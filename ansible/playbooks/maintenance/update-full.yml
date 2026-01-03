@@ -1,0 +1,374 @@
+---
+# Full system update playbook
+# Updates both OS packages AND applications in a single operation
+# Performs rolling updates to minimize service disruption
+
+- name: Full system update - OS packages (rolling)
+  hosts: base_managed
+  become: true
+  serial: 1  # One host at a time for safety
+  tasks:
+    - name: Display current host being updated
+      ansible.builtin.debug:
+        msg: "=== Updating {{ inventory_hostname }} - Phase 1: OS Packages ==="
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Check for available package updates
+      ansible.builtin.command: apt list --upgradable
+      register: upgradable_packages
+      changed_when: false
+
+    - name: Display available package updates
+      ansible.builtin.debug:
+        msg: "{{ upgradable_packages.stdout_lines }}"
+      when: upgradable_packages.stdout_lines | length > 1
+
+    - name: Upgrade packages (safe upgrade)
+      ansible.builtin.apt:
+        upgrade: safe
+        autoclean: true
+        autoremove: true
+      register: apt_upgrade
+
+    - name: Display package upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "Packages upgraded: {{ apt_upgrade.changed }}"
+          - "{{ apt_upgrade.stdout_lines | default([]) }}"
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Display reboot requirement
+      ansible.builtin.debug:
+        msg: "WARNING: {{ inventory_hostname }} requires reboot after package updates"
+      when: reboot_required.stat.exists
+
+    - name: Pause for manual reboot decision
+      ansible.builtin.pause:
+        prompt: |
+          {{ inventory_hostname }} requires a reboot after package updates.
+          Press ENTER to reboot now and continue with application updates, or Ctrl+C then 'A' to abort.
+      when:
+        - reboot_required.stat.exists
+        - not (auto_reboot | default(false))
+
+    - name: Reboot host if required
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting {{ inventory_hostname }} after package updates"
+      when: reboot_required.stat.exists
+
+    - name: Wait for host to come back online
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      when: reboot_required.stat.exists
+
+    - name: Verify SSH service after reboot
+      ansible.builtin.service:
+        name: ssh
+        state: started
+      when: reboot_required.stat.exists
+
+- name: Full system update - AdGuard Home
+  hosts: dns
+  become: true
+  serial: 1  # One host at a time to maintain DNS availability
+  tasks:
+    - name: Display current host being updated
+      ansible.builtin.debug:
+        msg: "=== Updating {{ inventory_hostname }} - Phase 2: AdGuard Home ==="
+
+    - name: Check current AdGuard Home version
+      ansible.builtin.command: "{{ adguard_install_path }}/AdGuardHome --version"
+      register: current_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display current vs target version
+      ansible.builtin.debug:
+        msg: "Current: {{ current_version.stdout | default('not installed') }}, Target: {{ adguard_home_version }}"
+
+    - name: Determine if upgrade needed
+      ansible.builtin.set_fact:
+        needs_upgrade: >-
+          {{
+            force_adguard_upgrade | default(false) or
+            current_version.rc != 0 or
+            adguard_home_version not in (current_version.stdout | default(''))
+          }}
+
+    - name: Skip if no upgrade needed
+      ansible.builtin.debug:
+        msg: "AdGuard Home already at version {{ adguard_home_version }}, skipping"
+      when: not needs_upgrade
+
+    # Upgrade AdGuard with error handling to ensure service always restarts
+    - name: Upgrade AdGuard Home with failure recovery
+      when: needs_upgrade
+      block:
+        # DNS chicken-and-egg fix: dns-01 uses itself for DNS resolution
+        # Before stopping AdGuard, configure it to use dns-02 temporarily
+        - name: Backup resolv.conf (dns-01 only)
+          ansible.builtin.copy:
+            src: /etc/resolv.conf
+            dest: /etc/resolv.conf.backup-upgrade
+            remote_src: true
+            mode: "0644"
+          when: inventory_hostname == 'dns-01'
+
+        - name: Configure temporary DNS to use dns-02 (dns-01 only)
+          ansible.builtin.copy:
+            content: |
+              # Temporary DNS configuration during AdGuard upgrade
+              # Using dns-02 for resolution while dns-01's AdGuard is stopped
+              nameserver 192.168.0.160
+            dest: /etc/resolv.conf
+            mode: "0644"
+          when: inventory_hostname == 'dns-01'
+
+        - name: Stop AdGuard Home for upgrade
+          ansible.builtin.service:
+            name: AdGuardHome
+            state: stopped
+
+        - name: Backup AdGuard Home configuration
+          ansible.builtin.copy:
+            src: "{{ adguard_install_path }}/AdGuardHome.yaml"
+            dest: "{{ adguard_install_path }}/AdGuardHome.yaml.backup-{{ ansible_date_time.epoch }}"
+            remote_src: true
+            mode: "0644"
+
+        - name: Download new AdGuard Home version
+          ansible.builtin.get_url:
+            url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_amd64.tar.gz"
+            dest: /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
+            mode: "0644"
+            timeout: 60
+
+        - name: Extract new version
+          ansible.builtin.unarchive:
+            src: /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
+            dest: /tmp
+            remote_src: true
+
+        - name: Install new binary
+          ansible.builtin.copy:
+            src: /tmp/AdGuardHome/AdGuardHome
+            dest: "{{ adguard_install_path }}/AdGuardHome"
+            owner: root
+            group: root
+            mode: "0755"
+            remote_src: true
+
+        - name: Start AdGuard Home
+          ansible.builtin.service:
+            name: AdGuardHome
+            state: started
+
+        - name: Wait for AdGuard Home to be ready
+          ansible.builtin.wait_for:
+            port: "{{ adguard_http_port }}"
+            timeout: 60
+
+        # Restore original DNS configuration after AdGuard is back up
+        - name: Restore original resolv.conf (dns-01 only)
+          ansible.builtin.copy:
+            src: /etc/resolv.conf.backup-upgrade
+            dest: /etc/resolv.conf
+            remote_src: true
+            mode: "0644"
+          when: inventory_hostname == 'dns-01'
+
+        - name: Remove resolv.conf backup (dns-01 only)
+          ansible.builtin.file:
+            path: /etc/resolv.conf.backup-upgrade
+            state: absent
+          when: inventory_hostname == 'dns-01'
+
+        - name: Cleanup download files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
+            - /tmp/AdGuardHome
+
+      rescue:
+        - name: Display upgrade failure warning
+          ansible.builtin.debug:
+            msg: "WARNING: AdGuard upgrade failed! Ensuring service is started and DNS is restored..."
+
+        - name: Ensure AdGuard Home is started after failure
+          ansible.builtin.service:
+            name: AdGuardHome
+            state: started
+          failed_when: false  # Best effort recovery
+
+        - name: Restore original resolv.conf after failure (dns-01 only)
+          ansible.builtin.copy:
+            src: /etc/resolv.conf.backup-upgrade
+            dest: /etc/resolv.conf
+            remote_src: true
+            mode: "0644"
+          when: inventory_hostname == 'dns-01'
+          failed_when: false  # Best effort recovery
+
+        - name: Remove resolv.conf backup after failure (dns-01 only)
+          ansible.builtin.file:
+            path: /etc/resolv.conf.backup-upgrade
+            state: absent
+          when: inventory_hostname == 'dns-01'
+          failed_when: false  # Best effort cleanup
+
+        - name: Fail with original error
+          ansible.builtin.fail:
+            msg: "AdGuard Home upgrade failed. Service has been restarted with previous version."
+
+    - name: Verify new version
+      ansible.builtin.command: "{{ adguard_install_path }}/AdGuardHome --version"
+      changed_when: false
+      register: new_version
+
+    - name: Display upgrade result
+      ansible.builtin.debug:
+        msg: "AdGuard Home {{ 'upgraded to' if needs_upgrade else 'already at' }} version: {{ new_version.stdout }}"
+
+- name: Full system update - adguardhome-sync (dns-01 only)
+  hosts: dns-01
+  become: true
+  tasks:
+    - name: Display current component being updated
+      ansible.builtin.debug:
+        msg: "=== Updating dns-01 - Phase 3: adguardhome-sync ==="
+
+    - name: Check if adguardhome-sync exists
+      ansible.builtin.stat:
+        path: /usr/local/bin/adguardhome-sync
+      register: sync_binary
+
+    - name: Get current version if exists
+      ansible.builtin.command: /usr/local/bin/adguardhome-sync --version
+      register: current_sync_version
+      changed_when: false
+      failed_when: false
+      when: sync_binary.stat.exists
+
+    - name: Display current vs target version
+      ansible.builtin.debug:
+        msg: "Current: {{ current_sync_version.stdout | default('not installed') }}, Target: {{ adguardhome_sync_version }}"
+
+    - name: Determine if sync upgrade needed
+      ansible.builtin.set_fact:
+        needs_sync_upgrade: >-
+          {{
+            force_sync_upgrade | default(false) or
+            not sync_binary.stat.exists or
+            adguardhome_sync_version not in (current_sync_version.stdout | default(''))
+          }}
+
+    - name: Skip if no upgrade needed
+      ansible.builtin.debug:
+        msg: "adguardhome-sync already at version {{ adguardhome_sync_version }}, skipping"
+      when: not needs_sync_upgrade
+
+    - name: Download new adguardhome-sync version
+      ansible.builtin.get_url:
+        url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"  # noqa yaml[line-length]
+        dest: /tmp/adguardhome-sync.tar.gz
+        mode: "0644"
+        timeout: 60
+      when: needs_sync_upgrade
+      register: sync_download
+
+    - name: Extract adguardhome-sync
+      ansible.builtin.unarchive:
+        src: /tmp/adguardhome-sync.tar.gz
+        dest: /tmp
+        remote_src: true
+      when: needs_sync_upgrade
+
+    - name: Stop sync timer before upgrade
+      ansible.builtin.systemd:
+        name: adguardhome-sync.timer
+        state: stopped
+      when: needs_sync_upgrade
+
+    - name: Install new binary
+      ansible.builtin.copy:
+        src: /tmp/adguardhome-sync
+        dest: /usr/local/bin/adguardhome-sync
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+      when: needs_sync_upgrade
+
+    - name: Start sync timer after upgrade
+      ansible.builtin.systemd:
+        name: adguardhome-sync.timer
+        state: started
+        daemon_reload: true
+      when: needs_sync_upgrade
+
+    - name: Cleanup download files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/adguardhome-sync.tar.gz
+        - /tmp/adguardhome-sync
+      when: needs_sync_upgrade
+
+    - name: Display upgrade result
+      ansible.builtin.debug:
+        msg: "adguardhome-sync {{ 'upgraded' if needs_sync_upgrade else 'already at version ' + adguardhome_sync_version }}"
+
+- name: Full system update - Ansible collections
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    ansible_become: false
+  tasks:
+    - name: Display current component being updated
+      ansible.builtin.debug:
+        msg: "=== Phase 4: Ansible Galaxy Collections ==="
+
+    - name: Update Galaxy collections
+      ansible.builtin.command: ansible-galaxy collection install -r requirements.yml --upgrade
+      args:
+        chdir: "{{ playbook_dir }}/../.."  # Go up to ansible/ directory
+      become: false
+      register: collection_update
+      changed_when: "'was installed successfully' in collection_update.stdout or 'Upgrading' in collection_update.stdout"
+
+    - name: Display collection update results
+      ansible.builtin.debug:
+        msg: "{{ collection_update.stdout_lines }}"
+
+- name: Full system update - Final summary
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    ansible_become: false
+  tasks:
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg:
+          - "========================================="
+          - "Full System Update Complete"
+          - "========================================="
+          - "- OS packages updated on all hosts"
+          - "- AdGuard Home updated on DNS servers"
+          - "- adguardhome-sync updated on dns-01"
+          - "- Ansible collections updated"
+          - ""
+          - "Verify deployment with: task deploy:verify"

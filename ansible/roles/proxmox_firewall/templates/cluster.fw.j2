@@ -1,0 +1,150 @@
+# {{ ansible_managed }}
+# Proxmox VE Cluster Firewall Configuration
+
+[OPTIONS]
+
+enable: 1
+policy_in: DROP
+policy_out: ACCEPT
+log_level_in: nolog
+log_level_out: nolog
+
+[ALIASES]
+
+{% for alias in pve_firewall_aliases | default([]) %}
+{{ alias.name }} {{ alias.cidr }}{% if alias.comment is defined %} # {{ alias.comment }}{% endif %}
+
+{% endfor %}
+
+[IPSET admin_lan]
+
+# Admin LAN network
+192.168.0.0/24
+
+[IPSET admin_ts]
+
+# Admin Tailscale network
+100.64.0.0/10
+
+{% include 'ipsets.j2' %}
+
+[IPSET smb_clients]
+
+# Hosts allowed SMB access (entire LAN)
+192.168.0.0/24
+
+[group sg-dns]
+
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
+
+[group sg-gitlab]
+
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+
+[group sg-haos]
+
+IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 5353 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 8123 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 8123 -log nolog
+
+[group sg-host-admin]
+
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 8006 -log nolog # Proxmox
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 8006 -log nolog # Proxmox
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_ts -p icmp -log nolog
+IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
+
+[group sg-k3s-core]
+
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 8472 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 6443 -log nolog
+
+[group sg-k3s-ingress-int]
+
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 80 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog
+
+[group sg-k3s-ingress-pub]
+
+IN ACCEPT -p tcp -dport 443 -log nolog
+IN ACCEPT -p tcp -dport 80 -log nolog
+
+[group sg-nfs-server]
+
+IN ACCEPT -source +dc/nfs_clients -p udp -dport 111 -log nolog
+IN ACCEPT -source +dc/nfs_clients -p tcp -dport 111 -log nolog
+IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
+
+[group sg-plex]
+
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 32469 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 32410:32414 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog
+IN ACCEPT -p tcp -dport 32400 -log nolog
+
+[group sg-pve-cluster]
+
+IN ACCEPT -source +dc/pve_hosts -p tcp -dport 8006 -log nolog
+IN ACCEPT -source +dc/pve_hosts -p tcp -dport 60000:60050 -log nolog
+IN ACCEPT -source +dc/pve_hosts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/pve_hosts -p udp -dport 5406 -log nolog
+IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog
+
+[group sg-smb-server]
+
+IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
+
+[group sg-smtp-relay]
+
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+OUT ACCEPT -p udp -dport 853 -log nolog
+OUT ACCEPT -p tcp -dport 853 -log nolog
+OUT ACCEPT -p udp -dport 53 -log nolog
+OUT ACCEPT -p tcp -dport 53 -log nolog
+OUT ACCEPT -p tcp -dport 587 -log nolog
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
+
+[group sg-windows]
+
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 3389 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 3389 -log nolog
+
+[group sg-xmrig]
+
+OUT ACCEPT -p tcp -dport 20128 -log nolog
+OUT ACCEPT -p tcp -dport 18192 -log nolog
+OUT ACCEPT -p tcp -dport 10128 -log nolog
+OUT ACCEPT -p tcp -dport 10032 -log nolog
+OUT ACCEPT -p tcp -dport 10001 -log nolog
+OUT ACCEPT -p udp -dport 53 -log nolog
+OUT ACCEPT -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+
+[RULES]
+
+{% for rule in pve_firewall_cluster_rules | default([]) %}
+{{ rule }}
+{% endfor %}

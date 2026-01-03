@@ -1,0 +1,44 @@
+{#- Generate IPSets dynamically from inventory -#}
+{#- This template collects hosts from inventory and their firewall_ipsets memberships -#}
+{%- set ipset_members = {} -%}
+{%- set ipset_comments = {
+  'core-cluster': 'Core cluster nodes (Proxmox hosts, DNS, SMTP, k3s VMs)',
+  'k3s_nodes': 'K3s cluster nodes + API VIP',
+  'nfs_clients': 'Hosts allowed NFS access',
+  'pve_hosts': 'Proxmox VE cluster hosts'
+} -%}
+
+{#- Collect all hosts from inventory and their IPSet memberships -#}
+{%- for host in groups['all'] -%}
+  {%- set host_ip = hostvars[host]['ansible_host'] -%}
+  {%- set host_ipsets = hostvars[host].get('firewall_ipsets', []) -%}
+  {%- for ipset_name in host_ipsets -%}
+    {%- if ipset_name not in ipset_members -%}
+      {%- set _ = ipset_members.update({ipset_name: []}) -%}
+    {%- endif -%}
+    {%- set _ = ipset_members[ipset_name].append({'ip': host_ip, 'name': host}) -%}
+  {%- endfor -%}
+{%- endfor -%}
+
+{#- Add special entries (VIPs, non-host IPs) -#}
+{%- for ipset_name, special_entries in firewall_ipset_special_entries.items() -%}
+  {%- if ipset_name not in ipset_members -%}
+    {%- set _ = ipset_members.update({ipset_name: []}) -%}
+  {%- endif -%}
+  {%- for entry in special_entries -%}
+    {%- set _ = ipset_members[ipset_name].append({'ip': entry.ip, 'name': entry.comment}) -%}
+  {%- endfor -%}
+{%- endfor -%}
+
+{#- Render IPSets in alphabetical order -#}
+{%- for ipset_name in ['core-cluster', 'k3s_nodes', 'nfs_clients', 'pve_hosts'] -%}
+  {%- if ipset_name in ipset_members %}
+[IPSET {{ ipset_name }}]
+
+# {{ ipset_comments.get(ipset_name, '') }}
+{% for member in ipset_members[ipset_name] | sort(attribute='ip') -%}
+{{ member.ip }}  # {{ member.name }}
+{% endfor %}
+
+  {%- endif -%}
+{%- endfor -%}

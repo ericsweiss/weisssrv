@@ -1,0 +1,40 @@
+---
+# Proxmox VE firewall configuration
+# Manages cluster.fw, ipsets, security groups, and per-node host.fw
+
+- name: Ensure Proxmox firewall directory exists
+  ansible.builtin.file:
+    path: /etc/pve/firewall
+    state: directory
+    owner: root
+    group: www-data
+    mode: "0755"
+
+- name: Deploy cluster firewall configuration
+  ansible.builtin.template:
+    src: cluster.fw.j2
+    dest: /etc/pve/firewall/cluster.fw
+    owner: root
+    group: www-data
+    mode: "0640"
+  when: pve_firewall_enabled | default(true)
+
+- name: Deploy node-specific host.fw configuration
+  ansible.builtin.template:
+    src: host.fw.j2
+    dest: "/etc/pve/nodes/{{ inventory_hostname }}/host.fw"
+    owner: root
+    group: www-data
+    mode: "0640"
+  when: pve_firewall_enabled | default(true)
+
+- name: Ensure firewall is enabled at datacenter level
+  ansible.builtin.lineinfile:
+    path: /etc/pve/datacenter.cfg
+    regexp: "^firewall:"
+    line: "firewall: 1"
+    create: true
+    owner: root
+    group: www-data
+    mode: "0640"
+  when: pve_firewall_enabled | default(true)

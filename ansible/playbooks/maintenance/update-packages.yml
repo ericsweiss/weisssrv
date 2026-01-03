@@ -1,0 +1,89 @@
+---
+# OS package update playbook
+# Performs rolling updates one host at a time to minimize disruption
+
+- name: Update OS packages on all hosts (rolling)
+  hosts: base_managed
+  become: true
+  serial: 1  # One host at a time
+  tasks:
+    - name: Display current host being updated
+      ansible.builtin.debug:
+        msg: "Updating packages on {{ inventory_hostname }}"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Check for available updates
+      ansible.builtin.command: apt list --upgradable
+      register: upgradable_packages
+      changed_when: false
+
+    - name: Display available updates
+      ansible.builtin.debug:
+        msg: "{{ upgradable_packages.stdout_lines }}"
+      when: upgradable_packages.stdout_lines | length > 1
+
+    - name: Upgrade packages (safe upgrade)
+      ansible.builtin.apt:
+        upgrade: safe
+        autoclean: true
+        autoremove: true
+      register: apt_upgrade
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "Packages upgraded: {{ apt_upgrade.changed }}"
+          - "{{ apt_upgrade.stdout_lines | default([]) }}"
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Display reboot requirement
+      ansible.builtin.debug:
+        msg: "WARNING: Reboot required for {{ inventory_hostname }}"
+      when: reboot_required.stat.exists
+
+    - name: Pause for manual reboot decision
+      ansible.builtin.pause:
+        prompt: |
+          {{ inventory_hostname }} requires a reboot.
+          Press ENTER to reboot now, or Ctrl+C then 'A' to abort and reboot manually later.
+      when:
+        - reboot_required.stat.exists
+        - not (auto_reboot | default(false))
+
+    - name: Reboot host if required
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting {{ inventory_hostname }} after package updates"
+      when: reboot_required.stat.exists
+
+    - name: Wait for host to come back online
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      when: reboot_required.stat.exists
+
+    - name: Verify services after reboot
+      ansible.builtin.service:
+        name: ssh
+        state: started
+      when: reboot_required.stat.exists
+
+- name: Update summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg:
+          - "========================================="
+          - "Package Update Complete"
+          - "========================================="
+          - "All hosts have been updated."
+          - "Check the output above for any hosts that required reboots."

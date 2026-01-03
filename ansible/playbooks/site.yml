@@ -1,0 +1,44 @@
+---
+# Main site playbook - deploy everything
+
+- name: Deploy base configuration to all managed hosts
+  hosts: base_managed
+  become: true
+  roles:
+    - base
+
+- name: Deploy Proxmox host configuration
+  hosts: proxmox
+  become: true
+  roles:
+    - qol
+    - postfix_null_client
+    - tailscale
+    - proxmox_firewall
+
+- name: Deploy NAS storage configuration
+  hosts: pve-nas-01
+  become: true
+  roles:
+    - nas_storage
+
+- name: Deploy DNS server configuration
+  hosts: dns
+  become: true
+  roles:
+    - postfix_null_client
+    - unbound
+    - adguard_home
+
+- name: Deploy certificate management and sync
+  hosts: dns
+  become: true
+  roles:
+    - acme_certs
+    - adguard_sync
+
+- name: Deploy SMTP relay configuration
+  hosts: mail
+  become: true
+  roles:
+    - smtp_relay

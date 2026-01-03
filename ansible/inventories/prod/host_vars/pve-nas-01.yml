@@ -1,0 +1,224 @@
+---
+# pve-nas-01 specific configuration
+# Primary NAS/storage server running Proxmox VE
+
+# ZFS pool configuration
+zfs_pools:
+  - name: tank
+    datasets:
+      - name: tank/media
+        properties:
+          mountpoint: /mnt/tank/media
+          atime: "off"
+          compression: zstd
+          recordsize: 1M
+          acltype: posix
+          com.sun:auto-snapshot: "true"
+      - name: tank/share
+        properties:
+          mountpoint: /mnt/tank/share
+          atime: "off"
+          compression: zstd
+          recordsize: 128K
+          acltype: posix
+          com.sun:auto-snapshot: "true"
+      - name: tank/proxmox
+        properties:
+          mountpoint: /mnt/tank/proxmox
+          atime: "off"
+          compression: zstd
+          com.sun:auto-snapshot: "false"
+      - name: tank/pve
+        properties:
+          mountpoint: /mnt/tank/pve
+          atime: "off"
+          compression: zstd
+          com.sun:auto-snapshot: "false"
+
+# ZFS scrub timer
+zfs_scrub_enabled: true
+zfs_scrub_schedule: "monthly"
+
+# NVMe fast storage
+nvme_storage:
+  downloads_hot: /mnt/nvme/downloads/media-hot
+  downloads: /mnt/nvme/downloads
+  appdata: /mnt/ssd/appdata
+
+# MergerFS configuration
+mergerfs_mounts:
+  - name: media
+    sources:
+      - "{{ nvme_storage.downloads_hot }}"
+      - /mnt/tank/media
+    target: /mnt/nvme/downloads/media
+    options:
+      - defaults
+      - allow_other
+      - default_permissions
+      - use_ino
+      - cache.files=off
+      - dropcacheonclose=true
+      - category.create=ff
+      - category.action=epall
+      - moveonenospc=true
+      - minfreespace=100G
+    systemd_requires:
+      - /mnt/tank/media
+      - /mnt/nvme/downloads
+
+# NFS exports
+nfs_exports:
+  # NFSv4 root export
+  - path: /export
+    clients:
+      - spec: "192.168.0.102/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.103/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.104/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.105/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.106/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.154/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+
+  # K3s/app RW exports
+  # These directories use UID 1000 (eric) and GID 2000 (media) with setgid for shared access
+  - path: /export/appdata
+    bind_source: /mnt/ssd/appdata
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,root_squash,fsid=11"
+
+  - path: /export/share
+    bind_source: /mnt/tank/share
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,root_squash,fsid=12"
+
+  - path: /export/downloads
+    bind_source: /mnt/nvme/downloads
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,root_squash,fsid=13"
+
+  # Read-only media export
+  - path: /export/media
+    bind_source: /mnt/nvme/downloads/media
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02755"  # rwxr-sr-x (setgid, read-only for others)
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "ro,sync,no_subtree_check,root_squash,fsid=10"
+      - spec: "192.168.0.154/32"
+        options: "ro,sync,no_subtree_check,root_squash,fsid=10"
+
+  # Proxmox backup target (requires no_root_squash, owned by root)
+  - path: /export/tank-proxmox
+    bind_source: /mnt/tank/proxmox
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    clients:
+      - spec: "192.168.0.102/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
+      - spec: "192.168.0.103/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
+      - spec: "192.168.0.104/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
+      - spec: "192.168.0.105/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
+      - spec: "192.168.0.106/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
+
+# Samba shares
+# Use "nas" user with "media" group (GID 2000) for shared access
+samba_shares:
+  - name: share
+    path: /mnt/tank/share
+    comment: General file share
+    browseable: true
+    read_only: false
+    guest_ok: false
+    valid_users: "nas"
+    force_group: "media"
+    create_mask: "0664"
+    directory_mask: "2775"  # setgid bit for group inheritance
+
+  - name: media
+    path: /mnt/tank/media
+    comment: Media library
+    browseable: true
+    read_only: false
+    guest_ok: false
+    valid_users: "nas"
+    force_group: "media"
+    create_mask: "0664"
+    directory_mask: "2775"  # setgid bit for group inheritance
+
+# Media mover configuration
+media_mover_enabled: true
+media_mover_src: /mnt/nvme/downloads/media-hot
+media_mover_dst: /mnt/tank/media
+media_mover_schedule: "*-*-* 02:00:00"  # Daily at 2 AM (systemd calendar format)
+
+# Proxmox storage configuration
+pve_storage:
+  - id: tank-proxmox
+    type: nfs
+    server: 192.168.0.102
+    export: /tank-proxmox
+    content: "backup,images,rootdir"
+    path: /mnt/pve/tank-proxmox
+
+# Proxmox backup job
+pve_vzdump_jobs:
+  - id: backup
+    storage: tank-proxmox
+    schedule: "0 2 * * *"
+    mode: snapshot
+    compress: zstd
+    mailnotification: failure
+    mailto: "{{ admin_email }}"
+
+# SMART monitoring
+smartd_enabled: true
+smartd_tank_disks:
+  - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA18WD1
+  - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0RDDB
+  - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0EJDZ
+  - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0ZZ1R
+  - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0HR34
+  - /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0FEGJ
+
+smartd_ssd_disks:
+  - /dev/disk/by-id/ata-Samsung_SSD_870_EVO_4TB_S757NL0Y902062Z
+  - /dev/disk/by-id/ata-Samsung_SSD_870_EVO_4TB_S757NL0Y902052X
+  - /dev/disk/by-id/ata-Samsung_SSD_870_EVO_4TB_S757NL0Y901976N
+
+smartd_nvme_disks:
+  - /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_4TB_S7KGNU0YA04137V
+  - /dev/disk/by-id/nvme-CT2000P5PSSD8_2334429F310B
+  - /dev/disk/by-id/nvme-CT2000P5PSSD8_2334429F32EE
+  - /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_with_Heatsink_4TB_S7DSNJ0Y608388N
+
+smartd_archive_disks:
+  - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1NC3Z
+  - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
+  - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
+  - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA

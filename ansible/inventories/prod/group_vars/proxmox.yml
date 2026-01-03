@@ -1,0 +1,76 @@
+---
+# Proxmox VE hypervisor configuration
+
+# Base packages for Proxmox hosts
+proxmox_packages:
+  - zsh
+  - neovim
+  - fzf
+  - ripgrep
+  - fd-find
+  - bat
+  - exa
+  - postfix
+  - libsasl2-modules
+  - mailutils
+
+# OpenRGB configuration (present but disabled)
+openrgb_enabled: false
+openrgb_config_path: /etc/openrgb
+
+# Postfix null client configuration
+postfix_config:
+  myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
+  myorigin: "{{ internal_domain }}"
+  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
+  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
+  mynetworks: "127.0.0.0/8"
+  inet_interfaces: "loopback-only"
+  smtp_tls_security_level: "encrypt"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+
+# Mail aliases
+mail_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"
+
+# SASL credentials for authenticating to smtp-relay (from 1Password)
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"
+
+# Proxmox firewall enabled
+pve_firewall_enabled: true
+
+# Shell QoL - Oh My Zsh
+omz_theme: risto
+omz_plugins:
+  - 1password
+  - ansible
+  - docker
+  - docker-compose
+  - git
+  - git-flow
+  - github
+  - golang
+  - history-substring-search
+  - python
+  - ruby
+  - rust
+  - scala
+  - screen
+  - ssh
+  - tmux
+  - vundle
+
+# Neovim plugins (Vundle)
+nvim_plugins:
+  - VundleVim/Vundle.vim
+  - tpope/vim-fugitive
+  - sheerun/vim-polyglot
+  - joshdick/onedark.vim

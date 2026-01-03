@@ -1,0 +1,26 @@
+---
+# SMART monitoring configuration
+
+- name: Install smartmontools
+  ansible.builtin.apt:
+    name: smartmontools
+    state: present
+  tags: [smart, packages]
+
+- name: Deploy smartd.conf
+  ansible.builtin.template:
+    src: smartd.conf.j2
+    dest: /etc/smartd.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  notify: Restart smartd
+  tags: [smart, config]
+
+- name: Ensure smartd service is enabled and running
+  ansible.builtin.systemd:
+    name: smartd
+    enabled: true
+    state: started
+  tags: [smart, service]

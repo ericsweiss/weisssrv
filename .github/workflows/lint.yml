@@ -1,0 +1,81 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ansible-lint:
+    name: Ansible Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install ansible ansible-lint
+
+      - name: Install Ansible collections
+        working-directory: ansible
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Ansible syntax check
+        working-directory: ansible
+        run: |
+          # Verify all playbooks have valid syntax
+          set -e  # Exit immediately if any command fails
+          for playbook in playbooks/*.yml playbooks/*/*.yml; do
+            if [ -f "$playbook" ]; then
+              echo "Checking syntax: $playbook"
+              ansible-playbook --syntax-check -i inventories/prod "$playbook"
+            fi
+          done
+
+      - name: Run ansible-lint
+        working-directory: ansible
+        run: |
+          ansible-lint playbooks/ roles/
+
+  terraform-fmt:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.5'
+
+      - name: Terraform Format Check
+        working-directory: terraform/cloudflare
+        run: terraform fmt -check -recursive
+
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Run yamllint
+        run: |
+          yamllint -d relaxed ansible/

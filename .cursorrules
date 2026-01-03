@@ -1,0 +1,380 @@
+# Cursor Rules for weisssrv Homelab
+
+You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, and GitOps principles.
+
+## Project Overview
+
+**Repository**: weisssrv (Weiss Server Infrastructure)
+**Tech Stack**: Ansible, Terraform, ZFS, Proxmox VE, Debian 13 (trixie)
+**Architecture**: 2 Proxmox hosts, 3 LXC containers, multi-pool ZFS storage
+**Documentation**: 19 comprehensive markdown files in docs/
+
+See `CLAUDE.md` for complete project overview.
+
+## Critical Rules
+
+### NEVER
+
+1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field`)
+2. **Automate ZFS pool creation/destruction** - Too critical, manual only
+3. **Skip deployment verification** - Always run `task deploy:verify` after changes
+4. **Use relative file paths in Ansible** - Always use absolute paths
+5. **Hardcode credentials** - Use 1Password references exclusively
+
+### ALWAYS
+
+1. **Test with dry run first** - `task deploy:check` before deploying
+2. **Use fully qualified collection names** - `ansible.builtin.apt` not `apt`
+3. **Follow existing patterns** - Check similar roles for conventions
+4. **Update documentation** - When changing behavior, update docs/
+5. **Use snake_case** - For all Ansible variables
+
+## Code Conventions
+
+### Ansible Tasks
+
+```yaml
+# Good example
+- name: Deploy AdGuard Home configuration
+  ansible.builtin.template:
+    src: AdGuardHome.yaml.j2
+    dest: "{{ adguard_install_path }}/AdGuardHome.yaml"
+    owner: adguard
+    group: adguard
+    mode: "0600"
+  notify: Restart AdGuardHome
+  no_log: true  # Contains passwords
+
+# Bad example
+- name: deploy config  # Not descriptive
+  template:  # Should be ansible.builtin.template
+    src: config.j2
+    dest: /opt/adguard/config.yaml  # Hardcoded path
+    mode: 600  # Should be quoted "0600"
+  # Missing: owner, group, no_log, notify
+```
+
+### Variable Organization
+
+**Precedence** (low to high):
+1. `group_vars/all.yml` - Global defaults, version pins, secrets
+2. `group_vars/<group>.yml` - Group-specific config
+3. `host_vars/<host>.yml` - Host-specific overrides
+
+**Naming**:
+- Role-specific: `adguard_http_port`, `unbound_port`
+- Global: `internal_domain`, `admin_user`
+- Secrets: Always in `secrets:` dict with `op://` format
+
+### Secrets
+
+```yaml
+# Correct - In group_vars/all.yml
+secrets:
+  smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
+  adguard_admin_password: "op://Homelab/AdGuard Home/password"
+
+# Usage in tasks
+- name: Deploy password file
+  ansible.builtin.template:
+    src: passwd.j2
+    dest: /etc/passwd
+  no_log: true  # Required for password tasks
+```
+
+### Inventory Structure
+
+```yaml
+# LXC Containers (use root)
+dns:
+  hosts:
+    dns-01:
+      ansible_host: 192.168.0.150
+      ansible_user: root
+
+# Proxmox Hosts (use eric with sudo)
+proxmox:
+  hosts:
+    pve-nas-01:
+      ansible_host: 192.168.0.102
+      ansible_user: eric
+      ansible_become: true
+```
+
+## Common Tasks
+
+### Add New Service
+
+1. Bootstrap LXC (see docs/18-bootstrap-new-systems.md)
+2. Add to `ansible/inventories/prod/hosts.yml`
+3. Create role in `ansible/roles/<service>/`
+4. Deploy: `task deploy:all -- --limit <hostname>`
+5. Verify: `task deploy:verify -- --limit <hostname>`
+
+### Update Application Version
+
+1. Edit `ansible/inventories/prod/group_vars/all.yml`:
+   ```yaml
+   adguard_home_version: "0.107.53"  # Update version
+   ```
+2. Run: `task maintenance:update-full`
+3. Verify: `task deploy:verify`
+
+### Modify Configuration
+
+1. Edit role template: `ansible/roles/<role>/templates/config.j2`
+2. Test: `task deploy:check -- --limit <hostname>`
+3. Deploy: `task deploy:all -- --limit <hostname>`
+4. Verify: `task deploy:verify -- --limit <hostname>`
+
+## Key Commands
+
+```bash
+# Deployment
+task deploy:check                    # Dry run (no changes)
+task deploy:all                      # Full deployment
+task deploy:verify                   # Verify services
+task deploy:base                     # Base config only
+
+# Maintenance
+task maintenance:update-full         # Update OS + apps (interactive)
+task maintenance:update-full-auto    # Update OS + apps (auto-reboot)
+
+# Ansible
+task ansible:ping                    # Test connectivity
+task ansible:lint                    # Lint playbooks
+ansible-playbook site.yml --limit dns-01  # Deploy to one host
+
+# Terraform
+task terraform:plan                  # Plan DNS changes
+task terraform:apply                 # Apply DNS changes
+
+# Testing
+task lint                            # Lint everything
+task collect-state                   # Generate cluster snapshot
+```
+
+## File Organization
+
+```
+ansible/
+├── inventories/prod/
+│   ├── hosts.yml                    # Host definitions
+│   ├── group_vars/
+│   │   ├── all.yml                  # Global vars, secrets, versions
+│   │   ├── dns.yml                  # DNS group vars
+│   │   └── proxmox.yml              # Proxmox group vars
+│   └── host_vars/                   # Host-specific overrides
+├── roles/
+│   └── <role>/
+│       ├── tasks/main.yml           # Main tasks
+│       ├── templates/               # Jinja2 templates
+│       ├── handlers/main.yml        # Service handlers
+│       └── files/                   # Static files
+└── playbooks/
+    ├── site.yml                     # Main playbook
+    ├── postflight.yml               # Verification
+    ├── maintenance/                 # Update playbooks
+    └── bootstrap/                   # Disaster recovery
+```
+
+## Architecture Quick Reference
+
+### Infrastructure
+
+- **Proxmox Hosts**: pve-nas-01 (.102), pve-opt-03 (.106)
+- **DNS Servers**: dns-01 (.150), dns-02 (.160) - AdGuard + Unbound
+- **SMTP Relay**: smtp-relay (.151) - Postfix to Gmail
+- **VPN**: Tailscale on all hosts (100.64.0.0/10)
+
+### Storage (pve-nas-01)
+
+- **tank** - 6x 22TB raidz2 (~122TB) - Bulk media
+- **ssd** - 3x 4TB raidz1 (~11TB) - App data
+- **nvme** - 1x 4TB (~2TB) - Hot cache
+- **archive** - 4x 6TB raidz1 (~22TB) - Cold storage
+
+### Network
+
+- **Internal domain**: *.esweiss.com (AdGuard rewrites)
+- **External domain**: *.ericsweiss.com (Cloudflare DNS)
+- **Gateway**: 192.168.0.1
+- **DNS**: 192.168.0.150, 192.168.0.160
+
+## User Context
+
+- **User**: eric
+- **Workstation**: MacBook Pro M1 Pro, 32GB RAM
+- **OS**: macOS (ARM architecture)
+- **1Password**: CLI integration for secrets
+
+## Safety Patterns
+
+### Deployment Workflow
+
+```bash
+# 1. Pre-deployment checks
+task ansible:ping          # Verify connectivity
+task lint                  # Validate syntax
+task deploy:check          # Dry run
+
+# 2. Review changes in output
+
+# 3. Deploy (start with non-critical host)
+task deploy:all -- --limit dns-02  # Secondary DNS first
+
+# 4. Verify
+task deploy:verify -- --limit dns-02
+
+# 5. Deploy to critical systems
+task deploy:all -- --limit dns-01  # Primary DNS
+
+# 6. Final verification
+task deploy:verify
+```
+
+### Before Committing
+
+- [ ] `task lint` passes
+- [ ] `task deploy:check` looks reasonable
+- [ ] Deployed and verified on test host
+- [ ] Documentation updated
+- [ ] Git diff reviewed for secrets
+- [ ] Commit message is descriptive
+
+## Patterns to Follow
+
+### Handler Pattern
+
+```yaml
+# tasks/main.yml
+- name: Deploy configuration
+  ansible.builtin.template:
+    src: config.j2
+    dest: /etc/service/config
+  notify: Restart service
+
+# handlers/main.yml
+- name: Restart service
+  ansible.builtin.service:
+    name: service
+    state: restarted
+```
+
+### Binary Installation Pattern
+
+```yaml
+- name: Check if binary exists
+  ansible.builtin.stat:
+    path: /usr/local/bin/binary
+  register: binary_exists
+
+- name: Download binary
+  ansible.builtin.get_url:
+    url: "https://example.com/v{{ version }}/binary.tar.gz"
+    dest: /tmp/binary.tar.gz
+  when: not binary_exists.stat.exists
+
+- name: Extract and install
+  ansible.builtin.unarchive:
+    src: /tmp/binary.tar.gz
+    dest: /tmp
+    remote_src: true
+  when: not binary_exists.stat.exists
+```
+
+### Service Pattern
+
+```yaml
+- name: Install packages
+  ansible.builtin.apt:
+    name:
+      - package1
+      - package2
+    state: present
+    update_cache: true
+
+- name: Create service user
+  ansible.builtin.user:
+    name: serviceuser
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Deploy systemd unit
+  ansible.builtin.template:
+    src: service.service.j2
+    dest: /etc/systemd/system/service.service
+  notify:
+    - Reload systemd
+    - Restart service
+
+- name: Enable service
+  ansible.builtin.systemd:
+    name: service
+    enabled: true
+    state: started
+```
+
+## Documentation
+
+Complete documentation in `docs/`:
+
+**Getting Started** (00-03): Hardware setup, architecture, installation, SSH
+**Infrastructure** (04-11): QoL, Tailscale, ZFS, file services, DNS, certs, mail, firewall
+**Operations** (12-18): Runbooks, CI/CD, k3s plan, credentials, DR, bootstrap
+
+## Debugging
+
+```bash
+# Verbose Ansible
+ansible-playbook site.yml -vvv
+
+# Test single task
+ansible dns-01 -m shell -a "systemctl status AdGuardHome"
+
+# Check facts
+ansible dns-01 -m setup
+
+# Validate syntax
+ansible-playbook site.yml --syntax-check
+```
+
+## Important Design Decisions
+
+### Root SSH on LXC Containers
+
+LXC containers use root SSH because:
+- Unprivileged (UIDs mapped, root = host UID 100000+)
+- Services run as non-root users (adguard, unbound)
+- Simplifies Ansible (no sudo complexity)
+- Conscious security design
+
+### ZFS Safety
+
+Ansible configures ZFS properties but NEVER creates/destroys pools. Pool management is manual-only (too critical to automate).
+
+### Split DNS
+
+- Internal (*.esweiss.com) via AdGuard rewrites
+- External (*.ericsweiss.com) via Terraform/Cloudflare
+- HA with dns-01/dns-02, adguardhome-sync replication
+
+## Getting Help
+
+For homelab architecture questions, hardware recommendations, or infrastructure design guidance, reference the homelab-architect agent's expertise when needed.
+
+## Version Info
+
+- **Debian**: 13 (trixie)
+- **Proxmox VE**: Latest stable
+- **Python**: 3 (required for Ansible)
+- **Ansible Collections**: See ansible/requirements.yml
+
+## Quick Reference Links
+
+- Main playbook: `ansible/playbooks/site.yml`
+- Inventory: `ansible/inventories/prod/hosts.yml`
+- Global vars: `ansible/inventories/prod/group_vars/all.yml`
+- Task runner: `Taskfile.yml`
+- All docs: `docs/00-*.md` through `docs/18-*.md`

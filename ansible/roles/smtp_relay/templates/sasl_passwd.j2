@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# SASL credentials for Gmail SMTP relay
+# WARNING: This file contains secrets - permissions should be 0600
+
+{{ smtp_relay_config.relayhost }}    {{ smtp_gmail_user }}:{{ smtp_gmail_password }}

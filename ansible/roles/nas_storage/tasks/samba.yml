@@ -1,0 +1,59 @@
+---
+# Samba file sharing configuration
+
+- name: Install Samba packages
+  ansible.builtin.apt:
+    name:
+      - samba
+      - samba-common-bin
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Ensure media group exists
+  ansible.builtin.group:
+    name: media
+    gid: 2000
+    state: present
+
+- name: Ensure nas user exists
+  ansible.builtin.user:
+    name: nas
+    comment: "Samba NAS user"
+    groups: media
+    append: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    state: present
+
+- name: Set Samba password for nas user
+  ansible.builtin.shell: |
+    set -o pipefail
+    (echo "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}";
+     echo "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}") |
+    smbpasswd -a -s nas
+  args:
+    executable: /bin/bash
+  when:
+    - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+  no_log: true
+  register: samba_password_set
+  changed_when: true
+
+- name: Deploy Samba configuration
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "testparm -s %s"
+  notify: Restart smbd
+
+- name: Ensure Samba services are enabled and running
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - smbd
+    - nmbd

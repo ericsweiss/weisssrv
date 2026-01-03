@@ -1,0 +1,259 @@
+# https://taskfile.dev
+version: '3'
+
+vars:
+  ANSIBLE_DIR: ./ansible
+  TERRAFORM_DIR: ./terraform
+  INVENTORY: ./inventories/prod
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # === Ansible Tasks ===
+  ansible:install-collections:
+    desc: Install Ansible Galaxy collections
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-galaxy collection install -r requirements.yml
+
+  ansible:ping:
+    desc: Ping all managed hosts
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible -i {{.INVENTORY}} all -m ping -e "ansible_become=false"
+
+  ansible:lint:
+    desc: Lint Ansible playbooks and roles
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-lint playbooks/ roles/
+
+  # === Deployment Tasks ===
+  deploy:all:
+    desc: Deploy full site configuration
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SMTP_GMAIL_USER: op://Homelab/SMTP Relay Gmail/username
+      SMTP_GMAIL_PASSWORD: op://Homelab/SMTP Relay Gmail/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml {{.CLI_ARGS}}
+
+  deploy:base:
+    desc: Deploy base configuration only
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/base.yml {{.CLI_ARGS}}
+
+  deploy:base-first-run:
+    desc: First-time base deployment (prompts for sudo password)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/base.yml -K {{.CLI_ARGS}}
+
+  deploy:dns:
+    desc: Deploy DNS stack (Unbound + AdGuard Home)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/dns.yml {{.CLI_ARGS}}
+
+  deploy:storage:
+    desc: Deploy NAS storage configuration
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/storage.yml {{.CLI_ARGS}}
+
+  deploy:check:
+    desc: Check mode - show what would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SMTP_GMAIL_USER: op://Homelab/SMTP Relay Gmail/username
+      SMTP_GMAIL_PASSWORD: op://Homelab/SMTP Relay Gmail/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml --check --diff {{.CLI_ARGS}}
+
+  deploy:verify:
+    desc: Run post-deployment verification
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/postflight.yml {{.CLI_ARGS}}
+
+  # === Maintenance Tasks ===
+  maintenance:update-packages:
+    desc: Update OS packages on all hosts (rolling, interactive)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-packages.yml {{.CLI_ARGS}}
+
+  maintenance:update-packages-auto:
+    desc: Update OS packages on all hosts (rolling, auto-reboot)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-packages.yml -e auto_reboot=true {{.CLI_ARGS}}
+
+  maintenance:update-applications:
+    desc: Update homelab applications to versions in versions.yml
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml {{.CLI_ARGS}}
+
+  maintenance:update-full:
+    desc: Full system update - packages + applications (rolling, interactive)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml {{.CLI_ARGS}}
+
+  maintenance:update-full-auto:
+    desc: Full system update - packages + applications (rolling, auto-reboot)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
+      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
+      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml -e auto_reboot=true {{.CLI_ARGS}}
+
+  # === Disaster Recovery Tasks ===
+  disaster-recovery:storage-bootstrap:
+    desc: Bootstrap storage from scratch (INTERACTIVE - for disaster recovery only)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/bootstrap/storage-bootstrap.yml --limit pve-nas-01 {{.CLI_ARGS}}
+
+  # === Terraform Tasks ===
+  terraform:init:
+    desc: Initialize Terraform
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - terraform init
+
+  terraform:plan:
+    desc: Plan Terraform changes
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - |
+        terraform plan \
+          -var="cloudflare_api_token=$(op read 'op://Homelab/Cloudflare DNS Token/credential')" \
+          -var="cloudflare_account_id=$(op read 'op://Homelab/Cloudflare DNS Token/username')" \
+          {{.CLI_ARGS}}
+
+  terraform:apply:
+    desc: Apply Terraform changes
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - |
+        terraform apply \
+          -var="cloudflare_api_token=$(op read 'op://Homelab/Cloudflare DNS Token/credential')" \
+          -var="cloudflare_account_id=$(op read 'op://Homelab/Cloudflare DNS Token/username')" \
+          {{.CLI_ARGS}}
+
+  terraform:validate:
+    desc: Validate Terraform configuration
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - terraform validate
+
+  terraform:fmt:
+    desc: Format Terraform files
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - terraform fmt -recursive
+
+  terraform:fmt-check:
+    desc: Check Terraform formatting
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - terraform fmt -check -recursive
+
+  # === Utility Tasks ===
+  collect-state:
+    desc: Collect redacted cluster state
+    cmds:
+      - ./scripts/collect-state.sh {{.CLI_ARGS}}
+
+  lint:
+    desc: Run all linters
+    cmds:
+      - task: ansible:lint
+      - task: terraform:fmt-check
+      - task: terraform:init
+      - task: terraform:validate
+
+  # === 1Password Integration ===
+  op:check:
+    desc: Verify 1Password CLI is authenticated
+    cmds:
+      - op account get
+
+  secrets:show:
+    desc: Display secret references (not values)
+    cmds:
+      - |
+        echo "Secret references in use:"
+        echo "  - op://Homelab/Cloudflare DNS Token/credential"
+        echo "  - op://Homelab/Cloudflare DNS Token/account_id"
+        echo "  - op://Homelab/SMTP Relay Gmail/password"
+        echo "  - op://Homelab/SMTP Relay Gmail/username"
+        echo "  - op://Homelab/AdGuard Home/password"
+        echo "  - op://Homelab/Tailscale Auth Key/credential"

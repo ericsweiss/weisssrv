@@ -1,0 +1,86 @@
+---
+# QoL role: zsh, oh-my-zsh, neovim, vundle for admin user
+
+- name: Install QoL packages
+  ansible.builtin.apt:
+    name:
+      - zsh
+      - neovim
+      - fzf
+      - ripgrep
+      - fd-find
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Check current shell for admin user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ admin_user }}"
+  register: admin_user_info
+
+- name: Set shell fact
+  ansible.builtin.set_fact:
+    current_user_shell: "{{ admin_user_info.ansible_facts.getent_passwd[admin_user][5] }}"
+
+- name: Set zsh as default shell for admin user
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    shell: /bin/zsh
+  when: current_user_shell != '/bin/zsh'
+
+- name: Check if Oh My Zsh is installed
+  ansible.builtin.stat:
+    path: "/home/{{ admin_user }}/.oh-my-zsh"
+  register: omz_installed
+  when: admin_user != 'root'
+
+- name: Install Oh My Zsh
+  ansible.builtin.shell: |
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+  args:
+    creates: "/home/{{ admin_user }}/.oh-my-zsh"
+  become: true
+  become_user: "{{ admin_user }}"
+  when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
+
+- name: Deploy .zshrc configuration
+  ansible.builtin.template:
+    src: zshrc.j2
+    dest: "/home/{{ admin_user }}/.zshrc"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0644"
+  when: admin_user != 'root'
+
+- name: Deploy .zprofile configuration
+  ansible.builtin.copy:
+    content: |
+      export PATH="$HOME/.local/bin:$PATH"
+    dest: "/home/{{ admin_user }}/.zprofile"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0644"
+  when: admin_user != 'root'
+
+- name: Deploy .alias.zsh configuration
+  ansible.builtin.template:
+    src: alias.zsh.j2
+    dest: "/home/{{ admin_user }}/.alias.zsh"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0644"
+  when: admin_user != 'root'
+
+- name: Deploy .local.zsh configuration
+  ansible.builtin.copy:
+    content: |
+      # Local environment overrides (not tracked in git)
+    dest: "/home/{{ admin_user }}/.local.zsh"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0644"
+    force: false
+  when: admin_user != 'root'
+
+- name: Include neovim setup tasks
+  ansible.builtin.include_tasks: neovim.yml

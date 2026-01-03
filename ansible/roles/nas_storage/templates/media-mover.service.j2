@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Move media from NVMe hot to tank
+RequiresMountsFor={{ media_mover_src }} {{ media_mover_dst }}
+After=zfs-mount.service
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+ExecStart=/usr/local/sbin/media-mover.sh

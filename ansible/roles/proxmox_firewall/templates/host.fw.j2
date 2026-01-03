@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Proxmox VE Node Firewall Configuration for {{ inventory_hostname }}
+
+[OPTIONS]
+
+enable: 1
+log_level_in: nolog
+log_level_out: nolog
+
+[RULES]
+
+{% for rule in pve_firewall_host_rules | default([]) %}
+{{ rule }}
+{% endfor %}
+
+{% if 'nas' in proxmox_role | default('') %}
+# NAS-specific rules
+GROUP sg-nfs-server
+GROUP sg-smb-server
+{% endif %}

@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+# Unbound configuration for weisssrv homelab
+
+server:
+  # listen only on loopback; AdGuard will be the LAN-facing DNS server
+  interface: {{ unbound_interface }}
+  port: {{ unbound_port }}
+  do-ip4: yes
+  do-ip6: yes
+  do-udp: yes
+  do-tcp: yes
+
+  tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"
+
+  # privacy / hygiene
+  hide-identity: yes
+  hide-version: yes
+  qname-minimisation: yes
+  harden-glue: yes
+  harden-dnssec-stripped: yes
+  use-caps-for-id: yes
+  prefetch: yes
+  cache-min-ttl: 60
+  cache-max-ttl: 86400
+
+  # allow only local clients (loopback)
+{% for acl in unbound_access_control %}
+  access-control: {{ acl }}
+{% endfor %}
+
+forward-zone:
+  name: "."
+  forward-tls-upstream: yes
+{% for forwarder in unbound_forwarders %}
+  # {{ forwarder.name }}
+  forward-addr: {{ forwarder.addr }}@{{ forwarder.port }}#{{ forwarder.name }}
+{% endfor %}

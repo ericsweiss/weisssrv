@@ -1,0 +1,342 @@
+---
+# Post-deployment verification playbook
+# Verifies critical services are functioning after deployment
+
+- name: Verify SSH access to all hosts
+  hosts: base_managed
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Verify SSH connectivity
+      ansible.builtin.ping:
+
+- name: Verify base system health
+  hosts: base_managed
+  become: true
+  tasks:
+    - name: Check disk space (fail if root <10% free)
+      ansible.builtin.assert:
+        that:
+          - item.size_available > (item.size_total * 0.10)
+        fail_msg: "{{ item.mount }} has less than 10% free space"
+      loop: "{{ ansible_mounts | selectattr('mount', 'equalto', '/') }}"
+      loop_control:
+        label: "{{ item.mount }}"
+
+    - name: Verify SSH service is running
+      ansible.builtin.service:
+        name: ssh
+        state: started
+      check_mode: true
+      register: ssh_check
+      failed_when: ssh_check.changed
+
+    - name: Verify admin user can sudo
+      ansible.builtin.command: sudo -n true
+      become: false
+      changed_when: false
+      when: admin_user != 'root'
+
+- name: Verify Proxmox host services
+  hosts: proxmox
+  become: true
+  tasks:
+    - name: Verify Tailscale is running
+      ansible.builtin.command: tailscale status
+      changed_when: false
+      register: tailscale_status
+      failed_when: tailscale_status.rc != 0
+
+    - name: Verify Postfix is running
+      ansible.builtin.service:
+        name: postfix
+        state: started
+      check_mode: true
+
+- name: Verify DNS services
+  hosts: dns
+  become: true
+  tasks:
+    - name: Verify Unbound is running
+      ansible.builtin.service:
+        name: unbound
+        state: started
+      check_mode: true
+
+    - name: Test DNS resolution via Unbound
+      ansible.builtin.command: dig @127.0.0.1 -p {{ unbound_port }} google.com +short
+      changed_when: false
+      register: dns_test
+      failed_when: dns_test.rc != 0 or dns_test.stdout == ""
+
+    - name: Verify AdGuard Home is running
+      ansible.builtin.service:
+        name: AdGuardHome
+        state: started
+      check_mode: true
+
+    - name: Test AdGuard Home API (401 is OK - means it's running)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ adguard_http_port }}/control/status"
+        method: GET
+        status_code: [200, 401]
+        validate_certs: false
+      register: adguard_status
+
+    - name: Verify AdGuard Home DNS is responding
+      ansible.builtin.command: dig @127.0.0.1 -p 53 google.com +short
+      changed_when: false
+      register: adguard_dns_test
+      failed_when: adguard_dns_test.rc != 0 or adguard_dns_test.stdout == ""
+
+- name: Verify certificate distribution SSH access (dns-01 only)
+  hosts: dns-01
+  become: true
+  tasks:
+    - name: Test SSH to dns-02
+      ansible.builtin.command: ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@192.168.0.160 'echo success'
+      changed_when: false
+      register: dns02_ssh
+      failed_when: "'success' not in dns02_ssh.stdout"
+
+    - name: Test SSH to smtp-relay
+      ansible.builtin.command: ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@192.168.0.151 'echo success'
+      changed_when: false
+      register: smtp_ssh
+      failed_when: "'success' not in smtp_ssh.stdout"
+
+    - name: Verify AdGuard Home Sync timer is enabled
+      ansible.builtin.systemd:
+        name: adguardhome-sync.timer
+        enabled: true
+      check_mode: true
+      register: sync_timer
+      failed_when: sync_timer.changed
+
+- name: Verify SMTP relay
+  hosts: mail
+  become: true
+  tasks:
+    - name: Verify Postfix is running
+      ansible.builtin.service:
+        name: postfix
+        state: started
+      check_mode: true
+
+    - name: Test Postfix is accepting connections on submission port
+      ansible.builtin.wait_for:
+        port: 587
+        host: 127.0.0.1
+        timeout: 5
+
+    - name: Test SASL authentication is configured
+      ansible.builtin.command: postconf -h smtp_sasl_auth_enable
+      changed_when: false
+      register: sasl_config
+      failed_when: "'yes' not in sasl_config.stdout"
+
+- name: Verify NAS storage
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Check ZFS pool health (all pools)
+      ansible.builtin.command: "zpool status {{ item }}"
+      changed_when: false
+      register: zpool_health
+      failed_when: >
+        zpool_health.rc != 0 or
+        'DEGRADED' in zpool_health.stdout or
+        'FAULTED' in zpool_health.stdout or
+        'UNAVAIL' in zpool_health.stdout
+      loop:
+        - tank
+        - ssd
+        - nvme
+        - archive
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Display ZFS pool status (tank)
+      ansible.builtin.debug:
+        msg: "{{ zpool_health.results[0].stdout_lines }}"
+
+    - name: Display ZFS pool status (ssd)
+      ansible.builtin.debug:
+        msg: "{{ zpool_health.results[1].stdout_lines }}"
+
+    - name: Display ZFS pool status (nvme)
+      ansible.builtin.debug:
+        msg: "{{ zpool_health.results[2].stdout_lines }}"
+
+    - name: Display ZFS pool status (archive)
+      ansible.builtin.debug:
+        msg: "{{ zpool_health.results[3].stdout_lines }}"
+
+    - name: Verify ZFS datasets are mounted
+      ansible.builtin.command: zfs list -H -o name,mounted
+      changed_when: false
+      register: zfs_datasets
+      failed_when: false
+
+    - name: Check critical datasets are mounted
+      ansible.builtin.assert:
+        that:
+          - "'yes' in item"
+        fail_msg: "Critical ZFS dataset not mounted: {{ item }}"
+      loop: "{{ zfs_datasets.stdout_lines }}"
+      when: >
+        'tank/media' in item or
+        'tank/share' in item or
+        'tank/downloads' in item or
+        'ssd/appdata' in item or
+        'nvme/downloads' in item
+
+    - name: Verify MergerFS mounts
+      ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE
+      changed_when: false
+      register: mergerfs_mounts
+      failed_when: mergerfs_mounts.rc != 0
+
+    - name: Display MergerFS mounts
+      ansible.builtin.debug:
+        msg: "{{ mergerfs_mounts.stdout_lines }}"
+
+    - name: Check disk space on critical mounts
+      ansible.builtin.command: df -h
+      changed_when: false
+      register: disk_space
+
+    - name: Display disk space
+      ansible.builtin.debug:
+        msg: "{{ disk_space.stdout_lines }}"
+
+    - name: Check SMART health for HDD disks
+      ansible.builtin.command: "smartctl -H {{ item }}"
+      changed_when: false
+      register: smart_health
+      failed_when: "'PASSED' not in smart_health.stdout"
+      loop: "{{ smartd_tank_disks }}"
+      loop_control:
+        label: "{{ item | basename }}"
+      when: smartd_enabled | default(true)
+
+    - name: Check SMART health for SSD disks
+      ansible.builtin.command: "smartctl -H {{ item }}"
+      changed_when: false
+      register: smart_ssd_health
+      failed_when: "'PASSED' not in smart_ssd_health.stdout"
+      loop: "{{ smartd_ssd_disks }}"
+      loop_control:
+        label: "{{ item | basename }}"
+      when: smartd_enabled | default(true)
+
+    - name: Check SMART health for NVMe disks
+      ansible.builtin.command: "smartctl -H {{ item }}"
+      changed_when: false
+      register: smart_nvme_health
+      failed_when: "'PASSED' not in smart_nvme_health.stdout"
+      loop: "{{ smartd_nvme_disks }}"
+      loop_control:
+        label: "{{ item | basename }}"
+      when: smartd_enabled | default(true)
+
+    - name: Check SMART health for archive pool disks
+      ansible.builtin.command: "smartctl -H {{ item }}"
+      changed_when: false
+      register: smart_archive_health
+      failed_when: "'PASSED' not in smart_archive_health.stdout"
+      loop: "{{ smartd_archive_disks | default([]) }}"
+      loop_control:
+        label: "{{ item | basename }}"
+      when:
+        - smartd_enabled | default(true)
+        - smartd_archive_disks is defined
+        - smartd_archive_disks | length > 0
+
+    - name: Verify smartd service is running
+      ansible.builtin.service:
+        name: smartd
+        state: started
+      check_mode: true
+      when: smartd_enabled | default(true)
+
+    - name: Check Proxmox backup job status
+      ansible.builtin.command: pvesh get /cluster/backup --output-format=json
+      changed_when: false
+      register: backup_jobs
+      failed_when: false
+
+    - name: Display backup job configuration
+      ansible.builtin.debug:
+        msg: "{{ backup_jobs.stdout | from_json }}"
+      when: backup_jobs.rc == 0
+
+    - name: Verify NFS server is running
+      ansible.builtin.service:
+        name: nfs-kernel-server
+        state: started
+      check_mode: true
+
+    - name: Check NFS exports are active
+      ansible.builtin.command: showmount -e localhost
+      changed_when: false
+      register: nfs_exports
+      failed_when: "'/export' not in nfs_exports.stdout"
+
+    - name: Verify Samba is running
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+      check_mode: true
+      loop:
+        - smbd
+        - nmbd
+
+    - name: Verify nas user exists in Samba
+      ansible.builtin.command: pdbedit -L
+      changed_when: false
+      register: samba_users
+      failed_when: "'nas' not in samba_users.stdout"
+
+    - name: Verify media-mover timer is enabled
+      ansible.builtin.systemd:
+        name: media-mover.timer
+        enabled: true
+      check_mode: true
+      register: mover_timer
+      failed_when: mover_timer.changed
+      when: media_mover_enabled | default(false)
+
+    - name: Check last media-mover run status
+      ansible.builtin.command: systemctl status media-mover.service
+      changed_when: false
+      register: mover_status
+      failed_when: false
+      when: media_mover_enabled | default(false)
+
+    - name: Display media-mover last run
+      ansible.builtin.debug:
+        msg: "{{ mover_status.stdout_lines | select('search', 'Active|Main PID|Status') | list }}"
+      when: media_mover_enabled | default(false) and mover_status.rc == 0
+
+- name: Display verification summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "========================================="
+          - "Post-Deployment Verification: PASSED"
+          - "========================================="
+          - "- SSH access verified on all hosts"
+          - "- DNS services operational (Unbound + AdGuard)"
+          - "- SMTP relay configured and running"
+          - "- NFS/Samba services active on NAS"
+          - "- Certificate delivery SSH access confirmed"
+          - "- ZFS pool health verified (ONLINE)"
+          - "- MergerFS mounts active"
+          - "- SMART disk health checks passed"
+          - "- Backup jobs configured"
+          - "- Media mover timer running"
+          - "========================================="

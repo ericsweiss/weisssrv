@@ -1,0 +1,24 @@
+---
+# Default variables for adguard_home role
+
+adguard_user: adguard
+adguard_group: adguard
+adguard_install_path: /opt/AdGuardHome
+adguard_http_port: 3000
+adguard_dns_port: 53
+adguard_dot_port: 853
+adguard_https_port: 443
+adguard_admin_user: eric
+
+adguard_tls_enabled: true
+adguard_tls_server_name: "dns.esweiss.com"
+adguard_cert_path: "{{ adguard_install_path }}/certs"
+
+# Upstream DNS (local Unbound)
+adguard_upstream_dns:
+  - "127.0.0.1:5335"
+
+# Bootstrap DNS for initial setup
+adguard_bootstrap_dns:
+  - "9.9.9.10"
+  - "149.112.112.10"

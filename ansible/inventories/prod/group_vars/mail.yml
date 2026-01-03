@@ -1,0 +1,45 @@
+---
+# SMTP relay server configuration
+
+# Postfix relay configuration
+smtp_relay_config:
+  myhostname: "smtp-relay.{{ internal_domain }}"
+  myorigin: "/etc/mailname"
+  mydestination: "$myhostname, localhost.$mydomain, localhost"
+  relayhost: "[smtp.gmail.com]:587"
+  mynetworks: "127.0.0.0/8,192.168.0.0/24"
+  inet_interfaces: "all"
+  inet_protocols: "ipv4"
+  smtp_tls_security_level: "encrypt"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_tls_security_options: "noanonymous"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+  smtpd_relay_restrictions: "permit_mynetworks,reject_unauth_destination"
+  smtpd_tls_cert_file: "/etc/postfix/tls/fullchain.pem"
+  smtpd_tls_key_file: "/etc/postfix/tls/privkey.pem"
+  smtpd_tls_security_level: "may"
+  smtpd_tls_loglevel: "1"
+  smtpd_tls_received_header: "yes"
+  smtpd_tls_protocols: "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1"
+  smtp_tls_protocols: "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1"
+  smtpd_tls_mandatory_protocols: "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1"
+  smtpd_sasl_type: "cyrus"
+  smtpd_sasl_path: "smtpd"
+  smtpd_sasl_security_options: "noanonymous"
+  broken_sasl_auth_clients: "yes"
+  smtpd_sasl_auth_enable: "yes"
+  smtpd_sasl_local_domain: "$myhostname"
+
+# TLS certificate paths
+smtp_tls_cert_dir: /etc/postfix/tls
+
+# Submission port configuration (587)
+smtp_submission_enabled: true
+smtp_submission_config:
+  syslog_name: "postfix/submission"
+  smtpd_tls_security_level: "encrypt"
+  smtpd_sasl_auth_enable: "yes"
+  smtpd_recipient_restrictions: "permit_sasl_authenticated,reject"
+  milter_macro_daemon_name: "ORIGINATING"

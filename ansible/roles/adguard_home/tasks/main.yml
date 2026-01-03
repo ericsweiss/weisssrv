@@ -1,0 +1,141 @@
+---
+# AdGuard Home installation and configuration
+# Runs as unprivileged user with CAP_NET_BIND_SERVICE
+
+- name: Check if AdGuard Home service exists
+  ansible.builtin.stat:
+    path: /etc/systemd/system/AdGuardHome.service
+  register: adguard_service
+
+- name: Stop AdGuard Home if running (for user modification)
+  ansible.builtin.service:
+    name: AdGuardHome
+    state: stopped
+  when: adguard_service.stat.exists
+  register: adguard_stopped
+  changed_when: false  # Service stop/start is deployment process, not config drift
+
+- name: Create adguard user and group
+  ansible.builtin.user:
+    name: "{{ adguard_user }}"
+    group: "{{ adguard_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ adguard_install_path }}"
+    create_home: false
+
+- name: Create AdGuard Home directory
+  ansible.builtin.file:
+    path: "{{ adguard_install_path }}"
+    state: directory
+    owner: "{{ adguard_user }}"
+    group: "{{ adguard_group }}"
+    mode: "0755"
+
+- name: Create AdGuard Home certs directory
+  ansible.builtin.file:
+    path: "{{ adguard_cert_path }}"
+    state: directory
+    owner: root
+    group: "{{ adguard_group }}"
+    mode: "2750"  # setgid so new files inherit group
+
+- name: Create AdGuard Home data directory
+  ansible.builtin.file:
+    path: "{{ adguard_install_path }}/data"
+    state: directory
+    owner: "{{ adguard_user }}"
+    group: "{{ adguard_group }}"
+    mode: "0700"
+
+- name: Check if AdGuard Home is installed
+  ansible.builtin.stat:
+    path: "{{ adguard_install_path }}/AdGuardHome"
+  register: adguard_binary
+
+- name: Download and install AdGuard Home
+  when: not adguard_binary.stat.exists
+  block:
+    - name: Download AdGuard Home
+      ansible.builtin.get_url:
+        url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_amd64.tar.gz"
+        dest: /tmp/adguardhome.tar.gz
+        mode: "0644"
+
+    - name: Extract AdGuard Home
+      ansible.builtin.unarchive:
+        src: /tmp/adguardhome.tar.gz
+        dest: /tmp
+        remote_src: true
+
+    - name: Install AdGuard Home binary
+      ansible.builtin.copy:
+        src: /tmp/AdGuardHome/AdGuardHome
+        dest: "{{ adguard_install_path }}/AdGuardHome"
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+
+    - name: Cleanup download
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/adguardhome.tar.gz
+        - /tmp/AdGuardHome
+
+- name: Deploy AdGuard Home systemd service
+  ansible.builtin.template:
+    src: adguardhome.service.j2
+    dest: /etc/systemd/system/AdGuardHome.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart AdGuardHome
+
+- name: Fix AdGuardHome.sig permissions (known issue on dns-02)
+  ansible.builtin.file:
+    path: "{{ adguard_install_path }}/AdGuardHome.sig"
+    mode: "0644"
+  failed_when: false
+
+- name: Ensure AdGuard Home is enabled and running
+  ansible.builtin.systemd:
+    name: AdGuardHome
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for AdGuard Home to be ready
+  ansible.builtin.wait_for:
+    port: "{{ adguard_http_port }}"
+    timeout: 60
+
+- name: Validate AdGuard admin password hash is set
+  ansible.builtin.assert:
+    that:
+      - adguard_admin_password_hash is defined
+      - adguard_admin_password_hash | length > 0
+      - adguard_admin_password_hash is match('^\$2[aby]\$')
+    fail_msg: "AdGuard admin password hash not found or invalid! Ensure ADGUARD_ADMIN_PASSWORD_HASH is set in 1Password with a valid bcrypt hash."
+    success_msg: "AdGuard admin password hash is set"
+
+- name: Check if AdGuard Home config exists
+  ansible.builtin.stat:
+    path: "{{ adguard_install_path }}/AdGuardHome.yaml"
+  register: adguard_config
+
+- name: Update admin password in AdGuard Home config
+  ansible.builtin.lineinfile:
+    path: "{{ adguard_install_path }}/AdGuardHome.yaml"
+    regexp: '^(\s+password:\s+).*$'
+    line: '    password: {{ adguard_admin_password_hash }}'
+    owner: "{{ adguard_user }}"
+    group: "{{ adguard_group }}"
+    mode: "0600"
+  when: adguard_config.stat.exists
+  notify: Restart AdGuardHome
+  no_log: true

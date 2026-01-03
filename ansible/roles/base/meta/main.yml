@@ -1,0 +1,17 @@
+---
+# Role metadata
+
+galaxy_info:
+  author: Eric Weiss
+  description: Base system configuration including packages and SSH hardening
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - noble
+
+dependencies: []

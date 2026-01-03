@@ -1,0 +1,82 @@
+---
+# Tailscale VPN setup
+# Note: tailscale up must be run manually with auth key to avoid storing keys in git
+
+- name: Create keyrings directory
+  ansible.builtin.file:
+    path: /usr/share/keyrings
+    state: directory
+    mode: '0755'
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Check if Tailscale GPG key exists
+  ansible.builtin.stat:
+    path: /usr/share/keyrings/tailscale-archive-keyring.gpg
+  register: tailscale_gpg_key
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Download Tailscale GPG key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: '0644'
+  when: ansible_facts['os_family'] == "Debian"
+  register: gpg_download_result
+  changed_when: gpg_download_result.changed and not tailscale_gpg_key.stat.exists
+
+- name: Add Tailscale repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg]
+      https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}
+      {{ ansible_facts['distribution_release'] }} main
+    state: present
+    filename: tailscale
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Enable Tailscale service
+  ansible.builtin.service:
+    name: tailscaled
+    state: started
+    enabled: true
+
+- name: Check Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Authenticate Tailscale with auth key
+  ansible.builtin.command: >
+    tailscale up
+    --authkey={{ lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY') }}
+    --accept-routes={{ tailscale_accept_routes | lower }}
+    --accept-dns={{ tailscale_accept_dns | lower }}
+  when:
+    - not ansible_check_mode
+    - tailscale_status.rc != 0 or (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') != "Running"
+    - lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY', default='') != ''
+  no_log: true  # Don't log the auth key
+  register: tailscale_up
+  changed_when: "'Success' in tailscale_up.stdout or tailscale_up.rc == 0"
+
+- name: Display Tailscale authentication status
+  ansible.builtin.debug:
+    msg: |
+      {% if tailscale_up is defined and tailscale_up.changed %}
+      Tailscale authenticated successfully
+      {% elif tailscale_status.rc == 0 and (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') == "Running" %}
+      Tailscale already authenticated and running
+      {% else %}
+      WARNING: Tailscale authentication may need manual intervention
+      Run: sudo tailscale up --accept-routes={{ tailscale_accept_routes | lower }} --accept-dns={{ tailscale_accept_dns | lower }}
+      {% endif %}
+  when: not ansible_check_mode

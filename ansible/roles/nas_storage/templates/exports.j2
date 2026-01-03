@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# NFS exports configuration - see exports(5)
+
+{% for export in nfs_exports %}
+# {{ export.path }}
+{{ export.path }} {% for client in export.clients %}{{ client.spec }}({{ client.options }}) {% if not loop.last %}\
+        {% endif %}{% endfor %}
+
+{% endfor %}

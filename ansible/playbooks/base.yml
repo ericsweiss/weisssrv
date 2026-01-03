@@ -1,0 +1,8 @@
+---
+# Base configuration playbook
+
+- name: Deploy base configuration
+  hosts: base_managed
+  become: true
+  roles:
+    - base

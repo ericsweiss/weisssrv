@@ -1,0 +1,427 @@
+---
+# Storage Bootstrap Playbook
+# WARNING: This playbook can create ZFS pools and datasets
+# ONLY use this for:
+#   - Initial NAS setup (brand new hardware)
+#   - Complete disaster recovery (rebuild from scratch)
+#   - Adding new storage pools
+#
+# This playbook is INTERACTIVE and will:
+#   1. Detect existing infrastructure
+#   2. Warn about what will be created/modified
+#   3. Require explicit confirmation before proceeding
+#
+# Usage:
+#   ansible-playbook playbooks/bootstrap/storage-bootstrap.yml --limit pve-nas-01
+
+- name: Storage Infrastructure Bootstrap - Pre-flight Checks
+  hosts: pve-nas-01
+  become: true
+  gather_facts: true
+  vars:
+    bootstrap_mode: "{{ bootstrap_mode | default('detect') }}"  # detect, create, force
+
+  tasks:
+    - name: Verify this is pve-nas-01
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'pve-nas-01'
+        fail_msg: "This playbook should only run on pve-nas-01. Use --limit pve-nas-01"
+
+    - name: Display warning banner
+      ansible.builtin.debug:
+        msg:
+          - "================================================================"
+          - "              STORAGE BOOTSTRAP PLAYBOOK"
+          - "================================================================"
+          - ""
+          - "WARNING: This playbook can CREATE storage infrastructure"
+          - "         including ZFS pools and datasets"
+          - ""
+          - "Use cases:"
+          - "  - Initial NAS setup (brand new hardware)"
+          - "  - Complete disaster recovery"
+          - "  - Adding new ZFS pools"
+          - ""
+          - "This playbook will:"
+          - "  1. Detect existing infrastructure"
+          - "  2. Show you what will be created"
+          - "  3. Ask for confirmation before proceeding"
+          - "================================================================"
+
+- name: Phase 1 - Detect Existing Infrastructure
+  hosts: pve-nas-01
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if ZFS kernel module is loaded
+      ansible.builtin.shell: set -o pipefail && lsmod | grep -q zfs
+      args:
+        executable: /bin/bash
+      register: zfs_module
+      changed_when: false
+      failed_when: false
+
+    - name: Detect existing ZFS pools
+      ansible.builtin.command: zpool list -H -o name
+      register: existing_pools
+      changed_when: false
+      failed_when: false
+
+    - name: Parse existing pools
+      ansible.builtin.set_fact:
+        existing_pool_list: "{{ existing_pools.stdout_lines | default([]) }}"
+
+    - name: Detect existing ZFS datasets for each configured pool
+      ansible.builtin.command: "zfs list -H -o name -r {{ item.name }}"
+      loop: "{{ zfs_pools }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: existing_datasets
+      changed_when: false
+      failed_when: false
+
+    - name: Parse existing datasets
+      ansible.builtin.set_fact:
+        existing_dataset_map: >-
+          {{
+            existing_dataset_map | default({}) | combine({
+              item.item.name: item.stdout_lines | default([])
+            })
+          }}
+      loop: "{{ existing_datasets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Check if critical directories exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: critical_dirs
+      loop:
+        - /mnt/tank
+        - /mnt/ssd
+        - /mnt/nvme
+        - /export
+
+    - name: Check if bind sources exist
+      ansible.builtin.stat:
+        path: "{{ item.bind_source }}"
+      loop: "{{ nfs_exports }}"
+      loop_control:
+        label: "{{ item.bind_source | default('N/A') }}"
+      register: bind_sources
+      when: item.bind_source is defined
+
+    - name: Display infrastructure detection results
+      ansible.builtin.debug:
+        msg:
+          - "================================================================"
+          - "INFRASTRUCTURE DETECTION RESULTS"
+          - "================================================================"
+          - ""
+          - "ZFS Kernel Module: {{ 'LOADED' if zfs_module.rc == 0 else 'NOT LOADED' }}"
+          - ""
+          - "Existing ZFS Pools:"
+          - "{{ existing_pool_list | length > 0 | ternary(existing_pool_list | map('regex_replace', '^', '  - ') | join('\n'), '  (none found)') }}"
+          - ""
+          - "Existing ZFS Datasets:"
+          - >-
+            {% for pool, datasets in existing_dataset_map.items() %}
+            {{ pool }}:
+            {% for ds in datasets %}
+              - {{ ds }}
+            {% endfor %}
+            {% endfor %}
+          - ""
+          - "Critical Directories:"
+          - >-
+            {% for dir in critical_dirs.results %}
+            {{ dir.item }}: {{ 'EXISTS' if dir.stat.exists else 'MISSING' }}
+            {% endfor %}
+          - "================================================================"
+
+- name: Phase 2 - Determine Required Actions
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Determine pools that need creation
+      ansible.builtin.set_fact:
+        pools_to_create: >-
+          {{
+            zfs_pools | map(attribute='name') | list |
+            difference(existing_pool_list | default([]))
+          }}
+
+    - name: Determine datasets that need creation
+      ansible.builtin.set_fact:
+        datasets_to_create: >-
+          {%- set result = [] -%}
+          {%- for pool in zfs_pools -%}
+            {%- for dataset in pool.datasets -%}
+              {%- if dataset.name not in (existing_dataset_map[pool.name] | default([])) -%}
+                {%- set _ = result.append(dataset.name) -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ result }}
+
+    - name: Display required actions
+      ansible.builtin.debug:
+        msg:
+          - "================================================================"
+          - "REQUIRED ACTIONS"
+          - "================================================================"
+          - ""
+          - "ZFS Pools to Create:"
+          - "{{ pools_to_create | length > 0 | ternary(pools_to_create | map('regex_replace', '^', '  WARNING: ') | join('\n'), '  All pools exist') }}"
+          - ""
+          - "ZFS Datasets to Create:"
+          - >-
+            {{ datasets_to_create | length > 0 |
+            ternary(datasets_to_create | map('regex_replace', '^', '  WARNING: ') | join('\n'),
+            '  All datasets exist') }}
+          - ""
+          - "Directories to Create:"
+          - "  - /export (if missing)"
+          - "  - Bind mount targets under /export/"
+          - "  - Bind source directories (if missing)"
+          - ""
+          - "Services to Configure:"
+          - "  - NFS exports (/etc/exports)"
+          - "  - Samba shares (smb.conf)"
+          - "  - MergerFS union mounts"
+          - "================================================================"
+
+    - name: Check if this is a new installation
+      ansible.builtin.set_fact:
+        is_new_installation: "{{ (pools_to_create | length > 0) or (datasets_to_create | length > 0) }}"
+
+    - name: CRITICAL WARNING - Pool creation required
+      ansible.builtin.debug:
+        msg:
+          - "================================================================"
+          - "                    CRITICAL WARNING"
+          - "================================================================"
+          - ""
+          - "The following ZFS pools need to be created:"
+          - "  {{ pools_to_create | join(', ') }}"
+          - ""
+          - "WARNING: ZFS POOL CREATION IS NOT AUTOMATED"
+          - ""
+          - "You must manually create ZFS pools first using:"
+          - ""
+          - "  zpool create -o ashift=12 \\"
+          - "               -O acltype=posixacl \\"
+          - "               -O compression=zstd \\"
+          - "               -O normalization=formD \\"
+          - "               -O relatime=on \\"
+          - "               -O xattr=sa \\"
+          - "               -m /mnt/POOLNAME \\"
+          - "               POOLNAME raidz2 /dev/disk/by-id/..."
+          - ""
+          - "See docs/06-zfs.md for detailed pool creation instructions"
+          - ""
+          - "After creating pools, re-run this playbook"
+          - "================================================================"
+      when: pools_to_create | length > 0
+
+    - name: Abort if pools need creation
+      ansible.builtin.fail:
+        msg: |
+          ZFS pools must be created manually first.
+          See warning above and docs/06-zfs.md for instructions.
+      when: pools_to_create | length > 0
+
+- name: Phase 3 - Interactive Confirmation
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Confirm dataset creation
+      ansible.builtin.pause:
+        prompt: |
+
+          ================================================================
+          CONFIRMATION REQUIRED
+          ================================================================
+
+          This playbook will create the following ZFS datasets:
+          {{ datasets_to_create | map('regex_replace', '^', '  - ') | join('\n') }}
+
+          WARNING: This operation will:
+            - Create ZFS datasets with configured properties
+            - Set mountpoints, compression, recordsize, etc.
+            - NOT destroy any existing data
+            - NOT format any existing filesystems
+
+          Existing datasets will be SKIPPED (safe).
+
+          Do you want to proceed? [yes/NO]
+      register: confirmation
+      when: datasets_to_create | length > 0
+
+    - name: Verify confirmation
+      ansible.builtin.assert:
+        that:
+          - confirmation.user_input | lower == 'yes'
+        fail_msg: "User did not confirm. Aborting."
+      when: datasets_to_create | length > 0
+
+- name: Phase 4 - Create ZFS Datasets
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Create missing ZFS datasets
+      ansible.builtin.command: >
+        zfs create
+        {% for prop, value in item.1.properties.items() %}
+        -o {{ prop }}={{ value }}
+        {% endfor %}
+        {{ item.1.name }}
+      loop: "{{ zfs_pools | subelements('datasets') }}"
+      loop_control:
+        label: "{{ item.1.name }}"
+      when: item.1.name in datasets_to_create
+      changed_when: true  # Creating a dataset is always a change
+      register: dataset_creation
+
+    - name: Display dataset creation results
+      ansible.builtin.debug:
+        msg:
+          - "================================================================"
+          - "ZFS DATASET CREATION COMPLETE"
+          - "================================================================"
+          - "Created {{ datasets_to_create | length }} datasets"
+          - "{{ datasets_to_create | map('regex_replace', '^', '  - ') | join('\n') }}"
+      when: datasets_to_create | length > 0
+
+- name: Phase 5 - Create Directory Structure
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Create required groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        gid: "{{ '2000' if item == 'media' else omit }}"
+        state: present
+      loop:
+        - media
+
+    - name: Ensure admin user is in media group
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        groups: media
+        append: true
+
+    - name: Create /export root directory
+      ansible.builtin.file:
+        path: /export
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create bind mount target directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default('root') }}"
+        mode: "{{ item.mode | default('0755') }}"
+      loop: "{{ nfs_exports }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Create bind source directories (if they don't exist)
+      ansible.builtin.file:
+        path: "{{ item.bind_source }}"
+        state: directory
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default('root') }}"
+        mode: "{{ item.mode | default('0755') }}"
+      loop: "{{ nfs_exports }}"
+      loop_control:
+        label: "{{ item.bind_source | default('N/A') }}"
+      when: item.bind_source is defined
+
+    - name: Create MergerFS source directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: media
+        mode: "02775"
+      loop:
+        - /mnt/nvme/downloads/media-hot
+
+- name: Phase 6 - Configure Storage Services
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Run NFS configuration
+      ansible.builtin.include_role:
+        name: nas_storage
+        tasks_from: nfs.yml
+
+    - name: Run MergerFS configuration
+      ansible.builtin.include_role:
+        name: nas_storage
+        tasks_from: mergerfs.yml
+      when: mergerfs_mounts is defined
+
+    - name: Run Samba configuration
+      ansible.builtin.include_role:
+        name: nas_storage
+        tasks_from: samba.yml
+      when: samba_shares is defined
+
+    - name: Run media-mover configuration
+      ansible.builtin.include_role:
+        name: nas_storage
+        tasks_from: media_mover.yml
+      when: media_mover_enabled | default(false)
+
+- name: Phase 7 - Verification
+  hosts: pve-nas-01
+  become: true
+  tasks:
+    - name: Verify ZFS datasets are mounted
+      ansible.builtin.command: zfs list -H -o name,mounted
+      register: mounted_datasets
+      changed_when: false
+
+    - name: Verify NFS exports are active
+      ansible.builtin.command: showmount -e localhost
+      register: nfs_verification
+      changed_when: false
+      failed_when: false
+
+    - name: Verify MergerFS mounts
+      ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE
+      register: mergerfs_verification
+      changed_when: false
+      failed_when: false
+
+    - name: Display final status
+      ansible.builtin.debug:
+        msg:
+          - "================================================================"
+          - "STORAGE BOOTSTRAP COMPLETE"
+          - "================================================================"
+          - ""
+          - "ZFS Datasets Mounted:"
+          - "{{ mounted_datasets.stdout_lines | map('regex_replace', '^', '  ') | join('\n') }}"
+          - ""
+          - "NFS Exports:"
+          - "{{ nfs_verification.stdout_lines | default(['  (check failed)']) | map('regex_replace', '^', '  ') | join('\n') }}"
+          - ""
+          - "MergerFS Mounts:"
+          - "{{ mergerfs_verification.stdout_lines | default(['  (none or check failed)']) | map('regex_replace', '^', '  ') | join('\n') }}"
+          - ""
+          - "Next steps:"
+          - "  1. Run postflight verification:"
+          - "     task deploy:verify"
+          - "  2. Review ZFS pool health:"
+          - "     zpool status"
+          - "  3. Check SMART disk health:"
+          - "     smartctl -H /dev/disk/by-id/..."
+          - "================================================================"

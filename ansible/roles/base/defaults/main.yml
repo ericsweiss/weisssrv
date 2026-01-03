@@ -1,0 +1,32 @@
+---
+# Default variables for base role
+
+admin_user: eric
+
+ssh_port: 22
+ssh_permit_root_login: "prohibit-password"
+ssh_password_authentication: false
+ssh_pubkey_authentication: true
+ssh_service_name: ssh
+
+timezone: America/Los_Angeles
+
+common_packages:
+  - curl
+  - wget
+  - neovim
+  - htop
+  - tmux
+  - git
+  - jq
+  - unzip
+  - rsync
+  - net-tools
+  - dnsutils
+  - ca-certificates
+  - gnupg
+  - lsb-release
+
+# SSH authorized keys to deploy
+# ssh_authorized_keys:
+#   - "ssh-ed25519 AAAA... user@host"

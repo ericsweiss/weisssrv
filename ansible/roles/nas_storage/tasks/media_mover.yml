@@ -1,0 +1,35 @@
+---
+# Media mover script and scheduling
+
+- name: Deploy media-mover script
+  ansible.builtin.template:
+    src: media-mover.sh.j2
+    dest: /usr/local/sbin/media-mover.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create media-mover systemd service
+  ansible.builtin.template:
+    src: media-mover.service.j2
+    dest: /etc/systemd/system/media-mover.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Create media-mover systemd timer
+  ansible.builtin.template:
+    src: media-mover.timer.j2
+    dest: /etc/systemd/system/media-mover.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable media-mover timer
+  ansible.builtin.systemd:
+    name: media-mover.timer
+    enabled: true
+    state: started
+    daemon_reload: true

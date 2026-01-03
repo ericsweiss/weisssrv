@@ -1,0 +1,48 @@
+---
+# Neovim setup with Vundle
+
+- name: Create neovim config directory
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.config/nvim"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0755"
+  when: admin_user != 'root'
+
+- name: Create vim bundle directory for Vundle
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.vim/bundle"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0755"
+  when: admin_user != 'root'
+
+- name: Clone Vundle plugin manager
+  ansible.builtin.git:
+    repo: https://github.com/VundleVim/Vundle.vim.git
+    dest: "/home/{{ admin_user }}/.vim/bundle/Vundle.vim"
+    version: master
+    depth: 1
+  become: true
+  become_user: "{{ admin_user }}"
+  when: admin_user != 'root'
+
+- name: Deploy neovim init.vim configuration
+  ansible.builtin.template:
+    src: init.vim.j2
+    dest: "/home/{{ admin_user }}/.config/nvim/init.vim"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0644"
+  when: admin_user != 'root'
+
+- name: Install Vundle plugins
+  ansible.builtin.shell: |
+    nvim --headless +PluginInstall +qall
+  become: true
+  become_user: "{{ admin_user }}"
+  args:
+    creates: "/home/{{ admin_user }}/.vim/bundle/vim-fugitive"
+  when: admin_user != 'root'

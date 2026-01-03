@@ -1,0 +1,38 @@
+---
+# SSH hardening configuration
+
+- name: Configure SSH daemon
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+    validate: "sshd -t -f %s"
+  loop:
+    - regexp: "^#?Port"
+      line: "Port {{ ssh_port }}"
+    - regexp: "^#?PermitRootLogin"
+      line: "PermitRootLogin {{ ssh_permit_root_login }}"
+    - regexp: "^#?PasswordAuthentication"
+      line: "PasswordAuthentication {{ ssh_password_authentication | ternary('yes', 'no') }}"
+    - regexp: "^#?PubkeyAuthentication"
+      line: "PubkeyAuthentication {{ ssh_pubkey_authentication | ternary('yes', 'no') }}"
+    - regexp: "^#?ChallengeResponseAuthentication"
+      line: "ChallengeResponseAuthentication no"
+    - regexp: "^#?UsePAM"
+      line: "UsePAM yes"
+    - regexp: "^#?X11Forwarding"
+      line: "X11Forwarding no"
+    - regexp: "^#?MaxAuthTries"
+      line: "MaxAuthTries 3"
+    - regexp: "^#?ClientAliveInterval"
+      line: "ClientAliveInterval 300"
+    - regexp: "^#?ClientAliveCountMax"
+      line: "ClientAliveCountMax 2"
+  notify: Restart sshd
+
+- name: Ensure SSH service is enabled and running
+  ansible.builtin.service:
+    name: "{{ ssh_service_name | default('sshd') }}"
+    state: started
+    enabled: true

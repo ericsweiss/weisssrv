@@ -1,0 +1,38 @@
+---
+# MergerFS configuration for tiered storage
+
+- name: Install MergerFS
+  ansible.builtin.apt:
+    name: mergerfs
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Configure MergerFS mounts in fstab
+  ansible.posix.mount:
+    path: "{{ item.target }}"
+    src: "{{ item.sources | join(':') }}"
+    fstype: fuse.mergerfs
+    opts: >-
+      {{ item.options | join(',') }},fsname={{ item.name }}{%- if item.systemd_requires is defined -%}
+      ,{% for req in item.systemd_requires %}x-systemd.requires-mounts-for={{ req }}{% if not loop.last %},{% endif %}{% endfor -%}
+      {% endif -%}
+    state: mounted
+  loop: "{{ mergerfs_mounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Deploy MergerFS remount service
+  ansible.builtin.template:
+    src: mergerfs-remount.service.j2
+    dest: /etc/systemd/system/mergerfs-remount.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable MergerFS remount service
+  ansible.builtin.systemd:
+    name: mergerfs-remount.service
+    enabled: true
+    daemon_reload: true
+  when: not ansible_check_mode

@@ -1,0 +1,22 @@
+---
+# Ansible-lint configuration for weisssrv homelab
+# https://ansible.readthedocs.io/projects/lint/configuring/
+
+# Use production profile - this is production infrastructure
+profile: production
+
+# Exclude paths (for third-party code, generated files, etc.)
+exclude_paths:
+  - .cache/
+  - .github/
+  - venv/
+
+# Skip only rules that don't apply to homelab context
+skip_list:
+  - var-naming[no-role-prefix]  # Global vars (admin_user, etc.) are intentional
+
+# Enable offline mode (don't check for updates during CI)
+offline: false
+
+# Show rule IDs in output
+parseable: true

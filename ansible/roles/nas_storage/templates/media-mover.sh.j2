@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Move completed downloads from fast NVMe tier to archival HDD tier
+
+set -euo pipefail
+
+SRC="{{ media_mover_src }}"
+DST="{{ media_mover_dst }}"
+LOCK="/run/media-mover.lock"
+
+# examples: 6h, 12h, 1d, 30m
+MIN_AGE="${MIN_AGE:-{{ media_mover_min_age | default('12h') }}}"
+DRY_RUN="${DRY_RUN:-0}"
+
+parse_age_to_minutes() {
+  local s="$1"
+  if [[ "$s" =~ ^([0-9]+)([smhd])$ ]]; then
+    local n="${BASH_REMATCH[1]}"
+    local u="${BASH_REMATCH[2]}"
+    case "$u" in
+      s) echo $(( (n + 59) / 60 )) ;;   # round seconds up to 1 minute
+      m) echo "$n" ;;
+      h) echo $(( n * 60 )) ;;
+      d) echo $(( n * 24 * 60 )) ;;
+    esac
+  else
+    echo "Bad MIN_AGE format: '$s' (use like 30m, 12h, 1d)" >&2
+    exit 2
+  fi
+}
+
+[[ -d "$SRC" ]] || { echo "SRC missing: $SRC"; exit 1; }
+[[ -d "$DST" ]] || { echo "DST missing: $DST"; exit 1; }
+
+exec 9>"$LOCK"
+flock -n 9 || { echo "media-mover already running"; exit 0; }
+
+AGE_MINUTES="$(parse_age_to_minutes "$MIN_AGE")"
+
+RSYNC_FLAGS=(-aHAX --numeric-ids --remove-source-files --info=stats2)
+if [[ "$DRY_RUN" == "1" ]]; then
+  RSYNC_FLAGS+=(--dry-run -v)
+fi
+
+# Build a list of files older than MIN_AGE and move only those.
+# Use relative paths so directory structure is preserved.
+cd "$SRC"
+# If there are no eligible files, exit cleanly
+if ! find . -type f -mmin +"$AGE_MINUTES" -print0 | \
+  rsync "${RSYNC_FLAGS[@]}" --from0 --files-from=- --relative ./ "$DST/"; then
+  exit 1
+fi
+
+# Clean up empty directories left behind (keep SRC root)
+find "$SRC" -mindepth 1 -type d -empty -print -delete

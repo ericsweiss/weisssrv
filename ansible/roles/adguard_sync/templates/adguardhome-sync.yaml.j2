@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+# AdGuard Home Sync configuration
+
+origin:
+  url: "{{ adguardhome_sync_origin }}"
+  username: "{{ adguard_admin_user }}"
+  password: "{{ adguard_admin_password }}"
+
+replica:
+  url: "{{ adguardhome_sync_replica }}"
+  username: "{{ adguard_admin_user }}"
+  password: "{{ adguard_admin_password }}"
+
+features:
+{% for feature, config in adguardhome_sync_features.items() %}
+{% if config is mapping %}
+  {{ feature }}:
+{% for subfeature, value in config.items() %}
+    {{ subfeature }}: {{ value | lower }}
+{% endfor %}
+{% else %}
+  {{ feature }}: {{ config | lower }}
+{% endif %}
+{% endfor %}
+
+api:
+  port: 0  # Disable API server

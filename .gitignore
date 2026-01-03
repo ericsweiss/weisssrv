@@ -1,0 +1,62 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# Secrets - NEVER COMMIT
+*.key
+*.pem
+**/secrets/
+**/*secret*
+**/*password*
+.env
+.env.*
+sasl_passwd
+sasl_passwd.db
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Ansible
+*.retry
+ansible/inventories/*/host_vars/*/vault.yml
+ansible/inventories/*/group_vars/*/vault.yml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+
+# State collection outputs
+cluster-state-*.txt
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+tmp/
+temp/
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
