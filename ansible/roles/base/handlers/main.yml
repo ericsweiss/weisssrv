@@ -1,0 +1,7 @@
+---
+# Handlers for base role
+
+- name: Restart sshd
+  ansible.builtin.service:
+    name: "{{ ssh_service_name | default('sshd') }}"
+    state: restarted

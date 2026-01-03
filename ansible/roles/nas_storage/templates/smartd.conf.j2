@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+# SMART monitoring configuration for {{ ansible_facts['hostname'] }}
+
+# Default scan with standby mode handling
+DEVICESCAN -d removable -n standby -m root -M exec /usr/share/smartmontools/smartd-runner
+
+# Tank pool (raidz2 - 6x 22TB enterprise drives)
+{% for disk in smartd_tank_disks | default([]) %}
+{{ disk }} -a -o on -S on -s (S/../.././02|L/../08/./03) -m root
+{% endfor %}
+
+# SSD pool (raidz1 - 3x 4TB Samsung SSDs)
+{% for disk in smartd_ssd_disks | default([]) %}
+{{ disk }} -a -o on -S on -s (S/../.././02|L/../08/./03) -m root
+{% endfor %}
+
+# NVMe devices (special/cache/fast storage)
+{% for disk in smartd_nvme_disks | default([]) %}
+{{ disk }} -a -o on -S on -s (S/../.././02|L/../08/./03) -m root
+{% endfor %}
+
+# Archive pool (raidz1 - 4x 6TB drives) - if defined
+{% for disk in smartd_archive_disks | default([]) %}
+{{ disk }} -a -o on -S on -s (S/../.././02|L/../08/./03) -m root
+{% endfor %}
+
+# SMART test schedule explanation:
+# -s (S/../.././02|L/../08/./03)
+#   S = Short self-test, daily at 2am
+#   L = Long self-test, on the 8th of each month at 3am
+#
+# Flags:
+# -a = Monitor all attributes, enable auto offline, autosave
+# -o on = Enable automatic offline data collection
+# -S on = Enable attribute autosave
+# -m root = Send email alerts to root (forwarded via postfix)

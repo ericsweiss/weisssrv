@@ -1,0 +1,23 @@
+---
+# Default variables for acme_certs role
+
+acme_email: "admin@esweiss.com"
+acme_dns_provider: dns_cf
+
+internal_domain: esweiss.com
+local_cert_dir: /opt/AdGuardHome/certs
+
+acme_domains:
+  - "*.{{ internal_domain }}"
+  - "{{ internal_domain }}"
+
+# Certificate distribution targets
+# cert_distribution_targets:
+#   - host: dns-02
+#     ip: 192.168.0.160
+#     cert_dir: /opt/AdGuardHome/certs
+#     owner: root
+#     group: adguard
+#     cert_mode: "0644"
+#     key_mode: "0640"
+#     restart_service: AdGuardHome

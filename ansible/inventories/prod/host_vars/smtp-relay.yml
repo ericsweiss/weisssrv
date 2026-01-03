@@ -1,0 +1,11 @@
+---
+# smtp-relay specific configuration
+# Central SMTP relay that forwards to Gmail
+
+# SSH configuration override for LXC container
+# LXCs use root login by design (unprivileged containers)
+ssh_permit_root_login: "prohibit-password"
+
+# SMTP relay variables (from 1Password at runtime)
+smtp_gmail_user: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_USER', default='user@gmail.com') }}"
+smtp_gmail_password: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_PASSWORD', default='changeme') }}"

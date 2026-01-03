@@ -1,0 +1,69 @@
+---
+# Postfix null client configuration
+# Forwards all mail to the central SMTP relay
+
+- name: Install postfix and dependencies
+  ansible.builtin.apt:
+    name:
+      - postfix
+      - libsasl2-modules
+      - mailutils
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Configure mailname
+  ansible.builtin.copy:
+    content: "{{ postfix_config.myhostname }}\n"
+    dest: /etc/mailname
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Deploy postfix main.cf
+  ansible.builtin.template:
+    src: main.cf.j2
+    dest: /etc/postfix/main.cf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Deploy SASL password file
+  ansible.builtin.template:
+    src: sasl_passwd.j2
+    dest: /etc/postfix/sasl_passwd
+    owner: root
+    group: root
+    mode: "0600"
+  notify:
+    - Postmap sasl_passwd
+    - Reload postfix
+  no_log: true
+
+- name: Deploy virtual aliases
+  ansible.builtin.template:
+    src: virtual.j2
+    dest: /etc/postfix/virtual
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Postmap virtual
+    - Reload postfix
+  when: postfix_virtual_aliases is defined
+
+- name: Configure mail aliases
+  ansible.builtin.template:
+    src: aliases.j2
+    dest: /etc/aliases
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Newaliases
+
+- name: Ensure postfix is enabled and running
+  ansible.builtin.service:
+    name: postfix
+    state: started
+    enabled: true

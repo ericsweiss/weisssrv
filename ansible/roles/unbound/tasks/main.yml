@@ -1,0 +1,44 @@
+---
+# Unbound DNS resolver configuration
+# Provides DoT upstream resolution for AdGuard Home
+
+- name: Install Unbound
+  ansible.builtin.apt:
+    name:
+      - unbound
+      - dns-root-data
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Deploy Unbound main configuration
+  ansible.builtin.template:
+    src: weisssrv.conf.j2
+    dest: /etc/unbound/unbound.conf.d/weisssrv.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart unbound
+
+- name: Deploy remote-control configuration
+  ansible.builtin.copy:
+    content: |
+      remote-control:
+        control-enable: yes
+        control-interface: /run/unbound.ctl
+    dest: /etc/unbound/unbound.conf.d/remote-control.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart unbound
+
+- name: Ensure Unbound is enabled and running
+  ansible.builtin.service:
+    name: unbound
+    state: started
+    enabled: true
+
+- name: Verify Unbound is listening
+  ansible.builtin.wait_for:
+    host: "{{ unbound_interface }}"
+    port: "{{ unbound_port }}"
+    timeout: 30

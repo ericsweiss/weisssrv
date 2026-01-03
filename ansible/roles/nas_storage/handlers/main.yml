@@ -1,0 +1,20 @@
+---
+# Handlers for NAS storage role
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reload NFS exports
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
+
+- name: Restart smbd
+  ansible.builtin.service:
+    name: smbd
+    state: restarted
+
+- name: Restart smartd
+  ansible.builtin.service:
+    name: smartd
+    state: restarted

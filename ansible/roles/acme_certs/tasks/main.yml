@@ -1,0 +1,121 @@
+---
+# ACME certificate management with acme.sh
+# Only runs on dns-01 (primary) and distributes to other hosts
+
+- name: Ensure /root/.ssh directory exists
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: inventory_hostname == 'dns-01'
+
+- name: Deploy dns-01 SSH private key for certificate distribution
+  ansible.builtin.copy:
+    content: "{{ dns01_ssh_private_key }}\n"
+    dest: /root/.ssh/id_ed25519
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - inventory_hostname == 'dns-01'
+    - dns01_ssh_private_key is defined
+    - dns01_ssh_private_key != ''
+  no_log: true
+
+- name: Deploy dns-01 SSH public key
+  ansible.builtin.copy:
+    content: "{{ dns01_ssh_public_key }}\n"
+    dest: /root/.ssh/id_ed25519.pub
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - inventory_hostname == 'dns-01'
+    - dns01_ssh_public_key is defined
+    - dns01_ssh_public_key != ''
+
+- name: Deploy dns-01 public key to dns-02 root authorized_keys
+  ansible.posix.authorized_key:
+    user: root
+    state: present
+    key: "{{ dns01_ssh_public_key }}"
+    comment: "root@dns-01"
+  when:
+    - inventory_hostname == 'dns-02'
+    - dns01_ssh_public_key is defined
+    - dns01_ssh_public_key != ''
+
+- name: Install acme.sh dependencies
+  ansible.builtin.apt:
+    name:
+      - curl
+      - openssl
+      - socat
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Check if acme.sh is installed
+  ansible.builtin.stat:
+    path: /root/.acme.sh/acme.sh
+  register: acme_installed
+  when: inventory_hostname == 'dns-01'
+
+- name: Download acme.sh installer
+  ansible.builtin.get_url:
+    url: https://get.acme.sh
+    dest: /tmp/acme_installer.sh
+    mode: '0755'
+  when:
+    - inventory_hostname == 'dns-01'
+    - not acme_installed.stat.exists
+
+- name: Install acme.sh
+  ansible.builtin.shell: |
+    sh /tmp/acme_installer.sh --install --nocron --email {{ acme_email }}
+  args:
+    creates: /root/.acme.sh/acme.sh
+  when:
+    - inventory_hostname == 'dns-01'
+    - not acme_installed.stat.exists
+
+- name: Remove acme.sh installer
+  ansible.builtin.file:
+    path: /tmp/acme_installer.sh
+    state: absent
+  when:
+    - inventory_hostname == 'dns-01'
+    - not acme_installed.stat.exists
+
+- name: Deploy homelab-cert-reload script
+  ansible.builtin.template:
+    src: homelab-cert-reload.sh.j2
+    dest: /usr/local/sbin/homelab-cert-reload.sh
+    owner: root
+    group: root
+    mode: "0700"
+  when: inventory_hostname == 'dns-01'
+
+- name: Display acme.sh setup instructions
+  ansible.builtin.debug:
+    msg: |
+      ACME.sh is installed. To issue certificates:
+
+      1. Set Cloudflare credentials (from 1Password):
+         export CF_Token=$(op read "{{ secrets.cloudflare_api_token }}")
+         export CF_Account_ID=$(op read "{{ secrets.cloudflare_account_id }}")
+
+      2. Issue wildcard certificate:
+         /root/.acme.sh/acme.sh --issue --dns dns_cf \
+           -d "{{ internal_domain }}" \
+           -d "*.{{ internal_domain }}" \
+           --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+
+      3. Install to AdGuard certs directory:
+         /root/.acme.sh/acme.sh --install-cert -d "{{ internal_domain }}" \
+           --cert-file {{ local_cert_dir }}/cert.pem \
+           --key-file {{ local_cert_dir }}/privkey.pem \
+           --fullchain-file {{ local_cert_dir }}/fullchain.pem \
+           --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+  when: inventory_hostname == 'dns-01'

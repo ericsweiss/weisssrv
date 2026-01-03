@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Distribute certificates to dns-02 and smtp-relay after acme.sh renewal
+
+set -euo pipefail
+
+FULLCHAIN_SRC="{{ local_cert_dir }}/fullchain.pem"
+PRIVKEY_SRC="{{ local_cert_dir }}/privkey.pem"
+
+{% for target in cert_distribution_targets %}
+{{ target.host | upper | replace('-', '_') }}_IP="{{ target.ip }}"
+{{ target.host | upper | replace('-', '_') }}_CERT_DIR="{{ target.cert_dir }}"
+{% endfor %}
+
+# Local: restart AdGuard on dns-01 (so it picks up the new cert)
+systemctl restart AdGuardHome
+
+# Helper: non-interactive ssh/scp
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+SCP_OPTS=(-q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+
+{% for target in cert_distribution_targets %}
+# --- {{ target.host }} ---
+scp "${SCP_OPTS[@]}" "${FULLCHAIN_SRC}" "${PRIVKEY_SRC}" "root@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}:${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/"
+ssh "${SSH_OPTS[@]}" "root@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
+  "chown {{ target.owner }}:{{ target.group }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
+   chmod {{ target.cert_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem;
+   chmod {{ target.key_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
+   systemctl restart {{ target.restart_service }}"
+
+{% endfor %}
+echo "Certificate distribution complete."

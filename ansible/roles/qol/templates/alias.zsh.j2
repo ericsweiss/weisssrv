@@ -1,0 +1,24 @@
+export EDITOR="nvim"
+
+# editing config
+alias ez="$EDITOR ~/.zshrc"       # alias for Edit Zshrc
+alias ea="$EDITOR ~/.alias.zsh"   # alias for Edit Alias
+alias el="$EDITOR ~/.local.zsh"   # alias for Edit Local
+alias sz='exec zsh'               # alias for Source Zsh
+
+# bookmarks
+alias @tmp='cd ~/tmp'
+alias @downloads='cd ~/Downloads'
+alias @src='cd ~/src'
+alias @repo='cd ~/src/repo'
+
+# directory related
+alias ..='..'          # move up by one directory
+alias ...='../..'      # move up by two directories
+alias ....='../../..'  # move up by three directories
+
+# applications
+alias v='nvim'
+alias vim='nvim'
+
+alias kn='kubectl config set-context --current --namespace'

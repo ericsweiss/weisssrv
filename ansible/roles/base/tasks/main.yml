@@ -1,0 +1,71 @@
+---
+# Base role: common packages, SSH hardening, and user setup
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_facts['os_family'] == "Debian"
+  changed_when: false  # Cache updates are maintenance, not config changes
+
+- name: Install common packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Check if admin user exists
+  ansible.builtin.command: id {{ admin_user }}
+  register: user_exists_check
+  changed_when: false
+  failed_when: false
+  when: admin_user != 'root'
+
+- name: Ensure admin user exists
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: sudo
+    append: true
+    create_home: true
+    state: present
+  when: admin_user != 'root'
+  register: user_create_result
+  changed_when: user_create_result.changed and user_exists_check.rc != 0
+
+- name: Create .ssh directory for admin user
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.ssh"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0700"
+  when: admin_user != 'root'
+
+- name: Deploy authorized_keys for admin user
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    state: present
+    key: "{{ item }}"
+  loop: "{{ ssh_authorized_keys | default([]) }}"
+  when: ssh_authorized_keys is defined
+  register: authorized_keys_result
+  failed_when:
+    - authorized_keys_result is failed
+    - not ansible_check_mode
+
+- name: Configure sudoers for admin user (passwordless sudo)
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/{{ admin_user }}
+    line: "{{ admin_user }} ALL=(ALL) NOPASSWD: ALL"
+    create: true
+    mode: "0440"
+    validate: "visudo -cf %s"
+  when: admin_user != 'root'
+
+- name: Include SSH hardening tasks
+  ansible.builtin.include_tasks: ssh.yml
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+  when: timezone is defined

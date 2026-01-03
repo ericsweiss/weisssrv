@@ -1,0 +1,74 @@
+---
+# NFS server configuration
+
+- name: Ensure media group exists
+  ansible.builtin.group:
+    name: media
+    gid: 2000
+    state: present
+
+- name: Install NFS server packages
+  ansible.builtin.apt:
+    name:
+      - nfs-kernel-server
+      - nfs-common
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Create export root directory
+  ansible.builtin.file:
+    path: /export
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create bind mount directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop: "{{ nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Set ownership on bind source directories
+  ansible.builtin.file:
+    path: "{{ item.bind_source }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop: "{{ nfs_exports }}"
+  loop_control:
+    label: "{{ item.bind_source | default('N/A') }}"
+  when: item.bind_source is defined
+
+- name: Configure bind mounts in fstab
+  ansible.posix.mount:
+    path: "{{ item.path }}"
+    src: "{{ item.bind_source }}"
+    fstype: none
+    opts: bind
+    state: mounted
+  loop: "{{ nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: item.bind_source is defined
+
+- name: Deploy NFS exports configuration
+  ansible.builtin.template:
+    src: exports.j2
+    dest: /etc/exports
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload NFS exports
+
+- name: Ensure NFS server is enabled and running
+  ansible.builtin.service:
+    name: nfs-kernel-server
+    state: started
+    enabled: true

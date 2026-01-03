@@ -1,0 +1,38 @@
+---
+# dns-01 specific configuration
+# Primary DNS server with ACME certificate management
+
+# This host runs acme.sh for certificate generation
+acme_enabled: true
+acme_email: "{{ admin_email }}"
+acme_dns_provider: dns_cf
+acme_domains:
+  - "*.{{ internal_domain }}"
+  - "{{ internal_domain }}"
+
+# Certificate distribution targets
+cert_distribution_targets:
+  - host: dns-02
+    ip: 192.168.0.160
+    cert_dir: /opt/AdGuardHome/certs
+    owner: root
+    group: adguard
+    cert_mode: "0644"
+    key_mode: "0640"
+    restart_service: AdGuardHome
+  - host: smtp-relay
+    ip: 192.168.0.151
+    cert_dir: /etc/postfix/tls
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_service: postfix
+
+# Certificate source paths on dns-01
+acme_cert_dir: "/root/.acme.sh/{{ internal_domain }}_ecc"
+local_cert_dir: /opt/AdGuardHome/certs
+
+# AdGuard Home Sync runs from dns-01
+adguardhome_sync_enabled: true
+adguardhome_sync_schedule: "*:0/5"  # Every 5 minutes

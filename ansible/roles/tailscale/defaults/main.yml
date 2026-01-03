@@ -1,0 +1,10 @@
+---
+# Default variables for tailscale role
+
+tailscale_enabled: true
+tailscale_accept_routes: true
+tailscale_accept_dns: false  # We use our own DNS infrastructure
+
+# 1Password reference for auth key (resolved at runtime)
+# secrets:
+#   tailscale_auth_key: "op://Homelab/Tailscale Auth Key/credential"

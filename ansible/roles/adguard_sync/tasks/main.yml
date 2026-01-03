@@ -1,0 +1,89 @@
+---
+# AdGuard Home Sync configuration
+# Syncs settings from dns-01 (primary) to dns-02 (replica)
+# Only runs on dns-01
+
+- name: Configure AdGuard Home Sync on dns-01
+  when: inventory_hostname == 'dns-01'
+  block:
+    - name: Check if adguardhome-sync binary exists
+      ansible.builtin.stat:
+        path: /usr/local/bin/adguardhome-sync
+      register: sync_binary
+
+    - name: Download adguardhome-sync binary
+      ansible.builtin.get_url:
+        url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"  # noqa yaml[line-length]
+        dest: /tmp/adguardhome-sync.tar.gz
+        mode: "0644"
+        force: false
+      when: not sync_binary.stat.exists
+
+    - name: Extract adguardhome-sync
+      ansible.builtin.unarchive:
+        src: /tmp/adguardhome-sync.tar.gz
+        dest: /tmp
+        remote_src: true
+        creates: /tmp/adguardhome-sync
+      when: not sync_binary.stat.exists
+
+    - name: Install adguardhome-sync binary
+      ansible.builtin.copy:
+        src: /tmp/adguardhome-sync
+        dest: /usr/local/bin/adguardhome-sync
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+      when: not sync_binary.stat.exists
+
+    - name: Cleanup download
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/adguardhome-sync.tar.gz
+        - /tmp/adguardhome-sync
+      when: not sync_binary.stat.exists
+
+    - name: Create adguardhome-sync home directory
+      ansible.builtin.file:
+        path: /var/lib/adguardhome-sync
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Deploy adguardhome-sync configuration
+      ansible.builtin.template:
+        src: adguardhome-sync.yaml.j2
+        dest: /etc/adguardhome-sync.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Deploy adguardhome-sync systemd service
+      ansible.builtin.template:
+        src: adguardhome-sync.service.j2
+        dest: /etc/systemd/system/adguardhome-sync.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Deploy adguardhome-sync systemd timer
+      ansible.builtin.template:
+        src: adguardhome-sync.timer.j2
+        dest: /etc/systemd/system/adguardhome-sync.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Enable adguardhome-sync timer
+      ansible.builtin.systemd:
+        name: adguardhome-sync.timer
+        enabled: true
+        state: started
+        daemon_reload: true

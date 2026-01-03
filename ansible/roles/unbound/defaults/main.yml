@@ -1,0 +1,23 @@
+---
+# Default variables for unbound role
+
+unbound_port: 5335
+unbound_interface: 127.0.0.1
+
+unbound_access_control:
+  - "127.0.0.0/8 allow"
+  - "::1 allow"
+
+unbound_forwarders:
+  - addr: "1.1.1.1"
+    port: 853
+    name: "cloudflare-dns.com"
+  - addr: "1.0.0.1"
+    port: 853
+    name: "cloudflare-dns.com"
+  - addr: "8.8.8.8"
+    port: 853
+    name: "dns.google"
+  - addr: "8.8.4.4"
+    port: 853
+    name: "dns.google"

@@ -1,0 +1,8 @@
+---
+# NAS storage deployment playbook
+
+- name: Deploy NAS storage configuration
+  hosts: pve-nas-01
+  become: true
+  roles:
+    - nas_storage

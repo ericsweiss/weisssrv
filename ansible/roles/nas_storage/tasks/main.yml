@@ -1,0 +1,26 @@
+---
+# NAS storage role: ZFS, NFS, MergerFS, Samba, media-mover
+
+- name: Include ZFS tasks
+  ansible.builtin.include_tasks: zfs.yml
+  when: zfs_pools is defined
+
+- name: Include MergerFS tasks
+  ansible.builtin.include_tasks: mergerfs.yml
+  when: mergerfs_mounts is defined
+
+- name: Include NFS tasks
+  ansible.builtin.include_tasks: nfs.yml
+  when: nfs_exports is defined
+
+- name: Include Samba tasks
+  ansible.builtin.include_tasks: samba.yml
+  when: samba_shares is defined
+
+- name: Include media-mover tasks
+  ansible.builtin.include_tasks: media_mover.yml
+  when: media_mover_enabled | default(false)
+
+- name: Include SMART monitoring tasks
+  ansible.builtin.include_tasks: smartd.yml
+  when: smartd_enabled | default(true)

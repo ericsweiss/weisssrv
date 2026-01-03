@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run media mover daily
+
+[Timer]
+OnCalendar={{ media_mover_schedule | default('*-*-* 03:30:00') }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,185 @@
+---
+# DNS server configuration (dns-01, dns-02)
+
+# SSH configuration override for LXC containers
+# LXCs use root login by design (unprivileged containers)
+ssh_permit_root_login: "prohibit-password"
+
+# Unbound configuration
+unbound_port: 5335
+unbound_interface: 127.0.0.1
+unbound_access_control:
+  - "127.0.0.0/8 allow"
+  - "::1 allow"
+
+# DoT upstream forwarders
+unbound_forwarders:
+  - addr: "1.1.1.1"
+    port: 853
+    name: "cloudflare-dns.com"
+  - addr: "1.0.0.1"
+    port: 853
+    name: "cloudflare-dns.com"
+  - addr: "8.8.8.8"
+    port: 853
+    name: "dns.google"
+  - addr: "8.8.4.4"
+    port: 853
+    name: "dns.google"
+
+# AdGuard Home configuration
+adguard_user: adguard
+adguard_group: adguard
+adguard_install_path: /opt/AdGuardHome
+adguard_http_port: 3000
+adguard_dns_port: 53
+adguard_dot_port: 853
+adguard_https_port: 443
+adguard_admin_user: eric
+adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD', default='') }}"
+adguard_admin_password_hash: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD_HASH', default='') }}"
+
+# TLS configuration
+adguard_tls_enabled: true
+adguard_tls_server_name: "dns.{{ internal_domain }}"
+adguard_cert_path: "{{ adguard_install_path }}/certs"
+
+# Upstream DNS (points to local Unbound)
+adguard_upstream_dns:
+  - "127.0.0.1:{{ unbound_port }}"
+
+# Bootstrap DNS (for resolving upstream hostnames)
+adguard_bootstrap_dns:
+  - "9.9.9.10"
+  - "149.112.112.10"
+
+# DNS rewrites for internal services
+# These are managed via AdGuard Home UI/API and synced between dns-01 and dns-02
+adguard_rewrites:
+  - domain: "dns-01.{{ internal_domain }}"
+    answer: "192.168.0.150"
+  - domain: "dns-02.{{ internal_domain }}"
+    answer: "192.168.0.160"
+  - domain: "dns.{{ internal_domain }}"
+    answer: "192.168.0.150"
+  - domain: "dns.{{ internal_domain }}"
+    answer: "192.168.0.160"
+  - domain: "smtp-relay.{{ internal_domain }}"
+    answer: "192.168.0.151"
+  - domain: "plex.{{ internal_domain }}"
+    answer: "192.168.0.152"
+  - domain: "gitlab.{{ internal_domain }}"
+    answer: "192.168.0.153"
+  - domain: "home.{{ internal_domain }}"
+    answer: "192.168.0.154"
+  - domain: "windows.{{ internal_domain }}"
+    answer: "192.168.0.155"
+  - domain: "pve-nas-01.{{ internal_domain }}"
+    answer: "192.168.0.102"
+  - domain: "pve-laptop-01.{{ internal_domain }}"
+    answer: "192.168.0.103"
+  - domain: "pve-opt-01.{{ internal_domain }}"
+    answer: "192.168.0.104"
+  - domain: "pve-opt-02.{{ internal_domain }}"
+    answer: "192.168.0.105"
+  - domain: "pve-opt-03.{{ internal_domain }}"
+    answer: "192.168.0.106"
+  - domain: "k3s.{{ internal_domain }}"
+    answer: "192.168.0.161"
+  - domain: "k3s-nas-server-01.{{ internal_domain }}"
+    answer: "192.168.0.202"
+  - domain: "k3s-laptop-01.{{ internal_domain }}"
+    answer: "192.168.0.203"
+  - domain: "k3s-opt-01.{{ internal_domain }}"
+    answer: "192.168.0.204"
+  - domain: "k3s-opt-02.{{ internal_domain }}"
+    answer: "192.168.0.205"
+  - domain: "k3s-opt-03.{{ internal_domain }}"
+    answer: "192.168.0.206"
+  - domain: "k3s-nas-worker-01.{{ internal_domain }}"
+    answer: "192.168.0.207"
+  - domain: "vip-internal.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "vip-public.{{ external_domain }}"
+    answer: "192.168.0.100"
+
+# AdGuard Home custom filtering rules
+adguard_user_rules:
+  # Allowlist for moneroocean.stream (mining pool)
+  - '@@||moneroocean.stream^'
+  # PTR (reverse DNS) records for internal infrastructure
+  - '||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
+  - '||160.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-02.{{ internal_domain }}.'
+  - '||151.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;smtp-relay.{{ internal_domain }}.'
+  - '||152.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;plex.{{ internal_domain }}.'
+  - '||153.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;gitlab.{{ internal_domain }}.'
+  - '||154.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;home.{{ internal_domain }}.'
+  - '||155.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;windows.{{ internal_domain }}.'
+  - '||102.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-nas-01.{{ internal_domain }}.'
+  - '||103.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-laptop-01.{{ internal_domain }}.'
+  - '||104.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-01.{{ internal_domain }}.'
+  - '||105.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-02.{{ internal_domain }}.'
+  - '||106.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-03.{{ internal_domain }}.'
+  - '||161.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s.{{ internal_domain }}.'
+  - '||202.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-nas-server-01.{{ internal_domain }}.'
+  - '||203.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-laptop-01.{{ internal_domain }}.'
+  - '||204.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-opt-01.{{ internal_domain }}.'
+  - '||205.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-opt-02.{{ internal_domain }}.'
+  - '||206.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-opt-03.{{ internal_domain }}.'
+  - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-nas-worker-01.{{ internal_domain }}.'
+  - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ external_domain }}.'
+  - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
+
+# DHCP configuration - router handles DHCP, AdGuard DHCP stays disabled
+adguard_dhcp_enabled: false
+
+# Postfix null client configuration for DNS LXCs
+postfix_config:
+  myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
+  myorigin: "/etc/mailname"
+  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
+  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
+  mynetworks: "127.0.0.0/8"
+  inet_interfaces: "loopback-only"
+  smtp_tls_security_level: "encrypt"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+
+# Mail aliases for DNS LXCs
+mail_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"
+
+# SASL credentials for authenticating to smtp-relay (from 1Password)
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"
+
+# dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
+dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY', default='') }}"
+dns01_ssh_public_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') }}"
+
+# AdGuard Home Sync configuration (dns-01 -> dns-02)
+adguardhome_sync_enabled: true
+adguardhome_sync_origin: "http://192.168.0.150:3000"
+adguardhome_sync_replica: "http://192.168.0.160:3000"
+adguardhome_sync_features:
+  dns:
+    accessLists: true
+    serverConfig: true
+    rewrites: true
+  dhcp:
+    serverConfig: true
+    staticLeases: true
+  generalSettings: true
+  queryLogConfig: true
+  statsConfig: true
+  clientSettings: true
+  services: true
+  filters: true
+  theme: true
+  tlsConfig: true

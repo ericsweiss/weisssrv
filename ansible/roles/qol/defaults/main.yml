@@ -1,0 +1,32 @@
+---
+# Default variables for QoL role
+
+admin_user: eric
+
+omz_theme: risto
+omz_plugins:
+  - 1password
+  - ansible
+  - command-not-found
+  - direnv
+  - docker
+  - docker-compose
+  - dotenv
+  - fzf
+  - git
+  - golang
+  - kubectl
+  - rsync
+  - systemd
+  - terraform
+  - thefuck
+  - tmux
+  - vscode
+  - zsh-autosuggestions
+  - zsh-syntax-highlighting
+
+nvim_plugins:
+  - VundleVim/Vundle.vim
+  - tpope/vim-fugitive
+  - sheerun/vim-polyglot
+  - joshdick/onedark.vim

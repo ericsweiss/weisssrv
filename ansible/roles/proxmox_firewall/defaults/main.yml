@@ -1,0 +1,47 @@
+---
+# Default variables for Proxmox firewall role
+
+pve_firewall_enabled: true
+
+# Core cluster nodes (Proxmox hosts)
+pve_firewall_core_cluster:
+  - 192.168.0.102  # pve-nas-01
+  - 192.168.0.103  # pve-laptop-01
+  - 192.168.0.104  # pve-opt-01
+  - 192.168.0.105  # pve-opt-02
+  - 192.168.0.106  # pve-opt-03
+
+# K3s cluster nodes
+pve_firewall_k3s_nodes:
+  - 192.168.0.202  # k3s-nas-server-01
+  - 192.168.0.203  # k3s-laptop-01
+  - 192.168.0.204  # k3s-opt-01
+  - 192.168.0.205  # k3s-opt-02
+  - 192.168.0.206  # k3s-opt-03
+  - 192.168.0.207  # k3s-nas-worker-01
+
+# NFS client allowlist
+pve_firewall_nfs_clients:
+  - 192.168.0.102
+  - 192.168.0.103
+  - 192.168.0.104
+  - 192.168.0.105
+  - 192.168.0.106
+  - 192.168.0.154
+  - 192.168.0.200/29
+
+# SMB client allowlist
+pve_firewall_smb_clients:
+  - 192.168.0.0/24
+
+# Named aliases
+pve_firewall_aliases:
+  - name: dns-01
+    cidr: 192.168.0.150
+    comment: Primary DNS server
+  - name: dns-02
+    cidr: 192.168.0.160
+    comment: Secondary DNS server
+  - name: smtp-relay
+    cidr: 192.168.0.151
+    comment: SMTP relay server

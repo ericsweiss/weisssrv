@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Remount MergerFS filesystems
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/mount -a -t fuse.mergerfs
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target

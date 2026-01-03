@@ -1,0 +1,30 @@
+---
+# Default variables for postfix null client role
+
+smtp_relay_host: smtp-relay.esweiss.com
+smtp_relay_port: 587
+
+postfix_config:
+  myhostname: "{{ inventory_hostname }}.esweiss.com"
+  myorigin: "/etc/mailname"
+  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
+  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
+  mynetworks: "127.0.0.0/8"
+  inet_interfaces: "loopback-only"
+  smtp_tls_security_level: "encrypt"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+
+mail_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"
+
+# These are resolved from 1Password at runtime
+# Relay user credentials for authenticating to smtp-relay
+# postfix_sasl_user: "{{ secrets.smtp_relay_user }}"
+# postfix_sasl_password: "{{ secrets.smtp_relay_password }}"

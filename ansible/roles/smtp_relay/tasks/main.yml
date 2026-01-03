@@ -1,0 +1,136 @@
+---
+# SMTP relay server configuration
+# Central postfix relay that forwards to Gmail
+
+- name: Deploy dns-01 public key to smtp-relay root authorized_keys
+  ansible.posix.authorized_key:
+    user: root
+    state: present
+    key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') }}"
+    comment: "root@dns-01"
+  when: lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') != ''
+
+- name: Install postfix and dependencies
+  ansible.builtin.apt:
+    name:
+      - postfix
+      - libsasl2-modules
+      - sasl2-bin
+      - mailutils
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Configure mailname
+  ansible.builtin.copy:
+    content: "{{ smtp_relay_config.myhostname }}\n"
+    dest: /etc/mailname
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Create TLS certificate directory
+  ansible.builtin.file:
+    path: "{{ smtp_tls_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy postfix main.cf
+  ansible.builtin.template:
+    src: main.cf.j2
+    dest: /etc/postfix/main.cf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Deploy postfix master.cf
+  ansible.builtin.template:
+    src: master.cf.j2
+    dest: /etc/postfix/master.cf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Deploy SASL password file for Gmail relay
+  ansible.builtin.template:
+    src: sasl_passwd.j2
+    dest: /etc/postfix/sasl_passwd
+    owner: root
+    group: root
+    mode: "0600"
+  notify:
+    - Postmap sasl_passwd
+    - Reload postfix
+  no_log: true
+
+- name: Create SASL configuration directory
+  ansible.builtin.file:
+    path: /etc/postfix/sasl
+    state: directory
+    owner: root
+    group: postfix
+    mode: "0750"
+
+- name: Deploy SASL smtpd.conf for incoming authentication
+  ansible.builtin.copy:
+    content: |
+      pwcheck_method: auxprop
+      auxprop_plugin: sasldb
+      mech_list: PLAIN LOGIN
+    dest: /etc/postfix/sasl/smtpd.conf
+    owner: root
+    group: postfix
+    mode: "0640"
+  notify: Reload postfix
+
+- name: Check if SASL user exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    sasldblistusers2 | grep -q "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}@{{ smtp_relay_config.myhostname }}"
+  args:
+    executable: /bin/bash
+  register: sasl_user_check
+  failed_when: false
+  changed_when: false
+
+- name: Create/update relay user in SASL database
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') }}" | \
+      saslpasswd2 -p -c -u {{ smtp_relay_config.myhostname }} {{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: sasl_user_check.rc != 0
+  notify: Reload postfix
+
+- name: Set permissions on SASL database
+  ansible.builtin.file:
+    path: /etc/sasldb2
+    owner: root
+    group: postfix
+    mode: "0640"
+
+- name: Configure mail aliases
+  ansible.builtin.copy:
+    content: |
+      postmaster: root
+      nobody: root
+      hostmaster: root
+      webmaster: root
+      root: {{ admin_email }}
+    dest: /etc/aliases
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Newaliases
+
+- name: Ensure postfix is enabled and running
+  ansible.builtin.service:
+    name: postfix
+    state: started
+    enabled: true

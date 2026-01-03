@@ -1,0 +1,51 @@
+---
+# Default variables for SMTP relay server role
+
+smtp_tls_cert_dir: /etc/postfix/tls
+
+smtp_relay_config:
+  myhostname: smtp-relay.esweiss.com
+  myorigin: esweiss.com
+  inet_interfaces: all
+  inet_protocols: ipv4
+  mynetworks: "127.0.0.0/8, 192.168.0.0/24"
+  relayhost: "[smtp.gmail.com]:587"
+  smtpd_relay_restrictions: "permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
+
+  # TLS for incoming connections (from null clients)
+  smtpd_tls_cert_file: "{{ smtp_tls_cert_dir }}/smtp-relay.esweiss.com_ecc/fullchain.cer"
+  smtpd_tls_key_file: "{{ smtp_tls_cert_dir }}/smtp-relay.esweiss.com_ecc/smtp-relay.esweiss.com.key"
+  smtpd_tls_security_level: "may"
+  smtpd_tls_loglevel: 1
+  smtpd_tls_received_header: "yes"
+  smtpd_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+  smtpd_tls_mandatory_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+
+  # TLS for outgoing connections (to Gmail)
+  smtp_tls_security_level: "encrypt"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+
+  # SASL authentication for Gmail relay (outgoing)
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_tls_security_options: "noanonymous"
+
+  # SASL authentication for null clients (incoming)
+  smtpd_sasl_type: "cyrus"
+  smtpd_sasl_path: "smtpd"
+  smtpd_sasl_auth_enable: "yes"
+  smtpd_sasl_security_options: "noanonymous"
+  smtpd_sasl_local_domain: "$myhostname"
+  broken_sasl_auth_clients: "yes"
+
+# Gmail credentials (from 1Password)
+# These are resolved at runtime via 1Password CLI
+# smtp_gmail_user: "{{ secrets.smtp_gmail_user }}"
+# smtp_gmail_password: "{{ secrets.smtp_gmail_password }}"
+
+# Relay user credentials for null clients
+# These are resolved at runtime via 1Password CLI
+# smtp_relay_user: "{{ secrets.smtp_relay_user }}"
+# smtp_relay_password: "{{ secrets.smtp_relay_password }}"

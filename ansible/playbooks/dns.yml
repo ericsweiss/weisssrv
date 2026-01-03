@@ -1,0 +1,17 @@
+---
+# DNS stack deployment playbook
+
+- name: Deploy DNS server configuration
+  hosts: dns
+  become: true
+  roles:
+    - postfix_null_client
+    - unbound
+    - adguard_home
+
+- name: Deploy certificate and sync management
+  hosts: dns
+  become: true
+  roles:
+    - acme_certs
+    - adguard_sync
