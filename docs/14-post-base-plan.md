@@ -61,12 +61,12 @@ All k3s VMs will be provisioned on Proxmox with Ubuntu 22.04 LTS or Debian 12.
 
 | Node | IP | Role | Resources |
 |------|-----|------|-----------|
-| k3s-nas-server-01 | 192.168.0.202 | Server (etcd) | 2 vCPU, 4GB RAM, 64GB disk |
-| k3s-laptop-01 | 192.168.0.203 | Server (etcd) + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-opt-01 | 192.168.0.204 | Server (etcd) + Ingress | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-opt-02 | 192.168.0.205 | Server (etcd) + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-opt-03 | 192.168.0.206 | Server (etcd) + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-nas-worker-01 | 192.168.0.207 | Worker (NAS) | 4 vCPU, 8GB RAM, 64GB disk |
+| k3s-srv-nas-01 | 192.168.0.202 | Server (etcd) | 2 vCPU, 4GB RAM, 64GB disk |
+| k3s-srv-laptop-01 | 192.168.0.203 | Server (etcd) + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-srv-opt-01 | 192.168.0.204 | Server (etcd) + Ingress | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-agt-opt-02 | 192.168.0.205 | Agent + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-agt-opt-03 | 192.168.0.206 | Agent + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-agt-nas-01 | 192.168.0.207 | Agent (NAS) | 4 vCPU, 8GB RAM, 64GB disk |
 
 **Note**: Enable memory ballooning with a reasonable minimum to prevent k3s being squeezed.
 
@@ -90,14 +90,15 @@ Namespace: `esweiss.com/*`
 
 **Taints**:
 - NAS server control-plane: `NoSchedule` (etcd + API only)
-- Other servers (opt-01, laptop-01): control-plane `PreferNoSchedule` (allow overflow)
-- NAS worker: `esweiss.com/nas=true:PreferNoSchedule` (prefer NAS workloads, allow overflow)
+- Other servers (k3s-srv-opt-01, k3s-srv-laptop-01): control-plane `PreferNoSchedule` (allow overflow)
+- NAS agent: `esweiss.com/nas=true:PreferNoSchedule` (prefer NAS workloads, allow overflow)
 
 **Node Eligibility Plan**:
-- `opt-01` server: ingress-only
-- `laptop-01` server: ingress + general (reserve headroom for HA workloads like Home Assistant)
-- `opt-02`, `opt-03` servers: ingress + general
-- NAS worker: nas workloads (and optionally general overflow)
+- `k3s-srv-opt-01` server: ingress-only
+- `k3s-srv-laptop-01` server: ingress + general (reserve headroom for HA workloads like Home Assistant)
+- `k3s-agt-opt-02` agent: ingress + general
+- `k3s-agt-opt-03` agent: ingress + general
+- `k3s-agt-nas-01` agent: nas workloads (and optionally general overflow)
 
 ## Platform Components
 

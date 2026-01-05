@@ -24,7 +24,7 @@ This document provides step-by-step procedures for common operational tasks.
 
 - Physical server installed with Proxmox VE
 - Connected to network with static IP assigned
-- SSH access via root
+- SSH access via `eric` user with passwordless sudo
 
 ### Procedure
 
@@ -132,7 +132,7 @@ This document provides step-by-step procedures for common operational tasks.
      hosts:
        new-service:
          ansible_host: 192.168.0.XXX
-         ansible_user: root
+         ansible_user: eric
    ```
 
 5. **Configure Firewall**:

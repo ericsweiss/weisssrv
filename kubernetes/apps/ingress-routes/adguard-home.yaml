@@ -1,0 +1,46 @@
+---
+# IngressRoute for dns-01.esweiss.com (AdGuard Home primary, internal-only)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: adguard-home-01
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`dns-01.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: adguard-home-01-backend
+          port: 3000
+  tls:
+    secretName: esweiss-com-tls
+---
+# IngressRoute for dns-02.esweiss.com (AdGuard Home secondary, internal-only)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: adguard-home-02
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`dns-02.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: adguard-home-02-backend
+          port: 3000
+  tls:
+    secretName: esweiss-com-tls

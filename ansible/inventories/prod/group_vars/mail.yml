@@ -1,6 +1,14 @@
 ---
 # SMTP relay server configuration
 
+# SSH configuration - SMTP relay container now uses 'eric' user like other hosts
+# Root login disabled for consistency with other LXC containers
+ssh_permit_root_login: "no"
+
+# Boot order configuration
+proxmox_startup_order: 20
+proxmox_startup_delay: 15
+
 # Postfix relay configuration
 smtp_relay_config:
   myhostname: "smtp-relay.{{ internal_domain }}"
@@ -35,7 +43,7 @@ smtp_relay_config:
 # TLS certificate paths
 smtp_tls_cert_dir: /etc/postfix/tls
 
-# Submission port configuration (587)
+# Submission port configuration
 smtp_submission_enabled: true
 smtp_submission_config:
   syslog_name: "postfix/submission"

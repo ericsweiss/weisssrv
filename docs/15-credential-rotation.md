@@ -299,10 +299,10 @@ ansible all -m shell -a "last -20"
 ssh eric@192.168.0.102 "echo 'Test after rotation' | mail -s 'Test' root"
 
 # Check smtp-relay logs
-ssh root@192.168.0.151 "tail -f /var/log/mail.log"
+ssh eric@192.168.0.151 "sudo tail -f /var/log/mail.log"
 
 # Verify authentication
-ssh root@192.168.0.151 "grep sasl /var/log/mail.log | tail -20"
+ssh eric@192.168.0.151 "sudo grep sasl /var/log/mail.log | tail -20"
 ```
 
 ### SSH
@@ -322,7 +322,7 @@ ansible all -m shell -a "wc -l ~/.ssh/authorized_keys"
 curl -k https://192.168.0.150:3000
 
 # Check sync status (if password changed)
-ssh root@192.168.0.150 "systemctl status adguardhome-sync"
+ssh eric@192.168.0.150 "sudo systemctl status adguardhome-sync"
 ```
 
 ---
@@ -375,13 +375,13 @@ ansible host -m setup
 **Fix**:
 ```bash
 # Check sasl_passwd on smtp-relay
-ssh root@192.168.0.151 "cat /etc/postfix/sasl_passwd"
+ssh eric@192.168.0.151 "sudo cat /etc/postfix/sasl_passwd"
 
 # Manually rebuild hash
-ssh root@192.168.0.151 "sudo postmap /etc/postfix/sasl_passwd && sudo systemctl reload postfix"
+ssh eric@192.168.0.151 "sudo postmap /etc/postfix/sasl_passwd && sudo systemctl reload postfix"
 
 # Check logs
-ssh root@192.168.0.151 "journalctl -u postfix -n 50"
+ssh eric@192.168.0.151 "sudo journalctl -u postfix -n 50"
 ```
 
 ### Terraform fails after Cloudflare rotation

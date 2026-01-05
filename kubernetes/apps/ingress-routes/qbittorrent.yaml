@@ -1,0 +1,51 @@
+---
+# IngressRoute for qbittorrent (internal-only: LAN + Tailscale)
+# Backend: qBittorrent pod on k3s-agt-nas-01 (future deployment)
+# Both domain variants respond, but AdGuard Home rewrites BOTH to internal VIP (.101)
+# No external DNS records exist - access controlled via DNS
+
+# External domain variant (ericsweiss.com)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: qbittorrent
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`qbittorrent.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: qbittorrent
+          port: 8080
+  tls:
+    secretName: ericsweiss-com-tls
+---
+# Internal domain variant (esweiss.com)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: qbittorrent-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`qbittorrent.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: qbittorrent
+          port: 8080
+  tls:
+    secretName: esweiss-com-tls

@@ -500,7 +500,7 @@ Before running Ansible automation, verify the following on each node:
 - [ ] SSH key deployed for `eric`
 - [ ] Passwordless SSH working from laptop (`ssh eric@<host>`)
 - [ ] Passwordless sudo configured (`sudo -v`)
-- [ ] Root SSH access available (temporary, for LXC container setup)
+- [ ] SSH access available for `eric` user with passwordless sudo
 
 ### System Updates
 

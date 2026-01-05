@@ -1,10 +1,9 @@
 ---
 # smtp-relay specific configuration
 # Central SMTP relay that forwards to Gmail
-
-# SSH configuration override for LXC container
-# LXCs use root login by design (unprivileged containers)
-ssh_permit_root_login: "prohibit-password"
+#
+# Note: This LXC uses 'eric' user for SSH access like all other containers.
+# Postfix itself runs as root (which is normal/expected for mail servers).
 
 # SMTP relay variables (from 1Password at runtime)
 smtp_gmail_user: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_USER', default='user@gmail.com') }}"

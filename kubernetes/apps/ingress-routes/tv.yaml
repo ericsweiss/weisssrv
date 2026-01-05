@@ -1,0 +1,51 @@
+---
+# IngressRoute for tv (Sonarr - internal-only: LAN + Tailscale)
+# Backend: Sonarr pod on k3s cluster (future deployment)
+# Both domain variants respond, but AdGuard Home rewrites BOTH to internal VIP (.101)
+# No external DNS records exist - access controlled via DNS
+
+# External domain variant (ericsweiss.com)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: tv
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`tv.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: sonarr
+          port: 8989
+  tls:
+    secretName: ericsweiss-com-tls
+---
+# Internal domain variant (esweiss.com)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: tv-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`tv.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: sonarr
+          port: 8989
+  tls:
+    secretName: esweiss-com-tls

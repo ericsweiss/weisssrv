@@ -1,0 +1,70 @@
+# external-dns Helm Chart Values
+# Automatic DNS management for k3s cluster services
+
+# Provider configuration
+provider:
+  name: cloudflare
+
+# Enable Cloudflare proxy (orange cloud) for DDoS protection and hiding public IP
+extraArgs:
+  - --cloudflare-proxied
+
+# Cloudflare API token from secret
+env:
+  - name: CF_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: cloudflare-api-token
+        key: api-token
+
+# DNS sources to watch
+sources:
+  - ingress
+  - service
+  - traefik-proxy  # Watch Traefik IngressRoute CRDs
+
+# Domain filters
+domainFilters:
+  - ericsweiss.com  # External domain managed by Cloudflare
+
+# TXT registry for ownership tracking
+txtOwnerId: "k3s-external-dns"
+txtPrefix: "_external-dns."
+
+# Policy
+policy: sync  # Sync mode - create and delete records
+
+# Registry type
+registry: txt
+
+# Log level
+logLevel: info
+logFormat: json
+
+# Interval for checking DNS records
+interval: 5m
+
+# Trigger loop on Kubernetes events
+triggerLoopOnEvent: true
+
+# RBAC permissions for Traefik IngressRoutes
+rbac:
+  create: true
+  additionalPermissions:
+    - apiGroups:
+        - traefik.io
+      resources:
+        - ingressroutes
+      verbs:
+        - get
+        - list
+        - watch
+
+# Resource limits
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

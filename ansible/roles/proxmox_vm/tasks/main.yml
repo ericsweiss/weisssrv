@@ -1,0 +1,138 @@
+---
+# Proxmox VM provisioning with cloud-init
+
+- name: Set VM ID from IP last octet
+  ansible.builtin.set_fact:
+    vm_id: "{{ ansible_host.split('.')[-1] }}"
+
+- name: Check if VM already exists
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm status {{ vm_id }} 2>/dev/null
+  register: vm_exists
+  changed_when: false
+  failed_when: false
+
+- name: Download cloud image if not present
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.get_url:
+    url: "{{ cloud_image_url }}"
+    dest: "/var/lib/vz/template/iso/{{ cloud_image_name }}"
+    mode: "0644"
+  when: vm_exists.rc != 0
+
+- name: Create VM
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm create {{ vm_id }} \
+      --name {{ inventory_hostname }} \
+      --memory {{ vm_memory }} \
+      --cores {{ vm_cores }} \
+      --net0 virtio,bridge={{ vm_bridge }} \
+      --ostype {{ vm_ostype }} \
+      --agent enabled={{ vm_agent_enabled | ternary(1, 0) }}
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Import cloud image disk
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm importdisk {{ vm_id }} \
+      /var/lib/vz/template/iso/{{ cloud_image_name }} \
+      {{ proxmox_storage }}
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Attach disk to VM
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} \
+      --scsihw virtio-scsi-pci \
+      --scsi0 {{ proxmox_storage }}:vm-{{ vm_id }}-disk-0
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Resize disk
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm resize {{ vm_id }} scsi0 {{ vm_disk_size }}
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Configure cloud-init drive
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} --ide2 {{ proxmox_storage }}:cloudinit
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Configure boot order
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} --boot c --bootdisk scsi0
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Deploy SSH public key for cloud-init
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.copy:
+    content: "{{ ssh_public_key }}"
+    dest: "/tmp/ssh_key_{{ vm_id }}.pub"
+    mode: "0600"
+  when: vm_exists.rc != 0
+  vars:
+    ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
+
+- name: Configure cloud-init settings
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} \
+      --ciuser {{ cloudinit_user }} \
+      --sshkeys /tmp/ssh_key_{{ vm_id }}.pub \
+      --ipconfig0 ip={{ ansible_host }}/24,gw={{ cloudinit_gateway }} \
+      --nameserver "{{ cloudinit_dns | join(' ') }}"
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Configure VM for QEMU agent
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} --agent 1
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Configure VM autostart and boot order
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} \
+      --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
+      --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+  when: vm_exists.rc != 0
+  changed_when: true
+
+- name: Clean up temporary SSH key
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.file:
+    path: "/tmp/ssh_key_{{ vm_id }}.pub"
+    state: absent
+  when: vm_exists.rc != 0
+
+- name: Start VM
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm start {{ vm_id }}
+  when: vm_exists.rc != 0
+  changed_when: true
+  register: vm_start
+
+- name: Wait for VM to be reachable via SSH
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 22
+    delay: 30
+    timeout: 300
+  when: vm_exists.rc != 0
+
+- name: Display VM creation status
+  ansible.builtin.debug:
+    msg: "VM {{ inventory_hostname }} (ID {{ vm_id }}) {{ 'created and started' if vm_exists.rc != 0 else 'already exists' }}"

@@ -1,0 +1,89 @@
+---
+# Configure autostart and boot order for existing VMs and LXC containers
+# This is a one-time setup task for existing infrastructure
+# New VMs/containers will have autostart configured during provisioning
+
+- name: Configure autostart and boot order for LXC containers
+  hosts: lxc_containers
+  gather_facts: false
+  tasks:
+    - name: Determine container ID from IP
+      ansible.builtin.set_fact:
+        container_id: "{{ ansible_host.split('.')[-1] }}"
+      delegate_to: localhost
+
+    - name: Find which Proxmox host has this container
+      ansible.builtin.shell: |
+        pct status {{ container_id }} 2>/dev/null && echo "found"
+      register: pve_check
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['proxmox'] }}"
+      failed_when: false
+      changed_when: false
+      when: groups['proxmox'] is defined
+
+    - name: Set Proxmox host variable
+      ansible.builtin.set_fact:
+        container_pve_host: "{{ item.item }}"
+      loop: "{{ pve_check.results }}"
+      when:
+        - pve_check is defined
+        - item.rc == 0
+        - "'found' in item.stdout"
+
+    - name: Configure autostart and boot order for LXC container
+      delegate_to: "{{ container_pve_host }}"
+      ansible.builtin.shell: |
+        pct set {{ container_id }} \
+          --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
+          --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+      register: result
+      changed_when: result.rc == 0
+      when: container_pve_host is defined
+
+    - name: Display configuration
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ container_id }}):
+          {{ 'on ' + container_pve_host + ' - order=' + (proxmox_startup_order | default(100) | string) +
+          ', delay=' + (proxmox_startup_delay | default(0) | string) + 's'
+          if container_pve_host is defined else 'not found on any Proxmox host' }}
+
+- name: Configure autostart and boot order for k3s VMs
+  hosts: k3s
+  gather_facts: false
+  tasks:
+    - name: Determine VM ID from IP
+      ansible.builtin.set_fact:
+        vm_id: "{{ ansible_host.split('.')[-1] }}"
+      delegate_to: localhost
+
+    - name: Check if VM exists
+      delegate_to: "{{ proxmox_host }}"
+      ansible.builtin.shell: |
+        qm status {{ vm_id }} 2>/dev/null
+      register: vm_check
+      failed_when: false
+      changed_when: false
+      when: proxmox_host is defined
+
+    - name: Configure autostart and boot order for VM
+      delegate_to: "{{ proxmox_host }}"
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} \
+          --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
+          --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+      register: result
+      changed_when: result.rc == 0
+      when:
+        - proxmox_host is defined
+        - vm_check.rc == 0
+
+    - name: Display configuration
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ vm_id }}) on {{ proxmox_host }}:
+          {{ 'order=' + (proxmox_startup_order | default(100) | string) +
+          ', delay=' + (proxmox_startup_delay | default(0) | string) + 's'
+          if (vm_check.rc | default(1)) == 0 else 'does not exist - skipped' }}
+      when: proxmox_host is defined

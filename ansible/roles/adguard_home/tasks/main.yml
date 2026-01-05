@@ -139,3 +139,16 @@
   when: adguard_config.stat.exists
   notify: Restart AdGuardHome
   no_log: true
+
+# Configure base settings via API (dns-01 only)
+# Manages upstream DNS, TLS, and other core settings
+# dns-02 will sync automatically via adguardhome-sync
+- name: Configure base AdGuard Home settings via API
+  ansible.builtin.include_tasks: api_base_config.yml
+  when: inventory_hostname == 'dns-01'
+
+# Configure DNS rewrites and filtering rules via API (dns-01 only)
+# dns-02 will sync automatically via adguardhome-sync
+- name: Configure DNS rewrites and filtering rules via API
+  ansible.builtin.include_tasks: api_config.yml
+  when: inventory_hostname == 'dns-01'

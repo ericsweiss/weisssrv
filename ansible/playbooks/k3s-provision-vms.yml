@@ -1,0 +1,20 @@
+---
+# Provision k3s VMs on Proxmox hosts
+# This playbook creates the VM infrastructure only
+
+- name: Provision k3s VM infrastructure
+  hosts: k3s
+  gather_facts: false
+  become: false
+  roles:
+    - proxmox_vm
+
+  post_tasks:
+    - name: Display provisioning summary
+      ansible.builtin.debug:
+        msg: |
+          VM provisioning complete!
+          Next steps:
+          1. Verify VMs are accessible via SSH
+          2. Run k3s deployment playbook: task k3s:deploy
+      run_once: true

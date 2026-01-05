@@ -4,7 +4,7 @@
 admin_user: eric
 
 ssh_port: 22
-ssh_permit_root_login: "prohibit-password"
+ssh_permit_root_login: "no"
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 ssh_service_name: ssh

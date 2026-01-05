@@ -1,0 +1,52 @@
+---
+# IngressRoute for home.ericsweiss.com (Home Assistant - public, WebSocket support, external domain)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: home-assistant
+  namespace: default
+  annotations:
+    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`home.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: home-assistant-headers
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: home-assistant-backend
+          port: 8123
+  tls:
+    secretName: ericsweiss-com-tls
+---
+# IngressRoute for home.esweiss.com (Home Assistant - internal domain)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: home-assistant-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`home.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: home-assistant-headers
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: home-assistant-backend
+          port: 8123
+  tls:
+    secretName: esweiss-com-tls

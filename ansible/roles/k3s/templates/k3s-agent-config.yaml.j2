@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# K3s agent configuration
+
+server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
+
+{% if k3s_labels | length > 0 %}
+node-label:
+{% for key, value in k3s_labels.items() %}
+  - "{{ key }}={{ value }}"
+{% endfor %}
+{% endif %}
+
+{% if k3s_taints | length > 0 %}
+node-taint:
+{% for taint in k3s_taints %}
+  - "{{ taint.key }}={{ taint.value }}:{{ taint.effect }}"
+{% endfor %}
+{% endif %}

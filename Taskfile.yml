@@ -33,7 +33,7 @@ tasks:
 
   # === Deployment Tasks ===
   deploy:all:
-    desc: Deploy full site configuration
+    desc: Deploy base infrastructure (Proxmox, DNS, NAS, mail - excludes k3s)
     dir: "{{.ANSIBLE_DIR}}"
     env:
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
@@ -116,6 +116,187 @@ tasks:
     cmds:
       - ansible-playbook -i {{.INVENTORY}} playbooks/postflight.yml {{.CLI_ARGS}}
 
+  # === K3s Deployment Tasks ===
+  k3s:provision-vms:
+    desc: Provision k3s VMs on Proxmox (creates VMs only)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/k3s-provision-vms.yml {{.CLI_ARGS}}
+
+  k3s:deploy:
+    desc: Deploy k3s cluster (full deployment)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/k3s.yml {{.CLI_ARGS}}
+
+  k3s:kubeconfig:
+    desc: Fetch kubeconfig from k3s cluster
+    cmds:
+      - |
+        ssh eric@192.168.0.202 "sudo cat /etc/rancher/k3s/k3s.yaml" | \
+          sed 's/127.0.0.1/192.168.0.161/g' > ~/.kube/config-k3s
+        echo "Kubeconfig saved to ~/.kube/config-k3s"
+        echo "Run: export KUBECONFIG=~/.kube/config-k3s"
+
+  # === K3s Workload Deployment Tasks ===
+  k3s:deploy-metallb:
+    desc: Deploy MetalLB load balancer with IP pools
+    dir: ./kubernetes
+    cmds:
+      - helm repo add metallb https://metallb.github.io/metallb --force-update
+      - helm repo update metallb
+      - helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace --wait
+      - |
+        echo "Waiting for MetalLB webhook to be ready..."
+        kubectl wait --namespace metallb-system \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/component=controller \
+          --timeout=120s
+      - kubectl apply -f bootstrap/metallb/ip-pool.yaml
+      - 'echo "MetalLB deployed with IP pools (public .100, internal .101)"'
+
+  k3s:deploy-traefik:
+    desc: Deploy Traefik ingress controller
+    dir: ./kubernetes/apps/traefik
+    cmds:
+      - helm repo add traefik https://traefik.github.io/charts --force-update
+      - helm repo update traefik
+      - kubectl apply -f namespace.yaml
+      - helm upgrade --install traefik traefik/traefik -n traefik -f values.yaml --wait
+      - kubectl apply -f traefik-internal-service.yaml
+      - |
+        echo "Verifying Traefik LoadBalancer IP..."
+        kubectl get svc -n traefik traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+        echo ""
+      - 'echo "Traefik deployed on 192.168.0.100 (public) and 192.168.0.101 (internal)"'
+
+  k3s:deploy-cert-manager:
+    desc: Deploy cert-manager with Let's Encrypt ClusterIssuer
+    dir: ./kubernetes/apps/cert-manager
+    env:
+      CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
+    cmds:
+      - helm repo add jetstack https://charts.jetstack.io --force-update
+      - helm repo update jetstack
+      - kubectl apply -f namespace.yaml
+      - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --wait
+      - |
+        echo "Creating Cloudflare API token secret..."
+        op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
+          --namespace=cert-manager \
+          --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
+          --dry-run=client -o yaml | kubectl apply -f -'
+      - kubectl apply -k .
+      - 'echo "cert-manager deployed with letsencrypt-prod ClusterIssuer"'
+      - 'echo "Certificates will be issued automatically (check with: kubectl get certificate -A)"'
+
+  k3s:deploy-external-dns:
+    desc: Deploy external-dns for automatic Cloudflare DNS management
+    dir: ./kubernetes/apps/external-dns
+    env:
+      CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
+    cmds:
+      - helm repo add external-dns https://kubernetes-sigs.github.io/external-dns --force-update
+      - helm repo update external-dns
+      - kubectl apply -f namespace.yaml
+      - |
+        echo "Creating Cloudflare API token secret..."
+        op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
+          --namespace=external-dns \
+          --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
+          --dry-run=client -o yaml | kubectl apply -f -'
+      - helm upgrade --install external-dns external-dns/external-dns -n external-dns -f values.yaml --wait
+      - echo "external-dns deployed - DNS records will sync to Cloudflare automatically"
+
+  k3s:deploy-ddns:
+    desc: Deploy Cloudflare DDNS CronJob for public IP updates
+    dir: ./kubernetes/apps/cloudflare-ddns
+    env:
+      CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
+    cmds:
+      - |
+        echo "Creating Cloudflare API token secret in default namespace..."
+        op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
+          --namespace=default \
+          --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
+          --dry-run=client -o yaml | kubectl apply -f -'
+      - kubectl apply -f cronjob.yaml
+      - echo "DDNS CronJob deployed - runs every 5 minutes to update public IP"
+
+  k3s:deploy-ingress-routes:
+    desc: Deploy Traefik IngressRoutes for all services
+    dir: ./kubernetes/apps/ingress-routes
+    cmds:
+      - kubectl apply -k .
+      - echo "IngressRoutes deployed for all services"
+      - kubectl get ingressroute -A
+
+  k3s:deploy-workloads:
+    desc: Deploy ALL k3s platform workloads in correct order
+    cmds:
+      - echo "=== Deploying K3s Platform Workloads ==="
+      - echo ""
+      - 'echo "Step 1/6 - MetalLB (LoadBalancer support)"'
+      - task: k3s:deploy-metallb
+      - echo ""
+      - 'echo "Step 2/6 - Traefik (Ingress controller)"'
+      - task: k3s:deploy-traefik
+      - echo ""
+      - 'echo "Step 3/6 - cert-manager (TLS certificates)"'
+      - task: k3s:deploy-cert-manager
+      - echo ""
+      - 'echo "Step 4/6 - external-dns (Cloudflare DNS)"'
+      - task: k3s:deploy-external-dns
+      - echo ""
+      - 'echo "Step 5/6 - DDNS CronJob (Public IP updates)"'
+      - task: k3s:deploy-ddns
+      - echo ""
+      - 'echo "Step 6/6 - IngressRoutes (Service routing)"'
+      - task: k3s:deploy-ingress-routes
+      - echo ""
+      - echo "=== All K3s workloads deployed successfully ==="
+      - echo ""
+      - 'echo "Next steps:"'
+      - 'echo "  1. Wait for certificates - kubectl get certificate -A"'
+      - 'echo "  2. Configure AdGuard Home DNS rewrites for *.esweiss.com"'
+      - 'echo "  3. Verify services - curl -k https://192.168.0.100"'
+
+  k3s:status:
+    desc: Show k3s cluster and workload status
+    cmds:
+      - echo "=== K3s Cluster Status ==="
+      - kubectl get nodes -o wide
+      - echo ""
+      - echo "=== Platform Services ==="
+      - echo "MetalLB -"
+      - kubectl get pods -n metallb-system 2>/dev/null || echo "  Not installed"
+      - kubectl get ipaddresspool -n metallb-system 2>/dev/null || true
+      - echo ""
+      - echo "Traefik -"
+      - kubectl get pods -n traefik 2>/dev/null || echo "  Not installed"
+      - kubectl get svc -n traefik 2>/dev/null || true
+      - echo ""
+      - echo "cert-manager -"
+      - kubectl get pods -n cert-manager 2>/dev/null || echo "  Not installed"
+      - kubectl get certificate -A 2>/dev/null || true
+      - echo ""
+      - echo "external-dns -"
+      - kubectl get pods -n external-dns 2>/dev/null || echo "  Not installed"
+      - echo ""
+      - echo "DDNS CronJob -"
+      - kubectl get cronjob cloudflare-ddns -n default 2>/dev/null || echo "  Not installed"
+      - echo ""
+      - echo "IngressRoutes -"
+      - kubectl get ingressroute -A 2>/dev/null || echo "  None configured"
+
   # === Maintenance Tasks ===
   maintenance:update-packages:
     desc: Update OS packages on all hosts (rolling, interactive)
@@ -180,6 +361,13 @@ tasks:
       SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/bootstrap/storage-bootstrap.yml --limit pve-nas-01 {{.CLI_ARGS}}
+
+  # === Proxmox Management Tasks ===
+  proxmox:configure-autostart:
+    desc: Configure autostart and boot order for existing VMs/containers (one-time setup)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/proxmox-enable-autostart.yml {{.CLI_ARGS}}
 
   # === Terraform Tasks ===
   terraform:init:

@@ -149,7 +149,7 @@ ssh-add ~/.ssh/id_ed25519
 # Test SSH to homelab (should work if key is deployed)
 ssh eric@192.168.0.102  # pve-nas-01
 ssh eric@192.168.0.106  # pve-opt-03
-ssh root@192.168.0.150  # dns-01
+ssh eric@192.168.0.150  # dns-01
 ```
 
 **If SSH fails**, ensure keys are deployed on all nodes (see [Homelab Node Preparation](#homelab-node-preparation)).
@@ -263,43 +263,27 @@ Ensure SSH access and proper user configuration on all nodes before running Ansi
 
 ### Current State
 
-- **Proxmox Hosts** (pve-nas-01, pve-opt-03): User `eric` exists with sudo
-- **LXC Containers** (dns-01, dns-02, smtp-relay): Currently root-only
+All hosts use the `eric` user for SSH access with passwordless sudo:
 
-### Option A: Keep Root SSH for LXCs (Recommended)
+- **Proxmox Hosts** (pve-nas-01, pve-opt-03): User `eric` with sudo
+- **LXC Containers** (dns-01, dns-02, smtp-relay): User `eric` with sudo
 
-This is the current configuration and doesn't require changes.
+Root SSH login is disabled on all hosts.
 
-**Verify root access**:
-```bash
-# From your laptop
-ssh root@192.168.0.150  # dns-01
-ssh root@192.168.0.160  # dns-02
-ssh root@192.168.0.151  # smtp-relay
-```
-
-If you can't SSH as root, deploy your public key:
+### Verify SSH Access
 
 ```bash
-# On each LXC (via Proxmox console):
-sudo pct enter 150  # dns-01 (adjust ID as needed)
-
-# Inside container:
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-
-# Copy your public key
-cat >> ~/.ssh/authorized_keys << 'EOF'
-from="192.168.0.0/24,100.64.0.0/10" ssh-ed25519 AAAA... eric@MacBookPro.esweiss.com
-EOF
-
-chmod 600 ~/.ssh/authorized_keys
-exit
+# From your laptop - all hosts use eric user
+ssh eric@192.168.0.102  # pve-nas-01
+ssh eric@192.168.0.106  # pve-opt-03
+ssh eric@192.168.0.150  # dns-01
+ssh eric@192.168.0.160  # dns-02
+ssh eric@192.168.0.151  # smtp-relay
 ```
 
-### Option B: Create `eric` User on LXCs (Future)
+If SSH fails, see [Bootstrapping New Systems](18-bootstrap-new-systems.md) for setup instructions.
 
-For consistency, create `eric` user on all LXCs:
+### Creating `eric` User on New LXCs
 
 ```bash
 # On each LXC:
@@ -319,8 +303,6 @@ chmod 440 /etc/sudoers.d/eric
 
 exit
 ```
-
-Then update Ansible inventory to use `ansible_user: eric` for LXCs.
 
 ### Configure NOPASSWD Sudo (Bootstrap Only)
 
@@ -493,12 +475,12 @@ task terraform:apply
 ### 1. SSH Access
 
 ```bash
-# All hosts should be accessible
-ssh eric@192.168.0.102
-ssh eric@192.168.0.106
-ssh root@192.168.0.150
-ssh root@192.168.0.160
-ssh root@192.168.0.151
+# All hosts should be accessible using eric user
+ssh eric@192.168.0.102  # pve-nas-01
+ssh eric@192.168.0.106  # pve-opt-03
+ssh eric@192.168.0.150  # dns-01
+ssh eric@192.168.0.160  # dns-02
+ssh eric@192.168.0.151  # smtp-relay
 ```
 
 ### 2. DNS Resolution
@@ -530,7 +512,7 @@ open https://192.168.0.150:3000
 
 ```bash
 # Check cert expiry
-ssh root@192.168.0.150 "openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -dates"
+ssh eric@192.168.0.150 "sudo openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -dates"
 
 # Test DoT with TLS
 kdig @192.168.0.150 -p 853 +tls esweiss.com

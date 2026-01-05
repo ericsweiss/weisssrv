@@ -1,0 +1,32 @@
+---
+# K3s installation defaults
+
+# K3s version and installation
+# Note: Version should be set in group_vars/k3s.yml or all.yml
+# This is a fallback default
+k3s_version: "v1.33.7+k3s1"
+k3s_install_script_url: "https://get.k3s.io"
+
+# Role configuration
+k3s_role: agent  # or 'server'
+k3s_is_first_server: false
+
+# Network configuration
+k3s_api_vip: 192.168.0.161
+k3s_api_port: 6443
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+
+# Components to disable
+k3s_disable:
+  - servicelb
+  - traefik
+
+# Node configuration
+k3s_labels: {}
+k3s_taints: []
+
+# kube-vip configuration
+# Note: Version should be set in group_vars/k3s.yml or all.yml
+kube_vip_version: "v1.0.3"
+kube_vip_interface: "eth0"

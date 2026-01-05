@@ -1,0 +1,57 @@
+---
+# Full k3s cluster deployment
+# Deploys base configuration, then k3s server(s), then k3s agents
+
+- name: Deploy base configuration to k3s nodes
+  hosts: k3s
+  become: true
+  roles:
+    - base
+    - qol
+    - postfix_null_client
+
+- name: Deploy k3s server(s)
+  hosts: k3s_servers
+  become: true
+  serial: 1  # One server at a time for safe cluster formation
+  roles:
+    - k3s
+
+- name: Deploy k3s agents
+  hosts: k3s_agents
+  become: true
+  roles:
+    - k3s
+
+- name: Verify cluster health
+  hosts: k3s_servers[0]
+  become: true
+  tasks:
+    - name: Get node status
+      ansible.builtin.command: k3s kubectl get nodes -o wide
+      register: node_status
+      changed_when: false
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        msg: "{{ node_status.stdout_lines }}"
+
+    - name: Get pod status across all namespaces
+      ansible.builtin.command: k3s kubectl get pods -A
+      register: pod_status
+      changed_when: false
+
+    - name: Display pod status
+      ansible.builtin.debug:
+        msg: "{{ pod_status.stdout_lines }}"
+
+    - name: Display next steps
+      ansible.builtin.debug:
+        msg: |
+          K3s cluster deployment complete!
+
+          Next steps:
+          1. Get kubeconfig: task k3s:kubeconfig
+          2. Deploy MetalLB for LoadBalancer services
+          3. Deploy Traefik ingress controller
+          4. Deploy external-dns for automatic DNS management

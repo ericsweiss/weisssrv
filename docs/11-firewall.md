@@ -30,12 +30,12 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 
 [IPSET dc/k3s-nodes]
 # K3s cluster VMs
-192.168.0.202  # k3s-nas-server-01
-192.168.0.203  # k3s-laptop-01
-192.168.0.204  # k3s-opt-01
-192.168.0.205  # k3s-opt-02
-192.168.0.206  # k3s-opt-03
-192.168.0.207  # k3s-nas-worker-01
+192.168.0.202  # k3s-srv-nas-01
+192.168.0.203  # k3s-srv-laptop-01
+192.168.0.204  # k3s-srv-opt-01
+192.168.0.205  # k3s-agt-opt-02
+192.168.0.206  # k3s-agt-opt-03
+192.168.0.207  # k3s-agt-nas-01
 
 [IPSET dc/nfs_clients]
 # Hosts allowed NFS access

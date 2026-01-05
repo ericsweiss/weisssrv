@@ -1,0 +1,101 @@
+---
+# Cloudflare DDNS using direct API calls
+# Updates root domain A record with current public IP
+# Runs every 5 minutes to keep ericsweiss.com pointing to the current public IP
+#
+# Uses a simple alpine/curl image that exits after completion (unlike linuxserver/ddclient
+# which uses s6-overlay and runs indefinitely, causing CronJob pods to accumulate)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cloudflare-ddns
+  namespace: default
+spec:
+  # Run every 5 minutes
+  schedule: "*/5 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid  # Don't start new job if previous is still running
+  jobTemplate:
+    spec:
+      # Jobs timeout after 5 minutes (should complete in seconds)
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: ddns-update
+            image: curlimages/curl:8.11.0
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              # Get current public IP
+              CURRENT_IP=$(curl -sf https://api.ipify.org)
+              if [ -z "$CURRENT_IP" ]; then
+                echo "ERROR: Failed to get public IP"
+                exit 1
+              fi
+              echo "Current public IP: $CURRENT_IP"
+
+              # Get zone ID for ericsweiss.com
+              ZONE_ID=$(curl -sf -X GET "https://api.cloudflare.com/client/v4/zones?name=ericsweiss.com" \
+                -H "Authorization: Bearer $CF_API_TOKEN" \
+                -H "Content-Type: application/json" | \
+                grep -o '"id":"[^"]*' | head -1 | cut -d'"' -f4)
+
+              if [ -z "$ZONE_ID" ]; then
+                echo "ERROR: Failed to get zone ID"
+                exit 1
+              fi
+              echo "Zone ID: $ZONE_ID"
+
+              # Get existing A record for root domain
+              RECORD_DATA=$(curl -sf -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=A&name=ericsweiss.com" \
+                -H "Authorization: Bearer $CF_API_TOKEN" \
+                -H "Content-Type: application/json")
+
+              RECORD_ID=$(echo "$RECORD_DATA" | grep -o '"id":"[^"]*' | head -1 | cut -d'"' -f4)
+              RECORD_IP=$(echo "$RECORD_DATA" | grep -o '"content":"[^"]*' | head -1 | cut -d'"' -f4)
+
+              echo "Existing record IP: $RECORD_IP"
+
+              # Check if update is needed
+              if [ "$CURRENT_IP" = "$RECORD_IP" ]; then
+                echo "IP unchanged, no update needed"
+                exit 0
+              fi
+
+              echo "IP changed, updating record..."
+
+              # Update or create the record
+              if [ -n "$RECORD_ID" ]; then
+                # Update existing record (proxied=true to match Terraform and external-dns)
+                curl -sf -X PUT "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$RECORD_ID" \
+                  -H "Authorization: Bearer $CF_API_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  --data "{\"type\":\"A\",\"name\":\"ericsweiss.com\",\"content\":\"$CURRENT_IP\",\"ttl\":1,\"proxied\":true}"
+                echo "Record updated successfully"
+              else
+                # Create new record (proxied=true to match Terraform and external-dns)
+                curl -sf -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+                  -H "Authorization: Bearer $CF_API_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  --data "{\"type\":\"A\",\"name\":\"ericsweiss.com\",\"content\":\"$CURRENT_IP\",\"ttl\":1,\"proxied\":true}"
+                echo "Record created successfully"
+              fi
+            env:
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-api-token
+                  key: api-token
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                cpu: 50m
+                memory: 64Mi
