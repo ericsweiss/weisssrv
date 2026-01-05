@@ -239,35 +239,83 @@ tasks:
       - echo "IngressRoutes deployed for all services"
       - kubectl get ingressroute -A
 
+  k3s:deploy-authentik:
+    desc: Deploy Authentik SSO identity provider
+    dir: ./kubernetes/apps/authentik
+    env:
+      AUTHENTIK_SECRET_KEY: op://Homelab/Authentik Secrets/secret-key
+      AUTHENTIK_POSTGRESQL_PASSWORD: op://Homelab/Authentik Secrets/postgresql-password
+      AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD: op://Homelab/Authentik Secrets/postgresql-admin-password
+      # SMTP credentials for email notifications (uses same creds as other services)
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+    cmds:
+      - helm repo add authentik https://charts.goauthentik.io --force-update
+      - helm repo update authentik
+      - kubectl apply -f namespace.yaml
+      - |
+        echo "Creating Authentik secrets from 1Password..."
+        op run -- sh -c 'kubectl create secret generic authentik-secrets \
+          --namespace=authentik \
+          --from-literal=secret-key="$AUTHENTIK_SECRET_KEY" \
+          --from-literal=postgresql-password="$AUTHENTIK_POSTGRESQL_PASSWORD" \
+          --from-literal=postgresql-admin-password="$AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD" \
+          --from-literal=smtp-username="$SMTP_RELAY_USER" \
+          --from-literal=smtp-password="$SMTP_RELAY_PASSWORD" \
+          --dry-run=client -o yaml | kubectl apply -f -'
+      - |
+        echo "Installing Authentik via Helm..."
+        op run -- sh -c 'helm upgrade --install authentik authentik/authentik \
+          -n authentik \
+          -f values.yaml \
+          --set authentik.secret_key="$AUTHENTIK_SECRET_KEY" \
+          --wait --timeout 10m'
+      - |
+        echo "Waiting for Authentik server to be ready..."
+        kubectl wait --namespace authentik \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/name=authentik,app.kubernetes.io/component=server \
+          --timeout=300s
+      - kubectl apply -k .
+      - echo ""
+      - echo "=== Authentik SSO deployed successfully ==="
+      - echo ""
+      - 'echo "Next steps:"'
+      - 'echo "  1. Add DNS rewrite in AdGuard Home: auth.esweiss.com -> 192.168.0.100"'
+      - 'echo "  2. Complete initial setup: https://auth.esweiss.com/if/flow/initial-setup/"'
+      - 'echo "  3. Create akadmin password and store in 1Password"'
+      - 'echo "  4. Configure SSO providers for other services"'
+      - echo ""
+      - kubectl get pods -n authentik
+      - kubectl get svc -n authentik
+
   k3s:deploy-workloads:
     desc: Deploy ALL k3s platform workloads in correct order
     cmds:
       - echo "=== Deploying K3s Platform Workloads ==="
       - echo ""
-      - 'echo "Step 1/6 - MetalLB (LoadBalancer support)"'
+      - 'echo "Step 1/7 - MetalLB (LoadBalancer support)"'
       - task: k3s:deploy-metallb
       - echo ""
-      - 'echo "Step 2/6 - Traefik (Ingress controller)"'
+      - 'echo "Step 2/7 - Traefik (Ingress controller)"'
       - task: k3s:deploy-traefik
       - echo ""
-      - 'echo "Step 3/6 - cert-manager (TLS certificates)"'
+      - 'echo "Step 3/7 - cert-manager (TLS certificates)"'
       - task: k3s:deploy-cert-manager
       - echo ""
-      - 'echo "Step 4/6 - external-dns (Cloudflare DNS)"'
+      - 'echo "Step 4/7 - external-dns (Cloudflare DNS)"'
       - task: k3s:deploy-external-dns
       - echo ""
-      - 'echo "Step 5/6 - DDNS CronJob (Public IP updates)"'
+      - 'echo "Step 5/7 - DDNS CronJob (Public IP updates)"'
       - task: k3s:deploy-ddns
       - echo ""
-      - 'echo "Step 6/6 - IngressRoutes (Service routing)"'
+      - 'echo "Step 6/7 - IngressRoutes (Service routing)"'
       - task: k3s:deploy-ingress-routes
       - echo ""
-      - echo "=== All K3s workloads deployed successfully ==="
+      - 'echo "Step 7/7 - Authentik SSO (Identity Provider)"'
+      - task: k3s:deploy-authentik
       - echo ""
-      - 'echo "Next steps:"'
-      - 'echo "  1. Wait for certificates - kubectl get certificate -A"'
-      - 'echo "  2. Configure AdGuard Home DNS rewrites for *.esweiss.com"'
-      - 'echo "  3. Verify services - curl -k https://192.168.0.100"'
+      - echo "=== All K3s workloads deployed successfully ==="
 
   k3s:status:
     desc: Show k3s cluster and workload status
@@ -293,6 +341,10 @@ tasks:
       - echo ""
       - echo "DDNS CronJob -"
       - kubectl get cronjob cloudflare-ddns -n default 2>/dev/null || echo "  Not installed"
+      - echo ""
+      - echo "Authentik SSO -"
+      - kubectl get pods -n authentik 2>/dev/null || echo "  Not installed"
+      - kubectl get svc -n authentik 2>/dev/null || true
       - echo ""
       - echo "IngressRoutes -"
       - kubectl get ingressroute -A 2>/dev/null || echo "  None configured"

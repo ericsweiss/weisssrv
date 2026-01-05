@@ -221,6 +221,12 @@ if systemctl is-active k3s &>/dev/null; then
     echo ""
     echo "--- Traefik Status ---"
     sudo k3s kubectl get pods,svc -n traefik 2>/dev/null || echo "Traefik not deployed"
+    echo ""
+    echo "--- Authentik Status ---"
+    sudo k3s kubectl get pods -n authentik 2>/dev/null || echo "Authentik not deployed"
+    sudo k3s kubectl get svc -n authentik 2>/dev/null || echo ""
+    sudo k3s kubectl get ingressroute -n authentik 2>/dev/null || echo ""
+    sudo k3s kubectl get middleware -n authentik 2>/dev/null || echo ""
 fi
 echo ""
 echo "--- K3s Config ---"
