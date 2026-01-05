@@ -53,8 +53,11 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 - Traefik ingress, external-dns (Cloudflare)
 - Ready for HA expansion (add 4 more servers for 5-node HA)
 
+**Applications**:
+- Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
+
 **Future**:
-- GitOps via Flux, Authentik SSO
+- GitOps via Flux
 - Apps: Media stack (*arr + Plex), Immich, Nextcloud
 
 ## Common Development Commands
@@ -93,6 +96,7 @@ task k3s:deploy-cert-manager      # Deploy cert-manager with Let's Encrypt
 task k3s:deploy-external-dns      # Deploy external-dns for Cloudflare
 task k3s:deploy-ddns              # Deploy DDNS CronJob
 task k3s:deploy-ingress-routes    # Deploy Traefik IngressRoutes
+task k3s:deploy-authentik         # Deploy Authentik SSO identity provider
 task k3s:status                   # Show cluster and workload status
 
 # Maintenance
@@ -166,6 +170,8 @@ In vault "Homelab":
 - **SSH Key** - public + private key
 - **Samba NAS User** - nas user password
 - **DNS-01 SSH Key** - private + public key (for cert distribution)
+- **K3s Cluster Token** - cluster join token (credential)
+- **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
 
 ### Using 1Password
 

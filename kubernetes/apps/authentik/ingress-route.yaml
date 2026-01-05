@@ -1,0 +1,87 @@
+---
+# External: auth.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: authentik
+  namespace: authentik
+  annotations:
+    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`auth.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: authentik-server
+          port: 80
+  tls:
+    secretName: ericsweiss-com-tls
+
+---
+# Internal: auth.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: authentik-internal
+  namespace: authentik
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`auth.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: authentik-server
+          port: 80
+  tls:
+    secretName: esweiss-com-tls
+
+---
+# Forward auth endpoint for protected services (external)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: authentik-outpost
+  namespace: authentik
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`auth.ericsweiss.com`) && PathPrefix(`/outpost.goauthentik.io/`)
+      kind: Rule
+      services:
+        - name: authentik-server
+          port: 80
+  tls:
+    secretName: ericsweiss-com-tls
+
+---
+# Forward auth endpoint for protected services (internal)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: authentik-outpost-internal
+  namespace: authentik
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`auth.esweiss.com`) && PathPrefix(`/outpost.goauthentik.io/`)
+      kind: Rule
+      services:
+        - name: authentik-server
+          port: 80
+  tls:
+    secretName: esweiss-com-tls

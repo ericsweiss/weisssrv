@@ -1,0 +1,489 @@
+# Authentik
+
+SSO/OIDC identity provider for the homelab.
+
+## Overview
+
+- **URL (External)**: https://auth.ericsweiss.com
+- **URL (Internal)**: https://auth.esweiss.com
+- **Initial Setup**: https://auth.esweiss.com/if/flow/initial-setup/
+- **Admin Interface**: https://auth.esweiss.com/if/admin/
+- **Chart**: [goauthentik/authentik](https://github.com/goauthentik/helm)
+
+## Architecture
+
+```
++----------+     +----------+     +-------------------+     +-----------------+
+|  Traefik |---->| Authentik|---->|  Authentik Server |---->|   PostgreSQL    |
+| Ingress  |     | Outpost  |     |  (Web UI + API)   |     |  (Helm subchart)|
++----------+     +----------+     +-------------------+     +-----------------+
+                                             |                       ^
+                                             |                       |
+                                  +----------v----------+            |
+                                  |  Authentik Worker   |------------+
+                                  |  (Background tasks) |
+                                  +---------------------+
+```
+
+Redis is not required as of Authentik 2025.10 - all state is in PostgreSQL.
+
+## Components
+
+| Component | Purpose | Replicas | Stateless? |
+|-----------|---------|----------|------------|
+| Server | Web UI, API, embedded outpost | 2 | Yes |
+| Worker | Background tasks (email, sync) | 1 | Yes |
+| PostgreSQL | Primary database (all state) | 1 | No |
+
+## Prerequisites
+
+### 1. Create 1Password Items
+
+Create the following items in your 1Password "Homelab" vault:
+
+**Item: "Authentik Secrets"**
+| Field | Description | Generation |
+|-------|-------------|------------|
+| `secret-key` | JWT signing key (50+ chars) | `openssl rand -base64 50` |
+| `postgresql-password` | PostgreSQL user password | `openssl rand -base64 32` |
+| `postgresql-admin-password` | PostgreSQL admin password | `openssl rand -base64 32` |
+
+Generate secrets:
+```bash
+# Generate all secrets at once
+echo "secret-key: $(openssl rand -base64 50)"
+echo "postgresql-password: $(openssl rand -base64 32)"
+echo "postgresql-admin-password: $(openssl rand -base64 32)"
+```
+
+**SMTP Authentication (uses existing 1Password item)**
+
+SMTP credentials are sourced from the existing "SMTP Relay Auth" item in 1Password.
+No additional secrets need to be created - the deployment task automatically includes
+`smtp-username` and `smtp-password` from this item in the authentik-secrets.
+
+### 2. DNS Configuration
+
+**Cloudflare (external-dns handles this automatically)**:
+- `auth.ericsweiss.com` -> Traefik LB (192.168.0.100)
+
+**AdGuard Home (manual configuration required)**:
+Add DNS rewrite in AdGuard Home:
+- `auth.esweiss.com` -> `192.168.0.100`
+
+## Deployment
+
+### Option A: Using Task (Recommended)
+
+```bash
+# Deploy Authentik
+task k3s:deploy-authentik
+
+# Check status
+kubectl get pods -n authentik
+kubectl get svc -n authentik
+```
+
+### Option B: Manual Deployment
+
+```bash
+# Create namespace
+kubectl apply -f kubernetes/apps/authentik/namespace.yaml
+
+# Set 1Password environment variables
+export AUTHENTIK_SECRET_KEY=$(op read "op://Homelab/Authentik Secrets/secret-key")
+export AUTHENTIK_POSTGRESQL_PASSWORD=$(op read "op://Homelab/Authentik Secrets/postgresql-password")
+export AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD=$(op read "op://Homelab/Authentik Secrets/postgresql-admin-password")
+export SMTP_RELAY_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
+export SMTP_RELAY_PASSWORD=$(op read "op://Homelab/SMTP Relay Auth/password")
+
+# Create secrets from 1Password
+kubectl create secret generic authentik-secrets \
+  --namespace=authentik \
+  --from-literal=secret-key="$AUTHENTIK_SECRET_KEY" \
+  --from-literal=postgresql-password="$AUTHENTIK_POSTGRESQL_PASSWORD" \
+  --from-literal=postgresql-admin-password="$AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD" \
+  --from-literal=smtp-username="$SMTP_RELAY_USER" \
+  --from-literal=smtp-password="$SMTP_RELAY_PASSWORD" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Add Helm repo and install
+helm repo add authentik https://charts.goauthentik.io
+helm repo update authentik
+helm upgrade --install authentik authentik/authentik \
+  -n authentik \
+  -f kubernetes/apps/authentik/values.yaml \
+  --set authentik.secret_key="$(op read 'op://Homelab/Authentik Secrets/secret-key')" \
+  --wait
+
+# Apply IngressRoutes and Middleware
+kubectl apply -k kubernetes/apps/authentik/
+```
+
+## Initial Setup
+
+1. **Wait for pods to be ready**:
+   ```bash
+   kubectl wait --namespace authentik \
+     --for=condition=ready pod \
+     --selector=app.kubernetes.io/name=authentik \
+     --timeout=300s
+   ```
+
+2. **Access initial setup**:
+   - Navigate to: https://auth.esweiss.com/if/flow/initial-setup/
+   - Create the default `akadmin` user and set password
+
+3. **Store admin password in 1Password**:
+   Add to "Authentik Secrets" item:
+   - `admin-password`: The password you set for akadmin
+
+## Integrating SSO with Services
+
+### Method 1: Traefik Forward Auth (Recommended)
+
+Add the `authentik-auth` middleware to any IngressRoute:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: my-service
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`myservice.esweiss.com`)
+      kind: Rule
+      middlewares:
+        # Add Authentik authentication
+        - name: authentik-auth
+          namespace: authentik
+        # Existing middlewares
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: my-backend
+          port: 8080
+  tls:
+    secretName: esweiss-com-tls
+```
+
+### Method 2: OAuth2/OIDC Native Integration
+
+For services that support OAuth2/OIDC natively (Grafana, ArgoCD, etc.):
+
+1. Create an OAuth2 Provider in Authentik admin
+2. Create an Application linked to the provider
+3. Configure the service with:
+   - Client ID: (from Authentik provider)
+   - Client Secret: (from Authentik provider)
+   - Authorization URL: `https://auth.ericsweiss.com/application/o/authorize/`
+   - Token URL: `https://auth.ericsweiss.com/application/o/token/`
+   - Userinfo URL: `https://auth.ericsweiss.com/application/o/userinfo/`
+
+**Note**: Use the canonical external domain (auth.ericsweiss.com) for OAuth URLs.
+This ensures callbacks work correctly for both internal and external clients.
+
+### Method 3: LDAP Integration
+
+For services that only support LDAP:
+
+1. Create an LDAP Provider in Authentik admin
+2. Deploy an LDAP Outpost (separate deployment)
+3. Configure service to use Authentik LDAP
+
+## Verification
+
+```bash
+# Check all pods are running
+kubectl get pods -n authentik
+
+# Check services
+kubectl get svc -n authentik
+
+# Check IngressRoutes
+kubectl get ingressroute -n authentik
+
+# Check certificates are being served
+curl -v https://auth.esweiss.com 2>&1 | grep "SSL certificate"
+
+# Check middleware is available
+kubectl get middleware -n authentik
+```
+
+## Troubleshooting
+
+### Pods not starting
+
+```bash
+# Check pod events
+kubectl describe pod -n authentik -l app.kubernetes.io/name=authentik
+
+# Check logs
+kubectl logs -n authentik -l app.kubernetes.io/name=authentik-server
+kubectl logs -n authentik -l app.kubernetes.io/name=authentik-worker
+
+# Check PostgreSQL
+kubectl logs -n authentik -l app.kubernetes.io/name=postgresql
+```
+
+### Database connection issues
+
+```bash
+# Verify secret exists
+kubectl get secret authentik-secrets -n authentik
+
+# Check PostgreSQL is running
+kubectl get pods -n authentik -l app.kubernetes.io/name=postgresql
+
+# Test database connectivity
+kubectl exec -it -n authentik deploy/authentik-server -- \
+  python -c "from authentik.lib.utils.http import get_http_session; print('OK')"
+```
+
+### Forward auth not working
+
+```bash
+# Verify middleware exists
+kubectl get middleware authentik-auth -n authentik -o yaml
+
+# Check Traefik can reach Authentik
+kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
+  curl -v http://authentik-server.authentik.svc.cluster.local/outpost.goauthentik.io/auth/traefik
+```
+
+### Certificate issues
+
+The IngressRoutes reference existing wildcard certificates:
+- `ericsweiss-com-tls` in `default` namespace
+- `esweiss-com-tls` in `default` namespace
+
+If certificates are not found:
+```bash
+# Check certificates exist
+kubectl get certificate -A
+kubectl get secret ericsweiss-com-tls -n default
+kubectl get secret esweiss-com-tls -n default
+
+# Copy secrets to authentik namespace if needed (Traefik handles cross-namespace by default)
+```
+
+## Backup and Restore
+
+### Backup
+
+```bash
+# Backup PostgreSQL
+kubectl exec -n authentik authentik-postgresql-0 -- \
+  pg_dump -U authentik authentik > authentik-backup-$(date +%Y%m%d).sql
+```
+
+### Restore
+
+```bash
+# Restore PostgreSQL
+kubectl exec -i -n authentik authentik-postgresql-0 -- \
+  psql -U authentik authentik < authentik-backup-YYYYMMDD.sql
+```
+
+## Security Notes
+
+- Store admin password in 1Password
+- Never expose secret key; rotate if compromised
+- Enable MFA for admin accounts
+- Consider NetworkPolicies for production
+
+## High Availability
+
+### Current Deployment
+
+The current deployment balances availability with simplicity:
+
+| Component | HA Status | Notes |
+|-----------|-----------|-------|
+| Authentik Server | **2 replicas** | Spread across nodes via anti-affinity |
+| Authentik Worker | **1 replica** | Single instance for background tasks |
+| PostgreSQL | **Not HA** | Single instance with local PVC (ReadWriteOnce) |
+
+**Key Limitations**:
+1. **PostgreSQL PVC**: Uses k3s local-path storage (ReadWriteOnce) - bound to a single node
+2. **No database replication**: Single PostgreSQL instance is a SPOF
+3. **Pod rescheduling risk**: If the PostgreSQL node fails, data is unavailable until node recovers
+
+**Why This Works**:
+- Server/Worker are stateless - all state in PostgreSQL
+- Pod anti-affinity spreads replicas across nodes
+- Data survives pod restarts (not node failures)
+- Can migrate to HA PostgreSQL later
+
+### Scaling
+
+Server and Worker are stateless and support horizontal scaling ([docs](https://docs.goauthentik.io/install-config/high-availability/)). The Helm chart supports HPA.
+
+To scale replicas, update `values.yaml`:
+```yaml
+server:
+  replicas: 2  # or more
+
+worker:
+  replicas: 2  # or more
+```
+
+### HA Upgrade Path
+
+#### Option 1: CloudNativePG Operator (Recommended)
+
+[CloudNativePG](https://cloudnative-pg.io/) provides production-grade PostgreSQL on Kubernetes:
+
+**Pros**:
+- Native Kubernetes operator with CRDs
+- Automated failover with primary/replica topology
+- Continuous backup to S3/object storage
+- Point-in-time recovery (PITR)
+- Rolling updates without downtime
+- Built-in connection pooling (PgBouncer)
+
+**Cons**:
+- Additional operator to manage
+- Requires shared storage or storage replication for true HA
+- More complex initial setup
+
+**Implementation Steps**:
+```bash
+# 1. Install CloudNativePG operator
+kubectl apply -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.22/releases/cnpg-1.22.yaml
+
+# 2. Create HA PostgreSQL cluster
+cat <<EOF | kubectl apply -f -
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: authentik-pg
+  namespace: authentik
+spec:
+  instances: 3
+  primaryUpdateStrategy: unsupervised
+  storage:
+    size: 8Gi
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      max_connections: "100"
+EOF
+
+# 3. Update Authentik values.yaml to use external PostgreSQL
+# postgresql:
+#   enabled: false
+# authentik:
+#   postgresql:
+#     host: authentik-pg-rw.authentik.svc
+#     name: app
+#     user: app
+#     password: ""  # From CNPG secret
+```
+
+#### Option 2: External PostgreSQL (Existing Infrastructure)
+
+Use existing PostgreSQL infrastructure outside Kubernetes:
+
+**Pros**:
+- Leverages existing database expertise
+- Can use managed services (e.g., on NAS with ZFS)
+- Simpler Kubernetes deployment
+- Database backups handled separately
+
+**Cons**:
+- External dependency
+- Network latency (minimal for LAN)
+- Separate backup strategy needed
+
+**Implementation**:
+```yaml
+# values.yaml
+postgresql:
+  enabled: false
+
+authentik:
+  postgresql:
+    host: "nas.esweiss.com"  # External PostgreSQL
+    port: 5432
+    name: authentik
+    user: authentik
+    password: ""  # From existingSecret
+```
+
+#### Option 3: PostgreSQL on NAS with ZFS (Homelab-Specific)
+
+Deploy PostgreSQL in an LXC container on pve-nas-01 with ZFS storage:
+
+**Pros**:
+- Leverages existing ZFS infrastructure (ssd pool)
+- Automatic snapshots and replication possible
+- Data lives on reliable storage system
+- Single database instance for all homelab apps
+
+**Cons**:
+- Not Kubernetes-native
+- Manual failover
+- Additional LXC container to manage
+
+**This option is particularly attractive for this homelab** because:
+- `ssd` pool already exists for database workloads
+- ZFS provides data integrity and snapshots
+- Centralizes database management
+- Reduces Kubernetes complexity
+
+### Storage Considerations
+
+**Current (local-path)**:
+- PVCs are bound to a single node
+- If node fails, PVC is inaccessible
+- Works well for single-replica workloads
+
+**For True HA**:
+- Need ReadWriteMany storage (NFS, Longhorn, Rook-Ceph)
+- Or use external database (CloudNativePG, external PostgreSQL)
+- Consider Longhorn for distributed block storage in K3s
+
+**Recommendation**: For this homelab, external PostgreSQL on NAS is the most practical HA solution, leveraging existing ZFS infrastructure.
+
+### Scaling Recommendations by Cluster Size
+
+| Cluster Size | Server Replicas | Worker Replicas | PostgreSQL Strategy |
+|-------------|-----------------|-----------------|---------------------|
+| 3 nodes (current) | 2 | 1 | Bundled (acceptable) |
+| 5 nodes (planned HA) | 2-3 | 1-2 | External or CloudNativePG |
+| Production | 3+ with HPA | 2+ with HPA | CloudNativePG 3-node |
+
+### Future Work
+
+- [ ] Migrate PostgreSQL to NAS (ZFS-backed)
+- [ ] Add PodDisruptionBudget
+- [ ] Evaluate CloudNativePG for 5-node cluster
+- [ ] Automate database backups to NAS
+
+## Upgrading
+
+```bash
+# Update Helm repo
+helm repo update authentik
+
+# Check available versions
+helm search repo authentik/authentik --versions
+
+# Upgrade (backup database first!)
+helm upgrade authentik authentik/authentik \
+  -n authentik \
+  -f kubernetes/apps/authentik/values.yaml \
+  --set authentik.secret_key="$(op read 'op://Homelab/Authentik Secrets/secret-key')"
+```
+
+## References
+
+- [Authentik Docs](https://docs.goauthentik.io/)
+- [Helm Chart](https://github.com/goauthentik/helm)
+- [Traefik Integration](https://docs.goauthentik.io/integrations/services/traefik/)
+- [HA Guide](https://docs.goauthentik.io/install-config/high-availability/)
+- [CloudNativePG](https://cloudnative-pg.io/)

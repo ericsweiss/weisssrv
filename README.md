@@ -144,6 +144,7 @@ Initial 3-node cluster with:
 - **MetalLB**: LoadBalancer IPs (.100 public, .101 internal)
 - **Traefik**: Ingress controller
 - **external-dns**: Automatic Cloudflare DNS
+- **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 

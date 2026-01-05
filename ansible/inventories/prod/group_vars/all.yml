@@ -52,6 +52,11 @@ secrets:
   dns01_ssh_private_key: "op://Homelab/DNS-01 SSH Key/private key"
   dns01_ssh_public_key: "op://Homelab/DNS-01 SSH Key/public key"
   k3s_token: "op://Homelab/K3s Cluster Token/credential"
+  # Authentik SSO secrets
+  # Note: Redis password is no longer needed as of Authentik 2025.10
+  authentik_secret_key: "op://Homelab/Authentik Secrets/secret-key"
+  authentik_postgresql_password: "op://Homelab/Authentik Secrets/postgresql-password"
+  authentik_postgresql_admin_password: "op://Homelab/Authentik Secrets/postgresql-admin-password"
 
 # Timezone
 timezone: America/Los_Angeles
