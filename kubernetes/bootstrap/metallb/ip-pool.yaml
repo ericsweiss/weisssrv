@@ -1,0 +1,35 @@
+---
+# MetalLB IP Address Pools for esweiss.com homelab
+# Public pool: 192.168.0.100 - For publicly accessible services (Traefik ingress)
+# Internal pool: 192.168.0.101 - For internal services
+
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: public-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.0.100/32
+
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: internal-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.0.101/32
+
+---
+# L2Advertisement - Announce IPs via ARP on the local network
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2-advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - public-pool
+    - internal-pool

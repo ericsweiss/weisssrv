@@ -83,16 +83,49 @@ ReadWritePaths=/opt/AdGuardHome
 
 ### DNS Rewrites
 
-Internal services use AdGuard rewrites instead of split-horizon DNS:
+Internal services use AdGuard rewrites instead of split-horizon DNS. Configure these in AdGuard Home (http://192.168.0.150:3000) under **DNS Settings → DNS rewrites**.
 
-| Domain | IP |
-|--------|-----|
-| dns-01.esweiss.com | 192.168.0.150 |
-| dns-02.esweiss.com | 192.168.0.160 |
-| smtp-relay.esweiss.com | 192.168.0.151 |
-| pve-nas-01.esweiss.com | 192.168.0.102 |
-| vip-internal.esweiss.com | 192.168.0.101 |
-| ... | ... |
+#### Forward DNS (A Records)
+
+| Domain | IP | Description |
+|--------|-----|-------------|
+| dns-01.esweiss.com | 192.168.0.150 | Primary DNS server |
+| dns-02.esweiss.com | 192.168.0.160 | Secondary DNS server |
+| smtp-relay.esweiss.com | 192.168.0.151 | SMTP relay |
+| pve-nas-01.esweiss.com | 192.168.0.102 | Proxmox NAS host |
+| pve-opt-03.esweiss.com | 192.168.0.106 | Proxmox compute host |
+| k3s-srv-nas-01.esweiss.com | 192.168.0.202 | K3s server node |
+| k3s-srv-laptop-01.esweiss.com | 192.168.0.203 | K3s server (future HA) |
+| k3s-srv-opt-01.esweiss.com | 192.168.0.204 | K3s server (future HA) |
+| k3s-agt-opt-02.esweiss.com | 192.168.0.205 | K3s agent (future) |
+| k3s-agt-opt-03.esweiss.com | 192.168.0.206 | K3s agent (ingress) |
+| k3s-agt-nas-01.esweiss.com | 192.168.0.207 | K3s agent (NAS) |
+| k3s.esweiss.com | 192.168.0.161 | K3s API VIP (kube-vip) |
+| vip-public.esweiss.com | 192.168.0.100 | MetalLB public pool |
+| vip-internal.esweiss.com | 192.168.0.101 | MetalLB internal pool |
+
+#### Reverse DNS (PTR Records)
+
+Configure these as additional rewrites for proper reverse lookups:
+
+| PTR Record | FQDN |
+|------------|------|
+| 150.0.168.192.in-addr.arpa | dns-01.esweiss.com |
+| 160.0.168.192.in-addr.arpa | dns-02.esweiss.com |
+| 151.0.168.192.in-addr.arpa | smtp-relay.esweiss.com |
+| 102.0.168.192.in-addr.arpa | pve-nas-01.esweiss.com |
+| 106.0.168.192.in-addr.arpa | pve-opt-03.esweiss.com |
+| 202.0.168.192.in-addr.arpa | k3s-srv-nas-01.esweiss.com |
+| 203.0.168.192.in-addr.arpa | k3s-srv-laptop-01.esweiss.com |
+| 204.0.168.192.in-addr.arpa | k3s-srv-opt-01.esweiss.com |
+| 205.0.168.192.in-addr.arpa | k3s-agt-opt-02.esweiss.com |
+| 206.0.168.192.in-addr.arpa | k3s-agt-opt-03.esweiss.com |
+| 207.0.168.192.in-addr.arpa | k3s-agt-nas-01.esweiss.com |
+| 161.0.168.192.in-addr.arpa | k3s.esweiss.com |
+| 100.0.168.192.in-addr.arpa | vip-public.esweiss.com |
+| 101.0.168.192.in-addr.arpa | vip-internal.esweiss.com |
+
+**Note**: AdGuard Home syncs DNS rewrites from dns-01 to dns-02 automatically via adguardhome-sync.
 
 ### TLS Configuration
 

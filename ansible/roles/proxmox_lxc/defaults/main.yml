@@ -1,0 +1,36 @@
+---
+# Default LXC container configuration
+
+# Container resource defaults
+lxc_cores: 2
+lxc_memory: 2048
+lxc_swap: 512
+lxc_disk_size: 8G
+lxc_storage: local-lvm
+lxc_bridge: vmbr0
+lxc_unprivileged: true
+
+# Template settings
+lxc_template: "debian-13-standard_13.0-1_amd64.tar.zst"
+lxc_template_storage: local
+
+# Network configuration
+lxc_nameserver: "192.168.0.150 192.168.0.160"
+lxc_searchdomain: "{{ internal_domain }}"
+lxc_gateway: 192.168.0.1
+
+# User configuration for Ansible access
+# This user will be created with sudo privileges and SSH key access
+lxc_admin_user: "{{ admin_user | default('eric') }}"
+
+# SSH configuration
+lxc_ssh_public_keys: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') }}"
+
+# Startup configuration
+lxc_onboot: true
+lxc_startup_order: 100
+lxc_startup_delay: 0
+
+# Features
+lxc_nesting: false
+lxc_keyctl: false

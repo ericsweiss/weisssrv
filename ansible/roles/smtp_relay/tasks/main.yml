@@ -2,12 +2,12 @@
 # SMTP relay server configuration
 # Central postfix relay that forwards to Gmail
 
-- name: Deploy dns-01 public key to smtp-relay root authorized_keys
+- name: Deploy dns-01 certificate distribution key to eric user
   ansible.posix.authorized_key:
-    user: root
+    user: "{{ admin_user }}"
     state: present
     key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') }}"
-    comment: "root@dns-01"
+    comment: "dns-01-certs"
   when: lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') != ''
 
 - name: Install postfix and dependencies

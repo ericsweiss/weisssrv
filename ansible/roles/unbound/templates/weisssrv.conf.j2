@@ -10,6 +10,20 @@ server:
   do-udp: yes
   do-tcp: yes
 
+  # performance tuning
+  num-threads: {{ unbound_num_threads | default(2) }}
+  msg-cache-size: {{ unbound_msg_cache_size | default('16m') }}
+  rrset-cache-size: {{ unbound_rrset_cache_size | default('32m') }}
+  outgoing-range: {{ unbound_outgoing_range | default(8192) }}
+  num-queries-per-thread: {{ unbound_num_queries_per_thread | default(4096) }}
+  so-reuseport: {{ 'yes' if (unbound_so_reuseport | default(true)) else 'no' }}
+
+  # advanced features
+  serve-expired: {{ 'yes' if (unbound_serve_expired | default(true)) else 'no' }}
+  serve-expired-ttl: {{ unbound_serve_expired_ttl | default(86400) }}
+  aggressive-nsec: {{ 'yes' if (unbound_aggressive_nsec | default(true)) else 'no' }}
+  edns-buffer-size: {{ unbound_edns_buffer_size | default(1232) }}
+
   tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"
 
   # privacy / hygiene

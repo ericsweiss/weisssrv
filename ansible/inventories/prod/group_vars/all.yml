@@ -5,10 +5,15 @@
 internal_domain: esweiss.com
 external_domain: ericsweiss.com
 
-# DNS servers (used for pointing hosts to internal DNS)
+# DNS servers
 dns_servers:
-  - 192.168.0.150  # dns-01
-  - 192.168.0.160  # dns-02
+  - 192.168.0.150
+  - 192.168.0.160
+
+# Proxmox autostart defaults
+proxmox_autostart_enabled: true
+proxmox_startup_order: 100
+proxmox_startup_delay: 0
 
 # SMTP relay configuration
 smtp_relay_host: smtp-relay.esweiss.com
@@ -20,27 +25,25 @@ admin_email: "{{ lookup('ansible.builtin.env', 'ROOT_EMAIL_ALIAS', default='root
 
 # SSH configuration
 ssh_port: 22
-ssh_permit_root_login: "no"  # Prohibit root login by default (overridden for LXCs)
+ssh_permit_root_login: "no"
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 
-# SSH authorized keys (deployed to admin user)
-# Note: from= restricts SSH access to local network and Tailscale IPs only
+# SSH authorized keys
 ssh_authorized_keys:
   - >-
     from="192.168.0.0/24,100.64.0.0/10"
     {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') }}
 
-# 1Password secret references (resolved at runtime via op CLI)
-# Format: op://vault/item/field
+# 1Password secret references
 secrets:
   cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
   cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
   smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
   smtp_gmail_user: "op://Homelab/SMTP Relay Gmail/username"
-  smtp_relay_user: "op://Homelab/SMTP Relay Auth/username"  # For null clients
-  smtp_relay_password: "op://Homelab/SMTP Relay Auth/password"  # For null clients
-  root_email_alias: "op://Homelab/Email Config/root_alias"  # ericsweiss1@gmail.com
+  smtp_relay_user: "op://Homelab/SMTP Relay Auth/username"
+  smtp_relay_password: "op://Homelab/SMTP Relay Auth/password"
+  root_email_alias: "op://Homelab/Email Config/root_alias"
   adguard_admin_password: "op://Homelab/AdGuard Home/password"
   adguard_admin_password_hash: "op://Homelab/AdGuard Home/password_hash"
   tailscale_auth_key: "op://Homelab/Tailscale Auth Key/credential"
@@ -48,6 +51,7 @@ secrets:
   samba_nas_password: "op://Homelab/Samba NAS User/password"
   dns01_ssh_private_key: "op://Homelab/DNS-01 SSH Key/private key"
   dns01_ssh_public_key: "op://Homelab/DNS-01 SSH Key/public key"
+  k3s_token: "op://Homelab/K3s Cluster Token/credential"
 
 # Timezone
 timezone: America/Los_Angeles
@@ -73,7 +77,7 @@ common_packages:
 # Tailscale configuration
 tailscale_enabled: true
 tailscale_accept_routes: true
-tailscale_accept_dns: false  # We use our own DNS
+tailscale_accept_dns: false
 
 # NTP configuration
 ntp_servers:
@@ -83,16 +87,16 @@ ntp_servers:
   - 3.pool.ntp.org
 
 # Application version pins
-# Update versions here, then run deployment to upgrade
-adguard_home_version: "0.107.71"  # Current installed version
+adguard_home_version: "0.107.71"
 adguardhome_sync_version: "0.8.2"
 tailscale_version: "latest"
 acme_version: "latest"
 debian_version: "13"
+k3s_version: "v1.33.7+k3s1"
+kube_vip_version: "v1.0.3"
 
-# Firewall IPSet special entries (VIPs, non-host IPs)
-# These are included in IPSets but are not inventory hosts
+# Firewall IPSet special entries
 firewall_ipset_special_entries:
   k3s_nodes:
     - ip: 192.168.0.161
-      comment: k3s API VIP (kube-vip)
+      comment: k3s API VIP

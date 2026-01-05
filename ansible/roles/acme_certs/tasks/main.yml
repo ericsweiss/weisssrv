@@ -1,22 +1,23 @@
 ---
 # ACME certificate management with acme.sh
 # Only runs on dns-01 (primary) and distributes to other hosts
+# Certificate distribution uses SSH with eric user (dns-01 -> dns-02, smtp-relay)
 
-- name: Ensure /root/.ssh directory exists
+- name: Ensure eric .ssh directory exists for cert distribution
   ansible.builtin.file:
-    path: /root/.ssh
+    path: /home/eric/.ssh
     state: directory
-    owner: root
-    group: root
+    owner: eric
+    group: eric
     mode: "0700"
   when: inventory_hostname == 'dns-01'
 
 - name: Deploy dns-01 SSH private key for certificate distribution
   ansible.builtin.copy:
     content: "{{ dns01_ssh_private_key }}\n"
-    dest: /root/.ssh/id_ed25519
-    owner: root
-    group: root
+    dest: /home/eric/.ssh/id_ed25519_certs
+    owner: eric
+    group: eric
     mode: "0600"
   when:
     - inventory_hostname == 'dns-01'
@@ -24,26 +25,37 @@
     - dns01_ssh_private_key != ''
   no_log: true
 
-- name: Deploy dns-01 SSH public key
+- name: Deploy dns-01 SSH public key for certificate distribution
   ansible.builtin.copy:
     content: "{{ dns01_ssh_public_key }}\n"
-    dest: /root/.ssh/id_ed25519.pub
-    owner: root
-    group: root
+    dest: /home/eric/.ssh/id_ed25519_certs.pub
+    owner: eric
+    group: eric
     mode: "0644"
   when:
     - inventory_hostname == 'dns-01'
     - dns01_ssh_public_key is defined
     - dns01_ssh_public_key != ''
 
-- name: Deploy dns-01 public key to dns-02 root authorized_keys
+- name: Deploy dns-01 public key to dns-02 eric authorized_keys
   ansible.posix.authorized_key:
-    user: root
+    user: eric
     state: present
     key: "{{ dns01_ssh_public_key }}"
-    comment: "root@dns-01"
+    comment: "eric@dns-01 (cert distribution)"
   when:
     - inventory_hostname == 'dns-02'
+    - dns01_ssh_public_key is defined
+    - dns01_ssh_public_key != ''
+
+- name: Deploy dns-01 public key to smtp-relay eric authorized_keys
+  ansible.posix.authorized_key:
+    user: eric
+    state: present
+    key: "{{ dns01_ssh_public_key }}"
+    comment: "eric@dns-01 (cert distribution)"
+  when:
+    - inventory_hostname == 'smtp-relay'
     - dns01_ssh_public_key is defined
     - dns01_ssh_public_key != ''
 

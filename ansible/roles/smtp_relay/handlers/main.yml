@@ -1,10 +1,8 @@
 ---
 # Handlers for smtp_relay role
-
-- name: Reload postfix
-  ansible.builtin.service:
-    name: postfix
-    state: reloaded
+# NOTE: Handler execution order matters! Handlers run in the order they are
+# defined here, not in the order they are notified. postmap must run before
+# reload so Postfix picks up the updated .db file.
 
 - name: Postmap sasl_passwd
   ansible.builtin.command: postmap /etc/postfix/sasl_passwd
@@ -13,3 +11,8 @@
 - name: Newaliases
   ansible.builtin.command: newaliases
   changed_when: true
+
+- name: Reload postfix
+  ansible.builtin.service:
+    name: postfix
+    state: reloaded

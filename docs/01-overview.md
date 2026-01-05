@@ -23,13 +23,13 @@ Internet
     |   +-- dns-02        (192.168.0.160) - Secondary DNS (AdGuard + Unbound)
     |   +-- smtp-relay    (192.168.0.151) - Mail relay (Postfix → Gmail)
     |
-    +-- K3s Cluster VMs (Planned)
-    |   +-- k3s-nas-server-01 (192.168.0.202) - K3s server + etcd
-    |   +-- k3s-laptop-01     (192.168.0.203) - K3s server + etcd
-    |   +-- k3s-opt-01        (192.168.0.204) - K3s server + etcd
-    |   +-- k3s-opt-02        (192.168.0.205) - K3s server + etcd
-    |   +-- k3s-opt-03        (192.168.0.206) - K3s server + etcd
-    |   +-- k3s-nas-worker-01 (192.168.0.207) - K3s worker (NAS-adjacent)
+    +-- K3s Cluster VMs
+    |   +-- k3s-srv-nas-01 (192.168.0.202) - K3s server + etcd (initial)
+    |   +-- k3s-srv-laptop-01 (192.168.0.203) - K3s server + etcd (future HA)
+    |   +-- k3s-srv-opt-01    (192.168.0.204) - K3s server + etcd (future HA)
+    |   +-- k3s-agt-opt-02    (192.168.0.205) - K3s agent (ingress/general)
+    |   +-- k3s-agt-nas-01    (192.168.0.207) - K3s agent (NAS workloads)
+    |   +-- k3s-agt-opt-03    (192.168.0.206) - K3s agent (ingress/general)
     |
     +-- Virtual IPs (Reserved)
         +-- vip-public    (192.168.0.100) - MetalLB public ingress

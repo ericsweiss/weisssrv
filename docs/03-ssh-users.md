@@ -4,14 +4,14 @@ This document covers SSH configuration, user management, and authentication for 
 
 ## User Strategy
 
-The homelab uses a deliberate hybrid user management approach:
+The homelab uses a consistent user management approach:
 
-- **Proxmox Hosts**: User `eric` with sudo access
-- **LXC Containers**: Root SSH access (by design)
+- **Proxmox Hosts**: User `eric` with passwordless sudo
+- **LXC Containers**: User `eric` with passwordless sudo
   - Containers are **unprivileged** (mapped UIDs for security)
   - Services run as dedicated non-root users (adguard, unbound)
-  - Root SSH simplifies automation without additional sudo complexity
-- **Future VMs**: Will use `eric` user via cloud-init
+  - Postfix on smtp-relay runs as root (normal for mail servers)
+- **VMs**: User `eric` via cloud-init
 
 ## SSH Configuration
 
@@ -23,30 +23,31 @@ SSH configuration managed by the `base` role:
 
 ```yaml
 ssh_port: 22
-ssh_permit_root_login: "prohibit-password"
+ssh_permit_root_login: "no"
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 ```
 
 **Key Features**:
-- Root login allowed via SSH keys only (no password)
+- Root login disabled via SSH
 - User `eric` has passwordless sudo
 - SSH keys stored in 1Password and deployed via Ansible
 - Restricted by source IP (from="192.168.0.0/24,100.64.0.0/10")
 
 ### LXC Containers (dns-01, dns-02, smtp-relay)
 
-**User**: `root`
-
-Currently, LXC containers use root SSH access:
+**User**: `eric` (all containers)
 
 ```bash
-ssh root@192.168.0.150  # dns-01
-ssh root@192.168.0.160  # dns-02
-ssh root@192.168.0.151  # smtp-relay
+ssh eric@192.168.0.150  # dns-01
+ssh eric@192.168.0.160  # dns-02
+ssh eric@192.168.0.151  # smtp-relay
 ```
 
-**Note**: Services (AdGuard, Unbound, Postfix) run as dedicated non-root users with appropriate capabilities.
+Services run as dedicated non-root users with appropriate capabilities:
+- AdGuard Home: `adguard:adguard`
+- Unbound: `unbound:unbound`
+- Postfix: runs as root (standard for mail servers)
 
 ### SSH Keys
 
@@ -73,9 +74,9 @@ ssh eric@192.168.0.102  # pve-nas-01
 ssh eric@192.168.0.106  # pve-opt-03
 
 # LXC containers
-ssh root@192.168.0.150  # dns-01
-ssh root@192.168.0.160  # dns-02
-ssh root@192.168.0.151  # smtp-relay
+ssh eric@192.168.0.150  # dns-01
+ssh eric@192.168.0.160  # dns-02
+ssh eric@192.168.0.151  # smtp-relay
 ```
 
 ### Via Tailscale VPN
@@ -107,10 +108,11 @@ proxmox:
 **LXC Containers**:
 ```yaml
 dns:
+  vars:
+    ansible_user: eric
   hosts:
     dns-01:
       ansible_host: 192.168.0.150
-      ansible_user: root
 ```
 
 ## Security Hardening
@@ -124,8 +126,8 @@ Applied by the `base` role via `/etc/ssh/sshd_config.d/hardening.conf`:
 PasswordAuthentication no
 PubkeyAuthentication yes
 
-# Disable root password login
-PermitRootLogin prohibit-password
+# Disable root login entirely
+PermitRootLogin no
 
 # Disable empty passwords
 PermitEmptyPasswords no
@@ -190,19 +192,18 @@ To add or update SSH keys:
    ssh eric@192.168.0.102
    ```
 
-## LXC User Management: Why Root SSH is OK
+## LXC User Management
 
-**Design Decision**: LXC containers use root SSH access, which is acceptable because:
+LXC containers use the `eric` user with passwordless sudo, consistent with Proxmox hosts and VMs:
 
 1. **Unprivileged Containers**: UIDs are mapped (e.g., container root = host UID 100000)
 2. **Service Isolation**: All services run as dedicated non-root users:
    - AdGuard Home: `adguard:adguard`
    - Unbound: `unbound:unbound`
    - Postfix: runs as root (standard for mail servers)
-3. **Automation Simplicity**: No sudo required in Ansible tasks
-4. **Limited Scope**: Containers are single-purpose, minimal attack surface
+3. **Consistent Automation**: Same user across all hosts simplifies Ansible playbooks
 
-This is a **conscious security design**, not a configuration shortcut.
+Note: While we SSH as `eric` to smtp-relay, Postfix itself runs as root. This is normal and expected for mail servers.
 
 ## Bootstrap Configuration
 

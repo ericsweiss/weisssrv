@@ -15,7 +15,7 @@ env:
 
 jobs:
   terraform:
-    name: Terraform Plan
+    name: Terraform Validate
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -39,10 +39,6 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      # Note: Actual plan requires secrets injection
-      # In production, use 1Password Connect or GitHub secrets
-      - name: Terraform Plan (dry run)
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "Terraform plan skipped - requires credentials"
-          echo "To enable in production, configure 1Password Connect or GitHub secrets"
+      # Note: terraform plan is run locally with `task terraform:plan`
+      # which uses 1Password CLI for credential injection.
+      # GitHub Actions cannot access 1Password without additional setup.

@@ -1,0 +1,31 @@
+---
+# K3s installation
+
+- name: Install k3s prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - open-iscsi
+      - nfs-common
+    state: present
+    update_cache: true
+
+- name: Enable iscsid service
+  ansible.builtin.systemd:
+    name: iscsid
+    enabled: true
+    state: started
+
+- name: Create k3s config directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+
+- name: Include server tasks
+  ansible.builtin.include_tasks: server.yml
+  when: k3s_role == 'server'
+
+- name: Include agent tasks
+  ansible.builtin.include_tasks: agent.yml
+  when: k3s_role == 'agent'

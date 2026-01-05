@@ -1,0 +1,23 @@
+---
+# IngressRoute for router (internal-only: LAN + Tailscale)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: router
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`router.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: router-backend
+          port: 80
+  tls:
+    secretName: esweiss-com-tls

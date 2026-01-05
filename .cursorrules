@@ -85,20 +85,21 @@ secrets:
 ### Inventory Structure
 
 ```yaml
-# LXC Containers (use root)
+# All hosts use eric user with sudo
+all:
+  vars:
+    ansible_user: eric
+    ansible_become: true
+
 dns:
   hosts:
     dns-01:
       ansible_host: 192.168.0.150
-      ansible_user: root
 
-# Proxmox Hosts (use eric with sudo)
 proxmox:
   hosts:
     pve-nas-01:
       ansible_host: 192.168.0.102
-      ansible_user: eric
-      ansible_become: true
 ```
 
 ## Common Tasks
@@ -342,13 +343,14 @@ ansible-playbook site.yml --syntax-check
 
 ## Important Design Decisions
 
-### Root SSH on LXC Containers
+### Uniform User Management
 
-LXC containers use root SSH because:
-- Unprivileged (UIDs mapped, root = host UID 100000+)
-- Services run as non-root users (adguard, unbound)
-- Simplifies Ansible (no sudo complexity)
-- Conscious security design
+All hosts (Proxmox, LXC containers, VMs) use the `eric` user with:
+- SSH key authentication only (no passwords)
+- Passwordless sudo (`NOPASSWD: ALL`)
+- Root SSH disabled (`PermitRootLogin no`)
+
+LXC containers are unprivileged (UIDs mapped) and services run as non-root users (adguard, unbound). Postfix runs as root (standard for mail servers).
 
 ### ZFS Safety
 

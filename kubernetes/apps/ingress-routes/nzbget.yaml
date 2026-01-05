@@ -1,0 +1,51 @@
+---
+# IngressRoute for nzbget (internal-only: LAN + Tailscale)
+# Backend: NZBGet pod on k3s-agt-nas-01 (future deployment)
+# Both domain variants respond, but AdGuard Home rewrites BOTH to internal VIP (.101)
+# No external DNS records exist - access controlled via DNS
+
+# External domain variant (ericsweiss.com)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nzbget
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`nzbget.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: nzbget
+          port: 6789
+  tls:
+    secretName: ericsweiss-com-tls
+---
+# Internal domain variant (esweiss.com)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nzbget-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`nzbget.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: nzbget
+          port: 6789
+  tls:
+    secretName: esweiss-com-tls

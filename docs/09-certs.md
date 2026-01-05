@@ -200,11 +200,11 @@ sudo journalctl -u postfix -f
 
 ### Distribution Failing
 
-1. **Check SSH connectivity**:
+1. **Check SSH connectivity** (using cert distribution key):
    ```bash
-   # From dns-01
-   ssh root@192.168.0.160 "echo OK"  # dns-02
-   ssh root@192.168.0.151 "echo OK"  # smtp-relay
+   # From dns-01 - uses dedicated cert distribution key
+   ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.160 "echo OK"  # dns-02
+   ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.151 "echo OK"  # smtp-relay
    ```
 
 2. **Manually run distribution**:

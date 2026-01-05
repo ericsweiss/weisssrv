@@ -37,8 +37,10 @@ This homelab uses two types of managed systems:
 | Type | User | SSH Method | Bootstrap Required |
 |------|------|------------|-------------------|
 | **Proxmox Hosts** | `eric` | Pubkey auth | Manual (one-time) |
-| **LXC Containers** | `root` | Pubkey auth | Manual (documented below) |
-| **VMs (future)** | `eric` | Pubkey auth | Cloud-init (minimal manual) |
+| **LXC Containers** | `eric` | Pubkey auth | Manual (documented below) |
+| **VMs** | `eric` | Pubkey auth | Cloud-init (minimal manual) |
+
+Note: All hosts use the `eric` user for SSH. On smtp-relay, while we SSH as `eric`, Postfix itself runs as root (which is normal for mail servers).
 
 ---
 
@@ -160,20 +162,28 @@ pct enter <VMID>
 # Update package list
 apt update
 
-# Install OpenSSH server
-apt install -y openssh-server
+# Install OpenSSH server and sudo
+apt install -y openssh-server sudo
 
-# Create SSH directory for root
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
+# Create eric user with sudo privileges
+useradd -m -s /bin/bash -G sudo eric
+
+# Create SSH directory for eric
+mkdir -p /home/eric/.ssh
+chmod 700 /home/eric/.ssh
 
 # Add your SSH public key
-cat > /root/.ssh/authorized_keys <<'EOF'
+cat > /home/eric/.ssh/authorized_keys <<'EOF'
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... eric@MacBookPro.esweiss.com
 EOF
 
 # Set proper permissions
-chmod 600 /root/.ssh/authorized_keys
+chmod 600 /home/eric/.ssh/authorized_keys
+chown -R eric:eric /home/eric/.ssh
+
+# Configure passwordless sudo
+echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric
+chmod 440 /etc/sudoers.d/eric
 
 # Enable and start SSH
 systemctl enable ssh
@@ -196,7 +206,7 @@ Copy the output and paste it in the authorized_keys file.
 From your laptop:
 
 ```bash
-ssh root@<IP>
+ssh eric@<IP>
 ```
 
 If successful, you should connect without a password prompt.
@@ -217,7 +227,7 @@ k3s_masters:
   hosts:
     k3s-master-01:
       ansible_host: 192.168.0.201
-      ansible_user: root
+      ansible_user: eric
 ```
 
 Or for a standalone service:
@@ -228,7 +238,7 @@ monitoring:
   hosts:
     grafana-01:
       ansible_host: 192.168.0.210
-      ansible_user: root
+      ansible_user: eric
 ```
 
 ### Step 6: Create Host Variables (Optional)
@@ -324,7 +334,7 @@ Or manually verify:
 
 ```bash
 # SSH should still work
-ssh root@192.168.0.201
+ssh eric@192.168.0.201
 
 # Check services
 systemctl status ssh
@@ -425,8 +435,7 @@ The `base` role (first role applied to all systems) expects these minimum prereq
    - DNS servers set
 
 3. **Initial User Access**:
-   - **LXC**: Root SSH access with key authentication
-   - **VM/Proxmox**: User `eric` exists with SSH key and sudo access
+   - **LXC/VM/Proxmox**: User `eric` exists with SSH key and passwordless sudo
 
 4. **Python Installed**:
    - Python 3 (usually included in Debian base)
@@ -465,7 +474,7 @@ Before running Ansible, verify:
 - [ ] Network configured with static IP
 - [ ] DNS resolution works (`ping google.com`)
 - [ ] SSH server installed and running
-- [ ] SSH key deployed to root (LXC) or eric (VM)
+- [ ] SSH key deployed to eric user
 - [ ] Can SSH from laptop without password
 - [ ] Added to Ansible inventory
 - [ ] Firewall rules created (`/etc/pve/firewall/<VMID>.fw`)
@@ -479,10 +488,9 @@ After running the base role:
 ansible <hostname> -m ping
 
 # 2. Test SSH access
-ssh root@<IP>  # For LXC
-ssh eric@<IP>  # For VM
+ssh eric@<IP>
 
-# 3. Verify sudo (VMs only)
+# 3. Verify sudo
 ansible <hostname> -m shell -a "sudo whoami"  # Should return 'root'
 
 # 4. Check base packages installed
@@ -507,8 +515,8 @@ If verification fails:
 - [ ] SSH service running? (`systemctl status ssh`)
 - [ ] Correct SSH key deployed?
 - [ ] Firewall blocking access?
-- [ ] Correct user in inventory (root for LXC, eric for VM)?
-- [ ] Sudo configured (VMs only)?
+- [ ] Correct user in inventory (eric for all hosts)?
+- [ ] Sudo configured?
 - [ ] Python installed on target?
 
 ---
@@ -551,16 +559,17 @@ GROUP sg-host-admin
 **Check**:
 ```bash
 # On container
-cat /root/.ssh/authorized_keys
+cat /home/eric/.ssh/authorized_keys
 
 # Verify permissions
-ls -la /root/.ssh
+ls -la /home/eric/.ssh
 # Should show: drwx------ (700) for .ssh
 #              -rw------- (600) for authorized_keys
 
 # Fix if needed
-chmod 700 /root/.ssh
-chmod 600 /root/.ssh/authorized_keys
+chmod 700 /home/eric/.ssh
+chmod 600 /home/eric/.ssh/authorized_keys
+chown -R eric:eric /home/eric/.ssh
 ```
 
 **Verify correct key**:
@@ -588,11 +597,9 @@ ansible <hostname> -m ping -vvv
 **Common fixes**:
 ```bash
 # Wrong user in inventory
-# LXC should use: ansible_user: root
-# VM should use: ansible_user: eric
+# All hosts should use: ansible_user: eric
 
-# Missing ansible_become for VMs
-# Add: ansible_become: true
+# Ensure ansible_become is set (usually inherited from group_vars/all.yml)
 ```
 
 ### Python Not Found
@@ -653,26 +660,21 @@ pct stop <VMID>
 pct start <VMID>
 ```
 
-### User 'eric' Cannot Sudo (VMs)
+### User 'eric' Cannot Sudo
 
 **Symptom**: `eric is not in the sudoers file`
 
 **Fix**:
 ```bash
-# SSH as eric
-ssh eric@<IP>
-
-# Temporarily become root (if you have root password)
-su -
-
-# Or use console access via Proxmox UI
+# Use console access via Proxmox UI (pct enter for LXC)
+pct enter <VMID>
 
 # Add sudo access
 echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric
 chmod 440 /etc/sudoers.d/eric
 
 # Test
-exit  # Back to eric user
+su - eric
 sudo whoami  # Should return 'root'
 ```
 
@@ -688,18 +690,22 @@ pct create <VMID> local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
   --hostname <name> --net0 name=eth0,bridge=vmbr0,ip=<IP>/24,gw=192.168.0.1 \
   --nameserver 192.168.0.150 --unprivileged 1 --start 1
 
-# 2. Configure SSH
+# 2. Configure SSH and user
 pct enter <VMID>
-apt update && apt install -y openssh-server
-mkdir -p /root/.ssh && chmod 700 /root/.ssh
-cat > /root/.ssh/authorized_keys <<EOF
+apt update && apt install -y openssh-server sudo
+useradd -m -s /bin/bash -G sudo eric
+mkdir -p /home/eric/.ssh && chmod 700 /home/eric/.ssh
+cat > /home/eric/.ssh/authorized_keys <<EOF
 <paste SSH public key>
 EOF
-chmod 600 /root/.ssh/authorized_keys
+chmod 600 /home/eric/.ssh/authorized_keys
+chown -R eric:eric /home/eric/.ssh
+echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric
+chmod 440 /etc/sudoers.d/eric
 exit
 
 # 3. Test SSH
-ssh root@<IP>
+ssh eric@<IP>
 
 # 4. Add to inventory and deploy
 ansible <hostname> -m ping

@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+# K3s server configuration
+
+cluster-cidr: "{{ k3s_cluster_cidr }}"
+service-cidr: "{{ k3s_service_cidr }}"
+
+{% if k3s_disable | length > 0 %}
+disable:
+{% for component in k3s_disable %}
+  - {{ component }}
+{% endfor %}
+{% endif %}
+
+tls-san:
+  - "{{ k3s_api_vip }}"
+  - "k3s.{{ internal_domain }}"
+  - "{{ inventory_hostname }}"
+  - "{{ ansible_host }}"
+
+{% if not k3s_is_first_server | default(false) %}
+server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
+{% endif %}
+
+write-kubeconfig-mode: "0644"

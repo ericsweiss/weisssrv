@@ -1,0 +1,48 @@
+---
+# IngressRoute for bar.ericsweiss.com (public - external domain)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: bar
+  namespace: default
+  annotations:
+    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`bar.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: bar-backend
+          port: 3000
+  tls:
+    secretName: ericsweiss-com-tls
+---
+# IngressRoute for bar.esweiss.com (internal domain)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: bar-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`bar.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: bar-backend
+          port: 3000
+  tls:
+    secretName: esweiss-com-tls

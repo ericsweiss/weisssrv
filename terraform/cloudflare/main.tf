@@ -12,11 +12,11 @@ resource "cloudflare_zone_settings_override" "external" {
 
   settings {
     # SSL/TLS settings
-    ssl                      = "full" # Full SSL mode (Cloudflare to origin with self-signed cert allowed)
-    always_use_https         = "on"   # Force HTTP → HTTPS redirects
-    min_tls_version          = "1.2"  # Minimum TLS version
-    automatic_https_rewrites = "on"   # Rewrite HTTP links to HTTPS
-    tls_1_3                  = "on"   # Enable TLS 1.3
+    ssl                      = "strict" # Full (strict) SSL mode - requires valid cert on origin
+    always_use_https         = "on"     # Force HTTP → HTTPS redirects
+    min_tls_version          = "1.2"    # Minimum TLS version
+    automatic_https_rewrites = "on"     # Rewrite HTTP links to HTTPS
+    tls_1_3                  = "on"     # Enable TLS 1.3
 
     # Performance settings
     # Note: http2, polish, mirage, webp are read-only via API

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
 # Distribute certificates to dns-02 and smtp-relay after acme.sh renewal
+# Runs as root on dns-01, SSHs to remote hosts as eric using dedicated cert key
 
 set -euo pipefail
 
 FULLCHAIN_SRC="{{ local_cert_dir }}/fullchain.pem"
 PRIVKEY_SRC="{{ local_cert_dir }}/privkey.pem"
+IDENTITY_FILE="/home/eric/.ssh/id_ed25519_certs"
 
 {% for target in cert_distribution_targets %}
 {{ target.host | upper | replace('-', '_') }}_IP="{{ target.ip }}"
@@ -15,18 +17,19 @@ PRIVKEY_SRC="{{ local_cert_dir }}/privkey.pem"
 # Local: restart AdGuard on dns-01 (so it picks up the new cert)
 systemctl restart AdGuardHome
 
-# Helper: non-interactive ssh/scp
-SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
-SCP_OPTS=(-q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+# Helper: non-interactive ssh/scp with dedicated identity file
+SSH_OPTS=(-i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+SCP_OPTS=(-q -i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 
 {% for target in cert_distribution_targets %}
 # --- {{ target.host }} ---
-scp "${SCP_OPTS[@]}" "${FULLCHAIN_SRC}" "${PRIVKEY_SRC}" "root@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}:${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/"
-ssh "${SSH_OPTS[@]}" "root@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
-  "chown {{ target.owner }}:{{ target.group }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
-   chmod {{ target.cert_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem;
-   chmod {{ target.key_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
-   systemctl restart {{ target.restart_service }}"
+scp "${SCP_OPTS[@]}" "${FULLCHAIN_SRC}" "${PRIVKEY_SRC}" "eric@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}:/tmp/"
+ssh "${SSH_OPTS[@]}" "eric@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
+  "sudo mv /tmp/fullchain.pem /tmp/privkey.pem ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/;
+   sudo chown {{ target.owner }}:{{ target.group }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
+   sudo chmod {{ target.cert_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem;
+   sudo chmod {{ target.key_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
+   sudo systemctl restart {{ target.restart_service }}"
 
 {% endfor %}
 echo "Certificate distribution complete."

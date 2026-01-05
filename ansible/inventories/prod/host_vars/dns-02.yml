@@ -1,0 +1,6 @@
+---
+# dns-02 specific configuration
+# Secondary DNS server (receives certificates from dns-01)
+
+# Disable AdGuard Home Sync on dns-02 (it's a replica)
+adguardhome_sync_enabled: false

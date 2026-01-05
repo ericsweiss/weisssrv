@@ -1,0 +1,22 @@
+---
+# Default VM configuration for Proxmox VMs
+
+# VM resource defaults
+vm_cores: 2
+vm_memory: 2048
+vm_disk_size: 32G
+vm_bridge: vmbr0
+vm_ostype: l26
+vm_agent_enabled: true
+
+# Cloud image settings
+cloud_image_url: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+cloud_image_storage: local
+cloud_image_name: "debian-13-generic-amd64.qcow2"
+
+# Cloud-init defaults
+cloudinit_user: eric
+cloudinit_dns:
+  - 192.168.0.150
+  - 192.168.0.160
+cloudinit_gateway: 192.168.0.1

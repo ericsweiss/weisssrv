@@ -1,31 +1,18 @@
 ---
 # DNS server configuration (dns-01, dns-02)
 
-# SSH configuration override for LXC containers
-# LXCs use root login by design (unprivileged containers)
-ssh_permit_root_login: "prohibit-password"
+# SSH configuration - DNS containers now use 'eric' user like other hosts
+# Root login disabled for consistency with other LXC containers
+ssh_permit_root_login: "no"
+
+# Boot order configuration
+proxmox_startup_order: 10
+proxmox_startup_delay: 30
 
 # Unbound configuration
+# Most settings (interface, forwarders, performance tuning) are in role defaults
+# unbound_port is defined here since it's referenced by adguard_home configuration
 unbound_port: 5335
-unbound_interface: 127.0.0.1
-unbound_access_control:
-  - "127.0.0.0/8 allow"
-  - "::1 allow"
-
-# DoT upstream forwarders
-unbound_forwarders:
-  - addr: "1.1.1.1"
-    port: 853
-    name: "cloudflare-dns.com"
-  - addr: "1.0.0.1"
-    port: 853
-    name: "cloudflare-dns.com"
-  - addr: "8.8.8.8"
-    port: 853
-    name: "dns.google"
-  - addr: "8.8.4.4"
-    port: 853
-    name: "dns.google"
 
 # AdGuard Home configuration
 adguard_user: adguard
@@ -39,38 +26,57 @@ adguard_admin_user: eric
 adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD', default='') }}"
 adguard_admin_password_hash: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD_HASH', default='') }}"
 
-# TLS configuration
+# TLS/Encryption configuration
+# TLS enabled for DoT (853) and DoQ (853) - AdGuard Home handles these directly
+# Web UI and DoH accessed via HTTP on port 3000 - Traefik Internal (.101) handles TLS termination
 adguard_tls_enabled: true
 adguard_tls_server_name: "dns.{{ internal_domain }}"
 adguard_cert_path: "{{ adguard_install_path }}/certs"
+adguard_doq_port: 853
 
-# Upstream DNS (points to local Unbound)
+# Upstream DNS
 adguard_upstream_dns:
   - "127.0.0.1:{{ unbound_port }}"
 
-# Bootstrap DNS (for resolving upstream hostnames)
-adguard_bootstrap_dns:
-  - "9.9.9.10"
-  - "149.112.112.10"
+# DNS server configuration
+adguard_protection_enabled: true
+adguard_upstream_mode: "load_balance"
+adguard_fallback_dns: []
+adguard_enable_dnssec: true
+adguard_resolve_clients: true
+adguard_use_private_ptr_resolvers: false
+adguard_disable_ipv6: false
+
+# Cache configuration
+adguard_cache_enabled: true
+adguard_cache_size: 8388608
+adguard_cache_ttl_min: 0
+adguard_cache_ttl_max: 0
+adguard_cache_optimistic: false
+
+# Rate limiting
+adguard_ratelimit: 20
+adguard_ratelimit_whitelist: []
 
 # DNS rewrites for internal services
-# These are managed via AdGuard Home UI/API and synced between dns-01 and dns-02
 adguard_rewrites:
+  # DNS web UIs accessed via Traefik Internal for HTTPS and DoH
   - domain: "dns-01.{{ internal_domain }}"
-    answer: "192.168.0.150"
+    answer: "192.168.0.101"
   - domain: "dns-02.{{ internal_domain }}"
-    answer: "192.168.0.160"
+    answer: "192.168.0.101"
+  # Direct DNS access (for DoT/DoQ on port 853)
   - domain: "dns.{{ internal_domain }}"
     answer: "192.168.0.150"
   - domain: "dns.{{ internal_domain }}"
     answer: "192.168.0.160"
   - domain: "smtp-relay.{{ internal_domain }}"
     answer: "192.168.0.151"
-  - domain: "plex.{{ internal_domain }}"
+  - domain: "plex-direct.{{ internal_domain }}"
     answer: "192.168.0.152"
   - domain: "gitlab.{{ internal_domain }}"
     answer: "192.168.0.153"
-  - domain: "home.{{ internal_domain }}"
+  - domain: "home-direct.{{ internal_domain }}"
     answer: "192.168.0.154"
   - domain: "windows.{{ internal_domain }}"
     answer: "192.168.0.155"
@@ -86,34 +92,56 @@ adguard_rewrites:
     answer: "192.168.0.106"
   - domain: "k3s.{{ internal_domain }}"
     answer: "192.168.0.161"
-  - domain: "k3s-nas-server-01.{{ internal_domain }}"
+  - domain: "k3s-srv-nas-01.{{ internal_domain }}"
     answer: "192.168.0.202"
-  - domain: "k3s-laptop-01.{{ internal_domain }}"
+  - domain: "k3s-srv-laptop-01.{{ internal_domain }}"
     answer: "192.168.0.203"
-  - domain: "k3s-opt-01.{{ internal_domain }}"
+  - domain: "k3s-srv-opt-01.{{ internal_domain }}"
     answer: "192.168.0.204"
-  - domain: "k3s-opt-02.{{ internal_domain }}"
+  - domain: "k3s-agt-opt-02.{{ internal_domain }}"
     answer: "192.168.0.205"
-  - domain: "k3s-opt-03.{{ internal_domain }}"
+  - domain: "k3s-agt-opt-03.{{ internal_domain }}"
     answer: "192.168.0.206"
-  - domain: "k3s-nas-worker-01.{{ internal_domain }}"
+  - domain: "k3s-agt-nas-01.{{ internal_domain }}"
     answer: "192.168.0.207"
   - domain: "vip-internal.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "vip-public.{{ external_domain }}"
     answer: "192.168.0.100"
+  # Traefik ingress routes (internal services via traefik-internal on .101)
+  - domain: "bar.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "food.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "home.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "plex.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "router.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  # Internal-only services - esweiss.com only (internal domain)
+  # No external DNS in Cloudflare, no AdGuard rewrite for ericsweiss.com
+  # ericsweiss.com variants won't resolve (cleaner separation of internal vs external domains)
+  - domain: "qbittorrent.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "nzbget.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "movies.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "tv.{{ internal_domain }}"
+    answer: "192.168.0.101"
 
-# AdGuard Home custom filtering rules
+# Custom filtering rules
 adguard_user_rules:
-  # Allowlist for moneroocean.stream (mining pool)
+  # Allowlist
   - '@@||moneroocean.stream^'
-  # PTR (reverse DNS) records for internal infrastructure
+  # PTR records for internal infrastructure
   - '||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
   - '||160.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-02.{{ internal_domain }}.'
   - '||151.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;smtp-relay.{{ internal_domain }}.'
-  - '||152.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;plex.{{ internal_domain }}.'
+  - '||152.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;plex-direct.{{ internal_domain }}.'
   - '||153.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;gitlab.{{ internal_domain }}.'
-  - '||154.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;home.{{ internal_domain }}.'
+  - '||154.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;home-direct.{{ internal_domain }}.'
   - '||155.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;windows.{{ internal_domain }}.'
   - '||102.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-nas-01.{{ internal_domain }}.'
   - '||103.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-laptop-01.{{ internal_domain }}.'
@@ -121,16 +149,16 @@ adguard_user_rules:
   - '||105.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-02.{{ internal_domain }}.'
   - '||106.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-03.{{ internal_domain }}.'
   - '||161.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s.{{ internal_domain }}.'
-  - '||202.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-nas-server-01.{{ internal_domain }}.'
-  - '||203.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-laptop-01.{{ internal_domain }}.'
-  - '||204.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-opt-01.{{ internal_domain }}.'
-  - '||205.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-opt-02.{{ internal_domain }}.'
-  - '||206.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-opt-03.{{ internal_domain }}.'
-  - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-nas-worker-01.{{ internal_domain }}.'
+  - '||202.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-nas-01.{{ internal_domain }}.'
+  - '||203.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-laptop-01.{{ internal_domain }}.'
+  - '||204.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-opt-01.{{ internal_domain }}.'
+  - '||205.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-02.{{ internal_domain }}.'
+  - '||206.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-03.{{ internal_domain }}.'
+  - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-nas-01.{{ internal_domain }}.'
   - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ external_domain }}.'
   - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
 
-# DHCP configuration - router handles DHCP, AdGuard DHCP stays disabled
+# DHCP configuration
 adguard_dhcp_enabled: false
 
 # Postfix null client configuration for DNS LXCs
@@ -182,4 +210,4 @@ adguardhome_sync_features:
   services: true
   filters: true
   theme: true
-  tlsConfig: true
+  tlsConfig: false  # Disabled - each host has its own TLS server name (dns-01 vs dns-02)

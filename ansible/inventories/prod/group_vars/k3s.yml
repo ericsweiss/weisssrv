@@ -1,0 +1,44 @@
+---
+# K3s cluster configuration
+
+# Cluster configuration
+k3s_cluster_name: esweiss-k3s
+k3s_api_vip: 192.168.0.161
+k3s_api_port: 6443
+
+# Node token (from 1Password at runtime)
+k3s_token: "{{ lookup('ansible.builtin.env', 'K3S_TOKEN', default='') }}"
+
+# Network configuration
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+k3s_cluster_dns: "10.43.0.10"
+
+# Disable built-in components (we deploy our own)
+k3s_disable:
+  - servicelb   # Using MetalLB
+  - traefik     # Deploying our own Traefik
+
+# Server configuration flags
+k3s_server_args:
+  - "--tls-san={{ k3s_api_vip }}"
+  - "--tls-san=k3s.{{ internal_domain }}"
+
+# MetalLB IP ranges
+metallb_public_range: "192.168.0.100-192.168.0.100"
+metallb_internal_range: "192.168.0.101-192.168.0.101"
+
+# kube-vip configuration
+kube_vip_interface: "eth0"
+
+# Boot order configuration (k3s VMs boot after DNS at order 10)
+proxmox_startup_order: 30
+proxmox_startup_delay: 0
+
+# VM and cloud-init defaults inherited from proxmox_vm role
+# Override in host_vars if needed (see hosts.yml for per-host resources)
+
+# Postfix null client overrides (base config in role defaults)
+# Only override fields that differ from defaults
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"

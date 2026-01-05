@@ -69,3 +69,6 @@
   community.general.timezone:
     name: "{{ timezone }}"
   when: timezone is defined
+
+- name: Configure DNS servers
+  ansible.builtin.include_tasks: dns.yml

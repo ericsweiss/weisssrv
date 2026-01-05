@@ -1,0 +1,31 @@
+---
+# Traefik Internal LoadBalancer Service
+# Separate service for internal-only traffic (*.esweiss.com)
+# Uses vip-internal (192.168.0.101) while external traffic uses vip-public (192.168.0.100)
+#
+# Both services route to the same Traefik pods - separation is purely at DNS/network layer
+# Security enforced by middlewares (lan-tailscale-only) on IngressRoutes
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-internal
+  namespace: traefik
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: "192.168.0.101"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local  # Preserve source IP for IP allowlist middleware
+  selector:
+    app.kubernetes.io/name: traefik
+    # Helm sets app.kubernetes.io/instance to {release-name}-{chart-name} (traefik-traefik)
+    app.kubernetes.io/instance: traefik-traefik
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+      protocol: TCP
+    - name: websecure
+      port: 443
+      targetPort: websecure
+      protocol: TCP

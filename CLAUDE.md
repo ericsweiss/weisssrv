@@ -35,11 +35,26 @@ weisssrv/
 - **VPN**: Tailscale on all hosts
 - **Firewall**: Proxmox firewall with IP Sets + Security Groups
 
-### Future: k3s Platform (not yet deployed)
+### K3s Platform (Ready to Deploy)
 
-- 5 server nodes (.202-.206) + 1 worker (.207)
+**Initial 3-node cluster** (fully codified):
+- **k3s-srv-nas-01** (192.168.0.202) - Server + etcd on pve-nas-01
+- **k3s-agt-nas-01** (192.168.0.207) - Agent on pve-nas-01 (NAS workloads)
+- **k3s-agt-opt-03** (192.168.0.206) - Agent on pve-opt-03 (ingress/general)
+
+**Deployment Model** (Two-phase approach):
+1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161)
+2. **Task/Helm** (`task k3s:deploy-workloads`): MetalLB, Traefik, cert-manager, external-dns, DDNS, IngressRoutes
+
+All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for complete workflow.
+
+**Features**:
 - kube-vip (API VIP .161), MetalLB (VIPs .100/.101)
-- GitOps via Flux, Authentik SSO, cert-manager, external-dns
+- Traefik ingress, external-dns (Cloudflare)
+- Ready for HA expansion (add 4 more servers for 5-node HA)
+
+**Future**:
+- GitOps via Flux, Authentik SSO
 - Apps: Media stack (*arr + Plex), Immich, Nextcloud
 
 ## Common Development Commands
@@ -57,13 +72,28 @@ task ansible:install-collections  # Install required collections
 task ansible:ping                 # Test connectivity
 task ansible:lint                 # Lint playbooks
 
-# Deployments
+# Deployments (base infrastructure)
 task deploy:check                 # Dry-run (--check mode)
-task deploy:all                   # Full deployment
+task deploy:all                   # Full base infrastructure deployment (excludes k3s)
 task deploy:verify                # Post-deployment verification
 task deploy:base                  # Base packages + SSH only
 task deploy:dns                   # DNS stack
 task deploy:storage               # NAS services
+
+# K3s cluster (Ansible - separate lifecycle)
+task k3s:provision-vms            # Provision k3s VMs on Proxmox
+task k3s:deploy                   # Deploy k3s cluster (idempotent, safe to re-run)
+task k3s:kubeconfig               # Fetch kubeconfig from cluster
+
+# K3s workloads (Helm/kubectl - after cluster is running)
+task k3s:deploy-workloads         # Deploy ALL platform workloads in order
+task k3s:deploy-metallb           # Deploy MetalLB load balancer
+task k3s:deploy-traefik           # Deploy Traefik ingress controller
+task k3s:deploy-cert-manager      # Deploy cert-manager with Let's Encrypt
+task k3s:deploy-external-dns      # Deploy external-dns for Cloudflare
+task k3s:deploy-ddns              # Deploy DDNS CronJob
+task k3s:deploy-ingress-routes    # Deploy Traefik IngressRoutes
+task k3s:status                   # Show cluster and workload status
 
 # Maintenance
 task maintenance:update-full      # Full update (OS + apps, interactive)
@@ -169,10 +199,10 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 - SMTP: .151
 - Services: .152-.155
 
-### Future k3s
+### K3s Cluster
 - API VIP: .161
-- Servers: .202-.206
-- Worker: .207
+- Server: .202
+- Agents: .206, .207
 - MetalLB: .100 (public), .101 (internal)
 
 ### Firewall IP Sets
@@ -186,26 +216,29 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 
 ## Ansible Roles
 
-1. **base** - Packages, SSH hardening, users, timezone
+1. **base** - Packages, SSH hardening, users, timezone, DNS configuration
 2. **qol** - zsh + Oh My Zsh (20 plugins), neovim + Vundle, fzf, ripgrep
 3. **postfix_null_client** - Local mail relay to smtp-relay
 4. **tailscale** - VPN setup (manual `tailscale up` required)
 5. **proxmox_firewall** - IPSets, security groups, cluster.fw
-6. **nas_storage** - ZFS properties, NFS exports, Samba, mergerfs, media-mover, SMART
-7. **unbound** - DoT recursive resolver (port 5335)
-8. **adguard_home** - DNS filtering + DoT (port 53), running as non-root
-9. **acme_certs** - Let's Encrypt via DNS-01, cert distribution via SSH
-10. **smtp_relay** - Postfix relay to Gmail via SASL + incoming auth
-11. **adguard_sync** - Sync dns-01 → dns-02 via systemd timer (every 5min)
+6. **proxmox_vm** - VM provisioning with cloud-init and autostart configuration
+7. **proxmox_lxc** - LXC container provisioning with autostart configuration
+8. **nas_storage** - ZFS properties, NFS exports, Samba, mergerfs, media-mover, SMART
+9. **unbound** - DoT recursive resolver (port 5335)
+10. **adguard_home** - DNS filtering + DoT (port 53), running as non-root
+11. **acme_certs** - Let's Encrypt via DNS-01, cert distribution via SSH
+12. **smtp_relay** - Postfix relay to Gmail via SASL + incoming auth
+13. **adguard_sync** - Sync dns-01 → dns-02 via systemd timer (every 5min)
+14. **k3s** - K3s cluster installation and configuration
 
 ## User Management
 
 - **Proxmox hosts**: User `eric` with passwordless sudo
-- **LXC containers**: Root SSH access (unprivileged containers with mapped UIDs)
+- **LXC containers**: User `eric` with passwordless sudo
+- **VMs**: User `eric` via cloud-init
 - **Services**: Run as dedicated users (adguard, unbound; postfix runs as root)
-- **Future VMs**: User `eric` via cloud-init
 
-This is a conscious design - LXC root SSH is acceptable because containers are unprivileged (UIDs mapped) and services run as non-root users.
+All hosts use `eric` for SSH access with passwordless sudo. LXC containers are unprivileged (mapped UIDs for security). Note that while we SSH as `eric` to smtp-relay, Postfix itself runs as root (which is normal and expected for mail servers).
 
 ## Testing / Deployment Workflow
 
@@ -283,6 +316,7 @@ See `docs/` for detailed guides:
 - 16-next-steps.md - TODO and feature roadmap
 - 17-disaster-recovery.md - Disaster recovery and backup procedures
 - 18-bootstrap-new-systems.md - Bootstrapping new LXC containers and VMs
+- 19-k3s-deployment.md - K3s cluster deployment (complete workflow with all components)
 
 ## Important Context Files
 
