@@ -1,0 +1,32 @@
+---
+# Plex Media Server defaults
+
+# Plex user and group
+plex_user: plex
+plex_group: plex
+plex_uid: 997
+plex_gid: 997
+
+# Media group (matches NAS storage configuration)
+media_group: media
+media_gid: 2000
+
+# Plex version (latest from official repo)
+plex_version: latest
+
+# Plex claim token (optional - for linking to account during initial setup)
+# Set via environment variable: PLEX_CLAIM
+plex_claim: "{{ lookup('ansible.builtin.env', 'PLEX_CLAIM', default='') }}"
+
+# Plex directories (inside container)
+plex_config_dir: /config
+plex_transcode_dir: /transcode
+plex_media_dir: /media
+
+# Systemd service dependencies
+# Plex should start after mergerfs is mounted
+plex_service_after:
+  - network-online.target
+
+# Plex hardware transcoding
+plex_hardware_transcoding: false

@@ -35,6 +35,9 @@ kube_vip_interface: "eth0"
 proxmox_startup_order: 30
 proxmox_startup_delay: 0
 
+# Proxmox resource pool for organization
+proxmox_resource_pool: platform
+
 # VM and cloud-init defaults inherited from proxmox_vm role
 # Override in host_vars if needed (see hosts.yml for per-host resources)
 

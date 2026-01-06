@@ -14,11 +14,11 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                 # Configuration management
 │   ├── inventories/prod/    # Production inventory + vars
-│   ├── roles/               # 11 roles for all services
+│   ├── roles/               # 15 roles for all services
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
 ├── kubernetes/              # Future k3s manifests (Flux)
-├── docs/                    # Comprehensive documentation (19 files)
+├── docs/                    # Comprehensive documentation (20 files)
 ├── scripts/                 # Utility scripts
 └── .github/workflows/       # CI/CD automation
 ```
@@ -55,10 +55,11 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
+- Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
 
 **Future**:
 - GitOps via Flux
-- Apps: Media stack (*arr + Plex), Immich, Nextcloud
+- Apps: Media stack (*arr), Immich, Nextcloud
 
 ## Common Development Commands
 
@@ -82,6 +83,8 @@ task deploy:verify                # Post-deployment verification
 task deploy:base                  # Base packages + SSH only
 task deploy:dns                   # DNS stack
 task deploy:storage               # NAS services
+task deploy:plex                  # Plex Media Server (LXC + Plex install)
+task deploy:plex-check            # Plex dry-run
 
 # K3s cluster (Ansible - separate lifecycle)
 task k3s:provision-vms            # Provision k3s VMs on Proxmox
@@ -236,13 +239,14 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 12. **smtp_relay** - Postfix relay to Gmail via SASL + incoming auth
 13. **adguard_sync** - Sync dns-01 → dns-02 via systemd timer (every 5min)
 14. **k3s** - K3s cluster installation and configuration
+15. **plex** - Plex Media Server installation and configuration
 
 ## User Management
 
 - **Proxmox hosts**: User `eric` with passwordless sudo
 - **LXC containers**: User `eric` with passwordless sudo
 - **VMs**: User `eric` via cloud-init
-- **Services**: Run as dedicated users (adguard, unbound; postfix runs as root)
+- **Services**: Run as dedicated users (adguard, unbound, plex; postfix runs as root)
 
 All hosts use `eric` for SSH access with passwordless sudo. LXC containers are unprivileged (mapped UIDs for security). Note that while we SSH as `eric` to smtp-relay, Postfix itself runs as root (which is normal and expected for mail servers).
 
@@ -323,6 +327,7 @@ See `docs/` for detailed guides:
 - 17-disaster-recovery.md - Disaster recovery and backup procedures
 - 18-bootstrap-new-systems.md - Bootstrapping new LXC containers and VMs
 - 19-k3s-deployment.md - K3s cluster deployment (complete workflow with all components)
+- 20-plex-deployment.md - Plex Media Server deployment (LXC with bind mounts)
 
 ## Important Context Files
 

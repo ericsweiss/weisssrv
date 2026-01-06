@@ -1,0 +1,67 @@
+---
+# Plex Media Server installation
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+
+# Intel Arc GPU hardware transcoding support
+- name: Enable non-free and non-free-firmware repositories
+  ansible.builtin.apt_repository:
+    repo: "{{ item }}"
+    state: present
+    update_cache: false
+  loop:
+    - "deb http://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
+    - "deb http://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+
+- name: Update apt cache after adding non-free repos
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Install Intel GPU drivers for hardware transcoding
+  ansible.builtin.apt:
+    name:
+      - intel-media-va-driver-non-free  # Intel media driver for VA-API (Arc support)
+      - vainfo                          # Tool to verify VA-API
+      - intel-gpu-tools                 # Intel GPU monitoring tools
+    state: present
+
+- name: Download Plex GPG key
+  ansible.builtin.get_url:
+    url: https://downloads.plex.tv/plex-keys/PlexSign.key
+    dest: /tmp/PlexSign.key
+    mode: "0644"
+
+- name: Add Plex GPG key to keyring
+  ansible.builtin.shell: |
+    gpg --dearmor < /tmp/PlexSign.key > /usr/share/keyrings/plex-archive-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/plex-archive-keyring.gpg
+
+- name: Add Plex repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/plex-archive-keyring.gpg] https://downloads.plex.tv/repo/deb public main"
+    filename: plexmediaserver
+    state: present
+    update_cache: true
+
+- name: Install Plex Media Server
+  ansible.builtin.apt:
+    name: plexmediaserver
+    state: "{{ 'latest' if plex_version == 'latest' else 'present' }}"
+  notify: Restart plex
+
+- name: Verify Plex package version
+  ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
+  register: plex_installed_version
+  changed_when: false
+
+- name: Display installed Plex version
+  ansible.builtin.debug:
+    msg: "Plex Media Server version: {{ plex_installed_version.stdout }}"

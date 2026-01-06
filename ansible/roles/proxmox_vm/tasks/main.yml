@@ -12,6 +12,41 @@
   register: vm_exists
   changed_when: false
   failed_when: false
+  check_mode: false
+
+# Ensure all standard resource pools exist on the Proxmox host
+- name: Ensure standard resource pools exist
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
+      pvesh create /pools --poolid {{ item }}
+      echo "created"
+    else
+      echo "exists"
+    fi
+  loop: "{{ proxmox_resource_pools | default([]) }}"
+  register: pool_creation
+  changed_when: pool_creation.results | map(attribute='stdout') | select('search', 'created') | list | length > 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - proxmox_resource_pools is defined
+
+# Validate that the requested pool is in the allowed list
+- name: Validate resource pool is in standard list
+  ansible.builtin.fail:
+    msg: |
+      Resource pool '{{ proxmox_resource_pool }}' is not in the standard pools list.
+
+      Standard pools: {{ proxmox_resource_pools | default([]) | join(', ') }}
+
+      Either use one of the standard pools or add '{{ proxmox_resource_pool }}'
+      to proxmox_resource_pools in group_vars/all.yml.
+  when:
+    - vm_exists.rc != 0
+    - proxmox_resource_pool is defined
+    - proxmox_resource_pools is defined
+    - proxmox_resource_pool not in proxmox_resource_pools
 
 - name: Download cloud image if not present
   delegate_to: "{{ proxmox_host }}"
@@ -19,7 +54,9 @@
     url: "{{ cloud_image_url }}"
     dest: "/var/lib/vz/template/iso/{{ cloud_image_name }}"
     mode: "0644"
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
 
 - name: Create VM
   delegate_to: "{{ proxmox_host }}"
@@ -30,8 +67,10 @@
       --cores {{ vm_cores }} \
       --net0 virtio,bridge={{ vm_bridge }} \
       --ostype {{ vm_ostype }} \
-      --agent enabled={{ vm_agent_enabled | ternary(1, 0) }}
-  when: vm_exists.rc != 0
+      --agent enabled={{ vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Import cloud image disk
@@ -40,7 +79,9 @@
     qm importdisk {{ vm_id }} \
       /var/lib/vz/template/iso/{{ cloud_image_name }} \
       {{ proxmox_storage }}
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Attach disk to VM
@@ -49,28 +90,36 @@
     qm set {{ vm_id }} \
       --scsihw virtio-scsi-pci \
       --scsi0 {{ proxmox_storage }}:vm-{{ vm_id }}-disk-0
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Resize disk
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm resize {{ vm_id }} scsi0 {{ vm_disk_size }}
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Configure cloud-init drive
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm set {{ vm_id }} --ide2 {{ proxmox_storage }}:cloudinit
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Configure boot order
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm set {{ vm_id }} --boot c --bootdisk scsi0
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Deploy SSH public key for cloud-init
@@ -79,7 +128,9 @@
     content: "{{ ssh_public_key }}"
     dest: "/tmp/ssh_key_{{ vm_id }}.pub"
     mode: "0600"
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   vars:
     ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
 
@@ -91,14 +142,18 @@
       --sshkeys /tmp/ssh_key_{{ vm_id }}.pub \
       --ipconfig0 ip={{ ansible_host }}/24,gw={{ cloudinit_gateway }} \
       --nameserver "{{ cloudinit_dns | join(' ') }}"
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Configure VM for QEMU agent
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm set {{ vm_id }} --agent 1
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Configure VM autostart and boot order
@@ -107,7 +162,9 @@
     qm set {{ vm_id }} \
       --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
       --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
 
 - name: Clean up temporary SSH key
@@ -115,13 +172,17 @@
   ansible.builtin.file:
     path: "/tmp/ssh_key_{{ vm_id }}.pub"
     state: absent
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
 
 - name: Start VM
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm start {{ vm_id }}
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
   changed_when: true
   register: vm_start
 
@@ -131,8 +192,20 @@
     port: 22
     delay: 30
     timeout: 300
-  when: vm_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
 
 - name: Display VM creation status
+  vars:
+    status_msg: >-
+      VM {{ inventory_hostname }} (ID {{ vm_id }})
+      {% if ansible_check_mode and vm_exists.rc != 0 %}
+      would be created (check mode - no changes made)
+      {% elif vm_exists.rc != 0 %}
+      created and started
+      {% else %}
+      already exists
+      {% endif %}
   ansible.builtin.debug:
-    msg: "VM {{ inventory_hostname }} (ID {{ vm_id }}) {{ 'created and started' if vm_exists.rc != 0 else 'already exists' }}"
+    msg: "{{ status_msg }}"

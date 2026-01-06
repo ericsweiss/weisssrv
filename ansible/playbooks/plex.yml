@@ -1,0 +1,47 @@
+---
+# Plex Media Server deployment playbook
+#
+# This playbook provisions the Plex LXC container and deploys Plex Media Server.
+#
+# Prerequisites:
+#   - pve-nas-01 must have storage mounts ready:
+#     - /mnt/ssd/appdata/plex (Plex config)
+#     - /mnt/nvme/fast/plex-transcode (transcoding temp)
+#     - /mnt/nvme/downloads/media (mergerfs media library)
+#   - Directories must exist with correct permissions (eric:media, 1000:2000)
+#
+# Usage:
+#   task deploy:plex              # Full deployment
+#   task deploy:plex-check        # Dry-run
+
+- name: Provision Plex LXC container
+  hosts: plex
+  gather_facts: false
+  roles:
+    - proxmox_lxc
+
+- name: Deploy Plex Media Server
+  hosts: plex
+  become: true
+  # In check mode, the container may not exist (LXC creation is skipped)
+  # We need to verify the host is reachable before attempting configuration
+  pre_tasks:
+    - name: Check if host is reachable (check mode safety)
+      ansible.builtin.wait_for_connection:
+        timeout: 5
+      register: host_reachable
+      ignore_errors: true
+      ignore_unreachable: true
+      when: ansible_check_mode
+
+    - name: Skip play if host unreachable in check mode
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - host_reachable is defined
+        - host_reachable is failed or host_reachable.unreachable | default(false)
+
+  roles:
+    - base
+    - postfix_null_client
+    - plex

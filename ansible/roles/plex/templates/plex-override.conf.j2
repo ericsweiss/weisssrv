@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# Plex Media Server systemd override
+
+[Unit]
+# Ensure Plex starts after network is fully available
+{% for after_target in plex_service_after %}
+After={{ after_target }}
+{% endfor %}
+
+[Service]
+# Plex directories - override default paths
+Environment="PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR={{ plex_config_dir }}/Library/Application Support"
+
+# Set transcoder temp directory
+Environment="TMPDIR={{ plex_transcode_dir }}"
+Environment="PLEX_MEDIA_SERVER_TMPDIR={{ plex_transcode_dir }}"
+
+{% if plex_claim | length > 0 %}
+# Plex claim token for initial setup
+Environment="PLEX_CLAIM={{ plex_claim }}"
+{% endif %}
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5

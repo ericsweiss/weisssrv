@@ -1,0 +1,72 @@
+---
+# Plex Media Server LXC container configuration
+# Running on pve-nas-01 (192.168.0.102)
+
+# Proxmox host for this container
+proxmox_host: pve-nas-01
+
+# Proxmox resource pool for organization
+proxmox_resource_pool: apps-public
+
+# LXC container configuration
+lxc_cores: 4
+lxc_memory: 8192
+lxc_swap: 2048
+lxc_disk_size: 64G
+lxc_storage: local-lvm
+
+# Enable nesting for potential Docker support in the future
+lxc_nesting: true
+
+# Container startup configuration
+# Order 80: Start after storage services (order 50-60) but before most apps
+proxmox_autostart_enabled: true
+proxmox_startup_order: 80
+proxmox_startup_delay: 10
+
+# UID/GID mapping for unprivileged container
+# The container needs access to host files with eric:media (1000:2000) permissions
+#
+# Unprivileged LXC containers map UIDs:
+#   Container UID 0 -> Host UID 100000
+#   Container UID 1000 -> Host UID 101000
+#   Container GID 2000 -> Host GID 102000
+#
+# We configure bind mounts with the correct host UIDs so the plex user
+# (which we add to the media group) can access the files.
+#
+# The host directories should be owned by:
+#   - eric:media (1000:2000) on the host
+#   - Inside container, plex user is added to media group (GID 2000 mapped)
+#
+# LXC bind mount configuration (added manually after container creation)
+# These are defined here for documentation and will be applied via pct set
+lxc_bind_mounts:
+  # Plex configuration/database
+  - host_path: /mnt/ssd/appdata/plex
+    container_path: /config
+    options: "mp=/config,backup=1"
+  # Transcoding workspace (NVMe for speed)
+  - host_path: /mnt/nvme/fast/plex-transcode
+    container_path: /transcode
+    options: "mp=/transcode,backup=0"
+  # Media library (mergerfs - read-write for Plex metadata/watch status)
+  - host_path: /mnt/nvme/downloads/media
+    container_path: /media
+    options: "mp=/media,backup=0,ro=0"
+
+# Plex-specific configuration
+plex_config_dir: /config
+plex_transcode_dir: /transcode
+plex_media_dir: /media
+
+# Media group configuration
+# Must match NAS storage configuration (GID 2000)
+media_group: media
+media_gid: 2000
+
+# GPU passthrough for Intel Arc B580 hardware transcoding
+# Pass through /dev/dri devices for hardware-accelerated transcoding
+lxc_gpu_passthrough: true
+lxc_gpu_devices:
+  - /dev/dri
