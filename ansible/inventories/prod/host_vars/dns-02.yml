@@ -2,5 +2,8 @@
 # dns-02 specific configuration
 # Secondary DNS server (receives certificates from dns-01)
 
+# Proxmox resource pool for organization
+proxmox_resource_pool: infra-core
+
 # Disable AdGuard Home Sync on dns-02 (it's a replica)
 adguardhome_sync_enabled: false

@@ -32,6 +32,7 @@ Internet
     |   +-- dns-01        (.150) - Primary DNS
     |   +-- dns-02        (.160) - Secondary DNS
     |   +-- smtp-relay    (.151) - Mail relay
+    |   +-- plex          (.152) - Plex Media Server
     |
     +-- K3s Cluster VMs
         +-- k3s-srv-nas-01 (.202) - Server + etcd
@@ -76,6 +77,7 @@ task deploy:verify             # Verify deployment
 
 task deploy:dns                # Deploy DNS stack
 task deploy:storage            # Deploy storage services
+task deploy:plex               # Deploy Plex Media Server
 
 task terraform:plan            # Plan Cloudflare DNS changes
 task terraform:apply           # Apply Cloudflare DNS changes
@@ -92,7 +94,7 @@ weisssrv/
 │   ├── inventories/prod/     # Production inventory
 │   │   ├── hosts.yml         # Host definitions
 │   │   └── group_vars/       # Group variables
-│   ├── roles/                # 14 Ansible roles
+│   ├── roles/                # 15 Ansible roles
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/cloudflare/     # Cloudflare DNS management
 ├── kubernetes/               # K3s manifests (Flux-ready)
@@ -118,6 +120,7 @@ weisssrv/
 | smtp_relay | Gmail SMTP relay |
 | adguard_sync | DNS sync (dns-01 -> dns-02) |
 | k3s | K3s cluster deployment |
+| plex | Plex Media Server with GPU transcoding |
 
 ## Secrets Management
 
@@ -184,6 +187,7 @@ See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 | [17-disaster-recovery](docs/17-disaster-recovery.md) | Disaster recovery and backup procedures |
 | [18-bootstrap-new-systems](docs/18-bootstrap-new-systems.md) | Bootstrapping new LXC containers and VMs |
 | [19-k3s-deployment](docs/19-k3s-deployment.md) | K3s cluster deployment (complete workflow) |
+| [20-plex-deployment](docs/20-plex-deployment.md) | Plex Media Server deployment |
 
 ## User Management
 

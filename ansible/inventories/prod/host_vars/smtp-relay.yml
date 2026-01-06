@@ -5,6 +5,9 @@
 # Note: This LXC uses 'eric' user for SSH access like all other containers.
 # Postfix itself runs as root (which is normal/expected for mail servers).
 
+# Proxmox resource pool for organization
+proxmox_resource_pool: infra-core
+
 # SMTP relay variables (from 1Password at runtime)
 smtp_gmail_user: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_USER', default='user@gmail.com') }}"
 smtp_gmail_password: "{{ lookup('ansible.builtin.env', 'SMTP_GMAIL_PASSWORD', default='changeme') }}"

@@ -12,15 +12,124 @@
   register: container_exists
   changed_when: false
   failed_when: false
+  check_mode: false
+
+# Ensure all standard resource pools exist on the Proxmox host
+- name: Ensure standard resource pools exist
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
+      pvesh create /pools --poolid {{ item }}
+      echo "created"
+    else
+      echo "exists"
+    fi
+  loop: "{{ proxmox_resource_pools | default([]) }}"
+  register: pool_creation
+  changed_when: pool_creation.results | map(attribute='stdout') | select('search', 'created') | list | length > 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - proxmox_resource_pools is defined
+
+# Validate that the requested pool is in the allowed list
+- name: Validate resource pool is in standard list
+  ansible.builtin.fail:
+    msg: |
+      Resource pool '{{ proxmox_resource_pool }}' is not in the standard pools list.
+
+      Standard pools: {{ proxmox_resource_pools | default([]) | join(', ') }}
+
+      Either use one of the standard pools or add '{{ proxmox_resource_pool }}'
+      to proxmox_resource_pools in group_vars/all.yml.
+  when:
+    - container_exists.rc != 0
+    - proxmox_resource_pool is defined
+    - proxmox_resource_pools is defined
+    - proxmox_resource_pool not in proxmox_resource_pools
 
 - name: Download LXC template if not present
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pveam update
     pveam download {{ lxc_template_storage }} {{ lxc_template }}
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   failed_when: false
   changed_when: false
+
+# Detect host video and render group GIDs for GPU passthrough
+- name: Get host video group GID
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    getent group video | cut -d: -f3
+  register: host_video_gid_result
+  changed_when: false
+  check_mode: false
+  when:
+    - container_exists.rc != 0
+    - lxc_gpu_passthrough | default(false)
+
+- name: Get host render group GID
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    getent group render | cut -d: -f3
+  register: host_render_gid_result
+  changed_when: false
+  check_mode: false
+  when:
+    - container_exists.rc != 0
+    - lxc_gpu_passthrough | default(false)
+
+- name: Set GPU group GID facts
+  ansible.builtin.set_fact:
+    host_video_gid: "{{ host_video_gid_result.stdout | int }}"
+    host_render_gid: "{{ host_render_gid_result.stdout | int }}"
+  when:
+    - container_exists.rc != 0
+    - lxc_gpu_passthrough | default(false)
+    - host_video_gid_result.stdout is defined
+    - host_render_gid_result.stdout is defined
+
+# Configure host UID/GID passthrough for unprivileged containers
+- name: Configure subuid/subgid for container UID/GID passthrough
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    # Add eric user (UID 1000) passthrough if not present
+    if ! grep -q "^root:1000:1" /etc/subuid; then
+      echo "root:1000:1" >> /etc/subuid
+    fi
+
+    # Add media group (GID 2000) passthrough if not present
+    if ! grep -q "^root:2000:1" /etc/subgid; then
+      echo "root:2000:1" >> /etc/subgid
+    fi
+
+    {% if lxc_gpu_passthrough | default(false) %}
+    # GPU passthrough requires video and render groups (dynamically detected)
+    VIDEO_GID="{{ host_video_gid }}"
+    RENDER_GID="{{ host_render_gid }}"
+
+    if ! grep -q "^root:${VIDEO_GID}:1" /etc/subgid; then
+      echo "root:${VIDEO_GID}:1" >> /etc/subgid
+    fi
+    if ! grep -q "^root:${RENDER_GID}:1" /etc/subgid; then
+      echo "root:${RENDER_GID}:1" >> /etc/subgid
+    fi
+    {% endif %}
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - lxc_unprivileged | default(true)
+  changed_when: false
+
+- name: Set resource pool argument
+  ansible.builtin.set_fact:
+    pool_arg: "{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}"
+  when: container_exists.rc != 0
 
 - name: Create LXC container
   delegate_to: "{{ proxmox_host }}"
@@ -31,34 +140,154 @@
       --cores {{ lxc_cores }} \
       --memory {{ lxc_memory }} \
       --swap {{ lxc_swap }} \
-      --rootfs {{ lxc_storage }}:{{ lxc_disk_size }} \
+      --rootfs {{ lxc_storage }}:{{ lxc_disk_size | regex_replace('G$', '') }} \
       --net0 name=eth0,bridge={{ lxc_bridge }},ip={{ ansible_host }}/24,gw={{ lxc_gateway }} \
       --nameserver "{{ lxc_nameserver }}" \
       --searchdomain "{{ lxc_searchdomain }}" \
       --unprivileged {{ lxc_unprivileged | ternary(1, 0) }} \
       --features nesting={{ lxc_nesting | ternary(1, 0) }},keyctl={{ lxc_keyctl | ternary(1, 0) }} \
       --onboot {{ proxmox_autostart_enabled | default(lxc_onboot) | ternary(1, 0) }} \
-      --startup order={{ proxmox_startup_order | default(lxc_startup_order) }},up={{ proxmox_startup_delay | default(lxc_startup_delay) }}
-  when: container_exists.rc != 0
+      --startup order={{ proxmox_startup_order | default(lxc_startup_order) }},up={{ proxmox_startup_delay | default(lxc_startup_delay) }}{{ pool_arg }}
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
   register: container_create
 
-- name: Configure container SSH keys
+# Configure bind mounts for containers that need host storage access
+# This must be done before starting the container
+- name: Configure bind mounts
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    pct set {{ container_id }} --ssh-public-keys <(echo "{{ lxc_ssh_public_keys }}")
-  args:
-    executable: /bin/bash
+    pct set {{ container_id }} --mp{{ idx }} {{ item.host_path }},{{ item.options }}
+  loop: "{{ lxc_bind_mounts | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.container_path }}"
   when:
+    - not ansible_check_mode
     - container_exists.rc != 0
-    - lxc_ssh_public_keys | length > 0
+    - lxc_bind_mounts is defined
+    - lxc_bind_mounts | length > 0
+  changed_when: true
+
+# For unprivileged containers with bind mounts, we need UID/GID mapping
+# This allows the container to access host files owned by specific UIDs
+# The mapping format: container-uid:host-uid:count
+- name: Configure UID/GID mapping (standard)
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    CONF_FILE="/etc/pve/lxc/{{ container_id }}.conf"
+
+    # Remove default lxc.idmap entries created by Proxmox
+    grep -v "^lxc.idmap" "$CONF_FILE" > "${CONF_FILE}.tmp" || true
+    mv "${CONF_FILE}.tmp" "$CONF_FILE"
+
+    # UID mapping - passthrough for eric (1000)
+    echo "lxc.idmap: u 0 100000 1000" >> "$CONF_FILE"
+    echo "lxc.idmap: u 1000 1000 1" >> "$CONF_FILE"
+    echo "lxc.idmap: u 1001 101001 64535" >> "$CONF_FILE"
+
+    # GID mapping - passthrough for media (2000)
+    echo "lxc.idmap: g 0 100000 2000" >> "$CONF_FILE"
+    echo "lxc.idmap: g 2000 2000 1" >> "$CONF_FILE"
+    echo "lxc.idmap: g 2001 102001 63535" >> "$CONF_FILE"
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - lxc_bind_mounts is defined
+    - lxc_bind_mounts | length > 0
+    - lxc_unprivileged | default(true)
+    - not (lxc_gpu_passthrough | default(false))
+  changed_when: true
+
+- name: Configure UID/GID mapping (with GPU)
+  delegate_to: "{{ proxmox_host }}"
+  vars:
+    video_gid: "{{ host_video_gid }}"
+    render_gid: "{{ host_render_gid }}"
+  ansible.builtin.shell:
+    cmd: |
+      CONF_FILE="/etc/pve/lxc/{{ container_id }}.conf"
+
+      # Remove default lxc.idmap entries created by Proxmox
+      grep -v "^lxc.idmap" "$CONF_FILE" > "${CONF_FILE}.tmp" || true
+      mv "${CONF_FILE}.tmp" "$CONF_FILE"
+
+      # UID mapping - passthrough for eric (1000)
+      echo "lxc.idmap: u 0 100000 1000" >> "$CONF_FILE"
+      echo "lxc.idmap: u 1000 1000 1" >> "$CONF_FILE"
+      echo "lxc.idmap: u 1001 101001 64535" >> "$CONF_FILE"
+
+      # GID mapping with GPU group passthrough
+      VIDEO_GID={{ video_gid }}
+      RENDER_GID={{ render_gid }}
+
+      if [ "$VIDEO_GID" -lt "$RENDER_GID" ]; then
+        FIRST_GPU_GID="$VIDEO_GID"
+        SECOND_GPU_GID="$RENDER_GID"
+      else
+        FIRST_GPU_GID="$RENDER_GID"
+        SECOND_GPU_GID="$VIDEO_GID"
+      fi
+
+      echo "lxc.idmap: g 0 100000 ${FIRST_GPU_GID}" >> "$CONF_FILE"
+      echo "lxc.idmap: g ${FIRST_GPU_GID} ${FIRST_GPU_GID} 1" >> "$CONF_FILE"
+
+      NEXT_GID=$((FIRST_GPU_GID + 1))
+      GAP=$((SECOND_GPU_GID - NEXT_GID))
+      if [ "$GAP" -gt 0 ]; then
+        MAPPED_START=$((100000 + NEXT_GID))
+        echo "lxc.idmap: g ${NEXT_GID} ${MAPPED_START} ${GAP}" >> "$CONF_FILE"
+      fi
+
+      echo "lxc.idmap: g ${SECOND_GPU_GID} ${SECOND_GPU_GID} 1" >> "$CONF_FILE"
+
+      NEXT_GID=$((SECOND_GPU_GID + 1))
+      if [ "$NEXT_GID" -lt 2000 ]; then
+        GAP=$((2000 - NEXT_GID))
+        MAPPED_START=$((100000 + NEXT_GID))
+        echo "lxc.idmap: g ${NEXT_GID} ${MAPPED_START} ${GAP}" >> "$CONF_FILE"
+      fi
+
+      echo "lxc.idmap: g 2000 2000 1" >> "$CONF_FILE"
+      echo "lxc.idmap: g 2001 102001 63535" >> "$CONF_FILE"
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - lxc_bind_mounts is defined
+    - lxc_bind_mounts | length > 0
+    - lxc_unprivileged | default(true)
+    - lxc_gpu_passthrough | default(false)
+  changed_when: true
+
+# Configure GPU passthrough for hardware transcoding
+# Pass through /dev/dri devices for Intel/AMD GPU access
+- name: Configure GPU passthrough
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    CONF_FILE="/etc/pve/lxc/{{ container_id }}.conf"
+
+    # Check if GPU passthrough is already configured
+    if ! grep -q "lxc.cgroup2.devices.allow" "$CONF_FILE"; then
+      # Allow access to DRI devices (GPU)
+      echo "lxc.cgroup2.devices.allow: c 226:* rwm" >> "$CONF_FILE"
+      # Mount /dev/dri into container
+      echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$CONF_FILE"
+    fi
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - lxc_gpu_passthrough | default(false)
   changed_when: true
 
 - name: Start LXC container
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct start {{ container_id }}
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
   register: container_start
 
@@ -66,7 +295,9 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.pause:
     seconds: 5
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
 
 # Bootstrap eric user for Ansible access
 # This replicates the manual bootstrap process from docs/18-bootstrap-new-systems.md
@@ -75,21 +306,27 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c 'apt-get update && apt-get install -y openssh-server sudo'
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
 
 - name: Create eric user with sudo group
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c 'id {{ lxc_admin_user }} &>/dev/null || useradd -m -s /bin/bash -G sudo {{ lxc_admin_user }}'
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
 
 - name: Create SSH directory for eric user
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c 'mkdir -p /home/{{ lxc_admin_user }}/.ssh && chmod 700 /home/{{ lxc_admin_user }}/.ssh'
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
 
 - name: Deploy SSH authorized keys for eric user
@@ -97,6 +334,7 @@
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c 'echo "{{ lxc_ssh_public_keys }}" > /home/{{ lxc_admin_user }}/.ssh/authorized_keys'
   when:
+    - not ansible_check_mode
     - container_exists.rc != 0
     - lxc_ssh_public_keys | length > 0
   changed_when: true
@@ -109,6 +347,7 @@
       chown -R {{ lxc_admin_user }}:{{ lxc_admin_user }} /home/{{ lxc_admin_user }}/.ssh
     '
   when:
+    - not ansible_check_mode
     - container_exists.rc != 0
     - lxc_ssh_public_keys | length > 0
   changed_when: true
@@ -121,14 +360,18 @@
         > /etc/sudoers.d/{{ lxc_admin_user }} &&
       chmod 440 /etc/sudoers.d/{{ lxc_admin_user }}
     '
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
 
 - name: Enable and start SSH service
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c 'systemctl enable ssh && systemctl start ssh'
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
   changed_when: true
 
 - name: Wait for container to be reachable via SSH
@@ -137,13 +380,20 @@
     port: 22
     delay: 5
     timeout: 120
-  when: container_exists.rc != 0
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
 
 - name: Display container creation status
   vars:
     status_msg: >-
       Container {{ inventory_hostname }} (ID {{ container_id }})
-      {{ 'created and started with user ' ~ lxc_admin_user
-         if container_exists.rc != 0 else 'already exists' }}
+      {% if ansible_check_mode and container_exists.rc != 0 %}
+      would be created (check mode - no changes made)
+      {% elif container_exists.rc != 0 %}
+      created and started with user {{ lxc_admin_user }}
+      {% else %}
+      already exists
+      {% endif %}
   ansible.builtin.debug:
     msg: "{{ status_msg }}"

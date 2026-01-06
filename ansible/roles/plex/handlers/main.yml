@@ -1,0 +1,14 @@
+---
+# Plex role handlers
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: Reload systemd
+
+- name: Restart plex
+  ansible.builtin.systemd:
+    name: plexmediaserver
+    state: restarted
+  when: not ansible_check_mode
+  listen: Restart plex

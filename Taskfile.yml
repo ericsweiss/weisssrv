@@ -116,6 +116,29 @@ tasks:
     cmds:
       - ansible-playbook -i {{.INVENTORY}} playbooks/postflight.yml {{.CLI_ARGS}}
 
+  # === Plex Deployment Tasks ===
+  deploy:plex:
+    desc: Deploy Plex Media Server (provisions LXC container and installs Plex)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml {{.CLI_ARGS}}
+
+  deploy:plex-check:
+    desc: Check mode - show what Plex deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml --check --diff {{.CLI_ARGS}}
+
   # === K3s Deployment Tasks ===
   k3s:provision-vms:
     desc: Provision k3s VMs on Proxmox (creates VMs only)

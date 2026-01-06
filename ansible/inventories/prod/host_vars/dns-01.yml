@@ -2,6 +2,9 @@
 # dns-01 specific configuration
 # Primary DNS server with ACME certificate management
 
+# Proxmox resource pool for organization
+proxmox_resource_pool: infra-core
+
 # This host runs acme.sh for certificate generation
 acme_enabled: true
 acme_email: "{{ admin_email }}"
