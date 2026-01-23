@@ -79,6 +79,10 @@ task deploy:dns                # Deploy DNS stack
 task deploy:storage            # Deploy storage services
 task deploy:plex               # Deploy Plex Media Server
 
+task downloads:deploy          # Deploy download clients and media stack
+task downloads:status          # Check downloads stack status
+task downloads:vpn-status      # Verify VPN connection
+
 task terraform:plan            # Plan Cloudflare DNS changes
 task terraform:apply           # Apply Cloudflare DNS changes
 
@@ -147,9 +151,38 @@ Initial 3-node cluster with:
 - **MetalLB**: LoadBalancer IPs (.100 public, .101 internal)
 - **Traefik**: Ingress controller
 - **external-dns**: Automatic Cloudflare DNS
+- **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
+
+## Applications
+
+### Plex Media Server
+
+LXC container on NAS with Intel GPU passthrough for hardware transcoding.
+
+- **URL**: plex.esweiss.com
+- **Documentation**: [docs/20-plex-deployment.md](docs/20-plex-deployment.md)
+
+### Download Clients and Media Stack
+
+VPN-protected download clients with media management applications:
+
+| Service | Purpose | URL |
+|---------|---------|-----|
+| Gluetun | VPN gateway with killswitch | - |
+| NZBGet | Usenet downloads | nzbget.esweiss.com |
+| qBittorrent | BitTorrent downloads | qbittorrent.esweiss.com |
+| Prowlarr | Indexer manager | prowlarr.esweiss.com |
+| Sonarr | TV shows | tv.esweiss.com |
+| Radarr | Movies | movies.esweiss.com |
+| Lidarr | Music | music.esweiss.com |
+| Pulsarr | Plex Watchlist automation | pulsarr.esweiss.com |
+
+All services are protected by Authentik SSO and internal-only DNS.
+
+- **Documentation**: [docs/21-download-clients-deployment.md](docs/21-download-clients-deployment.md)
 
 ## Documentation
 
@@ -188,6 +221,7 @@ See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 | [18-bootstrap-new-systems](docs/18-bootstrap-new-systems.md) | Bootstrapping new LXC containers and VMs |
 | [19-k3s-deployment](docs/19-k3s-deployment.md) | K3s cluster deployment (complete workflow) |
 | [20-plex-deployment](docs/20-plex-deployment.md) | Plex Media Server deployment |
+| [21-download-clients-deployment](docs/21-download-clients-deployment.md) | Download clients and media stack |
 
 ## User Management
 

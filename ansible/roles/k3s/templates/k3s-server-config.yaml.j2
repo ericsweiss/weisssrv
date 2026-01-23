@@ -3,6 +3,7 @@
 
 cluster-cidr: "{{ k3s_cluster_cidr }}"
 service-cidr: "{{ k3s_service_cidr }}"
+bind-address: "0.0.0.0"
 
 {% if k3s_disable | length > 0 %}
 disable:

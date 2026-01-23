@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Proxmox VE Guest Firewall Configuration for {{ inventory_hostname }}
+# VMID: {{ vmid }}
+
+[OPTIONS]
+
+enable: 1
+log_level_in: nolog
+log_level_out: nolog
+
+[RULES]
+
+{% for group in guest_security_groups | default([]) %}
+GROUP {{ group }}
+{% endfor %}

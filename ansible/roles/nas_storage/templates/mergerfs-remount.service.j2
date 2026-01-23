@@ -5,7 +5,8 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/mount -a -t fuse.mergerfs
+# Only mount if not already mounted - prevents duplicate mount entries
+ExecStart=/bin/bash -c 'for mnt in $(grep -E "fuse\\.mergerfs" /etc/fstab | awk "{print \\$2}"); do mountpoint -q "$mnt" || mount "$mnt"; done'
 RemainAfterExit=true
 
 [Install]

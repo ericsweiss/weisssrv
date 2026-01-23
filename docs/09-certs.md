@@ -29,37 +29,69 @@ dns-01 (Primary)
 
 ### Initial Setup
 
-Managed by the `acme_certs` Ansible role on `dns-01`:
+The `acme_certs` Ansible role sets up the certificate infrastructure:
 
 ```bash
-ansible-playbook ansible/playbooks/dns.yml --tags acme
+task deploy:dns
+# Or directly:
+ansible-playbook ansible/playbooks/dns.yml
 ```
 
-### Manual Issuance (if needed)
+This role:
+- Installs acme.sh on dns-01
+- Creates the certs directory at `/opt/AdGuardHome/certs`
+- Deploys the `homelab-cert-reload.sh` distribution script
+- Sets up SSH keys for cert distribution to dns-02 and smtp-relay
+- **Automatically installs certificates** if they exist in acme.sh but are not yet in the target directory
+- Configures the `--reloadcmd` hook for automatic distribution on future renewals
 
-On `dns-01`:
+### Certificate Issuance Workflow
+
+**Step 1: Issue Certificate (Manual - One Time)**
+
+Ansible does NOT issue certificates from Let's Encrypt automatically (to avoid accidental rate limit hits).
+You must manually issue the certificate once:
 
 ```bash
-# Set Cloudflare credentials
-export CF_Token="your-cloudflare-api-token"
-export CF_Account_ID="your-account-id"
+# On dns-01 as root
+export CF_Token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+export CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
 
-# Issue certificate
-sudo -u root /root/.acme.sh/acme.sh --issue \
+/root/.acme.sh/acme.sh --issue --dns dns_cf \
   -d esweiss.com \
   -d '*.esweiss.com' \
-  --dns dns_cf \
   --keylength ec-256
-
-# Install certificate
-sudo -u root /root/.acme.sh/acme.sh --install-cert \
-  -d esweiss.com \
-  --cert-file /opt/AdGuardHome/certs/fullchain.pem \
-  --key-file /opt/AdGuardHome/certs/privkey.pem \
-  --reloadcmd "/usr/local/bin/homelab-cert-reload.sh"
 ```
 
-**Note**: Credentials are sourced from 1Password in production.
+**Step 2: Install and Distribute (Automatic via Ansible)**
+
+After certificates are issued, run Ansible to automatically install and distribute them:
+
+```bash
+task deploy:dns
+```
+
+This will:
+1. Detect that certificates exist in `/root/.acme.sh/esweiss.com_ecc/`
+2. Install them to `/opt/AdGuardHome/certs/` on dns-01
+3. Configure the `--reloadcmd` hook to run `homelab-cert-reload.sh`
+4. The reload script distributes certs to dns-02 and smtp-relay, then restarts services
+
+**Important**: This is idempotent - once certificates are installed, subsequent runs will skip
+the installation step.
+
+### Manual Certificate Installation (Alternative)
+
+If you prefer to install manually instead of using Ansible:
+
+```bash
+# On dns-01 as root
+/root/.acme.sh/acme.sh --install-cert -d esweiss.com \
+  --cert-file /opt/AdGuardHome/certs/cert.pem \
+  --key-file /opt/AdGuardHome/certs/privkey.pem \
+  --fullchain-file /opt/AdGuardHome/certs/fullchain.pem \
+  --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+```
 
 ## Certificate Distribution
 
@@ -73,7 +105,7 @@ The `homelab-cert-reload.sh` script on `dns-01` handles:
 
 ### Script Location
 
-`/usr/local/bin/homelab-cert-reload.sh` on `dns-01`
+`/usr/local/sbin/homelab-cert-reload.sh` on `dns-01`
 
 ### Permissions
 
@@ -209,7 +241,7 @@ sudo journalctl -u postfix -f
 
 2. **Manually run distribution**:
    ```bash
-   sudo /usr/local/bin/homelab-cert-reload.sh
+   sudo /usr/local/sbin/homelab-cert-reload.sh
    ```
 
 3. **Check remote permissions**:

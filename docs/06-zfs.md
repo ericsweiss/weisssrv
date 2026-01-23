@@ -232,8 +232,8 @@ compression: zstd
 ```
 
 **Datasets**:
-- `nvme/downloads` - Active download directory (mounted `/mnt/nvme/downloads`)
-- `nvme/fast` - Fast scratch space
+- `nvme/media` - MergerFS hot tier for downloads and new media (mounted `/mnt/nvme/media`)
+- `nvme/fast` - Fast scratch space (Plex transcode, etc.)
 - `nvme/pve` - Fast Proxmox workloads
 
 ### archive (Cold Storage Pool)

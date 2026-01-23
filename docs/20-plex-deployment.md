@@ -92,7 +92,7 @@ op read "op://Homelab/SSH Key/public key" > /dev/null && echo "OK: 1Password con
 ssh eric@192.168.0.102 "echo 'OK: SSH to pve-nas-01 works'"
 
 # 4. Verify storage directories exist
-ssh eric@192.168.0.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/nvme/downloads/media 2>&1"
+ssh eric@192.168.0.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/media 2>&1"
 
 # 5. Verify GPU is available
 ssh eric@192.168.0.102 "ls -la /dev/dri/ && getent group render video"
@@ -138,7 +138,7 @@ sudo chmod 2775 /mnt/ssd/appdata/plex
 sudo chmod 2775 /mnt/nvme/fast/plex-transcode
 
 # Verify mergerfs mount exists (should be automatic from NAS storage setup)
-ls -la /mnt/nvme/downloads/media
+ls -la /mnt/media
 ```
 
 **If mergerfs mount is missing**, ensure the NAS storage role has been deployed:
@@ -222,7 +222,7 @@ ansible-playbook -i ansible/inventories/prod ansible/playbooks/plex.yml --limit 
 |-----------|----------------|---------|
 | /mnt/ssd/appdata/plex | /config | Plex database, metadata, settings |
 | /mnt/nvme/fast/plex-transcode | /transcode | Temporary transcoding files |
-| /mnt/nvme/downloads/media | /media | Media library (mergerfs) |
+| /mnt/media | /media | Media library (mergerfs union of NVMe + HDD) |
 
 ### Storage Characteristics
 
@@ -477,7 +477,7 @@ ssh eric@192.168.0.152 "tail -100 '/config/Library/Application Support/Plex Medi
 ssh eric@192.168.0.102 "cat /etc/pve/lxc/152.conf"
 
 # Check if host directories exist
-ssh eric@192.168.0.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/nvme/downloads/media"
+ssh eric@192.168.0.102 "ls -la /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode /mnt/media"
 
 # Start with verbose output
 ssh eric@192.168.0.102 "pct start 152 --debug"
@@ -496,7 +496,7 @@ ssh eric@192.168.0.102 "grep lxc.idmap /etc/pve/lxc/152.conf"
 ssh eric@192.168.0.152 "stat /media"
 
 # Compare with host
-ssh eric@192.168.0.102 "stat /mnt/nvme/downloads/media"
+ssh eric@192.168.0.102 "stat /mnt/media"
 ```
 
 **Fix**: If UID mapping is missing or incorrect:

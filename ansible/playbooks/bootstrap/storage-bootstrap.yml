@@ -343,7 +343,7 @@
         label: "{{ item.bind_source | default('N/A') }}"
       when: item.bind_source is defined
 
-    - name: Create MergerFS source directories
+    - name: Create MergerFS source directories (NVMe hot tier)
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -351,7 +351,19 @@
         group: media
         mode: "02775"
       loop:
-        - /mnt/nvme/downloads/media-hot
+        - /mnt/nvme/media
+        - /mnt/nvme/media/downloads
+        - /mnt/nvme/media/library
+
+    - name: Create media-mover destination directories (tank cold tier)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: media
+        mode: "02775"
+      loop:
+        - /mnt/tank/media/library
 
 - name: Phase 6 - Configure Storage Services
   hosts: pve-nas-01

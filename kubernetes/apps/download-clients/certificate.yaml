@@ -1,0 +1,19 @@
+---
+# Wildcard certificate for *.esweiss.com in downloads namespace
+# cert-manager will manage this secret and handle renewals automatically
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: esweiss-com-wildcard
+  namespace: downloads
+spec:
+  secretName: esweiss-com-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "*.esweiss.com"
+  dnsNames:
+    - "*.esweiss.com"
+    - esweiss.com
+  # Renew 30 days before expiration
+  renewBefore: 720h

@@ -17,6 +17,3 @@ skip_list:
 
 # Enable offline mode (don't check for updates during CI)
 offline: false
-
-# Show rule IDs in output
-parseable: true

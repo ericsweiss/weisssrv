@@ -10,13 +10,10 @@ resources:
   - services.yaml
 
   # IngressRoutes (in default namespace)
+  # These are for services running OUTSIDE the k3s cluster
   - adguard-home.yaml
   - bar.yaml
   - food.yaml
   - router.yaml
   - home-assistant.yaml
   - plex.yaml
-  - qbittorrent.yaml
-  - nzbget.yaml
-  - movies.yaml
-  - tv.yaml

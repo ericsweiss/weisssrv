@@ -51,7 +51,8 @@ lxc_bind_mounts:
     container_path: /transcode
     options: "mp=/transcode,backup=0"
   # Media library (mergerfs - read-write for Plex metadata/watch status)
-  - host_path: /mnt/nvme/downloads/media
+  # Full mergerfs mount to match *arr app paths (/media/library/*)
+  - host_path: /mnt/media
     container_path: /media
     options: "mp=/media,backup=0,ro=0"
 

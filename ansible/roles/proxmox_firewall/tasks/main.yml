@@ -9,6 +9,7 @@
     owner: root
     group: www-data
     mode: "0755"
+  when: inventory_hostname in groups['proxmox'] | default([])
 
 - name: Deploy cluster firewall configuration
   ansible.builtin.template:
@@ -17,7 +18,9 @@
     owner: root
     group: www-data
     mode: "0640"
-  when: pve_firewall_enabled | default(true)
+  when:
+    - pve_firewall_enabled | default(true)
+    - inventory_hostname in groups['proxmox'] | default([])
 
 - name: Deploy node-specific host.fw configuration
   ansible.builtin.template:
@@ -26,7 +29,9 @@
     owner: root
     group: www-data
     mode: "0640"
-  when: pve_firewall_enabled | default(true)
+  when:
+    - pve_firewall_enabled | default(true)
+    - inventory_hostname in groups['proxmox'] | default([])
 
 - name: Ensure firewall is enabled at datacenter level
   ansible.builtin.lineinfile:
@@ -37,4 +42,22 @@
     owner: root
     group: www-data
     mode: "0640"
-  when: pve_firewall_enabled | default(true)
+  when:
+    - pve_firewall_enabled | default(true)
+    - inventory_hostname in groups['proxmox'] | default([])
+
+- name: Ensure pve-firewall service is enabled and running
+  ansible.builtin.systemd:
+    name: pve-firewall
+    state: started
+    enabled: true
+  when:
+    - pve_firewall_enabled | default(true)
+    - inventory_hostname in groups['proxmox'] | default([])
+
+# Deploy per-guest firewall rules
+- name: Include guest firewall tasks
+  ansible.builtin.include_tasks: guest.yml
+  when:
+    - vmid is defined
+    - guest_security_groups is defined

@@ -2,8 +2,10 @@
 # Default variables for tailscale role
 
 tailscale_enabled: true
-tailscale_accept_routes: true
+tailscale_accept_routes: false  # CRITICAL: Should be false to prevent routing loops (especially for subnet routers)
 tailscale_accept_dns: false  # We use our own DNS infrastructure
+tailscale_advertise_routes: []  # Subnet routes to advertise (e.g., ["192.168.0.0/24"])
+tailscale_additional_flags: []  # Additional flags for tailscale up (e.g., ["--operator=eric", "--ssh"])
 
 # 1Password reference for auth key (resolved at runtime)
 # secrets:

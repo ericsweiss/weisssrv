@@ -47,6 +47,15 @@
     state: started
     enabled: true
 
+- name: Enable IP forwarding for subnet routing
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: true
+    state: present
+    reload: true
+  when: tailscale_advertise_routes | length > 0
+
 - name: Check Tailscale status
   ansible.builtin.command: tailscale status --json
   register: tailscale_status
@@ -60,6 +69,8 @@
     --authkey={{ lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY') }}
     --accept-routes={{ tailscale_accept_routes | lower }}
     --accept-dns={{ tailscale_accept_dns | lower }}
+    {% if tailscale_advertise_routes | length > 0 %}--advertise-routes={{ tailscale_advertise_routes | join(',') }}{% endif %}
+    {% if tailscale_additional_flags is defined %}{{ tailscale_additional_flags | join(' ') }}{% endif %}
   when:
     - not ansible_check_mode
     - tailscale_status.rc != 0 or (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') != "Running"
@@ -77,6 +88,15 @@
       Tailscale already authenticated and running
       {% else %}
       WARNING: Tailscale authentication may need manual intervention
-      Run: sudo tailscale up --accept-routes={{ tailscale_accept_routes | lower }} --accept-dns={{ tailscale_accept_dns | lower }}
+      Run:
+      sudo tailscale up
+      --accept-routes={{ tailscale_accept_routes | lower }}
+      --accept-dns={{ tailscale_accept_dns | lower }}
+      {% if tailscale_advertise_routes | length > 0 %}
+      --advertise-routes={{ tailscale_advertise_routes | join(',') }}
+      {% endif %}
+      {% if tailscale_additional_flags is defined %}
+      {{ tailscale_additional_flags | join(' ') }}
+      {% endif %}
       {% endif %}
   when: not ansible_check_mode

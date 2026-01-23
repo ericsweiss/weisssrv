@@ -95,16 +95,16 @@ External Recipients
 
 ```
 Hot Tier (NVMe)                 Cold Tier (HDD)
-/mnt/nvme/downloads/media-hot   /mnt/tank/media
+/mnt/nvme/media                 /mnt/tank/media
     |                               ^
     |                               |
     +-------[MergerFS]--------------+
                 |
                 v
-         /mnt/nvme/downloads/media
+         /mnt/media (MergerFS union)
                 |
                 v
-         /export/media (NFS)
+         /export/media (NFS bind mount)
 ```
 
 ## Domain Strategy

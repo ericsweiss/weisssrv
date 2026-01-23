@@ -6,8 +6,6 @@
 enable: 1
 policy_in: DROP
 policy_out: ACCEPT
-log_level_in: nolog
-log_level_out: nolog
 
 [ALIASES]
 
@@ -35,14 +33,15 @@ log_level_out: nolog
 
 [group sg-dns]
 
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+# DoT (DNS over TLS)
 IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
+# AdGuard Home Web UI
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
+# Standard DNS
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
 IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog
@@ -50,8 +49,14 @@ IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
 
 [group sg-gitlab]
 
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+# GitLab HTTP/HTTPS
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 80 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
+# GitLab SSH (Git protocol on port 2222, not shell access)
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 2222 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 2222 -log nolog
 
 [group sg-haos]
 
@@ -64,6 +69,13 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 8123 -log nolog
 
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 8006 -log nolog # Proxmox
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 8006 -log nolog # Proxmox
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_ts -p icmp -log nolog
+IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
+
+[group sg-vm-admin]
+
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
 IN ACCEPT -source +dc/admin_ts -p icmp -log nolog
@@ -116,15 +128,16 @@ IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
 
 [group sg-smtp-relay]
 
+# SMTP submission from core cluster
 IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+# SMTP relay from core cluster
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
+# Outbound DNS and SMTP (for upstream relay to Gmail)
 OUT ACCEPT -p udp -dport 853 -log nolog
 OUT ACCEPT -p tcp -dport 853 -log nolog
 OUT ACCEPT -p udp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 587 -log nolog
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
 
 [group sg-windows]
 
@@ -133,15 +146,15 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 3389 -log nolog
 
 [group sg-xmrig]
 
+# Mining pool outbound connections
 OUT ACCEPT -p tcp -dport 20128 -log nolog
 OUT ACCEPT -p tcp -dport 18192 -log nolog
 OUT ACCEPT -p tcp -dport 10128 -log nolog
 OUT ACCEPT -p tcp -dport 10032 -log nolog
 OUT ACCEPT -p tcp -dport 10001 -log nolog
+# DNS resolution
 OUT ACCEPT -p udp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
 
 [RULES]
 

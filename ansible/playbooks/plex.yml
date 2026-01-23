@@ -7,7 +7,7 @@
 #   - pve-nas-01 must have storage mounts ready:
 #     - /mnt/ssd/appdata/plex (Plex config)
 #     - /mnt/nvme/fast/plex-transcode (transcoding temp)
-#     - /mnt/nvme/downloads/media (mergerfs media library)
+#     - /mnt/media (mergerfs media library)
 #   - Directories must exist with correct permissions (eric:media, 1000:2000)
 #
 # Usage:
@@ -45,3 +45,4 @@
     - base
     - postfix_null_client
     - plex
+    - proxmox_firewall
