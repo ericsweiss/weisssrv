@@ -1,0 +1,306 @@
+---
+# qBittorrent - BitTorrent client with optional VPN sidecar
+# URL: qbittorrent.esweiss.com
+#
+# VPN Mode (vpn_enabled: "true"):
+#   - Gluetun sidecar provides VPN tunnel
+#   - Containers share network namespace for killswitch enforcement
+#   - If VPN dies, qBittorrent loses network (by design)
+#
+# Direct Mode (vpn_enabled: "false"):
+#   - qBittorrent runs without VPN
+#   - Direct internet access
+#
+# Switch modes: task downloads:vpn APP=qbittorrent ENABLED=true PROVIDER=privado
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qbittorrent-vpn-config
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+    app.kubernetes.io/component: config
+data:
+  # VPN settings - change these to control VPN behavior
+  # vpn_enabled: "true" = VPN sidecar active, killswitch enforced
+  # vpn_enabled: "false" = direct internet, no VPN
+  vpn_enabled: "true"
+  # VPN provider: "privado", "vpn unlimited"
+  vpn_provider: "privado"
+  # Server location (optional, provider-dependent)
+  server_countries: "Netherlands"
+
+---
+# Deployment with conditional VPN sidecar
+# The sidecar pattern ensures:
+# 1. When VPN is enabled, both containers share network namespace
+# 2. Gluetun owns the network stack, qBittorrent uses it
+# 3. If Gluetun crashes/loses VPN, qBittorrent has no network (killswitch)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qbittorrent
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+    app.kubernetes.io/component: download-client
+    app.kubernetes.io/part-of: media-stack
+  annotations:
+    # Track VPN state for observability
+    esweiss.com/vpn-mode: "sidecar"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qbittorrent
+        app.kubernetes.io/component: download-client
+      annotations:
+        # Force pod restart when VPN config changes
+        checksum/vpn-config: "placeholder-updated-by-task"
+    spec:
+      nodeSelector:
+        esweiss.com/nas: "true"
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          - name: single-request-reopen
+
+      # Init container verifies VPN prerequisites when VPN is enabled
+      initContainers:
+        - name: check-vpn-config
+          image: busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              VPN_ENABLED=$(cat /config/vpn_enabled)
+              echo "VPN enabled: $VPN_ENABLED"
+              if [ "$VPN_ENABLED" = "true" ]; then
+                echo "VPN mode - checking TUN device..."
+                if [ ! -c /dev/net/tun ]; then
+                  echo "ERROR: TUN device not available but VPN is enabled!"
+                  exit 1
+                fi
+                echo "TUN device available"
+              else
+                echo "Direct mode - skipping TUN check"
+              fi
+          volumeMounts:
+            - name: vpn-config
+              mountPath: /config
+            - name: tun
+              mountPath: /dev/net/tun
+
+      containers:
+        # Gluetun VPN sidecar - provides VPN tunnel when enabled
+        # When VPN is disabled, this container exits immediately (no resources used)
+        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        - name: gluetun
+          image: qmcgaw/gluetun:${GLUETUN_VERSION}
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - |
+              VPN_ENABLED=$(cat /gluetun/vpn_enabled)
+              if [ "$VPN_ENABLED" != "true" ]; then
+                echo "VPN disabled - sleeping indefinitely"
+                # Sleep but stay alive so pod doesn't restart
+                exec sleep infinity
+              fi
+              echo "VPN enabled - starting Gluetun"
+              exec /gluetun-entrypoint
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+          env:
+            - name: VPN_SERVICE_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: qbittorrent-vpn-config
+                  key: vpn_provider
+            - name: OPENVPN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vpn-credentials
+                  key: openvpn-user
+                  optional: true
+            - name: OPENVPN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vpn-credentials
+                  key: openvpn-password
+                  optional: true
+            - name: SERVER_COUNTRIES
+              valueFrom:
+                configMapKeyRef:
+                  name: qbittorrent-vpn-config
+                  key: server_countries
+                  optional: true
+            - name: FIREWALL_OUTBOUND_SUBNETS
+              value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+            - name: HEALTH_SERVER_ADDRESS
+              value: ":8000"
+            - name: HEALTH_VPN_DURATION_INITIAL
+              value: "30s"
+            - name: HTTP_CONTROL_SERVER_ADDRESS
+              value: ":8001"
+            - name: DNS_ADDRESS
+              value: "192.168.0.150"
+            - name: TZ
+              value: America/Los_Angeles
+            - name: LOG_LEVEL
+              value: info
+          ports:
+            - name: health
+              containerPort: 8000
+              protocol: TCP
+            - name: qbittorrent
+              containerPort: 8080
+              protocol: TCP
+            - name: bt-tcp
+              containerPort: 6881
+              protocol: TCP
+            - name: bt-udp
+              containerPort: 6881
+              protocol: UDP
+          # Only run health checks when VPN is supposed to be active
+          # When disabled, gluetun just sleeps and health checks would fail
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  VPN_ENABLED=$(cat /gluetun/vpn_enabled)
+                  if [ "$VPN_ENABLED" != "true" ]; then
+                    exit 0
+                  fi
+                  wget -q -O /dev/null http://localhost:8000/ || exit 1
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  VPN_ENABLED=$(cat /gluetun/vpn_enabled)
+                  if [ "$VPN_ENABLED" != "true" ]; then
+                    exit 0
+                  fi
+                  wget -q -O /dev/null http://localhost:8000/ || exit 1
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tun
+              mountPath: /dev/net/tun
+            - name: vpn-config
+              mountPath: /gluetun
+
+        # qBittorrent - main application container
+        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        - name: qbittorrent
+          image: lscr.io/linuxserver/qbittorrent:${QBITTORRENT_VERSION}
+          imagePullPolicy: Always
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "2000"
+            - name: TZ
+              value: America/Los_Angeles
+            - name: UMASK
+              value: "002"
+            - name: WEBUI_PORT
+              value: "8080"
+            - name: TORRENTING_PORT
+              value: "6881"
+          # Note: Ports are defined on gluetun sidecar (which owns the network namespace)
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: data
+              mountPath: /media/downloads
+              subPath: downloads
+
+      volumes:
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+        - name: vpn-config
+          configMap:
+            name: qbittorrent-vpn-config
+        - name: config
+          persistentVolumeClaim:
+            claimName: qbittorrent-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qbittorrent
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+spec:
+  selector:
+    app.kubernetes.io/name: qbittorrent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

@@ -56,10 +56,19 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
 - Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
+- Download clients + media stack (downloads namespace):
+  - Gluetun (VPN gateway with killswitch)
+  - NZBGet (nzbget.esweiss.com) - Usenet
+  - qBittorrent (qbittorrent.esweiss.com) - BitTorrent
+  - Prowlarr (prowlarr.esweiss.com) - Indexer manager
+  - Sonarr (tv.esweiss.com) - TV shows
+  - Radarr (movies.esweiss.com) - Movies
+  - Lidarr (music.esweiss.com) - Music
+  - Pulsarr (pulsarr.esweiss.com) - Plex Watchlist automation
 
 **Future**:
 - GitOps via Flux
-- Apps: Media stack (*arr), Immich, Nextcloud
+- Apps: Immich, Nextcloud
 
 ## Common Development Commands
 
@@ -101,6 +110,16 @@ task k3s:deploy-ddns              # Deploy DDNS CronJob
 task k3s:deploy-ingress-routes    # Deploy Traefik IngressRoutes
 task k3s:deploy-authentik         # Deploy Authentik SSO identity provider
 task k3s:status                   # Show cluster and workload status
+
+# Download clients and media stack
+task downloads:deploy             # Deploy full media stack with VPN
+task downloads:status             # Show downloads namespace status
+task downloads:vpn-status         # Check VPN connection and public IP
+task downloads:vpn                # Toggle VPN per-app (APP=nzbget ENABLED=true PROVIDER=privado)
+task downloads:restart            # Restart all download/media apps
+task downloads:logs               # View app logs
+task downloads:shell              # Shell into app container
+task downloads:delete             # Remove stack (preserves data)
 
 # Maintenance
 task maintenance:update-full      # Full update (OS + apps, interactive)
@@ -175,6 +194,8 @@ In vault "Homelab":
 - **DNS-01 SSH Key** - private + public key (for cert distribution)
 - **K3s Cluster Token** - cluster join token (credential)
 - **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
+- **PrivadoVPN Credentials** - openvpn-user, openvpn-password (for Gluetun VPN sidecar)
+- **VPN Unlimited Credentials** - openvpn-user, openvpn-password (alternate VPN provider)
 
 ### Using 1Password
 
@@ -277,7 +298,7 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
 Application versions centralized in `ansible/inventories/prod/group_vars/all.yml`:
 
 ```yaml
-adguard_home_version: "0.107.52"
+adguard_home_version: "0.107.71"
 adguardhome_sync_version: "0.8.2"
 tailscale_version: "latest"
 acme_version: "latest"
@@ -294,7 +315,7 @@ Update versions here, then run `task maintenance:update-full` to upgrade.
 - `nvme` - 1x 4TB NVMe (~2.27TB) - Hot downloads and fast scratch
 - `archive` - 4x 6TB raidz1 (~21.8TB) - Cold storage and backups
 
-**Key Datasets**: tank/media, tank/share, tank/downloads, ssd/appdata, nvme/downloads
+**Key Datasets**: tank/media, tank/share, ssd/appdata, nvme/media, nvme/fast
 
 **NEVER create/destroy ZFS pools via Ansible** - pools are created manually (too critical to automate). Ansible only sets properties and mounts.
 
@@ -326,6 +347,7 @@ See `docs/` for detailed guides:
 - 16-next-steps.md - TODO and feature roadmap
 - 17-disaster-recovery.md - Disaster recovery and backup procedures
 - 18-bootstrap-new-systems.md - Bootstrapping new LXC containers and VMs
+- 21-download-clients-deployment.md - Download clients and media stack (VPN, *arr apps)
 - 19-k3s-deployment.md - K3s cluster deployment (complete workflow with all components)
 - 20-plex-deployment.md - Plex Media Server deployment (LXC with bind mounts)
 

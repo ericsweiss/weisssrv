@@ -109,10 +109,55 @@
     mode: "0700"
   when: inventory_hostname == 'dns-01'
 
-- name: Display acme.sh setup instructions
+# Automatic certificate installation if certs exist in acme.sh but not in local_cert_dir
+# This handles the case where certs were manually issued but never installed to the target directory
+- name: Check if certificates exist in acme.sh
+  ansible.builtin.stat:
+    path: "/root/.acme.sh/{{ internal_domain }}_ecc/fullchain.cer"
+  register: acme_cert_exists
+  when: inventory_hostname == 'dns-01'
+
+- name: Check if certificates are already installed locally
+  ansible.builtin.stat:
+    path: "{{ local_cert_dir }}/fullchain.pem"
+  register: local_cert_exists
+  when: inventory_hostname == 'dns-01'
+
+- name: Install certificates to local directory (if acme.sh has certs but local dir is empty)
+  ansible.builtin.command:
+    cmd: >
+      /root/.acme.sh/acme.sh --install-cert -d "{{ internal_domain }}"
+      --cert-file {{ local_cert_dir }}/cert.pem
+      --key-file {{ local_cert_dir }}/privkey.pem
+      --fullchain-file {{ local_cert_dir }}/fullchain.pem
+      --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+  when:
+    - inventory_hostname == 'dns-01'
+    - acme_cert_exists.stat.exists | default(false)
+    - not (local_cert_exists.stat.exists | default(false))
+  register: cert_install_result
+  changed_when: cert_install_result.rc == 0
+
+- name: Set proper ownership on installed certificates
+  ansible.builtin.file:
+    path: "{{ local_cert_dir }}/{{ item.name }}"
+    owner: root
+    group: "{{ adguard_group | default('adguard') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { name: "fullchain.pem", mode: "0644" }
+    - { name: "privkey.pem", mode: "0640" }
+    - { name: "cert.pem", mode: "0644" }
+  when:
+    - inventory_hostname == 'dns-01'
+    - cert_install_result.changed | default(false)
+
+- name: Display acme.sh setup instructions (only if no certs exist yet)
   ansible.builtin.debug:
     msg: |
-      ACME.sh is installed. To issue certificates:
+      ACME.sh is installed but no certificates have been issued yet.
+
+      To issue certificates manually:
 
       1. Set Cloudflare credentials (from 1Password):
          export CF_Token=$(op read "{{ secrets.cloudflare_api_token }}")
@@ -121,13 +166,54 @@
       2. Issue wildcard certificate:
          /root/.acme.sh/acme.sh --issue --dns dns_cf \
            -d "{{ internal_domain }}" \
-           -d "*.{{ internal_domain }}" \
-           --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+           -d "*.{{ internal_domain }}"
 
-      3. Install to AdGuard certs directory:
-         /root/.acme.sh/acme.sh --install-cert -d "{{ internal_domain }}" \
-           --cert-file {{ local_cert_dir }}/cert.pem \
-           --key-file {{ local_cert_dir }}/privkey.pem \
-           --fullchain-file {{ local_cert_dir }}/fullchain.pem \
-           --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+      After issuing, re-run Ansible to automatically install and distribute the certs:
+         task deploy:dns
+  when:
+    - inventory_hostname == 'dns-01'
+    - not (acme_cert_exists.stat.exists | default(false))
+
+- name: Display certificate installation status
+  ansible.builtin.debug:
+    msg: "Certificates are installed at {{ local_cert_dir }} and configured for automatic renewal with distribution."
+  when:
+    - inventory_hostname == 'dns-01'
+    - acme_cert_exists.stat.exists | default(false)
+    - local_cert_exists.stat.exists | default(false) or (cert_install_result.changed | default(false))
+
+# Proactive certificate distribution to ensure remote hosts have certs
+# This runs every time Ansible deploys if local certs exist, handling cases where:
+# - Certs were manually installed but never distributed
+# - A target host was rebuilt and lost its certs
+# - Distribution failed during a previous renewal
+- name: Check if local certificates exist for distribution
+  ansible.builtin.stat:
+    path: "{{ local_cert_dir }}/fullchain.pem"
+  register: local_certs_for_dist
   when: inventory_hostname == 'dns-01'
+
+- name: Distribute certificates to remote hosts
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/homelab-cert-reload.sh
+  when:
+    - inventory_hostname == 'dns-01'
+    - local_certs_for_dist.stat.exists | default(false)
+    - cert_distribution_targets is defined
+    - cert_distribution_targets | length > 0
+    - not ansible_check_mode
+  register: cert_distribution_result
+  changed_when: cert_distribution_result.rc == 0
+  failed_when: false  # Don't fail the play if distribution fails (target might be down)
+
+- name: Warn if certificate distribution failed
+  ansible.builtin.debug:
+    msg: |
+      WARNING: Certificate distribution failed with return code {{ cert_distribution_result.rc }}.
+      stderr: {{ cert_distribution_result.stderr | default('none') }}
+      Ensure target hosts (dns-02, smtp-relay) are reachable and SSH keys are properly configured.
+  when:
+    - inventory_hostname == 'dns-01'
+    - cert_distribution_result is defined
+    - cert_distribution_result.rc is defined
+    - cert_distribution_result.rc != 0

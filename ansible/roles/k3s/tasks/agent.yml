@@ -1,6 +1,16 @@
 ---
 # K3s agent installation
 
+- name: Debug - Show k3s agent configuration variables
+  ansible.builtin.debug:
+    msg:
+      - "Host: {{ inventory_hostname }}"
+      - "k3s_role: {{ k3s_role }}"
+      - "k3s_api_vip: {{ k3s_api_vip }}"
+      - "k3s_labels: {{ k3s_labels }}"
+      - "Config will be written to: /etc/rancher/k3s/config.yaml"
+  tags: [debug, always]
+
 - name: Deploy k3s agent config
   ansible.builtin.template:
     src: k3s-agent-config.yaml.j2
@@ -8,12 +18,40 @@
     mode: "0600"
   notify: Restart k3s-agent
 
-- name: Check if k3s agent is already installed
+- name: Verify config file was created
   ansible.builtin.stat:
-    path: /usr/local/bin/k3s
-  register: k3s_binary
+    path: /etc/rancher/k3s/config.yaml
+  register: config_file_stat
+  when: not ansible_check_mode
 
-- name: Install k3s agent
+- name: Assert config file exists
+  ansible.builtin.assert:
+    that:
+      - config_file_stat.stat.exists
+    fail_msg: "Config file was NOT created at /etc/rancher/k3s/config.yaml!"
+    success_msg: "Config file successfully created at /etc/rancher/k3s/config.yaml"
+  when: not ansible_check_mode
+
+- name: Check current k3s version
+  ansible.builtin.command: k3s --version
+  register: k3s_current_version
+  changed_when: false
+  failed_when: false
+
+- name: Parse current k3s version
+  ansible.builtin.set_fact:
+    k3s_installed_version: "{{ k3s_current_version.stdout | regex_search('v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+') | default('') }}"
+  when: k3s_current_version.rc == 0
+
+- name: Debug k3s version info
+  ansible.builtin.debug:
+    msg:
+      - "Installed version: {{ k3s_installed_version | default('not installed') }}"
+      - "Target version: {{ k3s_version }}"
+      - "Needs install/upgrade: {{ k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version }}"
+  tags: [debug]
+
+- name: Install or upgrade k3s agent
   ansible.builtin.shell: |
     set -o pipefail
     curl -sfL {{ k3s_install_script_url }} | \
@@ -23,10 +61,11 @@
       sh -s - agent
   args:
     executable: /bin/bash
-  when: not k3s_binary.stat.exists
-  changed_when: true
+  when: k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
   environment:
     K3S_TOKEN: "{{ k3s_token }}"
+  notify: Restart k3s-agent
+  changed_when: true
 
 - name: Wait for k3s-agent service to be active
   ansible.builtin.systemd:

@@ -10,7 +10,7 @@ trap "rm -rf $TEMP_DIR" EXIT
 
 # Hosts to collect from
 PROXMOX_HOSTS=("pve-nas-01" "pve-opt-03")
-DNS_HOSTS=("dns-01" "dns-02")
+DNS_HOSTS=("192.168.0.150" "192.168.0.160")  # dns-01, dns-02 (use IPs since hostnames resolve to VIP)
 MAIL_HOSTS=("smtp-relay")
 K3S_HOSTS=("k3s-srv-nas-01" "k3s-agt-nas-01" "k3s-agt-opt-03")
 
@@ -27,6 +27,11 @@ REDACT_PATTERNS=(
     's/client-certificate-data:\s*\S+/client-certificate-data: <REDACTED>/g'
     's/client-key-data:\s*\S+/client-key-data: <REDACTED>/g'
     's/certificate-authority-data:\s*\S+/certificate-authority-data: <REDACTED>/g'
+    's/OPENVPN_USER=\S+/OPENVPN_USER=<REDACTED>/g'
+    's/OPENVPN_PASSWORD=\S+/OPENVPN_PASSWORD=<REDACTED>/g'
+    's/openvpn-user:\s*\S+/openvpn-user: <REDACTED>/g'
+    's/openvpn-password:\s*\S+/openvpn-password: <REDACTED>/g'
+    's/api-token:\s*\S+/api-token: <REDACTED>/g'
 )
 
 redact() {
@@ -57,7 +62,9 @@ echo "--- Services ---"
 systemctl list-units --type=service --state=running --no-pager | head -30
 echo ""
 echo "--- Disk Usage ---"
-df -h | grep -E '^/|Filesystem'
+# Include all mounted filesystems, not just those starting with /
+# LXC containers use rootfs/overlay paths that don't start with /
+df -h | grep -vE '^(tmpfs|devtmpfs|udev|overlay$)' | head -20
 echo ""
 EOF
 }
@@ -78,6 +85,14 @@ sudo pve-firewall status 2>/dev/null || echo "No firewall"
 echo ""
 echo "--- Firewall IP Sets ---"
 sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep -A 20 '\[IPSET' | head -100 || echo "No firewall config"
+echo ""
+echo "--- Firewall Guest Rules ---"
+for vmid in 150 151 152 160 202 206 207; do
+    if [ -f "/etc/pve/firewall/${vmid}.fw" ]; then
+        echo "Guest ${vmid}:"
+        sudo cat "/etc/pve/firewall/${vmid}.fw" 2>/dev/null || echo "  Cannot read"
+    fi
+done
 echo ""
 echo "--- ZFS Pools ---"
 zpool list 2>/dev/null || echo "No ZFS"
@@ -104,10 +119,60 @@ systemctl is-active smbd 2>/dev/null || echo "No Samba"
 sudo testparm -s 2>/dev/null | grep -A 5 '\[' | head -20 || true
 echo ""
 echo "--- MergerFS Mounts ---"
-mount | grep mergerfs || echo "No MergerFS mounts"
+if mount | grep -q mergerfs; then
+    mount | grep mergerfs
+    # Check for duplicates
+    mount_count=$(mount | grep -c mergerfs)
+    unique_count=$(mount | grep mergerfs | sort -u | wc -l)
+    if [ "$mount_count" -gt "$unique_count" ]; then
+        echo ""
+        echo "WARNING: Duplicate MergerFS mount entries detected!"
+        echo "  Total entries: $mount_count"
+        echo "  Unique entries: $unique_count"
+        echo "  This indicates the filesystem is mounted multiple times."
+    fi
+else
+    echo "No MergerFS mounts"
+fi
 if mount | grep -q mergerfs; then
     echo "MergerFS union details:"
     df -h | grep -E 'media|Filesystem' || true
+    echo ""
+    echo "MergerFS fstab options (authoritative - runtime options not queryable):"
+    # NOTE: MergerFS mount-time options (inodecalc, noforget, use_ino, etc.)
+    # are NOT visible in mount output or via xattrs. Only fstab is authoritative.
+    for mnt in $(mount | grep "type fuse.mergerfs" | awk '{print $3}' | sort -u); do
+        echo "  $mnt:"
+        fstab_line=$(grep "^[^#].*[[:space:]]${mnt}[[:space:]]" /etc/fstab 2>/dev/null)
+        fstab_opts=$(echo "$fstab_line" | awk '{print $4}')
+        fstab_src=$(echo "$fstab_line" | awk '{print $1}')
+        if [ -n "$fstab_opts" ]; then
+            # Check if this is a bind mount (inherits settings from source)
+            if [ "$fstab_opts" = "bind" ] || echo "$fstab_opts" | grep -qE '^bind,|,bind,|,bind$'; then
+                echo "    type: BIND MOUNT (inherits MergerFS options from source)"
+                echo "    source: $fstab_src"
+                echo "    full opts: $fstab_opts"
+            else
+                # Check critical NFS options for actual MergerFS mounts
+                has_inodecalc="NO"
+                has_noforget="NO"
+                echo "$fstab_opts" | grep -q "inodecalc=path-hash" && has_inodecalc="YES"
+                echo "$fstab_opts" | grep -q "noforget" && has_noforget="YES"
+                echo "    inodecalc=path-hash: $has_inodecalc"
+                echo "    noforget: $has_noforget"
+                echo "    full opts: $fstab_opts"
+            fi
+        else
+            echo "    WARNING: No fstab entry found"
+        fi
+        # Check if .mergerfs control file exists (confirms MergerFS is active)
+        control_file="${mnt}/.mergerfs"
+        if [ -e "$control_file" ]; then
+            echo "    control file: present (MergerFS active)"
+        else
+            echo "    control file: MISSING (mount may not be MergerFS)"
+        fi
+    done
 fi
 echo ""
 echo "--- Media Mover Status ---"
@@ -115,8 +180,28 @@ systemctl is-active media-mover.timer 2>/dev/null || echo "media-mover timer not
 systemctl status media-mover.timer 2>/dev/null | grep -E 'Active:|Trigger:' || true
 journalctl -u media-mover.service --since "1 day ago" --no-pager | tail -10 2>/dev/null || echo "No recent media-mover logs"
 echo ""
+echo "--- LXC Containers ---"
+sudo pct list 2>/dev/null || echo "No LXC containers"
+echo ""
+echo "--- Plex LXC Status (VMID 152) ---"
+if sudo pct status 152 &>/dev/null; then
+    sudo pct status 152
+    echo "Bind mounts:"
+    sudo grep "^mp" /etc/pve/lxc/152.conf 2>/dev/null || echo "No bind mounts configured"
+    echo "Plex service (inside container):"
+    sudo pct exec 152 -- systemctl is-active plexmediaserver 2>/dev/null || echo "Cannot check Plex service"
+else
+    echo "Plex LXC (152) not found"
+fi
+echo ""
 echo "--- Postfix Status ---"
-postconf myhostname relayhost 2>/dev/null || echo "No postfix"
+if systemctl is-active postfix &>/dev/null; then
+    echo "postfix: active"
+    # postconf requires sudo on Proxmox hosts (null client configs)
+    sudo postconf myhostname relayhost 2>/dev/null || echo "(postconf unavailable)"
+else
+    echo "postfix: not installed or inactive"
+fi
 echo ""
 echo "--- Tailscale ---"
 sudo tailscale status 2>/dev/null | head -5 || echo "No tailscale"
@@ -134,29 +219,31 @@ collect_dns() {
     ssh -o ConnectTimeout=10 "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
 echo "--- Unbound Status ---"
 systemctl is-active unbound
-unbound-checkconf 2>&1 | head -5
+sudo unbound-checkconf 2>&1 | head -5
 echo ""
 echo "--- AdGuard Home Status ---"
 systemctl is-active AdGuardHome
 ls -la /opt/AdGuardHome/ | head -10
 echo ""
 echo "--- AdGuard User Rules Count ---"
-grep -c "user_rules:" /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null || echo "No config"
-echo "First 5 user rules:"
-grep -A 5 "user_rules:" /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null | head -6 || echo "None"
+# User rules are stored in the user_rules array in the YAML
+user_rules_count=$(sudo grep -E -c '^[[:space:]]*-.*dnsrewrite|^[[:space:]]*-.*@@' /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null || echo "0")
+echo "User rules: $user_rules_count"
 echo ""
 echo "--- AdGuard Rewrites Count ---"
-grep -c "answer:" /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null || echo "No rewrites"
+# Rewrites are stored under dns.rewrites in the YAML, count entries with '- domain:' key
+rewrites_count=$(sudo grep -E -c '^[[:space:]]*- domain:' /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null || echo "0")
+echo "DNS rewrites: $rewrites_count"
 echo ""
 echo "--- AdGuard DHCP Status ---"
-grep "dhcp:" -A 2 /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null | grep enabled || echo "DHCP config not found"
+sudo grep "dhcp:" -A 2 /opt/AdGuardHome/AdGuardHome.yaml 2>/dev/null | grep enabled || echo "DHCP config not found"
 echo ""
 echo "--- Listening Ports ---"
 ss -lntup | grep -E ':53|:853|:443|:3000|:5335'
 echo ""
 echo "--- Cert Files ---"
-ls -la /opt/AdGuardHome/certs/ 2>/dev/null || echo "No certs"
-stat /opt/AdGuardHome/certs/*.pem 2>/dev/null | grep -E 'File:|Modify:' || true
+sudo ls -la /opt/AdGuardHome/certs/ 2>/dev/null || echo "No certs"
+sudo stat /opt/AdGuardHome/certs/*.pem 2>/dev/null | grep -E 'File:|Modify:' || true
 echo ""
 echo "--- acme.sh Status (dns-01 only) ---"
 if [ "$(hostname)" = "dns-01" ]; then
@@ -227,10 +314,58 @@ if systemctl is-active k3s &>/dev/null; then
     sudo k3s kubectl get svc -n authentik 2>/dev/null || echo ""
     sudo k3s kubectl get ingressroute -n authentik 2>/dev/null || echo ""
     sudo k3s kubectl get middleware -n authentik 2>/dev/null || echo ""
+    echo ""
+    echo "--- Downloads Namespace ---"
+    if sudo k3s kubectl get namespace downloads &>/dev/null; then
+        echo "Pods:"
+        sudo k3s kubectl get pods -n downloads -o wide 2>/dev/null || echo "No pods"
+        echo ""
+        echo "Services:"
+        sudo k3s kubectl get svc -n downloads 2>/dev/null || echo "No services"
+        echo ""
+        echo "PVCs:"
+        sudo k3s kubectl get pvc -n downloads 2>/dev/null || echo "No PVCs"
+        echo ""
+        echo "IngressRoutes:"
+        sudo k3s kubectl get ingressroute -n downloads 2>/dev/null || echo "No IngressRoutes"
+        echo ""
+        echo "VPN ConfigMaps:"
+        for app in nzbget qbittorrent; do
+            if sudo k3s kubectl get configmap "${app}-vpn-config" -n downloads &>/dev/null; then
+                echo "${app}:"
+                sudo k3s kubectl get configmap "${app}-vpn-config" -n downloads -o jsonpath='{.data}' 2>/dev/null
+                echo ""
+            fi
+        done
+        echo ""
+        echo "Gluetun VPN Status (public IP check):"
+        for app in nzbget qbittorrent; do
+            vpn_enabled=$(sudo k3s kubectl get configmap "${app}-vpn-config" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+            if [ "$vpn_enabled" = "true" ]; then
+                echo "${app} VPN: enabled"
+                # Use checkip.amazonaws.com - reliable and doesn't block VPN IPs
+                # ipinfo.io returns 403 Forbidden for VPN/datacenter IPs
+                public_ip=$(sudo k3s kubectl exec -n downloads deployment/"${app}" -c gluetun -- wget -qO- --timeout=10 http://checkip.amazonaws.com 2>/dev/null || echo "unreachable")
+                echo "${app} public IP: ${public_ip}"
+            else
+                echo "${app} VPN: disabled"
+            fi
+        done
+    else
+        echo "Downloads namespace not deployed"
+    fi
 fi
 echo ""
 echo "--- K3s Config ---"
-cat /etc/rancher/k3s/config.yaml 2>/dev/null || echo "No config file"
+if [ -f /etc/rancher/k3s/config.yaml ]; then
+    sudo cat /etc/rancher/k3s/config.yaml 2>/dev/null || echo "Cannot read config file (permission denied)"
+else
+    echo "No config file (k3s using defaults or command-line args)"
+    echo "Note: Re-run 'task k3s:deploy' to create config from Ansible"
+fi
+echo ""
+echo "--- NFS Mounts ---"
+mount | grep nfs || echo "No NFS mounts on this node"
 echo ""
 echo "--- Disk Usage ---"
 df -h | grep -E '^/|Filesystem'

@@ -310,10 +310,10 @@ NFS Exports:
   /export           192.168.0.102,192.168.0.200/29
   /export/media     192.168.0.200/29,192.168.0.154
   /export/share     192.168.0.200/29
-  /export/downloads 192.168.0.200/29
+  /export/appdata   192.168.0.200/29
 
 MergerFS Mounts:
-  /mnt/nvme/downloads/media  /mnt/nvme/downloads/media-hot:/mnt/tank/media
+  /mnt/media  /mnt/nvme/media:/mnt/tank/media
 
 Next steps:
   1. Run postflight verification: task deploy:verify
@@ -571,7 +571,8 @@ sudo mv /etc/exports /etc/exports.old
 sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.old
 
 # Unmount MergerFS
-sudo umount /mnt/nvme/downloads/media
+sudo umount /mnt/media
+sudo umount /export/media
 
 # Destroy datasets (DATA LOSS!)
 sudo zfs destroy -r tank/media

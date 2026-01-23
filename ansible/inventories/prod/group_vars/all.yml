@@ -81,8 +81,9 @@ common_packages:
 
 # Tailscale configuration
 tailscale_enabled: true
-tailscale_accept_routes: true
-tailscale_accept_dns: false
+tailscale_accept_routes: false  # Hosts should NOT accept routes (prevents routing loops)
+tailscale_accept_dns: false  # Use local DNS infrastructure
+tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should advertise routes
 
 # NTP configuration
 ntp_servers:
@@ -99,6 +100,19 @@ acme_version: "latest"
 debian_version: "13"
 k3s_version: "v1.33.7+k3s1"
 kube_vip_version: "v1.0.3"
+
+# Download clients and media stack versions
+# Using "latest" pulls the most recent stable release at deployment time
+# LinuxServer.io images use date-based tags (YYYY.MM.DD) or version tags
+# Check https://github.com/linuxserver for pinned versions if needed
+gluetun_version: "latest"
+nzbget_version: "latest"
+qbittorrent_version: "latest"
+prowlarr_version: "latest"
+sonarr_version: "latest"
+radarr_version: "latest"
+lidarr_version: "latest"
+pulsarr_version: "latest"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

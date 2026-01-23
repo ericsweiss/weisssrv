@@ -41,31 +41,34 @@ zfs_scrub_schedule: "monthly"
 
 # NVMe fast storage
 nvme_storage:
-  downloads_hot: /mnt/nvme/downloads/media-hot
-  downloads: /mnt/nvme/downloads
+  data: /mnt/nvme/media           # Renamed from /mnt/nvme/data
   appdata: /mnt/ssd/appdata
 
 # MergerFS configuration
+# Merges NVMe (hot tier) + tank (cold tier) media into unified /mnt/media
+# Only downloads/ and library/ are visible - tank's other directories are NOT exposed
 mergerfs_mounts:
   - name: media
     sources:
-      - "{{ nvme_storage.downloads_hot }}"
-      - /mnt/tank/media
-    target: /mnt/nvme/downloads/media
+      - /mnt/nvme/media          # Hot tier (renamed from nvme/data)
+      - /mnt/tank/media          # Cold tier (only tank/media, not entire tank)
+    target: /mnt/media
     options:
       - defaults
       - allow_other
       - default_permissions
       - use_ino
+      - inodecalc=path-hash      # Required for NFS: provides stable inodes for FUSE
+      - noforget                 # Required for NFS: prevents ESTALE (stale file handle) errors
       - cache.files=off
       - dropcacheonclose=true
-      - category.create=ff
-      - category.action=epall
-      - moveonenospc=true
-      - minfreespace=100G
+      - category.create=ff       # New files go to first branch (nvme)
+      - category.action=epall    # Actions use all branches
+      - moveonenospc=true        # Move to next branch when nvme fills
+      - minfreespace=100G        # Keep 100G free on nvme
     systemd_requires:
+      - /mnt/nvme/media
       - /mnt/tank/media
-      - /mnt/nvme/downloads
 
 # NFS exports
 nfs_exports:
@@ -89,6 +92,8 @@ nfs_exports:
 
   # K3s/app RW exports
   # These directories use UID 1000 (eric) and GID 2000 (media) with setgid for shared access
+  # all_squash + anonuid/anongid: Maps ALL clients (including root) to uid 1000/gid 2000
+  # This allows LinuxServer.io containers to run chmod/chown during init
   - path: /export/appdata
     bind_source: /mnt/ssd/appdata
     owner: 1000  # eric
@@ -96,7 +101,7 @@ nfs_exports:
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
     clients:
       - spec: "192.168.0.200/29"
-        options: "rw,sync,no_subtree_check,root_squash,fsid=11"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
   - path: /export/share
     bind_source: /mnt/tank/share
@@ -107,26 +112,18 @@ nfs_exports:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
 
-  - path: /export/downloads
-    bind_source: /mnt/nvme/downloads
+  # Unified media export (mergerfs mount - exposes only downloads/ and library/)
+  # NFS clients mount this as /media, pods mount it as /media
+  - path: /export/media
+    bind_source: /mnt/media
     owner: 1000  # eric
     group: 2000  # media
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
     clients:
       - spec: "192.168.0.200/29"
-        options: "rw,sync,no_subtree_check,root_squash,fsid=13"
-
-  # Read-only media export
-  - path: /export/media
-    bind_source: /mnt/nvme/downloads/media
-    owner: 1000  # eric
-    group: 2000  # media
-    mode: "02755"  # rwxr-sr-x (setgid, read-only for others)
-    clients:
-      - spec: "192.168.0.200/29"
-        options: "ro,sync,no_subtree_check,root_squash,fsid=10"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
       - spec: "192.168.0.154/32"
-        options: "ro,sync,no_subtree_check,root_squash,fsid=10"
+        options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 
   # Proxmox backup target (requires no_root_squash, owned by root)
   - path: /export/tank-proxmox
@@ -172,9 +169,10 @@ samba_shares:
     directory_mask: "2775"  # setgid bit for group inheritance
 
 # Media mover configuration
+# Moves old files from NVMe (hot tier) to tank (cold tier) to free up fast storage
 media_mover_enabled: true
-media_mover_src: /mnt/nvme/downloads/media-hot
-media_mover_dst: /mnt/tank/media
+media_mover_src: /mnt/nvme/media/library    # Hot tier library (renamed from nvme/data/media)
+media_mover_dst: /mnt/tank/media/library    # Cold tier library (restructured)
 media_mover_schedule: "*-*-* 02:00:00"  # Daily at 2 AM (systemd calendar format)
 
 # Proxmox storage configuration

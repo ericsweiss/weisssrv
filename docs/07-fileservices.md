@@ -19,12 +19,12 @@ The NAS server (pve-nas-01) provides file sharing via NFS and Samba.
 Fast NVMe storage is merged with slower HDD storage:
 
 ```
-/mnt/nvme/downloads/media-hot  (NVMe, hot)
+/mnt/nvme/media                (NVMe, hot)
            +
 /mnt/tank/media                (HDD, cold)
            |
            v
-/mnt/nvme/downloads/media      (MergerFS union)
+/mnt/media                     (MergerFS union)
            |
            v
 /export/media                  (NFS bind mount)
@@ -32,8 +32,9 @@ Fast NVMe storage is merged with slower HDD storage:
 
 **fstab entry:**
 ```
-/mnt/nvme/downloads/media-hot:/mnt/tank/media  /mnt/nvme/downloads/media  fuse.mergerfs  \
-  defaults,allow_other,default_permissions,use_ino,cache.files=off,dropcacheonclose=true,\
+/mnt/nvme/media:/mnt/tank/media  /mnt/media  fuse.mergerfs  \
+  defaults,allow_other,default_permissions,use_ino,inodecalc=path-hash,noforget,\
+  cache.files=off,dropcacheonclose=true,\
   category.create=ff,category.action=epall,moveonenospc=true,minfreespace=100G,fsname=media  0  0
 ```
 
@@ -135,8 +136,7 @@ With setgid + GID 2000:
 /export                    (NFSv4 root, fsid=0)
   +-- appdata              (bind: /mnt/ssd/appdata)
   +-- share                (bind: /mnt/tank/share)
-  +-- downloads            (bind: /mnt/nvme/downloads)
-  +-- media                (bind: /mnt/nvme/downloads/media)
+  +-- media                (bind: /mnt/media - mergerfs union)
   +-- tank-proxmox         (bind: /mnt/tank/proxmox)
 ```
 
@@ -144,12 +144,13 @@ With setgid + GID 2000:
 
 | Export | Clients | Access |
 |--------|---------|--------|
-| /export | Proxmox hosts, k3s VMs | RW, crossmnt |
+| /export | Proxmox hosts, k3s VMs, .154 | RW, crossmnt |
 | /export/appdata | k3s VMs (192.168.0.200/29) | RW |
 | /export/share | k3s VMs | RW |
-| /export/downloads | k3s VMs | RW |
-| /export/media | k3s VMs, home.esweiss.com | RO |
+| /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) |
 | /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash |
+
+**Note**: Plex LXC (.152) uses a bind mount (`/mnt/media`) directly, not NFS.
 
 ### Mounting from Clients
 
@@ -260,5 +261,5 @@ findmnt -t fuse.mergerfs
 mount -a -t fuse.mergerfs
 
 # Check pool distribution
-du -sh /mnt/nvme/downloads/media-hot /mnt/tank/media
+du -sh /mnt/nvme/media /mnt/tank/media
 ```

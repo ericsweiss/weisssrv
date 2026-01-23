@@ -18,3 +18,8 @@
   roles:
     - acme_certs
     - adguard_sync
+
+- name: Deploy guest firewall rules
+  hosts: dns
+  roles:
+    - proxmox_firewall

@@ -139,6 +139,12 @@ postgresql:
                   operator: In
                   values:
                     - k3s-agt-nas-01
+    # Tolerate NAS taint to run on k3s-agt-nas-01
+    tolerations:
+      - key: esweiss.com/nas
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule
 
 # Redis not required as of Authentik 2025.10
 redis:

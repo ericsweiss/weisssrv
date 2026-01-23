@@ -54,30 +54,115 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 
 ### Security Groups
 
-Security groups are reusable rule sets.
+Security groups are reusable rule sets. Each security group has a **single, clear purpose** - admin access is separated from service-specific rules.
 
+#### Admin Access Security Groups
+
+**sg-host-admin** - Proxmox hypervisor hosts only:
 ```ini
-[group sg-ssh]
-IN ACCEPT -source 192.168.0.150 -p tcp -dport 22 -log nolog
+[group sg-host-admin]
 
-[group sg-nfs]
-IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
-IN ACCEPT -source +dc/nfs_clients -p tcp -dport 111 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 8006 -log nolog # Proxmox Web UI
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 8006 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog   # SSH
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_ts -p icmp -log nolog            # Ping
+IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
+```
 
-[group sg-smb]
-IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
+**sg-vm-admin** - All VMs and LXC containers:
+```ini
+[group sg-vm-admin]
 
-[group sg-smtp-relay]
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
-IN ACCEPT -source 192.168.0.150 -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog   # SSH
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
+IN ACCEPT -source +dc/admin_ts -p icmp -log nolog            # Ping
+IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
+```
 
+**sg-pve-cluster** - Proxmox cluster communication:
+```ini
+[group sg-pve-cluster]
+
+IN ACCEPT -source +dc/pve_hosts -p tcp -dport 8006 -log nolog      # Web UI
+IN ACCEPT -source +dc/pve_hosts -p tcp -dport 60000:60050 -log nolog # Migration
+IN ACCEPT -source +dc/pve_hosts -p tcp -dport 22 -log nolog        # SSH
+IN ACCEPT -source +dc/pve_hosts -p udp -dport 5406 -log nolog      # Corosync
+IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog      # Corosync
+```
+
+#### Service-Specific Security Groups
+
+**sg-dns** - DNS service ports only (no SSH):
+```ini
 [group sg-dns]
-IN ACCEPT -p tcp -dport 53 -log nolog
-IN ACCEPT -p udp -dport 53 -log nolog
-IN ACCEPT -p tcp -dport 853 -log nolog
-IN ACCEPT -p udp -dport 853 -log nolog
-IN ACCEPT -p tcp -dport 443 -log nolog
-IN ACCEPT -source 192.168.0.150 -p tcp -dport 22 -log nolog
+
+# DoT (DNS over TLS)
+IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
+# AdGuard Home Web UI
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
+# Standard DNS
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
+```
+
+**sg-smtp-relay** - SMTP relay (no SSH):
+```ini
+[group sg-smtp-relay]
+
+# SMTP submission from core cluster
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
+# SMTP relay from core cluster
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
+# Outbound DNS and SMTP (for upstream relay)
+OUT ACCEPT -p udp -dport 853 -log nolog
+OUT ACCEPT -p tcp -dport 853 -log nolog
+OUT ACCEPT -p udp -dport 53 -log nolog
+OUT ACCEPT -p tcp -dport 53 -log nolog
+OUT ACCEPT -p tcp -dport 587 -log nolog
+```
+
+**sg-nfs-server** - NFS exports:
+```ini
+[group sg-nfs-server]
+
+IN ACCEPT -source +dc/nfs_clients -p udp -dport 111 -log nolog
+IN ACCEPT -source +dc/nfs_clients -p tcp -dport 111 -log nolog
+IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
+```
+
+**sg-smb-server** - Samba shares:
+```ini
+[group sg-smb-server]
+
+IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
+```
+
+**sg-k3s-core** - K3s cluster communication:
+```ini
+[group sg-k3s-core]
+
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog  # etcd
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog      # kubelet
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 8472 -log nolog       # Flannel VXLAN
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog       # k3s supervisor
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 6443 -log nolog       # Kubernetes API
+```
+
+**sg-plex** - Plex Media Server:
+```ini
+[group sg-plex]
+
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 32469 -log nolog      # DLNA
+IN ACCEPT -source +dc/admin_lan -p udp -dport 32410:32414 -log nolog # GDM
+IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog       # SSDP
+IN ACCEPT -p tcp -dport 32400 -log nolog                             # Plex Web (public)
 ```
 
 ### Options
@@ -93,32 +178,68 @@ log_level_out: nolog
 
 ## Host Firewall
 
-Each node has a host.fw that can reference security groups:
+Each Proxmox host has a host.fw that references security groups. All Proxmox hosts get `sg-pve-cluster` and `sg-host-admin` automatically.
 
-**pve-nas-01 host.fw:**
+**pve-nas-01 host.fw** (NAS role):
 ```ini
 [OPTIONS]
 enable: 1
 
 [RULES]
-GROUP sg-nfs
-GROUP sg-smb
+# All Proxmox hosts need cluster communication and admin access
+GROUP sg-pve-cluster
+GROUP sg-host-admin
+
+# NAS-specific rules
+GROUP sg-nfs-server
+GROUP sg-smb-server
 ```
 
-## LXC Container Firewall
-
-Containers can have individual firewall rules:
-
-**smtp-relay:**
+**pve-opt-03 host.fw** (Compute role):
 ```ini
+[OPTIONS]
+enable: 1
+
 [RULES]
+# All Proxmox hosts need cluster communication and admin access
+GROUP sg-pve-cluster
+GROUP sg-host-admin
+```
+
+## Guest Firewall (VMs and LXC Containers)
+
+VMs and LXC containers have per-guest firewall rules (e.g., `/etc/pve/firewall/150.fw` for VMID 150). All guests get `sg-vm-admin` for SSH + ICMP, plus service-specific groups.
+
+**dns-01 (VMID 150) firewall:**
+```ini
+[OPTIONS]
+enable: 1
+
+[RULES]
+GROUP sg-vm-admin
+GROUP sg-dns
+```
+
+**smtp-relay (VMID 151) firewall:**
+```ini
+[OPTIONS]
+enable: 1
+
+[RULES]
+GROUP sg-vm-admin
 GROUP sg-smtp-relay
 ```
 
-**dns-01/dns-02:**
+**k3s-agt-opt-03 (VMID 206) firewall:**
 ```ini
+[OPTIONS]
+enable: 1
+
 [RULES]
-GROUP sg-dns
+GROUP sg-vm-admin
+GROUP sg-k3s-core
+GROUP sg-k3s-ingress-int
+GROUP sg-k3s-ingress-pub
 ```
 
 ## Ansible Role
@@ -126,8 +247,9 @@ GROUP sg-dns
 Deploy with: `ansible/roles/proxmox_firewall`
 
 The role manages:
-- `/etc/pve/firewall/cluster.fw`
-- `/etc/pve/nodes/<node>/host.fw`
+- `/etc/pve/firewall/cluster.fw` - Cluster-wide IPSets and Security Groups
+- `/etc/pve/nodes/<node>/host.fw` - Per-host firewall rules
+- `/etc/pve/firewall/<vmid>.fw` - Per-guest firewall rules (VMs and LXC containers)
 
 ### Managing IPSets via Inventory
 
@@ -170,6 +292,81 @@ firewall_ipset_special_entries:
 - ✅ Automatic IPSet updates when hosts added/removed
 - ✅ No duplication between firewall rules and NFS exports
 - ✅ Git history tracks which hosts are in security groups
+
+### Managing Guest Security Groups
+
+Guest firewalls (VMs and LXC containers) are configured via inventory metadata. Add `vmid` and `guest_security_groups` to the host definition:
+
+**Example - DNS container:**
+```yaml
+# inventories/prod/hosts.yml
+dns:
+  hosts:
+    dns-01:
+      ansible_host: 192.168.0.150
+      vmid: 150
+      guest_security_groups:
+        - sg-vm-admin     # SSH + ICMP for admin access
+        - sg-dns          # DNS service ports
+```
+
+**Example - K3s ingress node:**
+```yaml
+k3s_agents:
+  hosts:
+    k3s-agt-opt-03:
+      ansible_host: 192.168.0.206
+      vmid: 206
+      guest_security_groups:
+        - sg-vm-admin         # SSH + ICMP for admin access
+        - sg-k3s-core         # K3s cluster communication
+        - sg-k3s-ingress-int  # Internal ingress (admin networks)
+        - sg-k3s-ingress-pub  # Public ingress (all sources)
+```
+
+**Available Security Groups:**
+
+| Security Group | Purpose | Use For |
+|---------------|---------|---------|
+| `sg-vm-admin` | SSH + ICMP admin access | **All VMs/LXCs** |
+| `sg-dns` | DNS service (DoT, UDP/TCP 53, AdGuard UI) | DNS containers |
+| `sg-smtp-relay` | SMTP submission/relay + outbound | smtp-relay container |
+| `sg-plex` | Plex Media Server ports | Plex container |
+| `sg-k3s-core` | K3s cluster communication | All K3s nodes |
+| `sg-k3s-ingress-int` | HTTP/HTTPS from admin networks | K3s ingress nodes (internal apps) |
+| `sg-k3s-ingress-pub` | HTTP/HTTPS from all sources | K3s ingress nodes (public apps) |
+| `sg-gitlab` | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
+| `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
+| `sg-windows` | Windows RDP | Windows VMs |
+
+**Deployment:**
+
+Guest firewalls are automatically deployed when:
+1. Running the `proxmox_firewall` role on a host with `vmid` and `guest_security_groups` defined
+2. Provisioning a new VM/LXC (the provisioning roles call the firewall role)
+
+**HA-Ready Design:**
+
+Guest firewall configs are stored in `/etc/pve/firewall/` which is **cluster-shared storage**. This means:
+- Firewall rules are accessible from ANY Proxmox node in the cluster
+- Ansible delegates firewall deployment to `groups['proxmox'][0]` (first Proxmox host)
+- No need to track which host is running each container
+- Works seamlessly with Proxmox HA and live migration
+
+You can override the deployment target with:
+```yaml
+# group_vars/all.yml
+firewall_deploy_host: pve-nas-01  # Optional: specific host for firewall deployment
+```
+
+To update guest firewall rules, modify `guest_security_groups` in inventory and re-run:
+```bash
+# Update all firewalls
+task deploy:all
+
+# Update specific host
+ansible-playbook ansible/playbooks/site.yml --limit dns-01
+```
 
 ## Troubleshooting
 

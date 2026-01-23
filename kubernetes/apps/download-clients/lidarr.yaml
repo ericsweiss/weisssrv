@@ -1,0 +1,110 @@
+---
+# Lidarr - Music management
+# URL: music.esweiss.com
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lidarr
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: lidarr
+    app.kubernetes.io/component: media-manager
+    app.kubernetes.io/part-of: media-stack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lidarr
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lidarr
+        app.kubernetes.io/component: media-manager
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          - name: single-request-reopen
+      containers:
+        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        - name: lidarr
+          image: lscr.io/linuxserver/lidarr:${LIDARR_VERSION}
+          imagePullPolicy: Always
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "2000"
+            - name: TZ
+              value: America/Los_Angeles
+            - name: UMASK
+              value: "002"
+          ports:
+            - name: http
+              containerPort: 8686
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: data
+              mountPath: /media
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: lidarr-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lidarr
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: lidarr
+spec:
+  selector:
+    app.kubernetes.io/name: lidarr
+  ports:
+    - name: http
+      port: 8686
+      targetPort: http
+  type: ClusterIP

@@ -8,7 +8,6 @@ omz_plugins:
   - 1password
   - ansible
   - command-not-found
-  - direnv
   - docker
   - docker-compose
   - dotenv
@@ -19,14 +18,10 @@ omz_plugins:
   - rsync
   - systemd
   - terraform
-  - thefuck
   - tmux
   - vscode
-  - zsh-autosuggestions
-  - zsh-syntax-highlighting
 
 nvim_plugins:
-  - VundleVim/Vundle.vim
   - tpope/vim-fugitive
   - sheerun/vim-polyglot
   - joshdick/onedark.vim

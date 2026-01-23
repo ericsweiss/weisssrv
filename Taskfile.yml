@@ -165,7 +165,7 @@ tasks:
     cmds:
       - |
         ssh eric@192.168.0.202 "sudo cat /etc/rancher/k3s/k3s.yaml" | \
-          sed 's/127.0.0.1/192.168.0.161/g' > ~/.kube/config-k3s
+          sed 's/127.0.0.1/192.168.0.161/g; s/0.0.0.0/192.168.0.161/g' > ~/.kube/config-k3s
         echo "Kubeconfig saved to ~/.kube/config-k3s"
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
 
@@ -176,7 +176,7 @@ tasks:
     cmds:
       - helm repo add metallb https://metallb.github.io/metallb --force-update
       - helm repo update metallb
-      - helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace --wait
+      - helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace -f bootstrap/metallb/values.yaml --wait
       - |
         echo "Waiting for MetalLB webhook to be ready..."
         kubectl wait --namespace metallb-system \
@@ -184,7 +184,7 @@ tasks:
           --selector=app.kubernetes.io/component=controller \
           --timeout=120s
       - kubectl apply -f bootstrap/metallb/ip-pool.yaml
-      - 'echo "MetalLB deployed with IP pools (public .100, internal .101)"'
+      - echo "MetalLB deployed successfully"
 
   k3s:deploy-traefik:
     desc: Deploy Traefik ingress controller
@@ -195,11 +195,7 @@ tasks:
       - kubectl apply -f namespace.yaml
       - helm upgrade --install traefik traefik/traefik -n traefik -f values.yaml --wait
       - kubectl apply -f traefik-internal-service.yaml
-      - |
-        echo "Verifying Traefik LoadBalancer IP..."
-        kubectl get svc -n traefik traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-        echo ""
-      - 'echo "Traefik deployed on 192.168.0.100 (public) and 192.168.0.101 (internal)"'
+      - echo "Traefik deployed successfully"
 
   k3s:deploy-cert-manager:
     desc: Deploy cert-manager with Let's Encrypt ClusterIssuer
@@ -218,8 +214,7 @@ tasks:
           --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
           --dry-run=client -o yaml | kubectl apply -f -'
       - kubectl apply -k .
-      - 'echo "cert-manager deployed with letsencrypt-prod ClusterIssuer"'
-      - 'echo "Certificates will be issued automatically (check with: kubectl get certificate -A)"'
+      - echo "cert-manager deployed successfully"
 
   k3s:deploy-external-dns:
     desc: Deploy external-dns for automatic Cloudflare DNS management
@@ -237,7 +232,7 @@ tasks:
           --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
           --dry-run=client -o yaml | kubectl apply -f -'
       - helm upgrade --install external-dns external-dns/external-dns -n external-dns -f values.yaml --wait
-      - echo "external-dns deployed - DNS records will sync to Cloudflare automatically"
+      - echo "external-dns deployed successfully"
 
   k3s:deploy-ddns:
     desc: Deploy Cloudflare DDNS CronJob for public IP updates
@@ -252,15 +247,14 @@ tasks:
           --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
           --dry-run=client -o yaml | kubectl apply -f -'
       - kubectl apply -f cronjob.yaml
-      - echo "DDNS CronJob deployed - runs every 5 minutes to update public IP"
+      - echo "DDNS CronJob deployed successfully"
 
   k3s:deploy-ingress-routes:
     desc: Deploy Traefik IngressRoutes for all services
     dir: ./kubernetes/apps/ingress-routes
     cmds:
       - kubectl apply -k .
-      - echo "IngressRoutes deployed for all services"
-      - kubectl get ingressroute -A
+      - echo "IngressRoutes deployed successfully"
 
   k3s:deploy-authentik:
     desc: Deploy Authentik SSO identity provider
@@ -300,45 +294,19 @@ tasks:
           --selector=app.kubernetes.io/name=authentik,app.kubernetes.io/component=server \
           --timeout=300s
       - kubectl apply -k .
-      - echo ""
-      - echo "=== Authentik SSO deployed successfully ==="
-      - echo ""
-      - 'echo "Next steps:"'
-      - 'echo "  1. Add DNS rewrite in AdGuard Home: auth.esweiss.com -> 192.168.0.100"'
-      - 'echo "  2. Complete initial setup: https://auth.esweiss.com/if/flow/initial-setup/"'
-      - 'echo "  3. Create akadmin password and store in 1Password"'
-      - 'echo "  4. Configure SSO providers for other services"'
-      - echo ""
-      - kubectl get pods -n authentik
-      - kubectl get svc -n authentik
+      - echo "Authentik deployed successfully"
 
   k3s:deploy-workloads:
     desc: Deploy ALL k3s platform workloads in correct order
     cmds:
-      - echo "=== Deploying K3s Platform Workloads ==="
-      - echo ""
-      - 'echo "Step 1/7 - MetalLB (LoadBalancer support)"'
       - task: k3s:deploy-metallb
-      - echo ""
-      - 'echo "Step 2/7 - Traefik (Ingress controller)"'
       - task: k3s:deploy-traefik
-      - echo ""
-      - 'echo "Step 3/7 - cert-manager (TLS certificates)"'
       - task: k3s:deploy-cert-manager
-      - echo ""
-      - 'echo "Step 4/7 - external-dns (Cloudflare DNS)"'
       - task: k3s:deploy-external-dns
-      - echo ""
-      - 'echo "Step 5/7 - DDNS CronJob (Public IP updates)"'
       - task: k3s:deploy-ddns
-      - echo ""
-      - 'echo "Step 6/7 - IngressRoutes (Service routing)"'
       - task: k3s:deploy-ingress-routes
-      - echo ""
-      - 'echo "Step 7/7 - Authentik SSO (Identity Provider)"'
       - task: k3s:deploy-authentik
-      - echo ""
-      - echo "=== All K3s workloads deployed successfully ==="
+      - echo "K3s platform workloads deployed successfully"
 
   k3s:status:
     desc: Show k3s cluster and workload status
@@ -520,3 +488,352 @@ tasks:
         echo "  - op://Homelab/SMTP Relay Gmail/username"
         echo "  - op://Homelab/AdGuard Home/password"
         echo "  - op://Homelab/Tailscale Auth Key/credential"
+        echo "  - op://Homelab/PrivadoVPN Credentials/openvpn-user"
+        echo "  - op://Homelab/PrivadoVPN Credentials/openvpn-password"
+        echo "  - op://Homelab/VPN Unlimited Credentials/openvpn-user"
+        echo "  - op://Homelab/VPN Unlimited Credentials/openvpn-password"
+
+  # === Download Clients / Media Stack Tasks ===
+  # New architecture: Each download client (nzbget, qbittorrent) runs independently
+  # with its own optional Gluetun VPN sidecar. VPN can be enabled/disabled per-app.
+
+  downloads:deploy:
+    desc: Deploy download clients and media management stack
+    dir: ./kubernetes/apps/download-clients
+    cmds:
+      - kubectl apply -f namespace.yaml
+      - |
+        echo "Creating VPN credentials secret (using PrivadoVPN by default)..."
+        # Validate 1Password is signed in and credentials are not empty
+        if ! op whoami &>/dev/null; then
+          echo "ERROR: 1Password CLI not signed in. Run 'eval \$(op signin)' first."
+          exit 1
+        fi
+        VPN_USER=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')
+        VPN_PASS=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')
+        if [ -z "$VPN_USER" ] || [ -z "$VPN_PASS" ]; then
+          echo "ERROR: VPN credentials are empty. Check 1Password item 'PrivadoVPN Credentials'."
+          exit 1
+        fi
+        kubectl create secret generic vpn-credentials \
+          --namespace=downloads \
+          --from-literal=openvpn-user="$VPN_USER" \
+          --from-literal=openvpn-password="$VPN_PASS" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        echo "Reading versions from centralized configuration..."
+        # Read versions from ansible/inventories/prod/group_vars/all.yml
+        # Using grep + awk to extract values (no yq dependency required)
+        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+        export GLUETUN_VERSION=$(grep '^gluetun_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export NZBGET_VERSION=$(grep '^nzbget_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export QBITTORRENT_VERSION=$(grep '^qbittorrent_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export PROWLARR_VERSION=$(grep '^prowlarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export SONARR_VERSION=$(grep '^sonarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export RADARR_VERSION=$(grep '^radarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export LIDARR_VERSION=$(grep '^lidarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export PULSARR_VERSION=$(grep '^pulsarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+
+        echo "Versions: Gluetun=$GLUETUN_VERSION, NZBGet=$NZBGET_VERSION, qBittorrent=$QBITTORRENT_VERSION"
+        echo "         Prowlarr=$PROWLARR_VERSION, Sonarr=$SONARR_VERSION, Radarr=$RADARR_VERSION"
+        echo "         Lidarr=$LIDARR_VERSION, Pulsarr=$PULSARR_VERSION"
+
+        # Validate all version variables are non-empty
+        if [ -z "$GLUETUN_VERSION" ] || [ -z "$NZBGET_VERSION" ] || [ -z "$QBITTORRENT_VERSION" ] || \
+           [ -z "$PROWLARR_VERSION" ] || [ -z "$SONARR_VERSION" ] || [ -z "$RADARR_VERSION" ] || \
+           [ -z "$LIDARR_VERSION" ] || [ -z "$PULSARR_VERSION" ]; then
+          echo "ERROR: One or more version variables are empty. Check $VARS_FILE format."
+          exit 1
+        fi
+
+        # Apply manifests with version substitution
+        # Only substitute our specific version variables (prevents envsubst from replacing other $ references)
+        ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
+        for file in nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml; do
+          envsubst "$ENVSUBST_VARS" < "$file" | kubectl apply -f -
+        done
+
+        # Apply remaining resources without substitution
+        kubectl apply -f storage.yaml
+        kubectl apply -f certificate.yaml
+        kubectl apply -f ingress-routes.yaml
+      - |
+        echo "Waiting for NZBGet to be ready..."
+        kubectl wait --namespace downloads \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/name=nzbget \
+          --timeout=300s || echo "Warning: NZBGet not ready yet"
+      - |
+        echo "Waiting for qBittorrent to be ready..."
+        kubectl wait --namespace downloads \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/name=qbittorrent \
+          --timeout=300s || echo "Warning: qBittorrent not ready yet"
+      - echo "Download clients and media stack deployed successfully"
+
+  downloads:status:
+    desc: Show status of download clients and media stack
+    cmds:
+      - echo "=== Download Clients Namespace ==="
+      - kubectl get pods -n downloads -o wide
+      - echo ""
+      - echo "=== Services ==="
+      - kubectl get svc -n downloads
+      - echo ""
+      - echo "=== PVCs ==="
+      - kubectl get pvc -n downloads
+      - echo ""
+      - echo "=== VPN ConfigMaps ==="
+      - 'echo "NZBGet VPN:"'
+      - kubectl get configmap nzbget-vpn-config -n downloads -o jsonpath='{.data}' 2>/dev/null || echo "  Not configured"
+      - echo ""
+      - 'echo "qBittorrent VPN:"'
+      - kubectl get configmap qbittorrent-vpn-config -n downloads -o jsonpath='{.data}' 2>/dev/null || echo "  Not configured"
+      - echo ""
+      - echo "=== IngressRoutes ==="
+      - kubectl get ingressroute -n downloads
+
+  downloads:vpn-status:
+    desc: Check VPN connection status for all download clients
+    cmds:
+      - echo "=== NZBGet VPN Status ==="
+      - |
+        VPN_ENABLED=$(kubectl get configmap nzbget-vpn-config -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+        VPN_PROVIDER=$(kubectl get configmap nzbget-vpn-config -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "unknown")
+        echo "VPN Enabled: $VPN_ENABLED"
+        echo "Provider: $VPN_PROVIDER"
+        if [ "$VPN_ENABLED" = "true" ]; then
+          echo "Gluetun logs (last 10 lines):"
+          kubectl logs -n downloads -l app.kubernetes.io/name=nzbget -c gluetun --tail=10 2>/dev/null || echo "  Cannot get logs"
+          echo "Public IP:"
+          kubectl exec -n downloads deployment/nzbget -c gluetun -- wget -qO- https://checkip.amazonaws.com 2>/dev/null || echo "  Cannot reach checkip.amazonaws.com"
+        fi
+      - echo ""
+      - echo "=== qBittorrent VPN Status ==="
+      - |
+        VPN_ENABLED=$(kubectl get configmap qbittorrent-vpn-config -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+        VPN_PROVIDER=$(kubectl get configmap qbittorrent-vpn-config -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "unknown")
+        echo "VPN Enabled: $VPN_ENABLED"
+        echo "Provider: $VPN_PROVIDER"
+        if [ "$VPN_ENABLED" = "true" ]; then
+          echo "Gluetun logs (last 10 lines):"
+          kubectl logs -n downloads -l app.kubernetes.io/name=qbittorrent -c gluetun --tail=10 2>/dev/null || echo "  Cannot get logs"
+          echo "Public IP:"
+          kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https://checkip.amazonaws.com 2>/dev/null || echo "  Cannot reach checkip.amazonaws.com"
+        fi
+
+  downloads:vpn:
+    desc: "Enable/disable VPN for an app (task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado)"
+    vars:
+      APP: '{{.APP | default ""}}'
+      ENABLED: '{{.ENABLED | default "true"}}'
+      PROVIDER: '{{.PROVIDER | default "privado"}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        ENABLED="{{.ENABLED}}"
+        PROVIDER="{{.PROVIDER}}"
+
+        if [ -z "$APP" ]; then
+          echo "Usage: task downloads:vpn APP=<nzbget|qbittorrent> ENABLED=<true|false> [PROVIDER=<privado|vpn-unlimited>]"
+          echo ""
+          echo "Examples:"
+          echo "  task downloads:vpn APP=nzbget ENABLED=true                    # Enable VPN with current provider"
+          echo "  task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado   # Enable with PrivadoVPN"
+          echo "  task downloads:vpn APP=nzbget ENABLED=false                   # Disable VPN (direct internet)"
+          echo "  task downloads:vpn APP=qbittorrent ENABLED=true PROVIDER=vpn-unlimited"
+          exit 1
+        fi
+
+        if [ "$APP" != "nzbget" ] && [ "$APP" != "qbittorrent" ]; then
+          echo "ERROR: APP must be 'nzbget' or 'qbittorrent'"
+          exit 1
+        fi
+
+        CONFIGMAP="${APP}-vpn-config"
+
+        # Update credentials if enabling VPN
+        if [ "$ENABLED" = "true" ]; then
+          # Validate 1Password is signed in
+          if ! op whoami &>/dev/null; then
+            echo "ERROR: 1Password CLI not signed in. Run 'eval \$(op signin)' first."
+            exit 1
+          fi
+          case "$PROVIDER" in
+            privado)
+              echo "Updating VPN credentials (PrivadoVPN)..."
+              VPN_USER=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')
+              VPN_PASS=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')
+              ;;
+            vpn-unlimited|keepsolid)
+              echo "Updating VPN credentials (VPN Unlimited)..."
+              VPN_USER=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-user')
+              VPN_PASS=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-password')
+              PROVIDER="vpn unlimited"
+              ;;
+            *)
+              echo "ERROR: Unknown provider: $PROVIDER"
+              echo "Supported providers: privado, vpn-unlimited"
+              exit 1
+              ;;
+          esac
+          # Validate credentials are not empty
+          if [ -z "$VPN_USER" ] || [ -z "$VPN_PASS" ]; then
+            echo "ERROR: VPN credentials are empty. Check 1Password item."
+            exit 1
+          fi
+          kubectl create secret generic vpn-credentials \
+            --namespace=downloads \
+            --from-literal=openvpn-user="$VPN_USER" \
+            --from-literal=openvpn-password="$VPN_PASS" \
+            --dry-run=client -o yaml | kubectl apply -f -
+        fi
+
+        # Update the ConfigMap
+        kubectl patch configmap "$CONFIGMAP" -n downloads -p "{\"data\":{\"vpn_enabled\":\"$ENABLED\",\"vpn_provider\":\"$PROVIDER\"}}"
+
+        # Restart the deployment
+        kubectl rollout restart deployment/"$APP" -n downloads
+        kubectl rollout status deployment/"$APP" -n downloads --timeout=180s
+
+        if [ "$ENABLED" = "true" ]; then
+          echo "$APP VPN enabled ($PROVIDER)"
+        else
+          echo "$APP VPN disabled"
+        fi
+
+  downloads:vpn-credentials:
+    desc: "Update VPN credentials (task downloads:vpn-credentials PROVIDER=privado)"
+    vars:
+      PROVIDER: '{{.PROVIDER | default "privado"}}'
+    cmds:
+      - |
+        PROVIDER="{{.PROVIDER}}"
+        # Validate 1Password is signed in
+        if ! op whoami &>/dev/null; then
+          echo "ERROR: 1Password CLI not signed in. Run 'eval \$(op signin)' first."
+          exit 1
+        fi
+        case "$PROVIDER" in
+          privado)
+            VPN_USER=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')
+            VPN_PASS=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')
+            ;;
+          vpn-unlimited|keepsolid)
+            VPN_USER=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-user')
+            VPN_PASS=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-password')
+            ;;
+          *)
+            echo "ERROR: Unknown provider: $PROVIDER"
+            echo "Supported providers: privado, vpn-unlimited"
+            exit 1
+            ;;
+        esac
+        # Validate credentials are not empty
+        if [ -z "$VPN_USER" ] || [ -z "$VPN_PASS" ]; then
+          echo "ERROR: VPN credentials are empty. Check 1Password item."
+          exit 1
+        fi
+        kubectl create secret generic vpn-credentials \
+          --namespace=downloads \
+          --from-literal=openvpn-user="$VPN_USER" \
+          --from-literal=openvpn-password="$VPN_PASS" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "VPN credentials updated for $PROVIDER"
+
+  downloads:restart:
+    desc: Restart all download clients and media apps
+    cmds:
+      - echo "Restarting download clients..."
+      - kubectl rollout restart deployment/nzbget -n downloads
+      - kubectl rollout restart deployment/qbittorrent -n downloads
+      - echo "Restarting *arr apps..."
+      - kubectl rollout restart deployment/prowlarr -n downloads
+      - kubectl rollout restart deployment/sonarr -n downloads
+      - kubectl rollout restart deployment/radarr -n downloads
+      - kubectl rollout restart deployment/lidarr -n downloads
+      - kubectl rollout restart deployment/pulsarr -n downloads
+      - echo "Waiting for pods to be ready..."
+      - kubectl wait --namespace downloads --for=condition=ready pod --all --timeout=300s
+
+  downloads:logs:
+    desc: "View logs for a specific app (task downloads:logs APP=nzbget [CONTAINER=gluetun])"
+    vars:
+      APP: '{{.APP | default "nzbget"}}'
+      CONTAINER: '{{.CONTAINER | default ""}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        CONTAINER="{{.CONTAINER}}"
+
+        case "$APP" in
+          nzbget|qbittorrent)
+            if [ -n "$CONTAINER" ]; then
+              echo "=== $APP / $CONTAINER logs ==="
+              kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -c "$CONTAINER" -f
+            else
+              echo "=== $APP logs (main container) ==="
+              kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -c "$APP" -f
+            fi
+            ;;
+          nzbget-vpn|qbittorrent-vpn)
+            REAL_APP="${APP%-vpn}"
+            echo "=== $REAL_APP / gluetun logs ==="
+            kubectl logs -n downloads -l app.kubernetes.io/name="$REAL_APP" -c gluetun -f
+            ;;
+          *)
+            echo "=== $APP logs ==="
+            kubectl logs -n downloads -l app.kubernetes.io/name="$APP" -f
+            ;;
+        esac
+
+  downloads:shell:
+    desc: "Open shell in app container (task downloads:shell APP=nzbget [CONTAINER=gluetun])"
+    vars:
+      APP: '{{.APP | default "nzbget"}}'
+      CONTAINER: '{{.CONTAINER | default ""}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        CONTAINER="{{.CONTAINER}}"
+
+        case "$APP" in
+          nzbget|qbittorrent)
+            if [ -n "$CONTAINER" ]; then
+              echo "Opening shell in $APP / $CONTAINER..."
+              kubectl exec -it -n downloads deployment/"$APP" -c "$CONTAINER" -- /bin/sh
+            else
+              echo "Opening shell in $APP..."
+              kubectl exec -it -n downloads deployment/"$APP" -c "$APP" -- /bin/sh
+            fi
+            ;;
+          *)
+            echo "Opening shell in $APP..."
+            kubectl exec -it -n downloads deployment/"$APP" -- /bin/sh
+            ;;
+        esac
+
+  downloads:delete:
+    desc: Delete download clients and media stack (preserves namespace, PVCs, and secrets)
+    dir: ./kubernetes/apps/download-clients
+    cmds:
+      - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
+      - |
+        # Delete only workload resources, NOT namespace/storage/secrets
+        # This allows safe redeploy with 'task downloads:deploy'
+        kubectl delete -f nzbget.yaml --ignore-not-found
+        kubectl delete -f qbittorrent.yaml --ignore-not-found
+        kubectl delete -f prowlarr.yaml --ignore-not-found
+        kubectl delete -f sonarr.yaml --ignore-not-found
+        kubectl delete -f radarr.yaml --ignore-not-found
+        kubectl delete -f lidarr.yaml --ignore-not-found
+        kubectl delete -f pulsarr.yaml --ignore-not-found
+        kubectl delete -f ingress-routes.yaml --ignore-not-found
+      - |
+        echo ""
+        echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
+        echo "Re-deploy with: task downloads:deploy"
+        echo ""
+        echo "To fully remove everything:"
+        echo "  kubectl delete namespace downloads"
+

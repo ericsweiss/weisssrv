@@ -197,10 +197,11 @@ flux bootstrap github \
 ### Downloads and Media (Direct NFS Mounts)
 
 Keep NAS-backed NFS mounts for IO-heavy workloads:
-- `/export/downloads` - Direct mount for download clients
-- `/export/media` - MergerFS view (combines media-hot + tank/media)
+- `/export/media` - MergerFS view (combines nvme/media + tank/media) with unified structure:
+  - `/export/media/downloads/` - Download client working directories
+  - `/export/media/library/` - Organized media library
 
-Media stack (*arr, qBittorrent, NZBGet, Plex) mounts these directly for best performance.
+Media stack (*arr, qBittorrent, NZBGet, Plex) mounts these directly for best performance. The unified `/media` mount enables hardlinking between downloads and library.
 
 ### App Data (Dynamic PVCs)
 
@@ -241,12 +242,11 @@ Media stack (*arr, qBittorrent, NZBGet, Plex) mounts these directly for best per
 - Sonarr - TV show management
 - Lidarr - Music management
 - Prowlarr - Indexer management
-- Readarr - Book management (optional)
 - Overseerr / Jellyseerr - Request management
 
 **Scheduling**:
 - Prefer `esweiss.com/nas=true` for IO-heavy services
-- Mount `/export/downloads` and `/export/media` directly
+- Mount `/export/media` directly (contains both downloads and library)
 - Use NFS provisioner for app config/state
 
 ### Photos / Personal Cloud
@@ -344,11 +344,11 @@ Client on Internet:
 ## Milestones / Sequencing
 
 1. Base infra parity codified + documented (COMPLETE)
-2. K3s VM provisioning (Terraform/Ansible)
-3. K3s bootstrap + kube-vip + MetalLB + Traefik
-4. GitOps controller (likely Flux)
-5. Platform services: Authentik + cert-manager + external-dns + monitoring
-6. Workloads: Plex (NAS) + download/*arr stack
+2. K3s VM provisioning (Terraform/Ansible) (COMPLETE)
+3. K3s bootstrap + kube-vip + MetalLB + Traefik (COMPLETE)
+4. Platform services: Authentik + cert-manager + external-dns (COMPLETE)
+5. Workloads: Plex (NAS LXC) + download/*arr stack (COMPLETE)
+6. GitOps controller (Flux) - PLANNED
 7. Immich + Nextcloud decisions and deployment
 8. Logging stack decision and rollout (TBD: Loki vs OpenSearch)
 9. Hardening + backup validation drills

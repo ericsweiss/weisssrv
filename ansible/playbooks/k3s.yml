@@ -23,6 +23,11 @@
   roles:
     - k3s
 
+- name: Deploy guest firewall rules
+  hosts: k3s
+  roles:
+    - proxmox_firewall
+
 - name: Verify cluster health
   hosts: k3s_servers[0]
   become: true

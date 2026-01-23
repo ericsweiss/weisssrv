@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: downloads
+  labels:
+    app.kubernetes.io/name: downloads
+    app.kubernetes.io/part-of: media-stack
+    # Pod Security Standards - privileged required for Gluetun VPN sysctls
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

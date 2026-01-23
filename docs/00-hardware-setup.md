@@ -426,7 +426,7 @@ zfs set com.sun:auto-snapshot=false archive
 
 ```bash
 # NVMe datasets
-zfs create nvme/downloads
+zfs create nvme/media
 
 # SSD datasets
 zfs create ssd/appdata

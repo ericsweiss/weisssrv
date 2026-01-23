@@ -1,76 +1,21 @@
 ---
-# Proxmox VE hypervisor configuration
+# Proxmox-specific variables
+# These hosts act as Tailscale subnet routers for remote access to the homelab
 
-# Base packages for Proxmox hosts
-proxmox_packages:
-  - zsh
-  - neovim
-  - fzf
-  - ripgrep
-  - fd-find
-  - bat
-  - exa
-  - postfix
-  - libsasl2-modules
-  - mailutils
+# Tailscale subnet routing configuration
+# Proxmox hosts advertise the internal LAN but do NOT accept routes from other peers
+# This prevents routing loops where the host routes its own traffic through Tailscale
+tailscale_accept_routes: false  # CRITICAL: Subnet routers must NOT accept routes
+tailscale_advertise_routes:
+  - "192.168.0.0/24"  # Advertise internal LAN for remote access via Tailscale
 
-# OpenRGB configuration (present but disabled)
-openrgb_enabled: false
-openrgb_config_path: /etc/openrgb
+# Additional Tailscale flags for subnet routers
+# These are passed to `tailscale up` command
+tailscale_additional_flags:
+  - "--operator=eric"  # Allow eric user to manage Tailscale
+  - "--ssh"  # Enable Tailscale SSH
 
-# Postfix null client configuration
-postfix_config:
-  myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
-  myorigin: "{{ internal_domain }}"
-  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
-  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
-  mynetworks: "127.0.0.0/8"
-  inet_interfaces: "loopback-only"
-  smtp_tls_security_level: "encrypt"
-  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
-  smtp_sasl_auth_enable: "yes"
-  smtp_sasl_security_options: "noanonymous"
-  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
-
-# Mail aliases
-mail_aliases:
-  postmaster: root
-  nobody: root
-  hostmaster: root
-  webmaster: root
-  root: "{{ admin_email }}"
-
-# SASL credentials for authenticating to smtp-relay (from 1Password)
+# Postfix null client SASL credentials (for relay to smtp-relay)
+# Resolved from 1Password at runtime via op run
 postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
 postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"
-
-# Proxmox firewall enabled
-pve_firewall_enabled: true
-
-# Shell QoL - Oh My Zsh
-omz_theme: risto
-omz_plugins:
-  - 1password
-  - ansible
-  - docker
-  - docker-compose
-  - git
-  - git-flow
-  - github
-  - golang
-  - history-substring-search
-  - python
-  - ruby
-  - rust
-  - scala
-  - screen
-  - ssh
-  - tmux
-  - vundle
-
-# Neovim plugins (Vundle)
-nvim_plugins:
-  - VundleVim/Vundle.vim
-  - tpope/vim-fugitive
-  - sheerun/vim-polyglot
-  - joshdick/onedark.vim

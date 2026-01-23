@@ -1,13 +1,13 @@
 # Cursor Rules for weisssrv Homelab
 
-You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, and GitOps principles.
+You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, Kubernetes (k3s), and GitOps principles.
 
 ## Project Overview
 
 **Repository**: weisssrv (Weiss Server Infrastructure)
-**Tech Stack**: Ansible, Terraform, ZFS, Proxmox VE, Debian 13 (trixie)
-**Architecture**: 2 Proxmox hosts, 3 LXC containers, multi-pool ZFS storage
-**Documentation**: 19 comprehensive markdown files in docs/
+**Tech Stack**: Ansible, Terraform, k3s, ZFS, Proxmox VE, Debian 13 (trixie)
+**Architecture**: 2 Proxmox hosts, 3 k3s nodes, 1 LXC container (Plex), multi-pool ZFS storage
+**Documentation**: Comprehensive markdown files in docs/
 
 See `CLAUDE.md` for complete project overview.
 
@@ -184,9 +184,12 @@ ansible/
 ### Infrastructure
 
 - **Proxmox Hosts**: pve-nas-01 (.102), pve-opt-03 (.106)
+- **K3s Cluster**: k3s-srv-nas-01 (.202), k3s-agt-nas-01 (.207), k3s-agt-opt-03 (.206)
 - **DNS Servers**: dns-01 (.150), dns-02 (.160) - AdGuard + Unbound
 - **SMTP Relay**: smtp-relay (.151) - Postfix to Gmail
+- **Plex LXC**: plex (.154) - Media server with GPU passthrough
 - **VPN**: Tailscale on all hosts (100.64.0.0/10)
+- **K3s VIPs**: API (.161), Public ingress (.100), Internal ingress (.101)
 
 ### Storage (pve-nas-01)
 
@@ -324,6 +327,7 @@ Complete documentation in `docs/`:
 **Getting Started** (00-03): Hardware setup, architecture, installation, SSH
 **Infrastructure** (04-11): QoL, Tailscale, ZFS, file services, DNS, certs, mail, firewall
 **Operations** (12-18): Runbooks, CI/CD, k3s plan, credentials, DR, bootstrap
+**Applications** (19-21): K3s deployment, Plex, download clients/media stack
 
 ## Debugging
 
@@ -379,4 +383,5 @@ For homelab architecture questions, hardware recommendations, or infrastructure 
 - Inventory: `ansible/inventories/prod/hosts.yml`
 - Global vars: `ansible/inventories/prod/group_vars/all.yml`
 - Task runner: `Taskfile.yml`
-- All docs: `docs/00-*.md` through `docs/18-*.md`
+- K3s manifests: `kubernetes/apps/` and `kubernetes/bootstrap/`
+- All docs: `docs/`

@@ -1,0 +1,38 @@
+---
+# VPN Credentials Secret - REFERENCE FILE
+#
+# This file documents the secret structure but is NOT applied via kustomize.
+# The actual secret is created by 'task downloads:deploy' which injects real
+# credentials from 1Password before applying other manifests.
+#
+# Manual creation (if needed):
+#   kubectl create secret generic vpn-credentials \
+#     --namespace=downloads \
+#     --from-literal=openvpn-user="$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')" \
+#     --from-literal=openvpn-password="$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')"
+#
+# Or for VPN Unlimited:
+#   kubectl create secret generic vpn-credentials \
+#     --namespace=downloads \
+#     --from-literal=openvpn-user="$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-user')" \
+#     --from-literal=openvpn-password="$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-password')"
+#
+# Both nzbget and qbittorrent reference this secret when VPN is enabled.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vpn-credentials
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: vpn-credentials
+    app.kubernetes.io/component: vpn
+    app.kubernetes.io/part-of: media-stack
+  annotations:
+    esweiss.com/managed-by: "task-command"
+    esweiss.com/description: "VPN credentials from 1Password, shared by download clients"
+type: Opaque
+# Secret data is created imperatively by task command - NOT from this file
+# Required keys:
+#   openvpn-user: <base64-encoded username>
+#   openvpn-password: <base64-encoded password>

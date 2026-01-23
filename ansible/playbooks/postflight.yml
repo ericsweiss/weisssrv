@@ -187,9 +187,8 @@
       when: >
         'tank/media' in item or
         'tank/share' in item or
-        'tank/downloads' in item or
         'ssd/appdata' in item or
-        'nvme/downloads' in item
+        'nvme/media' in item
 
     - name: Verify MergerFS mounts
       ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE

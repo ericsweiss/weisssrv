@@ -20,17 +20,23 @@ spec:
     spec:
       # Jobs timeout after 5 minutes (should complete in seconds)
       activeDeadlineSeconds: 300
+      # Automatically delete completed/failed jobs after 1 hour
+      ttlSecondsAfterFinished: 3600
       template:
         spec:
+          hostNetwork: true
           restartPolicy: Never
           containers:
           - name: ddns-update
-            image: curlimages/curl:8.11.0
+            image: alpine:3.21
             command:
             - /bin/sh
             - -c
             - |
               set -e
+
+              # Install curl
+              apk add --no-cache curl >/dev/null 2>&1
 
               # Get current public IP
               CURRENT_IP=$(curl -sf https://api.ipify.org)

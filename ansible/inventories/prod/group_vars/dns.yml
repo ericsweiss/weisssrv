@@ -124,13 +124,21 @@ adguard_rewrites:
   # Internal-only services - esweiss.com only (internal domain)
   # No external DNS in Cloudflare, no AdGuard rewrite for ericsweiss.com
   # ericsweiss.com variants won't resolve (cleaner separation of internal vs external domains)
+  # Download clients
+  - domain: "nzbget.{{ internal_domain }}"
+    answer: "192.168.0.101"
   - domain: "qbittorrent.{{ internal_domain }}"
     answer: "192.168.0.101"
-  - domain: "nzbget.{{ internal_domain }}"
+  # Media managers (*arr stack) - using canonical short names
+  - domain: "prowlarr.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "tv.{{ internal_domain }}"
     answer: "192.168.0.101"
   - domain: "movies.{{ internal_domain }}"
     answer: "192.168.0.101"
-  - domain: "tv.{{ internal_domain }}"
+  - domain: "music.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "pulsarr.{{ internal_domain }}"
     answer: "192.168.0.101"
 
 # Custom filtering rules

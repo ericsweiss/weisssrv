@@ -37,8 +37,18 @@
     - acme_certs
     - adguard_sync
 
+- name: Deploy DNS guest firewall rules
+  hosts: dns
+  roles:
+    - proxmox_firewall
+
 - name: Deploy SMTP relay configuration
   hosts: mail
   become: true
   roles:
     - smtp_relay
+
+- name: Deploy SMTP guest firewall rules
+  hosts: mail
+  roles:
+    - proxmox_firewall

@@ -94,7 +94,7 @@ kubectl apply -k kubernetes/apps/ingress-routes/
 
 ---
 
-## Idempotency
+## Idempotency and Upgrades
 
 **All k3s deployment tasks are idempotent** - safe to re-run at any time without side effects.
 
@@ -102,12 +102,29 @@ kubectl apply -k kubernetes/apps/ingress-routes/
 
 | Operation | Idempotency Mechanism |
 |-----------|----------------------|
-| K3s server install | `creates: /usr/local/bin/k3s` - skips if binary exists |
-| K3s agent install | `when: not k3s_binary.stat.exists` - skips if binary exists |
+| K3s server install | Version check - installs/upgrades when version differs |
+| K3s agent install | Version check - installs/upgrades when version differs |
 | Config files | Template tasks with notify - only restarts on change |
 | Node labels/taints | `--overwrite` flag - safe to re-apply |
 | kube-vip manifest | Template task - only updates if changed |
 | Package installation | `state: present` - no-op if installed |
+
+### K3s Version Upgrades
+
+To upgrade k3s to a new version:
+
+1. **Update the version** in `ansible/inventories/prod/group_vars/all.yml`:
+   ```yaml
+   k3s_version: "v1.33.8+k3s1"  # New version
+   ```
+
+2. **Run the deploy task** - it will detect the version mismatch and upgrade:
+   ```bash
+   task k3s:deploy
+   ```
+
+The installer checks the current k3s version and compares it to the target version. If they differ,
+the k3s install script runs again (which handles in-place upgrades).
 
 ### Helm Tasks (`task k3s:deploy-*`)
 
