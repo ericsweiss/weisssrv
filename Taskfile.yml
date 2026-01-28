@@ -492,6 +492,13 @@ tasks:
         echo "  - op://Homelab/PrivadoVPN Credentials/openvpn-password"
         echo "  - op://Homelab/VPN Unlimited Credentials/openvpn-user"
         echo "  - op://Homelab/VPN Unlimited Credentials/openvpn-password"
+        echo "  - op://Homelab/Mealie Secrets/postgres-password"
+        echo "  - op://Homelab/Mealie SSO/oidc-client-id"
+        echo "  - op://Homelab/Mealie SSO/oidc-client-secret"
+        echo "  - op://Homelab/OpenAI API Key/api-key"
+        echo "  - op://Homelab/Bar Assistant Secrets/meilisearch-master-key"
+        echo "  - op://Homelab/Bar Assistant SSO/authentik-client-id"
+        echo "  - op://Homelab/Bar Assistant SSO/authentik-client-secret"
 
   # === Download Clients / Media Stack Tasks ===
   # New architecture: Each download client (nzbget, qbittorrent) runs independently
@@ -836,4 +843,203 @@ tasks:
         echo ""
         echo "To fully remove everything:"
         echo "  kubectl delete namespace downloads"
+
+  # === Recipe Management Stack Tasks ===
+  # Mealie (recipe management) and Bar Assistant (cocktail recipes)
+  # Data services pinned to NAS node for NFS locality and backup consistency
+
+  recipes:deploy:
+    desc: Deploy Mealie and Bar Assistant recipe management stack
+    dir: ./kubernetes/apps/recipes
+    cmds:
+      - kubectl apply -f namespace.yaml
+      - kubectl apply -f storage.yaml
+      - |
+        # Create secrets from 1Password using op run wrapper
+        # op run handles authentication automatically (prompts if needed)
+        op run --no-masking -- sh -c '
+          echo "Creating secrets from 1Password..."
+
+          # Read all secrets from 1Password (required secrets - no fallbacks)
+          # This ensures idempotent deployments and supports credential rotation
+          echo "Reading secrets from 1Password..."
+
+          # Required for all deployments
+          SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
+          SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
+          MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
+          MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
+
+          # SSO secrets (REQUIRED - password login is disabled, SSO is the only way to log in)
+          MEALIE_OIDC_CLIENT_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
+          MEALIE_OIDC_CLIENT_SECRET=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
+          BA_CLIENT_ID=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-id")
+          BA_CLIENT_SECRET=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
+
+          # Optional: OpenAI for recipe parsing (deployment proceeds without this)
+          MEALIE_OPENAI_KEY=$(op read "op://Homelab/OpenAI API Key/api-key" 2>/dev/null || echo "")
+
+          # Validate required secrets are not empty
+          MISSING=""
+          if [ -z "$SMTP_USER" ] || [ -z "$SMTP_PASS" ]; then
+            MISSING="$MISSING\n  - SMTP Relay Auth (username, password)"
+          fi
+          if [ -z "$MEALIE_PG_PASS" ]; then
+            MISSING="$MISSING\n  - Mealie Secrets (postgres-password)"
+          fi
+          if [ -z "$MEILI_KEY" ]; then
+            MISSING="$MISSING\n  - Bar Assistant Secrets (meilisearch-master-key)"
+          fi
+          if [ -z "$MEALIE_OIDC_CLIENT_ID" ] || [ -z "$MEALIE_OIDC_CLIENT_SECRET" ]; then
+            MISSING="$MISSING\n  - Mealie SSO (oidc-client-id, oidc-client-secret)"
+          fi
+          if [ -z "$BA_CLIENT_ID" ] || [ -z "$BA_CLIENT_SECRET" ]; then
+            MISSING="$MISSING\n  - Bar Assistant SSO (authentik-client-id, authentik-client-secret)"
+          fi
+
+          if [ -n "$MISSING" ]; then
+            echo "ERROR: Required 1Password secrets are missing:$MISSING"
+            echo ""
+            echo "Create these items in 1Password vault Homelab before deploying."
+            echo "SSO secrets are REQUIRED - password login is disabled in both apps."
+            echo "See docs/22-recipes-deployment.md and docs/23-recipes-sso-setup.md for setup instructions."
+            exit 1
+          fi
+
+          # Warn about optional secrets
+          if [ -z "$MEALIE_OPENAI_KEY" ]; then
+            echo "NOTE: OpenAI API key not found. Recipe parsing from images will be disabled."
+            echo "      Add API key to OpenAI API Key 1Password item to enable."
+          fi
+
+          # Create Mealie secrets
+          kubectl create secret generic mealie-secrets \
+            --namespace=recipes \
+            --from-literal=postgres-password="$MEALIE_PG_PASS" \
+            --from-literal=smtp-username="$SMTP_USER" \
+            --from-literal=smtp-password="$SMTP_PASS" \
+            --from-literal=oidc-client-id="$MEALIE_OIDC_CLIENT_ID" \
+            --from-literal=oidc-client-secret="$MEALIE_OIDC_CLIENT_SECRET" \
+            --from-literal=openai-api-key="$MEALIE_OPENAI_KEY" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Create Bar Assistant secrets
+          kubectl create secret generic bar-assistant-secrets \
+            --namespace=recipes \
+            --from-literal=meilisearch-master-key="$MEILI_KEY" \
+            --from-literal=smtp-username="$SMTP_USER" \
+            --from-literal=smtp-password="$SMTP_PASS" \
+            --from-literal=authentik-client-id="$BA_CLIENT_ID" \
+            --from-literal=authentik-client-secret="$BA_CLIENT_SECRET" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Secrets created/updated successfully"
+        '
+      - |
+        echo "Reading versions from centralized configuration..."
+        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+        export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+
+        echo "Versions: Mealie=$MEALIE_VERSION, Bar Assistant=$BAR_ASSISTANT_VERSION, Salt Rim=$SALT_RIM_VERSION"
+
+        if [ -z "$MEALIE_VERSION" ] || [ -z "$BAR_ASSISTANT_VERSION" ] || [ -z "$SALT_RIM_VERSION" ]; then
+          echo "ERROR: One or more version variables are empty. Check $VARS_FILE format."
+          exit 1
+        fi
+
+        # Apply manifests with version substitution
+        ENVSUBST_VARS='$MEALIE_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
+        envsubst "$ENVSUBST_VARS" < mealie.yaml | kubectl apply -f -
+        envsubst "$ENVSUBST_VARS" < bar-assistant.yaml | kubectl apply -f -
+
+        # Apply ingress routes (no substitution needed)
+        kubectl apply -f ingress-routes.yaml
+      - |
+        echo "Waiting for Mealie PostgreSQL to be ready..."
+        kubectl wait --namespace recipes \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/name=mealie-postgres \
+          --timeout=180s || echo "Warning: Mealie PostgreSQL not ready yet"
+      - |
+        echo "Waiting for Mealie to be ready..."
+        kubectl wait --namespace recipes \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/name=mealie \
+          --timeout=300s || echo "Warning: Mealie not ready yet"
+      - |
+        echo "Waiting for Bar Assistant to be ready..."
+        kubectl wait --namespace recipes \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/name=bar-assistant \
+          --timeout=300s || echo "Warning: Bar Assistant not ready yet"
+      - echo "Recipe management stack deployed successfully"
+
+  recipes:status:
+    desc: Show status of recipe management stack
+    cmds:
+      - echo "=== Recipes Namespace ==="
+      - kubectl get pods -n recipes -o wide
+      - echo ""
+      - echo "=== Services ==="
+      - kubectl get svc -n recipes
+      - echo ""
+      - echo "=== PVCs ==="
+      - kubectl get pvc -n recipes
+      - echo ""
+      - echo "=== IngressRoutes ==="
+      - kubectl get ingressroute -n recipes
+
+  recipes:restart:
+    desc: Restart all recipe apps
+    cmds:
+      - echo "Restarting Mealie..."
+      - kubectl rollout restart deployment/mealie -n recipes
+      - kubectl rollout restart deployment/mealie-postgres -n recipes
+      - echo "Restarting Bar Assistant..."
+      - kubectl rollout restart deployment/bar-assistant -n recipes
+      - kubectl rollout restart deployment/bar-assistant-redis -n recipes
+      - kubectl rollout restart deployment/bar-assistant-meilisearch -n recipes
+      - kubectl rollout restart deployment/salt-rim -n recipes
+      - echo "Waiting for pods to be ready..."
+      - kubectl wait --namespace recipes --for=condition=ready pod --all --timeout=300s
+
+  recipes:logs:
+    desc: "View logs for a specific app (task recipes:logs APP=mealie)"
+    vars:
+      APP: '{{.APP | default "mealie"}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        echo "=== $APP logs ==="
+        kubectl logs -n recipes -l app.kubernetes.io/name="$APP" -f
+
+  recipes:shell:
+    desc: "Open shell in app container (task recipes:shell APP=mealie)"
+    vars:
+      APP: '{{.APP | default "mealie"}}'
+    cmds:
+      - |
+        APP="{{.APP}}"
+        echo "Opening shell in $APP..."
+        kubectl exec -it -n recipes deployment/"$APP" -- /bin/sh
+
+  recipes:delete:
+    desc: Delete recipe stack (preserves namespace, PVCs, and secrets)
+    dir: ./kubernetes/apps/recipes
+    cmds:
+      - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
+      - |
+        # Delete only workload resources, NOT namespace/storage/secrets
+        kubectl delete -f mealie.yaml --ignore-not-found
+        kubectl delete -f bar-assistant.yaml --ignore-not-found
+        kubectl delete -f ingress-routes.yaml --ignore-not-found
+      - |
+        echo ""
+        echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
+        echo "Re-deploy with: task recipes:deploy"
+        echo ""
+        echo "To fully remove everything:"
+        echo "  kubectl delete namespace recipes"
 

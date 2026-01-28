@@ -57,6 +57,13 @@ secrets:
   authentik_secret_key: "op://Homelab/Authentik Secrets/secret-key"
   authentik_postgresql_password: "op://Homelab/Authentik Secrets/postgresql-password"
   authentik_postgresql_admin_password: "op://Homelab/Authentik Secrets/postgresql-admin-password"
+  # Mealie SSO and OpenAI secrets
+  mealie_oidc_client_id: "op://Homelab/Mealie SSO/oidc-client-id"
+  mealie_oidc_client_secret: "op://Homelab/Mealie SSO/oidc-client-secret"
+  mealie_openai_api_key: "op://Homelab/OpenAI API Key/api-key"
+  # Bar Assistant SSO secrets
+  bar_assistant_authentik_client_id: "op://Homelab/Bar Assistant SSO/authentik-client-id"
+  bar_assistant_authentik_client_secret: "op://Homelab/Bar Assistant SSO/authentik-client-secret"
 
 # Timezone
 timezone: America/Los_Angeles
@@ -113,6 +120,13 @@ sonarr_version: "latest"
 radarr_version: "latest"
 lidarr_version: "latest"
 pulsarr_version: "latest"
+
+# Recipe management stack versions
+# Mealie: https://github.com/mealie-recipes/mealie
+# Bar Assistant: https://github.com/bar-assistant/bar-assistant
+mealie_version: "latest"
+bar_assistant_version: "v5"
+salt_rim_version: "v4"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

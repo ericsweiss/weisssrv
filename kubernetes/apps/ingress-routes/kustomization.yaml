@@ -12,8 +12,7 @@ resources:
   # IngressRoutes (in default namespace)
   # These are for services running OUTSIDE the k3s cluster
   - adguard-home.yaml
-  - bar.yaml
-  - food.yaml
   - router.yaml
   - home-assistant.yaml
   - plex.yaml
+  # Mealie and Bar Assistant ingress routes are in kubernetes/apps/recipes/

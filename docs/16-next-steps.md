@@ -32,6 +32,11 @@ This document tracks remaining work and planned improvements.
   - Media managers (Sonarr, Radarr, Lidarr, Prowlarr)
   - Plex Watchlist automation (Pulsarr)
   - All services with Authentik SSO protection
+- [x] Recipe management stack deployed:
+  - Mealie (food.esweiss.com) - Recipe management and meal planning
+  - Bar Assistant (bar.esweiss.com) - Cocktail recipe management
+  - Authentik SSO integration for both apps
+  - OpenAI integration for Mealie recipe parsing
 
 ## Immediate TODO
 
@@ -67,7 +72,6 @@ This document tracks remaining work and planned improvements.
 
 - [ ] Immich (photo management)
 - [ ] Nextcloud (file sync)
-- [ ] Overseerr/Jellyseerr (request management)
 
 ### Infrastructure Improvements
 
@@ -99,8 +103,12 @@ task k3s:status           # Show cluster status
 task downloads:deploy     # Deploy downloads stack
 task downloads:status     # Show stack status
 task downloads:vpn-status # Check VPN connection
-task downloads:vpn-switch # Switch VPN providers
+task downloads:vpn        # Toggle VPN per-app
 task downloads:logs       # View app logs
+
+# Recipes stack
+task recipes:deploy       # Deploy Mealie and Bar Assistant
+task recipes:status       # Show recipes status
 
 # Plex
 task deploy:plex          # Deploy Plex LXC
@@ -127,3 +135,5 @@ After deployment, verify:
 - [x] All pods running
 - [x] IngressRoutes accessible
 - [x] VPN connected for download clients
+- [x] Mealie accessible at food.esweiss.com
+- [x] Bar Assistant accessible at bar.esweiss.com

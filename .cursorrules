@@ -327,7 +327,7 @@ Complete documentation in `docs/`:
 **Getting Started** (00-03): Hardware setup, architecture, installation, SSH
 **Infrastructure** (04-11): QoL, Tailscale, ZFS, file services, DNS, certs, mail, firewall
 **Operations** (12-18): Runbooks, CI/CD, k3s plan, credentials, DR, bootstrap
-**Applications** (19-21): K3s deployment, Plex, download clients/media stack
+**Applications** (19-23): K3s deployment, Plex, download clients/media stack, recipe management
 
 ## Debugging
 

@@ -1,0 +1,505 @@
+---
+# Bar Assistant - Cocktail and bar recipe management
+# URL: bar.esweiss.com / bar.ericsweiss.com
+# Docs: https://bar-assistant.github.io/docs/
+#
+# Fresh deployment following official Docker setup:
+# https://github.com/bar-assistant/docker
+#
+# Architecture:
+# - Bar Assistant Server (v5) - Laravel API with SQLite database
+# - Salt Rim (v4) - Vue.js frontend
+# - Meilisearch - Full-text search engine
+# - Redis - Cache and session storage
+
+
+# =============================================================================
+# Redis (cache and session storage)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bar-assistant-redis
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: bar-assistant-redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: bar-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant-redis
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bar-assistant-redis
+        app.kubernetes.io/component: cache
+    spec:
+      # Pin to NAS agent for storage locality
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k3s-agt-nas-01
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bar-assistant-redis
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: bar-assistant-redis
+spec:
+  selector:
+    app.kubernetes.io/name: bar-assistant-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  type: ClusterIP
+
+---
+# =============================================================================
+# Meilisearch (search engine - using v1.15 per official docker-compose)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bar-assistant-meilisearch
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: bar-assistant-meilisearch
+    app.kubernetes.io/component: search
+    app.kubernetes.io/part-of: bar-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant-meilisearch
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bar-assistant-meilisearch
+        app.kubernetes.io/component: search
+    spec:
+      # Pin to NAS agent for storage locality
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k3s-agt-nas-01
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      containers:
+        - name: meilisearch
+          # Using v1.15 per official docker-compose
+          image: getmeili/meilisearch:v1.15
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MEILI_ENV
+              value: production
+            - name: MEILI_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bar-assistant-secrets
+                  key: meilisearch-master-key
+            - name: MEILI_NO_ANALYTICS
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 7700
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /meili_data
+              subPath: meilisearch
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bar-assistant-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bar-assistant-meilisearch
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: bar-assistant-meilisearch
+spec:
+  selector:
+    app.kubernetes.io/name: bar-assistant-meilisearch
+  ports:
+    - name: http
+      port: 7700
+      targetPort: http
+  type: ClusterIP
+
+---
+# =============================================================================
+# Bar Assistant API (Laravel backend with SQLite)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bar-assistant
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: bar-assistant
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: bar-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bar-assistant
+        app.kubernetes.io/component: api
+    spec:
+      # Pin to NAS agent for storage locality (same as redis/meilisearch)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k3s-agt-nas-01
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      containers:
+        - name: bar-assistant
+          # Version managed in ansible/inventories/prod/group_vars/all.yml
+          image: barassistant/server:${BAR_ASSISTANT_VERSION}
+          imagePullPolicy: Always
+          env:
+            # Application URL - matches official docker-compose APP_URL=$API_URL
+            - name: APP_URL
+              value: https://bar.ericsweiss.com
+            # Meilisearch configuration - matches official docker-compose
+            - name: MEILISEARCH_HOST
+              value: http://bar-assistant-meilisearch:7700
+            - name: MEILISEARCH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bar-assistant-secrets
+                  key: meilisearch-master-key
+            # Redis configuration - matches official docker-compose
+            - name: REDIS_HOST
+              value: bar-assistant-redis
+            - name: CACHE_DRIVER
+              value: redis
+            - name: SESSION_DRIVER
+              value: redis
+            # Mail configuration (uses existing SMTP relay)
+            - name: MAIL_MAILER
+              value: smtp
+            - name: MAIL_HOST
+              value: smtp-relay.esweiss.com
+            - name: MAIL_PORT
+              value: "587"
+            - name: MAIL_ENCRYPTION
+              value: tls
+            - name: MAIL_FROM_ADDRESS
+              value: bar-assistant@esweiss.com
+            - name: MAIL_FROM_NAME
+              value: Bar Assistant
+            - name: MAIL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: bar-assistant-secrets
+                  key: smtp-username
+            - name: MAIL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bar-assistant-secrets
+                  key: smtp-password
+            # Authentik SSO configuration
+            - name: AUTHENTIK_BASE_URL
+              value: https://auth.ericsweiss.com
+            - name: AUTHENTIK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bar-assistant-secrets
+                  key: authentik-client-id
+            - name: AUTHENTIK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bar-assistant-secrets
+                  key: authentik-client-secret
+            - name: AUTHENTIK_REDIRECT_URI
+              value: https://bar.ericsweiss.com/oauth/callback
+            # Allow registration for SSO auto-linking/creation
+            - name: ALLOW_REGISTRATION
+              value: "true"
+            # Disable password login (SSO only)
+            - name: ENABLE_PASSWORD_LOGIN
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # Give the app time to run migrations on first startup
+          startupProbe:
+            httpGet:
+              path: /api/server/version
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30  # Up to 5 minutes for initial startup/migration
+          livenessProbe:
+            httpGet:
+              path: /api/server/version
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/server/version
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          volumeMounts:
+            # Mount the entire bar-assistant directory for SQLite database + uploads
+            - name: data
+              mountPath: /var/www/cocktails/storage/bar-assistant
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bar-assistant-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bar-assistant
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: bar-assistant
+spec:
+  selector:
+    app.kubernetes.io/name: bar-assistant
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP
+
+---
+# =============================================================================
+# Salt Rim Configuration (config.js)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: salt-rim-config
+  namespace: recipes
+data:
+  config.js: |
+    window.srConfig = {
+      API_URL: "https://bar.ericsweiss.com",
+      MEILISEARCH_URL: "/search",
+      DEFAULT_LOCALE: "en-US"
+    };
+
+---
+# =============================================================================
+# Salt Rim (Bar Assistant Web UI)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: salt-rim
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: salt-rim
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: bar-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: salt-rim
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: salt-rim
+        app.kubernetes.io/component: frontend
+    spec:
+      # General workloads - prefer non-NAS nodes
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+      containers:
+        - name: salt-rim
+          # Version managed in ansible/inventories/prod/group_vars/all.yml
+          image: barassistant/salt-rim:${SALT_RIM_VERSION}
+          imagePullPolicy: Always
+          env:
+            - name: API_URL
+              value: ""
+            - name: MEILISEARCH_URL
+              value: "/search"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/nginx/html/config.js
+              subPath: config.js
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: salt-rim-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: salt-rim
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: salt-rim
+spec:
+  selector:
+    app.kubernetes.io/name: salt-rim
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP
