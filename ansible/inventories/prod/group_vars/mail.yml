@@ -15,7 +15,7 @@ smtp_relay_config:
   myorigin: "/etc/mailname"
   mydestination: "$myhostname, localhost.$mydomain, localhost"
   relayhost: "[smtp.gmail.com]:587"
-  mynetworks: "127.0.0.0/8,192.168.0.0/24"
+  mynetworks: "127.0.0.0/8,192.168.0.0/24,10.42.0.0/16"
   inet_interfaces: "all"
   inet_protocols: "ipv4"
   smtp_tls_security_level: "encrypt"

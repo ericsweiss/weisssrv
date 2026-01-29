@@ -83,6 +83,9 @@ task downloads:deploy          # Deploy download clients and media stack
 task downloads:status          # Check downloads stack status
 task downloads:vpn-status      # Verify VPN connection
 
+task recipes:deploy            # Deploy Mealie and Bar Assistant
+task recipes:status            # Check recipes stack status
+
 task terraform:plan            # Plan Cloudflare DNS changes
 task terraform:apply           # Apply Cloudflare DNS changes
 
@@ -102,7 +105,7 @@ weisssrv/
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/cloudflare/     # Cloudflare DNS management
 ├── kubernetes/               # K3s manifests (Flux-ready)
-├── docs/                     # Documentation (20 files)
+├── docs/                     # Documentation (23 files)
 └── Taskfile.yml              # Task runner commands
 ```
 
@@ -184,6 +187,19 @@ All services are protected by Authentik SSO and internal-only DNS.
 
 - **Documentation**: [docs/21-download-clients-deployment.md](docs/21-download-clients-deployment.md)
 
+### Recipe Management
+
+Mealie and Bar Assistant for food and cocktail recipe management:
+
+| Service | Purpose | URL |
+|---------|---------|-----|
+| Mealie | Recipe management and meal planning | food.esweiss.com |
+| Bar Assistant | Cocktail recipe management | bar.esweiss.com |
+
+Both services use Authentik SSO for authentication.
+
+- **Documentation**: [docs/22-recipes-deployment.md](docs/22-recipes-deployment.md)
+
 ## Documentation
 
 ### Getting Started
@@ -222,6 +238,8 @@ All services are protected by Authentik SSO and internal-only DNS.
 | [19-k3s-deployment](docs/19-k3s-deployment.md) | K3s cluster deployment (complete workflow) |
 | [20-plex-deployment](docs/20-plex-deployment.md) | Plex Media Server deployment |
 | [21-download-clients-deployment](docs/21-download-clients-deployment.md) | Download clients and media stack |
+| [22-recipes-deployment](docs/22-recipes-deployment.md) | Recipe management (Mealie, Bar Assistant) |
+| [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration |
 
 ## User Management
 

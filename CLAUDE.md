@@ -18,7 +18,7 @@ weisssrv/
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
 ├── kubernetes/              # Future k3s manifests (Flux)
-├── docs/                    # Comprehensive documentation (20 files)
+├── docs/                    # Comprehensive documentation (23 files)
 ├── scripts/                 # Utility scripts
 └── .github/workflows/       # CI/CD automation
 ```
@@ -65,6 +65,11 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - Radarr (movies.esweiss.com) - Movies
   - Lidarr (music.esweiss.com) - Music
   - Pulsarr (pulsarr.esweiss.com) - Plex Watchlist automation
+- Recipe management stack (recipes namespace):
+  - Mealie (food.esweiss.com) - Recipe management and meal planning
+  - Bar Assistant (bar.esweiss.com) - Cocktail/bar recipe management
+  - Authentik SSO integration for both apps
+  - OpenAI integration for Mealie recipe parsing
 
 **Future**:
 - GitOps via Flux
@@ -120,6 +125,14 @@ task downloads:restart            # Restart all download/media apps
 task downloads:logs               # View app logs
 task downloads:shell              # Shell into app container
 task downloads:delete             # Remove stack (preserves data)
+
+# Recipe management stack (Mealie + Bar Assistant)
+task recipes:deploy               # Deploy Mealie and Bar Assistant
+task recipes:status               # Show recipes namespace status
+task recipes:restart              # Restart all recipe apps
+task recipes:logs                 # View app logs (APP=mealie)
+task recipes:shell                # Shell into app container (APP=mealie)
+task recipes:delete               # Remove stack (preserves data)
 
 # Maintenance
 task maintenance:update-full      # Full update (OS + apps, interactive)
@@ -196,6 +209,11 @@ In vault "Homelab":
 - **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
 - **PrivadoVPN Credentials** - openvpn-user, openvpn-password (for Gluetun VPN sidecar)
 - **VPN Unlimited Credentials** - openvpn-user, openvpn-password (alternate VPN provider)
+- **Mealie Secrets** - postgres-password
+- **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
+- **Bar Assistant Secrets** - meilisearch-master-key
+- **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
+- **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
 
 ### Using 1Password
 
@@ -347,9 +365,11 @@ See `docs/` for detailed guides:
 - 16-next-steps.md - TODO and feature roadmap
 - 17-disaster-recovery.md - Disaster recovery and backup procedures
 - 18-bootstrap-new-systems.md - Bootstrapping new LXC containers and VMs
-- 21-download-clients-deployment.md - Download clients and media stack (VPN, *arr apps)
 - 19-k3s-deployment.md - K3s cluster deployment (complete workflow with all components)
 - 20-plex-deployment.md - Plex Media Server deployment (LXC with bind mounts)
+- 21-download-clients-deployment.md - Download clients and media stack (VPN, *arr apps)
+- 22-recipes-deployment.md - Recipe management stack (Mealie, Bar Assistant)
+- 23-recipes-sso-setup.md - Recipes SSO and OpenAI configuration
 
 ## Important Context Files
 

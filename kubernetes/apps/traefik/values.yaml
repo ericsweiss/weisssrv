@@ -57,8 +57,7 @@ ports:
     port: 80
   websecure:
     port: 443
-    tls:
-      enabled: true
+    # TLS is enabled by default on websecure port in Traefik v3+
 
 # Global HTTP to HTTPS redirect
 additionalArguments:

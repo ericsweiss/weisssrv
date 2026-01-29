@@ -1,71 +1,8 @@
 ---
 # Services and EndpointSlices for backend services running outside the cluster
 # Using ClusterIP services with manual EndpointSlices since these are IP addresses, not DNS names
+# Mealie and Bar Assistant are in the recipes namespace (kubernetes/apps/recipes/)
 
-# bar running on pve-laptop-01 (192.168.0.103:3000)
-apiVersion: v1
-kind: Service
-metadata:
-  name: bar-backend
-  namespace: default
-spec:
-  type: ClusterIP
-  ports:
-    - port: 3000
-      targetPort: 3000
-      protocol: TCP
----
-apiVersion: discovery.k8s.io/v1
-kind: EndpointSlice
-metadata:
-  name: bar-backend
-  namespace: default
-  labels:
-    kubernetes.io/service-name: bar-backend
-    endpointslice.kubernetes.io/managed-by: manual
-addressType: IPv4
-ports:
-  - port: 3000
-    protocol: TCP
-endpoints:
-  - addresses:
-      - 192.168.0.103
-    conditions:
-      ready: true
-
----
-# food running on pve-laptop-01 (192.168.0.103:9925)
-apiVersion: v1
-kind: Service
-metadata:
-  name: food-backend
-  namespace: default
-spec:
-  type: ClusterIP
-  ports:
-    - port: 9925
-      targetPort: 9925
-      protocol: TCP
----
-apiVersion: discovery.k8s.io/v1
-kind: EndpointSlice
-metadata:
-  name: food-backend
-  namespace: default
-  labels:
-    kubernetes.io/service-name: food-backend
-    endpointslice.kubernetes.io/managed-by: manual
-addressType: IPv4
-ports:
-  - port: 9925
-    protocol: TCP
-endpoints:
-  - addresses:
-      - 192.168.0.103
-    conditions:
-      ready: true
-
----
 # Home Assistant on 192.168.0.104:8123
 apiVersion: v1
 kind: Service

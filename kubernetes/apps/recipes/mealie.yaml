@@ -1,0 +1,312 @@
+---
+# Mealie - Recipe management and meal planning
+# URL: food.esweiss.com / food.ericsweiss.com
+# Docs: https://docs.mealie.io/
+
+# =============================================================================
+# PostgreSQL Database (pinned to NAS node for local storage)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mealie-postgres
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: mealie-postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: mealie
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mealie-postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mealie-postgres
+        app.kubernetes.io/component: database
+    spec:
+      # Pin to NAS agent for local storage performance
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k3s-agt-nas-01
+      # Tolerate NAS taint to run on k3s-agt-nas-01
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              value: mealie
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: mealie
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mealie
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mealie
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: mealie-postgres
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mealie-postgres
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: mealie-postgres
+spec:
+  selector:
+    app.kubernetes.io/name: mealie-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  type: ClusterIP
+
+---
+# =============================================================================
+# Mealie Application
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mealie
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: mealie
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: mealie
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mealie
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mealie
+        app.kubernetes.io/component: app
+    spec:
+      # General workloads - prefer non-NAS nodes
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          - name: single-request-reopen
+      containers:
+        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        - name: mealie
+          image: ghcr.io/mealie-recipes/mealie:${MEALIE_VERSION}
+          imagePullPolicy: Always
+          env:
+            # General settings
+            - name: TZ
+              value: America/Los_Angeles
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "2000"
+            # Base URL for proper link generation (use external domain for shared links)
+            - name: BASE_URL
+              value: https://food.ericsweiss.com
+            # Database configuration
+            - name: DB_ENGINE
+              value: postgres
+            - name: POSTGRES_USER
+              value: mealie
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: postgres-password
+            - name: POSTGRES_SERVER
+              value: mealie-postgres.recipes.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: mealie
+            # SMTP configuration (uses existing relay)
+            - name: SMTP_HOST
+              value: smtp-relay.esweiss.com
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_AUTH_STRATEGY
+              value: TLS
+            - name: SMTP_FROM_EMAIL
+              value: mealie@esweiss.com
+            - name: SMTP_FROM_NAME
+              value: Mealie
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: smtp-username
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: smtp-password
+            # OIDC/SSO configuration (Authentik)
+            - name: OIDC_AUTH_ENABLED
+              value: "true"
+            - name: OIDC_PROVIDER_NAME
+              value: authentik
+            - name: OIDC_CONFIGURATION_URL
+              value: https://auth.ericsweiss.com/application/o/food/.well-known/openid-configuration
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: oidc-client-id
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: oidc-client-secret
+            - name: OIDC_SIGNUP_ENABLED
+              value: "true"
+            - name: OIDC_USER_GROUP
+              value: mealie-users
+            - name: OIDC_ADMIN_GROUP
+              value: mealie-admins
+            - name: OIDC_AUTO_REDIRECT
+              value: "false"
+            - name: OIDC_REMEMBER_ME
+              value: "true"
+            # Disable password-based login (SSO only)
+            - name: ALLOW_PASSWORD_LOGIN
+              value: "false"
+            # OpenAI configuration
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mealie-secrets
+                  key: openai-api-key
+            - name: OPENAI_ENABLE_IMAGE_SERVICES
+              value: "true"
+            - name: OPENAI_SEND_DATABASE_DATA
+              value: "true"
+            # Security settings
+            - name: ALLOW_SIGNUP
+              value: "false"
+            # Performance
+            - name: MAX_WORKERS
+              value: "1"
+            - name: WEB_CONCURRENCY
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/app/about
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /api/app/about
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mealie-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mealie
+  namespace: recipes
+  labels:
+    app.kubernetes.io/name: mealie
+spec:
+  selector:
+    app.kubernetes.io/name: mealie
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http
+  type: ClusterIP

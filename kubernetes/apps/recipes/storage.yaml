@@ -1,0 +1,104 @@
+---
+# NFS storage for recipes stack
+# App configs stored on SSD-backed storage at /appdata/{app}
+# PostgreSQL data stored alongside app config for backup consistency
+
+# =============================================================================
+# Mealie App Config Storage
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: recipes-appdata-mealie
+  labels:
+    type: nfs
+    app: mealie
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: 192.168.0.102  # pve-nas-01
+    path: /appdata/mealie
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - intr
+    - noatime
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mealie-data
+  namespace: recipes
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 10Gi
+  volumeName: recipes-appdata-mealie
+
+---
+# Mealie PostgreSQL Storage (local-path on NAS node)
+# PostgreSQL requires ownership changes which don't work on NFS
+# Use local-path storage class for dynamic provisioning
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mealie-postgres
+  namespace: recipes
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "local-path"
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# =============================================================================
+# Bar Assistant App Config Storage
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: recipes-appdata-bar-assistant
+  labels:
+    type: nfs
+    app: bar-assistant
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: 192.168.0.102  # pve-nas-01
+    path: /appdata/bar-assistant
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - intr
+    - noatime
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bar-assistant-data
+  namespace: recipes
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 10Gi
+  volumeName: recipes-appdata-bar-assistant

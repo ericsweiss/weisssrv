@@ -354,6 +354,35 @@ if systemctl is-active k3s &>/dev/null; then
     else
         echo "Downloads namespace not deployed"
     fi
+    echo ""
+    echo "--- Recipes Namespace ---"
+    if sudo k3s kubectl get namespace recipes &>/dev/null; then
+        echo "Pods:"
+        sudo k3s kubectl get pods -n recipes -o wide 2>/dev/null || echo "No pods"
+        echo ""
+        echo "Services:"
+        sudo k3s kubectl get svc -n recipes 2>/dev/null || echo "No services"
+        echo ""
+        echo "PVCs:"
+        sudo k3s kubectl get pvc -n recipes 2>/dev/null || echo "No PVCs"
+        echo ""
+        echo "IngressRoutes:"
+        sudo k3s kubectl get ingressroute -n recipes 2>/dev/null || echo "No IngressRoutes"
+        echo ""
+        echo "Deployments:"
+        sudo k3s kubectl get deployments -n recipes 2>/dev/null || echo "No deployments"
+        echo ""
+        echo "App Versions:"
+        for app in mealie mealie-postgres bar-assistant bar-assistant-redis bar-assistant-meilisearch salt-rim; do
+            image=$(sudo k3s kubectl get deployment "$app" -n recipes -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "not found")
+            echo "  $app: $image"
+        done
+        echo ""
+        echo "Secrets (names only):"
+        sudo k3s kubectl get secrets -n recipes 2>/dev/null || echo "No secrets"
+    else
+        echo "Recipes namespace not deployed"
+    fi
 fi
 echo ""
 echo "--- K3s Config ---"
