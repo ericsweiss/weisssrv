@@ -101,11 +101,11 @@ weisssrv/
 │   ├── inventories/prod/     # Production inventory
 │   │   ├── hosts.yml         # Host definitions
 │   │   └── group_vars/       # Group variables
-│   ├── roles/                # 15 Ansible roles
+│   ├── roles/                # 16 Ansible roles
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/cloudflare/     # Cloudflare DNS management
 ├── kubernetes/               # K3s manifests (Flux-ready)
-├── docs/                     # Documentation (23 files)
+├── docs/                     # Documentation (24 files)
 └── Taskfile.yml              # Task runner commands
 ```
 
@@ -128,6 +128,7 @@ weisssrv/
 | adguard_sync | DNS sync (dns-01 -> dns-02) |
 | k3s | K3s cluster deployment |
 | plex | Plex Media Server with GPU transcoding |
+| home_assistant | Home Assistant OS configuration management |
 
 ## Secrets Management
 
@@ -156,6 +157,7 @@ Initial 3-node cluster with:
 - **external-dns**: Automatic Cloudflare DNS
 - **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
+  - Pinned to 2025.12.1 (regression bug in 2025.12.2)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 
@@ -200,6 +202,18 @@ Both services use Authentik SSO for authentication.
 
 - **Documentation**: [docs/22-recipes-deployment.md](docs/22-recipes-deployment.md)
 
+### Home Assistant
+
+Home automation platform running on Home Assistant OS:
+
+- **URLs**: home.esweiss.com (internal), home.ericsweiss.com (external)
+- **Authentication**: Authentik SSO via hass-openid custom integration
+- **Features**:
+  - Traefik ingress with WebSocket support
+  - API bypass routes for download client integrations
+  - Configuration managed via Ansible with 1Password secrets
+- **Documentation**: [docs/24-home-assistant-deployment.md](docs/24-home-assistant-deployment.md)
+
 ## Documentation
 
 ### Getting Started
@@ -240,6 +254,7 @@ Both services use Authentik SSO for authentication.
 | [21-download-clients-deployment](docs/21-download-clients-deployment.md) | Download clients and media stack |
 | [22-recipes-deployment](docs/22-recipes-deployment.md) | Recipe management (Mealie, Bar Assistant) |
 | [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration |
+| [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
 
 ## User Management
 

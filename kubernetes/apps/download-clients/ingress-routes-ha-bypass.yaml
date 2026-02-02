@@ -1,0 +1,124 @@
+---
+# Home Assistant bypass routes for download/media apps
+# These routes have higher priority and bypass Authentik SSO for Home Assistant's IP
+# Regular routes with SSO remain for browser access
+#
+# Apps that need bypasses (Home Assistant integrations):
+#   - sonarr, radarr, lidarr, nzbget, qbittorrent
+# Apps that do NOT need bypasses (no HA integration):
+#   - prowlarr, pulsarr
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: sonarr-ha-bypass
+  namespace: downloads
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`tv.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+      kind: Rule
+      priority: 100  # Higher priority than default SSO route
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: sonarr
+          port: 8989
+  tls:
+    secretName: esweiss-com-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: radarr-ha-bypass
+  namespace: downloads
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`movies.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: radarr
+          port: 7878
+  tls:
+    secretName: esweiss-com-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nzbget-ha-bypass
+  namespace: downloads
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`nzbget.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: nzbget
+          port: 6789
+  tls:
+    secretName: esweiss-com-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: qbittorrent-ha-bypass
+  namespace: downloads
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`qbittorrent.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: qbittorrent
+          port: 8080
+  tls:
+    secretName: esweiss-com-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: lidarr-ha-bypass
+  namespace: downloads
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`music.esweiss.com`) && ClientIP(`192.168.0.154/32`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: lidarr
+          port: 8686
+  tls:
+    secretName: esweiss-com-tls

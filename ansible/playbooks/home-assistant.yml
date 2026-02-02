@@ -1,0 +1,19 @@
+---
+# Home Assistant Configuration Deployment
+#
+# This playbook deploys Home Assistant configuration files via SSH/SCP
+# IMPORTANT: Home Assistant OS cannot be managed like traditional Linux
+# This only manages configuration files, not the OS itself
+#
+# Usage:
+#   task home-assistant:deploy-config
+
+- name: Deploy Home Assistant Configuration
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../inventories/prod/group_vars/all.yml
+  roles:
+    - home_assistant

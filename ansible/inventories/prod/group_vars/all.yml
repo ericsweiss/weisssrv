@@ -108,6 +108,12 @@ debian_version: "13"
 k3s_version: "v1.33.7+k3s1"
 kube_vip_version: "v1.0.3"
 
+# Authentik SSO
+# Pinned to 2025.12.1 due to regression bug in 2025.12.2
+# Bug: Embedded outpost fails with "no value given for required property pk"
+# Update to 2025.12.3+ when bug is fixed upstream
+authentik_version: "2025.12.1"
+
 # Download clients and media stack versions
 # Using "latest" pulls the most recent stable release at deployment time
 # LinuxServer.io images use date-based tags (YYYY.MM.DD) or version tags

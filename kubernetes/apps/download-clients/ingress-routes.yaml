@@ -1,6 +1,7 @@
 ---
 # Downloads stack IngressRoutes
 # All services use internal domain (esweiss.com) with Authentik SSO
+# Home Assistant bypasses Authentik via high-priority routes (see ingress-routes-ha-bypass.yaml)
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

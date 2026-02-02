@@ -14,6 +14,27 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
+- name: Detect if running in a VM
+  ansible.builtin.set_fact:
+    is_virtual_machine: "{{ ansible_facts['virtualization_role'] == 'guest' and ansible_facts['virtualization_type'] == 'kvm' }}"
+
+- name: Install VM-specific packages
+  ansible.builtin.apt:
+    name: "{{ vm_packages }}"
+    state: present
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - is_virtual_machine | bool
+
+- name: Enable and start qemu-guest-agent service
+  ansible.builtin.systemd:
+    name: qemu-guest-agent
+    enabled: true
+    state: started
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - is_virtual_machine | bool
+
 - name: Check if admin user exists
   ansible.builtin.command: id {{ admin_user }}
   register: user_exists_check

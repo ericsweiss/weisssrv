@@ -1,0 +1,80 @@
+---
+# Home Assistant VM configuration
+# Running Home Assistant OS on pve-nas-01 (192.168.0.154)
+#
+# IMPORTANT: Home Assistant OS is NOT a standard Linux distribution
+# It cannot be managed by Ansible like other VMs/LXCs
+# This file documents operational configuration for reference
+
+# Proxmox host for this VM
+proxmox_host: pve-nas-01
+
+# Proxmox resource pool for organization
+proxmox_resource_pool: apps-public
+
+# VM startup configuration
+# Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
+proxmox_autostart_enabled: true
+proxmox_startup_order: 50
+proxmox_startup_delay: 10
+
+# VM hardware configuration (for reference - VM created manually)
+# These values document the actual configuration but are not used for provisioning
+vm_cores: 4
+vm_memory: 8192
+vm_disk_size: 64G
+vm_storage: local-lvm
+
+# Home Assistant OS details
+haos_version: "17.0"  # Installed version (update manually via UI)
+haos_type: "qcow2"    # Image format
+
+# Network configuration (set via HAOS console)
+# Static IP: 192.168.0.154/24
+# Gateway: 192.168.0.1
+# DNS: 192.168.0.150
+
+# SMTP Configuration
+# HAOS does not use postfix (not a traditional Linux system)
+# Configure SMTP notifications via Home Assistant's built-in integration:
+#   - Host: smtp-relay.esweiss.com
+#   - Port: 587
+#   - Encryption: STARTTLS
+#   - Username: <from 1Password: SMTP Relay Auth/username>
+#   - Password: <from 1Password: SMTP Relay Auth/password>
+#   - Sender: home-assistant@esweiss.com
+# See: docs/24-home-assistant-deployment.md for setup instructions
+
+# Backup Strategy
+# HAOS has built-in backup system (Settings > System > Backups)
+# Recommended:
+#   - Enable automatic backups (daily)
+#   - Store backups on NFS mount: /mnt/ssd/appdata/home-assistant/backups
+#   - Keep last 7 days locally, archive monthly to /mnt/tank/archive/home-assistant
+# See: docs/24-home-assistant-deployment.md for NFS mount configuration
+
+# SSH Access
+# Install "SSH & Web Terminal" or "Terminal & SSH" add-on from Add-on Store
+# Access: ssh root@192.168.0.154 -p 22222
+# Or use: task home-assistant:console
+
+# Updates
+# HAOS updates managed via UI: Settings > System > Updates
+# Update strategy: Manual review before applying
+# Backup before major version updates
+
+# Monitoring
+# Home Assistant exposes metrics via Prometheus integration
+# Future: Add to cluster monitoring stack when implemented
+
+# SSO Integration
+# Authentik SSO via hass-openid custom integration (OIDC method)
+# Users must be pre-created in HA with matching Authentik username
+# block_login: true (SSO is sole login method)
+# See: docs/24-home-assistant-deployment.md Phase 6
+
+# API Bypass Access
+# Download/media apps accessible without Authentik SSO via ClientIP bypass routes
+# Standard hostnames with high-priority IngressRoutes matching HA's IP (192.168.0.154)
+# See: kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml
+# See: docs/24-home-assistant-deployment.md Phase 4

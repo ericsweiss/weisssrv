@@ -18,7 +18,7 @@ weisssrv/
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
 ├── kubernetes/              # Future k3s manifests (Flux)
-├── docs/                    # Comprehensive documentation (23 files)
+├── docs/                    # Comprehensive documentation (24 files)
 ├── scripts/                 # Utility scripts
 └── .github/workflows/       # CI/CD automation
 ```
@@ -55,6 +55,10 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
+  - **IMPORTANT**: Pinned to version 2025.12.1 due to regression bug in 2025.12.2
+  - Bug: Embedded outpost fails with "no value given for required property pk" error
+  - Download clients (Sonarr, Radarr, etc.) return 404 on 2025.12.2
+  - Update to 2025.12.3+ when bug is fixed upstream
 - Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
 - Download clients + media stack (downloads namespace):
   - Gluetun (VPN gateway with killswitch)
@@ -70,6 +74,12 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - Bar Assistant (bar.esweiss.com) - Cocktail/bar recipe management
   - Authentik SSO integration for both apps
   - OpenAI integration for Mealie recipe parsing
+- Home Assistant (home.esweiss.com / home.ericsweiss.com):
+  - HAOS VM on pve-nas-01 (192.168.0.154)
+  - Traefik ingress with WebSocket support
+  - Authentik SSO via hass-openid custom integration (OIDC)
+  - API bypass routes for HA integrations (sonarr, radarr, lidarr, nzbget, qbittorrent)
+  - NFS media mount (read-only access to unified media library)
 
 **Future**:
 - GitOps via Flux
@@ -133,6 +143,18 @@ task recipes:restart              # Restart all recipe apps
 task recipes:logs                 # View app logs (APP=mealie)
 task recipes:shell                # Shell into app container (APP=mealie)
 task recipes:delete               # Remove stack (preserves data)
+
+# Home Assistant (VM on Proxmox with Traefik ingress, managed by Ansible)
+task home-assistant:deploy        # Deploy ingress and configuration
+task home-assistant:deploy-ingress # Deploy/update IngressRoute only
+task home-assistant:deploy-config # Deploy configuration via Ansible only
+task home-assistant:restart-after-config # Restart after config deployment
+task home-assistant:status        # Show VM and ingress status
+task home-assistant:vm-start      # Start the Home Assistant VM
+task home-assistant:vm-stop       # Stop the Home Assistant VM
+task home-assistant:vm-restart    # Restart the Home Assistant VM
+task home-assistant:console       # SSH to Home Assistant (requires SSH add-on)
+task home-assistant:snapshot      # Create Proxmox VM snapshot
 
 # Maintenance
 task maintenance:update-full      # Full update (OS + apps, interactive)
@@ -214,6 +236,7 @@ In vault "Homelab":
 - **Bar Assistant Secrets** - meilisearch-master-key
 - **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
+- **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
 
 ### Using 1Password
 
@@ -279,6 +302,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 13. **adguard_sync** - Sync dns-01 → dns-02 via systemd timer (every 5min)
 14. **k3s** - K3s cluster installation and configuration
 15. **plex** - Plex Media Server installation and configuration
+16. **home_assistant** - Home Assistant configuration deployment via SSH/SCP (HAOS cannot be managed traditionally)
 
 ## User Management
 
@@ -370,6 +394,7 @@ See `docs/` for detailed guides:
 - 21-download-clients-deployment.md - Download clients and media stack (VPN, *arr apps)
 - 22-recipes-deployment.md - Recipe management stack (Mealie, Bar Assistant)
 - 23-recipes-sso-setup.md - Recipes SSO and OpenAI configuration
+- 24-home-assistant-deployment.md - Home Assistant OS VM with Traefik ingress
 
 ## Important Context Files
 
