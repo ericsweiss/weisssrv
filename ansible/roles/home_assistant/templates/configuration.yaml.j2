@@ -1,0 +1,45 @@
+# Home Assistant Configuration
+# This file is managed via Ansible and deployed from Git
+# Generated from: ansible/roles/home_assistant/templates/configuration.yaml.j2
+
+# Configure HTTP for reverse proxy (Traefik)
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+{% for proxy in home_assistant_trusted_proxies %}
+    - {{ proxy }}
+{% endfor %}
+
+# OpenID Connect SSO via Authentik
+openid:
+  client_id: !secret oidc_client_id
+  client_secret: !secret oidc_client_secret
+  configure_url: "https://auth.ericsweiss.com/application/o/home/.well-known/openid-configuration"
+  scope: "openid profile email"
+  username_field: "preferred_username"
+  block_login: true
+
+# SMTP Notifications (using smtp-relay)
+notify:
+  - name: smtp_notify
+    platform: smtp
+    server: "{{ home_assistant_smtp_host }}"
+    port: {{ home_assistant_smtp_port }}
+    encryption: "{{ home_assistant_smtp_encryption }}"
+    username: !secret smtp_username
+    password: !secret smtp_password
+    sender: "{{ home_assistant_smtp_sender }}"
+    sender_name: "{{ home_assistant_smtp_sender_name }}"
+    recipient:
+      - !secret admin_email
+
+# Default configuration
+default_config:
+
+# Text to speech
+tts:
+  - platform: google_translate
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml

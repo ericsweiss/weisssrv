@@ -1,0 +1,87 @@
+---
+# Home Assistant configuration management
+#
+# IMPORTANT: Home Assistant OS is NOT a traditional Linux distribution
+# This role only manages configuration files via SSH/SCP
+# It does NOT attempt to manage the OS itself via Ansible
+
+- name: Validate required SMTP relay credentials are set
+  ansible.builtin.assert:
+    that:
+      - home_assistant_smtp_username | default('') | length > 0
+      - home_assistant_smtp_password | default('') | length > 0
+    fail_msg: >-
+      SMTP relay credentials are not set. Ensure SMTP_RELAY_USER and
+      SMTP_RELAY_PASSWORD environment variables are provided via 'op run'.
+      Run deployment with: task home-assistant:deploy-config (which injects 1Password secrets)
+    success_msg: "SMTP relay credentials are present"
+  no_log: true
+
+- name: Validate required OIDC credentials are set
+  ansible.builtin.assert:
+    that:
+      - home_assistant_oidc_client_id | default('') | length > 0
+      - home_assistant_oidc_client_secret | default('') | length > 0
+    fail_msg: >-
+      OIDC credentials are not set. Ensure HA_OIDC_CLIENT_ID and
+      HA_OIDC_CLIENT_SECRET environment variables are provided via 'op run'.
+      Run deployment with: task home-assistant:deploy-config (which injects 1Password secrets)
+    success_msg: "OIDC credentials are present"
+  no_log: true
+
+- name: Deploy and validate Home Assistant configuration
+  block:
+    - name: Generate Home Assistant configuration from template
+      ansible.builtin.template:
+        src: configuration.yaml.j2
+        dest: "/tmp/ha-configuration.yaml"
+        mode: '0644'
+
+    - name: Generate Home Assistant secrets from template
+      ansible.builtin.template:
+        src: secrets.yaml.j2
+        dest: "/tmp/ha-secrets.yaml"
+        mode: '0600'
+      no_log: true
+
+    - name: Deploy configuration.yaml to Home Assistant
+      ansible.builtin.command:
+        cmd: >
+          scp -P {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=accept-new
+          /tmp/ha-configuration.yaml
+          root@{{ home_assistant_host }}:{{ home_assistant_config_path }}/configuration.yaml
+      changed_when: true
+
+    - name: Deploy secrets.yaml to Home Assistant
+      ansible.builtin.command:
+        cmd: >
+          scp -P {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=accept-new
+          /tmp/ha-secrets.yaml
+          root@{{ home_assistant_host }}:{{ home_assistant_config_path }}/secrets.yaml
+      changed_when: true
+      no_log: true
+
+    - name: Validate Home Assistant configuration
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=accept-new
+          root@{{ home_assistant_host }}
+          'ha core check'
+      register: ha_config_check
+      changed_when: false
+
+    - name: Display configuration check results
+      ansible.builtin.debug:
+        var: ha_config_check.stdout_lines
+
+  always:
+    - name: Clean up temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/ha-configuration.yaml
+        - /tmp/ha-secrets.yaml

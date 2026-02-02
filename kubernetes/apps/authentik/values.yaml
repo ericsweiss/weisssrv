@@ -34,6 +34,8 @@ authentik:
 server:
   replicas: 2
 
+  # Version set via Taskfile from ansible/inventories/prod/group_vars/all.yml
+
   env:
     - name: AUTHENTIK_POSTGRESQL__PASSWORD
       valueFrom:
@@ -81,6 +83,8 @@ server:
 
 worker:
   replicas: 1
+
+  # Version set via Taskfile from ansible/inventories/prod/group_vars/all.yml
 
   env:
     - name: AUTHENTIK_POSTGRESQL__PASSWORD

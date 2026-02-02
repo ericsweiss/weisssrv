@@ -13,11 +13,16 @@ PROXMOX_HOSTS=("pve-nas-01" "pve-opt-03")
 DNS_HOSTS=("192.168.0.150" "192.168.0.160")  # dns-01, dns-02 (use IPs since hostnames resolve to VIP)
 MAIL_HOSTS=("smtp-relay")
 K3S_HOSTS=("k3s-srv-nas-01" "k3s-agt-nas-01" "k3s-agt-opt-03")
+HOME_ASSISTANT_HOST="192.168.0.154"  # home (HAOS VM)
 
 # Redaction patterns
 REDACT_PATTERNS=(
     's/password\s*[:=]\s*\S+/password: <REDACTED>/gi'
     's/\btoken\s*[:=]\s*\S+/token: <REDACTED>/gi'
+    's/access_token\s*[:=]\s*\S+/access_token: <REDACTED>/gi'
+    's/refresh_token\s*[:=]\s*\S+/refresh_token: <REDACTED>/gi'
+    's/id_token\s*[:=]\s*\S+/id_token: <REDACTED>/gi'
+    's/bearer\s+[A-Za-z0-9._~+\/=-]+/Bearer <REDACTED>/gi'
     's/\bsecret\s*[:=]\s*\S+/secret: <REDACTED>/gi'
     's/CF_Token=\S+/CF_Token=<REDACTED>/g'
     's/CF_Account_ID=\S+/CF_Account_ID=<REDACTED>/g'
@@ -32,6 +37,10 @@ REDACT_PATTERNS=(
     's/openvpn-user:\s*\S+/openvpn-user: <REDACTED>/g'
     's/openvpn-password:\s*\S+/openvpn-password: <REDACTED>/g'
     's/api-token:\s*\S+/api-token: <REDACTED>/g'
+    's/oidc_client_id:\s*\S+/oidc_client_id: <REDACTED>/g'
+    's/oidc_client_secret:\s*\S+/oidc_client_secret: <REDACTED>/g'
+    's/client_id:\s*\S+/client_id: <REDACTED>/g'
+    's/client_secret:\s*\S+/client_secret: <REDACTED>/g'
 )
 
 redact() {
@@ -192,6 +201,17 @@ if sudo pct status 152 &>/dev/null; then
     sudo pct exec 152 -- systemctl is-active plexmediaserver 2>/dev/null || echo "Cannot check Plex service"
 else
     echo "Plex LXC (152) not found"
+fi
+echo ""
+echo "--- Home Assistant VM Status (VMID 154) ---"
+if sudo qm status 154 &>/dev/null; then
+    sudo qm status 154
+    echo "VM Config:"
+    sudo qm config 154 2>/dev/null | grep -E 'cores|memory|net0|boot|onboot|startup' || echo "Cannot read config"
+    echo "Network:"
+    sudo qm guest cmd 154 network-get-interfaces 2>/dev/null | grep -E 'ip-address|name' || echo "Guest agent unavailable"
+else
+    echo "Home Assistant VM (154) not found"
 fi
 echo ""
 echo "--- Postfix Status ---"
@@ -383,6 +403,19 @@ if systemctl is-active k3s &>/dev/null; then
     else
         echo "Recipes namespace not deployed"
     fi
+    echo ""
+    echo "--- Home Assistant (IngressRoutes and Services) ---"
+    echo "IngressRoutes:"
+    sudo k3s kubectl get ingressroute -A 2>/dev/null | grep -E "NAME|home-assistant" || echo "No Home Assistant IngressRoutes"
+    echo ""
+    echo "Service:"
+    sudo k3s kubectl get svc home-assistant-backend 2>/dev/null || echo "Service not found"
+    echo ""
+    echo "EndpointSlice:"
+    sudo k3s kubectl get endpointslice home-assistant-backend 2>/dev/null || echo "EndpointSlice not found"
+    echo ""
+    echo "Middleware:"
+    sudo k3s kubectl get middleware -n traefik 2>/dev/null | grep -E "NAME|home-assistant" || echo "No Home Assistant middleware"
 fi
 echo ""
 echo "--- K3s Config ---"
@@ -403,6 +436,52 @@ echo "--- Tailscale ---"
 sudo tailscale status 2>/dev/null | head -5 || echo "No tailscale"
 echo ""
 EOF
+}
+
+collect_home_assistant() {
+    local host=$1
+    echo "=== Home Assistant (HAOS VM): $host ==="
+
+    # Note: Home Assistant OS VM status collected from Proxmox host
+    # Configuration files collected via SSH if SSH add-on is configured
+
+    # Check if SSH is accessible (requires SSH add-on on port 22222)
+    if ssh -o ConnectTimeout=5 -p 22222 "root@${host}" "echo test" &>/dev/null; then
+        ssh -o ConnectTimeout=10 -p 22222 "root@${host}" bash << 'EOF' 2>/dev/null || echo "SSH command failed"
+echo "--- Home Assistant System Info ---"
+ha info 2>/dev/null || echo "ha CLI unavailable"
+echo ""
+echo "--- Home Assistant Core Status ---"
+ha core info 2>/dev/null || echo "Core info unavailable"
+echo ""
+echo "--- Home Assistant Supervisor ---"
+ha supervisor info 2>/dev/null || echo "Supervisor info unavailable"
+echo ""
+echo "--- Add-ons ---"
+ha addons 2>/dev/null || echo "Add-ons list unavailable"
+echo ""
+echo "--- Configuration Files ---"
+ls -la /config/*.yaml 2>/dev/null | head -20 || echo "Config directory inaccessible"
+echo ""
+echo "--- Configuration Check ---"
+ha core check 2>/dev/null || echo "Config check unavailable"
+echo ""
+echo "--- Custom Components ---"
+ls -la /config/custom_components/ 2>/dev/null || echo "No custom components or directory inaccessible"
+echo ""
+echo "--- Recent Logs (last 20 lines) ---"
+tail -20 /config/home-assistant.log 2>/dev/null || echo "Log file inaccessible"
+echo ""
+echo "--- Network Info ---"
+ha network info 2>/dev/null || echo "Network info unavailable"
+echo ""
+EOF
+    else
+        echo "SSH not accessible (port 22222)"
+        echo "Requires SSH add-on to be installed and configured"
+        echo "Collecting VM status from Proxmox instead..."
+    fi
+    echo ""
 }
 
 echo "Collecting cluster state..."
@@ -438,6 +517,10 @@ echo ""
         collect_k3s "$host"
         echo ""
     done
+
+    # Home Assistant
+    collect_home_assistant "$HOME_ASSISTANT_HOST"
+    echo ""
 
 } > "$TEMP_DIR/raw.txt"
 

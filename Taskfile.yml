@@ -259,6 +259,9 @@ tasks:
   k3s:deploy-authentik:
     desc: Deploy Authentik SSO identity provider
     dir: ./kubernetes/apps/authentik
+    vars:
+      AUTHENTIK_VERSION:
+        sh: grep '^authentik_version:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
     env:
       AUTHENTIK_SECRET_KEY: op://Homelab/Authentik Secrets/secret-key
       AUTHENTIK_POSTGRESQL_PASSWORD: op://Homelab/Authentik Secrets/postgresql-password
@@ -267,6 +270,7 @@ tasks:
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
     cmds:
+      - echo "Deploying Authentik version {{.AUTHENTIK_VERSION}}"
       - helm repo add authentik https://charts.goauthentik.io --force-update
       - helm repo update authentik
       - kubectl apply -f namespace.yaml
@@ -285,7 +289,10 @@ tasks:
         op run -- sh -c 'helm upgrade --install authentik authentik/authentik \
           -n authentik \
           -f values.yaml \
+          --version "{{.AUTHENTIK_VERSION}}" \
           --set authentik.secret_key="$AUTHENTIK_SECRET_KEY" \
+          --set server.image.tag="{{.AUTHENTIK_VERSION}}" \
+          --set worker.image.tag="{{.AUTHENTIK_VERSION}}" \
           --wait --timeout 10m'
       - |
         echo "Waiting for Authentik server to be ready..."
@@ -499,6 +506,8 @@ tasks:
         echo "  - op://Homelab/Bar Assistant Secrets/meilisearch-master-key"
         echo "  - op://Homelab/Bar Assistant SSO/authentik-client-id"
         echo "  - op://Homelab/Bar Assistant SSO/authentik-client-secret"
+        echo "  - op://Homelab/Home Assistant SSO/authentik-client-id"
+        echo "  - op://Homelab/Home Assistant SSO/authentik-client-secret"
 
   # === Download Clients / Media Stack Tasks ===
   # New architecture: Each download client (nzbget, qbittorrent) runs independently
@@ -564,6 +573,7 @@ tasks:
         kubectl apply -f storage.yaml
         kubectl apply -f certificate.yaml
         kubectl apply -f ingress-routes.yaml
+        kubectl apply -f ingress-routes-ha-bypass.yaml
       - |
         echo "Waiting for NZBGet to be ready..."
         kubectl wait --namespace downloads \
@@ -836,6 +846,7 @@ tasks:
         kubectl delete -f lidarr.yaml --ignore-not-found
         kubectl delete -f pulsarr.yaml --ignore-not-found
         kubectl delete -f ingress-routes.yaml --ignore-not-found
+        kubectl delete -f ingress-routes-ha-bypass.yaml --ignore-not-found
       - |
         echo ""
         echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
@@ -1042,4 +1053,168 @@ tasks:
         echo ""
         echo "To fully remove everything:"
         echo "  kubectl delete namespace recipes"
+
+  # === Home Assistant Tasks ===
+  # Home Assistant runs as a standalone VM on Proxmox (not in k3s)
+  # Traefik provides ingress via IngressRoute + Service/EndpointSlice
+
+  home-assistant:status:
+    desc: Show Home Assistant VM and ingress status
+    cmds:
+      - echo "=== Home Assistant VM Status ==="
+      - |
+        ssh pve-nas-01 "sudo qm status 154" 2>/dev/null || echo "Cannot reach Proxmox host"
+      - echo ""
+      - echo "=== Network Connectivity ==="
+      - |
+        if curl -s --connect-timeout 2 http://192.168.0.154:8123 >/dev/null 2>&1; then
+          echo "Home Assistant HTTP: OK (192.168.0.154:8123)"
+        else
+          echo "Home Assistant HTTP: UNREACHABLE"
+        fi
+      - echo ""
+      - echo "=== Kubernetes Resources ==="
+      - kubectl get service home-assistant-backend -o wide 2>/dev/null || echo "Service not found"
+      - kubectl get endpointslice home-assistant-backend 2>/dev/null || echo "EndpointSlice not found"
+      - kubectl get ingressroute -A 2>/dev/null | grep -E "NAME|home-assistant" || echo "IngressRoutes not found"
+      - echo ""
+      - echo "=== Traefik Routing Test ==="
+      - |
+        echo "Internal (home.esweiss.com):"
+        curl -sk --connect-timeout 5 https://home.esweiss.com -o /dev/null -w "  HTTP Status: %{http_code}\n" 2>/dev/null || echo "  UNREACHABLE"
+        echo "External (home.ericsweiss.com):"
+        curl -sk --connect-timeout 5 https://home.ericsweiss.com -o /dev/null -w "  HTTP Status: %{http_code}\n" 2>/dev/null || echo "  UNREACHABLE"
+
+  home-assistant:vm-start:
+    desc: Start the Home Assistant VM
+    cmds:
+      - ssh pve-nas-01 "sudo qm start 154"
+      - echo "Waiting for Home Assistant to be reachable..."
+      - |
+        for i in $(seq 1 30); do
+          if curl -s --connect-timeout 2 http://192.168.0.154:8123 >/dev/null 2>&1; then
+            echo "Home Assistant is up!"
+            exit 0
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 5
+        done
+        echo "Warning: Home Assistant may still be starting"
+
+  home-assistant:vm-stop:
+    desc: Stop the Home Assistant VM gracefully
+    cmds:
+      - ssh pve-nas-01 "sudo qm shutdown 154"
+      - echo "Sent shutdown signal to Home Assistant VM"
+
+  home-assistant:vm-restart:
+    desc: Restart the Home Assistant VM
+    cmds:
+      - ssh pve-nas-01 "sudo qm reboot 154"
+      - echo "Sent reboot signal to Home Assistant VM"
+
+  home-assistant:console:
+    desc: Open SSH console to Home Assistant (if SSH add-on installed)
+    cmds:
+      - |
+        echo "Connecting to Home Assistant..."
+        echo "Note: Requires SSH add-on to be installed in Home Assistant"
+        ssh root@192.168.0.154 -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
+
+  home-assistant:logs:
+    desc: View Home Assistant core logs via API (requires long-lived access token)
+    vars:
+      TOKEN: '{{.TOKEN | default ""}}'
+    cmds:
+      - |
+        TOKEN="{{.TOKEN}}"
+        if [ -z "$TOKEN" ]; then
+          echo "Usage: task home-assistant:logs TOKEN=<long-lived-access-token>"
+          echo ""
+          echo "To get a token:"
+          echo "1. Go to https://home.esweiss.com/profile"
+          echo "2. Scroll to 'Long-Lived Access Tokens'"
+          echo "3. Create a new token"
+          exit 1
+        fi
+        curl -s -H "Authorization: Bearer $TOKEN" \
+          https://home.esweiss.com/api/error_log | head -100
+
+  home-assistant:snapshot:
+    desc: Create a Proxmox snapshot of the Home Assistant VM
+    vars:
+      NAME: '{{.NAME | default "manual"}}'
+      DESC: '{{.DESC | default "Manual snapshot"}}'
+    cmds:
+      - |
+        NAME="{{.NAME}}"
+        DESC="{{.DESC}}"
+        echo "Creating snapshot '$NAME' of Home Assistant VM..."
+        ssh pve-nas-01 "sudo qm snapshot 154 $NAME --description '$DESC'"
+        echo "Snapshot created successfully"
+        echo ""
+        echo "To list snapshots: ssh pve-nas-01 'sudo qm listsnapshot 154'"
+        echo "To rollback: ssh pve-nas-01 'sudo qm rollback 154 $NAME'"
+
+  home-assistant:deploy:
+    desc: Deploy Home Assistant ingress and configuration
+    cmds:
+      - task: home-assistant:deploy-ingress
+      - task: home-assistant:deploy-config
+      - |
+        echo ""
+        echo "============================================"
+        echo "Home Assistant deployment complete!"
+        echo "============================================"
+        echo ""
+        echo "To restart and apply changes:"
+        echo "  task home-assistant:restart-after-config"
+        echo ""
+        echo "To check status:"
+        echo "  task home-assistant:status"
+
+  home-assistant:deploy-ingress:
+    desc: Deploy/update Home Assistant IngressRoute and backend service
+    dir: ./kubernetes/apps/ingress-routes
+    cmds:
+      - kubectl apply -f services.yaml
+      - kubectl apply -f home-assistant.yaml
+      - |
+        echo "Home Assistant ingress deployed"
+        echo ""
+        echo "Verify with: task home-assistant:status"
+
+  home-assistant:deploy-config:
+    desc: Deploy Home Assistant configuration via Ansible with 1Password secrets
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      ADMIN_EMAIL: op://Homelab/Email Config/root_alias
+      HA_OIDC_CLIENT_ID: op://Homelab/Home Assistant SSO/authentik-client-id
+      HA_OIDC_CLIENT_SECRET: op://Homelab/Home Assistant SSO/authentik-client-secret
+    cmds:
+      - |
+        echo "Deploying Home Assistant configuration..."
+        echo ""
+        op run -- ansible-playbook -i {{.INVENTORY}} -e "ansible_become=false" playbooks/home-assistant.yml
+        echo ""
+        echo "Configuration deployed successfully!"
+        echo ""
+        echo "Next steps:"
+        echo "  1. Review changes via Home Assistant UI"
+        echo "  2. Configuration has been validated automatically"
+        echo "  3. Restart Home Assistant: task home-assistant:vm-restart"
+        echo ""
+        echo "Or restart now with: task home-assistant:restart-after-config"
+
+  home-assistant:restart-after-config:
+    desc: Restart Home Assistant after configuration deployment
+    cmds:
+      - echo "Restarting Home Assistant..."
+      - task: home-assistant:vm-restart
+      - echo "Waiting for Home Assistant to come back online..."
+      - sleep 30
+      - echo "Testing connectivity..."
+      - task: home-assistant:status
 

@@ -20,6 +20,7 @@ resources:
   - pulsarr.yaml
   # Ingress routes
   - ingress-routes.yaml
+  - ingress-routes-ha-bypass.yaml
 # Use 'labels' instead of 'commonLabels' to avoid modifying deployment selectors.
 # commonLabels injects labels into spec.selector.matchLabels, which is immutable
 # after deployment creation, causing idempotency issues on re-deploy.

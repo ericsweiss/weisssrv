@@ -1,0 +1,33 @@
+---
+# Home Assistant role defaults
+
+# Home Assistant VM connection details
+home_assistant_host: "192.168.0.154"
+home_assistant_ssh_port: 22222
+home_assistant_config_path: "/config"
+
+# SMTP configuration (from 1Password via environment variables)
+home_assistant_smtp_host: "smtp-relay.esweiss.com"
+home_assistant_smtp_port: 587
+home_assistant_smtp_encryption: "starttls"
+home_assistant_smtp_username: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}"
+home_assistant_smtp_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') }}"
+home_assistant_smtp_sender: "home-assistant@esweiss.com"
+home_assistant_smtp_sender_name: "Home Assistant"
+home_assistant_admin_email: "{{ lookup('ansible.builtin.env', 'ADMIN_EMAIL') }}"
+
+# Trusted proxies for reverse proxy setup
+# INTENTIONAL: Broad ranges are required here because:
+# - 192.168.0.0/24: Traefik runs on k3s agents with LAN IPs, and the specific
+#   node handling traffic can change (MetalLB speaker election). Trusting the
+#   full LAN is acceptable since this is a private network behind a firewall.
+# - 10.42.0.0/16 and 10.43.0.0/16: k3s internal pod/service CIDRs. Traefik
+#   pods forward X-Forwarded-For headers from these source IPs.
+home_assistant_trusted_proxies:
+  - "192.168.0.0/24"      # Local LAN (includes all Traefik ingress nodes)
+  - "10.42.0.0/16"        # k3s pod network
+  - "10.43.0.0/16"        # k3s service network
+
+# SSO/OIDC configuration (from 1Password via environment variables)
+home_assistant_oidc_client_id: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CLIENT_ID') }}"
+home_assistant_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CLIENT_SECRET') }}"

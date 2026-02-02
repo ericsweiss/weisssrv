@@ -21,7 +21,7 @@ Internet-accessible services (no IP restrictions):
 - **food** → http://192.168.0.103:9925 (pve-laptop-01)
   - food.ericsweiss.com (public DNS via Cloudflare)
   - food.esweiss.com (internal DNS via AdGuard Home)
-- **home** → http://192.168.0.104:8123 (Home Assistant with WebSocket)
+- **home** → http://192.168.0.154:8123 (Home Assistant with WebSocket)
   - home.ericsweiss.com (public DNS via Cloudflare)
   - home.esweiss.com (internal DNS via AdGuard Home)
 - **plex** → http://192.168.0.152:32400
@@ -34,13 +34,13 @@ LAN + Tailscale only (IP allowlist enforced):
 
 - **router** → http://192.168.0.1 (router web UI)
   - router.esweiss.com (internal DNS via AdGuard Home)
-- **qbittorrent** → k8s pod on k3s-agt-nas-01 (future)
+- **qbittorrent** → k8s pod in downloads namespace
   - qbittorrent.esweiss.com (internal DNS via AdGuard Home)
-- **nzbget** → k8s pod on k3s-agt-nas-01 (future)
+- **nzbget** → k8s pod in downloads namespace
   - nzbget.esweiss.com (internal DNS via AdGuard Home)
-- **movies** → Radarr k8s pod (future)
+- **movies** → Radarr k8s pod in downloads namespace
   - movies.esweiss.com (internal DNS via AdGuard Home)
-- **tv** → Sonarr k8s pod (future)
+- **tv** → Sonarr k8s pod in downloads namespace
   - tv.esweiss.com (internal DNS via AdGuard Home)
 
 Note: Internal-only services only have DNS rewrites for the **esweiss.com** (internal) domain. The ericsweiss.com variants will not resolve (no Cloudflare DNS, no AdGuard rewrite). This provides clean domain separation: esweiss.com = internal, ericsweiss.com = external. IngressRoutes accept both domain variants for flexibility (in case DNS strategy changes), but only esweiss.com is actually reachable.
@@ -160,17 +160,19 @@ IngressRoutes reference the appropriate TLS secret:
 
 Both certificates are wildcard certificates managed by cert-manager.
 
-## Future Deployments
+## Download Clients
 
-When deploying download clients and *arrs as k8s pods:
+The download clients and media management apps are deployed in the `downloads` namespace:
 
-1. Deploy qBittorrent and NZBGet to k3s-agt-nas-01 (node selector)
-2. Deploy Radarr and Sonarr to k3s cluster (various nodes)
-3. IngressRoutes are already configured and waiting for Services with matching names:
-   - `qbittorrent` (port 8080)
-   - `nzbget` (port 6789)
-   - `radarr` (port 7878)
-   - `sonarr` (port 8989)
+- qBittorrent - BitTorrent client (Service: `qbittorrent` port 8080)
+- NZBGet - Usenet downloader (Service: `nzbget` port 6789)
+- Radarr - Movie management (Service: `radarr` port 7878)
+- Sonarr - TV show management (Service: `sonarr` port 8989)
+- Lidarr - Music management (Service: `lidarr` port 8686)
+- Prowlarr - Indexer manager (Service: `prowlarr` port 9696)
+- Pulsarr - Plex Watchlist automation (Service: `pulsarr` port 5997)
+
+All use VPN gateway (Gluetun) and are accessible via internal-only IngressRoutes.
 
 ## Troubleshooting
 

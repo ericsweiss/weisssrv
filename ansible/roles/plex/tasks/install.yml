@@ -46,10 +46,12 @@
 
 - name: Add Plex repository
   ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/plex-archive-keyring.gpg] https://downloads.plex.tv/repo/deb public main"
+    repo: "deb [signed-by=/usr/share/keyrings/plex-archive-keyring.gpg trusted=yes] https://downloads.plex.tv/repo/deb public main"
     filename: plexmediaserver
     state: present
     update_cache: true
+  # Note: trusted=yes is required because Plex's GPG key uses SHA1 signatures
+  # which Debian Trixie (13) rejects. This only affects the Plex repository.
 
 - name: Install Plex Media Server
   ansible.builtin.apt:
