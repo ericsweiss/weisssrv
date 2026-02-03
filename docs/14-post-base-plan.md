@@ -59,14 +59,26 @@ All k3s VMs will be provisioned on Proxmox with Ubuntu 22.04 LTS or Debian 12.
 
 ### Node Roles
 
-| Node | IP | Role | Resources |
-|------|-----|------|-----------|
-| k3s-srv-nas-01 | 192.168.0.202 | Server (etcd) | 2 vCPU, 4GB RAM, 64GB disk |
-| k3s-srv-laptop-01 | 192.168.0.203 | Server (etcd) + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-srv-opt-01 | 192.168.0.204 | Server (etcd) + Ingress | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-agt-opt-02 | 192.168.0.205 | Agent + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-agt-opt-03 | 192.168.0.206 | Agent + Ingress + General | 3 vCPU, 6GB RAM, 64GB disk |
-| k3s-agt-nas-01 | 192.168.0.207 | Agent (NAS) | 4 vCPU, 8GB RAM, 64GB disk |
+#### Servers (.22X range - control plane + etcd)
+
+| Node | IP | VMID | Proxmox Host | Role | Resources |
+|------|-----|------|--------------|------|-----------|
+| k3s-srv-nas-01 | 192.168.0.222 | 222 | pve-nas-01 | Server (etcd) | 2 vCPU, 4GB RAM, 64GB disk |
+| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | Server (etcd) | TBD |
+| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | Server (etcd) | TBD |
+| (future) | 192.168.0.224 | 224 | TBD | Server (etcd) - 5-node HA | TBD |
+| (future) | 192.168.0.225 | 225 | TBD | Server (etcd) - 5-node HA | TBD |
+
+#### Agents (.20X range - workers with specialized roles)
+
+| Node | IP | VMID | Proxmox Host | Role | Resources |
+|------|-----|------|--------------|------|-----------|
+| k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | 4 vCPU, 8GB RAM, 64GB disk |
+| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general (PreferNoSchedule) | TBD |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General (agent only, no server) | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General (agent only, no server) | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | 3 vCPU, 6GB RAM, 64GB disk |
+| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | General + compute (high-CPU/RAM) | TBD (higher specs) |
 
 **Note**: Enable memory ballooning with a reasonable minimum to prevent k3s being squeezed.
 
@@ -86,19 +98,23 @@ Namespace: `esweiss.com/*`
 - `esweiss.com/ingress=true` - Node can run ingress controllers
 - `esweiss.com/general=true` - Node can run general workloads
 - `esweiss.com/nas=true` - Node has fast access to NAS storage
+- `esweiss.com/compute=true` - Node can run high-computation tasks (ML, transcoding, etc.)
 - `esweiss.com/control-plane=true` - Informational label
 
 **Taints**:
-- NAS server control-plane: `NoSchedule` (etcd + API only)
-- Other servers (k3s-srv-opt-01, k3s-srv-laptop-01): control-plane `PreferNoSchedule` (allow overflow)
+- All server nodes: `node-role.kubernetes.io/control-plane=true:NoSchedule` (etcd + API only)
 - NAS agent: `esweiss.com/nas=true:PreferNoSchedule` (prefer NAS workloads, allow overflow)
+- Ingress agent (laptop-01): `esweiss.com/ingress=true:PreferNoSchedule` (prefer ingress, allow general overflow)
+- Compute agent (prec-01): `esweiss.com/compute=true:PreferNoSchedule` (prefer compute workloads, allow general overflow)
 
 **Node Eligibility Plan**:
-- `k3s-srv-opt-01` server: ingress-only
-- `k3s-srv-laptop-01` server: ingress + general (reserve headroom for HA workloads like Home Assistant)
-- `k3s-agt-opt-02` agent: ingress + general
+- `k3s-srv-*` servers: control-plane only (NoSchedule taint, no workloads)
+- `k3s-agt-nas-01` agent: NAS workloads + general overflow
+- `k3s-agt-laptop-01` agent: ingress + general (PreferNoSchedule taint)
+- `k3s-agt-opt-01` agent: general workloads
+- `k3s-agt-opt-02` agent: general workloads
 - `k3s-agt-opt-03` agent: ingress + general
-- `k3s-agt-nas-01` agent: nas workloads (and optionally general overflow)
+- `k3s-agt-prec-01` agent: compute + general overflow (PreferNoSchedule taint, high-CPU/RAM)
 
 ## Platform Components
 

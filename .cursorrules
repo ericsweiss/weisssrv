@@ -184,7 +184,7 @@ ansible/
 ### Infrastructure
 
 - **Proxmox Hosts**: pve-nas-01 (.102), pve-opt-03 (.106)
-- **K3s Cluster**: k3s-srv-nas-01 (.202), k3s-agt-nas-01 (.207), k3s-agt-opt-03 (.206)
+- **K3s Cluster**: k3s-srv-nas-01 (.222), k3s-agt-nas-01 (.202), k3s-agt-opt-03 (.206)
 - **DNS Servers**: dns-01 (.150), dns-02 (.160) - AdGuard + Unbound
 - **SMTP Relay**: smtp-relay (.151) - Postfix to Gmail
 - **Plex LXC**: plex (.154) - Media server with GPU passthrough

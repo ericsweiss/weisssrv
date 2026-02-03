@@ -96,7 +96,7 @@ echo "--- Firewall IP Sets ---"
 sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep -A 20 '\[IPSET' | head -100 || echo "No firewall config"
 echo ""
 echo "--- Firewall Guest Rules ---"
-for vmid in 150 151 152 160 202 206 207; do
+for vmid in 150 151 152 154 160 202 206 222; do
     if [ -f "/etc/pve/firewall/${vmid}.fw" ]; then
         echo "Guest ${vmid}:"
         sudo cat "/etc/pve/firewall/${vmid}.fw" 2>/dev/null || echo "  Cannot read"

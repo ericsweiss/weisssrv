@@ -22,6 +22,68 @@
     state: directory
     mode: "0755"
 
+# Mount additional persistent disks (ZFS zvols attached as scsi1, scsi2, etc.)
+# Initial device naming: scsi1 -> /dev/sdb, scsi2 -> /dev/sdc, etc.
+# After formatting, we mount by filesystem UUID for stability (immune to device reordering)
+- name: Check if additional disk is formatted
+  ansible.builtin.command: "blkid /dev/sd{{ 'bcdefghij'[idx] }}"
+  loop: "{{ vm_additional_disks | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.name }} (/dev/sd{{ 'bcdefghij'[idx] }})"
+  register: disk_formatted
+  failed_when: false
+  changed_when: false
+  when: vm_additional_disks is defined
+
+- name: Format additional disks
+  community.general.filesystem:
+    fstype: "{{ item.item.fstype }}"
+    dev: "/dev/sd{{ 'bcdefghij'[idx] }}"
+  loop: "{{ disk_formatted.results | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.item.name }} (/dev/sd{{ 'bcdefghij'[idx] }})"
+  when:
+    - vm_additional_disks is defined
+    - item.rc != 0
+
+# After formatting, discover the filesystem UUID for stable mounting
+# This avoids reliance on positional /dev/sdX names which can change
+- name: Get filesystem UUID for additional disks
+  ansible.builtin.command: "blkid -s UUID -o value /dev/sd{{ 'bcdefghij'[idx] }}"
+  loop: "{{ vm_additional_disks | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.name }} (/dev/sd{{ 'bcdefghij'[idx] }})"
+  register: disk_uuids
+  changed_when: false
+  when: vm_additional_disks is defined
+
+- name: Create mount points for additional disks
+  ansible.builtin.file:
+    path: "{{ item.mount_point }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ vm_additional_disks | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: vm_additional_disks is defined
+
+- name: Mount additional disks by UUID
+  ansible.posix.mount:
+    path: "{{ item.0.mount_point }}"
+    src: "UUID={{ item.1.stdout }}"
+    fstype: "{{ item.0.fstype }}"
+    opts: defaults,noatime
+    state: mounted
+  loop: "{{ vm_additional_disks | zip(disk_uuids.results) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} (UUID={{ item.1.stdout }}) -> {{ item.0.mount_point }}"
+  when:
+    - vm_additional_disks is defined
+    - disk_uuids is defined
+
 - name: Include server tasks
   ansible.builtin.include_tasks: server.yml
   when: k3s_role == 'server'

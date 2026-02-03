@@ -8,6 +8,11 @@ vm_disk_size: 32G
 vm_bridge: vmbr0
 vm_ostype: l26
 vm_agent_enabled: true
+vm_cpu_type: Penryn  # Baseline CPU for live migration across heterogeneous cluster
+# Override to 'host' per-host for NAS-only VMs that need AVX/AVX2
+# Penryn provides SSE3/SSSE3/SSE4.1 - compatible with oldest node:
+#   Core 2 Quad Q9650 (pve-opt-03, Penryn arch, NO SSE4.2/AVX)
+# Use 'host' for VMs pinned to modern CPUs (pve-nas-01, 12th Gen Intel)
 
 # Cloud image settings
 cloud_image_url: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"

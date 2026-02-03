@@ -185,10 +185,12 @@
         fail_msg: "Critical ZFS dataset not mounted: {{ item }}"
       loop: "{{ zfs_datasets.stdout_lines }}"
       when: >
-        'tank/media' in item or
-        'tank/share' in item or
-        'ssd/appdata' in item or
-        'nvme/media' in item
+        (
+          'tank/media' in item or
+          'tank/share' in item or
+          'ssd/appdata' in item or
+          'nvme/media' in item
+        ) and item is not regex('.*\t-$')
 
     - name: Verify MergerFS mounts
       ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE
@@ -318,6 +320,28 @@
         msg: "{{ mover_status.stdout_lines | select('search', 'Active|Main PID|Status') | list }}"
       when: media_mover_enabled | default(false) and mover_status.rc == 0
 
+- name: Verify k3s persistent storage mounts
+  hosts: k3s
+  become: true
+  tasks:
+    - name: Verify additional disk mount points
+      ansible.builtin.command: "findmnt {{ item.mount_point }}"
+      loop: "{{ vm_additional_disks | default([]) }}"
+      loop_control:
+        label: "{{ item.name }} -> {{ item.mount_point }}"
+      changed_when: false
+      register: mount_check
+      failed_when: mount_check.rc != 0
+      when: vm_additional_disks is defined
+
+    - name: Check disk space on persistent mounts
+      ansible.builtin.command: "df -h {{ item.mount_point }}"
+      loop: "{{ vm_additional_disks | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+      when: vm_additional_disks is defined
+
 - name: Display verification summary
   hosts: localhost
   gather_facts: false
@@ -338,4 +362,5 @@
           - "- SMART disk health checks passed"
           - "- Backup jobs configured"
           - "- Media mover timer running"
+          - "- K3s persistent storage mounts verified"
           - "========================================="

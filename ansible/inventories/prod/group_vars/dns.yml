@@ -90,19 +90,27 @@ adguard_rewrites:
     answer: "192.168.0.105"
   - domain: "pve-opt-03.{{ internal_domain }}"
     answer: "192.168.0.106"
+  - domain: "pve-prec-01.{{ internal_domain }}"
+    answer: "192.168.0.107"
   - domain: "k3s.{{ internal_domain }}"
     answer: "192.168.0.161"
   - domain: "k3s-srv-nas-01.{{ internal_domain }}"
-    answer: "192.168.0.202"
+    answer: "192.168.0.222"
   - domain: "k3s-srv-laptop-01.{{ internal_domain }}"
+    answer: "192.168.0.223"
+  - domain: "k3s-srv-prec-01.{{ internal_domain }}"
+    answer: "192.168.0.227"
+  - domain: "k3s-agt-nas-01.{{ internal_domain }}"
+    answer: "192.168.0.202"
+  - domain: "k3s-agt-laptop-01.{{ internal_domain }}"
     answer: "192.168.0.203"
-  - domain: "k3s-srv-opt-01.{{ internal_domain }}"
+  - domain: "k3s-agt-opt-01.{{ internal_domain }}"
     answer: "192.168.0.204"
   - domain: "k3s-agt-opt-02.{{ internal_domain }}"
     answer: "192.168.0.205"
   - domain: "k3s-agt-opt-03.{{ internal_domain }}"
     answer: "192.168.0.206"
-  - domain: "k3s-agt-nas-01.{{ internal_domain }}"
+  - domain: "k3s-agt-prec-01.{{ internal_domain }}"
     answer: "192.168.0.207"
   - domain: "vip-internal.{{ internal_domain }}"
     answer: "192.168.0.101"
@@ -158,13 +166,17 @@ adguard_user_rules:
   - '||104.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-01.{{ internal_domain }}.'
   - '||105.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-02.{{ internal_domain }}.'
   - '||106.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-03.{{ internal_domain }}.'
+  - '||107.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-prec-01.{{ internal_domain }}.'
   - '||161.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s.{{ internal_domain }}.'
-  - '||202.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-nas-01.{{ internal_domain }}.'
-  - '||203.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-laptop-01.{{ internal_domain }}.'
-  - '||204.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-opt-01.{{ internal_domain }}.'
+  - '||222.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-nas-01.{{ internal_domain }}.'
+  - '||223.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-laptop-01.{{ internal_domain }}.'
+  - '||227.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-srv-prec-01.{{ internal_domain }}.'
+  - '||202.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-nas-01.{{ internal_domain }}.'
+  - '||203.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-laptop-01.{{ internal_domain }}.'
+  - '||204.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-01.{{ internal_domain }}.'
   - '||205.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-02.{{ internal_domain }}.'
   - '||206.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-03.{{ internal_domain }}.'
-  - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-nas-01.{{ internal_domain }}.'
+  - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-prec-01.{{ internal_domain }}.'
   - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ external_domain }}.'
   - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
 

@@ -90,6 +90,9 @@ kubectl get svc -n authentik
 # Create namespace
 kubectl apply -f kubernetes/apps/authentik/namespace.yaml
 
+# Apply persistent storage (PV/PVC for PostgreSQL - must exist before Helm install)
+kubectl apply -f kubernetes/apps/authentik/storage.yaml
+
 # Set 1Password environment variables
 export AUTHENTIK_SECRET_KEY=$(op read "op://Homelab/Authentik Secrets/secret-key")
 export AUTHENTIK_POSTGRESQL_PASSWORD=$(op read "op://Homelab/Authentik Secrets/postgresql-password")

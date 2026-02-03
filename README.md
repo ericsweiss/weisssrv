@@ -35,8 +35,8 @@ Internet
     |   +-- plex          (.152) - Plex Media Server
     |
     +-- K3s Cluster VMs
-        +-- k3s-srv-nas-01 (.202) - Server + etcd
-        +-- k3s-agt-nas-01 (.207) - Agent (NAS workloads)
+        +-- k3s-srv-nas-01 (.222) - Server + etcd
+        +-- k3s-agt-nas-01 (.202) - Agent (NAS workloads)
         +-- k3s-agt-opt-03 (.206) - Agent (ingress)
 ```
 
@@ -255,6 +255,7 @@ Home automation platform running on Home Assistant OS:
 | [22-recipes-deployment](docs/22-recipes-deployment.md) | Recipe management (Mealie, Bar Assistant) |
 | [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration |
 | [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
+| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA |
 
 ## User Management
 

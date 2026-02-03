@@ -361,6 +361,8 @@ Configure *arr apps to use:
 
 ### Pulsarr
 
+> **AVX Requirement**: Pulsarr uses the Bun JavaScript runtime (v0.10.0+) which requires AVX CPU instructions. It is pinned to NAS nodes (`esweiss.com/nas: "true"`) because only pve-nas-01 (12th Gen Intel i7-12700K) has AVX support. The pve-opt-03 node (Core 2 Quad Q9650) does NOT support AVX and will cause Pulsarr to crash with an "Illegal instruction" error. Do not reschedule Pulsarr to non-NAS nodes without verifying AVX support on the target hardware.
+
 1. Access: https://pulsarr.esweiss.com
 2. Configure:
    - **Plex Token**: Get from Plex account settings
