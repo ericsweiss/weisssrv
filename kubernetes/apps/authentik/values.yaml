@@ -124,8 +124,9 @@ postgresql:
   primary:
     persistence:
       enabled: true
-      size: 8Gi
-      storageClass: ""  # local-path
+      size: 10Gi
+      storageClass: ""
+      existingClaim: authentik-postgres-data  # Use dedicated ZFS zvol PVC
     resources:
       requests:
         cpu: 100m

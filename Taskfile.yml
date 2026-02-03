@@ -164,7 +164,7 @@ tasks:
     desc: Fetch kubeconfig from k3s cluster
     cmds:
       - |
-        ssh eric@192.168.0.202 "sudo cat /etc/rancher/k3s/k3s.yaml" | \
+        ssh eric@192.168.0.222 "sudo cat /etc/rancher/k3s/k3s.yaml" | \
           sed 's/127.0.0.1/192.168.0.161/g; s/0.0.0.0/192.168.0.161/g' > ~/.kube/config-k3s
         echo "Kubeconfig saved to ~/.kube/config-k3s"
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
@@ -274,6 +274,7 @@ tasks:
       - helm repo add authentik https://charts.goauthentik.io --force-update
       - helm repo update authentik
       - kubectl apply -f namespace.yaml
+      - kubectl apply -f storage.yaml
       - |
         echo "Creating Authentik secrets from 1Password..."
         op run -- sh -c 'kubectl create secret generic authentik-secrets \

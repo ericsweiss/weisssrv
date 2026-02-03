@@ -80,8 +80,8 @@ kubectl get nodes
 - **Internal LoadBalancer**: 192.168.0.101 (MetalLB)
 
 ### Cluster Nodes
-- **k3s-srv-nas-01**: 192.168.0.202 (server, pve-nas-01)
-- **k3s-agt-nas-01**: 192.168.0.207 (agent, pve-nas-01, NAS workloads)
+- **k3s-srv-nas-01**: 192.168.0.222 (server, pve-nas-01)
+- **k3s-agt-nas-01**: 192.168.0.202 (agent, pve-nas-01, NAS workloads)
 - **k3s-agt-opt-03**: 192.168.0.206 (agent, pve-opt-03, general workloads)
 
 ## Documentation

@@ -94,12 +94,16 @@ Internal services use AdGuard rewrites instead of split-horizon DNS. Configure t
 | smtp-relay.esweiss.com | 192.168.0.151 | SMTP relay |
 | pve-nas-01.esweiss.com | 192.168.0.102 | Proxmox NAS host |
 | pve-opt-03.esweiss.com | 192.168.0.106 | Proxmox compute host |
-| k3s-srv-nas-01.esweiss.com | 192.168.0.202 | K3s server node |
-| k3s-srv-laptop-01.esweiss.com | 192.168.0.203 | K3s server (future HA) |
-| k3s-srv-opt-01.esweiss.com | 192.168.0.204 | K3s server (future HA) |
-| k3s-agt-opt-02.esweiss.com | 192.168.0.205 | K3s agent (future) |
-| k3s-agt-opt-03.esweiss.com | 192.168.0.206 | K3s agent (ingress) |
-| k3s-agt-nas-01.esweiss.com | 192.168.0.207 | K3s agent (NAS) |
+| pve-prec-01.esweiss.com | 192.168.0.107 | Proxmox compute host (future) |
+| k3s-srv-nas-01.esweiss.com | 192.168.0.222 | K3s server node |
+| k3s-srv-laptop-01.esweiss.com | 192.168.0.223 | K3s server (future HA) |
+| k3s-srv-prec-01.esweiss.com | 192.168.0.227 | K3s server (future HA) |
+| k3s-agt-nas-01.esweiss.com | 192.168.0.202 | K3s agent (NAS) |
+| k3s-agt-laptop-01.esweiss.com | 192.168.0.203 | K3s agent (ingress + general, future) |
+| k3s-agt-opt-01.esweiss.com | 192.168.0.204 | K3s agent (general, future) |
+| k3s-agt-opt-02.esweiss.com | 192.168.0.205 | K3s agent (general, future) |
+| k3s-agt-opt-03.esweiss.com | 192.168.0.206 | K3s agent (ingress + general) |
+| k3s-agt-prec-01.esweiss.com | 192.168.0.207 | K3s agent (general + compute, future) |
 | k3s.esweiss.com | 192.168.0.161 | K3s API VIP (kube-vip) |
 | vip-public.esweiss.com | 192.168.0.100 | MetalLB public pool |
 | vip-internal.esweiss.com | 192.168.0.101 | MetalLB internal pool |
@@ -115,12 +119,16 @@ Configure these as additional rewrites for proper reverse lookups:
 | 151.0.168.192.in-addr.arpa | smtp-relay.esweiss.com |
 | 102.0.168.192.in-addr.arpa | pve-nas-01.esweiss.com |
 | 106.0.168.192.in-addr.arpa | pve-opt-03.esweiss.com |
-| 202.0.168.192.in-addr.arpa | k3s-srv-nas-01.esweiss.com |
-| 203.0.168.192.in-addr.arpa | k3s-srv-laptop-01.esweiss.com |
-| 204.0.168.192.in-addr.arpa | k3s-srv-opt-01.esweiss.com |
+| 107.0.168.192.in-addr.arpa | pve-prec-01.esweiss.com |
+| 202.0.168.192.in-addr.arpa | k3s-agt-nas-01.esweiss.com |
+| 203.0.168.192.in-addr.arpa | k3s-agt-laptop-01.esweiss.com |
+| 204.0.168.192.in-addr.arpa | k3s-agt-opt-01.esweiss.com |
 | 205.0.168.192.in-addr.arpa | k3s-agt-opt-02.esweiss.com |
 | 206.0.168.192.in-addr.arpa | k3s-agt-opt-03.esweiss.com |
-| 207.0.168.192.in-addr.arpa | k3s-agt-nas-01.esweiss.com |
+| 207.0.168.192.in-addr.arpa | k3s-agt-prec-01.esweiss.com |
+| 222.0.168.192.in-addr.arpa | k3s-srv-nas-01.esweiss.com |
+| 223.0.168.192.in-addr.arpa | k3s-srv-laptop-01.esweiss.com |
+| 227.0.168.192.in-addr.arpa | k3s-srv-prec-01.esweiss.com |
 | 161.0.168.192.in-addr.arpa | k3s.esweiss.com |
 | 100.0.168.192.in-addr.arpa | vip-public.esweiss.com |
 | 101.0.168.192.in-addr.arpa | vip-internal.esweiss.com |

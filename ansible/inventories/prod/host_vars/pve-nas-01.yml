@@ -89,11 +89,17 @@ nfs_exports:
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.200/29"
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.220/29"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
 
   # K3s/app RW exports
   # These directories use UID 1000 (eric) and GID 2000 (media) with setgid for shared access
   # all_squash + anonuid/anongid: Maps ALL clients (including root) to uid 1000/gid 2000
   # This allows LinuxServer.io containers to run chmod/chown during init
+  #
+  # Two CIDR blocks for k3s nodes:
+  #   192.168.0.200/29 (.200-.207) = k3s agents
+  #   192.168.0.220/29 (.220-.227) = k3s servers
   - path: /export/appdata
     bind_source: /mnt/ssd/appdata
     owner: 1000  # eric
@@ -101,6 +107,8 @@ nfs_exports:
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
     clients:
       - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
+      - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
   - path: /export/share
@@ -110,6 +118,8 @@ nfs_exports:
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
     clients:
       - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,root_squash,fsid=12"
+      - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
 
   # Unified media export (mergerfs mount - exposes only downloads/ and library/)
@@ -121,6 +131,8 @@ nfs_exports:
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
     clients:
       - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
+      - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
       - spec: "192.168.0.154/32"
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"

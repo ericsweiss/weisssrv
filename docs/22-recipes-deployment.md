@@ -75,7 +75,7 @@ This guide covers deploying the recipe management stack including Mealie (food r
 The NFS exports should already be configured. Create the appdata directories:
 
 ```bash
-# Create directories for Mealie (app data only - PostgreSQL uses local-path storage)
+# Create directories for Mealie (app data only - PostgreSQL uses a dedicated ZFS zvol)
 ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/mealie"
 ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/mealie"
 ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/mealie"
@@ -86,7 +86,7 @@ ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/bar-assistant"
 ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/bar-assistant"
 ```
 
-**Note**: Mealie PostgreSQL uses k3s `local-path` storage (not NFS) because PostgreSQL requires ownership changes that don't work reliably on NFS. The PostgreSQL data is stored locally on k3s-agt-nas-01.
+**Note**: Mealie PostgreSQL uses a dedicated ZFS zvol (`ssd/appdata/mealie/postgres`) attached to k3s-agt-nas-01 as a SCSI disk and mounted at `/mnt/mealie-postgres-data`. This provides persistent storage that survives VM recreation. The zvol is managed by the `proxmox_vm` role via `vm_additional_disks` in `hosts.yml` and exposed to Kubernetes as a hostPath PV.
 
 ### 2. 1Password Secrets (Required)
 
@@ -328,9 +328,10 @@ App data is stored on NFS (`/mnt/ssd/appdata`). Include in your regular NAS back
 - `/mnt/ssd/appdata/bar-assistant/` - Bar Assistant data and SQLite database
 - `/mnt/ssd/appdata/bar-assistant/meilisearch/` - Meilisearch index data
 
-**Local storage (requires separate backup):**
-- Mealie PostgreSQL data is stored on k3s-agt-nas-01 via `local-path` storage class
-- Location: `/var/lib/rancher/k3s/storage/` (managed by k3s local-path-provisioner)
+**ZFS zvol storage (backed by SSD pool):**
+- Mealie PostgreSQL data is stored on a ZFS zvol (`ssd/appdata/mealie/postgres`) attached to k3s-agt-nas-01
+- Mounted at `/mnt/mealie-postgres-data` inside the VM, exposed as a hostPath PV
+- The zvol inherits ZFS pool-level snapshots and replication capabilities
 - **Recommended**: Use Mealie's built-in backup feature (Admin > Backups) which exports the full database
 
 For application-level backups:

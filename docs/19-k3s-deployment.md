@@ -142,8 +142,8 @@ the k3s install script runs again (which handles in-place upgrades).
 ## Overview
 
 Initial cluster topology:
-- **k3s-srv-nas-01** (192.168.0.202) - Server node on pve-nas-01
-- **k3s-agt-nas-01** (192.168.0.207) - Agent node on pve-nas-01 (NAS workloads)
+- **k3s-srv-nas-01** (192.168.0.222) - Server node on pve-nas-01
+- **k3s-agt-nas-01** (192.168.0.202) - Agent node on pve-nas-01 (NAS workloads)
 - **k3s-agt-opt-03** (192.168.0.206) - Agent node on pve-opt-03 (general workloads)
 
 Cluster features:
@@ -205,7 +205,7 @@ task k3s:provision-vms
 
 # This will:
 # - Download Debian 13 cloud image
-# - Create VMs on pve-nas-01 (k3s-srv-nas-01, k3s-agt-nas-01)
+# - Create VMs on pve-nas-01 (k3s-srv-nas-01 VMID 222, k3s-agt-nas-01 VMID 202)
 # - Create VM on pve-opt-03 (k3s-agt-opt-03)
 # - Configure cloud-init with SSH keys
 # - Start VMs and wait for SSH
@@ -215,15 +215,15 @@ task k3s:provision-vms
 
 ```bash
 # Test SSH access to all VMs
-ssh eric@192.168.0.202  # k3s-srv-nas-01
-ssh eric@192.168.0.207  # k3s-agt-nas-01
+ssh eric@192.168.0.222  # k3s-srv-nas-01
+ssh eric@192.168.0.202  # k3s-agt-nas-01
 ssh eric@192.168.0.206  # k3s-agt-opt-03
 
 # Verify VMs can reach the internet
-ssh eric@192.168.0.202 "ping -c 3 1.1.1.1"
+ssh eric@192.168.0.222 "ping -c 3 1.1.1.1"
 
 # Verify DNS resolution
-ssh eric@192.168.0.202 "dig google.com"
+ssh eric@192.168.0.222 "dig google.com"
 ```
 
 ## Phase 2: K3s Cluster Deployment
@@ -236,8 +236,8 @@ task k3s:deploy
 
 # This will:
 # 1. Deploy base configuration (base, qol, postfix, tailscale)
-# 2. Deploy k3s server on k3s-srv-nas-01 with kube-vip
-# 3. Deploy k3s agents on k3s-agt-nas-01 and k3s-agt-opt-03
+# 2. Deploy k3s server on k3s-srv-nas-01 (.222) with kube-vip
+# 3. Deploy k3s agents on k3s-agt-nas-01 (.202) and k3s-agt-opt-03 (.206)
 # 4. Apply node labels and taints
 # 5. Verify cluster health
 ```
@@ -418,8 +418,8 @@ kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns -f
 
 ```bash
 # SSH to each k3s node and run tailscale up
+ssh eric@192.168.0.222 "sudo tailscale up --accept-routes --accept-dns=false"
 ssh eric@192.168.0.202 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@192.168.0.207 "sudo tailscale up --accept-routes --accept-dns=false"
 ssh eric@192.168.0.206 "sudo tailscale up --accept-routes --accept-dns=false"
 ```
 
@@ -439,25 +439,25 @@ task collect-state
 ssh pve-nas-01 "journalctl -u pve-cluster -f"
 
 # Manually check VM status
-ssh pve-nas-01 "qm status 202"
+ssh pve-nas-01 "qm status 222"
 
 # Check cloud-init logs on VM
-ssh eric@192.168.0.202 "sudo cat /var/log/cloud-init-output.log"
+ssh eric@192.168.0.222 "sudo cat /var/log/cloud-init-output.log"
 ```
 
 ### K3s Installation Failed
 
 ```bash
 # Check k3s service on server
-ssh eric@192.168.0.202 "sudo systemctl status k3s"
-ssh eric@192.168.0.202 "sudo journalctl -u k3s -n 50"
+ssh eric@192.168.0.222 "sudo systemctl status k3s"
+ssh eric@192.168.0.222 "sudo journalctl -u k3s -n 50"
 
 # Check k3s-agent service on agents
-ssh eric@192.168.0.207 "sudo systemctl status k3s-agent"
-ssh eric@192.168.0.207 "sudo journalctl -u k3s-agent -n 50"
+ssh eric@192.168.0.202 "sudo systemctl status k3s-agent"
+ssh eric@192.168.0.202 "sudo journalctl -u k3s-agent -n 50"
 
 # Check kube-vip manifest
-ssh eric@192.168.0.202 "sudo cat /var/lib/rancher/k3s/server/manifests/kube-vip.yaml"
+ssh eric@192.168.0.222 "sudo cat /var/lib/rancher/k3s/server/manifests/kube-vip.yaml"
 ```
 
 ### kube-vip Not Assigning VIP
@@ -511,26 +511,33 @@ The initial 3-node cluster can be expanded to full HA with 5 server nodes (requi
 
 ### HA Expansion Nodes
 
-| Node | IP | Proxmox Host | Purpose |
-|------|-----|--------------|---------|
-| k3s-srv-laptop-01 | 192.168.0.203 | pve-laptop-01 | HA server #2 |
-| k3s-srv-opt-01 | 192.168.0.204 | pve-opt-01 | HA server #3 |
-| k3s-agt-opt-02 | 192.168.0.205 | pve-opt-02 | HA agent #1 |
+The cluster uses a split IP scheme: servers in the .22X range, agents in the .20X range.
+
+| Node | IP | VMID | Proxmox Host | Purpose |
+|------|-----|------|--------------|---------|
+| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | HA server #2 |
+| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | HA server #3 |
+| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general agent |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General agent |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General agent |
+| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | General + compute agent |
 
 ### Step 1: Uncomment Inventory Entries
 
-Edit `ansible/inventories/prod/hosts.yml` and uncomment the additional server nodes:
+Edit `ansible/inventories/prod/hosts.yml` and uncomment the additional nodes:
 
 ```yaml
 k3s_servers:
   hosts:
     k3s-srv-nas-01:
-      # ... existing first server ...
+      # ... existing first server (VMID 222, .222) ...
     # Uncomment these for HA:
     k3s-srv-laptop-01:
-      ansible_host: 192.168.0.203
+      ansible_host: 192.168.0.223
+      vmid: 223
       k3s_is_first_server: false
       proxmox_host: pve-laptop-01
+      proxmox_storage: local-ssd
       # ...
 ```
 
@@ -538,34 +545,34 @@ k3s_servers:
 
 ### Step 2: Deploy DNS (Already Configured)
 
-DNS records for the expansion nodes are already in `dns.yml` and deployed. Verify:
+DNS records for all expansion nodes are already in `dns.yml` and deployed. Verify:
 
 ```bash
 dig k3s-srv-laptop-01.esweiss.com @192.168.0.150
-dig k3s-srv-opt-01.esweiss.com @192.168.0.150
-dig k3s-agt-opt-02.esweiss.com @192.168.0.150
+dig k3s-srv-prec-01.esweiss.com @192.168.0.150
+dig k3s-agt-laptop-01.esweiss.com @192.168.0.150
 ```
 
 ### Step 3: Provision New VMs
 
 ```bash
 # Provision only the new server nodes
-task k3s:provision-vms -- --limit k3s-srv-laptop-01,k3s-srv-opt-01
+task k3s:provision-vms -- --limit k3s-srv-laptop-01,k3s-srv-prec-01
 ```
 
 ### Step 4: Deploy k3s to New Servers
 
 ```bash
 # Deploy k3s to new servers (joins existing cluster)
-task k3s:deploy -- --limit k3s-srv-laptop-01,k3s-srv-opt-01
+task k3s:deploy -- --limit k3s-srv-laptop-01,k3s-srv-prec-01
 ```
 
 ### Step 5: Verify HA Cluster
 
 ```bash
-# All 5 servers should show as control-plane
+# All 3 servers should show as control-plane (expand to 5 for full HA)
 kubectl get nodes
-# Expected: 5 nodes with control-plane,master role
+# Expected: 3 nodes with control-plane,master role
 
 # Verify etcd cluster health
 kubectl get pods -n kube-system | grep etcd
@@ -580,6 +587,7 @@ kubectl get pods -n kube-system | grep etcd
 - **VIP failover**: kube-vip automatically handles API VIP failover
 - **Rolling updates**: Deploy one server at a time using `serial: 1`
 - **etcd backup**: Consider backing up etcd before expansion
+- **5-node HA**: For 2-failure tolerance, add 2 more servers at .224 and .225
 
 ## Next Steps
 

@@ -27,15 +27,19 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 192.168.0.104  # pve-opt-01
 192.168.0.105  # pve-opt-02
 192.168.0.106  # pve-opt-03
+192.168.0.107  # pve-prec-01
 
 [IPSET dc/k3s-nodes]
 # K3s cluster VMs
-192.168.0.202  # k3s-srv-nas-01
-192.168.0.203  # k3s-srv-laptop-01
-192.168.0.204  # k3s-srv-opt-01
+192.168.0.222  # k3s-srv-nas-01
+192.168.0.223  # k3s-srv-laptop-01
+192.168.0.227  # k3s-srv-prec-01
+192.168.0.202  # k3s-agt-nas-01
+192.168.0.203  # k3s-agt-laptop-01
+192.168.0.204  # k3s-agt-opt-01
 192.168.0.205  # k3s-agt-opt-02
 192.168.0.206  # k3s-agt-opt-03
-192.168.0.207  # k3s-agt-nas-01
+192.168.0.207  # k3s-agt-prec-01
 
 [IPSET dc/nfs_clients]
 # Hosts allowed NFS access
@@ -44,8 +48,10 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 192.168.0.104
 192.168.0.105
 192.168.0.106
+192.168.0.107
 192.168.0.154
 192.168.0.200/29
+192.168.0.220/29
 
 [IPSET dc/smb_clients]
 # Hosts allowed SMB access

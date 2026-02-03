@@ -12,11 +12,12 @@ Internet
 [192.168.0.0/24] ---- Core LAN
     |
     +-- Proxmox Cluster
-    |   +-- pve-nas-01    (192.168.0.102) - NAS + Storage
-    |   +-- pve-laptop-01 (192.168.0.103) - Compute
-    |   +-- pve-opt-01    (192.168.0.104) - Compute
-    |   +-- pve-opt-02    (192.168.0.105) - Compute
-    |   +-- pve-opt-03    (192.168.0.106) - Compute
+    |   +-- pve-nas-01    (192.168.0.102) - NAS + Storage (active)
+    |   +-- pve-laptop-01 (192.168.0.103) - Compute (future)
+    |   +-- pve-opt-01    (192.168.0.104) - Compute (future)
+    |   +-- pve-opt-02    (192.168.0.105) - Compute (future)
+    |   +-- pve-opt-03    (192.168.0.106) - Compute (active)
+    |   +-- pve-prec-01   (192.168.0.107) - Compute (future, Dell Precision 3630)
     |
     +-- Infrastructure LXC
     |   +-- dns-01        (192.168.0.150) - Primary DNS (AdGuard + Unbound)
@@ -24,12 +25,17 @@ Internet
     |   +-- smtp-relay    (192.168.0.151) - Mail relay (Postfix → Gmail)
     |
     +-- K3s Cluster VMs
-    |   +-- k3s-srv-nas-01 (192.168.0.202) - K3s server + etcd (initial)
-    |   +-- k3s-srv-laptop-01 (192.168.0.203) - K3s server + etcd (future HA)
-    |   +-- k3s-srv-opt-01    (192.168.0.204) - K3s server + etcd (future HA)
-    |   +-- k3s-agt-opt-02    (192.168.0.205) - K3s agent (ingress/general)
-    |   +-- k3s-agt-nas-01    (192.168.0.207) - K3s agent (NAS workloads)
-    |   +-- k3s-agt-opt-03    (192.168.0.206) - K3s agent (ingress/general)
+    |   +-- Servers (.22X range - control plane + etcd)
+    |   |   +-- k3s-srv-nas-01    (192.168.0.222) - Server + etcd (active)
+    |   |   +-- k3s-srv-laptop-01 (192.168.0.223) - Server + etcd (future HA)
+    |   |   +-- k3s-srv-prec-01   (192.168.0.227) - Server + etcd (future HA)
+    |   +-- Agents (.20X range - workers)
+    |   |   +-- k3s-agt-nas-01    (192.168.0.202) - Agent (NAS workloads)
+    |   |   +-- k3s-agt-laptop-01 (192.168.0.203) - Agent (ingress + general, future)
+    |   |   +-- k3s-agt-opt-01    (192.168.0.204) - Agent (general, future)
+    |   |   +-- k3s-agt-opt-02    (192.168.0.205) - Agent (general, future)
+    |   |   +-- k3s-agt-opt-03    (192.168.0.206) - Agent (ingress + general, active)
+    |   |   +-- k3s-agt-prec-01   (192.168.0.207) - Agent (general + compute, future)
     |
     +-- Virtual IPs (Reserved)
         +-- vip-public    (192.168.0.100) - MetalLB public ingress
@@ -43,12 +49,13 @@ Internet
 |-------|---------|--------|
 | 192.168.0.1-99 | Infrastructure, DHCP, workstations | Active |
 | 192.168.0.100-101 | MetalLB VIPs (public/internal) | Reserved |
-| 192.168.0.102-109 | Proxmox hosts | Active |
+| 192.168.0.102-109 | Proxmox hosts | Active (.102, .106) / Reserved (.103-.105, .107-.109) |
 | 192.168.0.150-159 | Infrastructure LXCs (DNS, monitoring, etc.) | Active |
 | 192.168.0.160-169 | Additional infrastructure services | Partially active |
-| 192.168.0.200-207 | K3s VMs (subnet: 192.168.0.200/29) | Reserved |
+| 192.168.0.200-207 | K3s agent VMs (subnet: 192.168.0.200/29) | Active (.202, .206) / Reserved |
+| 192.168.0.220-227 | K3s server VMs (subnet: 192.168.0.220/29) | Active (.222) / Reserved |
 
-**Note**: K3s VM subnet (192.168.0.200/29) is allowlisted in NFS exports for secure access to storage.
+**Note**: K3s VM subnets (192.168.0.200/29 for agents, 192.168.0.220/29 for servers) are allowlisted in NFS exports for secure access to storage.
 
 ## Service Architecture
 

@@ -1,9 +1,9 @@
 ---
 # Proxmox VM provisioning with cloud-init
 
-- name: Set VM ID from IP last octet
+- name: Set VM ID
   ansible.builtin.set_fact:
-    vm_id: "{{ ansible_host.split('.')[-1] }}"
+    vm_id: "{{ vmid | default(ansible_host.split('.')[-1]) }}"
 
 - name: Check if VM already exists
   delegate_to: "{{ proxmox_host }}"
@@ -65,6 +65,7 @@
       --name {{ inventory_hostname }} \
       --memory {{ vm_memory }} \
       --cores {{ vm_cores }} \
+      --cpu {{ vm_cpu_type | default('host') }} \
       --net0 virtio,bridge={{ vm_bridge }} \
       --ostype {{ vm_ostype }} \
       --agent enabled={{ vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
@@ -166,6 +167,45 @@
     - not ansible_check_mode
     - vm_exists.rc != 0
   changed_when: true
+
+# Additional persistent disks (ZFS zvols)
+- name: Create ZFS zvol for additional disks
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    if ! zfs list {{ item.zvol }} 2>/dev/null; then
+      zfs create -p -V {{ item.size }} {{ item.zvol }}
+      echo "created"
+    else
+      echo "exists"
+    fi
+  loop: "{{ vm_additional_disks | default([]) }}"
+  register: zvol_creation
+  changed_when: zvol_creation.results | map(attribute='stdout') | select('search', 'created') | list | length > 0
+  when:
+    - not ansible_check_mode
+    - vm_additional_disks is defined
+
+- name: Attach additional disks to VM
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      # Check if disk is already attached (scsi1, scsi2, etc. - scsi0 is boot disk)
+      if ! qm config {{ vm_id }} | grep -q "scsi{{ loop_index + 1 }}"; then
+        qm set {{ vm_id }} --scsi{{ loop_index + 1 }} /dev/zvol/{{ item.zvol }}
+        echo "attached"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
+  loop: "{{ vm_additional_disks | default([]) }}"
+  loop_control:
+    index_var: loop_index
+  register: disk_attachment
+  changed_when: disk_attachment.results | map(attribute='stdout') | select('search', 'attached') | list | length > 0
+  when:
+    - not ansible_check_mode
+    - vm_additional_disks is defined
 
 - name: Clean up temporary SSH key
   delegate_to: "{{ proxmox_host }}"

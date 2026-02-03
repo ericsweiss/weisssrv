@@ -38,8 +38,8 @@ weisssrv/
 ### K3s Platform (Ready to Deploy)
 
 **Initial 3-node cluster** (fully codified):
-- **k3s-srv-nas-01** (192.168.0.202) - Server + etcd on pve-nas-01
-- **k3s-agt-nas-01** (192.168.0.207) - Agent on pve-nas-01 (NAS workloads)
+- **k3s-srv-nas-01** (192.168.0.222) - Server + etcd on pve-nas-01
+- **k3s-agt-nas-01** (192.168.0.202) - Agent on pve-nas-01 (NAS workloads)
 - **k3s-agt-opt-03** (192.168.0.206) - Agent on pve-opt-03 (ingress/general)
 
 **Deployment Model** (Two-phase approach):
@@ -55,10 +55,8 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
-  - **IMPORTANT**: Pinned to version 2025.12.1 due to regression bug in 2025.12.2
-  - Bug: Embedded outpost fails with "no value given for required property pk" error
-  - Download clients (Sonarr, Radarr, etc.) return 404 on 2025.12.2
-  - Update to 2025.12.3+ when bug is fixed upstream
+  - Version 2025.12.3 (latest stable)
+  - PostgreSQL data on persistent ZFS zvol (ssd/appdata/authentik/postgres, 10GB)
 - Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
 - Download clients + media stack (downloads namespace):
   - Gluetun (VPN gateway with killswitch)
@@ -68,12 +66,13 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - Sonarr (tv.esweiss.com) - TV shows
   - Radarr (movies.esweiss.com) - Movies
   - Lidarr (music.esweiss.com) - Music
-  - Pulsarr (pulsarr.esweiss.com) - Plex Watchlist automation
+  - Pulsarr (pulsarr.esweiss.com) - Plex Watchlist automation (pinned to NAS nodes, requires AVX)
 - Recipe management stack (recipes namespace):
   - Mealie (food.esweiss.com) - Recipe management and meal planning
   - Bar Assistant (bar.esweiss.com) - Cocktail/bar recipe management
   - Authentik SSO integration for both apps
   - OpenAI integration for Mealie recipe parsing
+  - Mealie PostgreSQL on persistent ZFS zvol (ssd/appdata/mealie/postgres, 32GB)
 - Home Assistant (home.esweiss.com / home.ericsweiss.com):
   - HAOS VM on pve-nas-01 (192.168.0.154)
   - Traefik ingress with WebSocket support
@@ -265,21 +264,21 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 ## Network / IP Allocation
 
 ### Infrastructure
-- Proxmox hosts: .102-.106
+- Proxmox hosts: .102-.109
 - DNS: .150, .160
 - SMTP: .151
 - Services: .152-.155
 
 ### K3s Cluster
 - API VIP: .161
-- Server: .202
-- Agents: .206, .207
+- Servers: .22X range (.222, and future .223, .227)
+- Agents: .20X range (.202, .206, and future .203, .204, .205, .207)
 - MetalLB: .100 (public), .101 (internal)
 
 ### Firewall IP Sets
 - `admin_lan`: 192.168.0.0/24
 - `admin_ts`: 100.64.0.0/10 (Tailscale)
-- `core-cluster`: All infra nodes (.102-.106, .150-.155, .160, .202-.207)
+- `core-cluster`: All infra nodes (.102-.107, .150-.155, .160, .202-.207, .222-.227)
 - `k3s_nodes`: k3s VMs + API VIP
 - `pve_hosts`: Proxmox hosts only
 - `nfs_clients`: Hosts allowed NFS
@@ -359,7 +358,15 @@ Update versions here, then run `task maintenance:update-full` to upgrade.
 
 **Key Datasets**: tank/media, tank/share, ssd/appdata, nvme/media, nvme/fast
 
-**NEVER create/destroy ZFS pools via Ansible** - pools are created manually (too critical to automate). Ansible only sets properties and mounts.
+**Persistent Database Storage (ZFS zvols)**:
+- `ssd/appdata/authentik/postgres` - 10GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdb, mounted at /mnt/postgres-data
+- `ssd/appdata/mealie/postgres` - 32GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdc, mounted at /mnt/mealie-postgres-data
+- Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by k3s role
+- Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
+
+**Resource Pools**: infra-core (dns, smtp), apps-public (plex), platform (k3s VMs)
+
+**NEVER create/destroy ZFS pools via Ansible** - pools are created manually (too critical to automate). Ansible only sets properties and mounts. Zvols for persistent storage are managed via `vm_additional_disks` but the parent pools are never touched.
 
 ## Documentation
 
@@ -395,6 +402,7 @@ See `docs/` for detailed guides:
 - 22-recipes-deployment.md - Recipe management stack (Mealie, Bar Assistant)
 - 23-recipes-sso-setup.md - Recipes SSO and OpenAI configuration
 - 24-home-assistant-deployment.md - Home Assistant OS VM with Traefik ingress
+- 25-multi-node-expansion.md - Multi-node expansion and Proxmox HA guide
 
 ## Important Context Files
 

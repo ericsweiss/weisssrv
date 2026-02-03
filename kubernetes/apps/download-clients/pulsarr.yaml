@@ -23,16 +23,12 @@ spec:
         app.kubernetes.io/name: pulsarr
         app.kubernetes.io/component: automation
     spec:
-      affinity:
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: esweiss.com/nas
-                    operator: DoesNotExist
+      # Pin to NAS nodes - REQUIRED: Pulsarr uses the Bun runtime (v0.10.0+)
+      # which requires AVX CPU instructions. Only pve-nas-01 (12th Gen Intel)
+      # has AVX support. pve-opt-03 (Core 2 Quad Q9650) does NOT have AVX.
+      # Do NOT move this workload to non-NAS nodes without verifying AVX support.
       nodeSelector:
-        esweiss.com/general: "true"
+        esweiss.com/nas: "true"
       securityContext:
         runAsUser: 1000
         runAsGroup: 2000
