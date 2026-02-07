@@ -1,6 +1,9 @@
 ---
 # Application update playbook
-# Updates homelab applications to versions specified in versions.yml
+# Updates homelab applications to versions specified in group_vars/all.yml
+#
+# Covers: AdGuard Home, adguardhome-sync, Tailscale, Plex, Ansible collections
+# This playbook is also imported by update-full.yml (single source of truth)
 
 - name: Update AdGuard Home
   hosts: dns
@@ -28,10 +31,20 @@
             adguard_home_version not in (current_version.stdout | default(''))
           }}
 
+    - name: Skip if no upgrade needed
+      ansible.builtin.debug:
+        msg: "AdGuard Home already at version {{ adguard_home_version }}, skipping"
+      when: not needs_upgrade
+
     # Upgrade AdGuard with error handling to ensure service always restarts
     - name: Upgrade AdGuard Home with failure recovery
       when: needs_upgrade
       block:
+        # Set architecture for download URL (same logic as adguard_home role)
+        - name: Set AdGuard Home architecture
+          ansible.builtin.set_fact:
+            adguard_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+
         # DNS chicken-and-egg fix: dns-01 uses itself for DNS resolution
         # Before stopping AdGuard, configure it to use dns-02 temporarily
         - name: Backup resolv.conf (dns-01 only)
@@ -66,9 +79,10 @@
 
         - name: Download new AdGuard Home version
           ansible.builtin.get_url:
-            url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_amd64.tar.gz"
+            url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
             dest: /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
             mode: "0644"
+            timeout: 60
 
         - name: Extract new version
           ansible.builtin.unarchive:
@@ -194,31 +208,48 @@
         msg: "adguardhome-sync already at version {{ adguardhome_sync_version }}, skipping"
       when: not needs_sync_upgrade
 
-    - name: Download new adguardhome-sync version
-      ansible.builtin.get_url:
-        url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"  # noqa yaml[line-length]
-        dest: /tmp/adguardhome-sync.tar.gz
-        mode: "0644"
+    - name: Upgrade adguardhome-sync with safe restart handling
       when: needs_sync_upgrade
-      register: sync_download
+      block:
+        # Set architecture for download URL (same logic as adguard_home role)
+        - name: Set adguardhome-sync architecture
+          ansible.builtin.set_fact:
+            adguard_sync_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
-    - name: Extract adguardhome-sync
-      ansible.builtin.unarchive:
-        src: /tmp/adguardhome-sync.tar.gz
-        dest: /tmp
-        remote_src: true
-      when: needs_sync_upgrade
+        - name: Download new adguardhome-sync version
+          ansible.builtin.get_url:
+            url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"  # noqa yaml[line-length]
+            dest: /tmp/adguardhome-sync.tar.gz
+            mode: "0644"
+            timeout: 60
+          register: sync_download
 
-    - name: Install new binary
-      ansible.builtin.copy:
-        src: /tmp/adguardhome-sync
-        dest: /usr/local/bin/adguardhome-sync
-        owner: root
-        group: root
-        mode: "0755"
-        remote_src: true
-      when: needs_sync_upgrade
-      notify: Restart adguardhome-sync timer
+        - name: Extract adguardhome-sync
+          ansible.builtin.unarchive:
+            src: /tmp/adguardhome-sync.tar.gz
+            dest: /tmp
+            remote_src: true
+
+        - name: Stop sync timer before upgrade
+          ansible.builtin.systemd:
+            name: adguardhome-sync.timer
+            state: stopped
+
+        - name: Install new binary
+          ansible.builtin.copy:
+            src: /tmp/adguardhome-sync
+            dest: /usr/local/bin/adguardhome-sync
+            owner: root
+            group: root
+            mode: "0755"
+            remote_src: true
+
+      always:
+        - name: Ensure sync timer is started after upgrade (even on failure)
+          ansible.builtin.systemd:
+            name: adguardhome-sync.timer
+            state: started
+            daemon_reload: true
 
     - name: Cleanup
       ansible.builtin.file:
@@ -233,12 +264,167 @@
       ansible.builtin.debug:
         msg: "adguardhome-sync {{ 'upgraded' if needs_sync_upgrade else 'already at version ' + adguardhome_sync_version }}"
 
-  handlers:
-    - name: Restart adguardhome-sync timer
+- name: Update Tailscale (Proxmox hosts only)
+  hosts: proxmox
+  become: true
+  serial: 1  # One host at a time
+  tasks:
+    - name: Check current Tailscale version
+      ansible.builtin.command: tailscale version
+      register: current_tailscale_version
+      changed_when: false
+      failed_when: false
+
+    - name: Parse current Tailscale version
+      ansible.builtin.set_fact:
+        tailscale_installed: "{{ current_tailscale_version.stdout_lines[0] | default('') }}"
+      when: current_tailscale_version.rc == 0
+
+    # NOTE: We intentionally compare the base version from `tailscale version`
+    # (e.g., "1.94.1") against our pinned tailscale_version, not the full Debian
+    # package version (e.g., "1.94.1-2"). This means Debian revision-only bumps
+    # (packaging fixes, not functional changes) won't trigger an upgrade.
+    # This is acceptable for a homelab -- revision bumps rarely matter for
+    # Tailscale and avoiding unnecessary restarts preserves VPN stability.
+    # If revision-level tracking is ever needed, compare against:
+    #   dpkg-query -W -f='${Version}' tailscale | sed 's/^//'
+    - name: Display version info
+      ansible.builtin.debug:
+        msg: "Current: {{ tailscale_installed | default('not detected') }}, Target: {{ tailscale_version }}"
+
+    - name: Determine if Tailscale upgrade needed
+      ansible.builtin.set_fact:
+        needs_tailscale_upgrade: >-
+          {{
+            current_tailscale_version.rc != 0 or
+            (tailscale_installed | default('')) != tailscale_version
+          }}
+
+    - name: Skip if no upgrade needed
+      ansible.builtin.debug:
+        msg: "Tailscale already at version {{ tailscale_version }}, skipping"
+      when: not needs_tailscale_upgrade
+
+    - name: Upgrade Tailscale package
+      ansible.builtin.apt:
+        name: "tailscale={{ tailscale_version }}"
+        state: present
+        update_cache: true
+        allow_downgrade: true
+      when: needs_tailscale_upgrade
+
+    - name: Restart Tailscale service if upgraded
       ansible.builtin.systemd:
-        name: adguardhome-sync.timer
+        name: tailscaled
         state: restarted
         daemon_reload: true
+      when: needs_tailscale_upgrade
+
+    - name: Verify Tailscale version after upgrade
+      ansible.builtin.command: tailscale version
+      register: new_tailscale_version
+      changed_when: false
+
+    - name: Display upgrade result
+      ansible.builtin.debug:
+        msg: >-
+          Tailscale {{ 'upgraded to' if needs_tailscale_upgrade else 'already at' }}
+          version: {{ new_tailscale_version.stdout_lines[0] | default('unknown') }}
+
+- name: Update Plex Media Server
+  hosts: plex
+  become: true
+  vars:
+    force_plex_upgrade: false  # Set to true to force apt upgrade
+  tasks:
+    - name: Check current Plex version
+      ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
+      register: current_plex_version
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Display current Plex version
+      ansible.builtin.debug:
+        msg: "Current: {{ current_plex_version.stdout | default('not installed') }}, Target: {{ plex_version }}"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    # When plex_version is "latest": upgrade to whatever apt has available
+    - name: Check for available Plex updates (latest mode)
+      ansible.builtin.shell: |
+        set -o pipefail
+        apt list --upgradable 2>/dev/null | grep plexmediaserver || echo "no updates"
+      args:
+        executable: /bin/bash
+      register: plex_upgradable
+      changed_when: false
+      check_mode: false
+      when: plex_version == 'latest'
+
+    - name: Upgrade Plex Media Server (latest mode)  # noqa package-latest
+      ansible.builtin.apt:
+        name: plexmediaserver
+        state: latest
+      when: plex_version == 'latest' and (force_plex_upgrade or 'plexmediaserver' in (plex_upgradable.stdout | default('')))
+      register: plex_upgrade_latest
+
+    # When plex_version is pinned: install that exact version
+    - name: Determine if pinned version differs from installed
+      ansible.builtin.set_fact:
+        needs_plex_upgrade: >-
+          {{
+            force_plex_upgrade or
+            current_plex_version.rc != 0 or
+            plex_version != (current_plex_version.stdout | default(''))
+          }}
+      when: plex_version != 'latest'
+
+    - name: Install pinned Plex version
+      ansible.builtin.apt:
+        name: "plexmediaserver={{ plex_version }}"
+        state: present
+        allow_downgrade: true
+      when: plex_version != 'latest' and (needs_plex_upgrade | default(false))
+      register: plex_upgrade_pinned
+
+    # Safe handling of upgrade result registers
+    # The pattern (var | default({})).changed | default(false) ensures:
+    # 1. If var is undefined, we get {} (empty dict)
+    # 2. Accessing .changed on {} returns undefined, which defaults to false
+    # This avoids Ansible errors when a register was never set (e.g., skipped tasks)
+    - name: Set combined upgrade result
+      ansible.builtin.set_fact:
+        plex_was_upgraded: >-
+          {{
+            ((plex_upgrade_latest | default({})).changed | default(false)) or
+            ((plex_upgrade_pinned | default({})).changed | default(false))
+          }}
+
+    - name: Restart Plex service if upgraded  # noqa no-handler
+      ansible.builtin.systemd:
+        name: plexmediaserver
+        state: restarted
+      when: plex_was_upgraded | bool
+
+    - name: Wait for Plex to be ready  # noqa no-handler
+      ansible.builtin.wait_for:
+        port: 32400
+        timeout: 60
+      when: plex_was_upgraded | bool
+
+    - name: Verify Plex version after upgrade
+      ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
+      register: new_plex_version
+      changed_when: false
+      check_mode: false
+
+    - name: Display Plex upgrade result
+      ansible.builtin.debug:
+        msg: "Plex {{ 'upgraded to' if (plex_was_upgraded | bool) else 'already at' }} version: {{ new_plex_version.stdout }}"
 
 - name: Update Ansible collections
   hosts: localhost
