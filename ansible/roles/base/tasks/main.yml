@@ -7,12 +7,14 @@
     cache_valid_time: 3600
   when: ansible_facts['os_family'] == "Debian"
   changed_when: false  # Cache updates are maintenance, not config changes
+  tags: [packages, base]
 
 - name: Install common packages
   ansible.builtin.apt:
     name: "{{ common_packages }}"
     state: present
   when: ansible_facts['os_family'] == "Debian"
+  tags: [packages, base]
 
 - name: Detect if running in a VM
   ansible.builtin.set_fact:
@@ -52,6 +54,7 @@
   when: admin_user != 'root'
   register: user_create_result
   changed_when: user_create_result.changed and user_exists_check.rc != 0
+  tags: [users, security, base]
 
 - name: Create .ssh directory for admin user
   ansible.builtin.file:
@@ -80,16 +83,41 @@
     line: "{{ admin_user }} ALL=(ALL) NOPASSWD: ALL"
     create: true
     mode: "0440"
-    validate: "visudo -cf %s"
+    validate: "{{ 'visudo -cf %s' if not (skip_sudoers_validation | default(false)) else omit }}"
   when: admin_user != 'root'
 
 - name: Include SSH hardening tasks
   ansible.builtin.include_tasks: ssh.yml
+  when: not (skip_ssh_config | default(false))
+  tags: [ssh, security, base]
 
-- name: Set timezone
+- name: Detect if running in a container (no hwclock access)
+  ansible.builtin.set_fact:
+    is_container: "{{ ansible_facts['virtualization_type'] | default('') in ['docker', 'lxc', 'container', 'podman'] }}"
+
+- name: Set timezone (physical/VM - with hwclock)
   community.general.timezone:
     name: "{{ timezone }}"
-  when: timezone is defined
+    hwclock: UTC
+  when:
+    - timezone is defined
+    - not (skip_timezone_config | default(false))
+    - not is_container
+  tags: [config, base]
+
+- name: Set timezone (container - symlink only, no hwclock)
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+  when:
+    - timezone is defined
+    - not (skip_timezone_config | default(false))
+    - is_container
+  tags: [config, base]
 
 - name: Configure DNS servers
   ansible.builtin.include_tasks: dns.yml
+  when: not (skip_dns_config | default(false))
+  tags: [dns, networking, base]

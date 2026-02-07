@@ -1,0 +1,64 @@
+---
+# Molecule configuration for unbound role testing
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: unbound-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        unbound_port: 5335
+        unbound_interface: "127.0.0.1"
+        unbound_access_control:
+          - "127.0.0.0/8 allow"
+          - "::1 allow"
+        unbound_num_threads: 2
+        unbound_msg_cache_size: 16m
+        unbound_rrset_cache_size: 32m
+        unbound_outgoing_range: 8192
+        unbound_num_queries_per_thread: 4096
+        unbound_so_reuseport: true
+        unbound_serve_expired: true
+        unbound_serve_expired_ttl: 86400
+        unbound_aggressive_nsec: true
+        unbound_edns_buffer_size: 1232
+        unbound_forwarders:
+          - addr: "1.1.1.1"
+            port: 853
+            name: "cloudflare-dns.com"
+          - addr: "8.8.8.8"
+            port: 853
+            name: "dns.google"
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

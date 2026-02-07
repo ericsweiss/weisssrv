@@ -38,6 +38,7 @@ terraform.rc
 *.retry
 ansible/inventories/*/host_vars/*/vault.yml
 ansible/inventories/*/group_vars/*/vault.yml
+.ansible/
 
 # Python
 __pycache__/
@@ -49,6 +50,10 @@ venv/
 
 # State collection outputs
 cluster-state-*.txt
+CLUSTER_STATUS.txt
+
+# Version check cache
+.version-cache/
 
 # Temporary files
 *.tmp

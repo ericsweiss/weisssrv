@@ -1,0 +1,14 @@
+---
+# Role metadata
+
+galaxy_info:
+  author: Eric Weiss
+  description: Proxmox VE firewall management (cluster, host, guest, IPSets, Security Groups)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

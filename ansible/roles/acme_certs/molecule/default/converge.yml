@@ -1,0 +1,56 @@
+---
+# Converge playbook for acme_certs role testing
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - systemd
+          - sudo
+          - curl
+          - openssl
+          - git
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create eric user for SSH key deployment
+      ansible.builtin.user:
+        name: eric
+        state: present
+        create_home: true
+        shell: /bin/bash
+
+    - name: Create certificate directory
+      ansible.builtin.file:
+        path: /opt/AdGuardHome/certs
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Pre-install acme.sh using git method to avoid shell compatibility issues
+    # The role's installer doesn't work well with dash (sh) in containers
+    - name: Clone acme.sh repository
+      ansible.builtin.git:
+        repo: https://github.com/acmesh-official/acme.sh.git
+        dest: /tmp/acme.sh
+        depth: 1
+        version: master
+
+    - name: Install acme.sh via bash (avoiding dash shell issues)
+      ansible.builtin.shell: |
+        cd /tmp/acme.sh && bash acme.sh --install --nocron --home /root/.acme.sh --accountemail test@test.local
+      args:
+        creates: /root/.acme.sh/acme.sh
+
+  roles:
+    - role: acme_certs

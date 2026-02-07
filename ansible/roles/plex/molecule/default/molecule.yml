@@ -1,0 +1,66 @@
+---
+# Molecule configuration for plex role testing
+# Tests: apt repo setup, package installation, systemd service
+# Skips: GPU drivers (not available in containers), actual Plex startup (requires config)
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: plex-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Plex configuration
+        plex_version: "latest"
+        plex_user: plex
+        plex_group: plex
+        plex_uid: 997
+        plex_gid: 997
+        media_group: media
+        media_gid: 2000
+        plex_claim: ""
+        # Directories (created for testing)
+        plex_config_dir: /tmp/plex-config
+        plex_transcode_dir: /tmp/plex-transcode
+        plex_media_dir: /tmp/plex-media
+        plex_service_after:
+          - network-online.target
+        plex_hardware_transcoding: false
+        # Skip GPU driver installation in containers
+        skip_gpu_drivers: true
+        # Skip Plex service startup (no valid config)
+        skip_plex_service: true
+        skip_ssh_config: true
+        skip_dns_config: true
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

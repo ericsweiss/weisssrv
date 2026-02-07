@@ -1,0 +1,29 @@
+---
+# Converge playbook for base role testing
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - systemd
+          - sudo
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create testuser before running base role
+      ansible.builtin.user:
+        name: testuser
+        state: present
+        create_home: true
+
+  roles:
+    - role: base

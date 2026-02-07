@@ -1,0 +1,74 @@
+---
+# Molecule configuration for base role testing
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: base-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Use testuser instead of root for non-root user testing
+        admin_user: testuser
+        admin_email: test@test.local
+        timezone: America/Los_Angeles
+        # Skip SSH config (sshd not running in container)
+        skip_ssh_config: true
+        # Skip DNS config (no inventory groups in molecule)
+        skip_dns_config: true
+        # Skip sudoers validation (visudo may not work reliably in containers)
+        skip_sudoers_validation: true
+        # SSH keys for authorized_keys test
+        ssh_authorized_keys:
+          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForMolecule test@molecule"
+        # Common packages to install
+        common_packages:
+          - curl
+          - wget
+          - neovim
+          - htop
+          - tmux
+          - git
+          - jq
+          - unzip
+          - rsync
+          - net-tools
+          - dnsutils
+          - ca-certificates
+          - gnupg
+          - lsb-release
+        # VM packages (won't be installed since we're in docker, not KVM)
+        vm_packages:
+          - qemu-guest-agent
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

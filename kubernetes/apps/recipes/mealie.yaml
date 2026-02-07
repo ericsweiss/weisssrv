@@ -46,7 +46,8 @@ spec:
           effect: PreferNoSchedule
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          # Version managed in ansible/inventories/prod/group_vars/all.yml
+          image: postgres:${MEALIE_POSTGRESQL_VERSION}
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER

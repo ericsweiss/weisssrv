@@ -1,6 +1,22 @@
 ---
 # K3s server installation
 
+- name: Validate required k3s variables
+  ansible.builtin.assert:
+    that:
+      - k3s_token is defined
+      - k3s_token | length > 0
+      - k3s_version is defined
+      - k3s_version | length > 0
+      - k3s_api_vip is defined
+      - k3s_api_vip | length > 0
+    fail_msg: >-
+      Required k3s variables are not set. Ensure K3S_TOKEN environment variable
+      is provided via 'op run' and k3s_version/k3s_api_vip are set in group_vars.
+      Run deployment with: task k3s:deploy (which injects 1Password secrets)
+    success_msg: "Required k3s variables are present"
+  tags: [validation, always]
+
 - name: Debug - Show k3s server configuration variables
   ansible.builtin.debug:
     msg:
@@ -76,7 +92,9 @@
     executable: /bin/bash
   environment:
     K3S_TOKEN: "{{ k3s_token }}"
-  when: k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+  when:
+    - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+    - not (skip_k3s_install | default(false))
   notify: Restart k3s
   changed_when: true
 
@@ -87,18 +105,23 @@
   delay: 10
   until: k3s_ready.rc == 0
   changed_when: false
+  when: not (skip_k3s_install | default(false))
 
 - name: Wait for kube-vip to assign VIP
   ansible.builtin.pause:
     seconds: 15
-  when: k3s_is_first_server | default(false)
+  when:
+    - k3s_is_first_server | default(false)
+    - not (skip_k3s_install | default(false))
 
 - name: Apply node labels
   ansible.builtin.command: >
     k3s kubectl label node {{ inventory_hostname }}
     {{ item.key }}={{ item.value }} --overwrite
   loop: "{{ k3s_labels | dict2items }}"
-  when: k3s_labels | length > 0
+  when:
+    - k3s_labels | length > 0
+    - not (skip_k3s_install | default(false))
   changed_when: false
 
 - name: Apply node taints
@@ -106,5 +129,7 @@
     k3s kubectl taint node {{ inventory_hostname }}
     {{ item.key }}={{ item.value }}:{{ item.effect }} --overwrite
   loop: "{{ k3s_taints }}"
-  when: k3s_taints | length > 0
+  when:
+    - k3s_taints | length > 0
+    - not (skip_k3s_install | default(false))
   changed_when: false

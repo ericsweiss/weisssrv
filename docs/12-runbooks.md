@@ -478,92 +478,154 @@ sudo qmrestore /path/to/backup.vma.zst 100 --storage local-lvm
 
 ### Update Strategy
 
-The infrastructure supports three types of updates with rolling deployment (one host at a time) to maintain service availability.
+The infrastructure has two independent update scopes, each with rolling deployment (one host/node at a time) to maintain service availability:
 
-#### Update Commands
+1. **Base infrastructure** - Proxmox hosts, DNS servers, SMTP relay, Plex LXC (managed by Ansible)
+2. **K3s cluster** - k3s nodes, Helm charts, application workloads (managed by Helm/kubectl)
 
-**Individual Updates**:
+### Quick Reference
+
+| What to update | Command |
+|---|---|
+| Check for available updates | `task maintenance:check-versions` |
+| Update versions in all.yml | `task maintenance:update-all-versions` |
+| OS packages only | `task maintenance:update-packages` |
+| Base apps (AdGuard, Tailscale, Plex) | `task maintenance:update-applications` |
+| Full base update (packages + apps) | `task maintenance:update-full` |
+| Full base update (auto-reboot) | `task maintenance:update-full-auto` |
+| Plex only | `task maintenance:update-plex` |
+| K3s nodes (rolling) | `task maintenance:update-k3s-nodes` |
+| Helm charts | `task maintenance:update-helm-charts` |
+| K3s workloads (Authentik, downloads, recipes) | `task maintenance:update-k3s-workloads` |
+| Full cluster update (all of the above k3s tasks) | `task maintenance:update-cluster` |
+
+### Automated Version Discovery
+
+The version checker (`scripts/check-versions.py`) automatically queries official sources (GitHub releases, Docker Hub, Helm repos) to find available updates for all tracked services.
+
+**Check for available updates**:
 ```bash
-# Update only OS packages (interactive)
-task maintenance:update-packages
+# Check all 24 managed services
+task maintenance:check-versions
 
-# Update only OS packages (auto-reboot)
-task maintenance:update-packages-auto
+# Check a specific service
+task maintenance:check-versions -- --service gluetun
 
-# Update only applications
-task maintenance:update-applications
+# Check a category (github, lsio, dockerhub, helm, plex)
+task maintenance:check-versions -- --category helm
+
+# JSON output (for scripting)
+task maintenance:check-versions-json
+
+# Force fresh lookups (skip 1-hour cache)
+task maintenance:check-versions -- --no-cache
+
+# List all tracked services
+task maintenance:check-versions -- --list
 ```
 
-**Full Updates (Recommended)**:
+**Update versions in all.yml**:
 ```bash
-# Full update - packages + applications (interactive)
-task maintenance:update-full
+# Update a single service
+task maintenance:update-version SERVICE=prowlarr
 
-# Full update - packages + applications (auto-reboot)
-task maintenance:update-full-auto
+# Update all outdated services at once
+task maintenance:update-all-versions
 ```
 
-#### Update Workflow
+After updating versions in `all.yml`, deploy with the appropriate task:
+- **Ansible-managed** (AdGuard, Tailscale, Plex): `task maintenance:update-applications`
+- **k3s node binary**: `task maintenance:update-k3s-nodes`
+- **Helm charts** (MetalLB, Traefik, etc.): `task maintenance:update-helm-charts`
+- **K3s workloads** (Authentik, downloads, recipes): `task maintenance:update-k3s-workloads`
 
-1. **Review current versions**:
+**GitHub API rate limits**: Unauthenticated requests are limited to 60/hour. Set `GITHUB_TOKEN` for 5000/hour:
+```bash
+export GITHUB_TOKEN=$(op read "op://Homelab/GitHub Token/credential")
+task maintenance:check-versions
+```
+
+Results are cached for 1 hour in `.version-cache/`. Clear with:
+```bash
+task maintenance:check-versions -- --clear-cache
+```
+
+### Recommended Update Workflow
+
+1. **Check for available updates**:
    ```bash
-   cat ansible/inventories/prod/group_vars/versions.yml
+   task maintenance:check-versions
    ```
 
-2. **Check what would change** (optional):
+2. **Update versions in all.yml** (does NOT deploy):
    ```bash
-   task deploy:check
+   task maintenance:update-all-versions
+   # Review the changes
+   git diff ansible/inventories/prod/group_vars/all.yml
    ```
 
-3. **Run full update** (interactive):
+3. **Deploy updates** (choose as appropriate):
    ```bash
+   # Base infrastructure (AdGuard, Tailscale, Plex, OS packages)
    task maintenance:update-full
+
+   # K3s cluster (nodes + charts + workloads)
+   task maintenance:update-cluster
    ```
 
 4. **Verify everything works**:
    ```bash
    task deploy:verify
+   task k3s:status
    ```
 
-#### Update Phases
+5. **Commit**:
+   ```bash
+   git add -A && git commit -m "Update service versions"
+   ```
 
-Full updates run in this order:
+### Base Infrastructure Update Details
+
+#### What `update-full` does
+
+Full base updates run in this order:
 
 1. **OS Packages** (rolling, one host at a time)
    - Update apt cache
    - Display available updates
-   - Upgrade packages
-   - Reboot if needed
+   - Upgrade packages (safe upgrade)
+   - Reboot if needed (interactive or auto-reboot)
    - Verify SSH service
 
 2. **AdGuard Home** (rolling, both DNS servers)
-   - Check current version
-   - Stop service if upgrade needed
-   - Backup configuration
-   - Download and install new version
-   - Start service
-   - Wait for service ready
-   - Verify version
+   - Check current vs target version
+   - Temporarily switch dns-01 to use dns-02 for resolution
+   - Stop service, backup config, download and install new binary
+   - Start service, restore DNS, verify version
 
 3. **adguardhome-sync** (dns-01 only)
-   - Check current version
-   - Download new version if needed
-   - Stop timer
-   - Install new binary
-   - Start timer
-   - Verify update
+   - Check current vs target version
+   - Stop timer, install new binary, start timer
 
-4. **Ansible Collections**
+4. **Tailscale** (rolling, Proxmox hosts only)
+   - Check current vs target version
+   - Upgrade apt package to pinned version
+   - Restart tailscaled service
+
+5. **Plex Media Server** (plex LXC only)
+   - Upgrade to latest via apt (when `plex_version: "latest"`)
+
+6. **Ansible Collections**
    - Update Galaxy collections
-   - Display results
 
 #### Version Management
 
-Application versions are centralized in `ansible/inventories/prod/group_vars/versions.yml`.
+Application versions are centralized in `ansible/inventories/prod/group_vars/all.yml`.
 
 To upgrade an application:
-1. Update version number in `versions.yml`
-2. Run `task maintenance:update-applications` or `task maintenance:update-full`
+1. Check for updates: `task maintenance:check-versions`
+2. Update version number: `task maintenance:update-version SERVICE=<name>` (or edit `all.yml` manually)
+3. Deploy: `task maintenance:update-applications` or the appropriate deploy task
 
 #### Update Schedule
 
@@ -579,11 +641,13 @@ task deploy:verify
 **Security Updates**:
 ```bash
 # For urgent security patches: OS packages only
-task maintenance:update-packages-auto
+task maintenance:update-packages
+# Add -e auto_reboot=true for auto-reboot:
+task maintenance:update-packages -- -e auto_reboot=true
 task deploy:verify
 ```
 
-#### Troubleshooting Updates
+#### Troubleshooting Base Updates
 
 **Update fails on one host**:
 ```bash
@@ -610,6 +674,203 @@ ansible <host> -i inventories/prod -m service -a "name=AdGuardHome state=status"
 
 # Check logs
 ansible <host> -i inventories/prod -m shell -a "journalctl -u AdGuardHome -n 50"
+```
+
+---
+
+## K3s Cluster Maintenance
+
+### Updating K3s Cluster
+
+The k3s cluster has three update layers, each with its own task.
+
+#### 1. Node Updates (k3s binary)
+
+```bash
+# Update k3s version in group_vars/all.yml first
+task maintenance:update-version SERVICE=k3s
+
+# Rolling update with pod evacuation
+task maintenance:update-k3s-nodes
+
+# Verify cluster health
+task k3s:status
+```
+
+**Process (per node, serial: 1):**
+1. Cordons node (prevents new pods)
+2. Drains node (evicts existing pods, 30s grace period)
+3. Upgrades k3s binary via install script
+4. Restarts k3s service
+5. Uncordons node (allows scheduling)
+6. Waits for node Ready status
+
+**Special considerations:**
+- Servers are updated first, then agents
+- Agents with persistent storage (Authentik/Mealie PostgreSQL) are drained carefully
+- DaemonSets are ignored during drain (expected behavior)
+- If drain fails, the node is uncordoned and the upgrade aborts (investigate PDBs or stuck pods)
+
+#### 2. Helm Chart Updates
+
+```bash
+# Update chart versions in group_vars/all.yml
+task maintenance:update-version SERVICE=traefik
+
+# Update all charts at once
+task maintenance:update-helm-charts
+
+# Or update individually
+helm upgrade metallb metallb/metallb -n metallb-system --version X.Y.Z --reuse-values
+helm upgrade traefik traefik/traefik -n traefik --version X.Y.Z --reuse-values
+helm upgrade cert-manager jetstack/cert-manager -n cert-manager --version vX.Y.Z --reuse-values
+helm upgrade external-dns external-dns/external-dns -n external-dns --version X.Y.Z --reuse-values
+```
+
+#### 3. Workload Image Updates
+
+```bash
+# Update container versions in group_vars/all.yml
+task maintenance:update-version SERVICE=sonarr
+
+# Update all k3s workloads (Authentik + downloads + recipes)
+task maintenance:update-k3s-workloads
+
+# Or update individual namespaces
+task k3s:deploy-authentik   # Authentik SSO
+task downloads:deploy       # Download clients + media stack
+task recipes:deploy         # Recipe management stack
+```
+
+#### 4. Complete Cluster Update
+
+```bash
+# Update all versions in group_vars/all.yml first
+task maintenance:update-all-versions
+
+# Run complete update workflow (all 3 layers in order)
+task maintenance:update-cluster
+```
+
+This runs:
+1. `task maintenance:update-k3s-nodes` (rolling node upgrades)
+2. `task maintenance:update-helm-charts` (platform components)
+3. `task maintenance:update-k3s-workloads` (Authentik + downloads + recipes)
+
+### Maintenance Windows
+
+**Recommended schedule:**
+- Monthly: OS package updates (`task maintenance:update-packages`)
+- Quarterly: Full base infrastructure update (`task maintenance:update-full`)
+- As needed: k3s cluster updates (`task maintenance:update-cluster`)
+- As needed: Individual workload updates
+
+**Downtime expectations:**
+- Base infrastructure: 5-10 minutes per host (rolling, minimal DNS impact)
+- K3s nodes: 2-5 minutes per node (rolling, workloads migrate)
+- Helm charts: 1-2 minutes per chart (rolling updates)
+- Workloads: 1-2 minutes per namespace (rolling restart)
+
+### Rollback Procedures
+
+#### Rolling back k3s version
+
+```bash
+# Update group_vars to previous version
+task maintenance:update-version SERVICE=k3s
+# (or manually edit all.yml to set previous version)
+
+# Re-run node update
+task maintenance:update-k3s-nodes
+```
+
+#### Rolling back Helm chart
+
+```bash
+# Rollback using Helm
+helm rollback <release-name> -n <namespace>
+
+# Examples
+helm rollback metallb -n metallb-system
+helm rollback traefik -n traefik
+helm rollback cert-manager -n cert-manager
+helm rollback external-dns -n external-dns
+
+# Or redeploy specific version
+helm upgrade traefik traefik/traefik -n traefik --version <old-version> --reuse-values
+```
+
+#### Rolling back workload images
+
+```bash
+# Update group_vars to previous versions (edit all.yml manually)
+
+# Redeploy
+task k3s:deploy-authentik
+task downloads:deploy
+task recipes:deploy
+```
+
+### Troubleshooting Cluster Updates
+
+#### Node stuck in NotReady
+
+```bash
+# Check node status
+kubectl get node <node-name> -o yaml
+kubectl describe node <node-name>
+
+# Check k3s service
+ssh <node-name>
+sudo systemctl status k3s  # or k3s-agent
+sudo journalctl -u k3s -f  # or k3s-agent
+
+# Restart k3s
+sudo systemctl restart k3s  # or k3s-agent
+```
+
+#### Pods stuck in Pending/CrashLoopBackOff
+
+```bash
+# Check pod status
+kubectl get pods -n <namespace>
+kubectl describe pod <pod-name> -n <namespace>
+kubectl logs <pod-name> -n <namespace>
+
+# Check node resources
+kubectl top nodes
+kubectl describe node <node-name>
+
+# Restart pod
+kubectl delete pod <pod-name> -n <namespace>
+```
+
+#### Helm upgrade fails
+
+```bash
+# Check release status
+helm list -n <namespace>
+helm history <release-name> -n <namespace>
+
+# View pending upgrade
+kubectl get all -n <namespace>
+kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+
+# Rollback
+helm rollback <release-name> -n <namespace>
+```
+
+#### Node drain hangs
+
+```bash
+# Check what pods are blocking
+kubectl get pods --all-namespaces --field-selector spec.nodeName=<node-name>
+
+# Force drain if necessary (use carefully)
+kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data --force --grace-period=0
+
+# Or uncordon and try again
+kubectl uncordon <node-name>
 ```
 
 ---

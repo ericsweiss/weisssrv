@@ -114,6 +114,8 @@ worker:
 # Bundled PostgreSQL - consider external for HA
 postgresql:
   enabled: true
+  # Image tag set via Taskfile from ansible/inventories/prod/group_vars/all.yml (postgresql_version)
+  # --set postgresql.image.tag="{{.POSTGRESQL_VERSION}}"
   auth:
     username: authentik
     database: authentik

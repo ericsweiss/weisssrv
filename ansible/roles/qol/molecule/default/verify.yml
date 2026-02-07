@@ -1,0 +1,162 @@
+---
+# Verify playbook for qol role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if qol packages are installed
+      ansible.builtin.command: dpkg -l {{ item }}
+      register: package_check
+      changed_when: false
+      failed_when: package_check.rc != 0
+      loop:
+        - zsh
+        - neovim
+        - fzf
+        - ripgrep
+        - htop
+        - tmux
+
+    - name: Check if Oh My Zsh is installed for testuser
+      ansible.builtin.stat:
+        path: /home/testuser/.oh-my-zsh
+      register: omz_dir
+      failed_when: not omz_dir.stat.exists or not omz_dir.stat.isdir
+
+    - name: Check if .zshrc exists
+      ansible.builtin.stat:
+        path: /home/testuser/.zshrc
+      register: zshrc_file
+      failed_when: not zshrc_file.stat.exists
+
+    - name: Read .zshrc content
+      ansible.builtin.slurp:
+        src: /home/testuser/.zshrc
+      register: zshrc_content
+
+    - name: Decode .zshrc content
+      ansible.builtin.set_fact:
+        zshrc_text: "{{ zshrc_content.content | b64decode }}"
+
+    - name: Verify .zshrc has Oh My Zsh config
+      ansible.builtin.assert:
+        that:
+          - "'ZSH=' in zshrc_text"
+          - "'plugins=' in zshrc_text"
+        fail_msg: ".zshrc missing Oh My Zsh configuration"
+        success_msg: ".zshrc has Oh My Zsh configuration"
+
+    # Verify specific plugins are configured in .zshrc
+    # Note: The molecule test configures these plugins but they may not all be installed
+    # We verify the plugins array is present and has the expected format
+    - name: Verify .zshrc has plugins array configured
+      ansible.builtin.assert:
+        that:
+          - "'plugins=(' in zshrc_text"
+          - "'git' in zshrc_text"
+        fail_msg: ".zshrc missing plugins configuration"
+        success_msg: ".zshrc has plugins array configured"
+
+    # Verify the plugins from molecule config are in the .zshrc
+    - name: Verify expected plugins are listed in .zshrc
+      ansible.builtin.assert:
+        that:
+          - "'sudo' in zshrc_text"
+          - "'history' in zshrc_text"
+          - "'fzf' in zshrc_text"
+          - "'docker' in zshrc_text"
+        fail_msg: ".zshrc missing expected plugins from molecule config"
+        success_msg: ".zshrc has expected plugins from molecule config"
+
+    # Verify Oh My Zsh directory structure
+    - name: Check Oh My Zsh plugins directory exists
+      ansible.builtin.stat:
+        path: /home/testuser/.oh-my-zsh/plugins
+      register: omz_plugins_dir
+      failed_when: not omz_plugins_dir.stat.exists or not omz_plugins_dir.stat.isdir
+
+    # Check that git plugin exists (should be built-in with OMZ)
+    - name: Check git plugin exists (built-in OMZ plugin)
+      ansible.builtin.stat:
+        path: /home/testuser/.oh-my-zsh/plugins/git
+      register: git_plugin
+      failed_when: not git_plugin.stat.exists or not git_plugin.stat.isdir
+
+    - name: Check if neovim config directory exists
+      ansible.builtin.stat:
+        path: /home/testuser/.config/nvim
+      register: nvim_dir
+      failed_when: not nvim_dir.stat.exists
+
+    - name: Check if init.vim exists
+      ansible.builtin.stat:
+        path: /home/testuser/.config/nvim/init.vim
+      register: init_vim
+      failed_when: not init_vim.stat.exists
+
+    # Verify init.vim has expected content
+    - name: Read init.vim content
+      ansible.builtin.slurp:
+        src: /home/testuser/.config/nvim/init.vim
+      register: init_vim_content
+
+    - name: Verify init.vim has Vundle configuration
+      ansible.builtin.assert:
+        that:
+          - "'Vundle' in (init_vim_content.content | b64decode)"
+        fail_msg: "init.vim missing Vundle configuration"
+        success_msg: "init.vim has Vundle configuration"
+
+    - name: Check if Vundle is installed
+      ansible.builtin.stat:
+        path: /home/testuser/.vim/bundle/Vundle.vim
+      register: vundle_dir
+      failed_when: not vundle_dir.stat.exists
+
+    - name: Verify Vundle is a git repository
+      ansible.builtin.stat:
+        path: /home/testuser/.vim/bundle/Vundle.vim/.git
+      register: vundle_git
+      failed_when: not vundle_git.stat.exists
+
+    - name: Check if shell is set to zsh for testuser
+      ansible.builtin.command: getent passwd testuser
+      register: testuser_passwd
+      changed_when: false
+
+    - name: Verify testuser shell is zsh
+      ansible.builtin.assert:
+        that:
+          - "'/bin/zsh' in testuser_passwd.stdout or '/usr/bin/zsh' in testuser_passwd.stdout"
+        fail_msg: "testuser shell is not zsh"
+        success_msg: "testuser shell is correctly set to zsh"
+
+    # Verify directory ownership
+    - name: Check Oh My Zsh directory ownership
+      ansible.builtin.stat:
+        path: /home/testuser/.oh-my-zsh
+      register: omz_ownership
+
+    - name: Assert Oh My Zsh directory has correct ownership
+      ansible.builtin.assert:
+        that:
+          - omz_ownership.stat.pw_name == 'testuser'
+        fail_msg: "Oh My Zsh directory has incorrect ownership"
+        success_msg: "Oh My Zsh directory has correct ownership"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "QoL packages installed (zsh, neovim, fzf, ripgrep, htop, tmux)"
+          - "Oh My Zsh installed at /home/testuser/.oh-my-zsh with correct ownership"
+          - ".zshrc configured with Oh My Zsh"
+          - "Plugins configured in .zshrc:"
+          - "  - git, sudo, history, fzf, docker (from molecule config)"
+          - "Oh My Zsh directory structure verified:"
+          - "  - plugins/ directory exists"
+          - "  - git plugin installed (built-in)"
+          - "Neovim config at /home/testuser/.config/nvim"
+          - "init.vim has Vundle configuration"
+          - "Vundle plugin manager installed (with .git directory)"
+          - "User shell changed to zsh"

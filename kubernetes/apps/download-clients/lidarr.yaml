@@ -41,7 +41,7 @@ spec:
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: lidarr
-          image: lscr.io/linuxserver/lidarr:${LIDARR_VERSION}
+          image: lscr.io/linuxserver/lidarr:version-${LIDARR_VERSION}
           imagePullPolicy: Always
           env:
             - name: PUID

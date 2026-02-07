@@ -1,0 +1,232 @@
+---
+# Verify playbook for plex role testing
+# Note: Some checks are container-aware and may have fallbacks for Docker environments
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    # Verify Plex apt repository is configured
+    - name: Check if Plex GPG key exists
+      ansible.builtin.stat:
+        path: /usr/share/keyrings/plex-archive-keyring.gpg
+      register: plex_gpg
+      failed_when: not plex_gpg.stat.exists
+
+    - name: Check if Plex apt repository file exists
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/plexmediaserver.list
+      register: plex_repo
+      failed_when: not plex_repo.stat.exists
+
+    - name: Read Plex repository config
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/plexmediaserver.list
+      register: plex_repo_content
+
+    - name: Verify Plex repository config
+      ansible.builtin.assert:
+        that:
+          - "'downloads.plex.tv' in (plex_repo_content.content | b64decode)"
+          - "'signed-by=/usr/share/keyrings/plex-archive-keyring.gpg' in (plex_repo_content.content | b64decode)"
+        fail_msg: "Plex repository not configured correctly"
+        success_msg: "Plex repository configured correctly"
+
+    # Verify Plex package is installed
+    - name: Check if Plex package is installed
+      ansible.builtin.command: dpkg -l plexmediaserver
+      register: plex_installed
+      changed_when: false
+      failed_when: plex_installed.rc != 0
+
+    - name: Get Plex installed version
+      ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
+      register: plex_version_check
+      changed_when: false
+
+    - name: Display installed Plex version
+      ansible.builtin.debug:
+        msg: "Plex Media Server version: {{ plex_version_check.stdout }}"
+
+    # Verify systemd service exists (check multiple locations)
+    # In containers, the service file may be in different locations or not created at all
+    - name: Check if Plex systemd service file exists (lib location)
+      ansible.builtin.stat:
+        path: /lib/systemd/system/plexmediaserver.service
+      register: plex_service_file_lib
+
+    - name: Check if Plex systemd service file exists (usr/lib location)
+      ansible.builtin.stat:
+        path: /usr/lib/systemd/system/plexmediaserver.service
+      register: plex_service_file_usr
+
+    - name: Check if Plex systemd service file exists (etc location)
+      ansible.builtin.stat:
+        path: /etc/systemd/system/plexmediaserver.service
+      register: plex_service_file_etc
+
+    - name: Set service file exists fact
+      ansible.builtin.set_fact:
+        plex_service_file_exists: >-
+          {{ plex_service_file_lib.stat.exists or
+             plex_service_file_usr.stat.exists or
+             plex_service_file_etc.stat.exists }}
+
+    - name: Note systemd service file status
+      ansible.builtin.debug:
+        msg: >-
+          Systemd service file status: {{ 'found' if plex_service_file_exists else
+          'not found (may be expected in container environments where systemd is not fully functional)' }}
+
+    # Verify systemd override (created by role regardless of service file)
+    - name: Check if systemd override directory exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/plexmediaserver.service.d
+      register: plex_override_dir
+      failed_when: not plex_override_dir.stat.exists
+
+    - name: Check if systemd override file exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/plexmediaserver.service.d/override.conf
+      register: plex_override_file
+      failed_when: not plex_override_file.stat.exists
+
+    - name: Read systemd override content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/plexmediaserver.service.d/override.conf
+      register: plex_override_content
+
+    - name: Verify systemd override content
+      ansible.builtin.assert:
+        that:
+          - "'PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR' in override_decoded"
+          - "'TMPDIR' in override_decoded"
+          - "'Restart=on-failure' in override_decoded"
+        fail_msg: "Systemd override missing expected configuration"
+        success_msg: "Systemd override has correct configuration"
+      vars:
+        override_decoded: "{{ plex_override_content.content | b64decode }}"
+
+    # Verify plex user exists (created by plexmediaserver package)
+    - name: Check if plex user exists
+      ansible.builtin.command: id plex
+      register: plex_user_check
+      changed_when: false
+      failed_when: false
+
+    - name: Verify plex user was created
+      ansible.builtin.assert:
+        that:
+          - plex_user_check.rc == 0
+        fail_msg: "plex user does not exist (package may not have configured properly)"
+        success_msg: "plex user exists"
+
+    # Verify group memberships (only if plex user exists)
+    # Use getent to check group membership more reliably than parsing id output
+    - name: Check media group membership
+      ansible.builtin.command: getent group media
+      register: media_group_members
+      changed_when: false
+      failed_when: false
+      when: plex_user_check.rc == 0
+
+    - name: Verify plex user is in media group
+      ansible.builtin.assert:
+        that:
+          - "'plex' in media_group_members.stdout"
+        fail_msg: "plex user is not in media group"
+        success_msg: "plex user is in media group"
+      when:
+        - plex_user_check.rc == 0
+        - media_group_members.rc | default(1) == 0
+
+    # Video group check - may not exist in all container environments
+    - name: Check if video group exists
+      ansible.builtin.command: getent group video
+      register: video_group_check
+      changed_when: false
+      failed_when: false
+      when: plex_user_check.rc == 0
+
+    - name: Check video group membership
+      ansible.builtin.command: getent group video
+      register: video_group_members
+      changed_when: false
+      failed_when: false
+      when:
+        - plex_user_check.rc == 0
+        - video_group_check.rc | default(1) == 0
+
+    - name: Verify plex user is in video group (if video group exists)
+      ansible.builtin.assert:
+        that:
+          - "'plex' in video_group_members.stdout"
+        fail_msg: "plex user is not in video group"
+        success_msg: "plex user is in video group"
+      when:
+        - plex_user_check.rc == 0
+        - video_group_check.rc | default(1) == 0
+        - video_group_members.rc | default(1) == 0
+
+    - name: Note video group status
+      ansible.builtin.debug:
+        msg: "Video group does not exist in this environment (expected in containers without GPU)"
+      when:
+        - plex_user_check.rc == 0
+        - video_group_check.rc | default(1) != 0
+
+    # Verify GPU driver packages were NOT installed (skip_gpu_drivers=true)
+    - name: Check if GPU drivers were skipped
+      ansible.builtin.command: dpkg -l intel-media-va-driver-non-free
+      register: gpu_driver_check
+      changed_when: false
+      failed_when: false
+
+    - name: Assert GPU drivers were skipped
+      ansible.builtin.assert:
+        that:
+          - gpu_driver_check.rc != 0
+        fail_msg: "GPU drivers should NOT be installed when skip_gpu_drivers=true"
+        success_msg: "GPU drivers correctly skipped (skip_gpu_drivers=true)"
+
+    # Verify test directories exist
+    - name: Check if config directory exists
+      ansible.builtin.stat:
+        path: /tmp/plex-config
+      register: config_dir
+      failed_when: not config_dir.stat.exists
+
+    - name: Check if transcode directory exists
+      ansible.builtin.stat:
+        path: /tmp/plex-transcode
+      register: transcode_dir
+      failed_when: not transcode_dir.stat.exists
+
+    # Determine group membership status for summary
+    - name: Set group membership facts for summary
+      ansible.builtin.set_fact:
+        media_group_status: >-
+          {{ 'yes' if (plex_user_check.rc == 0 and
+             media_group_members.rc | default(1) == 0 and
+             'plex' in media_group_members.stdout | default('')) else 'skipped' }}
+        video_group_status: >-
+          {{ 'yes' if (video_group_check.rc | default(1) == 0 and
+             'plex' in video_group_members.stdout | default('')) else 'skipped (no video group)' }}
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Plex apt repository configured:"
+          - "  - GPG key at /usr/share/keyrings/plex-archive-keyring.gpg"
+          - "  - Repository at /etc/apt/sources.list.d/plexmediaserver.list"
+          - "Plex Media Server installed: {{ plex_version_check.stdout }}"
+          - "Systemd service file: {{ 'found' if plex_service_file_exists else 'not found (container)' }}"
+          - "Systemd override configured with:"
+          - "  - Custom application support directory"
+          - "  - Custom tmpdir for transcoding"
+          - "  - Restart on failure policy"
+          - "plex user: {{ 'yes' if plex_user_check.rc == 0 else 'no (container limitation)' }}"
+          - "  - Member of media group: {{ media_group_status }}"
+          - "  - Member of video group: {{ video_group_status }}"
+          - "GPU drivers skipped (skip_gpu_drivers=true)"
+          - "Service startup skipped (skip_plex_service=true)"

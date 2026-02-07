@@ -11,6 +11,7 @@
     update_cache: true
 
 # Intel Arc GPU hardware transcoding support
+# Skip in container testing where GPU drivers aren't available
 - name: Enable non-free and non-free-firmware repositories
   ansible.builtin.apt_repository:
     repo: "{{ item }}"
@@ -19,10 +20,12 @@
   loop:
     - "deb http://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
     - "deb http://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+  when: not (skip_gpu_drivers | default(false))
 
 - name: Update apt cache after adding non-free repos
   ansible.builtin.apt:
     update_cache: true
+  when: not (skip_gpu_drivers | default(false))
 
 - name: Install Intel GPU drivers for hardware transcoding
   ansible.builtin.apt:
@@ -31,6 +34,7 @@
       - vainfo                          # Tool to verify VA-API
       - intel-gpu-tools                 # Intel GPU monitoring tools
     state: present
+  when: not (skip_gpu_drivers | default(false))
 
 - name: Download Plex GPG key
   ansible.builtin.get_url:
@@ -53,10 +57,19 @@
   # Note: trusted=yes is required because Plex's GPG key uses SHA1 signatures
   # which Debian Trixie (13) rejects. This only affects the Plex repository.
 
-- name: Install Plex Media Server
+- name: Install Plex Media Server (pinned version)
+  ansible.builtin.apt:
+    name: "plexmediaserver={{ plex_version }}"
+    state: present
+    allow_downgrade: true
+  when: plex_version != 'latest'
+  notify: Restart plex
+
+- name: Install Plex Media Server (latest)  # noqa package-latest
   ansible.builtin.apt:
     name: plexmediaserver
-    state: "{{ 'latest' if plex_version == 'latest' else 'present' }}"
+    state: latest
+  when: plex_version == 'latest'
   notify: Restart plex
 
 - name: Verify Plex package version

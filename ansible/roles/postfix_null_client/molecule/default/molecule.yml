@@ -1,0 +1,66 @@
+---
+# Molecule configuration for postfix_null_client role testing
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: postfix-null-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        internal_domain: test.local
+        admin_email: test@test.local
+        smtp_relay_host: smtp-relay.test.local
+        smtp_relay_port: 587
+        postfix_sasl_user: testuser
+        postfix_sasl_password: testpassword
+        postfix_config:
+          myhostname: "postfix-null-test.test.local"
+          myorigin: "/etc/mailname"
+          mydestination: "postfix-null-test.test.local, test.local, localhost.localdomain, localhost"
+          relayhost: "[smtp-relay.test.local]:587"
+          mynetworks: "127.0.0.0/8"
+          inet_interfaces: "loopback-only"
+          smtp_tls_security_level: "encrypt"
+          smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+          smtp_sasl_auth_enable: "yes"
+          smtp_sasl_security_options: "noanonymous"
+          smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+        mail_aliases:
+          postmaster: root
+          nobody: root
+          hostmaster: root
+          webmaster: root
+          root: "test@test.local"
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

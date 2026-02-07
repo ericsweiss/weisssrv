@@ -1,0 +1,33 @@
+---
+# Converge playbook for adguard_home role testing
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - systemd
+          - ca-certificates
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Set bcrypt password hash for testing
+      ansible.builtin.set_fact:
+        adguard_admin_password_hash: "$2a$10$e.JGriTiPgFCVQK2A1pOKOkqbXIBWDCscHBGBSGBe8LRYw34hkyGC"
+
+    - name: Create adguard group (pre-requisite for user creation)
+      ansible.builtin.group:
+        name: adguard
+        system: true
+        state: present
+
+  roles:
+    - role: adguard_home

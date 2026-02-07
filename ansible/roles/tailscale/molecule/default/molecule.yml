@@ -1,0 +1,54 @@
+---
+# Molecule configuration for tailscale role testing
+# Tests: apt repo setup, package installation, service enablement
+# Skips: tailscale up command (requires auth key and network)
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: tailscale-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    # Empty auth key - tailscale up will be skipped
+    TAILSCALE_AUTH_KEY: ""
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Use pinned version matching group_vars/all.yml
+        # The role installs tailscale={{ tailscale_version }}-* so this must be a real version
+        tailscale_version: "1.94.1"
+        tailscale_enabled: true
+        tailscale_accept_routes: false
+        tailscale_accept_dns: false
+        tailscale_advertise_routes: []
+        tailscale_additional_flags: []
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

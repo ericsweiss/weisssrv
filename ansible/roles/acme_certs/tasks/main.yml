@@ -3,6 +3,25 @@
 # Only runs on dns-01 (primary) and distributes to other hosts
 # Certificate distribution uses SSH with eric user (dns-01 -> dns-02, smtp-relay)
 
+- name: Validate required acme.sh variables (dns-01 only)
+  ansible.builtin.assert:
+    that:
+      - dns01_ssh_private_key is defined
+      - dns01_ssh_private_key | length > 0
+      - dns01_ssh_public_key is defined
+      - dns01_ssh_public_key | length > 0
+      - acme_email is defined
+      - acme_email | length > 0
+      - internal_domain is defined
+      - internal_domain | length > 0
+    fail_msg: >-
+      Required acme.sh variables are not set. Ensure DNS01_SSH_PRIVATE_KEY,
+      DNS01_SSH_PUBLIC_KEY environment variables are provided via 'op run'.
+      Run deployment with: task deploy:dns (which injects 1Password secrets)
+    success_msg: "Required acme.sh variables are present"
+  when: inventory_hostname == 'dns-01'
+  tags: [validation, always]
+
 - name: Ensure eric .ssh directory exists for cert distribution
   ansible.builtin.file:
     path: /home/eric/.ssh
@@ -202,6 +221,7 @@
     - cert_distribution_targets is defined
     - cert_distribution_targets | length > 0
     - not ansible_check_mode
+    - not (skip_cert_distribution | default(false))
   register: cert_distribution_result
   changed_when: cert_distribution_result.rc == 0
   failed_when: false  # Don't fail the play if distribution fails (target might be down)

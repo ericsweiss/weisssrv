@@ -1,0 +1,64 @@
+---
+# Molecule configuration for k3s agent role testing
+# Tests k3s agent configuration deployment
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../default/requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: k3s-agent-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    capabilities:
+      - SYS_ADMIN
+    tmpfs:
+      - /run
+      - /tmp
+    networks:
+      - name: k3s-agent-test-net
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        k3s_version: "v1.35.0+k3s1"
+        k3s_api_vip: "192.168.0.161"
+        k3s_api_port: 6443
+        k3s_token: "test-token-for-molecule-agent-testing"
+        k3s_role: agent  # This makes it run agent tasks
+        k3s_labels:
+          node-type: "general"
+          workload: "media"
+        k3s_taints:
+          - key: "node.kubernetes.io/ingress"
+            value: "true"
+            effect: "NoSchedule"
+        admin_user: root
+        internal_domain: test.local
+        skip_ssh_config: true
+        skip_dns_config: true
+        skip_k3s_install: true  # Skip actual k3s install in container
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

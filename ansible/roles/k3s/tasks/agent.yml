@@ -1,6 +1,22 @@
 ---
 # K3s agent installation
 
+- name: Validate required k3s variables
+  ansible.builtin.assert:
+    that:
+      - k3s_token is defined
+      - k3s_token | length > 0
+      - k3s_version is defined
+      - k3s_version | length > 0
+      - k3s_api_vip is defined
+      - k3s_api_vip | length > 0
+    fail_msg: >-
+      Required k3s variables are not set. Ensure K3S_TOKEN environment variable
+      is provided via 'op run' and k3s_version/k3s_api_vip are set in group_vars.
+      Run deployment with: task k3s:deploy (which injects 1Password secrets)
+    success_msg: "Required k3s variables are present"
+  tags: [validation, always]
+
 - name: Debug - Show k3s agent configuration variables
   ansible.builtin.debug:
     msg:
@@ -61,11 +77,31 @@
       sh -s - agent
   args:
     executable: /bin/bash
-  when: k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+  when:
+    - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+    - not (skip_k3s_install | default(false))
   environment:
     K3S_TOKEN: "{{ k3s_token }}"
   notify: Restart k3s-agent
   changed_when: true
+
+# SAFEGUARD: Ensure k3s.service (server) is never running on agent nodes.
+# This protects against incorrect manual installations or bugs.
+- name: Check if k3s.service exists (server service on agent node)
+  ansible.builtin.stat:
+    path: /etc/systemd/system/k3s.service
+  register: k3s_server_service
+
+- name: Stop and disable k3s.service if present (wrong service for agent)
+  ansible.builtin.systemd:
+    name: k3s
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - k3s_server_service.stat.exists
+    - not (skip_k3s_install | default(false))
+  failed_when: false  # Don't fail if service doesn't exist in systemd
 
 - name: Wait for k3s-agent service to be active
   ansible.builtin.systemd:
@@ -76,6 +112,7 @@
   retries: 5
   delay: 10
   until: k3s_agent_service is succeeded
+  when: not (skip_k3s_install | default(false))
 
 - name: Wait for agent node to register with cluster
   ansible.builtin.command: k3s kubectl get node {{ inventory_hostname }}
@@ -84,15 +121,23 @@
   delay: 10
   until: k3s_node_ready.rc == 0
   changed_when: false
-  delegate_to: "{{ groups['k3s_servers'][0] }}"
+  delegate_to: "{{ groups['k3s_servers'][0] | default(inventory_hostname) }}"
+  when:
+    - not (skip_k3s_install | default(false))
+    - groups['k3s_servers'] is defined
+    - groups['k3s_servers'] | length > 0
 
 - name: Apply node labels
   ansible.builtin.command: >
     k3s kubectl label node {{ inventory_hostname }}
     {{ item.key }}={{ item.value }} --overwrite
   loop: "{{ k3s_labels | dict2items }}"
-  when: k3s_labels | length > 0
-  delegate_to: "{{ groups['k3s_servers'][0] }}"
+  when:
+    - k3s_labels | length > 0
+    - not (skip_k3s_install | default(false))
+    - groups['k3s_servers'] is defined
+    - groups['k3s_servers'] | length > 0
+  delegate_to: "{{ groups['k3s_servers'][0] | default(inventory_hostname) }}"
   changed_when: false
 
 - name: Apply node taints
@@ -100,6 +145,10 @@
     k3s kubectl taint node {{ inventory_hostname }}
     {{ item.key }}={{ item.value }}:{{ item.effect }} --overwrite
   loop: "{{ k3s_taints }}"
-  when: k3s_taints | length > 0
-  delegate_to: "{{ groups['k3s_servers'][0] }}"
+  when:
+    - k3s_taints | length > 0
+    - not (skip_k3s_install | default(false))
+    - groups['k3s_servers'] is defined
+    - groups['k3s_servers'] | length > 0
+  delegate_to: "{{ groups['k3s_servers'][0] | default(inventory_hostname) }}"
   changed_when: false

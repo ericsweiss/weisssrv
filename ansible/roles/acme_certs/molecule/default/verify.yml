@@ -1,0 +1,112 @@
+---
+# Verify playbook for acme_certs role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check acme.sh dependencies are installed
+      ansible.builtin.command: dpkg -l {{ item }}
+      register: package_check
+      changed_when: false
+      failed_when: package_check.rc != 0
+      loop:
+        - curl
+        - openssl
+        - socat
+
+    - name: Check if eric .ssh directory exists
+      ansible.builtin.stat:
+        path: /home/eric/.ssh
+      register: eric_ssh_dir
+      failed_when: not eric_ssh_dir.stat.exists or eric_ssh_dir.stat.mode != '0700'
+
+    - name: Check if cert distribution private key exists
+      ansible.builtin.stat:
+        path: /home/eric/.ssh/id_ed25519_certs
+      register: cert_private_key
+      failed_when: not cert_private_key.stat.exists
+
+    - name: Verify private key permissions
+      ansible.builtin.assert:
+        that:
+          - cert_private_key.stat.mode == '0600'
+          - cert_private_key.stat.pw_name == 'eric'
+        fail_msg: "Private key has incorrect permissions or ownership"
+        success_msg: "Private key has correct permissions (0600) and ownership (eric)"
+
+    - name: Check if cert distribution public key exists
+      ansible.builtin.stat:
+        path: /home/eric/.ssh/id_ed25519_certs.pub
+      register: cert_public_key
+      failed_when: not cert_public_key.stat.exists
+
+    - name: Verify public key permissions
+      ansible.builtin.assert:
+        that:
+          - cert_public_key.stat.mode == '0644'
+          - cert_public_key.stat.pw_name == 'eric'
+        fail_msg: "Public key has incorrect permissions or ownership"
+        success_msg: "Public key has correct permissions (0644) and ownership (eric)"
+
+    - name: Check if acme.sh is installed
+      ansible.builtin.stat:
+        path: /root/.acme.sh/acme.sh
+      register: acme_sh_installed
+      failed_when: not acme_sh_installed.stat.exists
+
+    - name: Verify acme.sh is executable
+      ansible.builtin.assert:
+        that:
+          - acme_sh_installed.stat.executable
+        fail_msg: "acme.sh is not executable"
+        success_msg: "acme.sh is installed and executable"
+
+    - name: Check if homelab-cert-reload script exists
+      ansible.builtin.stat:
+        path: /usr/local/sbin/homelab-cert-reload.sh
+      register: cert_reload_script
+      failed_when: not cert_reload_script.stat.exists
+
+    - name: Verify cert reload script permissions
+      ansible.builtin.assert:
+        that:
+          - cert_reload_script.stat.mode == '0700'
+          - cert_reload_script.stat.pw_name == 'root'
+        fail_msg: "Cert reload script has incorrect permissions"
+        success_msg: "Cert reload script has correct permissions (0700) and ownership (root)"
+
+    - name: Read cert reload script content
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/homelab-cert-reload.sh
+      register: cert_reload_content
+
+    - name: Verify cert reload script contains expected content
+      ansible.builtin.assert:
+        that:
+          - "'FULLCHAIN_SRC=' in (cert_reload_content.content | b64decode)"
+          - "'PRIVKEY_SRC=' in (cert_reload_content.content | b64decode)"
+          - "'IDENTITY_FILE=' in (cert_reload_content.content | b64decode)"
+          - "'DNS_02_IP=' in (cert_reload_content.content | b64decode)"
+          - "'systemctl restart AdGuardHome' in (cert_reload_content.content | b64decode)"
+        fail_msg: "Cert reload script missing expected content"
+        success_msg: "Cert reload script contains all expected variables and commands"
+
+    - name: Check if certificate directory exists
+      ansible.builtin.stat:
+        path: /opt/AdGuardHome/certs
+      register: cert_dir
+      failed_when: not cert_dir.stat.exists or not cert_dir.stat.isdir
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "acme.sh dependencies installed (curl, openssl, socat)"
+          - "eric .ssh directory created with correct permissions (0700)"
+          - "SSH private key deployed for cert distribution (0600)"
+          - "SSH public key deployed for cert distribution (0644)"
+          - "acme.sh installed at /root/.acme.sh/acme.sh"
+          - "homelab-cert-reload.sh deployed with correct permissions"
+          - "Certificate directory structure created"
+          - "NOTE: Actual certificate issuance requires manual Cloudflare API setup"
+          - "NOTE: Role may not be fully idempotent due to acme.sh installer handling"
