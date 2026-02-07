@@ -1,0 +1,1299 @@
+#!/usr/bin/env python3
+"""
+check-versions.py - Automated version discovery for weisssrv homelab infrastructure.
+
+Checks the latest available versions from official sources and compares them
+against the pinned versions in ansible/inventories/prod/group_vars/all.yml.
+
+Supports:
+  - GitHub releases (binary tools, container images with GitHub releases)
+  - Docker Hub / ghcr.io / LinuxServer.io container image tags
+  - Helm chart versions from OCI/HTTP repositories
+  - APT package versions (documented only)
+
+Usage:
+  ./scripts/check-versions.py                     # Check all services
+  ./scripts/check-versions.py --service gluetun    # Check single service
+  ./scripts/check-versions.py --category helm      # Check category
+  ./scripts/check-versions.py --json               # JSON output
+  ./scripts/check-versions.py --update gluetun     # Update version in all.yml
+  ./scripts/check-versions.py --update-all         # Update all outdated versions
+
+Environment:
+  GITHUB_TOKEN - Optional GitHub personal access token for higher rate limits
+                 (unauthenticated: 60 req/hr, authenticated: 5000 req/hr)
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+VARS_FILE = Path(__file__).resolve().parent.parent / "ansible" / "inventories" / "prod" / "group_vars" / "all.yml"
+CACHE_DIR = Path(__file__).resolve().parent.parent / ".version-cache"
+CACHE_TTL = 3600  # 1 hour cache
+
+# GitHub API rate limit handling
+GITHUB_API = "https://api.github.com"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+# Request timeout in seconds
+REQUEST_TIMEOUT = 15
+
+
+@dataclass
+class ServiceVersion:
+    """Represents a tracked service and its version information."""
+    name: str
+    category: str  # github, container, helm, apt, manual
+    current_version: str
+    latest_version: Optional[str] = None
+    update_available: bool = False
+    source_url: str = ""
+    release_url: str = ""
+    error: Optional[str] = None
+    var_name: str = ""  # Variable name in all.yml
+    notes: str = ""
+
+
+# Service definitions - maps var_name to lookup configuration
+SERVICE_REGISTRY: list[dict] = [
+    # --- GitHub releases (binary tools) ---
+    {
+        "name": "AdGuard Home",
+        "var_name": "adguard_home_version",
+        "category": "github",
+        "github_repo": "AdguardTeam/AdGuardHome",
+        "version_prefix": "v",
+        "strip_prefix": True,
+    },
+    {
+        "name": "adguardhome-sync",
+        "var_name": "adguardhome_sync_version",
+        "category": "github",
+        "github_repo": "bakito/adguardhome-sync",
+        "version_prefix": "v",
+        "strip_prefix": True,
+    },
+    {
+        "name": "k3s",
+        "var_name": "k3s_version",
+        "category": "github",
+        "github_repo": "k3s-io/k3s",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d+\.\d+\.\d+\+k3s\d+$",
+    },
+    {
+        "name": "kube-vip",
+        "var_name": "kube_vip_version",
+        "category": "github",
+        "github_repo": "kube-vip/kube-vip",
+        "version_prefix": "v",
+        "strip_prefix": False,
+    },
+    {
+        "name": "Pulsarr",
+        "var_name": "pulsarr_version",
+        "category": "github",
+        "github_repo": "jamcalli/Pulsarr",
+        "version_prefix": "v",
+        "strip_prefix": True,
+    },
+    # --- Container images ---
+    {
+        "name": "Gluetun",
+        "var_name": "gluetun_version",
+        "category": "github",
+        "github_repo": "qdm12/gluetun",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
+    {
+        "name": "Authentik",
+        "var_name": "authentik_version",
+        "category": "github",
+        "github_repo": "goauthentik/authentik",
+        "version_prefix": "version/",
+        "strip_prefix": True,
+        "tag_filter": r"^version/\d{4}\.\d+\.\d+$",
+    },
+    {
+        "name": "PostgreSQL (Authentik)",
+        "var_name": "postgresql_version",
+        "category": "dockerhub",
+        "docker_image": "library/postgres",
+        "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",  # Matches 17-trixie, 17.1-trixie, etc.
+        "notes": "Used by Authentik (bundled PostgreSQL). Only checks updates within current major version.",
+        "pin_major_version": True,  # Only suggest updates within same major version
+    },
+    {
+        "name": "PostgreSQL (Mealie)",
+        "var_name": "mealie_postgresql_version",
+        "category": "dockerhub",
+        "docker_image": "library/postgres",
+        "tag_regex": r"^(\d+(?:\.\d+)?)-alpine$",  # Matches 16-alpine, 16.1-alpine, etc.
+        "notes": "Used by Mealie (standalone deployment). Only checks updates within current major version.",
+        "pin_major_version": True,  # Only suggest updates within same major version
+    },
+    {
+        "name": "Mealie",
+        "var_name": "mealie_version",
+        "category": "github",
+        "github_repo": "mealie-recipes/mealie",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
+    {
+        "name": "Bar Assistant",
+        "var_name": "bar_assistant_version",
+        "category": "dockerhub",
+        "docker_image": "barassistant/server",
+        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
+    },
+    {
+        "name": "Salt Rim",
+        "var_name": "salt_rim_version",
+        "category": "dockerhub",
+        "docker_image": "barassistant/salt-rim",
+        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
+    },
+    # --- LinuxServer.io container images ---
+    # LinuxServer.io tags follow these patterns:
+    #   version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
+    #   version-X.Y.Z.BUILD (*arr apps - stable branch)
+    # We use the "version-" prefixed tags as the canonical source of truth
+    {
+        "name": "NZBGet",
+        "var_name": "nzbget_version",
+        "category": "lsio",
+        "docker_image": "linuxserver/nzbget",
+        "lsio_tag_prefix": "version-v",
+        "lsio_version_regex": r"^version-v(\d+\.\d+(?:\.\d+)?)$",
+    },
+    {
+        "name": "qBittorrent",
+        "var_name": "qbittorrent_version",
+        "category": "lsio",
+        "docker_image": "linuxserver/qbittorrent",
+        "lsio_tag_prefix": "",  # qBittorrent uses bare tags without version- prefix
+        "lsio_version_regex": r"^(\d+\.\d+\.\d+)$",  # Match bare version tags like "5.1.4"
+    },
+    {
+        "name": "Prowlarr",
+        "var_name": "prowlarr_version",
+        "category": "lsio",
+        "docker_image": "linuxserver/prowlarr",
+        "lsio_tag_prefix": "version-",
+        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        "notes": "LinuxServer stable branch",
+    },
+    {
+        "name": "Sonarr",
+        "var_name": "sonarr_version",
+        "category": "lsio",
+        "docker_image": "linuxserver/sonarr",
+        "lsio_tag_prefix": "version-",
+        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        "notes": "LinuxServer stable branch",
+    },
+    {
+        "name": "Radarr",
+        "var_name": "radarr_version",
+        "category": "lsio",
+        "docker_image": "linuxserver/radarr",
+        "lsio_tag_prefix": "version-",
+        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        "notes": "LinuxServer stable branch",
+    },
+    {
+        "name": "Lidarr",
+        "var_name": "lidarr_version",
+        "category": "lsio",
+        "docker_image": "linuxserver/lidarr",
+        "lsio_tag_prefix": "version-",
+        "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        "notes": "LinuxServer stable branch",
+    },
+    # --- Helm charts ---
+    {
+        "name": "MetalLB",
+        "var_name": "helm_chart_versions.metallb",
+        "category": "helm",
+        "helm_repo": "https://metallb.github.io/metallb",
+        "helm_chart": "metallb",
+        "source_url": "https://artifacthub.io/packages/helm/metallb/metallb",
+    },
+    {
+        "name": "Traefik",
+        "var_name": "helm_chart_versions.traefik",
+        "category": "helm",
+        "helm_repo": "https://traefik.github.io/charts",
+        "helm_chart": "traefik",
+        "source_url": "https://github.com/traefik/traefik-helm-chart/releases",
+    },
+    {
+        "name": "cert-manager",
+        "var_name": "helm_chart_versions.cert_manager",
+        "category": "helm",
+        "helm_repo": "https://charts.jetstack.io",
+        "helm_chart": "cert-manager",
+        "source_url": "https://artifacthub.io/packages/helm/cert-manager/cert-manager",
+    },
+    {
+        "name": "external-dns",
+        "var_name": "helm_chart_versions.external_dns",
+        "category": "helm",
+        "helm_repo": "https://kubernetes-sigs.github.io/external-dns",
+        "helm_chart": "external-dns",
+        "source_url": "https://artifacthub.io/packages/helm/external-dns/external-dns",
+    },
+    {
+        "name": "Tailscale",
+        "var_name": "tailscale_version",
+        "category": "github",
+        "github_repo": "tailscale/tailscale",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "source_url": "https://github.com/tailscale/tailscale/releases",
+    },
+    # --- APT / Manual ---
+    {
+        "name": "Plex Media Server",
+        "var_name": "plex_version",
+        "category": "plex",
+        "source_url": "https://www.plex.tv/media-server-downloads/",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str:
+    """Make an HTTP GET request and return parsed JSON or raw text."""
+    req_headers = {"User-Agent": "weisssrv-version-checker/1.0"}
+    if headers:
+        req_headers.update(headers)
+
+    req = urllib.request.Request(url, headers=req_headers)
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            data = resp.read().decode("utf-8")
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                return data
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            # Check for rate limiting
+            remaining = e.headers.get("X-RateLimit-Remaining", "?")
+            reset = e.headers.get("X-RateLimit-Reset", "?")
+            raise RuntimeError(
+                f"HTTP 403 (rate limited?) remaining={remaining} reset={reset}"
+            ) from e
+        raise RuntimeError(f"HTTP {e.code}: {e.reason}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Connection error: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Request failed: {e}") from e
+
+
+def github_api(path: str) -> dict | list:
+    """Make a GitHub API request with optional authentication."""
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return _make_request(f"{GITHUB_API}{path}", headers)
+
+
+# ---------------------------------------------------------------------------
+# Cache helpers
+# ---------------------------------------------------------------------------
+
+def _cache_key(service_name: str) -> Path:
+    """Generate a cache file path for a service."""
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", service_name)
+    return CACHE_DIR / f"{safe_name}.json"
+
+
+def _read_cache(service_name: str) -> Optional[str]:
+    """Read cached version if still valid."""
+    cache_file = _cache_key(service_name)
+    if not cache_file.exists():
+        return None
+    try:
+        data = json.loads(cache_file.read_text())
+        if time.time() - data.get("timestamp", 0) < CACHE_TTL:
+            return data.get("version")
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return None
+
+
+def _write_cache(service_name: str, version: str) -> None:
+    """Write version to cache."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = _cache_key(service_name)
+    cache_file.write_text(json.dumps({
+        "version": version,
+        "timestamp": time.time(),
+        "service": service_name,
+    }))
+
+
+# ---------------------------------------------------------------------------
+# Version parsing
+# ---------------------------------------------------------------------------
+
+def parse_version_tuple(version_str: str) -> tuple:
+    """Parse a version string into a comparable tuple.
+
+    Handles formats like:
+      1.2.3, v1.2.3, 2025.12.3, 1.2.3.4567, v1.33.7+k3s1
+    """
+    # Remove leading 'v' for comparison
+    v = version_str.lstrip("v")
+    # Replace + with . for k3s-style versions
+    v = v.replace("+", ".")
+    # Split on . and - and try to convert to ints
+    parts = re.split(r"[.\-]", v)
+    result = []
+    for part in parts:
+        # Extract leading numeric portion
+        m = re.match(r"(\d+)(.*)", part)
+        if m:
+            result.append(int(m.group(1)))
+            if m.group(2):
+                result.append(m.group(2))
+        else:
+            result.append(part)
+    return tuple(result)
+
+
+def version_greater(a: str, b: str) -> bool:
+    """Return True if version a is greater than version b."""
+    try:
+        return parse_version_tuple(a) > parse_version_tuple(b)
+    except (TypeError, ValueError):
+        # Fall back to string comparison
+        return a > b
+
+
+# ---------------------------------------------------------------------------
+# Version fetchers
+# ---------------------------------------------------------------------------
+
+def fetch_github_release(svc: dict) -> str:
+    """Fetch latest release version from GitHub."""
+    repo = svc["github_repo"]
+    tag_filter = svc.get("tag_filter")
+    prefix = svc.get("version_prefix", "")
+    strip_prefix = svc.get("strip_prefix", False)
+
+    if tag_filter:
+        # Need to list releases and filter
+        releases = github_api(f"/repos/{repo}/releases?per_page=30")
+        for release in releases:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            tag = release.get("tag_name", "")
+            if re.match(tag_filter, tag):
+                version = tag
+                if strip_prefix and prefix and version.startswith(prefix):
+                    version = version[len(prefix):]
+                return version
+        raise RuntimeError(f"No release matching {tag_filter}")
+    else:
+        # Use latest release endpoint
+        release = github_api(f"/repos/{repo}/releases/latest")
+        version = release.get("tag_name", "")
+        if strip_prefix and prefix and version.startswith(prefix):
+            version = version[len(prefix):]
+        return version
+
+
+def fetch_dockerhub_version(svc: dict) -> str:
+    """Fetch latest version from Docker Hub using tag_regex.
+
+    The tag_regex should have a capture group for the version portion.
+    The highest matching version (by version tuple comparison) is returned,
+    prefixed with the non-captured portion of the tag.
+
+    If pin_major_version is True, only returns versions matching the same major
+    version as the current version.
+    """
+    image = svc["docker_image"]
+    tag_regex = svc.get("tag_regex", r"^(v?\d+(?:\.\d+)*)$")
+    pin_major = svc.get("pin_major_version", False)
+    current_version = svc.get("_current_version", "")
+
+    # Extract major version from current version if pinning
+    major_version_filter = None
+    if pin_major and current_version:
+        # Extract major version (e.g., "17-trixie" -> "17", "17.2-trixie" -> "17")
+        match = re.match(r"^(\d+)", current_version)
+        if match:
+            major_version_filter = match.group(1)
+
+    # For postgres, use larger page size to find alpine/trixie tags
+    page_size = 100 if image == "library/postgres" else 50
+    url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={page_size}&ordering=last_updated"
+    data = _make_request(url)
+
+    best_tag = None
+    best_tuple = None
+
+    for result in data.get("results", []):
+        tag_name = result.get("name", "")
+        match = re.match(tag_regex, tag_name)
+        if match:
+            # If pinning major version, check if this tag matches
+            if major_version_filter:
+                tag_major = re.match(r"^(\d+)", tag_name)
+                if not tag_major or tag_major.group(1) != major_version_filter:
+                    continue  # Skip tags from different major versions
+
+            # Use the full tag as the version (since that's what's in all.yml)
+            try:
+                vtuple = parse_version_tuple(tag_name)
+                if best_tuple is None or vtuple > best_tuple:
+                    best_tuple = vtuple
+                    best_tag = tag_name
+            except (TypeError, ValueError):
+                continue
+
+    if best_tag is None:
+        raise RuntimeError(f"No matching tags found for {image} (regex: {tag_regex})")
+
+    return best_tag
+
+
+def fetch_lsio_version(svc: dict) -> str:
+    """Fetch latest version from LinuxServer.io Docker Hub images.
+
+    LinuxServer.io images use canonical version tags with prefixes:
+      version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
+      version-X.Y.Z.BUILD (*arr apps - stable branch)
+
+    The regex captures the version portion from the tag.
+    """
+    image = svc["docker_image"]
+    version_regex = svc["lsio_version_regex"]
+
+    # Docker Hub API v2 - list tags sorted by most recently updated
+    # For postgres, use larger page size to find alpine/trixie tags
+    page_size = 100 if image == "library/postgres" else 50
+    url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={page_size}&ordering=last_updated"
+    data = _make_request(url)
+
+    best_version = None
+    best_tuple = None
+
+    for result in data.get("results", []):
+        tag_name = result.get("name", "")
+        match = re.match(version_regex, tag_name)
+        if match:
+            extracted = match.group(1)
+            try:
+                vtuple = parse_version_tuple(extracted)
+                if best_tuple is None or vtuple > best_tuple:
+                    best_tuple = vtuple
+                    best_version = extracted
+            except (TypeError, ValueError):
+                continue
+
+    if best_version is None:
+        raise RuntimeError(
+            f"No matching tags found for {image} "
+            f"(regex: {version_regex})"
+        )
+
+    return best_version
+
+
+def fetch_ghcr_version(svc: dict) -> str:
+    """Fetch latest version tag from GitHub Container Registry.
+
+    Uses the GitHub API to list package versions since ghcr.io token
+    auth requires a different flow.
+    """
+    image = svc["ghcr_image"]
+    tag_filter = svc.get("tag_filter", r"^v?\d+\.\d+")
+
+    # Use GitHub API for package versions
+    # ghcr.io packages are accessible via the packages API
+    owner = image.split("/")[0]
+    package_name = image.split("/", 1)[1] if "/" in image else image
+
+    url = f"/users/{owner}/packages/container/{package_name}/versions?per_page=50"
+    try:
+        versions = github_api(url)
+    except RuntimeError:
+        # Try org endpoint
+        url = f"/orgs/{owner}/packages/container/{package_name}/versions?per_page=50"
+        versions = github_api(url)
+
+    best_version = None
+    best_tuple = None
+
+    for version in versions:
+        tags = version.get("metadata", {}).get("container", {}).get("tags", [])
+        for tag in tags:
+            if re.match(tag_filter, tag):
+                try:
+                    vtuple = parse_version_tuple(tag)
+                    if best_tuple is None or vtuple > best_tuple:
+                        best_tuple = vtuple
+                        best_version = tag
+                except (TypeError, ValueError):
+                    continue
+
+    if best_version is None:
+        raise RuntimeError(f"No matching tags found for ghcr.io/{image}")
+
+    return best_version
+
+
+def fetch_helm_version(svc: dict) -> str:
+    """Fetch latest chart version from a Helm repository index.
+
+    Parses the index.yaml manually to avoid PyYAML dependency.
+    The format is:
+        entries:
+          chartname:
+          - apiVersion: v2
+            version: X.Y.Z
+          - apiVersion: v2
+            version: X.Y.Z
+          otherchartname:
+          ...
+    """
+    repo_url = svc["helm_repo"]
+    chart_name = svc["helm_chart"]
+
+    index_url = f"{repo_url}/index.yaml"
+    raw = _make_request(index_url)
+
+    if not isinstance(raw, str):
+        raise RuntimeError(f"Unexpected response type from {index_url}")
+
+    # Find the chart section using a simple state machine
+    lines = raw.split("\n")
+    in_entries = False
+    in_chart = False
+    chart_indent = 0
+    versions = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # Track when we enter the entries: block
+        if stripped == "entries:":
+            in_entries = True
+            continue
+
+        if not in_entries:
+            continue
+
+        # Detect chart name entry - it appears as "  chartname:" under entries
+        # The key thing is that chart names are at a consistent indentation level
+        if not in_chart:
+            # Chart names are indented exactly 2 spaces under entries:
+            if line.rstrip().rstrip(":") and stripped.rstrip(":") == chart_name:
+                in_chart = True
+                chart_indent = len(line) - len(line.lstrip())
+                continue
+        else:
+            # Calculate this line's indent
+            if not line or line.isspace():
+                continue
+            line_indent = len(line) - len(line.lstrip())
+
+            # If we hit something at the same indent as the chart name
+            # (another chart entry), we've exited our chart section
+            if line_indent <= chart_indent and not stripped.startswith("-"):
+                break
+
+            # Look for "version:" lines within chart entries
+            # These are indented deeper than the chart name
+            if stripped.startswith("version:") and not stripped.startswith("version:  "):
+                ver = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                if not re.search(r"(alpha|beta|rc|dev|snapshot)", ver, re.IGNORECASE):
+                    versions.append(ver)
+
+    if not versions:
+        raise RuntimeError(f"No versions found for chart {chart_name}")
+
+    versions.sort(key=parse_version_tuple, reverse=True)
+    return versions[0]
+
+
+def fetch_plex_version(svc: dict) -> str:
+    """Fetch latest Plex Media Server version from Plex API.
+
+    Uses the public Plex downloads API endpoint.
+    """
+    api_url = "https://plex.tv/api/downloads/5.json"
+    data = _make_request(api_url)
+
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected response type from Plex API")
+
+    try:
+        version = data["computer"]["Linux"]["version"]
+        return version
+    except (KeyError, TypeError) as e:
+        raise RuntimeError(f"Could not parse Plex version from API: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# all.yml parser (simple YAML extraction without PyYAML)
+# ---------------------------------------------------------------------------
+
+def read_current_versions() -> dict[str, str]:
+    """Read current versions from all.yml without a YAML parser.
+
+    Returns a dict mapping var_name to current version string.
+    """
+    content = VARS_FILE.read_text()
+    versions = {}
+
+    # Track if we are inside helm_chart_versions block
+    in_helm = False
+
+    for line in content.split("\n"):
+        stripped = line.strip()
+
+        # Skip comments and empty lines
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # Detect helm_chart_versions block
+        if stripped == "helm_chart_versions:":
+            in_helm = True
+            continue
+
+        if in_helm:
+            # Indented entries under helm_chart_versions
+            if line.startswith("  ") and ":" in stripped:
+                key, _, val = stripped.partition(":")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                # Remove inline comments
+                if "#" in val:
+                    val = val[:val.index("#")].strip().strip('"').strip("'")
+                versions[f"helm_chart_versions.{key}"] = val
+            elif not line.startswith(" "):
+                in_helm = False
+                # Fall through to check this line as a regular entry
+
+        if not in_helm and ":" in stripped and "_version" in stripped.split(":")[0]:
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            # Remove inline comments
+            if "#" in val:
+                val = val[:val.index("#")].strip().strip('"').strip("'")
+            versions[key] = val
+
+    return versions
+
+
+def update_version_in_file(var_name: str, new_version: str) -> bool:
+    """Update a version in all.yml, preserving formatting and comments.
+
+    Returns True if the file was modified.
+    """
+    content = VARS_FILE.read_text()
+    lines = content.split("\n")
+    modified = False
+
+    if var_name.startswith("helm_chart_versions."):
+        # Handle nested helm chart version
+        chart_key = var_name.split(".", 1)[1]
+        in_helm = False
+        for i, line in enumerate(lines):
+            if line.strip() == "helm_chart_versions:":
+                in_helm = True
+                continue
+            if in_helm and line.startswith("  ") and line.strip().startswith(f"{chart_key}:"):
+                # Preserve the comment portion
+                comment = ""
+                if "#" in line:
+                    # Find comment after the value
+                    parts = line.split("#", 1)
+                    comment_text = parts[1]
+                    # Update "Currently deployed" comment
+                    comment_text = re.sub(
+                        r"Currently deployed \S+",
+                        f"Currently deployed {new_version}",
+                        comment_text,
+                    )
+                    comment = f"# {comment_text.strip()}" if comment_text.strip() else ""
+
+                indent = len(line) - len(line.lstrip())
+                prefix = " " * indent + f'{chart_key}: "{new_version}"'
+                if comment:
+                    lines[i] = f"{prefix}  {comment}"
+                else:
+                    lines[i] = prefix
+                modified = True
+                break
+            if in_helm and not line.startswith(" ") and line.strip() and not line.strip().startswith("#"):
+                break
+    else:
+        for i, line in enumerate(lines):
+            if line.strip().startswith(f"{var_name}:"):
+                # Preserve the comment portion
+                comment = ""
+                if "#" in line:
+                    parts = line.split("#", 1)
+                    comment_text = parts[1]
+                    # Update "Currently deployed" comment
+                    comment_text = re.sub(
+                        r"Currently deployed \S+",
+                        f"Currently deployed {new_version}",
+                        comment_text,
+                    )
+                    comment = f"# {comment_text.strip()}" if comment_text.strip() else ""
+
+                # Determine quoting style from original
+                old_val_part = line.split(":", 1)[1]
+                if "#" in old_val_part:
+                    old_val_part = old_val_part[:old_val_part.index("#")]
+                old_val_part = old_val_part.strip()
+
+                uses_quotes = old_val_part.startswith('"') or old_val_part.startswith("'")
+
+                if uses_quotes:
+                    new_val = f'"{new_version}"'
+                else:
+                    new_val = new_version
+
+                prefix = f"{var_name}: {new_val}"
+                # Pad to align comment (rough alignment)
+                if comment:
+                    lines[i] = f"{prefix}  {comment}"
+                else:
+                    lines[i] = prefix
+                modified = True
+                break
+
+    if modified:
+        VARS_FILE.write_text("\n".join(lines))
+
+    return modified
+
+
+# ---------------------------------------------------------------------------
+# Main logic
+# ---------------------------------------------------------------------------
+
+def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bool = True) -> ServiceVersion:
+    """Check a single service for available updates."""
+    name = svc_def["name"]
+    var_name = svc_def["var_name"]
+    category = svc_def["category"]
+    current = current_versions.get(var_name, "unknown")
+    notes = svc_def.get("notes", "")
+
+    result = ServiceVersion(
+        name=name,
+        category=category,
+        current_version=current,
+        var_name=var_name,
+        notes=notes,
+    )
+
+    # Set source URLs
+    if "github_repo" in svc_def:
+        result.source_url = f"https://github.com/{svc_def['github_repo']}/releases"
+        result.release_url = result.source_url
+    elif "docker_image" in svc_def:
+        result.source_url = f"https://hub.docker.com/r/{svc_def['docker_image']}/tags"
+        result.release_url = result.source_url
+    elif "ghcr_image" in svc_def:
+        result.source_url = f"https://github.com/orgs/{svc_def['ghcr_image'].split('/')[0]}/packages"
+    if svc_def.get("source_url"):
+        result.source_url = svc_def["source_url"]
+
+    # Manual/apt services - no automated check
+    if category == "manual":
+        result.latest_version = current
+        result.notes = notes or "Manual version management"
+        return result
+
+    # Check cache first
+    if use_cache:
+        cached = _read_cache(name)
+        if cached:
+            result.latest_version = cached
+            result.update_available = (
+                current != "latest"
+                and cached != current
+                and version_greater(cached, current)
+            )
+            return result
+
+    # Fetch latest version
+    try:
+        # Add current version to svc_def for major version pinning
+        svc_def_with_current = svc_def.copy()
+        svc_def_with_current["_current_version"] = current
+
+        if category == "github":
+            latest = fetch_github_release(svc_def_with_current)
+        elif category == "dockerhub":
+            latest = fetch_dockerhub_version(svc_def_with_current)
+        elif category == "lsio":
+            latest = fetch_lsio_version(svc_def)
+        elif category == "ghcr":
+            latest = fetch_ghcr_version(svc_def)
+        elif category == "helm":
+            latest = fetch_helm_version(svc_def)
+        elif category == "plex":
+            latest = fetch_plex_version(svc_def)
+        else:
+            result.error = f"Unknown category: {category}"
+            return result
+
+        result.latest_version = latest
+        _write_cache(name, latest)
+
+        # Determine if update is available
+        if current == "latest":
+            result.notes = (result.notes + " " if result.notes else "") + f"'latest' resolves to {latest}"
+            result.update_available = False
+        elif latest != current:
+            result.update_available = version_greater(latest, current)
+
+    except RuntimeError as e:
+        result.error = str(e)
+    except Exception as e:
+        result.error = f"Unexpected error: {e}"
+
+    return result
+
+
+def check_all(
+    services: Optional[list[dict]] = None,
+    category_filter: Optional[str] = None,
+    use_cache: bool = True,
+) -> list[ServiceVersion]:
+    """Check all services for available updates."""
+    current_versions = read_current_versions()
+
+    if services is None:
+        services = SERVICE_REGISTRY
+
+    if category_filter:
+        services = [s for s in services if s["category"] == category_filter]
+
+    results = []
+    for svc_def in services:
+        result = check_service(svc_def, current_versions, use_cache=use_cache)
+        results.append(result)
+        # Small delay between API calls to be nice to rate limits
+        time.sleep(0.2)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+# ANSI colors
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
+def should_use_color() -> bool:
+    """Determine if terminal supports color output."""
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def format_table(results: list[ServiceVersion]) -> str:
+    """Format results as a human-readable table."""
+    use_color = should_use_color()
+
+    def c(code: str, text: str) -> str:
+        if use_color:
+            return f"{code}{text}{RESET}"
+        return text
+
+    lines = []
+    lines.append("")
+    lines.append(c(BOLD, "Homelab Version Check Report"))
+    lines.append(c(DIM, f"Source: {VARS_FILE}"))
+    lines.append(c(DIM, f"Checked: {time.strftime('%Y-%m-%d %H:%M:%S')}"))
+    lines.append("")
+
+    # Group by category
+    categories = {
+        "github": "GitHub Releases",
+        "dockerhub": "Container Images (Docker Hub)",
+        "ghcr": "Container Images (GHCR)",
+        "lsio": "Container Images (LinuxServer.io)",
+        "helm": "Helm Charts",
+        "plex": "Plex Media Server",
+        "manual": "Manual / APT Managed",
+    }
+
+    updates_available = 0
+    errors = 0
+
+    for cat_key, cat_name in categories.items():
+        cat_results = [r for r in results if r.category == cat_key]
+        if not cat_results:
+            continue
+
+        lines.append(c(BOLD + CYAN, f"--- {cat_name} ---"))
+        lines.append("")
+
+        # Column widths
+        name_w = max(len(r.name) for r in cat_results)
+        cur_w = max(len(r.current_version) for r in cat_results)
+        lat_w = max(len(r.latest_version or "error") for r in cat_results)
+
+        # Header
+        header = f"  {'Service':<{name_w}}  {'Current':<{cur_w}}  {'Latest':<{lat_w}}  Status"
+        lines.append(c(DIM, header))
+        lines.append(c(DIM, "  " + "-" * (name_w + cur_w + lat_w + 20)))
+
+        for r in cat_results:
+            latest_str = r.latest_version or "error"
+
+            if r.error:
+                status = c(RED, "ERROR")
+                latest_str = "?"
+                errors += 1
+            elif r.update_available:
+                status = c(YELLOW, "UPDATE AVAILABLE")
+                updates_available += 1
+            elif r.current_version == "latest":
+                status = c(DIM, "tracking latest")
+            else:
+                status = c(GREEN, "up to date")
+
+            line = f"  {r.name:<{name_w}}  {r.current_version:<{cur_w}}  {latest_str:<{lat_w}}  {status}"
+            lines.append(line)
+
+            if r.notes:
+                lines.append(c(DIM, f"  {'':>{name_w}}  {r.notes}"))
+            if r.error:
+                lines.append(c(RED, f"  {'':>{name_w}}  Error: {r.error}"))
+
+        lines.append("")
+
+    # Summary
+    lines.append(c(BOLD, "--- Summary ---"))
+    total = len(results)
+    up_to_date = total - updates_available - errors
+    lines.append(f"  Total services: {total}")
+    lines.append(f"  Up to date:     {c(GREEN, str(up_to_date))}")
+    if updates_available > 0:
+        lines.append(f"  Updates:        {c(YELLOW, str(updates_available))}")
+    else:
+        lines.append(f"  Updates:        {updates_available}")
+    if errors > 0:
+        lines.append(f"  Errors:         {c(RED, str(errors))}")
+    else:
+        lines.append(f"  Errors:         {errors}")
+    lines.append("")
+
+    if updates_available > 0:
+        lines.append(c(DIM, "To update a specific service:"))
+        lines.append(c(DIM, "  task maintenance:update-version SERVICE=<name>"))
+        lines.append(c(DIM, ""))
+        lines.append(c(DIM, "To update all outdated services:"))
+        lines.append(c(DIM, "  task maintenance:update-all-versions"))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_json(results: list[ServiceVersion]) -> str:
+    """Format results as JSON."""
+    data = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "source_file": str(VARS_FILE),
+        "services": [],
+        "summary": {
+            "total": len(results),
+            "up_to_date": sum(1 for r in results if not r.update_available and not r.error),
+            "updates_available": sum(1 for r in results if r.update_available),
+            "errors": sum(1 for r in results if r.error),
+        },
+    }
+
+    for r in results:
+        entry = {
+            "name": r.name,
+            "category": r.category,
+            "var_name": r.var_name,
+            "current_version": r.current_version,
+            "latest_version": r.latest_version,
+            "update_available": r.update_available,
+            "source_url": r.source_url,
+        }
+        if r.error:
+            entry["error"] = r.error
+        if r.notes:
+            entry["notes"] = r.notes
+        if r.release_url:
+            entry["release_url"] = r.release_url
+        data["services"].append(entry)
+
+    return json.dumps(data, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def get_deploy_command(result: ServiceVersion) -> str:
+    """Get the deployment command for a service."""
+    var_name = result.var_name
+    category = result.category
+
+    # Helm charts
+    if category == "helm" or var_name.startswith("helm_chart"):
+        return "task maintenance:update-helm-charts"
+
+    # K3s infrastructure
+    if var_name == "k3s_version":
+        return "task maintenance:update-k3s-nodes"
+    if var_name == "kube_vip_version":
+        return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
+
+    # Plex
+    if var_name == "plex_version":
+        return "task maintenance:update-plex"
+
+    # Tailscale
+    if var_name == "tailscale_version":
+        return "task maintenance:update-applications"
+
+    # AdGuard Home
+    if var_name == "adguard_home_version":
+        return "task maintenance:update-applications --limit dns"
+    if var_name == "adguardhome_sync_version":
+        return "task maintenance:update-applications --limit dns-01"
+
+    # Download clients and media stack
+    if var_name in ("gluetun_version", "nzbget_version", "qbittorrent_version",
+                    "prowlarr_version", "sonarr_version", "radarr_version",
+                    "lidarr_version", "pulsarr_version"):
+        return "task downloads:deploy"
+
+    # Recipe management stack
+    if var_name in ("mealie_version", "mealie_postgresql_version", "bar_assistant_version", "salt_rim_version"):
+        return "task recipes:deploy"
+
+    # Authentik and bundled PostgreSQL
+    if var_name in ("authentik_version", "postgresql_version"):
+        return "task k3s:deploy-authentik"
+
+    return "task deploy:all  # Or the appropriate deployment task"
+
+
+def print_usage():
+    """Print usage information."""
+    print("""Usage: check-versions.py [OPTIONS]
+
+Options:
+  --help                Show this help message
+  --service NAME        Check a specific service only
+  --category CAT        Check a category only (github, dockerhub, ghcr, helm, plex, manual)
+  --json                Output as JSON
+  --no-cache            Skip cache, force fresh lookups
+  --clear-cache         Clear the version cache
+  --update NAME         Update a specific service to latest version in all.yml
+  --update-all          Update all outdated versions in all.yml
+  --list                List all tracked services
+
+Environment:
+  GITHUB_TOKEN          GitHub personal access token for higher API rate limits
+  NO_COLOR              Disable colored output""")
+
+
+def main():
+    args = sys.argv[1:]
+
+    if "--help" in args or "-h" in args:
+        print_usage()
+        sys.exit(0)
+
+    if "--clear-cache" in args:
+        if CACHE_DIR.exists():
+            for f in CACHE_DIR.iterdir():
+                f.unlink()
+            print(f"Cache cleared: {CACHE_DIR}")
+        else:
+            print("No cache to clear")
+        sys.exit(0)
+
+    if "--list" in args:
+        print("\nTracked services:\n")
+        for svc in SERVICE_REGISTRY:
+            cat = svc["category"]
+            var = svc["var_name"]
+            print(f"  {svc['name']:<25} [{cat:<10}] var: {var}")
+        print()
+        sys.exit(0)
+
+    use_cache = "--no-cache" not in args
+    output_json = "--json" in args
+    service_filter = None
+    category_filter = None
+
+    # Parse arguments
+    i = 0
+    while i < len(args):
+        if args[i] == "--service" and i + 1 < len(args):
+            service_filter = args[i + 1].lower()
+            i += 2
+        elif args[i] == "--category" and i + 1 < len(args):
+            category_filter = args[i + 1].lower()
+            i += 2
+        elif args[i] == "--update" and i + 1 < len(args):
+            service_name = args[i + 1].lower()
+            # Find the service
+            matched = [
+                s for s in SERVICE_REGISTRY
+                if s["name"].lower() == service_name
+                or s["var_name"].lower() == service_name
+                or s["var_name"].replace("_version", "").lower() == service_name
+            ]
+            if not matched:
+                print(f"Error: Unknown service '{service_name}'")
+                print("Run with --list to see available services")
+                sys.exit(1)
+
+            svc_def = matched[0]
+            current_versions = read_current_versions()
+            result = check_service(svc_def, current_versions, use_cache=False)
+
+            if result.error:
+                print(f"Error checking {result.name}: {result.error}")
+                sys.exit(1)
+
+            if not result.update_available:
+                print(f"{result.name} is already at the latest version ({result.current_version})")
+                sys.exit(0)
+
+            print(f"Updating {result.name}: {result.current_version} -> {result.latest_version}")
+            if update_version_in_file(result.var_name, result.latest_version):
+                print(f"Updated {result.var_name} in {VARS_FILE.name}")
+                print(f"\nNext steps:")
+                print(f"  1. Review the change: git diff ansible/inventories/prod/group_vars/all.yml")
+                print(f"  2. Deploy the update: {get_deploy_command(result)}")
+                print(f"  3. Verify deployment: task k3s:status  # Or appropriate status check")
+            else:
+                print(f"Warning: Could not find {result.var_name} in {VARS_FILE.name}")
+            sys.exit(0)
+
+        elif args[i] == "--update-all":
+            current_versions = read_current_versions()
+            results = check_all(use_cache=False)
+            updated = []
+            for r in results:
+                if r.update_available and not r.error:
+                    print(f"Updating {r.name}: {r.current_version} -> {r.latest_version}")
+                    if update_version_in_file(r.var_name, r.latest_version):
+                        updated.append(r)
+                    else:
+                        print(f"  Warning: Could not update {r.var_name}")
+
+            if updated:
+                print(f"\nUpdated {len(updated)} services in {VARS_FILE.name}")
+
+                # Group updates by deployment command
+                deploy_commands = {}
+                for r in updated:
+                    cmd = get_deploy_command(r)
+                    if cmd not in deploy_commands:
+                        deploy_commands[cmd] = []
+                    deploy_commands[cmd].append(r.name)
+
+                print("\nNext steps:")
+                print("  1. Review changes:")
+                repo_root = Path(__file__).resolve().parent.parent
+                print(f"     git diff {VARS_FILE.relative_to(repo_root)}")
+                print("\n  2. Deploy updates (in this order):")
+
+                # Show deployment commands with the services they update
+                for cmd, services in deploy_commands.items():
+                    print(f"     {cmd}")
+                    for svc in services:
+                        print(f"       # Updates: {svc}")
+
+                print("\n  3. Verify deployments:")
+                print("     task k3s:status")
+                print("     task deploy:verify")
+
+                print("\n  4. Commit changes:")
+                print("     git add -A && git commit -m 'Update service versions'")
+            else:
+                print("\nAll services are up to date!")
+            sys.exit(0)
+        else:
+            i += 1
+
+    # Filter services
+    services = SERVICE_REGISTRY
+    if service_filter:
+        services = [
+            s for s in services
+            if service_filter in s["name"].lower()
+            or service_filter in s["var_name"].lower()
+        ]
+        if not services:
+            print(f"Error: No services matching '{service_filter}'")
+            print("Run with --list to see available services")
+            sys.exit(1)
+
+    # Run checks
+    results = check_all(services=services, category_filter=category_filter, use_cache=use_cache)
+
+    # Output
+    if output_json:
+        print(format_json(results))
+    else:
+        print(format_table(results))
+
+    # Exit code: 0 = all up to date, 1 = updates available, 2 = errors
+    has_errors = any(r.error for r in results)
+    has_updates = any(r.update_available for r in results)
+    if has_errors:
+        sys.exit(2)
+    elif has_updates:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

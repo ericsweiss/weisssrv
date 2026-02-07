@@ -139,9 +139,11 @@ Each download client has its own VPN configuration via ConfigMap:
 # nzbget-vpn-config / qbittorrent-vpn-config
 data:
   vpn_enabled: "true"           # "true" or "false"
-  vpn_provider: "privado"       # "privado" or "vpn unlimited"
+  vpn_provider: "privado"       # "privado" or "vpn unlimited" (Gluetun format)
   server_countries: "Netherlands"
 ```
+
+**Note**: The `task downloads:vpn` command accepts `PROVIDER=vpn-unlimited` (with hyphen) for CLI convenience and automatically normalizes it to `"vpn unlimited"` (with space) in the ConfigMap, which is the format Gluetun expects.
 
 ## Storage Layout
 
