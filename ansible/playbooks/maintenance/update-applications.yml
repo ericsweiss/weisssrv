@@ -280,14 +280,10 @@
         tailscale_installed: "{{ current_tailscale_version.stdout_lines[0] | default('') }}"
       when: current_tailscale_version.rc == 0
 
-    # NOTE: We intentionally compare the base version from `tailscale version`
-    # (e.g., "1.94.1") against our pinned tailscale_version, not the full Debian
-    # package version (e.g., "1.94.1-2"). This means Debian revision-only bumps
-    # (packaging fixes, not functional changes) won't trigger an upgrade.
-    # This is acceptable for a homelab -- revision bumps rarely matter for
-    # Tailscale and avoiding unnecessary restarts preserves VPN stability.
-    # If revision-level tracking is ever needed, compare against:
-    #   dpkg-query -W -f='${Version}' tailscale | sed 's/^//'
+    # NOTE: We compare the version from `tailscale version` (e.g., "1.94.1")
+    # against our pinned tailscale_version. Tailscale's official apt packages
+    # use the base version directly without Debian revision suffixes, so this
+    # comparison works correctly for determining when upgrades are needed.
     - name: Display version info
       ansible.builtin.debug:
         msg: "Current: {{ tailscale_installed | default('not detected') }}, Target: {{ tailscale_version }}"
