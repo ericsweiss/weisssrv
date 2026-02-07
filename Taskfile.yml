@@ -31,6 +31,21 @@ tasks:
     cmds:
       - ansible-lint playbooks/ roles/
 
+  ansible:test:
+    desc: Run Molecule tests for Ansible roles (all or specific)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      # Check for molecule in pyenv (preferred) or system python
+      # Matches the logic in test-all-roles.sh
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running. Start Docker Desktop first."
+    cmds:
+      - ./test-all-roles.sh {{.CLI_ARGS}}
+
   # === Deployment Tasks ===
   deploy:all:
     desc: Deploy base infrastructure (Proxmox, DNS, NAS, mail - excludes k3s)
@@ -48,6 +63,13 @@ tasks:
       SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    preconditions:
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed. Install Ansible first (pip install ansible or brew install ansible), then run: task ansible:install-collections"
+      - sh: command -v op
+        msg: "1Password CLI is not installed. Install via: https://developer.1password.com/docs/cli/get-started/"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml {{.CLI_ARGS}}
 
@@ -164,19 +186,46 @@ tasks:
     desc: Fetch kubeconfig from k3s cluster
     cmds:
       - |
-        ssh eric@192.168.0.222 "sudo cat /etc/rancher/k3s/k3s.yaml" | \
+        echo "Fetching kubeconfig from k3s server..."
+        SSH_STDERR=$(mktemp)
+        KUBECONFIG_DATA=$(ssh eric@192.168.0.222 "sudo cat /etc/rancher/k3s/k3s.yaml" 2>"$SSH_STDERR")
+        SSH_RC=$?
+        if [ $SSH_RC -ne 0 ]; then
+          echo "ERROR: Failed to fetch kubeconfig from k3s server (exit code: $SSH_RC)"
+          cat "$SSH_STDERR"
+          rm -f "$SSH_STDERR"
+          exit 1
+        fi
+        rm -f "$SSH_STDERR"
+        if [ -z "$KUBECONFIG_DATA" ]; then
+          echo "ERROR: Kubeconfig data is empty"
+          exit 1
+        fi
+        echo "$KUBECONFIG_DATA" | \
           sed 's/127.0.0.1/192.168.0.161/g; s/0.0.0.0/192.168.0.161/g' > ~/.kube/config-k3s
-        echo "Kubeconfig saved to ~/.kube/config-k3s"
+        chmod 600 ~/.kube/config-k3s
+        echo "Kubeconfig saved to ~/.kube/config-k3s (permissions: 600)"
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
 
   # === K3s Workload Deployment Tasks ===
   k3s:deploy-metallb:
     desc: Deploy MetalLB load balancer with IP pools
     dir: ./kubernetes
+    vars:
+      METALLB_VERSION:
+        sh: grep 'metallb:' ../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: command -v helm
+        msg: "helm is not installed. Install via: https://helm.sh/docs/intro/install/"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
     cmds:
+      - echo "Deploying MetalLB version {{.METALLB_VERSION}}"
       - helm repo add metallb https://metallb.github.io/metallb --force-update
       - helm repo update metallb
-      - helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace -f bootstrap/metallb/values.yaml --wait
+      - helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace -f bootstrap/metallb/values.yaml --version "{{.METALLB_VERSION}}" --wait
       - |
         echo "Waiting for MetalLB webhook to be ready..."
         kubectl wait --namespace metallb-system \
@@ -189,24 +238,32 @@ tasks:
   k3s:deploy-traefik:
     desc: Deploy Traefik ingress controller
     dir: ./kubernetes/apps/traefik
+    vars:
+      TRAEFIK_VERSION:
+        sh: grep 'traefik:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
     cmds:
+      - echo "Deploying Traefik chart version {{.TRAEFIK_VERSION}}"
       - helm repo add traefik https://traefik.github.io/charts --force-update
       - helm repo update traefik
       - kubectl apply -f namespace.yaml
-      - helm upgrade --install traefik traefik/traefik -n traefik -f values.yaml --wait
+      - helm upgrade --install traefik traefik/traefik -n traefik -f values.yaml --version "{{.TRAEFIK_VERSION}}" --wait
       - kubectl apply -f traefik-internal-service.yaml
       - echo "Traefik deployed successfully"
 
   k3s:deploy-cert-manager:
     desc: Deploy cert-manager with Let's Encrypt ClusterIssuer
     dir: ./kubernetes/apps/cert-manager
+    vars:
+      CERT_MANAGER_VERSION:
+        sh: grep 'cert_manager:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
     env:
       CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
     cmds:
+      - echo "Deploying cert-manager version {{.CERT_MANAGER_VERSION}}"
       - helm repo add jetstack https://charts.jetstack.io --force-update
       - helm repo update jetstack
       - kubectl apply -f namespace.yaml
-      - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --wait
+      - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --version "{{.CERT_MANAGER_VERSION}}" --wait
       - |
         echo "Creating Cloudflare API token secret..."
         op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
@@ -219,9 +276,13 @@ tasks:
   k3s:deploy-external-dns:
     desc: Deploy external-dns for automatic Cloudflare DNS management
     dir: ./kubernetes/apps/external-dns
+    vars:
+      EXTERNAL_DNS_VERSION:
+        sh: grep 'external_dns:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
     env:
       CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
     cmds:
+      - echo "Deploying external-dns chart version {{.EXTERNAL_DNS_VERSION}}"
       - helm repo add external-dns https://kubernetes-sigs.github.io/external-dns --force-update
       - helm repo update external-dns
       - kubectl apply -f namespace.yaml
@@ -231,7 +292,7 @@ tasks:
           --namespace=external-dns \
           --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
           --dry-run=client -o yaml | kubectl apply -f -'
-      - helm upgrade --install external-dns external-dns/external-dns -n external-dns -f values.yaml --wait
+      - helm upgrade --install external-dns external-dns/external-dns -n external-dns -f values.yaml --version "{{.EXTERNAL_DNS_VERSION}}" --wait
       - echo "external-dns deployed successfully"
 
   k3s:deploy-ddns:
@@ -262,6 +323,8 @@ tasks:
     vars:
       AUTHENTIK_VERSION:
         sh: grep '^authentik_version:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
+      POSTGRESQL_VERSION:
+        sh: grep '^postgresql_version:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
     env:
       AUTHENTIK_SECRET_KEY: op://Homelab/Authentik Secrets/secret-key
       AUTHENTIK_POSTGRESQL_PASSWORD: op://Homelab/Authentik Secrets/postgresql-password
@@ -294,15 +357,49 @@ tasks:
           --set authentik.secret_key="$AUTHENTIK_SECRET_KEY" \
           --set server.image.tag="{{.AUTHENTIK_VERSION}}" \
           --set worker.image.tag="{{.AUTHENTIK_VERSION}}" \
+          --set postgresql.image.tag="{{.POSTGRESQL_VERSION}}" \
           --wait --timeout 10m'
       - |
         echo "Waiting for Authentik server to be ready..."
-        kubectl wait --namespace authentik \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/name=authentik,app.kubernetes.io/component=server \
-          --timeout=300s
+        kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
       - kubectl apply -k .
       - echo "Authentik deployed successfully"
+
+  authentik:status:
+    desc: Show Authentik SSO status
+    cmds:
+      - echo "=== Authentik Namespace ==="
+      - kubectl get pods -n authentik -o wide
+      - echo ""
+      - echo "=== Services ==="
+      - kubectl get svc -n authentik
+      - echo ""
+      - echo "=== PVCs ==="
+      - kubectl get pvc -n authentik
+      - echo ""
+      - echo "=== IngressRoutes ==="
+      - kubectl get ingressroute -n authentik
+
+  authentik:logs:
+    desc: "View Authentik logs (task authentik:logs [COMPONENT=server])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "server"}}'
+    cmds:
+      - |
+        COMPONENT="{{.COMPONENT}}"
+        echo "=== Authentik $COMPONENT logs ==="
+        kubectl logs -n authentik -l app.kubernetes.io/name=authentik,app.kubernetes.io/component=$COMPONENT -f
+
+  authentik:restart:
+    desc: Restart Authentik server and worker
+    cmds:
+      - echo "Restarting Authentik..."
+      - kubectl rollout restart deployment -n authentik -l app.kubernetes.io/name=authentik
+      - kubectl rollout restart statefulset -n authentik -l app.kubernetes.io/name=authentik
+      - echo "Waiting for rollout to complete..."
+      - kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
+      - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s
+      - kubectl rollout status statefulset/authentik-postgresql -n authentik --timeout=300s
 
   k3s:deploy-workloads:
     desc: Deploy ALL k3s platform workloads in correct order
@@ -316,8 +413,27 @@ tasks:
       - task: k3s:deploy-authentik
       - echo "K3s platform workloads deployed successfully"
 
+  k3s:backup:
+    desc: Create etcd snapshot on k3s server
+    cmds:
+      - |
+        SNAPSHOT_NAME="manual-$(date +%Y%m%d-%H%M%S)"
+        echo "Creating etcd snapshot: $SNAPSHOT_NAME"
+        ssh eric@192.168.0.222 "sudo k3s etcd-snapshot save --name $SNAPSHOT_NAME"
+        echo "Snapshot created successfully"
+        echo ""
+        echo "To list snapshots:"
+        echo "  ssh eric@192.168.0.222 'sudo k3s etcd-snapshot ls'"
+        echo ""
+        echo "Snapshots are stored in: /var/lib/rancher/k3s/server/db/snapshots/"
+
   k3s:status:
     desc: Show k3s cluster and workload status
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed. Install via: https://kubernetes.io/docs/tasks/tools/"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
     cmds:
       - echo "=== K3s Cluster Status ==="
       - kubectl get nodes -o wide
@@ -349,20 +465,15 @@ tasks:
       - kubectl get ingressroute -A 2>/dev/null || echo "  None configured"
 
   # === Maintenance Tasks ===
+  # --- Base Infrastructure ---
   maintenance:update-packages:
     desc: Update OS packages on all hosts (rolling, interactive)
     dir: "{{.ANSIBLE_DIR}}"
     cmds:
       - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-packages.yml {{.CLI_ARGS}}
 
-  maintenance:update-packages-auto:
-    desc: Update OS packages on all hosts (rolling, auto-reboot)
-    dir: "{{.ANSIBLE_DIR}}"
-    cmds:
-      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-packages.yml -e auto_reboot=true {{.CLI_ARGS}}
-
   maintenance:update-applications:
-    desc: Update homelab applications to versions in versions.yml
+    desc: Update base applications (AdGuard, Tailscale, Plex, Ansible collections)
     dir: "{{.ANSIBLE_DIR}}"
     env:
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
@@ -370,13 +481,14 @@ tasks:
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
       ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml {{.CLI_ARGS}}
 
   maintenance:update-full:
-    desc: Full system update - packages + applications (rolling, interactive)
+    desc: Full base update - OS packages + applications (rolling, interactive)
     dir: "{{.ANSIBLE_DIR}}"
     env:
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
@@ -384,13 +496,14 @@ tasks:
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
       ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml {{.CLI_ARGS}}
 
   maintenance:update-full-auto:
-    desc: Full system update - packages + applications (rolling, auto-reboot)
+    desc: Full base update - OS packages + applications (rolling, auto-reboot)
     dir: "{{.ANSIBLE_DIR}}"
     env:
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
@@ -398,10 +511,111 @@ tasks:
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
       ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
+      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml -e auto_reboot=true {{.CLI_ARGS}}
+
+  maintenance:update-plex:
+    desc: Update Plex Media Server only (apt latest)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-applications.yml --limit plex {{.CLI_ARGS}}
+
+  # --- K3s Cluster ---
+  maintenance:update-k3s-nodes:
+    desc: Rolling k3s node upgrades (drain/cordon/upgrade/uncordon)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-k3s-nodes.yml {{.CLI_ARGS}}
+
+  maintenance:update-helm-charts:
+    desc: Update platform Helm charts (MetalLB, Traefik, cert-manager, external-dns)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-helm-charts.yml {{.CLI_ARGS}}
+
+  maintenance:update-k3s-workloads:
+    desc: Update k3s workload images (Authentik, downloads, recipes namespaces)
+    cmds:
+      - echo "=== Updating Authentik SSO ==="
+      - echo "Re-deploying Authentik with current version from group_vars/all.yml..."
+      - task: k3s:deploy-authentik
+      - echo ""
+      - echo "=== Updating Downloads namespace workloads ==="
+      - echo "Re-applying manifests with current versions from group_vars/all.yml..."
+      - task: downloads:deploy
+      - echo ""
+      - echo "=== Updating Recipes namespace workloads ==="
+      - echo "Re-applying manifests with current versions from group_vars/all.yml..."
+      - task: recipes:deploy
+      - echo ""
+      - echo "Workload updates complete. Verify with 'task k3s:status'"
+
+  # --- Version Discovery Tasks ---
+  maintenance:check-versions:
+    desc: Check all services for available version updates
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    cmds:
+      - op run -- python3 ./scripts/check-versions.py {{.CLI_ARGS}}; RC=$?; [ $RC -le 1 ] || exit $RC
+
+  maintenance:check-versions-json:
+    desc: Check all versions and output as JSON
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    cmds:
+      - op run -- python3 ./scripts/check-versions.py --json {{.CLI_ARGS}}; RC=$?; [ $RC -le 1 ] || exit $RC
+
+  maintenance:update-version:
+    desc: "Update a single service version in all.yml (task maintenance:update-version SERVICE=gluetun)"
+    vars:
+      SERVICE: '{{.SERVICE | default ""}}'
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    cmds:
+      - |
+        SERVICE="{{.SERVICE}}"
+        if [ -z "$SERVICE" ]; then
+          echo "Usage: task maintenance:update-version SERVICE=<name>"
+          echo ""
+          echo "Available services:"
+          op run -- python3 ./scripts/check-versions.py --list
+          exit 1
+        fi
+        op run -- python3 ./scripts/check-versions.py --update "$SERVICE"
+
+  maintenance:update-all-versions:
+    desc: Update all outdated service versions in all.yml (review changes before deploying)
+    env:
+      GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    cmds:
+      - op run -- python3 ./scripts/check-versions.py --update-all
+
+  maintenance:update-cluster:
+    desc: Complete k3s cluster update (nodes + Helm charts + all workloads)
+    cmds:
+      - echo "==================================="
+      - echo "K3s Cluster Full Update"
+      - echo "==================================="
+      - echo ""
+      - echo "Phase 1 - Update k3s nodes (rolling)"
+      - task: maintenance:update-k3s-nodes
+      - echo ""
+      - echo "Phase 2 - Update Helm charts"
+      - task: maintenance:update-helm-charts
+      - echo ""
+      - echo "Phase 3 - Update workload images (Authentik, downloads, recipes)"
+      - task: maintenance:update-k3s-workloads
+      - echo ""
+      - echo "==================================="
+      - echo "Cluster update complete!"
+      - echo "==================================="
+      - echo ""
+      - echo "Verify cluster status with 'task k3s:status'"
 
   # === Disaster Recovery Tasks ===
   disaster-recovery:storage-bootstrap:
@@ -430,22 +644,34 @@ tasks:
   terraform:plan:
     desc: Plan Terraform changes
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    env:
+      TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
+      TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
+    preconditions:
+      - sh: command -v terraform
+        msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
-      - |
-        terraform plan \
-          -var="cloudflare_api_token=$(op read 'op://Homelab/Cloudflare DNS Token/credential')" \
-          -var="cloudflare_account_id=$(op read 'op://Homelab/Cloudflare DNS Token/username')" \
-          {{.CLI_ARGS}}
+      - op run -- terraform plan {{.CLI_ARGS}}
 
   terraform:apply:
     desc: Apply Terraform changes
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    env:
+      TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
+      TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
+    preconditions:
+      - sh: command -v terraform
+        msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
-      - |
-        terraform apply \
-          -var="cloudflare_api_token=$(op read 'op://Homelab/Cloudflare DNS Token/credential')" \
-          -var="cloudflare_account_id=$(op read 'op://Homelab/Cloudflare DNS Token/username')" \
-          {{.CLI_ARGS}}
+      - op run -- terraform apply {{.CLI_ARGS}}
 
   terraform:validate:
     desc: Validate Terraform configuration
@@ -486,29 +712,22 @@ tasks:
       - op account get
 
   secrets:show:
-    desc: Display secret references (not values)
+    desc: Display secret references (not values) - scans Taskfile and playbooks
     cmds:
       - |
-        echo "Secret references in use:"
-        echo "  - op://Homelab/Cloudflare DNS Token/credential"
-        echo "  - op://Homelab/Cloudflare DNS Token/account_id"
-        echo "  - op://Homelab/SMTP Relay Gmail/password"
-        echo "  - op://Homelab/SMTP Relay Gmail/username"
-        echo "  - op://Homelab/AdGuard Home/password"
-        echo "  - op://Homelab/Tailscale Auth Key/credential"
-        echo "  - op://Homelab/PrivadoVPN Credentials/openvpn-user"
-        echo "  - op://Homelab/PrivadoVPN Credentials/openvpn-password"
-        echo "  - op://Homelab/VPN Unlimited Credentials/openvpn-user"
-        echo "  - op://Homelab/VPN Unlimited Credentials/openvpn-password"
-        echo "  - op://Homelab/Mealie Secrets/postgres-password"
-        echo "  - op://Homelab/Mealie SSO/oidc-client-id"
-        echo "  - op://Homelab/Mealie SSO/oidc-client-secret"
-        echo "  - op://Homelab/OpenAI API Key/api-key"
-        echo "  - op://Homelab/Bar Assistant Secrets/meilisearch-master-key"
-        echo "  - op://Homelab/Bar Assistant SSO/authentik-client-id"
-        echo "  - op://Homelab/Bar Assistant SSO/authentik-client-secret"
-        echo "  - op://Homelab/Home Assistant SSO/authentik-client-id"
-        echo "  - op://Homelab/Home Assistant SSO/authentik-client-secret"
+        echo "Secret references in use (from Taskfile.yml):"
+        echo ""
+        # Extract unique 1Password references from Taskfile
+        # Format: op://Vault/Item Name/field (item names and fields can contain spaces)
+        # Stop at quotes, parentheses, or backticks; trim trailing whitespace
+        grep -oE "op://Homelab/[^\"'\`\)\(]+" Taskfile.yml | sed 's/[[:space:]]*$//' | grep -E "^op://Homelab/[^/]+/[^/]+$" | sort -u | sed 's/^/  - /'
+        echo ""
+        echo "Secret references in playbooks (if any):"
+        # Also check ansible playbooks for 1Password references
+        find ansible/playbooks -name "*.yml" -type f -exec grep -hoE "op://Homelab/[^\"'\`\)\(]+" {} \; 2>/dev/null | sed 's/[[:space:]]*$//' | grep -E "^op://Homelab/[^/]+/[^/]+$" | sort -u | sed 's/^/  - /' || echo "  (none found)"
+        echo ""
+        echo "To verify all secrets exist in 1Password:"
+        echo "  op whoami && op item list --vault Homelab"
 
   # === Download Clients / Media Stack Tasks ===
   # New architecture: Each download client (nzbget, qbittorrent) runs independently
@@ -517,6 +736,15 @@ tasks:
   downloads:deploy:
     desc: Deploy download clients and media management stack
     dir: ./kubernetes/apps/download-clients
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: command -v envsubst
+        msg: "envsubst is not installed. Install via: brew install gettext (macOS) or apt install gettext-base (Linux)"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
     cmds:
       - kubectl apply -f namespace.yaml
       - |
@@ -577,17 +805,61 @@ tasks:
         kubectl apply -f ingress-routes-ha-bypass.yaml
       - |
         echo "Waiting for NZBGet to be ready..."
-        kubectl wait --namespace downloads \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/name=nzbget \
-          --timeout=300s || echo "Warning: NZBGet not ready yet"
+        kubectl rollout status deployment/nzbget -n downloads --timeout=300s || echo "Warning: NZBGet not ready yet"
       - |
         echo "Waiting for qBittorrent to be ready..."
-        kubectl wait --namespace downloads \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/name=qbittorrent \
-          --timeout=300s || echo "Warning: qBittorrent not ready yet"
+        kubectl rollout status deployment/qbittorrent -n downloads --timeout=300s || echo "Warning: qBittorrent not ready yet"
       - echo "Download clients and media stack deployed successfully"
+
+  downloads:check:
+    desc: Show what would change in downloads namespace (dry-run)
+    dir: ./kubernetes/apps/download-clients
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: command -v envsubst
+        msg: "envsubst is not installed"
+      - sh: kubectl cluster-info >/dev/null 2>&1
+        msg: "Cannot connect to Kubernetes cluster. Check kubeconfig and connectivity."
+    cmds:
+      - |
+        echo "Checking downloads namespace for changes..."
+        echo ""
+        # Read versions from centralized configuration
+        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+        export GLUETUN_VERSION=$(grep '^gluetun_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export NZBGET_VERSION=$(grep '^nzbget_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export QBITTORRENT_VERSION=$(grep '^qbittorrent_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export PROWLARR_VERSION=$(grep '^prowlarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export SONARR_VERSION=$(grep '^sonarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export RADARR_VERSION=$(grep '^radarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export LIDARR_VERSION=$(grep '^lidarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export PULSARR_VERSION=$(grep '^pulsarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+
+        # Check manifests with version substitution
+        # kubectl diff exit codes: 0=no changes, 1=changes found, >1=error
+        # Errors (exit >1) are non-fatal here since resources may not exist yet,
+        # but we report them clearly. Cluster connectivity is validated by precondition.
+        ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
+        for file in nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml; do
+          echo "--- Checking $file ---"
+          set +e
+          diff_output=$(envsubst "$ENVSUBST_VARS" < "$file" | kubectl diff -f - 2>&1)
+          diff_exit=$?
+          set -e
+          if [ $diff_exit -eq 0 ]; then
+            echo "(no changes)"
+          elif [ $diff_exit -eq 1 ]; then
+            echo "$diff_output"
+            echo "(changes detected - deploy to apply)"
+          else
+            echo "WARNING: kubectl diff failed (exit $diff_exit): resource may not exist yet"
+            echo "$diff_output" | head -5
+          fi
+          echo ""
+        done
+
+        echo "Check complete. Use 'task downloads:deploy' to apply changes."
 
   downloads:status:
     desc: Show status of download clients and media stack
@@ -670,45 +942,23 @@ tasks:
 
         CONFIGMAP="${APP}-vpn-config"
 
-        # Update credentials if enabling VPN
+        # Normalize provider name for Gluetun (expects "vpn unlimited" with space, not "vpn-unlimited")
+        GLUETUN_PROVIDER="$PROVIDER"
+        case "$PROVIDER" in
+          vpn-unlimited|keepsolid)
+            GLUETUN_PROVIDER="vpn unlimited"
+            ;;
+        esac
+
+        # Update credentials if enabling VPN (calls downloads:vpn-credentials)
         if [ "$ENABLED" = "true" ]; then
-          # Validate 1Password is signed in
-          if ! op whoami &>/dev/null; then
-            echo "ERROR: 1Password CLI not signed in. Run 'eval \$(op signin)' first."
-            exit 1
-          fi
-          case "$PROVIDER" in
-            privado)
-              echo "Updating VPN credentials (PrivadoVPN)..."
-              VPN_USER=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')
-              VPN_PASS=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')
-              ;;
-            vpn-unlimited|keepsolid)
-              echo "Updating VPN credentials (VPN Unlimited)..."
-              VPN_USER=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-user')
-              VPN_PASS=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-password')
-              PROVIDER="vpn unlimited"
-              ;;
-            *)
-              echo "ERROR: Unknown provider: $PROVIDER"
-              echo "Supported providers: privado, vpn-unlimited"
-              exit 1
-              ;;
-          esac
-          # Validate credentials are not empty
-          if [ -z "$VPN_USER" ] || [ -z "$VPN_PASS" ]; then
-            echo "ERROR: VPN credentials are empty. Check 1Password item."
-            exit 1
-          fi
-          kubectl create secret generic vpn-credentials \
-            --namespace=downloads \
-            --from-literal=openvpn-user="$VPN_USER" \
-            --from-literal=openvpn-password="$VPN_PASS" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Updating VPN credentials for provider: $PROVIDER"
+          # Use task to update credentials (avoids code duplication)
+          task downloads:vpn-credentials PROVIDER="$PROVIDER"
         fi
 
-        # Update the ConfigMap
-        kubectl patch configmap "$CONFIGMAP" -n downloads -p "{\"data\":{\"vpn_enabled\":\"$ENABLED\",\"vpn_provider\":\"$PROVIDER\"}}"
+        # Update the ConfigMap (use normalized provider name for Gluetun)
+        kubectl patch configmap "$CONFIGMAP" -n downloads -p "{\"data\":{\"vpn_enabled\":\"$ENABLED\",\"vpn_provider\":\"$GLUETUN_PROVIDER\"}}"
 
         # Restart the deployment
         kubectl rollout restart deployment/"$APP" -n downloads
@@ -863,13 +1113,22 @@ tasks:
   recipes:deploy:
     desc: Deploy Mealie and Bar Assistant recipe management stack
     dir: ./kubernetes/apps/recipes
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: command -v envsubst
+        msg: "envsubst is not installed. Install via: brew install gettext (macOS) or apt install gettext-base (Linux)"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
     cmds:
       - kubectl apply -f namespace.yaml
       - kubectl apply -f storage.yaml
       - |
         # Create secrets from 1Password using op run wrapper
         # op run handles authentication automatically (prompts if needed)
-        op run --no-masking -- sh -c '
+        op run -- sh -c '
           echo "Creating secrets from 1Password..."
 
           # Read all secrets from 1Password (required secrets - no fallbacks)
@@ -951,18 +1210,19 @@ tasks:
         echo "Reading versions from centralized configuration..."
         VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
         export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
         export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
         export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
 
-        echo "Versions: Mealie=$MEALIE_VERSION, Bar Assistant=$BAR_ASSISTANT_VERSION, Salt Rim=$SALT_RIM_VERSION"
+        echo "Versions: Mealie=$MEALIE_VERSION (PostgreSQL=$MEALIE_POSTGRESQL_VERSION), Bar Assistant=$BAR_ASSISTANT_VERSION, Salt Rim=$SALT_RIM_VERSION"
 
-        if [ -z "$MEALIE_VERSION" ] || [ -z "$BAR_ASSISTANT_VERSION" ] || [ -z "$SALT_RIM_VERSION" ]; then
+        if [ -z "$MEALIE_VERSION" ] || [ -z "$MEALIE_POSTGRESQL_VERSION" ] || [ -z "$BAR_ASSISTANT_VERSION" ] || [ -z "$SALT_RIM_VERSION" ]; then
           echo "ERROR: One or more version variables are empty. Check $VARS_FILE format."
           exit 1
         fi
 
         # Apply manifests with version substitution
-        ENVSUBST_VARS='$MEALIE_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
+        ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
         envsubst "$ENVSUBST_VARS" < mealie.yaml | kubectl apply -f -
         envsubst "$ENVSUBST_VARS" < bar-assistant.yaml | kubectl apply -f -
 
@@ -970,23 +1230,60 @@ tasks:
         kubectl apply -f ingress-routes.yaml
       - |
         echo "Waiting for Mealie PostgreSQL to be ready..."
-        kubectl wait --namespace recipes \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/name=mealie-postgres \
-          --timeout=180s || echo "Warning: Mealie PostgreSQL not ready yet"
+        kubectl rollout status deployment/mealie-postgres -n recipes --timeout=180s || echo "Warning: Mealie PostgreSQL not ready yet"
       - |
         echo "Waiting for Mealie to be ready..."
-        kubectl wait --namespace recipes \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/name=mealie \
-          --timeout=300s || echo "Warning: Mealie not ready yet"
+        kubectl rollout status deployment/mealie -n recipes --timeout=300s || echo "Warning: Mealie not ready yet"
       - |
         echo "Waiting for Bar Assistant to be ready..."
-        kubectl wait --namespace recipes \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/name=bar-assistant \
-          --timeout=300s || echo "Warning: Bar Assistant not ready yet"
+        kubectl rollout status deployment/bar-assistant -n recipes --timeout=300s || echo "Warning: Bar Assistant not ready yet"
       - echo "Recipe management stack deployed successfully"
+
+  recipes:check:
+    desc: Show what would change in recipes namespace (dry-run)
+    dir: ./kubernetes/apps/recipes
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: command -v envsubst
+        msg: "envsubst is not installed"
+      - sh: kubectl cluster-info >/dev/null 2>&1
+        msg: "Cannot connect to Kubernetes cluster. Check kubeconfig and connectivity."
+    cmds:
+      - |
+        echo "Checking recipes namespace for changes..."
+        echo ""
+        # Read versions from centralized configuration
+        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+        export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+        export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+
+        # Check manifests with version substitution
+        # kubectl diff exit codes: 0=no changes, 1=changes found, >1=error
+        # Errors (exit >1) are non-fatal here since resources may not exist yet,
+        # but we report them clearly. Cluster connectivity is validated by precondition.
+        ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
+        for file in mealie.yaml bar-assistant.yaml; do
+          echo "--- Checking $file ---"
+          set +e
+          diff_output=$(envsubst "$ENVSUBST_VARS" < "$file" | kubectl diff -f - 2>&1)
+          diff_exit=$?
+          set -e
+          if [ $diff_exit -eq 0 ]; then
+            echo "(no changes)"
+          elif [ $diff_exit -eq 1 ]; then
+            echo "$diff_output"
+            echo "(changes detected - deploy to apply)"
+          else
+            echo "WARNING: kubectl diff failed (exit $diff_exit): resource may not exist yet"
+            echo "$diff_output" | head -5
+          fi
+          echo ""
+        done
+
+        echo "Check complete. Use 'task recipes:deploy' to apply changes."
 
   recipes:status:
     desc: Show status of recipe management stack
@@ -1151,11 +1448,11 @@ tasks:
         NAME="{{.NAME}}"
         DESC="{{.DESC}}"
         echo "Creating snapshot '$NAME' of Home Assistant VM..."
-        ssh pve-nas-01 "sudo qm snapshot 154 $NAME --description '$DESC'"
+        ssh pve-nas-01 "sudo qm snapshot 154 '${NAME}' --description '${DESC}'"
         echo "Snapshot created successfully"
         echo ""
         echo "To list snapshots: ssh pve-nas-01 'sudo qm listsnapshot 154'"
-        echo "To rollback: ssh pve-nas-01 'sudo qm rollback 154 $NAME'"
+        echo "To rollback: ssh pve-nas-01 \"sudo qm rollback 154 '${NAME}'\""
 
   home-assistant:deploy:
     desc: Deploy Home Assistant ingress and configuration
