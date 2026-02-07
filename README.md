@@ -157,7 +157,6 @@ Initial 3-node cluster with:
 - **external-dns**: Automatic Cloudflare DNS
 - **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
-  - Pinned to 2025.12.1 (regression bug in 2025.12.2)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 

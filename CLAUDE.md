@@ -155,11 +155,24 @@ task home-assistant:vm-restart    # Restart the Home Assistant VM
 task home-assistant:console       # SSH to Home Assistant (requires SSH add-on)
 task home-assistant:snapshot      # Create Proxmox VM snapshot
 
-# Maintenance
-task maintenance:update-full      # Full update (OS + apps, interactive)
-task maintenance:update-full-auto # Full update (OS + apps, auto-reboot)
-task maintenance:update-packages  # OS packages only
-task maintenance:update-applications # Applications only
+# Version discovery (automated update checking)
+task maintenance:check-versions        # Check all 24 managed services for available updates
+task maintenance:check-versions-json   # JSON output for scripting
+task maintenance:update-version        # Update single service: SERVICE=gluetun
+task maintenance:update-all-versions   # Update all outdated versions in all.yml
+
+# Maintenance (Base Infrastructure)
+task maintenance:update-full           # Full base update (OS + apps, interactive)
+task maintenance:update-full-auto      # Full base update (OS + apps, auto-reboot)
+task maintenance:update-packages       # OS packages only
+task maintenance:update-applications   # Applications only (AdGuard, Tailscale, Plex)
+task maintenance:update-plex           # Plex Media Server only
+
+# Maintenance (K3s Cluster)
+task maintenance:update-k3s-nodes      # Rolling k3s node upgrades (drain/cordon)
+task maintenance:update-helm-charts    # Update platform Helm charts
+task maintenance:update-k3s-workloads  # Update container images (Authentik, downloads, recipes)
+task maintenance:update-cluster        # Complete cluster update (nodes + charts + workloads)
 
 # Terraform
 task terraform:init               # Initialize Terraform
@@ -236,6 +249,7 @@ In vault "Homelab":
 - **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
 - **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
+- **GitHub Token** - credential (personal access token for version checker API rate limits)
 
 ### Using 1Password
 
@@ -339,14 +353,57 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
 Application versions centralized in `ansible/inventories/prod/group_vars/all.yml`:
 
 ```yaml
+# Base infrastructure
 adguard_home_version: "0.107.71"
 adguardhome_sync_version: "0.8.2"
-tailscale_version: "latest"
-acme_version: "latest"
-debian_version: "13"  # trixie
+k3s_version: "v1.35.0+k3s3"
+kube_vip_version: "v1.0.4"
+authentik_version: "2025.12.3"
+plex_version: "1.42.2.10156-f737b826c"  # apt pinned (or "latest" for auto-update)
+home_assistant_version: "17.0"       # HAOS, manual updates
+
+# Helm charts (k3s platform)
+helm_chart_versions:
+  metallb: "0.15.3"
+  traefik: "39.1.0-ea.1"
+  cert_manager: "v1.19.3"
+  external_dns: "1.20.0"
+
+# Download clients (pinned to deployed versions)
+gluetun_version: "v3.41.0"
+nzbget_version: "26.0"
+qbittorrent_version: "5.1.4"
+prowlarr_version: "2.3.0.5236"
+sonarr_version: "4.0.16.2944"
+radarr_version: "6.0.4.10291"
+lidarr_version: "3.1.0.4875"
+pulsarr_version: "0.10.1"
+
+# Recipe stack
+mealie_version: "v3.10.2"
+bar_assistant_version: "5.13.1"
+salt_rim_version: "4.14.0"
 ```
 
-Update versions here, then run `task maintenance:update-full` to upgrade.
+**Automated version discovery** (`scripts/check-versions.py`):
+- Checks 24 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
+- Run `task maintenance:check-versions` to see available updates
+- Run `task maintenance:update-version SERVICE=<name>` to update a single version in all.yml
+- Run `task maintenance:update-all-versions` to update all outdated versions
+- Results cached for 1 hour in `.version-cache/`; set `GITHUB_TOKEN` for higher API rate limits
+
+**Update strategy:**
+1. **Check for updates:** `task maintenance:check-versions`
+2. **Update versions in all.yml:** `task maintenance:update-version SERVICE=<name>` or `task maintenance:update-all-versions`
+3. **Deploy:** Run appropriate task (see `docs/12-runbooks.md` for update workflow)
+
+**Version pinning philosophy:**
+- k3s, Authentik, Helm charts: Pinned to specific versions for stability
+- Download/recipe containers: Pinned to specific stable tags (no "latest") for reproducible deployments
+- Bar Assistant / Salt Rim: Pinned to specific versions (check for breaking changes on major bumps)
+- Tailscale: Pinned to specific apt version
+- Plex: Pinned to specific apt version (set to "latest" for auto-update behavior)
+- Home Assistant: Manual updates via HAOS UI (documented version only)
 
 ## Storage Architecture (pve-nas-01)
 

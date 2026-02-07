@@ -221,10 +221,10 @@ Proxmox includes enterprise repositories by default. For homelab use, switch to 
 
 ```bash
 # Disable enterprise repo
-echo "# deb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise" > /etc/apt/sources.list.d/pve-enterprise.list
+echo "# deb https://enterprise.proxmox.com/debian/pve trixie pve-enterprise" > /etc/apt/sources.list.d/pve-enterprise.list
 
 # Add no-subscription repo
-echo "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list
+echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list
 
 # Update and upgrade
 apt update

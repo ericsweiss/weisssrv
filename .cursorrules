@@ -114,12 +114,15 @@ proxmox:
 
 ### Update Application Version
 
-1. Edit `ansible/inventories/prod/group_vars/all.yml`:
-   ```yaml
-   adguard_home_version: "0.107.53"  # Update version
-   ```
-2. Run: `task maintenance:update-full`
-3. Verify: `task deploy:verify`
+1. Check for updates: `task maintenance:check-versions`
+2. Update version in all.yml: `task maintenance:update-version SERVICE=<name>`
+   (or edit `ansible/inventories/prod/group_vars/all.yml` manually)
+3. Deploy the update:
+   - Base apps (AdGuard, Tailscale, Plex): `task maintenance:update-applications`
+   - K3s workloads: `task downloads:deploy` / `task recipes:deploy` / `task k3s:deploy-authentik`
+   - K3s nodes: `task maintenance:update-k3s-nodes`
+   - Helm charts: `task maintenance:update-helm-charts`
+4. Verify: `task deploy:verify` and/or `task k3s:status`
 
 ### Modify Configuration
 
@@ -137,9 +140,22 @@ task deploy:all                      # Full deployment
 task deploy:verify                   # Verify services
 task deploy:base                     # Base config only
 
-# Maintenance
-task maintenance:update-full         # Update OS + apps (interactive)
-task maintenance:update-full-auto    # Update OS + apps (auto-reboot)
+# Version Discovery
+task maintenance:check-versions      # Check all services for updates
+task maintenance:update-version SERVICE=<name>  # Update single version in all.yml
+task maintenance:update-all-versions # Update all outdated versions
+
+# Maintenance (Base Infrastructure)
+task maintenance:update-full         # Full base update (OS + apps, interactive)
+task maintenance:update-full-auto    # Full base update (OS + apps, auto-reboot)
+task maintenance:update-applications # Base apps only (AdGuard, Tailscale, Plex)
+task maintenance:update-plex         # Plex Media Server only
+
+# Maintenance (K3s Cluster)
+task maintenance:update-k3s-nodes    # Rolling k3s node upgrades
+task maintenance:update-helm-charts  # Update platform Helm charts
+task maintenance:update-k3s-workloads # Update container images
+task maintenance:update-cluster      # Complete cluster update
 
 # Ansible
 task ansible:ping                    # Test connectivity
@@ -327,7 +343,7 @@ Complete documentation in `docs/`:
 **Getting Started** (00-03): Hardware setup, architecture, installation, SSH
 **Infrastructure** (04-11): QoL, Tailscale, ZFS, file services, DNS, certs, mail, firewall
 **Operations** (12-18): Runbooks, CI/CD, k3s plan, credentials, DR, bootstrap
-**Applications** (19-23): K3s deployment, Plex, download clients/media stack, recipe management
+**Applications** (19-25): K3s deployment, Plex, download clients, recipes, SSO, Home Assistant, multi-node expansion
 
 ## Debugging
 
