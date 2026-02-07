@@ -119,7 +119,7 @@ jobs:
         env:
           ANSIBLE_VERBOSITY: 1
         run: |
-          molecule --debug test -s ${{ matrix.scenario }}
+          molecule test -s ${{ matrix.scenario }}
 
   # Summary job that all tests passed
   molecule-all:

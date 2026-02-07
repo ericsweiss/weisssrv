@@ -221,6 +221,7 @@
     - cert_distribution_targets is defined
     - cert_distribution_targets | length > 0
     - not ansible_check_mode
+    - not (skip_cert_distribution | default(false))
   register: cert_distribution_result
   changed_when: cert_distribution_result.rc == 0
   failed_when: false  # Don't fail the play if distribution fails (target might be down)
