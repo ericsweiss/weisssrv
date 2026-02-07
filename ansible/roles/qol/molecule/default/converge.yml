@@ -1,0 +1,39 @@
+---
+# Converge playbook for qol role testing
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - systemd
+          - sudo
+          - curl
+          - git
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Check if test user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: testuser
+      register: testuser_check
+      failed_when: false
+
+    - name: Create test user
+      ansible.builtin.user:
+        name: testuser
+        state: present
+        create_home: true
+      when: testuser_check.ansible_facts.getent_passwd is not defined or testuser_check.ansible_facts.getent_passwd.testuser is not defined
+
+  roles:
+    - role: qol

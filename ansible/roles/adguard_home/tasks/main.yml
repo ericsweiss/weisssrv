@@ -2,17 +2,25 @@
 # AdGuard Home installation and configuration
 # Runs as unprivileged user with CAP_NET_BIND_SERVICE
 
+- name: Check if adguard user exists
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ adguard_user }}"
+  register: adguard_user_check
+  failed_when: false
+
 - name: Check if AdGuard Home service exists
   ansible.builtin.stat:
     path: /etc/systemd/system/AdGuardHome.service
   register: adguard_service
 
-- name: Stop AdGuard Home if running (for user modification)
+- name: Stop AdGuard Home for user creation
   ansible.builtin.service:
     name: AdGuardHome
     state: stopped
-  when: adguard_service.stat.exists
-  register: adguard_stopped
+  when:
+    - adguard_service.stat.exists
+    - adguard_user_check.ansible_facts.getent_passwd is not defined or adguard_user_check.ansible_facts.getent_passwd[adguard_user] is not defined
   changed_when: false  # Service stop/start is deployment process, not config drift
 
 - name: Create adguard user and group
@@ -53,12 +61,16 @@
     path: "{{ adguard_install_path }}/AdGuardHome"
   register: adguard_binary
 
+- name: Set AdGuard Home architecture
+  ansible.builtin.set_fact:
+    adguard_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+
 - name: Download and install AdGuard Home
   when: not adguard_binary.stat.exists
   block:
     - name: Download AdGuard Home
       ansible.builtin.get_url:
-        url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_amd64.tar.gz"
+        url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
         dest: /tmp/adguardhome.tar.gz
         mode: "0644"
 
@@ -95,6 +107,11 @@
   notify:
     - Reload systemd
     - Restart AdGuardHome
+
+# Flush handlers to ensure systemd daemon reload happens before starting the service.
+# On a fresh install, the new unit file won't be visible to systemd until daemon-reload runs.
+- name: Flush handlers before starting service
+  ansible.builtin.meta: flush_handlers
 
 - name: Fix AdGuardHome.sig permissions (known issue on dns-02)
   ansible.builtin.file:

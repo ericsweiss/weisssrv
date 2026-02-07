@@ -1,0 +1,58 @@
+---
+# Molecule configuration for k3s role testing
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: k3s-server-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    capabilities:
+      - SYS_ADMIN
+    tmpfs:
+      - /run
+      - /tmp
+    networks:
+      - name: k3s-test-net
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        k3s_version: "v1.35.0+k3s3"
+        kube_vip_version: "v1.0.4"
+        k3s_api_vip: "192.168.0.161"
+        k3s_token: "test-token-for-molecule-testing"
+        k3s_role: server
+        k3s_is_first_server: true
+        k3s_labels:
+          test: "true"
+        k3s_taints: []
+        admin_user: root
+        internal_domain: test.local
+        skip_ssh_config: true
+        skip_dns_config: true
+        skip_k3s_install: true
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

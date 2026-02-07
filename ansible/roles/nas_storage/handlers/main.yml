@@ -8,6 +8,7 @@
 - name: Reload NFS exports
   ansible.builtin.command: exportfs -ra
   changed_when: true
+  when: not (skip_nfs_reload | default(false))
 
 - name: Restart smbd
   ansible.builtin.service:
@@ -18,3 +19,4 @@
   ansible.builtin.service:
     name: smartd
     state: restarted
+  when: not (skip_smartd_service | default(false))

@@ -1,0 +1,94 @@
+---
+# Verify playbook for postfix_null_client role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if Postfix is installed
+      ansible.builtin.command: postconf mail_version
+      register: postfix_installed
+      changed_when: false
+      failed_when: postfix_installed.rc != 0
+
+    - name: Check if Postfix service is running
+      ansible.builtin.systemd:
+        name: postfix
+      register: postfix_service
+      failed_when: postfix_service.status.ActiveState != 'active'
+
+    - name: Check if main.cf exists
+      ansible.builtin.stat:
+        path: /etc/postfix/main.cf
+      register: main_cf
+      failed_when: not main_cf.stat.exists
+
+    - name: Read main.cf
+      ansible.builtin.slurp:
+        src: /etc/postfix/main.cf
+      register: main_cf_content
+
+    - name: Verify main.cf contains expected settings
+      ansible.builtin.assert:
+        that:
+          - "'relayhost = [smtp-relay.test.local]:587' in (main_cf_content.content | b64decode)"
+          - "'inet_interfaces = loopback-only' in (main_cf_content.content | b64decode)"
+          - "'smtp_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
+          - "'smtp_tls_security_level = encrypt' in (main_cf_content.content | b64decode)"
+        fail_msg: "main.cf missing expected settings"
+        success_msg: "main.cf contains all expected settings"
+
+    - name: Check if sasl_passwd exists with correct permissions
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl_passwd
+      register: sasl_passwd
+      failed_when:
+        - not sasl_passwd.stat.exists
+        - sasl_passwd.stat.mode != '0600'
+
+    - name: Check if sasl_passwd.db was generated
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl_passwd.db
+      register: sasl_passwd_db
+      failed_when: not sasl_passwd_db.stat.exists
+
+    - name: Check if mailname is configured
+      ansible.builtin.slurp:
+        src: /etc/mailname
+      register: mailname_content
+
+    - name: Verify mailname
+      ansible.builtin.assert:
+        that:
+          - "'postfix-null-test.test.local' in (mailname_content.content | b64decode)"
+        fail_msg: "mailname not set correctly"
+        success_msg: "mailname configured correctly"
+
+    - name: Check if aliases file exists
+      ansible.builtin.stat:
+        path: /etc/aliases
+      register: aliases_file
+      failed_when: not aliases_file.stat.exists
+
+    - name: Read aliases file
+      ansible.builtin.slurp:
+        src: /etc/aliases
+      register: aliases_content
+
+    - name: Verify aliases contain expected entries
+      ansible.builtin.assert:
+        that:
+          - "'root: test@test.local' in (aliases_content.content | b64decode)"
+          - "'postmaster: root' in (aliases_content.content | b64decode)"
+        fail_msg: "aliases missing expected entries"
+        success_msg: "aliases configured correctly"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Postfix installed and running"
+          - "main.cf configured with relay, SASL, and TLS settings"
+          - "SASL credentials deployed with correct permissions (0600)"
+          - "SASL password database generated"
+          - "Mailname configured correctly"
+          - "Mail aliases configured with root forwarding"

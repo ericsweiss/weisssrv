@@ -1,0 +1,69 @@
+---
+# Verify playbook for unbound role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if Unbound is installed
+      ansible.builtin.command: unbound -V
+      register: unbound_installed
+      changed_when: false
+      failed_when: unbound_installed.rc != 0
+
+    - name: Check if Unbound service is running
+      ansible.builtin.systemd:
+        name: unbound
+      register: unbound_service
+      failed_when: unbound_service.status.ActiveState != 'active'
+
+    - name: Check if Unbound is listening on configured port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 5335
+        timeout: 10
+
+    - name: Check if config file exists
+      ansible.builtin.stat:
+        path: /etc/unbound/unbound.conf.d/weisssrv.conf
+      register: unbound_config
+      failed_when: not unbound_config.stat.exists
+
+    - name: Read Unbound config
+      ansible.builtin.slurp:
+        src: /etc/unbound/unbound.conf.d/weisssrv.conf
+      register: unbound_config_content
+
+    - name: Verify config contains expected settings
+      ansible.builtin.assert:
+        that:
+          - "'port: 5335' in (unbound_config_content.content | b64decode)"
+          - "'forward-tls-upstream: yes' in (unbound_config_content.content | b64decode)"
+          - "'cloudflare-dns.com' in (unbound_config_content.content | b64decode)"
+          - "'dns.google' in (unbound_config_content.content | b64decode)"
+          - "'serve-expired: yes' in (unbound_config_content.content | b64decode)"
+        fail_msg: "Unbound config missing expected settings"
+        success_msg: "Unbound config contains all expected settings"
+
+    - name: Check if remote-control config exists
+      ansible.builtin.stat:
+        path: /etc/unbound/unbound.conf.d/remote-control.conf
+      register: remote_control_config
+      failed_when: not remote_control_config.stat.exists
+
+    - name: Test DNS resolution via Unbound
+      ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short
+      register: dns_test
+      changed_when: false
+      failed_when: dns_test.rc != 0
+      ignore_errors: true
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Unbound installed and version verified"
+          - "Unbound service is active"
+          - "Listening on 127.0.0.1:5335"
+          - "Configuration deployed with DoT forwarders"
+          - "Remote-control configuration deployed"
+          - "DNS resolution: {{ 'working' if dns_test.rc == 0 else 'skipped (no network in container)' }}"

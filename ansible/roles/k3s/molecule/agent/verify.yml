@@ -1,0 +1,90 @@
+---
+# Verify playbook for k3s agent role testing
+# Tests agent-specific configuration deployment
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if k3s config directory exists
+      ansible.builtin.stat:
+        path: /etc/rancher/k3s
+      register: k3s_config_dir
+      failed_when: not k3s_config_dir.stat.exists
+
+    - name: Check if k3s config file exists
+      ansible.builtin.stat:
+        path: /etc/rancher/k3s/config.yaml
+      register: k3s_config_file
+      failed_when: not k3s_config_file.stat.exists
+
+    - name: Verify k3s config file permissions
+      ansible.builtin.stat:
+        path: /etc/rancher/k3s/config.yaml
+      register: config_perms
+      failed_when: config_perms.stat.mode != '0600'
+
+    - name: Read k3s config file
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/config.yaml
+      register: k3s_config_content
+
+    - name: Decode k3s config
+      ansible.builtin.set_fact:
+        k3s_config_text: "{{ k3s_config_content.content | b64decode }}"
+
+    - name: Debug - Show agent config
+      ansible.builtin.debug:
+        msg: "{{ k3s_config_text }}"
+
+    # Agent-specific configuration tests
+    - name: Verify agent config has server URL
+      ansible.builtin.assert:
+        that:
+          - "'server:' in k3s_config_text"
+          - "'https://192.168.0.161:6443' in k3s_config_text"
+        fail_msg: "Agent config missing server URL"
+        success_msg: "Agent config has correct server URL"
+
+    - name: Verify agent config has node labels
+      ansible.builtin.assert:
+        that:
+          - "'node-label:' in k3s_config_text"
+          - "'node-type=general' in k3s_config_text"
+          - "'workload=media' in k3s_config_text"
+        fail_msg: "Agent config missing expected node labels"
+        success_msg: "Agent config has correct node labels"
+
+    - name: Verify agent config has node taints
+      ansible.builtin.assert:
+        that:
+          - "'node-taint:' in k3s_config_text"
+          - "'node.kubernetes.io/ingress=true:NoSchedule' in k3s_config_text"
+        fail_msg: "Agent config missing expected node taints"
+        success_msg: "Agent config has correct node taints"
+
+    # Verify kube-vip manifest does NOT exist for agents
+    - name: Check kube-vip manifest does NOT exist
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+      register: kube_vip_manifest
+
+    - name: Assert kube-vip is not deployed for agents
+      ansible.builtin.assert:
+        that:
+          - not kube_vip_manifest.stat.exists
+        fail_msg: "kube-vip should NOT be deployed on agent nodes"
+        success_msg: "kube-vip correctly not deployed on agent node"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "k3s agent configuration deployed successfully"
+          - "Config directory: /etc/rancher/k3s"
+          - "Config file: /etc/rancher/k3s/config.yaml (mode 0600)"
+          - "Agent-specific settings verified:"
+          - "  - Server URL: https://192.168.0.161:6443"
+          - "  - Node labels: node-type=general, workload=media"
+          - "  - Node taints: node.kubernetes.io/ingress=true:NoSchedule"
+          - "  - kube-vip NOT deployed (correct for agent)"
+          - "(k3s binary install skipped in container testing)"

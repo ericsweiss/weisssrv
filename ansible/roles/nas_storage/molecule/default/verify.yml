@@ -1,0 +1,70 @@
+---
+# Verify playbook for nas_storage role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if NFS server is installed
+      ansible.builtin.package:
+        name: nfs-kernel-server
+        state: present
+      check_mode: true
+      register: nfs_installed
+      failed_when: nfs_installed.changed
+
+    - name: Check if exports file exists
+      ansible.builtin.stat:
+        path: /etc/exports
+      register: exports_file
+      failed_when: not exports_file.stat.exists
+
+    - name: Verify exports file contains expected exports
+      ansible.builtin.command: grep -q "/tank/media/unified" /etc/exports
+      register: exports_check
+      failed_when: exports_check.rc != 0
+      changed_when: false
+
+    - name: Check if Samba is installed
+      ansible.builtin.package:
+        name: samba
+        state: present
+      check_mode: true
+      register: samba_installed
+      failed_when: samba_installed.changed
+
+    - name: Check if smb.conf exists
+      ansible.builtin.stat:
+        path: /etc/samba/smb.conf
+      register: smb_conf
+      failed_when: not smb_conf.stat.exists
+
+    - name: Verify smb.conf contains expected shares
+      ansible.builtin.command: grep -q "\[media\]" /etc/samba/smb.conf
+      register: smb_check
+      failed_when: smb_check.rc != 0
+      changed_when: false
+
+    - name: Check if NFS service exists
+      ansible.builtin.systemd:
+        name: nfs-kernel-server
+      register: nfs_service
+      failed_when: nfs_service.status.LoadState != 'loaded'
+
+    - name: Check if Samba service exists
+      ansible.builtin.systemd:
+        name: smbd
+      register: smb_service
+      failed_when: smb_service.status.LoadState != 'loaded'
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "✓ NFS server installed"
+          - "✓ /etc/exports configured"
+          - "✓ Exports file contains expected paths"
+          - "✓ Samba installed"
+          - "✓ smb.conf configured"
+          - "✓ smb.conf contains expected shares"
+          - "✓ NFS service loaded"
+          - "✓ Samba service loaded"

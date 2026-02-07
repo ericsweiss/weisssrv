@@ -1,0 +1,62 @@
+---
+# Molecule configuration for nas_storage role testing
+# Note: ZFS functionality is limited in containers, so we test configuration tasks
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: nas-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    capabilities:
+      - SYS_ADMIN
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        admin_user: root
+        admin_email: test@test.local
+        internal_domain: test.local
+        skip_ssh_config: true
+        skip_dns_config: true
+        # NFS configuration
+        nfs_exports:
+          - path: /tank/media/unified
+            clients:
+              - spec: "192.168.0.0/24"
+                options: "ro,sync,no_subtree_check"
+        # Samba configuration
+        samba_shares:
+          - name: media
+            path: /tank/media/unified
+            read_only: true
+            guest_ok: false
+        # Skip actual ZFS/mergerfs/NFS/smartd operations in container
+        skip_zfs_operations: true
+        skip_mergerfs: true
+        skip_nfs_reload: true
+        skip_smartd_service: true
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

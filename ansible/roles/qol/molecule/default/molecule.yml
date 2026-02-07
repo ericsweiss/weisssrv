@@ -1,0 +1,62 @@
+---
+# Molecule configuration for qol (quality of life) role testing
+# Tests: package installation, Oh My Zsh setup, neovim config, dotfiles
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: qol-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        admin_user: testuser
+        # Skip base role configs that don't work in containers
+        skip_ssh_config: true
+        skip_dns_config: true
+        skip_timezone_config: true
+        ssh_authorized_keys: []
+        qol_packages:
+          - zsh
+          - neovim
+          - fzf
+          - ripgrep
+          - htop
+          - tmux
+        omz_plugins:
+          - git
+          - sudo
+          - history
+          - zsh-autosuggestions
+          - zsh-syntax-highlighting
+          - fzf
+          - docker
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

@@ -1,0 +1,68 @@
+---
+# Verify playbook for k3s role testing
+# Tests configuration deployment only (k3s binary install is skipped in containers)
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if k3s config directory exists
+      ansible.builtin.stat:
+        path: /etc/rancher/k3s
+      register: k3s_config_dir
+      failed_when: not k3s_config_dir.stat.exists
+
+    - name: Check if k3s config file exists
+      ansible.builtin.stat:
+        path: /etc/rancher/k3s/config.yaml
+      register: k3s_config_file
+      failed_when: not k3s_config_file.stat.exists
+
+    - name: Verify k3s config file permissions
+      ansible.builtin.stat:
+        path: /etc/rancher/k3s/config.yaml
+      register: config_perms
+      failed_when: config_perms.stat.mode != '0600'
+
+    - name: Read k3s config file
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/config.yaml
+      register: k3s_config_content
+
+    - name: Verify k3s config contains expected settings
+      ansible.builtin.assert:
+        that:
+          - "'tls-san' in (k3s_config_content.content | b64decode)"
+          - "'192.168.0.161' in (k3s_config_content.content | b64decode)"
+          - "'cluster-cidr' in (k3s_config_content.content | b64decode)"
+          - "'service-cidr' in (k3s_config_content.content | b64decode)"
+        fail_msg: "k3s config file missing expected settings"
+        success_msg: "k3s config file contains expected settings"
+
+    - name: Check if kube-vip manifest exists (first server only)
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+      register: kube_vip_manifest
+      failed_when: not kube_vip_manifest.stat.exists
+
+    - name: Read kube-vip manifest
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+      register: kube_vip_content
+
+    - name: Verify kube-vip manifest contains expected settings
+      ansible.builtin.assert:
+        that:
+          - "'192.168.0.161' in (kube_vip_content.content | b64decode)"
+          - "'kube-vip' in (kube_vip_content.content | b64decode)"
+        fail_msg: "kube-vip manifest missing expected settings"
+        success_msg: "kube-vip manifest contains expected settings"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "k3s config directory exists"
+          - "k3s config file exists with correct permissions (0600)"
+          - "k3s config contains tls-san, API VIP, cluster-cidr, and service-cidr"
+          - "kube-vip manifest deployed with correct VIP"
+          - "(k3s binary install skipped in container testing)"

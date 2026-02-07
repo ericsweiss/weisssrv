@@ -1,0 +1,58 @@
+---
+# Molecule configuration for adguard_home role testing
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: adguard-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    capabilities:
+      - NET_ADMIN
+      - NET_RAW
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        adguard_home_version: "0.107.71"
+        adguard_user: adguard
+        adguard_group: adguard
+        adguard_install_path: /opt/AdGuardHome
+        adguard_cert_path: /opt/AdGuardHome/certs
+        adguard_http_port: 3000
+        adguard_dns_port: 53
+        adguard_admin_password_hash: "skip-in-molecule"
+        adguard_protection_enabled: true
+        adguard_upstream_dns:
+          - "127.0.0.1:5335"
+        adguard_enable_dnssec: true
+        internal_domain: test.local
+        skip_ssh_config: true
+        skip_dns_config: true
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

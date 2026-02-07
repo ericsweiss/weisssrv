@@ -4,19 +4,25 @@
 - name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: true
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - not (skip_plex_service | default(false))
 
 - name: Enable Plex service
   ansible.builtin.systemd:
     name: plexmediaserver
     enabled: true
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - not (skip_plex_service | default(false))
 
 - name: Start Plex service
   ansible.builtin.systemd:
     name: plexmediaserver
     state: started
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - not (skip_plex_service | default(false))
 
 - name: Wait for Plex to start
   ansible.builtin.uri:
@@ -27,12 +33,15 @@
   retries: 12
   delay: 5
   until: plex_health.status == 200
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - not (skip_plex_service | default(false))
 
 - name: Display Plex server info
   ansible.builtin.debug:
     msg: "Plex server started successfully: {{ plex_health.json.MediaContainer.machineIdentifier | default('unknown') }}"
   when:
     - not ansible_check_mode
+    - not (skip_plex_service | default(false))
     - plex_health is defined
     - plex_health.json is defined

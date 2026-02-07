@@ -34,12 +34,14 @@
     filename: tailscale
   when: ansible_facts['os_family'] == "Debian"
 
-- name: Install Tailscale
+- name: Install Tailscale (pinned version)
   ansible.builtin.apt:
-    name: tailscale
+    name: "tailscale={{ tailscale_version }}"
     state: present
     update_cache: true
-  when: ansible_facts['os_family'] == "Debian"
+    allow_downgrade: true
+  when:
+    - ansible_facts['os_family'] == "Debian"
 
 - name: Enable Tailscale service
   ansible.builtin.service:

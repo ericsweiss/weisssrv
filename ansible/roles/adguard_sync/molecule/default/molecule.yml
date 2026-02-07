@@ -1,0 +1,65 @@
+---
+# Molecule configuration for adguard_sync role testing
+# Tests: binary download, systemd timer, config generation
+# Partial testing: Timer functionality (actual sync requires two AdGuard instances)
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: dns-01
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # AdGuard sync configuration
+        adguardhome_sync_version: "0.8.2"
+        adguardhome_sync_schedule: "*:0/5"
+        adguardhome_sync_origin: "http://192.168.0.150:3000"
+        adguardhome_sync_replica: "http://192.168.0.160:3000"
+        # Mock credentials (never used - no actual sync in testing)
+        adguard_admin_user: "admin"
+        adguard_admin_password: "test-password"
+        # Sync features (from production config)
+        adguardhome_sync_features:
+          generalSettings: true
+          queryLogConfig: true
+          statsConfig: true
+          clientSettings: true
+          services: true
+          filters: true
+          dhcp:
+            serverConfig: false
+            staticLeases: false
+          dns:
+            serverConfig: true
+            accessLists: true
+            rewrites: true
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

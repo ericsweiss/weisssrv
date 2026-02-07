@@ -1,0 +1,46 @@
+---
+# Converge playbook for smtp_relay role testing
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - systemd
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create mock TLS certificate directory
+      ansible.builtin.file:
+        path: /etc/postfix/tls/smtp-relay.test.local_ecc
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create mock TLS certificate
+      ansible.builtin.copy:
+        content: "MOCK CERTIFICATE FOR TESTING"
+        dest: /etc/postfix/tls/smtp-relay.test.local_ecc/fullchain.cer
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Create mock TLS key
+      ansible.builtin.copy:
+        content: "MOCK KEY FOR TESTING"
+        dest: /etc/postfix/tls/smtp-relay.test.local_ecc/smtp-relay.test.local.key
+        owner: root
+        group: root
+        mode: "0600"
+
+  roles:
+    - role: smtp_relay

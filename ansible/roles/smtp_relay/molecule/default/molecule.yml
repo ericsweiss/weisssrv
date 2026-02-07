@@ -1,0 +1,75 @@
+---
+# Molecule configuration for smtp_relay role testing
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: smtp-relay-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    SMTP_RELAY_USER: testrelay
+    SMTP_RELAY_PASSWORD: testrelaypass
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        admin_user: root
+        admin_email: test@test.local
+        smtp_gmail_user: testgmail@gmail.com
+        smtp_gmail_password: testgmailpass
+        smtp_tls_cert_dir: /etc/postfix/tls
+        smtp_relay_config:
+          myhostname: smtp-relay.test.local
+          myorigin: test.local
+          inet_interfaces: all
+          inet_protocols: ipv4
+          mynetworks: "127.0.0.0/8, 192.168.0.0/24"
+          relayhost: "[smtp.gmail.com]:587"
+          smtpd_relay_restrictions: "permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
+          smtpd_tls_cert_file: "/etc/postfix/tls/smtp-relay.test.local_ecc/fullchain.cer"
+          smtpd_tls_key_file: "/etc/postfix/tls/smtp-relay.test.local_ecc/smtp-relay.test.local.key"
+          smtpd_tls_security_level: "may"
+          smtpd_tls_loglevel: 1
+          smtpd_tls_received_header: "yes"
+          smtpd_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+          smtpd_tls_mandatory_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+          smtp_tls_security_level: "encrypt"
+          smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+          smtp_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+          smtp_sasl_auth_enable: "yes"
+          smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+          smtp_sasl_security_options: "noanonymous"
+          smtp_sasl_tls_security_options: "noanonymous"
+          smtpd_sasl_type: "cyrus"
+          smtpd_sasl_path: "smtpd"
+          smtpd_sasl_auth_enable: "yes"
+          smtpd_sasl_security_options: "noanonymous"
+          smtpd_sasl_local_domain: "smtp-relay.test.local"
+          broken_sasl_auth_clients: "yes"
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

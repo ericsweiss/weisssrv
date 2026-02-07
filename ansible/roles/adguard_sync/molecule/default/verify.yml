@@ -1,0 +1,147 @@
+---
+# Verify playbook for adguard_sync role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    # Verify binary is installed
+    - name: Check if adguardhome-sync binary exists
+      ansible.builtin.stat:
+        path: /usr/local/bin/adguardhome-sync
+      register: sync_binary
+      failed_when: not sync_binary.stat.exists
+
+    - name: Verify binary is executable
+      ansible.builtin.assert:
+        that:
+          - sync_binary.stat.executable
+        fail_msg: "adguardhome-sync binary is not executable"
+        success_msg: "adguardhome-sync binary is executable"
+
+    - name: Check adguardhome-sync version
+      ansible.builtin.command: /usr/local/bin/adguardhome-sync version
+      register: sync_version
+      changed_when: false
+      # May fail in cross-architecture testing (e.g., arm64 host, amd64 binary)
+      failed_when: false
+
+    - name: Display installed version
+      ansible.builtin.debug:
+        msg: "adguardhome-sync version: {{ sync_version.stdout | default('(binary incompatible with test host architecture)') }}"
+
+    # Verify home directory
+    - name: Check if home directory exists
+      ansible.builtin.stat:
+        path: /var/lib/adguardhome-sync
+      register: home_dir
+      failed_when: not home_dir.stat.exists or not home_dir.stat.isdir
+
+    # Verify configuration file
+    - name: Check if config file exists
+      ansible.builtin.stat:
+        path: /etc/adguardhome-sync.yaml
+      register: config_file
+      failed_when: not config_file.stat.exists
+
+    - name: Verify config file has restrictive permissions
+      ansible.builtin.assert:
+        that:
+          - config_file.stat.mode == '0600'
+        fail_msg: "Config file should have 0600 permissions (contains credentials)"
+        success_msg: "Config file has correct restrictive permissions"
+
+    - name: Read config file content
+      ansible.builtin.slurp:
+        src: /etc/adguardhome-sync.yaml
+      register: config_content
+      no_log: true
+
+    - name: Verify config file structure
+      ansible.builtin.assert:
+        that:
+          - "'origin:' in (config_content.content | b64decode)"
+          - "'replica:' in (config_content.content | b64decode)"
+          - "'features:' in (config_content.content | b64decode)"
+          - "'api:' in (config_content.content | b64decode)"
+        fail_msg: "Config file missing expected sections"
+        success_msg: "Config file has correct structure"
+
+    # Verify systemd service
+    - name: Check if systemd service file exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/adguardhome-sync.service
+      register: service_file
+      failed_when: not service_file.stat.exists
+
+    - name: Read service file content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/adguardhome-sync.service
+      register: service_content
+
+    - name: Verify service file content
+      ansible.builtin.assert:
+        that:
+          - "'Type=oneshot' in (service_content.content | b64decode)"
+          - "'ExecStart=/usr/local/bin/adguardhome-sync' in (service_content.content | b64decode)"
+          - "'/etc/adguardhome-sync.yaml' in (service_content.content | b64decode)"
+        fail_msg: "Service file missing expected configuration"
+        success_msg: "Service file has correct configuration"
+
+    # Verify systemd timer
+    - name: Check if systemd timer file exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/adguardhome-sync.timer
+      register: timer_file
+      failed_when: not timer_file.stat.exists
+
+    - name: Read timer file content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/adguardhome-sync.timer
+      register: timer_content
+
+    - name: Verify timer file content
+      ansible.builtin.assert:
+        that:
+          - "'OnCalendar=' in (timer_content.content | b64decode)"
+          - "'*:0/5' in (timer_content.content | b64decode)"
+          - "'Persistent=true' in (timer_content.content | b64decode)"
+          - "'WantedBy=timers.target' in (timer_content.content | b64decode)"
+        fail_msg: "Timer file missing expected configuration"
+        success_msg: "Timer file configured for 5-minute intervals"
+
+    # Verify timer is enabled and running
+    - name: Check timer status
+      ansible.builtin.systemd:
+        name: adguardhome-sync.timer
+      register: timer_status
+
+    - name: Verify timer is enabled
+      ansible.builtin.assert:
+        that:
+          - timer_status.status.UnitFileState == 'enabled'
+        fail_msg: "Timer is not enabled"
+        success_msg: "Timer is enabled"
+
+    - name: Verify timer is active
+      ansible.builtin.assert:
+        that:
+          - timer_status.status.ActiveState == 'active'
+        fail_msg: "Timer is not active"
+        success_msg: "Timer is active"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "adguardhome-sync installed and configured:"
+          - "  - Binary: /usr/local/bin/adguardhome-sync (executable)"
+          - "  - Version: {{ (sync_version.stdout | default('N/A')) | trim }}"
+          - "  - Home directory: /var/lib/adguardhome-sync"
+          - "Configuration:"
+          - "  - Config file: /etc/adguardhome-sync.yaml (mode 0600)"
+          - "  - Contains origin/replica/features/api sections"
+          - "Systemd:"
+          - "  - Service: /etc/systemd/system/adguardhome-sync.service (oneshot)"
+          - "  - Timer: /etc/systemd/system/adguardhome-sync.timer (every 5 min)"
+          - "  - Timer status: enabled and active"
+          - "(Actual sync requires two AdGuard Home instances - not tested)"

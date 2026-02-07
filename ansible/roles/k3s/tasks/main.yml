@@ -9,12 +9,22 @@
       - nfs-common
     state: present
     update_cache: true
+  when: not (skip_k3s_install | default(false))
+
+- name: Install k3s prerequisites (minimal for config testing)
+  ansible.builtin.apt:
+    name:
+      - curl
+    state: present
+    update_cache: true
+  when: skip_k3s_install | default(false)
 
 - name: Enable iscsid service
   ansible.builtin.systemd:
     name: iscsid
     enabled: true
     state: started
+  when: not (skip_k3s_install | default(false))
 
 - name: Create k3s config directory
   ansible.builtin.file:
@@ -25,6 +35,7 @@
 # Mount additional persistent disks (ZFS zvols attached as scsi1, scsi2, etc.)
 # Initial device naming: scsi1 -> /dev/sdb, scsi2 -> /dev/sdc, etc.
 # After formatting, we mount by filesystem UUID for stability (immune to device reordering)
+# Skipped in container testing (no real block devices)
 - name: Check if additional disk is formatted
   ansible.builtin.command: "blkid /dev/sd{{ 'bcdefghij'[idx] }}"
   loop: "{{ vm_additional_disks | default([]) }}"

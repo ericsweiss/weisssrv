@@ -1,0 +1,139 @@
+---
+name: Molecule Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/roles/**'
+      - '.github/workflows/molecule.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ansible/roles/**'
+      - '.github/workflows/molecule.yml'
+  workflow_dispatch:
+
+env:
+  ANSIBLE_FORCE_COLOR: '1'
+  ANSIBLE_ALLOW_BROKEN_CONDITIONALS: '1'
+  PY_COLORS: '1'
+
+jobs:
+  # Detect which roles have changed
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed roles
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # The 'changes' output is a JSON array of filter names that matched
+          # e.g., ["base", "k3s"] when those roles have changes
+          filters: |
+            acme_certs: 'ansible/roles/acme_certs/**'
+            adguard_home: 'ansible/roles/adguard_home/**'
+            adguard_sync: 'ansible/roles/adguard_sync/**'
+            base: 'ansible/roles/base/**'
+            k3s: 'ansible/roles/k3s/**'
+            nas_storage: 'ansible/roles/nas_storage/**'
+            plex: 'ansible/roles/plex/**'
+            postfix_null_client: 'ansible/roles/postfix_null_client/**'
+            qol: 'ansible/roles/qol/**'
+            smtp_relay: 'ansible/roles/smtp_relay/**'
+            tailscale: 'ansible/roles/tailscale/**'
+            unbound: 'ansible/roles/unbound/**'
+
+      - name: Build test matrix
+        id: set-matrix
+        env:
+          # Use the 'changes' output which is a JSON array of changed filter names
+          CHANGED_ROLES: ${{ steps.filter.outputs.changes }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # All roles that have molecule tests
+          ALL_ROLES='["acme_certs","adguard_home","adguard_sync","base","k3s","nas_storage","plex","postfix_null_client","qol","smtp_relay","tailscale","unbound"]'
+
+          # For workflow_dispatch, test all roles; otherwise use changed roles
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            ROLES_TO_TEST="$ALL_ROLES"
+          else
+            ROLES_TO_TEST="$CHANGED_ROLES"
+          fi
+
+          echo "Roles to test: $ROLES_TO_TEST"
+
+          # Build matrix entries for default scenarios
+          MATRIX_ENTRIES=$(echo "$ROLES_TO_TEST" | jq -c '[.[] | {"role": ., "scenario": "default"}]')
+
+          # Add k3s agent scenario if k3s is being tested
+          if echo "$ROLES_TO_TEST" | jq -e 'index("k3s")' > /dev/null 2>&1; then
+            MATRIX_ENTRIES=$(echo "$MATRIX_ENTRIES" | jq -c '. + [{"role": "k3s", "scenario": "agent"}]')
+          fi
+
+          # Build final matrix object
+          MATRIX=$(echo "$MATRIX_ENTRIES" | jq -c '{"include": .}')
+
+          # Output using heredoc for safe multi-line/special character handling
+          {
+            echo 'matrix<<EOF'
+            echo "$MATRIX"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Generated matrix: $MATRIX"
+
+  molecule:
+    needs: changes
+    if: ${{ needs.changes.outputs.matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install molecule molecule-docker ansible ansible-lint yamllint
+
+      - name: Install Ansible collections
+        working-directory: ansible
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Run Molecule tests
+        working-directory: ansible/roles/${{ matrix.role }}
+        run: |
+          molecule test -s ${{ matrix.scenario }}
+
+  # Summary job that all tests passed
+  molecule-all:
+    needs: [changes, molecule]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.changes.outputs.matrix }}" = '{"include":[]}' ]; then
+            echo "No roles changed - tests skipped"
+            exit 0
+          fi
+          if [ "${{ needs.molecule.result }}" = "success" ]; then
+            echo "All Molecule tests passed!"
+          else
+            echo "Some Molecule tests failed"
+            exit 1
+          fi

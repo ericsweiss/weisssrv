@@ -19,8 +19,9 @@
   tags: [smart, config]
 
 - name: Ensure smartd service is enabled and running
-  ansible.builtin.systemd:
+  ansible.builtin.service:
     name: smartd
     enabled: true
     state: started
+  when: not (skip_smartd_service | default(false))
   tags: [smart, service]

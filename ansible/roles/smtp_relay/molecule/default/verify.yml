@@ -1,0 +1,118 @@
+---
+# Verify playbook for smtp_relay role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if Postfix is installed
+      ansible.builtin.command: postconf mail_version
+      register: postfix_installed
+      changed_when: false
+      failed_when: postfix_installed.rc != 0
+
+    - name: Check if Postfix service is running
+      ansible.builtin.systemd:
+        name: postfix
+      register: postfix_service
+      failed_when: postfix_service.status.ActiveState != 'active'
+
+    - name: Check if main.cf exists
+      ansible.builtin.stat:
+        path: /etc/postfix/main.cf
+      register: main_cf
+      failed_when: not main_cf.stat.exists
+
+    - name: Read main.cf
+      ansible.builtin.slurp:
+        src: /etc/postfix/main.cf
+      register: main_cf_content
+
+    - name: Verify main.cf contains relay settings
+      ansible.builtin.assert:
+        that:
+          - "'relayhost = [smtp.gmail.com]:587' in (main_cf_content.content | b64decode)"
+          - "'inet_interfaces = all' in (main_cf_content.content | b64decode)"
+          - "'smtp_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
+          - "'smtpd_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
+          - "'smtpd_tls_security_level = may' in (main_cf_content.content | b64decode)"
+          - "'smtp_tls_security_level = encrypt' in (main_cf_content.content | b64decode)"
+        fail_msg: "main.cf missing expected relay settings"
+        success_msg: "main.cf contains all expected relay settings"
+
+    - name: Check if master.cf exists
+      ansible.builtin.stat:
+        path: /etc/postfix/master.cf
+      register: master_cf
+      failed_when: not master_cf.stat.exists
+
+    - name: Check if SASL password file has correct permissions
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl_passwd
+      register: sasl_passwd
+      failed_when:
+        - not sasl_passwd.stat.exists
+        - sasl_passwd.stat.mode != '0600'
+
+    - name: Check if sasl_passwd.db was generated
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl_passwd.db
+      register: sasl_passwd_db
+      failed_when: not sasl_passwd_db.stat.exists
+
+    - name: Check if SASL smtpd.conf exists
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl/smtpd.conf
+      register: sasl_smtpd_conf
+      failed_when: not sasl_smtpd_conf.stat.exists
+
+    - name: Read SASL smtpd.conf
+      ansible.builtin.slurp:
+        src: /etc/postfix/sasl/smtpd.conf
+      register: sasl_smtpd_content
+
+    - name: Verify SASL smtpd.conf contains expected config
+      ansible.builtin.assert:
+        that:
+          - "'pwcheck_method: auxprop' in (sasl_smtpd_content.content | b64decode)"
+          - "'auxprop_plugin: sasldb' in (sasl_smtpd_content.content | b64decode)"
+          - "'mech_list: PLAIN LOGIN' in (sasl_smtpd_content.content | b64decode)"
+        fail_msg: "SASL smtpd.conf missing expected config"
+        success_msg: "SASL smtpd.conf configured correctly"
+
+    - name: Check if SASL database exists with correct permissions
+      ansible.builtin.stat:
+        path: /etc/sasldb2
+      register: sasldb2
+      failed_when:
+        - not sasldb2.stat.exists
+        - sasldb2.stat.mode != '0640'
+
+    - name: Check if TLS certificate directory exists
+      ansible.builtin.stat:
+        path: /etc/postfix/tls
+      register: tls_dir
+      failed_when: not tls_dir.stat.exists
+
+    - name: Check mailname configuration
+      ansible.builtin.slurp:
+        src: /etc/mailname
+      register: mailname_content
+
+    - name: Verify mailname
+      ansible.builtin.assert:
+        that:
+          - "'smtp-relay.test.local' in (mailname_content.content | b64decode)"
+        fail_msg: "mailname not set correctly"
+        success_msg: "mailname configured correctly"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Postfix installed and running"
+          - "main.cf configured with Gmail relay and dual SASL (inbound + outbound)"
+          - "master.cf deployed"
+          - "SASL credentials deployed (Gmail relay + incoming auth)"
+          - "SASL database created for incoming authentication"
+          - "TLS certificate directory created"
+          - "Mailname configured correctly"

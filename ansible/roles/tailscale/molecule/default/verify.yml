@@ -1,0 +1,71 @@
+---
+# Verify playbook for tailscale role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if Tailscale GPG key exists
+      ansible.builtin.stat:
+        path: /usr/share/keyrings/tailscale-archive-keyring.gpg
+      register: tailscale_gpg
+      failed_when: not tailscale_gpg.stat.exists
+
+    - name: Check if Tailscale apt repository exists
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/tailscale.list
+      register: tailscale_repo
+      failed_when: not tailscale_repo.stat.exists
+
+    - name: Read Tailscale repository config
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/tailscale.list
+      register: tailscale_repo_content
+
+    - name: Verify repository config
+      ansible.builtin.assert:
+        that:
+          - "'pkgs.tailscale.com' in (tailscale_repo_content.content | b64decode)"
+          - "'signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg' in (tailscale_repo_content.content | b64decode)"
+        fail_msg: "Tailscale repository not configured correctly"
+        success_msg: "Tailscale repository configured correctly"
+
+    - name: Check if tailscale package is installed
+      ansible.builtin.command: dpkg -l tailscale
+      register: tailscale_installed
+      changed_when: false
+      failed_when: tailscale_installed.rc != 0
+
+    - name: Check if tailscaled service exists
+      ansible.builtin.stat:
+        path: /lib/systemd/system/tailscaled.service
+      register: tailscaled_service
+      failed_when: not tailscaled_service.stat.exists
+
+    - name: Check if tailscaled service is enabled
+      ansible.builtin.systemd:
+        name: tailscaled
+      register: tailscaled_status
+
+    - name: Verify tailscaled service state
+      ansible.builtin.assert:
+        that:
+          - tailscaled_status.status.UnitFileState == 'enabled'
+        fail_msg: "tailscaled service is not enabled"
+        success_msg: "tailscaled service is enabled"
+
+    - name: Check if tailscale binary exists
+      ansible.builtin.stat:
+        path: /usr/bin/tailscale
+      register: tailscale_binary
+      failed_when: not tailscale_binary.stat.exists
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Tailscale GPG key deployed to /usr/share/keyrings/"
+          - "Tailscale apt repository configured"
+          - "Tailscale package installed"
+          - "tailscaled systemd service exists and is enabled"
+          - "tailscale binary present at /usr/bin/tailscale"
+          - "NOTE: tailscale up skipped (requires auth key)"

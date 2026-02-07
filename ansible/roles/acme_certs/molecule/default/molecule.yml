@@ -1,0 +1,70 @@
+---
+# Molecule configuration for acme_certs role testing
+# Tests acme.sh installation, SSH key deployment, certificate directory structure
+# Skips: Cloudflare API calls, actual certificate issuance
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  # Use dns-01 as the container name to match inventory_hostname checks in the role
+  - name: dns-01
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Mock SSH keys for testing (not real keys)
+        dns01_ssh_private_key: |
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+          QyNTUxOQAAACBtb2NrLWtleS1mb3ItdGVzdGluZy1vbmx5LWRvbnQtdXNlAAAAUm1vY2st
+          a2V5LWZvci10ZXN0aW5nLW9ubHktZG9udC11c2Vtb2NrLWtleS1mb3ItdGVzdGluZy1v
+          bmx5LWRvbnQtdXNlAAAAC3Rlc3RAbW9sZWN1bGUBAgMEBQ==
+          -----END OPENSSH PRIVATE KEY-----
+        dns01_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtlc3Qtc3NoLWtleS1mb3ItbW9sZWN1bGUtdGVzdGluZw== test@molecule"
+        acme_email: test@molecule.local
+        internal_domain: test.local
+        local_cert_dir: /opt/AdGuardHome/certs
+        adguard_group: root
+        # Secrets for the debug message (not used for actual issuance)
+        secrets:
+          cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
+          cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
+        # Distribution targets (for template rendering, not actual distribution)
+        cert_distribution_targets:
+          - host: dns-02
+            ip: 192.168.0.160
+            cert_dir: /opt/AdGuardHome/certs
+            owner: root
+            group: adguard
+            cert_mode: "0644"
+            key_mode: "0640"
+            restart_service: AdGuardHome
+verifier:
+  name: ansible
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

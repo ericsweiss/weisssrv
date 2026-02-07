@@ -72,3 +72,4 @@
     name: nfs-kernel-server
     state: started
     enabled: true
+  when: not (skip_nfs_reload | default(false))
