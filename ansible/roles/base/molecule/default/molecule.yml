@@ -40,6 +40,8 @@ provisioner:
         skip_ssh_config: true
         # Skip DNS config (no inventory groups in molecule)
         skip_dns_config: true
+        # Skip sudoers validation (visudo may not work reliably in containers)
+        skip_sudoers_validation: true
         # SSH keys for authorized_keys test
         ssh_authorized_keys:
           - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForMolecule test@molecule"

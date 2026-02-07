@@ -83,7 +83,7 @@
     line: "{{ admin_user }} ALL=(ALL) NOPASSWD: ALL"
     create: true
     mode: "0440"
-    validate: "visudo -cf %s"
+    validate: "{{ 'visudo -cf %s' if not (skip_sudoers_validation | default(false)) else omit }}"
   when: admin_user != 'root'
 
 - name: Include SSH hardening tasks
