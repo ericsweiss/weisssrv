@@ -107,7 +107,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install molecule molecule-docker ansible ansible-lint yamllint
+          pip install -r requirements.txt
 
       - name: Install Ansible collections
         working-directory: ansible
@@ -116,8 +116,10 @@ jobs:
 
       - name: Run Molecule tests
         working-directory: ansible/roles/${{ matrix.role }}
+        env:
+          ANSIBLE_VERBOSITY: 1
         run: |
-          molecule test -s ${{ matrix.scenario }}
+          molecule --debug test -s ${{ matrix.scenario }}
 
   # Summary job that all tests passed
   molecule-all:
