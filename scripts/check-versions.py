@@ -467,9 +467,13 @@ def fetch_dockerhub_version(svc: dict) -> str:
                 if not tag_major or tag_major.group(1) != major_version_filter:
                     continue  # Skip tags from different major versions
 
-            # Use the full tag as the version (since that's what's in all.yml)
+            # Compare using the captured version portion (match.group(1)) to avoid
+            # TypeError when comparing tuples with mixed int/str elements (e.g.,
+            # "17-trixie" vs "17.1-trixie" produces (17, "trixie") vs (17, 1, "trixie")).
+            # Still return the full tag name since that's what's stored in all.yml.
+            extracted_version = match.group(1)
             try:
-                vtuple = parse_version_tuple(tag_name)
+                vtuple = parse_version_tuple(extracted_version)
                 if best_tuple is None or vtuple > best_tuple:
                     best_tuple = vtuple
                     best_tag = tag_name
