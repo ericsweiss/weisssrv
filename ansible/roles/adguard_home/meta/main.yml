@@ -1,0 +1,17 @@
+---
+# Role metadata
+
+galaxy_info:
+  role_name: adguard_home
+  namespace: weisssrv
+  author: Eric Weiss
+  description: AdGuard Home DNS filtering with API-based configuration management
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies:
+  - role: unbound

@@ -7,31 +7,31 @@ Manages AdGuard Home DNS filtering and ad-blocking server.
 ### Via API (Idempotent, Safe)
 
 **Base Configuration** (`api_base_config.yml` - dns-01 only):
-- ✅ DNS filtering/ad-blocking protection
-- ✅ Upstream DNS servers → Unbound (127.0.0.1:5335)
-- ✅ Upstream mode (load balancing, parallel, or fastest)
-- ✅ Fallback DNS servers (empty - all queries via Unbound)
-- ✅ DNSSEC validation
-- ✅ Client reverse DNS resolution (rDNS)
-- ✅ IPv6 DNS support
-- ✅ Rate limiting (20 req/s per client)
-- ✅ Rate limit whitelist
-- ✅ TLS/DoT/DoQ configuration (HTTPS, DoT, DoQ ports)
-- ✅ DNS cache enabled (8MB optimized for 2GB RAM)
-- ✅ Cache TTL settings
-- ✅ Cache optimistic mode
-- ✅ DHCP server disabled (router handles DHCP)
+- DNS filtering/ad-blocking protection
+- Upstream DNS servers → Unbound (127.0.0.1:5335)
+- Upstream mode (load balancing, parallel, or fastest)
+- Fallback DNS servers (empty - all queries via Unbound)
+- DNSSEC validation
+- Client reverse DNS resolution (rDNS)
+- IPv6 DNS support
+- Rate limiting (20 req/s per client)
+- Rate limit whitelist
+- TLS/DoT/DoQ configuration (HTTPS, DoT, DoQ ports)
+- DNS cache enabled (8MB optimized for 2GB RAM)
+- Cache TTL settings
+- Cache optimistic mode
+- DHCP server disabled (router handles DHCP)
 
 **DNS Records** (`api_config.yml` - dns-01 only):
-- ✅ DNS rewrites (forward A records)
-- ✅ Custom filtering rules (reverse PTR records)
-- ✅ Reconciliation: adds missing, deletes orphaned
+- DNS rewrites (forward A records)
+- Custom filtering rules (reverse PTR records)
+- Reconciliation: adds missing, deletes orphaned
 
 **Sync**: dns-02 automatically syncs from dns-01 via `adguardhome-sync` (every 5 minutes)
 
 ### Via File Edit (Legacy, Risky)
 
-- ⚠️ Admin password hash (lineinfile on AdGuardHome.yaml)
+- Admin password hash (lineinfile on AdGuardHome.yaml) -- legacy, needs migration
   - **TODO**: Migrate to API-based password management
 
 ### Not Managed (AdGuard Defaults)

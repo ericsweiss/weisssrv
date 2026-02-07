@@ -1,0 +1,17 @@
+---
+# Role metadata
+
+galaxy_info:
+  role_name: k3s
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Kubernetes k3s cluster with kube-vip, persistent storage, and workload placement
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies:
+  - role: base
