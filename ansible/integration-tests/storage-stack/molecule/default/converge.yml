@@ -1,0 +1,95 @@
+---
+# Storage Stack Integration Test - Converge
+# Deploys nas_storage role and sets up Samba client for connectivity testing
+#
+# What this test validates:
+# - nas_storage role deploys configuration correctly
+# - Samba service starts and is accessible
+# - NFS configuration files are generated (service won't fully work in Docker)
+
+- name: Converge - Storage Stack (NAS Server)
+  hosts: nas_servers
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - systemd
+          - nfs-kernel-server
+          - samba
+          - smbclient  # For local verification of shares
+          - smartmontools
+        state: present
+
+    - name: Wait for systemd to be ready
+      ansible.builtin.wait_for:
+        path: /run/systemd/system
+        state: present
+        timeout: 30
+
+    # Create mock ZFS mount points (since ZFS doesn't work in containers)
+    - name: Create mock ZFS mount points
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      loop: "{{ mock_zfs_mounts }}"
+
+    - name: Create test files in mock mounts
+      ansible.builtin.copy:
+        content: "Test file in {{ item }}"
+        dest: "{{ item }}/test.txt"
+        mode: '0644'
+      loop: "{{ mock_zfs_mounts }}"
+
+  tasks:
+    # Apply nas_storage role with container-appropriate skip flags
+    # Skip flags are set in molecule.yml group_vars
+    - name: Apply nas_storage role
+      ansible.builtin.include_role:
+        name: nas_storage
+
+- name: Converge - Storage Stack (Samba Clients)
+  hosts: smb_clients
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: Install Samba client packages
+      ansible.builtin.apt:
+        name:
+          - smbclient
+        state: present
+        # Note: cifs-utils not needed - we test with smbclient only
+        # Mounting CIFS shares doesn't work reliably in Docker containers
+
+    - name: Wait for Samba server to be ready
+      ansible.builtin.wait_for:
+        host: nas-server
+        port: 445
+        timeout: 60
+        delay: 5
+      register: samba_wait
+      retries: 3
+      delay: 10
+      until: samba_wait is succeeded

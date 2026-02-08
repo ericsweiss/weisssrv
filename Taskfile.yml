@@ -46,6 +46,128 @@ tasks:
     cmds:
       - ./test-all-roles.sh {{.CLI_ARGS}}
 
+  # === Integration Tests ===
+  ansible:test-integration:
+    desc: Run all integration tests (multi-role scenarios)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running. Start Docker Desktop first."
+    cmds:
+      - task: ansible:test-integration-dns
+      - task: ansible:test-integration-mail
+      - task: ansible:test-integration-base
+      - task: ansible:test-integration-storage
+      - task: ansible:test-integration-certs
+
+  ansible:test-integration-dns:
+    desc: Run DNS stack integration test (unbound + adguard_home + adguard_sync)
+    dir: "{{.ANSIBLE_DIR}}/integration-tests/dns-stack"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running"
+    cmds:
+      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+
+  ansible:test-integration-mail:
+    desc: Run mail stack integration test (smtp_relay + postfix_null_client)
+    dir: "{{.ANSIBLE_DIR}}/integration-tests/mail-stack"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running"
+    cmds:
+      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+
+  ansible:test-integration-base:
+    desc: Run base infrastructure integration test (base + qol + tailscale)
+    dir: "{{.ANSIBLE_DIR}}/integration-tests/base-infrastructure"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running"
+    cmds:
+      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+
+  ansible:test-integration-storage:
+    desc: Run storage stack integration test (nas_storage + Samba client, NFS server-side only)
+    dir: "{{.ANSIBLE_DIR}}/integration-tests/storage-stack"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running"
+    cmds:
+      - ~/.pyenv/versions/3.13.5/bin/molecule test || python3 -m molecule test
+
+  ansible:test-integration-certs:
+    desc: Run certificate distribution integration test (acme_certs multi-host)
+    dir: "{{.ANSIBLE_DIR}}/integration-tests/cert-distribution"
+    env:
+      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    preconditions:
+      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+        msg: "molecule not installed"
+      - sh: docker info 2>/dev/null
+        msg: "Docker is not running"
+    cmds:
+      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+
+  # === Kubernetes Validation Tasks ===
+  kubernetes:lint:
+    desc: Validate Kubernetes manifests with kubeconform
+    preconditions:
+      - sh: command -v kubeconform
+        msg: "kubeconform not installed. Run: brew install kubeconform (or download from GitHub)"
+    cmds:
+      - |
+        find kubernetes/apps kubernetes/bootstrap -name "*.yaml" \
+          ! -name "values.yaml" \
+          ! -name "kustomization.yaml" \
+          -exec kubeconform -summary -strict \
+            -ignore-missing-schemas \
+            -kubernetes-version 1.35.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{ "{{.Group}}" }}/{{ "{{.ResourceKind}}" }}_{{ "{{.ResourceAPIVersion}}" }}.json' \
+            {} +
+
+  kubernetes:validate-helm:
+    desc: Validate Helm values by templating charts
+    preconditions:
+      - sh: command -v helm
+        msg: "helm not installed. Run: brew install helm"
+    cmds:
+      - helm repo add traefik https://traefik.github.io/charts 2>/dev/null || true
+      - helm repo add metallb https://metallb.github.io/metallb 2>/dev/null || true
+      - helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+      - helm repo add authentik https://charts.goauthentik.io 2>/dev/null || true
+      - helm repo update
+      - echo "Validating Traefik values..."
+      - helm template traefik traefik/traefik -f kubernetes/apps/traefik/values.yaml --namespace traefik > /dev/null && echo "  OK"
+      - echo "Validating MetalLB values..."
+      - helm template metallb metallb/metallb -f kubernetes/bootstrap/metallb/values.yaml --namespace metallb-system > /dev/null && echo "  OK"
+      - echo "Validating cert-manager values..."
+      - helm template cert-manager jetstack/cert-manager -f kubernetes/apps/cert-manager/values.yaml --namespace cert-manager > /dev/null && echo "  OK"
+      - echo "Validating Authentik values..."
+      - helm template authentik authentik/authentik -f kubernetes/apps/authentik/values.yaml --namespace authentik --set authentik.secret_key=dummy --set authentik.postgresql.password=dummy > /dev/null && echo "  OK"
+      - echo "All Helm values validated successfully"
+
   # === Deployment Tasks ===
   deploy:all:
     desc: Deploy base infrastructure (Proxmox, DNS, NAS, mail - excludes k3s)
@@ -704,6 +826,8 @@ tasks:
       - task: terraform:fmt-check
       - task: terraform:init
       - task: terraform:validate
+      - task: kubernetes:lint
+      - task: kubernetes:validate-helm
 
   # === 1Password Integration ===
   op:check:

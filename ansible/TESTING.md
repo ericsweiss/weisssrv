@@ -260,42 +260,173 @@ ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule destroy   # Cleanup
 | proxmox_lxc | Requires Proxmox API (pct commands) |
 | home_assistant | Requires HAOS VM (SSH/SCP based management) |
 
-## Integration Tests Strategy
+## Idempotency Testing
 
-Integration tests verify multi-role interactions (e.g., dns-stack with dns-01 + dns-02, mail-stack).
+All molecule tests include idempotency verification by default. The test sequence runs `converge` twice
+and verifies that the second run produces no changes. This catches tasks that are not properly
+idempotent (e.g., always reporting "changed" even when no changes are needed).
 
-**Current Status: Deferred**
+**Exception:** The cert-distribution integration test intentionally skips idempotence testing
+because SSH keys are regenerated on each test run (the role deploys dummy keys that are
+overwritten with working keys for the test environment).
 
-Unit tests for individual roles provide sufficient coverage. Integration tests would require:
-
-1. Multi-container scenarios with Docker networks
-2. Real service dependencies (e.g., two AdGuard instances for sync testing)
-3. Longer test timeouts and more complex teardown
-
-**Recommended approach for future integration tests:**
-
+The test sequence is:
 ```yaml
-# molecule.yml for dns-stack integration scenario
-platforms:
-  - name: dns-01
-    groups: [dns, dns_primary]
-    networks:
-      - name: dns-stack
-  - name: dns-02
-    groups: [dns, dns_replica]
-    networks:
-      - name: dns-stack
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence    # Runs converge again, fails if any tasks report "changed"
+    - verify
+    - cleanup
+    - destroy
 ```
 
-This would allow testing:
-- adguard_sync from dns-01 to dns-02
-- DNS failover scenarios
-- Split-horizon DNS validation
+If a role fails idempotency testing, check for:
+- Tasks using `changed_when: true` or missing `changed_when`
+- Tasks that modify files unconditionally
+- Shell/command tasks without proper `creates:` or `changed_when:` guards
 
-**When to implement integration tests:**
-- When adding complex multi-host features
-- When debugging production issues that unit tests miss
-- When preparing for major infrastructure changes
+## Integration Tests
+
+Integration tests verify multi-role interactions using multi-container Docker networks.
+
+**Current Status: Implemented**
+
+Five integration test scenarios are implemented in `ansible/integration-tests/`:
+
+1. **DNS Stack** - unbound + adguard_home + adguard_sync (2 DNS servers with sync)
+2. **Mail Stack** - smtp_relay + postfix_null_client (relay server + 2 clients)
+3. **Base Infrastructure** - base + qol + tailscale (foundation stack on 2 hosts)
+4. **Storage Stack** - nas_storage + Samba client (server + SMB client, NFS server-only)
+5. **Certificate Distribution** - acme_certs with SSH distribution (1 cert server + 2 clients)
+
+### Running Integration Tests
+
+```bash
+# Run all integration tests
+task ansible:test-integration
+
+# Run specific integration test
+task ansible:test-integration-dns
+task ansible:test-integration-mail
+task ansible:test-integration-base
+task ansible:test-integration-storage
+task ansible:test-integration-certs
+
+# Run directly with molecule
+cd ansible/integration-tests/dns-stack
+ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 molecule test
+```
+
+**Version Management:** Integration tests automatically use production versions from `ansible/inventories/prod/group_vars/all.yml` via `vars_files` in each converge.yml. This ensures tests always use the same versions as production deployments, maintaining a single source of truth.
+
+### DNS Stack Integration Test
+
+**Tests:** unbound + adguard_home + adguard_sync
+
+**Scenario:** Two DNS servers (dns-01 primary, dns-02 replica) on a shared Docker network.
+
+**What IS tested:**
+- Unbound DoT recursive resolver installation and configuration on both servers
+- AdGuard Home binary installation and systemd service
+- AdGuard Home configuration file deployment (AdGuardHome.yaml)
+- Web UI accessibility on port 3000
+- adguardhome-sync service configuration and timer setup
+- Cross-server connectivity (replica can reach primary)
+
+**What is NOT tested (due to AdGuard Home setup wizard requirement):**
+- DNS listening on port 53 (requires completing interactive setup wizard first)
+- DNS query resolution via AdGuard Home (tested via Unbound directly instead)
+- Full adguardhome-sync operation (sync config deployed, but API auth not exercised because AdGuard Home runs in "setup mode" until wizard is completed)
+
+**Note:** Production validation should use `postflight.yml` which tests real instances.
+
+**Location:** `ansible/integration-tests/dns-stack/`
+
+### Mail Stack Integration Test
+
+**Tests:** smtp_relay + postfix_null_client
+
+**Scenario:** One relay server + two mail clients on a shared Docker network.
+
+**What IS tested:**
+- SMTP relay server Postfix configuration (relayhost to Gmail SMTP)
+- SASL password file existence and permissions (on both relay and clients)
+- Postfix null client configuration (loopback-only mode)
+- Client-to-relay SMTP transport connectivity (TCP port 25, SMTP banner)
+- Virtual alias file configuration
+
+**What is NOT tested (would require real Gmail credentials):**
+- SASL authentication between clients and relay (mock credentials used)
+- Actual mail delivery to Gmail SMTP
+- TLS negotiation (STARTTLS)
+- Mail queue processing and delivery
+
+**Note:** Full mail flow is validated manually in production by sending test emails.
+
+**Location:** `ansible/integration-tests/mail-stack/`
+
+### Base Infrastructure Integration Test
+
+**Tests:** base + qol + tailscale
+
+**Scenario:** Two hosts with full base infrastructure stack.
+
+**What it tests:**
+- Base role (packages, user, sudoers, timezone)
+- QoL role (Oh My Zsh, neovim, fzf, ripgrep)
+- Tailscale VPN setup
+- User shell configuration integration
+- Developer tools functionality
+
+**Location:** `ansible/integration-tests/base-infrastructure/`
+
+### Storage Stack Integration Test
+
+**Tests:** nas_storage + Samba client
+
+**Scenario:** One NAS server + one Samba client on a shared network.
+
+**What it tests:**
+- NFS server configuration and exports (server-side only)
+- Samba server configuration and shares
+- SMART monitoring setup
+- Samba client connectivity and share listing
+
+**Limitations (Docker):**
+- NFS client mounts are NOT tested (Docker containers lack kernel NFS support)
+- CIFS/SMB mounts are NOT tested (requires CAP_SYS_ADMIN and kernel modules)
+- The test validates server configuration and Samba share access, but cannot verify NFS client read/write operations
+
+**Location:** `ansible/integration-tests/storage-stack/`
+
+### Certificate Distribution Integration Test
+
+**Tests:** acme_certs with SSH-based distribution
+
+**Scenario:** One certificate server + two client hosts receiving certificates.
+
+**What it tests:**
+- acme.sh installation and configuration
+- Mock certificate generation
+- SSH key setup for distribution
+- Certificate distribution to multiple hosts
+- Client certificate directory setup
+
+**Location:** `ansible/integration-tests/cert-distribution/`
+
+### When to Run Integration Tests
+
+- **Before major infrastructure changes** - Validate multi-role interactions
+- **When debugging production issues** - Reproduce cross-service problems
+- **During code review** - Ensure changes don't break integrations
+- **CI/CD** - Automatic testing via GitHub Actions when relevant roles change
 
 ## Manual Testing Checklist
 
@@ -337,8 +468,181 @@ smbclient -L //pve-nas-01 -N          # Samba shares
 df -h /tank/media/unified             # Mergerfs mount
 ```
 
+## CI/CD Integration
+
+### GitHub Actions Workflows
+
+The repository includes several CI/CD workflows:
+
+| Workflow | File | Purpose |
+|----------|------|---------|
+| Lint | `.github/workflows/lint.yml` | Ansible syntax, ansible-lint, terraform fmt, yamllint |
+| Molecule | `.github/workflows/molecule.yml` | Molecule tests for changed roles (matrix-based) |
+| Integration Tests | `.github/workflows/integration-tests.yml` | Multi-role integration tests (triggered by role changes) |
+| Terraform | `.github/workflows/terraform.yml` | Terraform format, init, validate |
+| Kubernetes | `.github/workflows/kubernetes.yml` | kubeconform validation, Helm values linting |
+
+### Molecule CI Workflow
+
+The `molecule.yml` workflow uses smart change detection to only test roles that have changed:
+
+```yaml
+# Only tests roles with changes in their directory
+filters: |
+  base: 'ansible/roles/base/**'
+  k3s: 'ansible/roles/k3s/**'
+  # ...
+```
+
+Features:
+- Matrix-based parallel testing (one job per role)
+- Change detection via `dorny/paths-filter`
+- Manual trigger via `workflow_dispatch` tests all roles
+- K3s has both `default` and `agent` scenarios in matrix
+
+### Integration Tests CI Workflow
+
+The `integration-tests.yml` workflow runs multi-role integration tests when relevant roles change:
+
+```yaml
+# Triggers integration tests based on role changes
+filters:
+  dns-stack:
+    - 'ansible/roles/unbound/**'
+    - 'ansible/roles/adguard_home/**'
+    - 'ansible/roles/adguard_sync/**'
+  mail-stack:
+    - 'ansible/roles/smtp_relay/**'
+    - 'ansible/roles/postfix_null_client/**'
+  # ...
+```
+
+Features:
+- Smart change detection - only runs affected integration tests
+- Matrix-based parallel execution
+- Manual trigger via `workflow_dispatch` runs all integration tests
+- Tests multi-container scenarios with Docker networks
+- Validates cross-role configuration and service dependencies
+
+### Kubernetes Validation Workflow
+
+The `kubernetes.yml` workflow validates Kubernetes manifests and Helm values:
+
+1. **kubeconform**: Validates YAML against Kubernetes API schemas
+   - Includes CRD schemas from datreeio/CRDs-catalog
+   - Ignores values.yaml and kustomization.yaml files
+
+2. **Helm template**: Validates Helm values render correctly
+   - Tests Traefik, MetalLB, cert-manager, Authentik values
+
+3. **yamllint**: Basic YAML syntax validation
+
+## Kubernetes Testing
+
+### Manifest Validation
+
+All Kubernetes manifests are validated with `kubeconform`:
+
+```bash
+# Local validation
+kubeconform -summary -strict \
+  -ignore-missing-schemas \
+  -kubernetes-version 1.35.0 \
+  kubernetes/apps/**/*.yaml
+```
+
+### Helm Values Testing
+
+Helm values files are validated by templating against the actual charts:
+
+```bash
+# Test Traefik values
+helm template traefik traefik/traefik \
+  -f kubernetes/apps/traefik/values.yaml \
+  --namespace traefik > /dev/null
+
+# Test Authentik values (requires dummy secrets)
+helm template authentik authentik/authentik \
+  -f kubernetes/apps/authentik/values.yaml \
+  --set authentik.secret_key=dummy \
+  --set authentik.postgresql.password=dummy > /dev/null
+```
+
+## Production Verification
+
+### Postflight Playbook
+
+The `postflight.yml` playbook provides comprehensive production health checks:
+
+```bash
+# Run after any deployment
+task deploy:verify
+```
+
+Verifies:
+- SSH connectivity to all hosts
+- Disk space on root partitions
+- Service status (DNS, mail, NAS, k3s)
+- ZFS pool health (ONLINE, no DEGRADED/FAULTED)
+- NFS/Samba exports active
+- SMART disk health
+- Certificate distribution SSH access
+- K3s persistent storage mounts
+
+### Future: Automated Smoke Tests
+
+A self-hosted runner would enable automated production verification:
+
+```yaml
+# .github/workflows/smoke-tests.yml (future)
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM
+
+jobs:
+  smoke-tests:
+    runs-on: self-hosted
+    steps:
+      - name: DNS health check
+        run: dig @192.168.0.150 google.com +short
+
+      - name: K3s cluster health
+        run: kubectl get nodes
+
+      - name: Service endpoint checks
+        run: curl -sf https://auth.esweiss.com/health/
+```
+
+## Testing Pyramid
+
+The testing strategy follows a pyramid structure:
+
+```
+                    /\
+                   /  \
+                  / E2E \        <- Production smoke tests (postflight.yml)
+                 /------\
+                /        \
+               / Integr.  \      <- Multi-role integration tests (5 scenarios)
+              /------------\
+             /              \
+            /   Unit Tests   \   <- Individual role molecule tests (12 roles, 13 scenarios)
+           /------------------\
+          /                    \
+         /    Static Analysis   \  <- ansible-lint, kubeconform, terraform validate
+        /------------------------\
+```
+
+**Test Coverage:**
+- **Static Analysis:** ansible-lint, yamllint, kubeconform, terraform validate
+- **Unit Tests:** 12 roles with 13 Molecule scenarios (including idempotency)
+- **Integration Tests:** 5 multi-role scenarios testing cross-service interactions
+- **E2E Tests:** Production verification via postflight.yml playbook
+
 ## References
 
 - [Molecule Documentation](https://molecule.readthedocs.io/)
 - [molecule-docker Plugin](https://github.com/ansible-community/molecule-plugins)
 - [Jeff Geerling - Testing Ansible Roles](https://www.jeffgeerling.com/blog/2018/testing-your-ansible-roles-molecule)
+- [kubeconform](https://github.com/yannh/kubeconform)
+- [GitHub Actions Workflow Syntax](https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions)

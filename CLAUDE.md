@@ -98,6 +98,13 @@ task --list
 task ansible:install-collections  # Install required collections
 task ansible:ping                 # Test connectivity
 task ansible:lint                 # Lint playbooks
+task ansible:test                 # Run all Molecule unit tests
+task ansible:test-integration     # Run all integration tests (multi-role)
+task ansible:test-integration-dns # DNS stack (unbound + adguard_home + adguard_sync)
+task ansible:test-integration-mail # Mail stack (smtp_relay + postfix_null_client)
+task ansible:test-integration-base # Base stack (base + qol + tailscale)
+task ansible:test-integration-storage # Storage stack (nas_storage + Samba client, NFS server-side only)
+task ansible:test-integration-certs # Certificate distribution (acme_certs multi-host)
 
 # Deployments (base infrastructure)
 task deploy:check                 # Dry-run (--check mode)
@@ -180,8 +187,10 @@ task terraform:plan               # Plan changes
 task terraform:apply              # Apply changes
 task terraform:validate           # Validate syntax
 
-# Linting
-task lint                         # Lint everything
+# Linting and validation
+task lint                         # Lint everything (Ansible, Terraform, Kubernetes)
+task kubernetes:lint              # Validate K8s manifests with kubeconform
+task kubernetes:validate-helm     # Validate Helm values by templating charts
 
 # State collection
 task collect-state                # Generate cluster snapshot

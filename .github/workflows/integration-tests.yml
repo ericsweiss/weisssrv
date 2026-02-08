@@ -1,0 +1,150 @@
+---
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/integration-tests/**'
+      - 'ansible/roles/**'
+      - 'ansible/inventories/**'
+      - '.github/workflows/integration-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ansible/integration-tests/**'
+      - 'ansible/roles/**'
+      - 'ansible/inventories/**'
+      - '.github/workflows/integration-tests.yml'
+  workflow_dispatch:
+
+env:
+  ANSIBLE_FORCE_COLOR: '1'
+  ANSIBLE_ALLOW_BROKEN_CONDITIONALS: '1'
+  PY_COLORS: '1'
+
+jobs:
+  # Detect which integration tests should run based on changed roles
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed roles and integration tests
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            dns-stack:
+              - 'ansible/roles/unbound/**'
+              - 'ansible/roles/adguard_home/**'
+              - 'ansible/roles/adguard_sync/**'
+              - 'ansible/integration-tests/dns-stack/**'
+              - 'ansible/inventories/**'
+            mail-stack:
+              - 'ansible/roles/smtp_relay/**'
+              - 'ansible/roles/postfix_null_client/**'
+              - 'ansible/integration-tests/mail-stack/**'
+              - 'ansible/inventories/**'
+            base-infrastructure:
+              - 'ansible/roles/base/**'
+              - 'ansible/roles/qol/**'
+              - 'ansible/roles/tailscale/**'
+              - 'ansible/integration-tests/base-infrastructure/**'
+              - 'ansible/inventories/**'
+            storage-stack:
+              - 'ansible/roles/nas_storage/**'
+              - 'ansible/integration-tests/storage-stack/**'
+              - 'ansible/inventories/**'
+            cert-distribution:
+              - 'ansible/roles/acme_certs/**'
+              - 'ansible/integration-tests/cert-distribution/**'
+              - 'ansible/inventories/**'
+
+      - name: Build test matrix
+        id: set-matrix
+        env:
+          CHANGED_TESTS: ${{ steps.filter.outputs.changes }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # All integration test scenarios
+          ALL_TESTS='["dns-stack","mail-stack","base-infrastructure","storage-stack","cert-distribution"]'
+
+          # For workflow_dispatch, test all; otherwise use changed tests
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            TESTS_TO_RUN="$ALL_TESTS"
+          else
+            TESTS_TO_RUN="$CHANGED_TESTS"
+          fi
+
+          echo "Integration tests to run: $TESTS_TO_RUN"
+
+          # Build matrix entries
+          MATRIX_ENTRIES=$(echo "$TESTS_TO_RUN" | jq -c '[.[] | {"test": .}]')
+
+          # Build final matrix object
+          MATRIX=$(echo "$MATRIX_ENTRIES" | jq -c '{"include": .}')
+
+          # Output using heredoc
+          {
+            echo 'matrix<<EOF'
+            echo "$MATRIX"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Generated matrix: $MATRIX"
+
+  integration-tests:
+    needs: changes
+    if: ${{ needs.changes.outputs.matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install Ansible collections
+        working-directory: ansible
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Run integration test - ${{ matrix.test }}
+        working-directory: ansible/integration-tests/${{ matrix.test }}
+        env:
+          ANSIBLE_VERBOSITY: 1
+        run: |
+          molecule test
+
+  # Summary job that all tests passed
+  integration-tests-all:
+    needs: [changes, integration-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.changes.outputs.matrix }}" = '{"include":[]}' ]; then
+            echo "No integration tests needed - skipped"
+            exit 0
+          fi
+          if [ "${{ needs.integration-tests.result }}" = "success" ]; then
+            echo "All integration tests passed!"
+          else
+            echo "Some integration tests failed"
+            exit 1
+          fi

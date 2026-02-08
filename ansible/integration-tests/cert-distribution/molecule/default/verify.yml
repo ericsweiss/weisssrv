@@ -1,0 +1,268 @@
+---
+# Certificate Distribution Integration Test - Verify
+# Validates acme_certs installation and SSH-based certificate distribution
+
+- name: Verify - Certificate Server
+  hosts: cert_servers
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ============================================
+    # acme.sh Installation Verification
+    # ============================================
+    - name: Check acme.sh is installed
+      ansible.builtin.stat:
+        path: /root/.acme.sh/acme.sh
+      register: acme_sh
+
+    - name: Assert acme.sh is installed
+      ansible.builtin.assert:
+        that:
+          - acme_sh.stat.exists
+          - acme_sh.stat.executable
+        fail_msg: "acme.sh not installed"
+        success_msg: "acme.sh is installed"
+
+    - name: Check acme.sh account configuration
+      ansible.builtin.stat:
+        path: /root/.acme.sh/account.conf
+      register: acme_account
+
+    - name: Log acme.sh account status
+      ansible.builtin.debug:
+        msg: "acme.sh account configured: {{ acme_account.stat.exists }}"
+
+    # ============================================
+    # Certificate Files Verification
+    # ============================================
+    - name: Check certificate directories exist
+      ansible.builtin.stat:
+        path: "/root/.acme.sh/{{ item.domain }}"
+      register: cert_dirs
+      loop: "{{ acme_domains }}"
+
+    - name: Assert certificate directories exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: "Certificate directory missing for {{ item.item.domain }}"
+        success_msg: "Certificate directory exists for {{ item.item.domain }}"
+      loop: "{{ cert_dirs.results }}"
+
+    - name: Check certificate files exist
+      ansible.builtin.stat:
+        path: "/root/.acme.sh/{{ item.domain }}/fullchain.cer"
+      register: cert_files
+      loop: "{{ acme_domains }}"
+
+    - name: Assert certificate files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.size > 0
+        fail_msg: "Certificate file missing for {{ item.item.domain }}"
+        success_msg: "Certificate exists for {{ item.item.domain }}"
+      loop: "{{ cert_files.results }}"
+
+    - name: Check private key files exist
+      ansible.builtin.stat:
+        path: "/root/.acme.sh/{{ item.domain }}/{{ item.domain }}.key"
+      register: key_files
+      loop: "{{ acme_domains }}"
+
+    - name: Assert private key files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.mode == '0600'
+        fail_msg: "Private key missing or wrong permissions for {{ item.item.domain }}"
+        success_msg: "Private key exists with correct permissions for {{ item.item.domain }}"
+      loop: "{{ key_files.results }}"
+
+    # ============================================
+    # SSH Key Setup Verification (matches role output)
+    # ============================================
+    - name: Check SSH private key for distribution
+      ansible.builtin.stat:
+        path: /home/eric/.ssh/id_ed25519_certs
+      register: ssh_key
+
+    - name: Assert SSH distribution key exists
+      ansible.builtin.assert:
+        that:
+          - ssh_key.stat.exists
+          - ssh_key.stat.mode == '0600'
+        fail_msg: "SSH distribution key not created or wrong permissions"
+        success_msg: "SSH distribution key exists with correct permissions"
+
+    - name: Check SSH public key for distribution
+      ansible.builtin.stat:
+        path: /home/eric/.ssh/id_ed25519_certs.pub
+      register: ssh_pubkey
+
+    - name: Assert SSH public key exists
+      ansible.builtin.assert:
+        that:
+          - ssh_pubkey.stat.exists
+          - ssh_pubkey.stat.mode == '0644'
+        fail_msg: "SSH distribution public key not created or wrong permissions"
+        success_msg: "SSH distribution public key exists"
+
+    - name: Check cert reload script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/homelab-cert-reload.sh
+      register: reload_script
+
+    - name: Assert reload script exists
+      ansible.builtin.assert:
+        that:
+          - reload_script.stat.exists
+          - reload_script.stat.executable
+          - reload_script.stat.mode == '0700'
+        fail_msg: "Cert reload script not created or not executable"
+        success_msg: "Cert reload script exists and is executable"
+
+    - name: Read reload script content
+      ansible.builtin.command: cat /usr/local/sbin/homelab-cert-reload.sh
+      register: reload_script_content
+      changed_when: false
+
+    - name: Assert reload script contains distribution targets
+      ansible.builtin.assert:
+        that:
+          - "'cert-client-01' in reload_script_content.stdout"
+          - "'cert-client-02' in reload_script_content.stdout"
+        fail_msg: "Reload script missing distribution target hostnames"
+        success_msg: "Reload script contains all distribution targets"
+
+- name: Verify - Certificate Clients
+  hosts: cert_clients
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ============================================
+    # Certificate Directory Verification
+    # ============================================
+    - name: Check certificate directory exists
+      ansible.builtin.stat:
+        path: /etc/ssl/certs/wildcard
+      register: client_cert_dir
+
+    - name: Assert certificate directory exists
+      ansible.builtin.assert:
+        that:
+          - client_cert_dir.stat.exists
+          - client_cert_dir.stat.isdir
+        fail_msg: "Certificate directory not created"
+        success_msg: "Certificate directory exists"
+
+    # ============================================
+    # Distributed Certificate Verification
+    # ============================================
+    - name: Check for distributed fullchain certificate
+      ansible.builtin.stat:
+        path: /etc/ssl/certs/wildcard/fullchain.pem
+      register: client_fullchain
+
+    - name: Assert fullchain certificate was distributed
+      ansible.builtin.assert:
+        that:
+          - client_fullchain.stat.exists
+          - client_fullchain.stat.size > 0
+          - client_fullchain.stat.mode == '0644'
+        fail_msg: "Fullchain certificate not distributed or wrong permissions (expected 0644)"
+        success_msg: "Fullchain certificate distributed with correct permissions"
+
+    - name: Check for distributed private key
+      ansible.builtin.stat:
+        path: /etc/ssl/certs/wildcard/privkey.pem
+      register: client_privkey
+
+    - name: Assert private key was distributed
+      ansible.builtin.assert:
+        that:
+          - client_privkey.stat.exists
+          - client_privkey.stat.size > 0
+          - client_privkey.stat.mode == '0600'
+        fail_msg: "Private key not distributed or wrong permissions (expected 0600)"
+        success_msg: "Private key distributed with correct permissions"
+
+    - name: Verify certificate content is valid (contains BEGIN CERTIFICATE)
+      ansible.builtin.command: grep -q "BEGIN CERTIFICATE" /etc/ssl/certs/wildcard/fullchain.pem
+      register: cert_content_check
+      changed_when: false
+
+    - name: Assert certificate content is valid
+      ansible.builtin.assert:
+        that:
+          - cert_content_check.rc == 0
+        fail_msg: "Distributed certificate does not contain valid PEM content"
+        success_msg: "Distributed certificate contains valid PEM content"
+
+    - name: Verify private key content is valid (contains BEGIN)
+      ansible.builtin.command: grep -q "BEGIN" /etc/ssl/certs/wildcard/privkey.pem
+      register: key_content_check
+      changed_when: false
+
+    - name: Assert private key content is valid
+      ansible.builtin.assert:
+        that:
+          - key_content_check.rc == 0
+        fail_msg: "Distributed private key does not contain valid PEM content"
+        success_msg: "Distributed private key contains valid PEM content"
+
+    # ============================================
+    # SSH Connectivity Verification
+    # ============================================
+    - name: Check SSH service is running
+      ansible.builtin.systemd:
+        name: ssh
+        state: started
+      check_mode: true
+      register: ssh_service
+
+    - name: Assert SSH service is active
+      ansible.builtin.assert:
+        that:
+          - ssh_service.status.ActiveState == "active"
+        fail_msg: "SSH service not running"
+        success_msg: "SSH service is running"
+
+    - name: Check authorized_keys for cert distribution key
+      ansible.builtin.shell: grep -c "test@molecule.dev\|dns-01" /home/{{ admin_username }}/.ssh/authorized_keys || echo "0"
+      register: authorized_key_check
+      changed_when: false
+
+    - name: Log authorized_keys status
+      ansible.builtin.debug:
+        msg: "Authorized keys for cert distribution: {{ authorized_key_check.stdout }}"
+
+- name: Integration Test Summary
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Certificate distribution integration test summary
+      ansible.builtin.debug:
+        msg: |
+          Certificate Distribution Integration Test Results:
+          ==================================================
+          Host: {{ inventory_hostname }}
+          Role: {% if 'cert_servers' in group_names %}Certificate Server{% else %}Certificate Client{% endif %}
+
+          {% if 'cert_servers' in group_names %}
+          acme.sh Installed: {{ 'YES' if hostvars[inventory_hostname].acme_sh.stat.exists else 'NO' }}
+          Certificates: {{ hostvars[inventory_hostname].acme_domains | length }} domains
+          Distribution Targets: {{ hostvars[inventory_hostname].cert_distribution_targets | length }} hosts
+          SSH Key for Distribution: {{ 'YES' if hostvars[inventory_hostname].ssh_key.stat.exists else 'NO' }}
+          Reload Script: {{ 'YES' if hostvars[inventory_hostname].reload_script.stat.exists else 'NO' }}
+          {% else %}
+          Certificate Directory: {{ 'EXISTS' if hostvars[inventory_hostname].client_cert_dir.stat.exists else 'MISSING' }}
+          Fullchain Certificate: {{ 'RECEIVED' if hostvars[inventory_hostname].client_fullchain.stat.exists else 'MISSING' }}
+          Private Key: {{ 'RECEIVED' if hostvars[inventory_hostname].client_privkey.stat.exists else 'MISSING' }}
+          SSH Service: {{ hostvars[inventory_hostname].ssh_service.status.ActiveState }}
+          {% endif %}

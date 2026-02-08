@@ -1,0 +1,123 @@
+---
+# Custom create playbook for Ansible 2.20+ compatibility
+# Simplified for pre-built images only
+- name: Create
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  no_log: "{{ molecule_no_log }}"
+
+  tasks:
+    - name: Set async_dir for HOME env
+      ansible.builtin.set_fact:
+        ansible_async_dir: "{{ lookup('env', 'HOME') }}/.ansible_async/"
+      when: lookup('env', 'HOME') | length > 0
+
+    - name: Log into a container registry
+      community.docker.docker_login:
+        registry_url: "{{ item.registry.url }}"
+        username: "{{ item.registry.credentials.username }}"
+        password: "{{ item.registry.credentials.password }}"
+        email: "{{ item.registry.credentials.email | default(omit) }}"
+        reauthorize: "{{ item.registry.credentials.reauthorize | default(omit) }}"
+        config_path: "{{ item.registry.credentials.config_path | default(omit) }}"
+        state: present
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.registry is defined
+        - item.registry.credentials is defined
+        - item.registry.credentials.username is defined
+
+    - name: Create docker network(s)
+      community.docker.docker_network:
+        name: "{{ item }}"
+        docker_host: "{{ lookup('env', 'DOCKER_HOST') or 'unix://var/run/docker.sock' }}"
+        state: present
+      loop:
+        - storage-stack-net
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Determine the CMD directives
+      ansible.builtin.set_fact:
+        command_directives_dict: >-
+          {{ command_directives_dict | default({}) |
+             combine({item.name: item.command | default('')})
+          }}
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.override_command | default(true)
+
+    - name: Create molecule instance(s)
+      community.docker.docker_container:
+        name: "{{ item.name }}"
+        docker_host: "{{ item.docker_host | default(lookup('env', 'DOCKER_HOST') or 'unix://var/run/docker.sock') }}"
+        hostname: "{{ item.hostname | default(item.name) }}"
+        image: "{{ item.image }}"
+        pull: "{{ item.pull | default(omit) }}"
+        state: started
+        recreate: false
+        log_driver: json-file
+        command: "{{ (command_directives_dict | default({}))[item.name] | default(omit, true) }}"
+        command_handling: "{{ item.command_handling | default('correct') }}"
+        healthcheck: "{{ item.healthcheck | default(omit) }}"
+        user: "{{ item.user | default(omit) }}"
+        pid_mode: "{{ item.pid_mode | default(omit) }}"
+        privileged: "{{ item.privileged | default(omit) }}"
+        cgroupns_mode: "{{ item.cgroupns_mode | default(omit) }}"
+        security_opts: "{{ item.security_opts | default(omit) }}"
+        devices: "{{ item.devices | default(omit) }}"
+        device_requests: "{{ item.device_requests | default(omit) }}"
+        volumes: "{{ item.volumes | default(omit) }}"
+        mounts: "{{ item.mounts | default(omit) }}"
+        tmpfs: "{{ item.tmpfs | default(omit) }}"
+        capabilities: "{{ item.capabilities | default(omit) }}"
+        sysctls: "{{ item.sysctls | default(omit) }}"
+        exposed_ports: "{{ item.exposed_ports | default(omit) }}"
+        published_ports: "{{ item.published_ports | default(omit) }}"
+        ulimits: "{{ item.ulimits | default(omit) }}"
+        networks: "{{ item.networks | default(omit) }}"
+        network_mode: "{{ item.network_mode | default(omit) }}"
+        purge_networks: "{{ item.purge_networks | default(omit) }}"
+        dns_servers: "{{ item.dns_servers | default(omit) }}"
+        dns_search_domains: "{{ item.dns_search_domains | default(omit) }}"
+        etc_hosts: "{{ item.etc_hosts | default(omit) }}"
+        env: "{{ item.env | default(omit) }}"
+        restart_policy: "{{ item.restart_policy | default(omit) }}"
+        restart_retries: "{{ item.restart_retries | default(omit) }}"
+        tty: "{{ item.tty | default(omit) }}"
+        labels: "{{ item.labels | default(omit) }}"
+        container_default_behavior: "{{ item.container_default_behavior | default('compatibility') }}"
+        stop_signal: "{{ item.stop_signal | default(omit) }}"
+        kill_signal: "{{ item.kill_signal | default(omit) }}"
+        platform: "{{ item.platform | default(omit) }}"
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: docker_container_result
+      async: 7200
+      poll: 0
+
+    - name: Wait for instance(s) creation to complete
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ docker_container_result.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      register: docker_jobs
+      until: docker_jobs.finished
+      retries: 300
+      delay: 1
+
+    - name: Fail if container is not running
+      ansible.builtin.fail:
+        msg: "Container {{ item.item.item.name }} failed to start: {{ item.container.State.Error | default('unknown error') }}"
+      when:
+        - item.container is defined
+        - item.container.State.ExitCode != 0
+      loop: "{{ docker_jobs.results }}"
+      loop_control:
+        label: "{{ item.item.item.name }}"
