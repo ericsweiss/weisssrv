@@ -23,7 +23,13 @@
     - adguard_user_check.ansible_facts.getent_passwd is not defined or adguard_user_check.ansible_facts.getent_passwd[adguard_user] is not defined
   changed_when: false  # Service stop/start is deployment process, not config drift
 
-- name: Create adguard user and group
+- name: Create adguard group
+  ansible.builtin.group:
+    name: "{{ adguard_group }}"
+    system: true
+    state: present
+
+- name: Create adguard user
   ansible.builtin.user:
     name: "{{ adguard_user }}"
     group: "{{ adguard_group }}"
@@ -162,10 +168,14 @@
 # dns-02 will sync automatically via adguardhome-sync
 - name: Configure base AdGuard Home settings via API
   ansible.builtin.include_tasks: api_base_config.yml
-  when: inventory_hostname == 'dns-01'
+  when:
+    - inventory_hostname == 'dns-01'
+    - not (skip_adguard_api_config | default(false))
 
 # Configure DNS rewrites and filtering rules via API (dns-01 only)
 # dns-02 will sync automatically via adguardhome-sync
 - name: Configure DNS rewrites and filtering rules via API
   ansible.builtin.include_tasks: api_config.yml
-  when: inventory_hostname == 'dns-01'
+  when:
+    - inventory_hostname == 'dns-01'
+    - not (skip_adguard_api_config | default(false))

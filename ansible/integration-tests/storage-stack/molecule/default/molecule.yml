@@ -1,0 +1,150 @@
+---
+# Storage Stack Integration Test
+# Tests: nas_storage role configuration (NFS exports + Samba shares)
+#
+# IMPORTANT: Docker container limitations
+# - NFS server: Configuration tested, but service won't fully work (kernel modules)
+# - Samba server: Full testing works (user-space daemon)
+# - NFS client mounts: NOT possible in Docker (requires kernel NFS support)
+# - CIFS/SMB mounts: NOT possible without CAP_SYS_ADMIN and kernel modules
+#
+# This test validates:
+# 1. Configuration files are correctly generated
+# 2. Packages are installed
+# 3. Samba service runs and shares are accessible
+# 4. Idempotence of the role
+
+driver:
+  name: docker
+
+platforms:
+  # NAS Server - runs nas_storage role
+  - name: nas-server
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    capabilities:
+      - SYS_ADMIN
+    tmpfs:
+      - /run
+      - /tmp
+    networks:
+      - name: storage-stack-net
+    groups:
+      - storage
+      - nas_servers
+
+  # SMB Client - tests Samba connectivity (listing shares)
+  # NFS client removed: mounting NFS shares doesn't work in Docker containers
+  - name: smb-client-01
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    tmpfs:
+      - /run
+      - /tmp
+    networks:
+      - name: storage-stack-net
+    groups:
+      - storage
+      - smb_clients
+
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../../../roles
+    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  # Custom playbooks for Ansible 2.20+ compatibility
+  playbooks:
+    create: create.yml
+    destroy: destroy.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      nas_servers:
+        # Base role configuration (applied by converge)
+        skip_ssh_config: true  # SSH doesn't work in containers
+        skip_dns_config: true  # DNS resolver needs real network
+
+        # NAS storage configuration - skip operations that don't work in containers
+        skip_zfs_config: true      # ZFS requires kernel modules
+        skip_nfs_reload: true      # exportfs -ra fails without NFS kernel support
+        skip_smartd_service: true  # No block devices in container
+
+        # NFS exports configuration (templates will be generated)
+        nfs_exports:
+          - path: /tank/media
+            clients:
+              - spec: "172.16.0.0/12"
+                options: "rw,sync,no_subtree_check,no_root_squash"
+          - path: /tank/share
+            clients:
+              - spec: "172.16.0.0/12"
+                options: "rw,sync,no_subtree_check,no_root_squash"
+
+        # Samba shares configuration (Samba DOES work in containers)
+        samba_shares:
+          - name: media
+            path: /tank/media
+            comment: "Media Library"
+            read_only: false
+            browseable: true
+            guest_ok: true
+            create_mask: "0664"
+            directory_mask: "0775"
+          - name: share
+            path: /tank/share
+            comment: "Shared Files"
+            read_only: false
+            browseable: true
+            guest_ok: true
+            create_mask: "0664"
+            directory_mask: "0775"
+
+        # Mock ZFS mount points (created in converge)
+        mock_zfs_mounts:
+          - /tank/media
+          - /tank/share
+
+        # SMART monitoring (no real devices in container)
+        smartd_enabled: true
+        smartd_devices: []
+
+      smb_clients:
+        # Samba client configuration
+        smb_server: nas-server
+        smb_test_shares:
+          - media
+          - share
+
+verifier:
+  name: ansible
+
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy

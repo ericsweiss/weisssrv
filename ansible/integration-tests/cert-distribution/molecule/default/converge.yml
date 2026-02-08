@@ -1,0 +1,282 @@
+---
+# Certificate Distribution Integration Test - Converge
+# Tests acme_certs with SSH distribution to multiple hosts
+
+- name: Converge - Certificate Stack (All Hosts)
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - systemd
+          - openssh-server
+          - openssh-client
+          - curl
+          - git
+          - sudo
+        state: present
+
+    - name: Wait for systemd to be ready
+      ansible.builtin.wait_for:
+        path: /run/systemd/system
+        state: present
+        timeout: 30
+
+    # Set up SSH for certificate distribution
+    - name: Create admin user
+      ansible.builtin.user:
+        name: "{{ admin_username }}"
+        state: present
+        shell: /bin/bash
+        create_home: true
+
+    - name: Configure passwordless sudo for admin user
+      ansible.builtin.copy:
+        content: "{{ admin_username }} ALL=(ALL) NOPASSWD: ALL\n"
+        dest: "/etc/sudoers.d/{{ admin_username }}"
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    - name: Start SSH service
+      ansible.builtin.systemd:
+        name: ssh
+        state: started
+        enabled: true
+
+    - name: Ensure .ssh directory exists for admin user
+      ansible.builtin.file:
+        path: /home/{{ admin_username }}/.ssh
+        state: directory
+        owner: "{{ admin_username }}"
+        group: "{{ admin_username }}"
+        mode: '0700'
+
+    - name: Accept host keys (for SSH distribution - eric user)
+      ansible.builtin.shell: |
+        ssh-keyscan -H {{ item }} >> /home/{{ admin_username }}/.ssh/known_hosts
+        chown {{ admin_username }}:{{ admin_username }} /home/{{ admin_username }}/.ssh/known_hosts
+      loop:
+        - cert-client-01
+        - cert-client-02
+      when: "'cert_servers' in group_names"
+      changed_when: false
+
+    - name: Accept host keys (for SSH distribution - root user for distribution script)
+      ansible.builtin.shell: |
+        mkdir -p /root/.ssh
+        ssh-keyscan -H {{ item }} >> /root/.ssh/known_hosts
+        chmod 700 /root/.ssh
+        chmod 644 /root/.ssh/known_hosts
+      loop:
+        - cert-client-01
+        - cert-client-02
+      when: "'cert_servers' in group_names"
+      changed_when: false
+
+    # Create destination directories on clients
+    - name: Create certificate directories on clients
+      ansible.builtin.file:
+        path: /etc/ssl/certs/wildcard
+        state: directory
+        mode: '0755'
+      when: "'cert_clients' in group_names"
+
+- name: Converge - Certificate Server
+  hosts: cert_servers
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  vars:
+    # Override defaults for container testing
+    local_cert_dir: /opt/AdGuardHome/certs
+
+  tasks:
+    # Pre-create mock certificates (acme.sh would normally get these from Let's Encrypt)
+    - name: Create acme.sh directory
+      ansible.builtin.file:
+        path: /root/.acme.sh
+        state: directory
+        mode: '0700'
+
+    - name: Create mock domain directory
+      ansible.builtin.file:
+        path: "/root/.acme.sh/{{ item.domain }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ acme_domains }}"
+
+    - name: Create mock certificates in acme.sh directory
+      ansible.builtin.copy:
+        content: |
+          -----BEGIN CERTIFICATE-----
+          MIICMzCCAZygAwIBAgIUMockTestCertificate{{ item.domain }}000000wDQYJKoZI
+          -----END CERTIFICATE-----
+        dest: "/root/.acme.sh/{{ item.domain }}/fullchain.cer"
+        mode: '0644'
+      loop: "{{ acme_domains }}"
+
+    - name: Create mock private keys in acme.sh directory
+      ansible.builtin.copy:
+        content: |
+          -----BEGIN PRIVATE KEY-----
+          MIIEvgIBADANBgkqhkiGTestPrivateKey{{ item.domain }}00000000000000000
+          -----END PRIVATE KEY-----
+        dest: "/root/.acme.sh/{{ item.domain }}/{{ item.domain }}.key"
+        mode: '0600'
+      loop: "{{ acme_domains }}"
+
+    - name: Create mock acme.sh binary
+      ansible.builtin.copy:
+        content: |
+          #!/usr/bin/env bash
+          # Mock acme.sh for testing
+          echo "Mock acme.sh - test only"
+        dest: /root/.acme.sh/acme.sh
+        mode: '0755'
+
+    # Create local cert dir with installed certs (simulates acme.sh --install-cert)
+    - name: Create local certificate directory
+      ansible.builtin.file:
+        path: "{{ local_cert_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Create mock fullchain.pem in local cert dir
+      ansible.builtin.copy:
+        content: |
+          -----BEGIN CERTIFICATE-----
+          MIICMzCCAZygAwIBAgIUMockTestCertificateFullchain000000wDQYJKoZI
+          -----END CERTIFICATE-----
+        dest: "{{ local_cert_dir }}/fullchain.pem"
+        mode: '0644'
+
+    - name: Create mock privkey.pem in local cert dir
+      ansible.builtin.copy:
+        content: |
+          -----BEGIN PRIVATE KEY-----
+          MIIEvgIBADANBgkqhkiGTestPrivateKeyLocalCert00000000000000000
+          -----END PRIVATE KEY-----
+        dest: "{{ local_cert_dir }}/privkey.pem"
+        mode: '0640'
+
+    # Install sudo for the distribution script (runs sudo on remote hosts)
+    - name: Install sudo
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+
+    # Create mock AdGuardHome service (the reload script tries to restart it)
+    - name: Create mock AdGuardHome binary
+      ansible.builtin.copy:
+        content: |
+          #!/bin/bash
+          echo "Mock AdGuardHome running"
+          sleep infinity
+        dest: /usr/local/bin/AdGuardHome
+        mode: '0755'
+
+    - name: Create mock AdGuardHome systemd service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Mock AdGuard Home for testing
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/AdGuardHome
+          Restart=on-failure
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/AdGuardHome.service
+        mode: '0644'
+
+    - name: Reload systemd and start mock AdGuardHome
+      ansible.builtin.systemd:
+        daemon_reload: true
+        name: AdGuardHome
+        state: started
+        enabled: true
+
+    # Vars come from molecule.yml inventory and all.yml vars_files
+    - name: Apply acme_certs role
+      ansible.builtin.include_role:
+        name: acme_certs
+      vars:
+        # Override defaults for container testing
+        skip_acme_install: false  # Install acme.sh
+        skip_cert_issuance: true  # Don't actually issue certs (use mock)
+        local_cert_dir: /opt/AdGuardHome/certs
+
+    # After the role runs, regenerate a working SSH key for actual distribution
+    # (the role deploys dummy keys from molecule vars that don't actually work)
+    - name: Generate working SSH key for cert distribution
+      ansible.builtin.shell: |
+        rm -f /home/{{ admin_username }}/.ssh/id_ed25519_certs /home/{{ admin_username }}/.ssh/id_ed25519_certs.pub
+        ssh-keygen -t ed25519 -f /home/{{ admin_username }}/.ssh/id_ed25519_certs -N "" -C "cert-distribution@dns-01"
+        chown {{ admin_username }}:{{ admin_username }} /home/{{ admin_username }}/.ssh/id_ed25519_certs*
+        chmod 600 /home/{{ admin_username }}/.ssh/id_ed25519_certs
+        chmod 644 /home/{{ admin_username }}/.ssh/id_ed25519_certs.pub
+      changed_when: true
+
+    - name: Fetch public key for distribution
+      ansible.builtin.slurp:
+        src: /home/{{ admin_username }}/.ssh/id_ed25519_certs.pub
+      register: generated_pubkey
+
+    - name: Set fact for generated public key
+      ansible.builtin.set_fact:
+        cert_distribution_pubkey: "{{ generated_pubkey.content | b64decode | trim }}"
+
+# Third play: Add the generated public key to clients
+- name: Converge - Add Distribution Key to Clients
+  hosts: cert_clients
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  tasks:
+    - name: Add cert distribution public key to authorized_keys
+      ansible.posix.authorized_key:
+        user: "{{ admin_username }}"
+        key: "{{ hostvars['dns-01'].cert_distribution_pubkey }}"
+        state: present
+        comment: "cert-distribution@dns-01"
+
+# Fourth play: Run the distribution script now that keys are in place
+- name: Converge - Run Certificate Distribution
+  hosts: cert_servers
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  vars:
+    local_cert_dir: /opt/AdGuardHome/certs
+
+  tasks:
+    - name: Run certificate distribution script
+      ansible.builtin.command: /usr/local/sbin/homelab-cert-reload.sh
+      register: distribution_result
+      changed_when: distribution_result.rc == 0
+      failed_when: false  # Don't fail if distribution has issues (we'll check in verify)
+
+    - name: Log distribution result
+      ansible.builtin.debug:
+        msg: |
+          Distribution script exit code: {{ distribution_result.rc }}
+          stdout: {{ distribution_result.stdout | default('') }}
+          stderr: {{ distribution_result.stderr | default('') }}

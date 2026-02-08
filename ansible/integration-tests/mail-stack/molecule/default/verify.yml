@@ -1,0 +1,236 @@
+---
+# Mail Stack Integration Test - Verify
+# Validates smtp_relay + postfix_null_client integration
+
+- name: Verify - Mail Stack Integration
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ============================================
+    # SMTP Relay Server Verification
+    # ============================================
+    - name: Check Postfix service on relay
+      ansible.builtin.systemd:
+        name: postfix
+        state: started
+      check_mode: true
+      register: relay_postfix
+      when: "'relay_servers' in group_names"
+      failed_when: false
+
+    - name: Assert relay Postfix is active
+      ansible.builtin.assert:
+        that:
+          - relay_postfix.status.ActiveState == "active"
+        fail_msg: "Relay Postfix is not active"
+        success_msg: "Relay Postfix is running"
+      when: "'relay_servers' in group_names"
+
+    - name: Check SMTP relay is listening on port 25
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 25
+        timeout: 5
+        msg: "SMTP relay not listening on port 25"
+      when: "'relay_servers' in group_names"
+
+    - name: Check relay main.cf configuration
+      ansible.builtin.command: postconf -h relayhost
+      register: relay_relayhost
+      changed_when: false
+      when: "'relay_servers' in group_names"
+
+    - name: Assert relay has correct relayhost
+      ansible.builtin.assert:
+        that:
+          - "'smtp.gmail.com' in relay_relayhost.stdout"
+        fail_msg: "Relay relayhost not configured correctly"
+        success_msg: "Relay relayhost is correct"
+      when: "'relay_servers' in group_names"
+
+    - name: Check relay SASL password file exists
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl_passwd
+      register: relay_sasl
+      when: "'relay_servers' in group_names"
+
+    - name: Assert relay SASL password file exists
+      ansible.builtin.assert:
+        that:
+          - relay_sasl.stat.exists
+          - relay_sasl.stat.mode == '0600'
+        fail_msg: "Relay SASL password file missing or wrong permissions"
+        success_msg: "Relay SASL password file configured"
+      when: "'relay_servers' in group_names"
+
+
+    # ============================================
+    # Mail Client Verification
+    # ============================================
+    - name: Check Postfix service on clients
+      ansible.builtin.systemd:
+        name: postfix
+        state: started
+      check_mode: true
+      register: client_postfix
+      when: "'mail_clients' in group_names"
+      failed_when: false
+
+    - name: Assert client Postfix is active
+      ansible.builtin.assert:
+        that:
+          - client_postfix.status.ActiveState == "active"
+        fail_msg: "Client Postfix is not active"
+        success_msg: "Client Postfix is running"
+      when: "'mail_clients' in group_names"
+
+    - name: Check client relayhost configuration
+      ansible.builtin.command: postconf -h relayhost
+      register: client_relayhost
+      changed_when: false
+      when: "'mail_clients' in group_names"
+
+    - name: Assert client has correct relayhost
+      ansible.builtin.assert:
+        that:
+          - "'smtp-relay' in client_relayhost.stdout"
+        fail_msg: "Client relayhost not pointing to smtp-relay"
+        success_msg: "Client relayhost is correct"
+      when: "'mail_clients' in group_names"
+
+    - name: Check client SASL password file exists
+      ansible.builtin.stat:
+        path: /etc/postfix/sasl_passwd
+      register: client_sasl
+      when: "'mail_clients' in group_names"
+
+    - name: Assert client SASL password file exists
+      ansible.builtin.assert:
+        that:
+          - client_sasl.stat.exists
+          - client_sasl.stat.mode == '0600'
+        fail_msg: "Client SASL password file missing or wrong permissions"
+        success_msg: "Client SASL password file configured"
+      when: "'mail_clients' in group_names"
+
+    - name: Check client virtual alias file
+      ansible.builtin.stat:
+        path: /etc/postfix/virtual
+      register: client_virtual
+      when: "'mail_clients' in group_names"
+
+    - name: Assert client virtual alias file exists
+      ansible.builtin.assert:
+        that:
+          - client_virtual.stat.exists
+        fail_msg: "Client virtual alias file missing"
+        success_msg: "Client virtual alias file configured"
+      when: "'mail_clients' in group_names"
+
+    # ============================================
+    # Integration Tests (Client -> Relay)
+    # ============================================
+    # INTEGRATION TEST LIMITATION:
+    # This test verifies SMTP connectivity at the transport level only:
+    # - TCP connection to port 25 succeeds
+    # - SMTP banner (220) is received
+    #
+    # What is NOT tested (would require real Gmail credentials):
+    # - SASL authentication between client and relay
+    # - Actual mail delivery to Gmail SMTP
+    # - TLS negotiation (STARTTLS)
+    # - Mail queue processing and delivery
+    #
+    # These limitations exist because:
+    # 1. Integration tests use mock credentials (not real Gmail app password)
+    # 2. Gmail SMTP requires valid authentication
+    # 3. Container networking may not allow outbound SMTP
+    #
+    # Full mail flow is validated manually in production by sending test emails.
+    # The SASL password files and Postfix configuration ARE validated above.
+    - name: Test SMTP connectivity from client to relay
+      ansible.builtin.shell: |
+        (sleep 0.5; echo "QUIT") | nc smtp-relay 25 2>&1 | head -1
+      register: smtp_test
+      changed_when: false
+      when: "'mail_clients' in group_names"
+      retries: 3
+      delay: 2
+      until: smtp_test.rc == 0 and '220' in smtp_test.stdout
+
+    - name: Assert SMTP banner received
+      ansible.builtin.assert:
+        that:
+          - smtp_test.rc == 0
+          - "'220' in smtp_test.stdout"
+        fail_msg: "Client cannot connect to SMTP relay (banner: {{ smtp_test.stdout }})"
+        success_msg: "Client can connect to SMTP relay (transport-level connectivity verified)"
+      when: "'mail_clients' in group_names"
+
+    - name: Log SMTP connectivity test
+      ansible.builtin.debug:
+        msg: "SMTP banner received: {{ smtp_test.stdout }}"
+      when: "'mail_clients' in group_names"
+
+    - name: Check mail queue is empty on clients
+      ansible.builtin.command: mailq
+      register: client_mailq
+      changed_when: false
+      when: "'mail_clients' in group_names"
+
+    - name: Log client mail queue
+      ansible.builtin.debug:
+        msg: "Client mail queue: {{ client_mailq.stdout_lines }}"
+      when: "'mail_clients' in group_names"
+
+    # ============================================
+    # Configuration Verification
+    # ============================================
+    - name: Verify Postfix is in null client mode
+      ansible.builtin.command: postconf -h inet_interfaces
+      register: client_interfaces
+      changed_when: false
+      when: "'mail_clients' in group_names"
+
+    - name: Assert client is in null client mode
+      ansible.builtin.assert:
+        that:
+          - "'loopback-only' in client_interfaces.stdout"
+        fail_msg: "Client not in null client mode (inet_interfaces)"
+        success_msg: "Client is in null client mode"
+      when: "'mail_clients' in group_names"
+
+    - name: Check relay mynetworks includes Docker network
+      ansible.builtin.command: postconf -h mynetworks
+      register: relay_mynetworks
+      changed_when: false
+      when: "'relay_servers' in group_names"
+
+    - name: Log relay mynetworks
+      ansible.builtin.debug:
+        msg: "Relay mynetworks: {{ relay_mynetworks.stdout }}"
+      when: "'relay_servers' in group_names"
+
+    # ============================================
+    # Final Summary
+    # ============================================
+    - name: Integration test summary
+      ansible.builtin.debug:
+        msg: |
+          Mail Stack Integration Test Results:
+          ====================================
+          Host: {{ inventory_hostname }}
+          {% if 'relay_servers' in group_names %}
+          Role: SMTP Relay Server
+          Postfix: {{ 'RUNNING' if relay_postfix.status.ActiveState == 'active' else 'FAILED' }}
+          Port 25: {{ 'LISTENING' }}
+          Relayhost: {{ relay_relayhost.stdout }}
+          {% elif 'mail_clients' in group_names %}
+          Role: Mail Client
+          Postfix: {{ 'RUNNING' if client_postfix.status.ActiveState == 'active' else 'FAILED' }}
+          Relayhost: {{ client_relayhost.stdout }}
+          SMTP Connectivity: {{ 'OK' if smtp_test.rc == 0 else 'FAILED' }}
+          Null Client Mode: {{ 'YES' if 'loopback-only' in client_interfaces.stdout else 'NO' }}
+          {% endif %}

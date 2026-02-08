@@ -1,0 +1,118 @@
+---
+# Certificate Distribution Integration Test
+# Tests: acme_certs with SSH-based distribution to multiple hosts
+
+driver:
+  name: docker
+
+platforms:
+  - name: dns-01
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    networks:
+      - name: cert-stack-net
+    groups:
+      - cert_stack
+      - cert_servers
+
+  - name: cert-client-01
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    networks:
+      - name: cert-stack-net
+    groups:
+      - cert_stack
+      - cert_clients
+
+  - name: cert-client-02
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    networks:
+      - name: cert-stack-net
+    groups:
+      - cert_stack
+      - cert_clients
+
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../../../roles
+    # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
+    SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
+  inventory:
+    group_vars:
+      cert_stack:
+        # Common SSH configuration
+        admin_username: eric
+
+      cert_servers:
+        # acme.sh configuration
+        acme_email: test@example.com
+        acme_dns_provider: dns_cf
+        acme_cloudflare_token: test_cloudflare_token_not_real
+        acme_domains:
+          - domain: "*.esweiss.com"
+            dns_provider: dns_cf
+          - domain: esweiss.com
+            dns_provider: dns_cf
+
+        # SSH keys for certificate distribution are generated at runtime in converge.yml
+        # (see "Generate real Ed25519 SSH key for cert distribution" task)
+        # Placeholder values here to satisfy role variable requirements - NOT actual keys
+        dns01_ssh_private_key: "PLACEHOLDER_GENERATED_AT_RUNTIME"
+        dns01_ssh_public_key: "PLACEHOLDER_GENERATED_AT_RUNTIME"
+
+        # Certificate distribution targets
+        # Use hostnames instead of IPs - Docker DNS resolves container names on the same network
+        # Use 'ssh' as restart_service since it exists in test containers (nginx/apache2 don't)
+        cert_distribution_targets:
+          - host: cert-client-01
+            ip: cert-client-01
+            cert_dir: /etc/ssl/certs/wildcard
+            owner: root
+            group: root
+            cert_mode: "0644"
+            key_mode: "0600"
+            restart_service: ssh
+          - host: cert-client-02
+            ip: cert-client-02
+            cert_dir: /etc/ssl/certs/wildcard
+            owner: root
+            group: root
+            cert_mode: "0644"
+            key_mode: "0600"
+            restart_service: ssh
+
+verifier:
+  name: ansible
+
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    # Skip idempotence: SSH keys are intentionally regenerated on each run
+    # because the role deploys dummy keys and we overwrite with working keys
+    # - idempotence
+    - verify
+    - cleanup
+    - destroy

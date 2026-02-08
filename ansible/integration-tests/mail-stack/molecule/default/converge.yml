@@ -1,0 +1,86 @@
+---
+# Mail Stack Integration Test - Converge
+# Deploys smtp_relay on relay server and postfix_null_client on clients
+
+- name: Converge - Mail Stack
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - systemd
+          - mailutils  # For testing mail
+          - netcat-openbsd  # For port testing
+        state: present
+
+    - name: Wait for systemd to be ready
+      ansible.builtin.wait_for:
+        path: /run/systemd/system
+        state: present
+        timeout: 30
+
+    - name: Create mock TLS directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/letsencrypt/live/smtp-relay
+        - /etc/letsencrypt/archive/smtp-relay
+
+    - name: Create mock TLS certificates
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: |
+          -----BEGIN CERTIFICATE-----
+          MIICMzCCAZygAwIBAgIUMockTestCertificate0000000wDQYJKoZIhvcNAQELBQAw
+          -----END CERTIFICATE-----
+        mode: '0644'
+      loop:
+        - /etc/letsencrypt/live/smtp-relay/fullchain.pem
+        - /etc/letsencrypt/archive/smtp-relay/fullchain1.pem
+
+    - name: Create mock TLS private keys
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: |
+          -----BEGIN PRIVATE KEY-----
+          MIIEvgIBADANBgkqhkiGTestPrivateKey000000000000000000000000000
+          -----END PRIVATE KEY-----
+        mode: '0600'
+      loop:
+        - /etc/letsencrypt/live/smtp-relay/privkey.pem
+        - /etc/letsencrypt/archive/smtp-relay/privkey1.pem
+
+  tasks:
+    # Deploy SMTP relay server
+    # Vars come from molecule.yml inventory and all.yml vars_files
+    - name: Apply smtp_relay role
+      ansible.builtin.include_role:
+        name: smtp_relay
+      when: "'relay_servers' in group_names"
+
+    # Deploy postfix null clients
+    # Vars come from molecule.yml inventory and all.yml vars_files
+    - name: Apply postfix_null_client role
+      ansible.builtin.include_role:
+        name: postfix_null_client
+      when: "'mail_clients' in group_names"
+      vars:
+        # Override defaults for container testing
+        smtp_relay_port: 25
+        smtp_use_auth: true

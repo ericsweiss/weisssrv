@@ -8,5 +8,7 @@ collections:
     version: ">=12.2.0"
   - name: community.crypto
     version: ">=3.1.0"
+  - name: community.docker
+    version: ">=4.3.0"
 
 roles: []

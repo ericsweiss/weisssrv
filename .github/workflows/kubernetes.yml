@@ -1,0 +1,155 @@
+---
+name: Kubernetes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kubernetes/**'
+      - '.github/workflows/kubernetes.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'kubernetes/**'
+      - '.github/workflows/kubernetes.yml'
+  workflow_dispatch:
+
+env:
+  KUBECONFORM_VERSION: '0.6.7'
+
+jobs:
+  validate-manifests:
+    name: Validate Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sLO "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf kubeconform-linux-amd64.tar.gz
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: Validate Kubernetes manifests
+        run: |
+          # Find all YAML files excluding Helm values files and kustomization files
+          # kubeconform validates against Kubernetes API schemas
+          find kubernetes/apps kubernetes/bootstrap -name "*.yaml" \
+            ! -name "values.yaml" \
+            ! -name "kustomization.yaml" \
+            -exec kubeconform -summary -strict \
+              -ignore-missing-schemas \
+              -kubernetes-version 1.35.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              {} +
+
+  lint-helm-values:
+    name: Lint Helm Values
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo add metallb https://metallb.github.io/metallb
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add authentik https://charts.goauthentik.io
+          helm repo update
+
+      - name: Install yq
+        env:
+          YQ_VERSION: 'v4.52.2'
+          YQ_SHA256: 'a74bd266990339e0c48a2103534aef692abf99f19390d12c2b0ce6830385c459'
+        run: |
+          curl -sL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o yq
+          echo "${YQ_SHA256}  yq" | sha256sum --check --strict
+          sudo mv yq /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      # Extract pinned versions from production group_vars
+      # This ensures CI validates against the same chart versions used in production
+      - name: Extract Helm chart versions from production config
+        id: versions
+        run: |
+          VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
+          # Extract helm_chart_versions using yq
+          METALLB_VERSION=$(yq -r '.helm_chart_versions.metallb' "$VARS_FILE")
+          TRAEFIK_VERSION=$(yq -r '.helm_chart_versions.traefik' "$VARS_FILE")
+          CERT_MANAGER_VERSION=$(yq -r '.helm_chart_versions.cert_manager' "$VARS_FILE")
+          # Note: Authentik chart version not in helm_chart_versions, use latest
+          # (external_dns IS in helm_chart_versions but we don't validate its Helm values here)
+          echo "metallb=$METALLB_VERSION" >> $GITHUB_OUTPUT
+          echo "traefik=$TRAEFIK_VERSION" >> $GITHUB_OUTPUT
+          echo "cert_manager=$CERT_MANAGER_VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted versions: MetalLB=$METALLB_VERSION, Traefik=$TRAEFIK_VERSION, cert-manager=$CERT_MANAGER_VERSION"
+
+      - name: Validate Traefik values
+        run: |
+          helm template traefik traefik/traefik \
+            -f kubernetes/apps/traefik/values.yaml \
+            --namespace traefik \
+            --version "${{ steps.versions.outputs.traefik }}" \
+            > /dev/null
+          echo "Traefik values validated successfully (chart version: ${{ steps.versions.outputs.traefik }})"
+
+      - name: Validate MetalLB values
+        run: |
+          helm template metallb metallb/metallb \
+            -f kubernetes/bootstrap/metallb/values.yaml \
+            --namespace metallb-system \
+            --version "${{ steps.versions.outputs.metallb }}" \
+            > /dev/null
+          echo "MetalLB values validated successfully (chart version: ${{ steps.versions.outputs.metallb }})"
+
+      - name: Validate cert-manager values
+        run: |
+          helm template cert-manager jetstack/cert-manager \
+            -f kubernetes/apps/cert-manager/values.yaml \
+            --namespace cert-manager \
+            --version "${{ steps.versions.outputs.cert_manager }}" \
+            > /dev/null
+          echo "cert-manager values validated successfully (chart version: ${{ steps.versions.outputs.cert_manager }})"
+
+      - name: Validate Authentik values
+        run: |
+          # Authentik requires secrets, so we template with dummy values
+          # Note: Authentik version is pinned via authentik_version in all.yml, but chart version
+          # follows semantic versioning separately. Using latest chart for validation.
+          helm template authentik authentik/authentik \
+            -f kubernetes/apps/authentik/values.yaml \
+            --namespace authentik \
+            --set authentik.secret_key=dummy-secret-key-for-validation \
+            --set authentik.postgresql.password=dummy-postgres-password \
+            > /dev/null
+          echo "Authentik values validated successfully"
+
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint Kubernetes YAML files
+        run: |
+          yamllint -d relaxed kubernetes/

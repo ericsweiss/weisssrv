@@ -1,0 +1,98 @@
+---
+# DNS Stack Integration Test - Converge
+# Deploys unbound + adguard_home on both servers, then adguard_sync on dns-02
+
+- name: Converge - DNS Stack
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  pre_tasks:
+    # IMPORTANT: This bcrypt hash MUST match the plaintext password in molecule.yml
+    # The hash below is the canonical sample bcrypt hash for plaintext "password" (cost factor 10)
+    # This enables adguardhome-sync to authenticate correctly in integration tests
+    - name: Set AdGuard admin password hash (workaround for Molecule YAML parser)
+      ansible.builtin.set_fact:
+        adguard_admin_password_hash: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - gnupg
+          - systemd
+          - dnsutils  # For dig command in tests
+        state: present
+
+    - name: Wait for systemd to be ready
+      ansible.builtin.wait_for:
+        path: /run/systemd/system
+        state: present
+        timeout: 30
+
+  tasks:
+    # Deploy Unbound on all DNS servers
+    - name: Apply unbound role
+      ansible.builtin.include_role:
+        name: unbound
+      vars:
+        # Unbound listens on localhost for AdGuard Home
+        unbound_interface: "127.0.0.1"
+        unbound_port: 5335
+        # Use public DNS for upstream (DoT)
+        unbound_forward_zone:
+          - name: "."
+            forward_tls_upstream: "yes"
+            forward_addr:
+              - "1.1.1.1@853#cloudflare-dns.com"
+              - "8.8.8.8@853#dns.google"
+
+    # Deploy AdGuard Home on all DNS servers
+    # INTEGRATION TEST LIMITATION:
+    # AdGuard Home API configuration is skipped because:
+    # 1. API endpoints require completing the initial setup wizard first
+    # 2. The setup wizard is interactive (web-based) and cannot be automated
+    # 3. Without setup completion, AdGuard Home runs in "setup mode" and
+    #    the /control/dns_config endpoint returns 403 Forbidden
+    #
+    # What IS tested:
+    # - Binary installation and systemd service
+    # - Configuration file deployment (AdGuardHome.yaml)
+    # - Web UI accessibility on port 3000
+    # - adguardhome-sync service configuration and timer
+    #
+    # What is NOT tested (due to setup wizard requirement):
+    # - DNS listening on port 53 (requires setup completion)
+    # - DNS query resolution via AdGuard (tested via Unbound instead)
+    # - Full sync operation (sync config deployed, but API auth not exercised)
+    #
+    # Production validation: Use postflight.yml which tests real instances
+    - name: Apply adguard_home role
+      ansible.builtin.include_role:
+        name: adguard_home
+      vars:
+        # Use local Unbound as upstream
+        adguard_dns_upstream_servers:
+          - "127.0.0.1:5335"
+        # Skip API configuration in integration tests
+        # (requires fully initialized instance with initial setup completed)
+        skip_adguard_api_config: true
+        # Note: Other vars (ports, admin credentials) come from molecule.yml inventory
+
+    # Deploy AdGuard Sync on primary only (syncs TO replica)
+    - name: Apply adguard_sync role
+      ansible.builtin.include_role:
+        name: adguard_sync
+      when:
+        - "'dns_primary' in group_names"
+        - adguardhome_sync_enabled | default(false)
+      # Note: All sync configuration comes from molecule.yml inventory

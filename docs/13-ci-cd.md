@@ -5,8 +5,10 @@ This document covers the GitHub Actions workflows for automated testing and depl
 ## Overview
 
 The repository uses GitHub Actions for:
-- **Linting**: Ansible playbooks and Terraform code
+- **Linting**: Ansible playbooks, Terraform code, Kubernetes manifests
+- **Molecule Testing**: Automated Ansible role testing with idempotency checks
 - **Terraform Planning**: Automated `terraform plan` on PRs
+- **Kubernetes Validation**: kubeconform and Helm values validation
 - **Validation**: Syntax checking before merge
 
 ## Workflows
@@ -22,15 +24,78 @@ Runs on every push and pull request to validate code quality.
 2. Ansible-lint for best practices
 3. Terraform format check (`terraform fmt -check`)
 4. Terraform validation
+5. YAML lint
 
 **Usage**:
 ```bash
-# Locally run the same checks
+# Locally run the same checks (includes Kubernetes validation)
 task lint
 
 # Individual checks
 task ansible:lint
 task terraform:validate
+task kubernetes:lint
+task kubernetes:validate-helm
+```
+
+### Molecule Workflow
+
+**File**: `.github/workflows/molecule.yml`
+
+Runs Molecule tests for Ansible roles with change detection.
+
+**Triggers**:
+- Push/PR to main modifying `ansible/roles/**`
+- Manual workflow dispatch (tests all roles)
+
+**Features**:
+- Change detection: Only tests roles with modifications
+- Matrix-based parallel execution
+- Idempotency verification on all roles
+- K3s has both `default` and `agent` scenarios
+
+**Tested Roles** (12 roles, 13 scenarios):
+- base, qol, adguard_home, adguard_sync, acme_certs
+- tailscale, nas_storage, k3s (server + agent), plex
+- unbound, postfix_null_client, smtp_relay
+
+**Usage**:
+```bash
+# Run all molecule tests locally
+task ansible:test
+
+# Test specific role
+task ansible:test -- k3s
+
+# Test with containers kept for debugging
+MOLECULE_OPTS="--destroy=never" task ansible:test -- unbound
+```
+
+### Kubernetes Workflow
+
+**File**: `.github/workflows/kubernetes.yml`
+
+Validates Kubernetes manifests and Helm values.
+
+**Triggers**:
+- Push/PR to main modifying `kubernetes/**`
+- Manual workflow dispatch
+
+**Steps**:
+1. **kubeconform**: Validates manifests against K8s API schemas
+   - Uses CRD schemas from datreeio/CRDs-catalog
+   - Kubernetes version 1.35.0
+2. **Helm template**: Validates values files render correctly
+   - Traefik, MetalLB, cert-manager, Authentik
+3. **yamllint**: Basic YAML syntax validation
+
+**Usage**:
+```bash
+# Validate Kubernetes manifests locally
+task kubernetes:lint
+
+# Validate Helm values
+task kubernetes:validate-helm
 ```
 
 ### Terraform Workflow

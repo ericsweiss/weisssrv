@@ -1,0 +1,325 @@
+---
+# Storage Stack Integration Test - Verify
+# Validates nas_storage role configuration and Samba connectivity
+#
+# Test Categories:
+# 1. NFS Configuration - Files generated correctly (service may not run in Docker)
+# 2. Samba Server - Service running, shares configured
+# 3. Samba Client - Can list and access shares from remote container
+#
+# NOTE: NFS client mounts are NOT tested - they don't work in Docker containers
+# due to kernel module requirements. See molecule.yml header for details.
+
+- name: Verify - Storage Stack (NAS Server Configuration)
+  hosts: nas_servers
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ============================================
+    # NFS Configuration Verification
+    # (Service may not run, but config should be correct)
+    # ============================================
+    - name: Check NFS server package is installed
+      ansible.builtin.package:
+        name: nfs-kernel-server
+        state: present
+      check_mode: true
+      register: nfs_installed
+
+    - name: Assert NFS server is installed
+      ansible.builtin.assert:
+        that:
+          - not nfs_installed.changed
+        fail_msg: "NFS server package not installed"
+        success_msg: "NFS server package is installed"
+
+    - name: Check NFS exports file exists
+      ansible.builtin.stat:
+        path: /etc/exports
+      register: exports_file
+
+    - name: Assert NFS exports file exists
+      ansible.builtin.assert:
+        that:
+          - exports_file.stat.exists
+        fail_msg: "NFS exports file missing"
+        success_msg: "NFS exports file exists"
+
+    - name: Read NFS exports content
+      ansible.builtin.command: cat /etc/exports
+      register: exports_content
+      changed_when: false
+
+    - name: Log NFS exports configuration
+      ansible.builtin.debug:
+        msg: "NFS exports:\n{{ exports_content.stdout }}"
+
+    - name: Assert NFS exports contain expected paths
+      ansible.builtin.assert:
+        that:
+          - "'/tank/media' in exports_content.stdout"
+          - "'/tank/share' in exports_content.stdout"
+          - "'172.16.0.0/12' in exports_content.stdout"
+          - "'rw,sync,no_subtree_check,no_root_squash' in exports_content.stdout"
+        fail_msg: "NFS exports missing expected configuration"
+        success_msg: "NFS exports configured correctly"
+
+    # ============================================
+    # Samba Server Verification
+    # (Samba works fully in Docker containers)
+    # ============================================
+    - name: Check Samba package is installed
+      ansible.builtin.package:
+        name: samba
+        state: present
+      check_mode: true
+      register: samba_installed
+
+    - name: Assert Samba is installed
+      ansible.builtin.assert:
+        that:
+          - not samba_installed.changed
+        fail_msg: "Samba package not installed"
+        success_msg: "Samba package is installed"
+
+    - name: Check Samba configuration file exists
+      ansible.builtin.stat:
+        path: /etc/samba/smb.conf
+      register: smb_conf
+
+    - name: Assert Samba configuration exists
+      ansible.builtin.assert:
+        that:
+          - smb_conf.stat.exists
+        fail_msg: "Samba configuration file missing"
+        success_msg: "Samba configuration file exists"
+
+    - name: Read Samba configuration
+      ansible.builtin.command: cat /etc/samba/smb.conf
+      register: smb_conf_content
+      changed_when: false
+
+    - name: Log Samba configuration
+      ansible.builtin.debug:
+        msg: "Samba configuration:\n{{ smb_conf_content.stdout }}"
+
+    - name: Assert Samba configuration contains expected shares
+      ansible.builtin.assert:
+        that:
+          - "'[media]' in smb_conf_content.stdout"
+          - "'[share]' in smb_conf_content.stdout"
+          - "'/tank/media' in smb_conf_content.stdout"
+          - "'/tank/share' in smb_conf_content.stdout"
+        fail_msg: "Samba configuration missing expected shares"
+        success_msg: "Samba shares configured correctly"
+
+    - name: Validate Samba configuration syntax
+      ansible.builtin.command: testparm -s /etc/samba/smb.conf
+      register: testparm_result
+      changed_when: false
+
+    - name: Assert Samba configuration is valid
+      ansible.builtin.assert:
+        that:
+          - testparm_result.rc == 0
+        fail_msg: "Samba configuration has syntax errors"
+        success_msg: "Samba configuration syntax is valid"
+
+    - name: Check smbd service status
+      ansible.builtin.systemd:
+        name: smbd
+      register: smbd_status
+
+    - name: Log smbd service status
+      ansible.builtin.debug:
+        msg: "smbd status: {{ smbd_status.status.ActiveState }} ({{ smbd_status.status.SubState }})"
+
+    - name: Assert smbd is running
+      ansible.builtin.assert:
+        that:
+          - smbd_status.status.ActiveState == "active"
+        fail_msg: "smbd service is not running"
+        success_msg: "smbd service is running"
+
+    - name: Check Samba is listening on port 445
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 445
+        timeout: 5
+      register: samba_port
+
+    - name: List local Samba shares
+      ansible.builtin.command: smbclient -L localhost -N
+      register: local_samba_shares
+      changed_when: false
+
+    - name: Log local Samba shares
+      ansible.builtin.debug:
+        msg: "Local Samba shares:\n{{ local_samba_shares.stdout }}"
+
+    - name: Assert local Samba shares are visible
+      ansible.builtin.assert:
+        that:
+          - "'media' in local_samba_shares.stdout"
+          - "'share' in local_samba_shares.stdout"
+        fail_msg: "Expected Samba shares not visible locally"
+        success_msg: "Samba shares are visible locally"
+
+    # ============================================
+    # Service Status Summary
+    # ============================================
+    - name: Check NFS service status (informational only)
+      ansible.builtin.systemd:
+        name: nfs-kernel-server
+      register: nfs_status
+      failed_when: false
+
+    - name: Log NFS service status
+      ansible.builtin.debug:
+        msg: |
+          NFS Server Status (may not be running in Docker - expected):
+          - LoadState: {{ nfs_status.status.LoadState | default('unknown') }}
+          - ActiveState: {{ nfs_status.status.ActiveState | default('unknown') }}
+          Note: NFS requires kernel modules which may not work in Docker
+
+- name: Verify - Storage Stack (Samba Client Connectivity)
+  hosts: smb_clients
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ============================================
+    # Samba Client Connectivity Tests
+    # ============================================
+    - name: Check smbclient is installed
+      ansible.builtin.package:
+        name: smbclient
+        state: present
+      check_mode: true
+      register: smbclient_installed
+
+    - name: Assert smbclient is installed
+      ansible.builtin.assert:
+        that:
+          - not smbclient_installed.changed
+        fail_msg: "smbclient package not installed"
+        success_msg: "smbclient package is installed"
+
+    - name: Test Samba connectivity to nas-server
+      ansible.builtin.command: smbclient -L //nas-server -N
+      register: smb_list
+      changed_when: false
+
+    - name: Log available Samba shares on nas-server
+      ansible.builtin.debug:
+        msg: "Available shares on nas-server:\n{{ smb_list.stdout }}"
+
+    - name: Assert can list Samba shares from client
+      ansible.builtin.assert:
+        that:
+          - smb_list.rc == 0
+          - "'media' in smb_list.stdout"
+          - "'share' in smb_list.stdout"
+        fail_msg: "Cannot list Samba shares from client"
+        success_msg: "Can list Samba shares from client"
+
+    - name: Test reading from media share
+      ansible.builtin.command: smbclient //nas-server/media -N -c "ls"
+      register: smb_media_ls
+      changed_when: false
+
+    - name: Log media share contents
+      ansible.builtin.debug:
+        msg: "Media share contents:\n{{ smb_media_ls.stdout }}"
+
+    - name: Assert can read from media share
+      ansible.builtin.assert:
+        that:
+          - smb_media_ls.rc == 0
+          - "'test.txt' in smb_media_ls.stdout"
+        fail_msg: "Cannot read from media share"
+        success_msg: "Can read from media share"
+
+    - name: Test reading from share share
+      ansible.builtin.command: smbclient //nas-server/share -N -c "ls"
+      register: smb_share_ls
+      changed_when: false
+
+    - name: Log share contents
+      ansible.builtin.debug:
+        msg: "Share contents:\n{{ smb_share_ls.stdout }}"
+
+    - name: Assert can read from share
+      ansible.builtin.assert:
+        that:
+          - smb_share_ls.rc == 0
+          - "'test.txt' in smb_share_ls.stdout"
+        fail_msg: "Cannot read from share"
+        success_msg: "Can read from share"
+
+    - name: Test writing to media share
+      ansible.builtin.command: >
+        smbclient //nas-server/media -N -c "put /etc/hostname client_test.txt"
+      register: smb_write_test
+      changed_when: false
+      failed_when: false
+
+    - name: Log write test result
+      ansible.builtin.debug:
+        msg: "Write test: {{ 'SUCCESS' if smb_write_test.rc == 0 else 'FAILED (may be expected in some configs)' }}"
+
+    - name: Verify written file exists
+      ansible.builtin.command: smbclient //nas-server/media -N -c "ls client_test.txt"
+      register: smb_verify_write
+      changed_when: false
+      when: smb_write_test.rc == 0
+
+    - name: Assert write was successful
+      ansible.builtin.assert:
+        that:
+          - smb_verify_write.rc == 0
+        fail_msg: "Write verification failed"
+        success_msg: "Write verification successful"
+      when: smb_write_test.rc == 0
+
+- name: Integration Test Summary
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Display test summary
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          Storage Stack Integration Test Summary
+          ============================================
+          Host: {{ inventory_hostname }}
+          Role: {% if 'nas_servers' in group_names %}NAS Server{% elif 'smb_clients' in group_names %}Samba Client{% endif %}
+
+          {% if 'nas_servers' in group_names %}
+          NFS Configuration:
+            - Package installed: OK
+            - /etc/exports exists: OK
+            - Exports contain /tank/media: OK
+            - Exports contain /tank/share: OK
+            - Note: NFS service may not run in Docker (kernel modules)
+
+          Samba Server:
+            - Package installed: OK
+            - smb.conf configured: OK
+            - Configuration syntax valid: OK
+            - smbd service running: {{ hostvars[inventory_hostname].smbd_status.status.ActiveState | default('unknown') }}
+            - Listening on port 445: OK
+            - Shares visible locally: OK
+          {% elif 'smb_clients' in group_names %}
+          Samba Client:
+            - smbclient installed: OK
+            - Can connect to nas-server: OK
+            - Can list shares: OK
+            - Can read from media share: OK
+            - Can read from share: OK
+            - Write access: {{ 'OK' if hostvars[inventory_hostname].smb_write_test.rc == 0 else 'Not tested/Failed' }}
+          {% endif %}
+          ============================================

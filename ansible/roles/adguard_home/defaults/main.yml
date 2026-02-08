@@ -10,6 +10,9 @@ adguard_dot_port: 853
 adguard_https_port: 443
 adguard_admin_user: eric
 
+# Skip API configuration (useful for integration tests)
+skip_adguard_api_config: false
+
 adguard_tls_enabled: true
 adguard_tls_server_name: "dns.esweiss.com"
 adguard_cert_path: "{{ adguard_install_path }}/certs"

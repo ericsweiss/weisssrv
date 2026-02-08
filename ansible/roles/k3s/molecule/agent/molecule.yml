@@ -58,6 +58,19 @@ provisioner:
         skip_k3s_install: true  # Skip actual k3s install in container
 verifier:
   name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
 lint: |
   set -e
   yamllint .

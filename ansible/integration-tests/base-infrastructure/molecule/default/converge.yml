@@ -1,0 +1,50 @@
+---
+# Base Infrastructure Integration Test - Converge
+# Deploys base + qol + tailscale in sequence
+
+- name: Converge - Base Infrastructure
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../../inventories/prod/group_vars/all.yml
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: Wait for systemd to be ready
+      ansible.builtin.wait_for:
+        path: /run/systemd/system
+        state: present
+        timeout: 30
+
+  tasks:
+    # 1. Base role - Foundation (packages, user, timezone)
+    # Vars come from molecule.yml inventory and all.yml vars_files
+    - name: Apply base role
+      ansible.builtin.include_role:
+        name: base
+
+    # 2. QoL role - Developer tools (zsh, neovim, fzf, ripgrep)
+    # Vars come from molecule.yml inventory and all.yml vars_files
+    - name: Apply qol role
+      ansible.builtin.include_role:
+        name: qol
+      when: "'qol_enabled' in group_names"
+      vars:
+        # Override defaults for container testing
+        install_fzf: true
+        install_ripgrep: true
+
+    # 3. Tailscale role - VPN connectivity
+    # Vars come from molecule.yml inventory and all.yml vars_files
+    - name: Apply tailscale role
+      ansible.builtin.include_role:
+        name: tailscale
+      vars:
+        # Override defaults for container testing
+        skip_tailscale_up: true
