@@ -45,15 +45,15 @@
           ansible.builtin.set_fact:
             adguard_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
-        # DNS chicken-and-egg fix: dns-01 uses itself for DNS resolution
-        # Before stopping AdGuard, configure it to use dns-02 temporarily
-        - name: Backup resolv.conf (dns-01 only)
+        # DNS chicken-and-egg fix: Each DNS server uses itself for resolution.
+        # Before stopping AdGuard, configure it to use the OTHER DNS server temporarily.
+        # Since serial: 1, dns-01 upgrades first (uses dns-02), then dns-02 (uses dns-01).
+        - name: Backup resolv.conf
           ansible.builtin.copy:
             src: /etc/resolv.conf
             dest: /etc/resolv.conf.backup-upgrade
             remote_src: true
             mode: "0644"
-          when: inventory_hostname == 'dns-01'
 
         - name: Configure temporary DNS to use dns-02 (dns-01 only)
           ansible.builtin.copy:
@@ -64,6 +64,16 @@
             dest: /etc/resolv.conf
             mode: "0644"
           when: inventory_hostname == 'dns-01'
+
+        - name: Configure temporary DNS to use dns-01 (dns-02 only)
+          ansible.builtin.copy:
+            content: |
+              # Temporary DNS configuration during AdGuard upgrade
+              # Using dns-01 for resolution while dns-02's AdGuard is stopped
+              nameserver 192.168.0.150
+            dest: /etc/resolv.conf
+            mode: "0644"
+          when: inventory_hostname == 'dns-02'
 
         - name: Stop AdGuard Home for upgrade
           ansible.builtin.service:
@@ -110,19 +120,17 @@
             timeout: 60
 
         # Restore original DNS configuration after AdGuard is back up
-        - name: Restore original resolv.conf (dns-01 only)
+        - name: Restore original resolv.conf
           ansible.builtin.copy:
             src: /etc/resolv.conf.backup-upgrade
             dest: /etc/resolv.conf
             remote_src: true
             mode: "0644"
-          when: inventory_hostname == 'dns-01'
 
-        - name: Remove resolv.conf backup (dns-01 only)
+        - name: Remove resolv.conf backup
           ansible.builtin.file:
             path: /etc/resolv.conf.backup-upgrade
             state: absent
-          when: inventory_hostname == 'dns-01'
 
         - name: Cleanup download
           ansible.builtin.file:
@@ -143,20 +151,18 @@
             state: started
           failed_when: false  # Best effort recovery
 
-        - name: Restore original resolv.conf after failure (dns-01 only)
+        - name: Restore original resolv.conf after failure
           ansible.builtin.copy:
             src: /etc/resolv.conf.backup-upgrade
             dest: /etc/resolv.conf
             remote_src: true
             mode: "0644"
-          when: inventory_hostname == 'dns-01'
           failed_when: false  # Best effort recovery
 
-        - name: Remove resolv.conf backup after failure (dns-01 only)
+        - name: Remove resolv.conf backup after failure
           ansible.builtin.file:
             path: /etc/resolv.conf.backup-upgrade
             state: absent
-          when: inventory_hostname == 'dns-01'
           failed_when: false  # Best effort cleanup
 
         - name: Fail with original error
