@@ -111,11 +111,11 @@ ntp_servers:
   - 3.pool.ntp.org
 
 # Application version pins
-adguard_home_version: "0.107.71"
+adguard_home_version: "0.107.72"
 adguardhome_sync_version: "0.8.2"
 tailscale_version: "1.94.1"
 debian_version: "13"
-k3s_version: "v1.35.0+k3s3"
+k3s_version: "v1.35.1+k3s1"
 kube_vip_version: "v1.0.4"
 
 # Authentik SSO identity provider
@@ -125,12 +125,12 @@ authentik_version: "2025.12.3"
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
 # Available tags: https://hub.docker.com/_/postgres/tags
-postgresql_version: "18.1-trixie"
+postgresql_version: "18.2-trixie"
 
 # PostgreSQL version for Mealie (standalone deployment)
 # Using Alpine base for lighter footprint
 # Available tags: https://hub.docker.com/_/postgres/tags
-mealie_postgresql_version: "18.1-alpine"
+mealie_postgresql_version: "18.2-alpine"
 
 # Download clients and media stack versions
 # Pinned to specific versions for reproducible deployments and controlled updates
@@ -138,22 +138,22 @@ mealie_postgresql_version: "18.1-alpine"
 # LinuxServer.io images: https://docs.linuxserver.io/images/
 # Gluetun: https://github.com/qdm12/gluetun/releases
 # Pulsarr: https://github.com/jamcalli/Pulsarr/releases
-gluetun_version: "v3.41.0"
+gluetun_version: "v3.41.1"
 nzbget_version: "26.0"
 qbittorrent_version: "5.1.4"
 prowlarr_version: "2.3.0.5236"
 sonarr_version: "4.0.16.2944"
 radarr_version: "6.0.4.10291"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.10.1"
+pulsarr_version: "0.12.2"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
 # Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
-mealie_version: "v3.10.2"
+mealie_version: "v3.11.0"
 bar_assistant_version: "5.13.1"
-salt_rim_version: "4.14.0"
+salt_rim_version: "4.14.1"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.42.2.10156-f737b826c"
@@ -168,7 +168,7 @@ plex_version: "1.42.2.10156-f737b826c"
 # - external-dns: https://artifacthub.io/packages/helm/external-dns/external-dns
 helm_chart_versions:
   metallb: "0.15.3"
-  traefik: "39.1.0-ea.1"  # App version v3.6.7
+  traefik: "39.1.0-ea.2"  # App version v3.6.7
   cert_manager: "v1.19.3"
   external_dns: "1.20.0"  # App version 0.20.0
 
