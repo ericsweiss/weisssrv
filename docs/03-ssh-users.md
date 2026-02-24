@@ -23,16 +23,23 @@ SSH configuration managed by the `base` role:
 
 ```yaml
 ssh_port: 22
-ssh_permit_root_login: "no"
+ssh_permit_root_login: "no"  # Default for most hosts
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 ```
 
 **Key Features**:
-- Root login disabled via SSH
+- Root login disabled via SSH (with exception below)
 - User `eric` has passwordless sudo
 - SSH keys stored in 1Password and deployed via Ansible
 - Restricted by source IP (from="192.168.0.0/24,100.64.0.0/10")
+
+**Proxmox Host Exception**: Root SSH with key authentication is enabled on Proxmox cluster hosts (`ssh_permit_root_login: "prohibit-password"` in `group_vars/proxmox.yml`). This is required for:
+- **Live VM/CT migrations** between cluster nodes
+- **ZFS storage replication** for HA failover
+- **Proxmox cluster operations** (corosync, pve-cluster)
+
+This is a standard Proxmox requirement - the cluster cannot function without root-level access between nodes. Password authentication remains disabled; only key-based authentication is allowed.
 
 ### LXC Containers (dns-01, dns-02, smtp-relay)
 
@@ -207,33 +214,54 @@ Note: While we SSH as `eric` to smtp-relay, Postfix itself runs as root. This is
 
 ## Bootstrap Configuration
 
-### Initial Setup for Existing Hosts
+### Automated Bootstrap (Recommended)
 
-Before Ansible can manage a host, you need to:
+Use the bootstrap script to prepare new Proxmox hosts for Ansible management:
+
+```bash
+# From your laptop
+./scripts/bootstrap-proxmox-host.sh <host-ip> <your-ssh-public-key>
+
+# Example:
+./scripts/bootstrap-proxmox-host.sh 192.168.0.107 "ssh-ed25519 AAAA... eric@laptop"
+```
+
+The script handles:
+- Creating user `eric` with sudo group membership
+- Deploying SSH authorized keys with proper permissions
+- Configuring passwordless sudo via `/etc/sudoers.d/eric`
+- Installing `sudo` package if not present (common on fresh Proxmox)
+- Temporarily disabling enterprise repos during package install
+
+After bootstrap, verify: `ssh eric@<host-ip> sudo whoami` should return `root`.
+
+### Manual Setup (Alternative)
+
+If you prefer manual setup or the bootstrap script doesn't work:
 
 1. **Ensure user `eric` exists with sudo group**:
    ```bash
-   # Already exists on pve-nas-01 and pve-opt-03
+   # SSH as root to new host
+   ssh root@<host-ip>
+   useradd -m -s /bin/bash -G sudo eric
    ```
 
-2. **Configure passwordless sudo** (one-time manual setup):
+2. **Configure passwordless sudo**:
    ```bash
-   # On each Proxmox host
-   ssh eric@192.168.0.102
-   echo 'eric ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/eric
-   sudo chmod 440 /etc/sudoers.d/eric
-   exit
-
-   # Repeat for pve-opt-03
+   echo 'eric ALL=(ALL) NOPASSWD: ALL' | tee /etc/sudoers.d/eric
+   chmod 440 /etc/sudoers.d/eric
    ```
 
-3. **Deploy SSH key** (if not already present):
+3. **Deploy SSH key**:
    ```bash
-   # The base role will handle this, but for bootstrap you can manually:
-   ssh-copy-id eric@192.168.0.102
+   mkdir -p /home/eric/.ssh
+   echo "your-ssh-public-key" >> /home/eric/.ssh/authorized_keys
+   chown -R eric:eric /home/eric/.ssh
+   chmod 700 /home/eric/.ssh
+   chmod 600 /home/eric/.ssh/authorized_keys
    ```
 
-After this one-time setup, Ansible can manage everything else.
+After this setup, Ansible can manage everything else.
 
 ### Automated Setup for New VMs
 

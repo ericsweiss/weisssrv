@@ -1,0 +1,88 @@
+---
+# Manage Proxmox HA groups
+# Groups must exist before resources can reference them
+
+- name: Get current HA groups
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && ha-manager groupconfig | grep -E '^group:' | awk -F: '{print $2}' | awk '{print $1}' || true"
+    executable: /bin/bash
+  register: current_ha_groups
+  changed_when: false
+  check_mode: false  # Must run to determine current state
+  tags: [proxmox_ha_groups]
+
+- name: Get detailed HA group config
+  ansible.builtin.shell:
+    cmd: "ha-manager groupconfig {{ item.name }} 2>/dev/null || true"
+    executable: /bin/bash
+  loop: "{{ ha_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: ha_group_details
+  changed_when: false
+  check_mode: false
+  tags: [proxmox_ha_groups]
+
+- name: Add HA groups
+  ansible.builtin.command: >-
+    ha-manager groupadd {{ item.name }}
+    --nodes {{ item.nodes | join(',') }}
+    {% if item.restricted | default(false) %}--restricted 1{% endif %}
+    {% if item.nofailback | default(false) %}--nofailback 1{% endif %}
+    {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
+  when:
+    - item.name not in current_ha_groups.stdout_lines
+    - item.state | default('present') == 'present'
+  loop: "{{ ha_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: ha_group_add_result
+  changed_when: ha_group_add_result.rc == 0
+  tags: [proxmox_ha_groups]
+
+- name: Update HA groups (drift detection)
+  ansible.builtin.command: >-
+    ha-manager groupset {{ item.item.name }}
+    --nodes {{ item.item.nodes | join(',') }}
+    {% if item.item.restricted | default(false) %}--restricted 1{% else %}--restricted 0{% endif %}
+    {% if item.item.nofailback | default(false) %}--nofailback 1{% else %}--nofailback 0{% endif %}
+    {% if item.item.comment is defined %}--comment "{{ item.item.comment }}"{% endif %}
+  vars:
+    # Extract current nodes from output (format: "nodes pve-a,pve-b,pve-c")
+    _current_nodes_match: "{{ (item.stdout | default('')) | regex_search('nodes\\s+([^\\n]+)', '\\1') }}"
+    _current_nodes_str: "{{ _current_nodes_match[0] | default('') if _current_nodes_match else '' }}"
+    _current_nodes_set: "{{ _current_nodes_str.split(',') | select | sort | list }}"
+    _desired_nodes_set: "{{ item.item.nodes | sort | list }}"
+  when:
+    - item.item.name in current_ha_groups.stdout_lines
+    - item.item.state | default('present') == 'present'
+    # Detect drift: nodes mismatch (exact set comparison), settings changed, or comment changed
+    - >-
+      (_current_nodes_set != _desired_nodes_set)
+      or (item.item.restricted | default(false) and 'restricted 1' not in (item.stdout | default('')))
+      or (not (item.item.restricted | default(false)) and 'restricted 1' in (item.stdout | default('')))
+      or (item.item.nofailback | default(false) and 'nofailback 1' not in (item.stdout | default('')))
+      or (not (item.item.nofailback | default(false)) and 'nofailback 1' in (item.stdout | default('')))
+      or (item.item.comment is defined and ('comment ' ~ item.item.comment) not in (item.stdout | default('')))
+  loop: "{{ ha_group_details.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  register: ha_group_update_result
+  changed_when: ha_group_update_result.rc == 0
+  tags: [proxmox_ha_groups]
+
+- name: Remove HA groups
+  ansible.builtin.command: ha-manager groupremove {{ item.name }}
+  when:
+    - item.name in current_ha_groups.stdout_lines
+    - item.state | default('present') == 'absent'
+  loop: "{{ ha_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: ha_group_remove_result
+  changed_when: ha_group_remove_result.rc == 0
+  failed_when:
+    - ha_group_remove_result.rc != 0
+    # Don't fail if group is in use (resources still reference it)
+    - "'group is in use' not in (ha_group_remove_result.stderr | default(''))"
+  tags: [proxmox_ha_groups]

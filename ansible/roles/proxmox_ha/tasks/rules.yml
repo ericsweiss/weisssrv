@@ -1,0 +1,115 @@
+---
+# Manage Proxmox HA node-affinity rules
+#
+# Note: This uses JSON output from ha-manager to avoid yq dependency.
+
+- name: Check if ha-manager rules command exists
+  ansible.builtin.command: ha-manager rules list --output-format=json
+  register: ha_rules_check
+  changed_when: false
+  failed_when: false
+  check_mode: false  # Must run to determine current state
+  tags: [proxmox_ha_rules]
+
+- name: Fail if Proxmox version does not support HA rules
+  ansible.builtin.fail:
+    msg: >-
+      HA rules command failed (rc={{ ha_rules_check.rc }}).
+      This could indicate: Proxmox version < 9 (rules require 9+),
+      cluster not properly configured, or permission issues.
+      Error: {{ ha_rules_check.stderr | default('(no stderr)') }}
+  when: ha_rules_check.rc != 0
+  tags: [proxmox_ha_rules]
+
+- name: Parse current HA rules from JSON
+  ansible.builtin.set_fact:
+    # The JSON output has 'rule' attribute (not 'id') containing the rule name
+    current_ha_rule_ids: "{{ (ha_rules_check.stdout | from_json | default([])) | map(attribute='rule') | list }}"
+    # Build a lookup dict keyed by rule name for drift detection
+    current_ha_rules_lookup: >-
+      {{ dict((ha_rules_check.stdout | from_json | default([]))
+         | map(attribute='rule')
+         | zip(ha_rules_check.stdout | from_json | default([]))) }}
+  when: ha_rules_check.rc == 0 and ha_rules_check.stdout | length > 0
+  tags: [proxmox_ha_rules]
+
+- name: Set empty list if no rules exist
+  ansible.builtin.set_fact:
+    current_ha_rule_ids: []
+    current_ha_rules_lookup: {}
+  when: ha_rules_check.rc != 0 or ha_rules_check.stdout | length == 0 or ha_rules_check.stdout == '[]'
+  tags: [proxmox_ha_rules]
+
+- name: Create or update node-affinity HA rules
+  ansible.builtin.command: >-
+    ha-manager rules add node-affinity {{ item.name }}
+    --resources {{ item.resources | join(',') }}
+    --nodes {{ item.nodes | join(',') }}
+    --strict {{ '1' if item.strict | default(false) else '0' }}
+    {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
+  when:
+    - ha_rules_check.rc == 0
+    - item.name not in (current_ha_rule_ids | default([]))
+    - item.type == 'node-affinity'
+    - item.enabled | default(true)
+  loop: "{{ ha_rules | default([]) }}"
+  register: ha_rule_add_result
+  changed_when: ha_rule_add_result.rc == 0
+  failed_when:
+    - ha_rule_add_result.rc != 0
+    # Handle various Proxmox error messages for already-existing rules
+    - "'already defined' not in (ha_rule_add_result.stderr | default(''))"
+    - "'already exists' not in (ha_rule_add_result.stderr | default(''))"
+  tags: [proxmox_ha_rules]
+
+- name: Update existing node-affinity HA rules
+  vars:
+    # Get current rule state for comparison
+    _current: "{{ current_ha_rules_lookup.get(item.name, {}) }}"
+    # Normalize desired values for comparison (Proxmox stores as comma-separated strings)
+    _desired_nodes: "{{ item.nodes | sort | join(',') }}"
+    _desired_resources: "{{ item.resources | sort | join(',') }}"
+    _desired_strict: "{{ '1' if item.strict | default(false) else '0' }}"
+    _desired_comment: "{{ item.comment | default('') }}"
+    # Normalize current values (split, sort, rejoin for consistent comparison)
+    _current_nodes: "{{ (_current.nodes | default('') | split(',') | sort | join(',')) if _current else '' }}"
+    _current_resources: "{{ (_current.resources | default('') | split(',') | sort | join(',')) if _current else '' }}"
+    _current_strict: "{{ _current.strict | default('0') | string }}"
+    _current_comment: "{{ _current.comment | default('') }}"
+    # Detect drift
+    _has_drift: >-
+      {{ _desired_nodes != _current_nodes or
+         _desired_resources != _current_resources or
+         _desired_strict != _current_strict or
+         _desired_comment != _current_comment }}
+  ansible.builtin.command: >-
+    ha-manager rules set node-affinity {{ item.name }}
+    --resources {{ item.resources | join(',') }}
+    --nodes {{ item.nodes | join(',') }}
+    --strict {{ '1' if item.strict | default(false) else '0' }}
+    {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
+  when:
+    - ha_rules_check.rc == 0
+    - item.name in (current_ha_rule_ids | default([]))
+    - item.type == 'node-affinity'
+    - item.enabled | default(true)
+    - _has_drift | bool  # Only update if there's actual drift
+  loop: "{{ ha_rules | default([]) }}"
+  register: ha_rule_update_result
+  changed_when: ha_rule_update_result.rc == 0
+  tags: [proxmox_ha_rules]
+
+- name: Remove HA rules
+  ansible.builtin.command: ha-manager rules remove {{ item.name }}
+  when:
+    - ha_rules_check.rc == 0
+    - item.name in (current_ha_rule_ids | default([]))
+    - not (item.enabled | default(true))
+  loop: "{{ ha_rules | default([]) }}"
+  register: ha_rule_remove_result
+  changed_when: ha_rule_remove_result.rc == 0
+  failed_when:
+    - ha_rule_remove_result.rc != 0
+    - "'does not exist' not in (ha_rule_remove_result.stderr | default(''))"
+    - "'not found' not in (ha_rule_remove_result.stderr | default(''))"
+  tags: [proxmox_ha_rules]

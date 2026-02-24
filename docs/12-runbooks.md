@@ -15,6 +15,7 @@ This document provides step-by-step procedures for common operational tasks.
 9. [Performance Investigation](#performance-investigation)
 10. [System Maintenance](#system-maintenance)
 11. [Understanding Skipped Tasks](#understanding-skipped-tasks)
+12. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
 
 ---
 
@@ -96,11 +97,12 @@ This document provides step-by-step procedures for common operational tasks.
 1. **Create Container**:
    ```bash
    # Via Proxmox Web UI or CLI
+   # Note: Use Debian 13 (Trixie) and local-ssd storage
    sudo pct create 200 \
-     local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst \
+     local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
      --hostname new-service \
      --net0 name=eth0,bridge=vmbr0,ip=192.168.0.XXX/24,gw=192.168.0.1 \
-     --storage local-lvm \
+     --storage local-ssd \
      --cores 2 \
      --memory 2048 \
      --unprivileged 1
@@ -943,6 +945,173 @@ This checks:
 - ZFS pool health (tank, ssd, nvme, archive)
 - SMART disk health (17 disks: 6 HDD tank + 3 SSD + 4 NVMe + 4 HDD archive)
 - Disk space
+
+---
+
+## Proxmox HA Post-Failover Reconciliation
+
+When Proxmox HA migrates a VM/container to a different node (due to node failure or manual migration), ZFS replication must be reconfigured. Replication only works FROM the source node, so after failover the service is running on what was previously a target node.
+
+### Symptoms
+
+- Replication jobs show errors in `pvesr status`
+- `task proxmox:ha-status` shows service running on a different node than configured `source_node`
+- ZFS recv errors in Proxmox task log
+
+### Detect Failover
+
+1. **Check current service locations:**
+   ```bash
+   task proxmox:ha-status
+   ```
+
+2. **Compare ha-manager status against configured source_node:**
+   ```bash
+   # Look at the "Node" column in ha-manager status
+   # Compare against source_node values in ansible/inventories/prod/group_vars/all.yml
+
+   # Example output showing failover (dns-01 expected on pve-laptop-01, running on pve-opt-01):
+   # VMID   Type  State    Node
+   # 150    ct    started  pve-opt-01   <-- MISMATCH: source_node is pve-laptop-01
+   ```
+
+3. **Check replication status for errors:**
+   ```bash
+   # Use the HA status task (checks all source nodes)
+   task proxmox:ha-status
+
+   # Or SSH to each replication SOURCE node (pvesr only shows local jobs)
+   # Source nodes: pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01
+   ssh pve-laptop-01 sudo pvesr status
+   ssh pve-opt-01 sudo pvesr status
+   # ... etc
+
+   # Look for "error" state or failed last_sync timestamps
+   ```
+
+### Reconciliation Procedure
+
+After a failover, you have two options:
+
+#### Option A: Update Configuration (Permanent Migration)
+
+Use this when the original node is offline for extended maintenance or has failed permanently.
+
+1. **Edit `/Users/eric/src/weisssrv/ansible/inventories/prod/group_vars/all.yml`:**
+   ```yaml
+   # Find the storage_replication_jobs section
+   # Update source_node for all jobs of the affected VMID
+
+   # Example: dns-01 (VMID 150) failed over from pve-laptop-01 to pve-opt-01
+   # BEFORE:
+   - id: "150-0"
+     source_node: pve-laptop-01  # <-- old source
+     target_node: pve-opt-01
+
+   # AFTER:
+   - id: "150-0"
+     source_node: pve-opt-01     # <-- new source (where service is now running)
+     target_node: pve-laptop-01  # <-- swap: old source becomes a target
+   ```
+
+2. **Update all 4 jobs for the VMID:**
+   - Change `source_node` to the current running node
+   - Swap the old source to be a target
+   - Ensure no job has source == target
+
+3. **Apply the configuration:**
+   ```bash
+   task proxmox:ha
+   ```
+
+4. **Verify replication is working:**
+   ```bash
+   task proxmox:ha-status
+
+   # Wait for next scheduled replication (check staggered schedule)
+   # dns-01: minutes 0,15,30,45
+   # smtp-relay: minutes 3,18,33,48
+   # dns-02: minutes 6,21,36,51
+   # home-assistant: minutes 9,24,39,54
+
+   # Then verify
+   sudo pvesr status
+   ```
+
+#### Option B: Migrate Back (Original Node Recovered)
+
+Use this when the original node is back online and you want to restore the original topology.
+
+1. **Verify original node is healthy:**
+   ```bash
+   sudo pvecm status
+   # Ensure the node shows as online
+   ```
+
+2. **Manually migrate the service back:**
+   ```bash
+   # For containers
+   sudo pct migrate <vmid> <original_node> --online
+
+   # For VMs
+   sudo qm migrate <vmid> <original_node> --online
+
+   # Example: migrate dns-01 back to pve-laptop-01
+   sudo pct migrate 150 pve-laptop-01 --online
+   ```
+
+3. **Verify replication resumes:**
+   ```bash
+   task proxmox:ha-status
+   sudo pvesr status
+   ```
+
+   Since the configuration still points to the original source_node, replication should resume automatically.
+
+### Service-Specific Notes
+
+| Service | VMID | Primary Node | Schedule | Notes |
+|---------|------|--------------|----------|-------|
+| dns-01 | 150 | pve-laptop-01 | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
+| smtp-relay | 151 | pve-opt-01 | `3-59/15` (3,18,33,48) | Single instance; brief outage during failover |
+| dns-02 | 160 | pve-opt-03 | `6-59/15` (6,21,36,51) | Secondary DNS; dns-01 provides redundancy |
+| home-assistant | 154 | pve-prec-01 | `9-59/15` (9,24,39,54) | HAOS VM; check integrations after failover |
+
+### Replication Job ID Format
+
+Job IDs follow the format `<VMID>-<sequence>`:
+- `150-0`, `150-1`, `150-2`, `150-3` - dns-01 to 4 targets
+- `151-0`, `151-1`, `151-2`, `151-3` - smtp-relay to 4 targets
+- `160-0`, `160-1`, `160-2`, `160-3` - dns-02 to 4 targets
+- `154-0`, `154-1`, `154-2`, `154-3` - home-assistant to 4 targets
+
+### Troubleshooting
+
+**Replication job stuck in error state:**
+```bash
+# Check job details
+sudo pvesr status --verbose
+
+# View task log for specific job
+sudo pvesr read <vmid>-<seq>
+
+# Force immediate sync attempt (useful for testing)
+sudo pvesr run <vmid>-<seq>
+```
+
+**Cannot create replication job (source not on this node):**
+```bash
+# Replication jobs can only be created from the node where the VM/CT disk resides
+# SSH to the correct node first, or use the Proxmox web UI
+```
+
+**ZFS dataset doesn't exist on target:**
+```bash
+# The first replication creates a full copy; subsequent are incremental
+# If target dataset is corrupted, remove and let replication recreate:
+sudo zfs destroy local-ssd/data/images/<vmid>  # ON TARGET NODE ONLY
+# Next replication job will create a fresh full copy
+```
 
 ---
 

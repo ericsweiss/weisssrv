@@ -18,7 +18,11 @@ tls-san:
   - "{{ inventory_hostname }}"
   - "{{ ansible_host }}"
 
-{% if not k3s_is_first_server | default(false) %}
+{% if k3s_is_first_server | default(false) %}
+# Enable embedded etcd for HA (first server initializes the cluster)
+cluster-init: true
+{% else %}
+# Join existing cluster via VIP
 server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
 {% endif %}
 

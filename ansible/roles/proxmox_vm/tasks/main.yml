@@ -5,6 +5,23 @@
   ansible.builtin.set_fact:
     vm_id: "{{ vmid | default(ansible_host.split('.')[-1]) }}"
 
+# Storage selection logic: auto-select based on Proxmox host role if not specified
+- name: Determine Proxmox host role
+  ansible.builtin.set_fact:
+    _proxmox_host_role: "{{ hostvars[proxmox_host]['proxmox_role'] | default('compute') }}"
+
+- name: Auto-select storage based on Proxmox host role
+  ansible.builtin.set_fact:
+    _effective_storage: >-
+      {{
+        proxmox_storage |
+        default(proxmox_storage_defaults[_proxmox_host_role] | default('local-ssd'))
+      }}
+
+- name: Display storage selection
+  ansible.builtin.debug:
+    msg: "VM {{ inventory_hostname }} will use storage: {{ _effective_storage }} (host: {{ proxmox_host }}, role: {{ _proxmox_host_role }})"
+
 - name: Check if VM already exists
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -14,19 +31,55 @@
   failed_when: false
   check_mode: false
 
+# Verify storage pool exists on target host before proceeding
+# Only check when creating a new VM - existing VMs may be on different storage during migrations
+- name: Get available storage pools on target host
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command: pvesm status
+  register: storage_list
+  changed_when: false
+  check_mode: false
+  when: vm_exists.rc != 0
+
+- name: Check if required storage pool exists
+  ansible.builtin.set_fact:
+    _storage_exists: "{{ storage_list.stdout_lines | select('match', '^' + _effective_storage + '\\s') | list | length > 0 }}"
+  when: vm_exists.rc != 0
+
+- name: Fail if required storage pool does not exist
+  ansible.builtin.fail:
+    msg: |
+      Storage pool '{{ _effective_storage }}' not found on {{ proxmox_host }}.
+
+      For compute nodes, you must create the local-ssd ZFS pool first.
+      See docs/06-zfs.md for pool creation commands.
+
+      Available storage pools on {{ proxmox_host }}:
+      {{ storage_list.stdout | default('(unable to retrieve)') }}
+  when:
+    - vm_exists.rc != 0
+    - not _storage_exists | default(true)
+    - not ansible_check_mode
+
 # Ensure all standard resource pools exist on the Proxmox host
+# With loops + register, changed_when is evaluated per-iteration using the current result
+# We use 'item' in the shell command and check stdout for "created" to track changes
 - name: Ensure standard resource pools exist
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
-      pvesh create /pools --poolid {{ item }}
-      echo "created"
-    else
-      echo "exists"
-    fi
+  ansible.builtin.shell:
+    cmd: |
+      if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
+        pvesh create /pools --poolid {{ item }}
+        echo "created"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
   loop: "{{ proxmox_resource_pools | default([]) }}"
-  register: pool_creation
-  changed_when: pool_creation.results | map(attribute='stdout') | select('search', 'created') | list | length > 0
+  register: pool_creation_result
+  changed_when: "'created' in pool_creation_result.stdout"
+  loop_control:
+    label: "{{ item }}"
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
@@ -79,7 +132,7 @@
   ansible.builtin.shell: |
     qm importdisk {{ vm_id }} \
       /var/lib/vz/template/iso/{{ cloud_image_name }} \
-      {{ proxmox_storage }}
+      {{ _effective_storage }}
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
@@ -90,7 +143,7 @@
   ansible.builtin.shell: |
     qm set {{ vm_id }} \
       --scsihw virtio-scsi-pci \
-      --scsi0 {{ proxmox_storage }}:vm-{{ vm_id }}-disk-0
+      --scsi0 {{ _effective_storage }}:vm-{{ vm_id }}-disk-0
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
@@ -108,7 +161,7 @@
 - name: Configure cloud-init drive
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    qm set {{ vm_id }} --ide2 {{ proxmox_storage }}:cloudinit
+    qm set {{ vm_id }} --ide2 {{ _effective_storage }}:cloudinit
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
@@ -169,6 +222,7 @@
   changed_when: true
 
 # Additional persistent disks (ZFS zvols)
+# With loops + register, changed_when is evaluated per-iteration using the current result
 - name: Create ZFS zvol for additional disks
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -179,8 +233,10 @@
       echo "exists"
     fi
   loop: "{{ vm_additional_disks | default([]) }}"
-  register: zvol_creation
-  changed_when: zvol_creation.results | map(attribute='stdout') | select('search', 'created') | list | length > 0
+  register: zvol_creation_result
+  changed_when: "'created' in zvol_creation_result.stdout"
+  loop_control:
+    label: "{{ item.name }}"
   when:
     - not ansible_check_mode
     - vm_additional_disks is defined
@@ -190,22 +246,43 @@
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      # Check if disk is already attached (scsi1, scsi2, etc. - scsi0 is boot disk)
-      if ! qm config {{ vm_id }} | grep -q "scsi{{ loop_index + 1 }}"; then
-        qm set {{ vm_id }} --scsi{{ loop_index + 1 }} /dev/zvol/{{ item.zvol }}
-        echo "attached"
+      EXPECTED_PATH="/dev/zvol/{{ item.zvol }}"
+      SCSI_SLOT="scsi{{ loop_index + 1 }}"
+      CURRENT_CONFIG=$(qm config {{ vm_id }} | grep "^${SCSI_SLOT}:" || true)
+
+      if [ -z "$CURRENT_CONFIG" ]; then
+        # Disk not attached, attach it
+        qm set {{ vm_id }} --${SCSI_SLOT} "$EXPECTED_PATH"
+        echo "CHANGED:attached"
+      elif echo "$CURRENT_CONFIG" | grep -q "$EXPECTED_PATH"; then
+        # Disk attached and matches expected path
+        echo "OK:exists"
       else
-        echo "exists"
+        # Disk attached but wrong path - update it
+        qm set {{ vm_id }} --${SCSI_SLOT} "$EXPECTED_PATH"
+        echo "CHANGED:updated"
       fi
     executable: /bin/bash
   loop: "{{ vm_additional_disks | default([]) }}"
   loop_control:
     index_var: loop_index
-  register: disk_attachment
-  changed_when: disk_attachment.results | map(attribute='stdout') | select('search', 'attached') | list | length > 0
+    label: "{{ item.name }}"
+  register: disk_attach_result
+  changed_when: "'CHANGED:' in (disk_attach_result.stdout | default(''))"
   when:
     - not ansible_check_mode
     - vm_additional_disks is defined
+
+- name: Report disk attachment changes
+  ansible.builtin.debug:
+    msg: "Disk {{ item.item.name }}: {{ item.stdout | regex_replace('^(CHANGED:|OK:)', '') }}"
+  loop: "{{ disk_attach_result.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('N/A') }}"
+  when:
+    - disk_attach_result.results is defined
+    - item.stdout is defined
+  changed_when: false
 
 - name: Clean up temporary SSH key
   delegate_to: "{{ proxmox_host }}"

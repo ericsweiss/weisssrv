@@ -15,6 +15,15 @@ proxmox_autostart_enabled: true
 proxmox_startup_order: 100
 proxmox_startup_delay: 0
 
+# Proxmox storage defaults by host role
+# NAS node (pve-nas-01) uses ssd pool for VMs/containers (raidz1 3x 4TB SSDs)
+# General/compute nodes (Optiplexes, laptops) use local-ssd (single 1TB SSD per node)
+# These defaults can be overridden per-VM/container by setting proxmox_storage or lxc_storage
+proxmox_storage_defaults:
+  nas: ssd
+  compute: local-ssd
+  general: local-ssd
+
 # SMTP relay configuration
 smtp_relay_host: smtp-relay.esweiss.com
 smtp_relay_port: 587
@@ -30,10 +39,11 @@ ssh_password_authentication: false
 ssh_pubkey_authentication: true
 
 # SSH authorized keys
+# IMPORTANT: SSH_PUBLIC_KEY must be set via 'op run' - empty key will fail validation
 ssh_authorized_keys:
   - >-
     from="192.168.0.0/24,100.64.0.0/10"
-    {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') }}
+    {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') | mandatory }}
 
 # 1Password secret references
 secrets:
@@ -75,6 +85,7 @@ common_packages:
   - neovim
   - htop
   - tmux
+  - screen
   - git
   - jq
   - unzip
@@ -174,3 +185,183 @@ firewall_ipset_special_entries:
   k3s_nodes:
     - ip: 192.168.0.161
       comment: k3s API VIP
+
+# Proxmox HA configuration
+# HA rules (Proxmox 9+) define node affinity for resources
+# node-affinity rules restrict which nodes can run specific resources
+# All critical services excluded from pve-nas-01 to avoid I/O contention with NAS workloads
+ha_rules:
+  - name: critical-services-no-nas
+    type: node-affinity
+    resources:
+      - ct:150  # dns-01
+      - ct:160  # dns-02
+      - ct:151  # smtp-relay
+      - vm:154  # home-assistant
+    nodes:
+      - pve-laptop-01
+      - pve-opt-01
+      - pve-opt-02
+      - pve-opt-03
+      - pve-prec-01
+    strict: false  # Allow running on pve-nas-01 only if all other nodes are unavailable
+    comment: "Prevent critical services from running on pve-nas-01 (avoid I/O contention with NAS workloads)"
+    enabled: true
+
+# HA resources define which VMs/containers are managed by HA
+# These will automatically restart/relocate on node failure
+ha_resources:
+  - type: ct
+    vmid: 150
+    state: started
+    comment: "dns-01 (AdGuard Home primary)"
+    enabled: true
+
+  - type: ct
+    vmid: 151
+    state: started
+    comment: "smtp-relay (Postfix relay)"
+    enabled: true
+
+  - type: ct
+    vmid: 160
+    state: started
+    comment: "dns-02 (AdGuard Home secondary)"
+    enabled: true
+
+  - type: vm
+    vmid: 154
+    state: started
+    comment: "home-assistant (HAOS VM)"
+    enabled: true
+
+# Proxmox Storage Replication configuration
+# Replication jobs provide near-synchronous data replication for fast failover
+# Jobs replicate from primary node to ALL other eligible nodes every 15 minutes
+#
+# BEST PRACTICE: Multi-target replication
+# - Proxmox supports replicating a guest to MULTIPLE target nodes
+# - Each service replicates to ALL 4 other local-ssd nodes (not just one)
+# - This allows HA to failover to ANY available node, not just a single backup
+# - Replication job IDs: <VMID>-<job_number> (0, 1, 2, 3 for 4 targets)
+# - pve-nas-01 excluded: no local-ssd storage, services migrated OFF for I/O contention
+#
+# Node layout (primary locations):
+# - pve-laptop-01: dns-01 (150)
+# - pve-opt-01: smtp-relay (151)
+# - pve-opt-02: (no primary services - backup only)
+# - pve-opt-03: dns-02 (160)
+# - pve-prec-01: home-assistant (154)
+#
+storage_replication_jobs:
+  # dns-01 (VMID 150) - Primary on pve-laptop-01
+  # Replicate to all other local-ssd nodes
+  # Staggered schedule: offset 0 (minutes 0,15,30,45)
+  - id: "150-0"
+    source_node: pve-laptop-01
+    target_node: pve-opt-01
+    schedule: "*/15"
+    comment: "dns-01 -> pve-opt-01"
+    enabled: true
+  - id: "150-1"
+    source_node: pve-laptop-01
+    target_node: pve-opt-02
+    schedule: "*/15"
+    comment: "dns-01 -> pve-opt-02"
+    enabled: true
+  - id: "150-2"
+    source_node: pve-laptop-01
+    target_node: pve-opt-03
+    schedule: "*/15"
+    comment: "dns-01 -> pve-opt-03"
+    enabled: true
+  - id: "150-3"
+    source_node: pve-laptop-01
+    target_node: pve-prec-01
+    schedule: "*/15"
+    comment: "dns-01 -> pve-prec-01"
+    enabled: true
+
+  # smtp-relay (VMID 151) - Primary on pve-opt-01
+  # Replicate to all other local-ssd nodes
+  # Staggered schedule: offset 3 (minutes 3,18,33,48)
+  - id: "151-0"
+    source_node: pve-opt-01
+    target_node: pve-laptop-01
+    schedule: "3,18,33,48"
+    comment: "smtp-relay -> pve-laptop-01"
+    enabled: true
+  - id: "151-1"
+    source_node: pve-opt-01
+    target_node: pve-opt-02
+    schedule: "3,18,33,48"
+    comment: "smtp-relay -> pve-opt-02"
+    enabled: true
+  - id: "151-2"
+    source_node: pve-opt-01
+    target_node: pve-opt-03
+    schedule: "3,18,33,48"
+    comment: "smtp-relay -> pve-opt-03"
+    enabled: true
+  - id: "151-3"
+    source_node: pve-opt-01
+    target_node: pve-prec-01
+    schedule: "3,18,33,48"
+    comment: "smtp-relay -> pve-prec-01"
+    enabled: true
+
+  # dns-02 (VMID 160) - Primary on pve-opt-03
+  # Replicate to all other local-ssd nodes
+  # Staggered schedule: offset 6 (minutes 6,21,36,51)
+  - id: "160-0"
+    source_node: pve-opt-03
+    target_node: pve-laptop-01
+    schedule: "6,21,36,51"
+    comment: "dns-02 -> pve-laptop-01"
+    enabled: true
+  - id: "160-1"
+    source_node: pve-opt-03
+    target_node: pve-opt-01
+    schedule: "6,21,36,51"
+    comment: "dns-02 -> pve-opt-01"
+    enabled: true
+  - id: "160-2"
+    source_node: pve-opt-03
+    target_node: pve-opt-02
+    schedule: "6,21,36,51"
+    comment: "dns-02 -> pve-opt-02"
+    enabled: true
+  - id: "160-3"
+    source_node: pve-opt-03
+    target_node: pve-prec-01
+    schedule: "6,21,36,51"
+    comment: "dns-02 -> pve-prec-01"
+    enabled: true
+
+  # home-assistant (VMID 154) - Primary on pve-prec-01
+  # Replicate to all other local-ssd nodes
+  # Staggered schedule: offset 9 (minutes 9,24,39,54)
+  - id: "154-0"
+    source_node: pve-prec-01
+    target_node: pve-laptop-01
+    schedule: "9,24,39,54"
+    comment: "home-assistant -> pve-laptop-01"
+    enabled: true
+  - id: "154-1"
+    source_node: pve-prec-01
+    target_node: pve-opt-01
+    schedule: "9,24,39,54"
+    comment: "home-assistant -> pve-opt-01"
+    enabled: true
+  - id: "154-2"
+    source_node: pve-prec-01
+    target_node: pve-opt-02
+    schedule: "9,24,39,54"
+    comment: "home-assistant -> pve-opt-02"
+    enabled: true
+  - id: "154-3"
+    source_node: pve-prec-01
+    target_node: pve-opt-03
+    schedule: "9,24,39,54"
+    comment: "home-assistant -> pve-opt-03"
+    enabled: true

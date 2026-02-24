@@ -169,39 +169,107 @@ zpool list -v archive
 
 **Capacity**: With raidz1, usable capacity is approximately 18TB (6TB × 3 data drives)
 
-### Future Pool Configurations
+### local-ssd (Compute Node Storage)
 
-#### Optiplex/Laptop 1TB SSD Pool (Planned)
+**Status**: Active on all compute nodes (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01)
 
-For future Optiplex and laptop nodes with 1TB Samsung 870 EVO SSDs:
+The `local-ssd` pool provides local VM/container storage on compute nodes (all Proxmox hosts except the NAS). Each compute node has a 1TB Samsung 870 EVO SSD configured as local-ssd.
+
+**Configuration** (verified on pve-opt-03):
+- **Device**: 1x Samsung 870 EVO 1TB (ata-Samsung_SSD_870_EVO_1TB_S6PTNS0Y900757T)
+- **Capacity**: ~900GB usable
+- **Redundancy**: None (single device)
+- **Use Case**: Local storage for VMs/containers on compute nodes
+
+**Why local-ssd for compute nodes?**
+
+1. **Proxmox HA Requirements**: ZFS pools required on all nodes for replication and failover
+2. **Performance**: Better than LVM thin (compression, checksumming, snapshots)
+3. **Stateless Workloads**: Compute nodes run stateless/replicated workloads:
+   - K3s agents: State in etcd (replicated across servers)
+   - Pods: Automatically rescheduled on node failure
+   - DNS/SMTP: Multiple instances or retry mechanisms
+4. **Cost-Effective**: 1TB SSD per node is sufficient for local workloads
+
+**Pool Properties** (optimized for VM workloads):
 
 ```bash
-# Create local-ssd pool on compute nodes (when installed)
-zpool create -o ashift=12 \
-             -O acltype=posixacl \
-             -O compression=zstd \
-             -O normalization=formD \
-             -O relatime=on \
-             -O xattr=sa \
-             -m /mnt/local-ssd \
-             local-ssd \
-             /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB-SERIALNUMBER
-
-# For mirror configuration (if node has 2 SSDs)
-zpool create -o ashift=12 \
-             -O acltype=posixacl \
-             -O compression=zstd \
-             -O normalization=formD \
-             -O relatime=on \
-             -O xattr=sa \
-             -m /mnt/local-ssd \
-             local-ssd mirror \
-             /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB-SERIAL1 \
-             /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB-SERIAL2
+ashift=12           # 4K sector alignment
+compression=lz4     # Low-latency compression (better than zstd for VMs)
+atime=off           # Reduce write amplification
+xattr=sa            # System attribute storage (3x faster, shows as "on" in ZFS 2.3+)
+autotrim=on         # SSD longevity
+normalization=formD # Unicode normalization
+acltype=posixacl    # POSIX ACL support
 ```
 
-**Use Case**: Local storage for VM/LXC workloads on compute nodes
-**Status**: Not yet implemented - awaiting hardware installation
+**Why lz4 instead of zstd?**
+- VM workloads are latency-sensitive (random I/O patterns)
+- lz4 has ~10x faster decompression than zstd
+- Near-zero CPU overhead vs zstd's higher cost
+- Industry standard for VM storage (Proxmox defaults to lz4)
+
+**Creation Commands**:
+
+```bash
+# Step 1: Identify the disk
+ls -l /dev/disk/by-id/ | grep -i samsung
+
+# Step 2: Wipe any existing filesystem signatures
+sudo wipefs -a /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
+sudo sgdisk --zap-all /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
+
+# Step 3: Create local-ssd pool
+sudo zpool create -f -o ashift=12 \
+  -O compression=lz4 \
+  -O atime=off \
+  -O xattr=sa \
+  -O normalization=formD \
+  -O acltype=posixacl \
+  local-ssd \
+  /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
+
+# Step 4: Enable autotrim for SSD longevity
+sudo zpool set autotrim=on local-ssd
+
+# Step 5: Verify pool creation
+sudo zpool status local-ssd
+sudo zpool list local-ssd
+sudo zfs list local-ssd
+
+# Step 6: Register as Proxmox storage (via UI or CLI)
+# Via Proxmox UI: Datacenter → Storage → Add → ZFS
+# Or via CLI:
+sudo pvesm add zfspool local-ssd --pool local-ssd --content images,rootdir
+
+# Step 7: Verify Proxmox recognizes the storage
+sudo pvesm status
+```
+
+**Current Deployment**:
+
+| Host | Status | Device | Pool Size | VMs/CTs |
+|------|--------|--------|-----------|---------|
+| pve-laptop-01 | Active | Samsung 870 EVO 1TB | ~900GB | k3s-srv-laptop-01 (VM 223), k3s-agt-laptop-01 (VM 203) |
+| pve-opt-01 | Active | Samsung 870 EVO 1TB | ~900GB | k3s-agt-opt-01 (VM 204) |
+| pve-opt-02 | Active | Samsung 870 EVO 1TB | ~900GB | k3s-agt-opt-02 (VM 205) |
+| pve-opt-03 | Active | Samsung 870 EVO 1TB | ~900GB | k3s-agt-opt-03 (VM 206) |
+| pve-prec-01 | Active | Samsung 870 EVO 1TB | ~900GB | k3s-srv-prec-01 (VM 227), k3s-agt-prec-01 (VM 207) |
+
+**Future: Mirror Configuration** (if node has 2 SSDs):
+
+```bash
+# For future nodes with 2x 1TB SSDs (redundancy)
+zpool create -f -o ashift=12 \
+  -O compression=lz4 \
+  -O atime=off \
+  -O xattr=sa \
+  -O normalization=formD \
+  -O acltype=posixacl \
+  local-ssd mirror \
+  /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIAL1 \
+  /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIAL2
+```
 
 ### ssd (App Data Pool)
 
@@ -276,7 +344,8 @@ for pool in tank ssd nvme archive; do
 done
 ```
 
-**TODO**: Document exact scrub schedule once retrieved from system.
+Scrub scheduling is handled by Proxmox's built-in ZFS scrub systemd timers (typically monthly).
+Check current schedule with: `systemctl list-timers '*scrub*'`
 
 ## Snapshots
 

@@ -217,14 +217,31 @@ Proxmox includes enterprise repositories by default. For homelab use, switch to 
 2. Disable `pve-enterprise` repository
 3. Add `pve-no-subscription` repository
 
-**Via SSH**:
+**Via SSH** (Proxmox 9+ / Debian Trixie uses DEB822 `.sources` format):
 
 ```bash
-# Disable enterprise repo
-echo "# deb https://enterprise.proxmox.com/debian/pve trixie pve-enterprise" > /etc/apt/sources.list.d/pve-enterprise.list
+# Remove legacy .list files if they exist
+rm -f /etc/apt/sources.list.d/pve-enterprise.list
+rm -f /etc/apt/sources.list.d/ceph.list
+
+# Disable enterprise repo (comment out Enabled line or set to no)
+cat > /etc/apt/sources.list.d/pve-enterprise.sources << 'EOF'
+# Proxmox VE Enterprise Repository (disabled - requires subscription)
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-enterprise
+Enabled: no
+EOF
 
 # Add no-subscription repo
-echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list
+cat > /etc/apt/sources.list.d/pve-no-subscription.sources << 'EOF'
+# Proxmox VE No-Subscription Repository
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+EOF
 
 # Update and upgrade
 apt update
@@ -482,9 +499,31 @@ pvesm add zfspool tank-pool --pool tank --content images,rootdir
 
 ## Pre-Ansible Checklist
 
-Before running Ansible automation, verify the following on each node:
+Before running Ansible automation, verify the following on each node.
 
-### Network and Connectivity
+### Automated Bootstrap (Recommended)
+
+Use the bootstrap script to automate user creation, SSH key deployment, and sudo configuration:
+
+```bash
+# From your laptop, run the bootstrap script against the new host
+./scripts/bootstrap-proxmox-host.sh <host-ip> <your-ssh-public-key>
+
+# Example:
+./scripts/bootstrap-proxmox-host.sh 192.168.0.107 "ssh-ed25519 AAAA... eric@laptop"
+```
+
+The script handles:
+- Creating user `eric` with sudo group
+- Deploying SSH authorized keys
+- Configuring passwordless sudo
+- Installing required packages (sudo if missing)
+
+After bootstrap, verify SSH access: `ssh eric@<host-ip>`
+
+### Manual Checklist (if not using bootstrap script)
+
+#### Network and Connectivity
 
 - [ ] Static IP configured and persistent
 - [ ] Default gateway reachable (`ping 192.168.0.1`)
@@ -493,7 +532,7 @@ Before running Ansible automation, verify the following on each node:
 - [ ] Hostname set correctly (`hostnamectl`)
 - [ ] Hostname resolves to IP (`hostname -f`)
 
-### SSH Access
+#### SSH Access
 
 - [ ] SSH service running (`systemctl status sshd`)
 - [ ] User `eric` created

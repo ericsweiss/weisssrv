@@ -1,0 +1,88 @@
+---
+# Manage Proxmox HA resources
+
+- name: Get current HA resources
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && ha-manager config | grep -E '^(vm|ct):' | awk -F: '{print $1\":\"$2}' || true"
+    executable: /bin/bash
+  register: current_ha_resources
+  changed_when: false
+  check_mode: false  # Must run to determine current state
+  tags: [proxmox_ha_resources]
+
+- name: Add HA resources
+  ansible.builtin.command: >-
+    ha-manager add {{ item.type }}:{{ item.vmid }}
+    --state {{ item.state | default('started') }}
+    {% if item.group is defined %}--group {{ item.group }}{% endif %}
+    {% if item.max_restart is defined %}--max_restart {{ item.max_restart }}{% endif %}
+    {% if item.max_relocate is defined %}--max_relocate {{ item.max_relocate }}{% endif %}
+    {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
+  when:
+    - item.type + ':' + (item.vmid | string) not in current_ha_resources.stdout_lines
+    - item.enabled | default(true)
+  loop: "{{ ha_resources }}"
+  register: ha_resource_add_result
+  changed_when: ha_resource_add_result.rc == 0
+  failed_when:
+    - ha_resource_add_result.rc != 0
+    - "'already exists' not in ha_resource_add_result.stderr"
+  tags: [proxmox_ha_resources]
+
+- name: Get current HA resource config for updates
+  ansible.builtin.shell:
+    cmd: "ha-manager config {{ item.type }}:{{ item.vmid }} 2>/dev/null || true"
+    executable: /bin/bash
+  when:
+    - item.type + ':' + (item.vmid | string) in current_ha_resources.stdout_lines
+    - item.enabled | default(true)
+  loop: "{{ ha_resources }}"
+  register: ha_resource_current_config
+  changed_when: false
+  check_mode: false
+  tags: [proxmox_ha_resources]
+
+- name: Update HA resources
+  ansible.builtin.command: >-
+    ha-manager set {{ item.item.type }}:{{ item.item.vmid }}
+    --state {{ item.item.state | default('started') }}
+    {% if item.item.group is defined %}--group {{ item.item.group }}{% endif %}
+    {% if item.item.group is not defined and 'group ' in (item.stdout | default('')) %}--delete group{% endif %}
+    {% if item.item.max_restart is defined %}--max_restart {{ item.item.max_restart }}{% endif %}
+    {% if item.item.max_relocate is defined %}--max_relocate {{ item.item.max_relocate }}{% endif %}
+    {% if item.item.comment is defined %}--comment "{{ item.item.comment }}"{% endif %}
+  vars:
+    # Extract numeric field values using regex with word boundary (whitespace or end-of-line)
+    _stdout: "{{ item.stdout | default('') }}"
+    # Match "max_restart <digits>" where digits are followed by whitespace or end-of-string
+    _current_max_restart_match: "{{ _stdout | regex_search('max_restart\\s+(\\d+)(?:\\s|$)', '\\1') }}"
+    _current_max_restart: "{{ _current_max_restart_match[0] | default('') if _current_max_restart_match else '' }}"
+    _current_max_relocate_match: "{{ _stdout | regex_search('max_relocate\\s+(\\d+)(?:\\s|$)', '\\1') }}"
+    _current_max_relocate: "{{ _current_max_relocate_match[0] | default('') if _current_max_relocate_match else '' }}"
+  when:
+    - item.item.type + ':' + (item.item.vmid | string) in current_ha_resources.stdout_lines
+    - item.item.enabled | default(true)
+    # Only update when drift is detected
+    - >-
+      ('state ' ~ (item.item.state | default('started'))) not in _stdout
+      or (item.item.group is defined and ('group ' ~ item.item.group) not in _stdout)
+      or (item.item.group is not defined and 'group ' in _stdout)
+      or (item.item.max_restart is defined and _current_max_restart != (item.item.max_restart | string))
+      or (item.item.max_relocate is defined and _current_max_relocate != (item.item.max_relocate | string))
+      or (item.item.comment is defined and ('comment ' ~ item.item.comment) not in _stdout)
+  loop: "{{ ha_resource_current_config.results }}"
+  loop_control:
+    label: "{{ item.item.type }}:{{ item.item.vmid | default('N/A') }}"
+  register: ha_resource_update_result
+  changed_when: ha_resource_update_result.rc == 0
+  tags: [proxmox_ha_resources]
+
+- name: Remove HA resources
+  ansible.builtin.command: ha-manager remove {{ item.type }}:{{ item.vmid }}
+  when:
+    - item.type + ':' + (item.vmid | string) in current_ha_resources.stdout_lines
+    - not (item.enabled | default(true))
+  loop: "{{ ha_resources }}"
+  register: ha_resource_remove_result
+  changed_when: ha_resource_remove_result.rc == 0
+  tags: [proxmox_ha_resources]

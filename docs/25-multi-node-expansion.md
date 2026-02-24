@@ -1,6 +1,6 @@
 # Multi-Node Expansion and Proxmox HA Guide
 
-This document covers the full path from the current 2-host setup to a multi-node Proxmox HA cluster with k3s running across all hosts. It is organized into three phases: adding local storage to pve-opt-03, bringing up new Proxmox hosts with k3s nodes, and enabling Proxmox HA for infrastructure services.
+This document covers the architecture and procedures for the 6-node Proxmox HA cluster with k3s running across all hosts. It includes reference material for storage configuration, host setup procedures, and HA management.
 
 ## Table of Contents
 
@@ -17,23 +17,53 @@ This document covers the full path from the current 2-host setup to a multi-node
 
 ## Current State
 
-**Active Proxmox hosts**:
-- pve-nas-01 (192.168.0.102) -- NAS + storage, ZFS pools (tank/ssd/nvme/archive)
-- pve-opt-03 (192.168.0.106) -- Compute only, local-lvm storage
+**Proxmox Cluster (weisssrv)** - 6 nodes, fully quorate:
 
-**Active k3s nodes**:
-- k3s-srv-nas-01 (.222, VMID 222) -- Server + etcd on pve-nas-01
-- k3s-agt-nas-01 (.202, VMID 202) -- Agent on pve-nas-01 (NAS workloads)
-- k3s-agt-opt-03 (.206, VMID 206) -- Agent on pve-opt-03 (ingress + general)
+| Host | IP | Role | Storage | Status |
+|------|-----|------|---------|--------|
+| pve-nas-01 | .102 | NAS + storage | tank/ssd/nvme/archive | Active |
+| pve-laptop-01 | .103 | Compute | local-ssd (1TB) | Active |
+| pve-opt-01 | .104 | Compute | local-ssd (1TB) | Active |
+| pve-opt-02 | .105 | Compute | local-ssd (1TB) | Active |
+| pve-opt-03 | .106 | Compute | local-ssd (1TB) | Active |
+| pve-prec-01 | .107 | Compute | local-ssd (1TB) | Active |
 
-**Infrastructure LXC containers** (all on pve-nas-01):
-- dns-01 (VMID 150, .150) -- Primary DNS
-- dns-02 (VMID 160, .160) -- Secondary DNS
-- smtp-relay (VMID 151, .151) -- Mail relay
-- plex (VMID 152, .152) -- Plex Media Server
+**K3s Cluster** - 9 nodes (3 servers + 6 agents):
 
-**VMs**:
-- home-assistant (VMID 154, .154) -- HAOS VM on pve-nas-01
+| Node | IP | VMID | Host | Role | Status |
+|------|-----|------|------|------|--------|
+| k3s-srv-nas-01 | .222 | 222 | pve-nas-01 | Server (first) | Active |
+| k3s-srv-laptop-01 | .223 | 223 | pve-laptop-01 | Server | Active |
+| k3s-srv-prec-01 | .227 | 227 | pve-prec-01 | Server | Active |
+| k3s-agt-nas-01 | .202 | 202 | pve-nas-01 | Agent (NAS) | Active |
+| k3s-agt-laptop-01 | .203 | 203 | pve-laptop-01 | Agent (ingress) | Active |
+| k3s-agt-opt-01 | .204 | 204 | pve-opt-01 | Agent (ingress) | Active |
+| k3s-agt-opt-02 | .205 | 205 | pve-opt-02 | Agent (ingress) | Active |
+| k3s-agt-opt-03 | .206 | 206 | pve-opt-03 | Agent (ingress) | Active |
+| k3s-agt-prec-01 | .207 | 207 | pve-prec-01 | Agent (compute) | Active |
+
+**Infrastructure Services (HA-managed)**:
+
+These services float between nodes via Proxmox HA - there is no fixed "preferred" or "current" host. To check actual runtime locations, run `task proxmox:ha-status` or `ha-manager status` on any cluster node.
+
+| Service | VMID | Type | HA State | Eligible Hosts (have replicated data) |
+|---------|------|------|----------|---------------------------------------|
+| dns-01 | 150 | LXC | started | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| smtp-relay | 151 | LXC | started | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| dns-02 | 160 | LXC | started | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| home-assistant | 154 | VM | started | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+
+**Non-HA Services (NAS-bound)**:
+
+| Service | VMID | Type | Host | Notes |
+|---------|------|------|------|-------|
+| plex | 152 | LXC | pve-nas-01 | Requires NAS bind mounts |
+| k3s-agt-nas-01 | 202 | VM | pve-nas-01 | Requires local NFS access |
+
+**HA Configuration**:
+- Node-affinity rule `critical-services-no-nas` excludes pve-nas-01 from HA resources
+- Multi-target ZFS replication (every 15 minutes) to 4 nodes per service
+- Services can failover to any node with replicated data
 
 ---
 
@@ -50,32 +80,32 @@ This document covers the full path from the current 2-host setup to a multi-node
 | Host | IP | Status | Hardware | K3s VMs |
 |------|-----|--------|----------|---------|
 | pve-nas-01 | .102 | Active | NAS + Storage | srv-nas-01 (.222), agt-nas-01 (.202) |
-| pve-laptop-01 | .103 | Future | MSI GS60 2QD | srv-laptop-01 (.223), agt-laptop-01 (.203) |
-| pve-opt-01 | .104 | Future | Dell OptiPlex 780 | agt-opt-01 (.204) -- agent only |
-| pve-opt-02 | .105 | Future | Dell OptiPlex 780 | agt-opt-02 (.205) -- agent only |
+| pve-laptop-01 | .103 | Active | MSI GS60 2QD | srv-laptop-01 (.223), agt-laptop-01 (.203) |
+| pve-opt-01 | .104 | Active | Dell OptiPlex 780 | agt-opt-01 (.204) -- agent only |
+| pve-opt-02 | .105 | Active | Dell OptiPlex 780 | agt-opt-02 (.205) -- agent only |
 | pve-opt-03 | .106 | Active | Dell OptiPlex 780 | agt-opt-03 (.206) |
-| pve-prec-01 | .107 | Future | Dell Precision 3630 | srv-prec-01 (.227), agt-prec-01 (.207) |
+| pve-prec-01 | .107 | Active | Dell Precision 3630 | srv-prec-01 (.227), agt-prec-01 (.207) |
 
 ### K3s Server Nodes (.22X -- Control Plane)
 
 | Node | IP | VMID | Host | Storage | Status |
 |------|-----|------|------|---------|--------|
 | k3s-srv-nas-01 | .222 | 222 | pve-nas-01 | local-lvm | Active |
-| k3s-srv-laptop-01 | .223 | 223 | pve-laptop-01 | local-ssd | Future |
-| k3s-srv-prec-01 | .227 | 227 | pve-prec-01 | TBD | Future |
-| (reserved) | .224 | 224 | TBD | TBD | Future (5-node HA) |
-| (reserved) | .225 | 225 | TBD | TBD | Future (5-node HA) |
+| k3s-srv-laptop-01 | .223 | 223 | pve-laptop-01 | local-ssd | Active |
+| k3s-srv-prec-01 | .227 | 227 | pve-prec-01 | local-ssd | Active |
+| (reserved) | .224 | 224 | - | - | Reserved for 5-node HA |
+| (reserved) | .225 | 225 | - | - | Reserved for 5-node HA |
 
 ### K3s Agent Nodes (.20X -- Workers)
 
 | Node | IP | VMID | Host | Role | Status |
 |------|-----|------|------|------|--------|
 | k3s-agt-nas-01 | .202 | 202 | pve-nas-01 | NAS workloads | Active |
-| k3s-agt-laptop-01 | .203 | 203 | pve-laptop-01 | Ingress + general | Future |
-| k3s-agt-opt-01 | .204 | 204 | pve-opt-01 | General | Future |
-| k3s-agt-opt-02 | .205 | 205 | pve-opt-02 | General | Future |
+| k3s-agt-laptop-01 | .203 | 203 | pve-laptop-01 | Ingress + general | Active |
+| k3s-agt-opt-01 | .204 | 204 | pve-opt-01 | Ingress + general | Active |
+| k3s-agt-opt-02 | .205 | 205 | pve-opt-02 | Ingress + general | Active |
 | k3s-agt-opt-03 | .206 | 206 | pve-opt-03 | Ingress + general | Active |
-| k3s-agt-prec-01 | .207 | 207 | pve-prec-01 | General + compute | Future |
+| k3s-agt-prec-01 | .207 | 207 | pve-prec-01 | General + compute | Active |
 
 ---
 
@@ -89,7 +119,7 @@ All labels use the `esweiss.com/` prefix:
 |-------|---------|-------|
 | `esweiss.com/nas=true` | Fast NAS storage access (local NFS) | k3s-agt-nas-01 |
 | `esweiss.com/general=true` | General workloads | All agents |
-| `esweiss.com/ingress=true` | Ingress controller eligible | agt-opt-03, agt-laptop-01 |
+| `esweiss.com/ingress=true` | Ingress controller eligible | k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03 |
 | `esweiss.com/compute=true` | High-computation tasks (ML, transcoding) | k3s-agt-prec-01 |
 | `esweiss.com/control-plane=true` | Informational: control plane node | All servers |
 
@@ -148,20 +178,43 @@ General workloads without the toleration will still schedule on prec-01 because 
 
 ---
 
-## Section 1: Adding local-ssd to pve-opt-03
+## Section 1: Adding local-ssd ZFS Pool (Reference)
 
-pve-opt-03 currently uses `local-lvm` for VM storage. Adding a 1TB SSD with a `local-ssd` ZFS pool provides better snapshots, compression, and prepares the node for Proxmox HA replication.
+**Status**: ✅ **Complete** - All compute nodes now have local-ssd configured.
+
+This section documents the setup of a 1TB SSD with a `local-ssd` ZFS pool, which provides snapshots, compression, and enables Proxmox HA replication. Use this as a reference when adding new compute nodes.
+
+### Storage Strategy for Multi-Node Setup
+
+**Automated Storage Selection**: The `proxmox_vm` and `proxmox_lxc` Ansible roles now automatically select storage based on the Proxmox host's role:
+
+| Proxmox Host Role | Default Storage | Details |
+|-------------------|-----------------|---------|
+| `nas` (pve-nas-01) | `ssd` | 3x 4TB Samsung SSDs (raidz1) - App data and databases |
+| `compute` / `general` (all others) | `local-ssd` | 1TB Samsung 870 EVO per host - VM/container workloads |
+
+Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_storage` in the inventory.
+
+**Why local-ssd for compute nodes?**
+1. **Proxmox HA**: ZFS pools required on all nodes for replication and failover
+2. **Stateless workloads**: K3s agents, DNS, SMTP have redundancy via k8s or multiple instances
+3. **ZFS benefits**: Compression (lz4), snapshots, checksumming, atomic operations
+4. **lz4 for VMs**: Low-latency compression (~10x faster decompression than zstd, near-zero CPU overhead)
+
+**Current Storage Layout**:
+- pve-nas-01: Uses `ssd` pool for containers (plex), `local-lvm` for VMs (k3s server/agent)
+- All compute nodes (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01): Use `local-ssd` for all VM/container workloads
 
 ### Prerequisites
 
-- 1x 1TB Samsung 870 EVO SSD installed in pve-opt-03
+- 1x 1TB Samsung 870 EVO SSD (or equivalent) installed in the target compute node
 - Physical access to install the drive (or hot-swap if chassis supports it)
 
 ### Step 1: Identify the Disk
 
 ```bash
-# SSH to pve-opt-03
-ssh eric@192.168.0.106
+# SSH to the target compute node (example: pve-opt-03)
+ssh eric@<node-ip>
 
 # List all block devices
 sudo lsblk -d -o NAME,SIZE,MODEL,SERIAL,ROTA
@@ -176,30 +229,34 @@ ls -la /dev/disk/by-id/ | grep -i samsung
 
 ### Step 2: Create the ZFS Pool
 
-Follow the same property conventions as the NAS pools (see `docs/06-zfs.md`):
+See `docs/06-zfs.md` for complete details. **Key difference from NAS pools**: Use `lz4` compression instead of `zstd` for VM workloads (lower latency).
 
 ```bash
 # Create local-ssd pool (single device, no redundancy)
-sudo zpool create -o ashift=12 \
+sudo zpool create -f -o ashift=12 \
     -O acltype=posixacl \
-    -O compression=zstd \
+    -O compression=lz4 \
     -O normalization=formD \
-    -O relatime=on \
+    -O atime=off \
     -O xattr=sa \
-    -m /mnt/local-ssd \
     local-ssd \
     /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
 
+# Enable autotrim for SSD longevity
+sudo zpool set autotrim=on local-ssd
+
 # Verify pool creation
 sudo zpool status local-ssd
-sudo zpool list -v local-ssd
+sudo zpool list local-ssd
+sudo zfs list local-ssd
 ```
 
-**Pool properties match the established pattern**:
+**Pool properties optimized for VM workloads**:
 - `ashift=12`: 4K sector alignment
-- `compression=zstd`: Same as all other pools
-- `relatime=on`: Reduced atime writes
-- `xattr=sa`: Extended attributes in system attribute table
+- `compression=lz4`: Low-latency compression (better than zstd for VMs)
+- `atime=off`: Reduces write amplification (vs relatime on NAS pools)
+- `autotrim=on`: SSD longevity and performance
+- `xattr=sa`: Extended attributes in system attribute table (shows as "on" in ZFS 2.3+)
 
 **WARNING**: Single device pool has no redundancy. This is acceptable for compute nodes because VM data is replicated via Proxmox HA and k3s workloads are stateless or use NFS-backed PVs from the NAS.
 
@@ -256,9 +313,9 @@ k3s-agt-opt-03:
 
 ---
 
-## Section 2: Setting Up New Proxmox Hosts
+## Section 2: Setting Up Proxmox Hosts (Reference)
 
-This section covers bringing each future host from bare hardware to a fully integrated Proxmox cluster member with k3s nodes.
+This section documents the procedure for bringing a host from bare hardware to a fully integrated Proxmox cluster member with k3s nodes. Use this as a reference when adding new hosts in the future.
 
 ### General Procedure (All Hosts)
 
@@ -288,22 +345,25 @@ Gateway: 192.168.0.1, DNS: 192.168.0.150 (use 192.168.0.1 if DNS stack is not ye
 
 #### Step 2: Create local-ssd ZFS Pool
 
-For hosts with a dedicated 1TB SSD (all except pve-prec-01 where storage is TBD):
+For hosts with a dedicated 1TB SSD (all compute nodes):
 
 ```bash
 # Identify the SSD
 ls -la /dev/disk/by-id/ | grep -i samsung
 
 # Create pool (replace SERIALNUMBER with actual serial)
-sudo zpool create -o ashift=12 \
+# NOTE: Use lz4 (not zstd) and atime=off for VM workloads
+sudo zpool create -f -o ashift=12 \
     -O acltype=posixacl \
-    -O compression=zstd \
+    -O compression=lz4 \
     -O normalization=formD \
-    -O relatime=on \
+    -O atime=off \
     -O xattr=sa \
-    -m /mnt/local-ssd \
     local-ssd \
     /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
+
+# Enable autotrim for SSD longevity
+sudo zpool set autotrim=on local-ssd
 
 # Register as Proxmox storage
 sudo pvesm add zfspool local-ssd --pool local-ssd --content images,rootdir
@@ -419,29 +479,35 @@ curl -sk https://192.168.0.161:6443/healthz
 
 - **IP**: 192.168.0.107
 - **K3s nodes**: k3s-srv-prec-01 (.227/227) + k3s-agt-prec-01 (.207/207)
-- **Storage**: TBD (depends on available drives)
+- **Storage**: 1TB Samsung 870 EVO as `local-ssd`
 - **Agent role**: General + compute with `PreferNoSchedule` taint
-- **Agent specs**: Higher than standard (6 vCPU, 16GB RAM -- exact values TBD based on hardware)
+- **Agent specs**: 6 vCPU, 16GB RAM (workstation-class hardware)
 - **Notes**:
   - Workstation-class hardware with more capable CPU than the OptiPlex nodes
   - Good candidate for GPU passthrough if the Precision has a discrete GPU
   - The compute taint means general workloads will prefer other agents first
 
-### Recommended Expansion Order
+### Expansion History
 
-1. **pve-opt-03 local-ssd** -- Minimal effort, immediate benefit (Section 1)
-2. **pve-prec-01** -- Adds server #2 for etcd quorum progress + compute agent
-3. **pve-laptop-01** -- Adds server #3 for full 3-node HA quorum + ingress agent
-4. **pve-opt-01** -- Additional general capacity
-5. **pve-opt-02** -- Additional general capacity
+The cluster was expanded in the following order (all complete):
 
-After steps 2-3, you have 3 etcd servers (tolerates 1 server failure). After all 5, you can consider adding 2 more servers at .224/.225 for full 5-node HA (tolerates 2 server failures).
+1. **pve-opt-03 local-ssd** -- First compute node with local storage
+2. **pve-prec-01** -- Added server #2 for etcd quorum progress + compute agent
+3. **pve-laptop-01** -- Added server #3 for full 3-node HA quorum + ingress agent
+4. **pve-opt-01** -- Additional general/ingress capacity
+5. **pve-opt-02** -- Additional general/ingress capacity
+
+**Current state**: 3 etcd servers (tolerates 1 server failure), 6 agents for workloads.
+
+**Future expansion**: Consider adding 2 more servers at .224/.225 for 5-node HA (tolerates 2 server failures).
 
 ---
 
-## Section 3: Enabling Proxmox HA
+## Section 3: Proxmox HA Configuration (Reference)
 
-Proxmox HA (High Availability) automatically restarts VMs/CTs on surviving nodes when a host fails. This requires a Proxmox cluster with at least 3 nodes (for corosync quorum).
+**Status**: ✅ **Complete** - HA is fully configured and active on the 6-node cluster.
+
+Proxmox HA (High Availability) automatically restarts VMs/CTs on surviving nodes when a host fails. This section documents the HA architecture and procedures for reference.
 
 ### Prerequisites
 
@@ -474,46 +540,63 @@ If you later decide VMs are needed (e.g., for live migration), the conversion pr
 
 ZFS replication copies VM/CT disk data between hosts, enabling HA failover to a node that already has the data.
 
-```bash
-# On the Proxmox web UI:
-# 1. Select a VM (e.g., VMID 222 / k3s-srv-nas-01)
-# 2. Go to Replication tab
-# 3. Click Add
-# 4. Target: pve-laptop-01 (or another cluster member)
-# 5. Schedule: */15 (every 15 minutes) -- adjust based on RPO needs
-# 6. Rate limit: optional, prevents saturating the network
+**Best Practice: Multi-Target Replication**
 
-# Or via CLI on the source node:
-sudo pvesr create-local-job 222-0 pve-laptop-01 --schedule '*/15' --comment 'k3s-srv-nas-01 to laptop'
+Proxmox supports replicating a VM/CT to MULTIPLE target nodes (but not twice to the same node). This allows services to failover to ANY available node, not just a single backup. This is the recommended approach for true high availability.
+
+**Current Configuration** (managed by Ansible):
+
+Services are distributed across 5 nodes with `local-ssd` storage (excluding pve-nas-01 which has no local-ssd). Services have been migrated OFF pve-nas-01 to nodes with local-ssd pools to enable HA replication.
+
+| Service | VMID | Primary Node | Replication Targets |
+|---------|------|---------------------|---------------------|
+| dns-01 | 150 | pve-laptop-01 | pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| smtp-relay | 151 | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| dns-02 | 160 | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 |
+| home-assistant | 154 | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 |
+
+Each service replicates every 15 minutes to ALL 4 other nodes. When any node fails, HA can restart the service on ANY surviving node that has replicated data.
+
+**Why pve-nas-01 is excluded**:
+- No `local-ssd` storage (services were migrated OFF to avoid I/O contention with NAS workloads)
+- Services with NAS dependencies (Plex, k3s-agt-nas-01) cannot run elsewhere anyway
+
+**Managing Replication via Ansible** (recommended):
+
+```bash
+# Deploy HA rules, resources, and multi-target replication
+task proxmox:ha
+
+# Check what would change
+task proxmox:ha-check
+
+# View current status
+task proxmox:ha-status
 ```
 
-**Replication targets by host** (suggested):
-
-| Source Host | VM/CT | VMID | Replication Target | Notes |
-|-------------|-------|------|--------------------|-------|
-| pve-nas-01 | k3s-srv-nas-01 | 222 | pve-laptop-01 or pve-prec-01 | Server node |
-| pve-nas-01 | k3s-agt-nas-01 | 202 | pve-laptop-01 or pve-prec-01 | NAS agent -- but NFS mounts break on other hosts |
-| pve-nas-01 | dns-01 | 150 | pve-laptop-01 or pve-prec-01 | Primary DNS |
-| pve-nas-01 | dns-02 | 160 | pve-opt-03 | Secondary DNS on different host |
-| pve-nas-01 | smtp-relay | 151 | pve-laptop-01 or pve-prec-01 | Mail relay |
-| pve-nas-01 | home-assistant | 154 | pve-laptop-01 or pve-prec-01 | HAOS VM |
-| pve-nas-01 | plex | 152 | -- | Plex depends on NAS bind mounts; HA migration impractical |
-
-**Note on k3s-agt-nas-01**: This agent uses NFS mounts from the NAS. If pve-nas-01 fails, the NFS server is also down, making HA migration of this specific agent pointless. It should be excluded from HA or configured to only run on pve-nas-01.
-
-**Note on plex**: Plex uses bind mounts to the NAS ZFS pools. It can only run on pve-nas-01 and should be excluded from HA.
+**Manual CLI commands** (for reference):
 
 ```bash
+# Create a multi-target replication job (repeat for each target)
+sudo pvesr create-local-job 150-0 pve-opt-01 --schedule '*/15' --comment 'dns-01 -> pve-opt-01'
+sudo pvesr create-local-job 150-1 pve-opt-02 --schedule '*/15' --comment 'dns-01 -> pve-opt-02'
+sudo pvesr create-local-job 150-2 pve-opt-03 --schedule '*/15' --comment 'dns-01 -> pve-opt-03'
+sudo pvesr create-local-job 150-3 pve-prec-01 --schedule '*/15' --comment 'dns-01 -> pve-prec-01'
+
 # Check replication status
 sudo pvesr status
 sudo pvesr list
 
 # Manually trigger a replication
-sudo pvesr schedule-now 222-0
+sudo pvesr schedule-now 150-0
 
 # View replication logs
 sudo journalctl -u pvesr -n 50
 ```
+
+**Services NOT replicated**:
+- `plex` (VMID 152) -- Depends on NAS bind mounts; can only run on pve-nas-01
+- `k3s-agt-nas-01` (VMID 202) -- Depends on NFS from NAS; pointless to migrate
 
 ### Step 2: Enable HA on the Cluster
 
@@ -530,84 +613,114 @@ sudo ha-manager status
 
 If the cluster is quorate, HA is ready to be configured per-resource.
 
-### Step 3: Create HA Groups
+### Step 3: Create Node Affinity Rules
 
-HA groups define which nodes can run specific resources. This controls where VMs/CTs migrate during failover.
+Node-affinity rules provide flexible control over which nodes can run specific resources.
 
-```bash
-# Group for services that should prefer pve-nas-01 (NAS-dependent)
-sudo ha-manager groupadd nas-services \
-    --nodes pve-nas-01:2,pve-laptop-01:1,pve-prec-01:1 \
-    --restricted 1 \
-    --nofailback 0 \
-    --comment "Services preferring NAS host"
+**Current Configuration** (managed by Ansible):
 
-# Group for services that can run anywhere
-sudo ha-manager groupadd general \
-    --nodes pve-nas-01:1,pve-laptop-01:1,pve-opt-03:1,pve-prec-01:1 \
-    --restricted 0 \
-    --nofailback 0 \
-    --comment "General services - any host"
+We use a single node-affinity rule that excludes pve-nas-01 from all critical services:
 
-# Group for DNS - spread across hosts for redundancy
-sudo ha-manager groupadd dns-primary \
-    --nodes pve-nas-01:2,pve-laptop-01:1,pve-prec-01:1 \
-    --restricted 1 \
-    --nofailback 0 \
-    --comment "Primary DNS server"
-
-sudo ha-manager groupadd dns-secondary \
-    --nodes pve-opt-03:2,pve-laptop-01:1,pve-prec-01:1 \
-    --restricted 1 \
-    --nofailback 0 \
-    --comment "Secondary DNS on different host from primary"
+```yaml
+# From ansible/inventories/prod/group_vars/all.yml
+ha_rules:
+  - name: critical-services-no-nas
+    type: node-affinity
+    resources:
+      - ct:150  # dns-01
+      - ct:160  # dns-02
+      - ct:151  # smtp-relay
+      - vm:154  # home-assistant
+    nodes:
+      - pve-laptop-01
+      - pve-opt-01
+      - pve-opt-02
+      - pve-opt-03
+      - pve-prec-01
+    strict: false  # Allow NAS only if ALL other nodes unavailable
 ```
 
-**Parameter explanation**:
-- `--nodes host:priority` -- Higher priority = preferred node. During failover, the surviving node with the highest priority is chosen.
-- `--restricted 1` -- Only migrate to nodes listed in the group. Use this when a service has host-specific dependencies.
-- `--nofailback 0` -- When the preferred node recovers, migrate back to it. Set to 1 if you want to avoid unnecessary migrations.
+**Why exclude pve-nas-01**:
+- Avoids I/O contention between critical services and NAS workloads
+- Services can float freely among the 5 `local-ssd` nodes
+- Multi-target replication ensures data is available on all eligible nodes
+
+**Manual CLI commands** (for reference):
+
+```bash
+# Create node-affinity rule (Proxmox 9+)
+sudo ha-manager rules add node-affinity critical-services-no-nas \
+    --resources ct:150,ct:151,ct:160,vm:154 \
+    --nodes pve-laptop-01,pve-opt-01,pve-opt-02,pve-opt-03,pve-prec-01 \
+    --comment "Prevent critical services from running on pve-nas-01"
+
+# List rules
+sudo ha-manager rules list
+
+# Update a rule
+sudo ha-manager rules set node-affinity critical-services-no-nas \
+    --resources ct:150,ct:151,ct:160,vm:154 \
+    --nodes pve-laptop-01,pve-opt-01,pve-opt-02,pve-opt-03,pve-prec-01
+```
 
 ### Step 4: Add HA Resources
 
-Configure each VM/CT as an HA-managed resource with its group and restart policy.
+Configure each VM/CT as an HA-managed resource. When using node-affinity rules (Step 3), you don't need to specify a `--group` -- the rules control placement.
+
+**Current Configuration** (managed by Ansible):
+
+```yaml
+# From ansible/inventories/prod/group_vars/all.yml
+ha_resources:
+  - type: ct
+    vmid: 150
+    state: started
+    comment: "dns-01 (AdGuard Home primary)"
+    enabled: true
+
+  - type: ct
+    vmid: 151
+    state: started
+    comment: "smtp-relay (Postfix relay)"
+    enabled: true
+
+  - type: ct
+    vmid: 160
+    state: started
+    comment: "dns-02 (AdGuard Home secondary)"
+    enabled: true
+
+  - type: vm
+    vmid: 154
+    state: started
+    comment: "home-assistant (HAOS VM)"
+    enabled: true
+```
+
+**Manual CLI commands** (for reference):
 
 ```bash
-# DNS servers
-sudo ha-manager add ct:150 --group dns-primary --state started \
-    --max_restart 3 --max_relocate 2 \
-    --comment "dns-01 primary DNS"
+# Add resources to HA (no group needed when using node-affinity rules)
+sudo ha-manager add ct:150 --state started --comment "dns-01 primary DNS"
+sudo ha-manager add ct:151 --state started --comment "smtp-relay mail relay"
+sudo ha-manager add ct:160 --state started --comment "dns-02 secondary DNS"
+sudo ha-manager add vm:154 --state started --comment "home-assistant HAOS"
 
-sudo ha-manager add ct:160 --group dns-secondary --state started \
-    --max_restart 3 --max_relocate 2 \
-    --comment "dns-02 secondary DNS"
+# View current HA resources
+sudo ha-manager config
 
-# SMTP relay
-sudo ha-manager add ct:151 --group nas-services --state started \
-    --max_restart 3 --max_relocate 2 \
-    --comment "smtp-relay mail relay"
-
-# Home Assistant (already a VM)
-sudo ha-manager add vm:154 --group nas-services --state started \
-    --max_restart 3 --max_relocate 2 \
-    --comment "home-assistant HAOS"
-
-# K3s server (critical for cluster API)
-sudo ha-manager add vm:222 --group general --state started \
-    --max_restart 3 --max_relocate 2 \
-    --comment "k3s-srv-nas-01 control plane"
+# Update a resource
+sudo ha-manager set ct:150 --state started
 ```
 
 **Parameter explanation**:
 - `--state started` -- HA manager ensures this resource is running. If it stops unexpectedly, HA restarts it.
-- `--max_restart 3` -- Try restarting on the same node up to 3 times before relocating.
-- `--max_relocate 2` -- Try migrating to another node up to 2 times.
 - `ct:150` vs `vm:154` -- Use `ct:` prefix for LXC containers, `vm:` for VMs.
 
 **Resources NOT to add to HA**:
 - `plex` (VMID 152) -- Depends on NAS bind mounts, cannot run elsewhere
 - `k3s-agt-nas-01` (VMID 202) -- Depends on NFS from NAS, pointless to migrate
-- k3s agents on opt nodes -- k3s handles agent failure at the application layer; pods reschedule to other agents automatically
+- k3s agents on other nodes -- k3s handles agent failure at the application layer; pods reschedule automatically
 
 ### Step 5: Floating VIPs
 
@@ -754,33 +867,33 @@ Internet
     |
 [192.168.0.0/24] ---- Core LAN
     |
-    +-- Proxmox Cluster (HA with 3+ nodes)
-    |   +-- pve-nas-01    (.102) -- NAS + Storage [active]
-    |   +-- pve-laptop-01 (.103) -- Compute [future]
-    |   +-- pve-opt-01    (.104) -- Compute [future]
-    |   +-- pve-opt-02    (.105) -- Compute [future]
-    |   +-- pve-opt-03    (.106) -- Compute [active]
-    |   +-- pve-prec-01   (.107) -- Compute [future]
+    +-- Proxmox Cluster (6-node HA cluster "weisssrv")
+    |   +-- pve-nas-01    (.102) -- NAS + Storage
+    |   +-- pve-laptop-01 (.103) -- Compute
+    |   +-- pve-opt-01    (.104) -- Compute
+    |   +-- pve-opt-02    (.105) -- Compute
+    |   +-- pve-opt-03    (.106) -- Compute
+    |   +-- pve-prec-01   (.107) -- Compute
     |
     +-- Infrastructure (HA-managed, floating IPs)
-    |   +-- dns-01     (.150)  -- Primary DNS
-    |   +-- smtp-relay (.151)  -- Mail relay
+    |   +-- dns-01     (.150)  -- Primary DNS (floats via HA)
+    |   +-- smtp-relay (.151)  -- Mail relay (floats via HA)
     |   +-- plex       (.152)  -- Plex (NAS-bound, no HA)
-    |   +-- home       (.154)  -- Home Assistant VM
-    |   +-- dns-02     (.160)  -- Secondary DNS
+    |   +-- home       (.154)  -- Home Assistant VM (floats via HA)
+    |   +-- dns-02     (.160)  -- Secondary DNS (floats via HA)
     |
-    +-- K3s Servers (.22X) -- control plane only
-    |   +-- k3s-srv-nas-01    (.222) on pve-nas-01     [active]
-    |   +-- k3s-srv-laptop-01 (.223) on pve-laptop-01  [future]
-    |   +-- k3s-srv-prec-01   (.227) on pve-prec-01    [future]
+    +-- K3s Servers (.22X) -- 3-node etcd quorum
+    |   +-- k3s-srv-nas-01    (.222) on pve-nas-01
+    |   +-- k3s-srv-laptop-01 (.223) on pve-laptop-01
+    |   +-- k3s-srv-prec-01   (.227) on pve-prec-01
     |
     +-- K3s Agents (.20X) -- workloads
     |   +-- k3s-agt-nas-01    (.202) on pve-nas-01     [nas, general]
-    |   +-- k3s-agt-laptop-01 (.203) on pve-laptop-01  [ingress, general] [future]
-    |   +-- k3s-agt-opt-01    (.204) on pve-opt-01     [general] [future]
-    |   +-- k3s-agt-opt-02    (.205) on pve-opt-02     [general] [future]
+    |   +-- k3s-agt-laptop-01 (.203) on pve-laptop-01  [ingress, general]
+    |   +-- k3s-agt-opt-01    (.204) on pve-opt-01     [ingress, general]
+    |   +-- k3s-agt-opt-02    (.205) on pve-opt-02     [ingress, general]
     |   +-- k3s-agt-opt-03    (.206) on pve-opt-03     [ingress, general]
-    |   +-- k3s-agt-prec-01   (.207) on pve-prec-01    [general, compute] [future]
+    |   +-- k3s-agt-prec-01   (.207) on pve-prec-01    [general, compute]
     |
     +-- Virtual IPs
         +-- vip-public    (.100) -- MetalLB (managed by MetalLB)
