@@ -3,7 +3,7 @@
 
 # Deployment configuration
 deployment:
-  replicas: 2  # HA with 2 replicas
+  replicas: 3  # HA with 3 replicas across different ingress nodes
   podAnnotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "9100"
@@ -68,6 +68,19 @@ additionalArguments:
 # Node selector - prefer ingress nodes
 nodeSelector:
   esweiss.com/ingress: "true"
+
+# Pod anti-affinity to spread replicas across different nodes
+# Using preferredDuringScheduling for better availability during partial outages
+# (requiredDuringScheduling can leave pods Pending if < 3 ingress nodes available)
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+          topologyKey: kubernetes.io/hostname
 
 # Tolerations for scheduling
 tolerations: []

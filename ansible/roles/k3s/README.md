@@ -78,22 +78,21 @@ task k3s:kubeconfig
 ## Architecture
 
 ```
-k3s Cluster (3-node initial)
-├─ k3s-srv-nas-01 (192.168.0.222)
-│  ├─ Role: server + etcd
-│  ├─ Kube-vip VIP: 192.168.0.161
-│  └─ Labels: control-plane=true
+k3s Cluster (9 nodes: 3 servers + 6 agents)
+├─ Servers (etcd quorum)
+│  ├─ k3s-srv-nas-01 (.222) - pve-nas-01
+│  ├─ k3s-srv-laptop-01 (.223) - pve-laptop-01
+│  └─ k3s-srv-prec-01 (.227) - pve-prec-01
 │
-├─ k3s-agt-nas-01 (192.168.0.202)
-│  ├─ Role: agent
-│  ├─ Persistent disks: postgres-data, mealie-postgres-data
-│  ├─ Labels: nas=true, general=true
-│  └─ Taints: nas=true:PreferNoSchedule
+├─ Kube-vip VIP: 192.168.0.161
 │
-└─ k3s-agt-opt-03 (192.168.0.206)
-   ├─ Role: agent
-   ├─ Labels: general=true, ingress=true
-   └─ No taints (general workloads)
+└─ Agents (workloads)
+   ├─ k3s-agt-nas-01 (.202) - NAS workloads, persistent disks
+   ├─ k3s-agt-laptop-01 (.203) - ingress + general
+   ├─ k3s-agt-opt-01 (.204) - ingress + general
+   ├─ k3s-agt-opt-02 (.205) - ingress + general
+   ├─ k3s-agt-opt-03 (.206) - ingress + general
+   └─ k3s-agt-prec-01 (.207) - compute + general
 ```
 
 ## Task Flow

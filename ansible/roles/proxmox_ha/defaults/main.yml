@@ -1,0 +1,33 @@
+---
+# Default configuration for Proxmox HA
+
+# HA groups define which nodes can run which services
+# Example:
+# ha_groups:
+#   - name: no-nas
+#     nodes:
+#       - pve-laptop-01
+#       - pve-opt-01
+#       - pve-opt-02
+#       - pve-opt-03
+#       - pve-prec-01
+#     restricted: false  # If true, services MUST run on these nodes only
+#     nofailback: false  # If true, don't migrate back to preferred node
+#     comment: "Nodes excluding pve-nas-01 (avoid I/O contention)"
+#     state: present
+
+ha_groups: []
+
+# HA resources define which VMs/containers should be managed by HA
+# Example:
+# ha_resources:
+#   - type: ct  # or 'vm'
+#     vmid: 150
+#     state: started  # started, stopped, ignored, disabled
+#     group: no-nas  # Optional: restrict to specific HA group
+#     max_restart: 3  # Max restart attempts before giving up
+#     max_relocate: 3  # Max relocate attempts before giving up
+#     comment: "dns-01 (AdGuard Home primary)"
+#     enabled: true  # Set to false to remove from HA
+
+ha_resources: []

@@ -31,7 +31,9 @@ plex:
   vmid: 152
   proxmox_host: pve-nas-01
   lxc_bind_mounts:
-    - "/tank/media/unified,mp=/mnt/media,ro=1"
+    - host_path: /mnt/media
+      container_path: /media
+      options: "mp=/media,ro=0"
   lxc_gpu_passthrough: true
 ```
 
@@ -53,7 +55,7 @@ task deploy:plex-check
 ```
 Plex LXC (192.168.0.152)
 ├─ Plex Media Server
-├─ Bind mount: /mnt/media (from pve-nas-01:/tank/media/unified)
+├─ Bind mount: /mnt/media (mergerfs on pve-nas-01, read-write for metadata)
 ├─ GPU: /dev/dri (Intel/AMD transcoding)
 └─ Traefik Ingress
    └─ plex.esweiss.com → 192.168.0.152:32400
@@ -83,7 +85,7 @@ Plex LXC (192.168.0.152)
 
 - `proxmox_lxc` role (creates container with GPU and bind mounts)
 - `base` role (networking, packages)
-- NAS storage (pve-nas-01:/tank/media/unified)
+- NAS storage (pve-nas-01:/mnt/media via mergerfs)
 
 ## Initial Setup
 
@@ -137,11 +139,11 @@ ls -la /dev/dri
 
 ## Media Library
 
-Media accessed via read-only bind mount:
+Media accessed via read-write bind mount (required for Plex metadata/watch status):
 
 ```
-pve-nas-01:/tank/media/unified
-  └─ Bind mounted to → plex:/mnt/media (read-only)
+pve-nas-01:/mnt/media (mergerfs)
+  └─ Bind mounted to → plex:/mnt/media (read-write)
      └─ Plex libraries point to /mnt/media/*
 ```
 

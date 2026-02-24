@@ -1,0 +1,51 @@
+---
+# Configure Proxmox repositories for non-subscription use
+# Disable enterprise repos (require subscription) and enable community repo
+
+- name: Check if this is a Proxmox VE host
+  ansible.builtin.stat:
+    path: /etc/pve
+  register: pve_check
+
+- name: Disable Proxmox enterprise repository (.list format - PVE 8 and older)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/pve-enterprise.list
+    state: absent
+  when: pve_check.stat.exists
+
+- name: Disable Ceph enterprise repository (.list format - PVE 8 and older)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/ceph.list
+    state: absent
+  when: pve_check.stat.exists
+
+- name: Disable Proxmox enterprise repository (.sources format - PVE 9+)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/pve-enterprise.sources
+    state: absent
+  when: pve_check.stat.exists
+
+- name: Disable Ceph enterprise repository (.sources format - PVE 9+)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/ceph.sources
+    state: absent
+  when: pve_check.stat.exists
+
+- name: Enable Proxmox no-subscription (community) repository (.sources format)
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pve-no-subscription.sources
+    content: |
+      Types: deb
+      URIs: http://download.proxmox.com/debian/pve
+      Suites: {{ ansible_facts['distribution_release'] }}
+      Components: pve-no-subscription
+    mode: '0644'
+  when:
+    - pve_check.stat.exists
+    - ansible_facts['os_family'] == "Debian"
+
+- name: Remove legacy no-subscription .list file (prevents apt duplicate warnings)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/pve-no-subscription.list
+    state: absent
+  when: pve_check.stat.exists

@@ -6,7 +6,9 @@ lxc_cores: 2
 lxc_memory: 2048
 lxc_swap: 512
 lxc_disk_size: 8G
-lxc_storage: local-lvm
+# NOTE: lxc_storage is intentionally NOT defined here.
+# The role auto-selects storage based on proxmox_host role (nas -> ssd, compute -> local-ssd).
+# Override per-container by setting lxc_storage in host_vars.
 lxc_bridge: vmbr0
 lxc_unprivileged: true
 

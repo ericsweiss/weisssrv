@@ -1,6 +1,11 @@
 ---
 # Base role: common packages, SSH hardening, and user setup
 
+# Configure Proxmox repositories first (disable enterprise, enable community)
+- name: Configure Proxmox repositories
+  ansible.builtin.include_tasks: proxmox-repos.yml
+  tags: [packages, base, proxmox-repos]
+
 - name: Update apt cache
   ansible.builtin.apt:
     update_cache: true
@@ -37,14 +42,7 @@
     - ansible_facts['os_family'] == "Debian"
     - is_virtual_machine | bool
 
-- name: Check if admin user exists
-  ansible.builtin.command: id {{ admin_user }}
-  register: user_exists_check
-  changed_when: false
-  failed_when: false
-  when: admin_user != 'root'
-
-- name: Ensure admin user exists
+- name: Ensure admin user exists with sudo group
   ansible.builtin.user:
     name: "{{ admin_user }}"
     groups: sudo
@@ -52,8 +50,6 @@
     create_home: true
     state: present
   when: admin_user != 'root'
-  register: user_create_result
-  changed_when: user_create_result.changed and user_exists_check.rc != 0
   tags: [users, security, base]
 
 - name: Create .ssh directory for admin user
@@ -65,17 +61,23 @@
     mode: "0700"
   when: admin_user != 'root'
 
+- name: Validate SSH keys are not empty
+  ansible.builtin.assert:
+    that:
+      - item | trim | length > 0
+      - "'ssh-' in item or 'ecdsa-' in item or 'sk-' in item"
+    fail_msg: "SSH key appears empty or invalid. Ensure SSH_PUBLIC_KEY env var is set via 'op run'."
+    quiet: true
+  loop: "{{ ssh_authorized_keys | default([]) }}"
+  when: ssh_authorized_keys is defined and ssh_authorized_keys | length > 0
+
 - name: Deploy authorized_keys for admin user
   ansible.posix.authorized_key:
     user: "{{ admin_user }}"
     state: present
     key: "{{ item }}"
   loop: "{{ ssh_authorized_keys | default([]) }}"
-  when: ssh_authorized_keys is defined
-  register: authorized_keys_result
-  failed_when:
-    - authorized_keys_result is failed
-    - not ansible_check_mode
+  when: ssh_authorized_keys is defined and ssh_authorized_keys | length > 0
 
 - name: Configure sudoers for admin user (passwordless sudo)
   ansible.builtin.lineinfile:

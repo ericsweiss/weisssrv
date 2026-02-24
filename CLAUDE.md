@@ -14,11 +14,11 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                 # Configuration management
 │   ├── inventories/prod/    # Production inventory + vars
-│   ├── roles/               # 15 roles for all services
+│   ├── roles/               # 17 roles for all services
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
 ├── kubernetes/              # Future k3s manifests (Flux)
-├── docs/                    # Comprehensive documentation (24 files)
+├── docs/                    # Documentation (26 files)
 ├── scripts/                 # Utility scripts
 └── .github/workflows/       # CI/CD automation
 ```
@@ -27,20 +27,37 @@ weisssrv/
 
 ### Current Infrastructure (Base Parity)
 
-- **2 Proxmox Hosts**: pve-nas-01 (192.168.0.102), pve-opt-03 (192.168.0.106)
+- **6 Proxmox Hosts** (cluster name: weisssrv):
+  - pve-nas-01 (192.168.0.102) - NAS + storage
+  - pve-laptop-01 (192.168.0.103) - Compute
+  - pve-opt-01 (192.168.0.104) - Compute
+  - pve-opt-02 (192.168.0.105) - Compute
+  - pve-opt-03 (192.168.0.106) - Compute
+  - pve-prec-01 (192.168.0.107) - Compute
 - **NAS Storage**: ZFS (tank/ssd/nvme/archive pools), NFS, Samba
 - **DNS**: 2x AdGuard Home + Unbound (DoT) - 192.168.0.150/160
 - **SMTP**: Relay via Gmail - 192.168.0.151
 - **Certs**: acme.sh with Cloudflare DNS-01
-- **VPN**: Tailscale on all hosts
+- **VPN**: Tailscale on Proxmox hosts (remote access)
 - **Firewall**: Proxmox firewall with IP Sets + Security Groups
+- **HA**: Proxmox HA for infrastructure services (DNS, SMTP, Home Assistant)
 
-### K3s Platform (Ready to Deploy)
+### K3s Platform
 
-**Initial 3-node cluster** (fully codified):
-- **k3s-srv-nas-01** (192.168.0.222) - Server + etcd on pve-nas-01
-- **k3s-agt-nas-01** (192.168.0.202) - Agent on pve-nas-01 (NAS workloads)
-- **k3s-agt-opt-03** (192.168.0.206) - Agent on pve-opt-03 (ingress/general)
+**9-node cluster** (3 servers + 6 agents):
+
+**Server Nodes** (etcd quorum):
+- **k3s-srv-nas-01** (192.168.0.222) - Server on pve-nas-01
+- **k3s-srv-laptop-01** (192.168.0.223) - Server on pve-laptop-01
+- **k3s-srv-prec-01** (192.168.0.227) - Server on pve-prec-01
+
+**Agent Nodes**:
+- **k3s-agt-nas-01** (.202) - NAS workloads (esweiss.com/nas)
+- **k3s-agt-laptop-01** (.203) - Ingress + general
+- **k3s-agt-opt-01** (.204) - Ingress + general
+- **k3s-agt-opt-02** (.205) - Ingress + general
+- **k3s-agt-opt-03** (.206) - Ingress + general
+- **k3s-agt-prec-01** (.207) - General + compute (esweiss.com/compute)
 
 **Deployment Model** (Two-phase approach):
 1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161)
@@ -51,7 +68,7 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 **Features**:
 - kube-vip (API VIP .161), MetalLB (VIPs .100/.101)
 - Traefik ingress, external-dns (Cloudflare)
-- Ready for HA expansion (add 4 more servers for 5-node HA)
+- 3-node etcd quorum (tolerates 1 server failure)
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
@@ -115,6 +132,11 @@ task deploy:dns                   # DNS stack
 task deploy:storage               # NAS services
 task deploy:plex                  # Plex Media Server (LXC + Plex install)
 task deploy:plex-check            # Plex dry-run
+
+# Proxmox HA (multi-node high availability)
+task proxmox:ha                   # Configure HA rules, resources, and replication
+task proxmox:ha-check             # Dry-run HA configuration
+task proxmox:ha-status            # Show HA manager, rules, and replication status
 
 # K3s cluster (Ansible - separate lifecycle)
 task k3s:provision-vms            # Provision k3s VMs on Proxmox
@@ -325,6 +347,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 14. **k3s** - K3s cluster installation and configuration
 15. **plex** - Plex Media Server installation and configuration
 16. **home_assistant** - Home Assistant configuration deployment via SSH/SCP (HAOS cannot be managed traditionally)
+17. **proxmox_ha** - Proxmox HA rules, resources, and ZFS replication management
 
 ## User Management
 
@@ -414,11 +437,30 @@ salt_rim_version: "4.14.0"
 - Plex: Pinned to specific apt version (set to "latest" for auto-update behavior)
 - Home Assistant: Manual updates via HAOS UI (documented version only)
 
-## Storage Architecture (pve-nas-01)
+## Storage Architecture
+
+### Storage Strategy
+
+**Automated Storage Selection**: The `proxmox_vm` and `proxmox_lxc` Ansible roles automatically select storage based on the Proxmox host's role:
+
+| Proxmox Host | Role | Default Storage | Details |
+|--------------|------|-----------------|---------|
+| pve-nas-01 | `nas` | `ssd` | 3x 4TB Samsung SSDs (raidz1) - App data and databases |
+| pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 | `compute` / `general` | `local-ssd` | 1TB Samsung 870 EVO per host - VM/container workloads |
+
+Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_storage` in the inventory.
+
+**Why local-ssd for compute nodes?**
+- **Proxmox HA**: ZFS pools required on all nodes for replication and failover
+- **Performance**: Compression (lz4), snapshots, checksumming, atomic operations
+- **Stateless workloads**: K3s agents, DNS, SMTP have redundancy via k8s or multiple instances
+- **Cost-effective**: 1TB SSD per node is sufficient for local workloads
+
+### NAS Node (pve-nas-01) - Specialized ZFS Pools
 
 **ZFS Pools**:
 - `tank` - 6x 22TB raidz2 (~122TB usable) - Media and bulk storage
-- `ssd` - 3x 4TB raidz1 (~10.9TB) - App data and databases
+- `ssd` - 3x 4TB raidz1 (~10.9TB) - App data, databases, and containers
 - `nvme` - 1x 4TB NVMe (~2.27TB) - Hot downloads and fast scratch
 - `archive` - 4x 6TB raidz1 (~21.8TB) - Cold storage and backups
 
@@ -429,6 +471,22 @@ salt_rim_version: "4.14.0"
 - `ssd/appdata/mealie/postgres` - 32GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdc, mounted at /mnt/mealie-postgres-data
 - Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by k3s role
 - Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
+
+### Compute Nodes - local-ssd ZFS Pool
+
+**All compute nodes** (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01):
+- Pool: `local-ssd` - 1x 1TB Samsung 870 EVO (~900GB usable)
+- Compression: **lz4** (low-latency, optimized for VM workloads)
+- Properties: ashift=12, atime=off, autotrim=on, xattr=sa
+- Used for k3s VMs and HA-managed containers (dns-01, dns-02, smtp-relay, home-assistant)
+
+**Why lz4 instead of zstd?**
+- VM workloads are latency-sensitive (random I/O patterns)
+- lz4 has ~10x faster decompression than zstd
+- Near-zero CPU overhead vs zstd's higher cost
+- Industry standard for VM storage (Proxmox defaults to lz4)
+
+### Resource Pools and Storage Management
 
 **Resource Pools**: infra-core (dns, smtp), apps-public (plex), platform (k3s VMs)
 
@@ -469,6 +527,7 @@ See `docs/` for detailed guides:
 - 23-recipes-sso-setup.md - Recipes SSO and OpenAI configuration
 - 24-home-assistant-deployment.md - Home Assistant OS VM with Traefik ingress
 - 25-multi-node-expansion.md - Multi-node expansion and Proxmox HA guide
+- 26-multi-node-implementation.md - Step-by-step implementation for 6-node cluster
 
 ## Important Context Files
 

@@ -85,6 +85,8 @@ nfs_exports:
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.106/32"
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.107/32"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.154/32"
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.200/29"
@@ -153,6 +155,8 @@ nfs_exports:
       - spec: "192.168.0.105/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
       - spec: "192.168.0.106/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
+      - spec: "192.168.0.107/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=14"
 
 # Samba shares

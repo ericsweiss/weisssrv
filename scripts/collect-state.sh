@@ -6,13 +6,15 @@ set -euo pipefail
 
 OUTPUT_FILE="${1:-cluster-state-$(date +%Y%m%d-%H%M%S).txt}"
 TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Hosts to collect from
-PROXMOX_HOSTS=("pve-nas-01" "pve-opt-03")
+# 6-node Proxmox cluster
+PROXMOX_HOSTS=("pve-nas-01" "pve-laptop-01" "pve-opt-01" "pve-opt-02" "pve-opt-03" "pve-prec-01")
 DNS_HOSTS=("192.168.0.150" "192.168.0.160")  # dns-01, dns-02 (use IPs since hostnames resolve to VIP)
 MAIL_HOSTS=("smtp-relay")
-K3S_HOSTS=("k3s-srv-nas-01" "k3s-agt-nas-01" "k3s-agt-opt-03")
+# 9-node k3s cluster (3 servers + 6 agents)
+K3S_HOSTS=("k3s-srv-nas-01" "k3s-srv-laptop-01" "k3s-srv-prec-01" "k3s-agt-nas-01" "k3s-agt-laptop-01" "k3s-agt-opt-01" "k3s-agt-opt-02" "k3s-agt-opt-03" "k3s-agt-prec-01")
 HOME_ASSISTANT_HOST="192.168.0.154"  # home (HAOS VM)
 
 # Redaction patterns
@@ -56,7 +58,12 @@ collect_host() {
     local user=${2:-eric}
     echo "=== Collecting from $host ==="
 
-    ssh -o ConnectTimeout=10 "${user}@${host}" bash << 'EOF' 2>/dev/null || echo "Failed to connect to $host"
+    # Capture both stdout and stderr, show errors on failure
+    # Temporarily disable errexit to capture exit code before it triggers script exit
+    local ssh_output
+    local ssh_rc
+    set +e
+    ssh_output=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "${user}@${host}" bash << 'REMOTE_EOF' 2>&1
 echo "=== $HOSTNAME - $(date -Iseconds) ==="
 echo ""
 echo "--- System Info ---"
@@ -75,7 +82,18 @@ echo "--- Disk Usage ---"
 # LXC containers use rootfs/overlay paths that don't start with /
 df -h | grep -vE '^(tmpfs|devtmpfs|udev|overlay$)' | head -20
 echo ""
-EOF
+REMOTE_EOF
+)
+    ssh_rc=$?
+    set -e
+
+    if [ $ssh_rc -ne 0 ]; then
+        echo "Failed to connect to $host (exit code: $ssh_rc)"
+        # Show first few lines of error output for diagnostics
+        echo "Error details: $(echo "$ssh_output" | head -3)"
+    else
+        echo "$ssh_output"
+    fi
 }
 
 collect_proxmox() {
@@ -96,7 +114,8 @@ echo "--- Firewall IP Sets ---"
 sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep -A 20 '\[IPSET' | head -100 || echo "No firewall config"
 echo ""
 echo "--- Firewall Guest Rules ---"
-for vmid in 150 151 152 154 160 202 206 222; do
+# All VMIDs: DNS (150,160), SMTP (151), Plex (152), HA (154), k3s servers (222,223,227), k3s agents (202-207)
+for vmid in 150 151 152 154 160 202 203 204 205 206 207 222 223 227; do
     if [ -f "/etc/pve/firewall/${vmid}.fw" ]; then
         echo "Guest ${vmid}:"
         sudo cat "/etc/pve/firewall/${vmid}.fw" 2>/dev/null || echo "  Cannot read"
@@ -107,11 +126,10 @@ echo "--- ZFS Pools ---"
 zpool list 2>/dev/null || echo "No ZFS"
 echo ""
 echo "--- ZFS Pool Health (All Pools) ---"
-for pool in tank ssd nvme archive; do
-    if zpool list "$pool" &>/dev/null; then
-        echo "Pool: $pool"
-        zpool status "$pool" 2>/dev/null | grep -E 'state:|scan:|errors:' || true
-    fi
+# Dynamically discover pools on this host (NAS has tank/ssd/nvme/archive, compute nodes have local-ssd)
+zpool list -H -o name 2>/dev/null | while IFS= read -r pool; do
+    echo "Pool: $pool"
+    zpool status "$pool" 2>/dev/null | grep -E 'state:|scan:|errors:' || true
 done
 echo ""
 echo "--- ZFS Datasets ---"
@@ -150,7 +168,7 @@ if mount | grep -q mergerfs; then
     echo "MergerFS fstab options (authoritative - runtime options not queryable):"
     # NOTE: MergerFS mount-time options (inodecalc, noforget, use_ino, etc.)
     # are NOT visible in mount output or via xattrs. Only fstab is authoritative.
-    for mnt in $(mount | grep "type fuse.mergerfs" | awk '{print $3}' | sort -u); do
+    mount | grep "type fuse.mergerfs" | awk '{print $3}' | sort -u | while IFS= read -r mnt; do
         echo "  $mnt:"
         fstab_line=$(grep "^[^#].*[[:space:]]${mnt}[[:space:]]" /etc/fstab 2>/dev/null)
         fstab_opts=$(echo "$fstab_line" | awk '{print $4}')
@@ -193,25 +211,45 @@ echo "--- LXC Containers ---"
 sudo pct list 2>/dev/null || echo "No LXC containers"
 echo ""
 echo "--- Plex LXC Status (VMID 152) ---"
-if sudo pct status 152 &>/dev/null; then
-    sudo pct status 152
-    echo "Bind mounts:"
-    sudo grep "^mp" /etc/pve/lxc/152.conf 2>/dev/null || echo "No bind mounts configured"
-    echo "Plex service (inside container):"
-    sudo pct exec 152 -- systemctl is-active plexmediaserver 2>/dev/null || echo "Cannot check Plex service"
+# Query cluster to find which node hosts LXC 152
+# Note: Pipeline guarded with || true to continue state collection if cluster API unavailable
+plex_node=$(sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(next((v['node'] for v in d if v.get('vmid')==152),''))" 2>/dev/null || true)
+if [ -z "$plex_node" ]; then
+    echo "Plex LXC location: unknown (cluster API unavailable or VMID 152 not found)"
+elif [ "$(hostname)" = "$plex_node" ]; then
+    if sudo pct status 152 &>/dev/null; then
+        sudo pct status 152
+        echo "Bind mounts:"
+        sudo grep "^mp" /etc/pve/lxc/152.conf 2>/dev/null || echo "No bind mounts configured"
+        echo "Plex service (inside container):"
+        sudo pct exec 152 -- systemctl is-active plexmediaserver 2>/dev/null || echo "Cannot check Plex service"
+    else
+        echo "Plex LXC (152) not found"
+    fi
 else
-    echo "Plex LXC (152) not found"
+    echo "Plex LXC runs on $plex_node (skipping - this is $(hostname))"
 fi
 echo ""
 echo "--- Home Assistant VM Status (VMID 154) ---"
-if sudo qm status 154 &>/dev/null; then
-    sudo qm status 154
-    echo "VM Config:"
-    sudo qm config 154 2>/dev/null | grep -E 'cores|memory|net0|boot|onboot|startup' || echo "Cannot read config"
-    echo "Network:"
-    sudo qm guest cmd 154 network-get-interfaces 2>/dev/null | grep -E 'ip-address|name' || echo "Guest agent unavailable"
+# Query cluster to find which node hosts VM 154
+# Note: Pipeline guarded with || true to continue state collection if cluster API unavailable
+ha_node=$(sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(next((v['node'] for v in d if v.get('vmid')==154),''))" 2>/dev/null || true)
+if [ -z "$ha_node" ]; then
+    echo "Home Assistant VM location: unknown (cluster API unavailable or VMID 154 not found)"
+elif [ "$(hostname)" = "$ha_node" ]; then
+    if sudo qm status 154 &>/dev/null; then
+        sudo qm status 154
+        echo "VM Config:"
+        sudo qm config 154 2>/dev/null | grep -E 'cores|memory|net0|boot|onboot|startup' || echo "Cannot read config"
+        echo "Network:"
+        sudo qm guest cmd 154 network-get-interfaces 2>/dev/null | grep -E 'ip-address|name' || echo "Guest agent unavailable"
+    else
+        echo "Home Assistant VM (154) not found"
+    fi
 else
-    echo "Home Assistant VM (154) not found"
+    echo "Home Assistant VM runs on $ha_node (skipping - this is $(hostname))"
 fi
 echo ""
 echo "--- Postfix Status ---"
@@ -224,10 +262,38 @@ else
 fi
 echo ""
 echo "--- Tailscale ---"
-sudo tailscale status 2>/dev/null | head -5 || echo "No tailscale"
+if command -v tailscale &>/dev/null; then
+    ts_output=$(sudo tailscale status 2>/dev/null | head -5)
+    if [ -n "$ts_output" ]; then
+        echo "$ts_output"
+    else
+        echo "Tailscale installed but not connected or no peers"
+    fi
+else
+    echo "Tailscale not installed"
+fi
 echo ""
 echo "--- Oh My Zsh Plugins ---"
-grep "^plugins=" ~/.zshrc 2>/dev/null || echo "No zsh config"
+# Plugins span multiple lines in .zshrc, extract the entire block
+if [ -f ~/.zshrc ]; then
+    # Use sed to extract plugins=( ... ) block (handles multi-line)
+    sed -n '/^plugins=(/,/^)/p' ~/.zshrc 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g' || echo "No plugins found"
+else
+    echo "No zsh config"
+fi
+echo ""
+echo "--- Proxmox HA Status ---"
+sudo ha-manager status 2>/dev/null || echo "HA not configured"
+echo ""
+echo "--- HA Resources ---"
+sudo ha-manager config 2>/dev/null | grep -E '^(ct|vm):' || echo "No HA resources"
+echo ""
+echo "--- HA Rules ---"
+sudo ha-manager rules list 2>/dev/null || echo "No HA rules (Proxmox 9+ feature)"
+echo ""
+echo "--- Storage Replication ---"
+sudo pvesr list 2>/dev/null || echo "No replication jobs"
+sudo pvesr status 2>/dev/null | head -10 || true
 echo ""
 EOF
 }
@@ -433,7 +499,16 @@ echo "--- Disk Usage ---"
 df -h | grep -E '^/|Filesystem'
 echo ""
 echo "--- Tailscale ---"
-sudo tailscale status 2>/dev/null | head -5 || echo "No tailscale"
+if command -v tailscale &>/dev/null; then
+    ts_output=$(sudo tailscale status 2>/dev/null | head -5)
+    if [ -n "$ts_output" ]; then
+        echo "$ts_output"
+    else
+        echo "Tailscale installed but not connected or no peers"
+    fi
+else
+    echo "Tailscale not installed"
+fi
 echo ""
 EOF
 }

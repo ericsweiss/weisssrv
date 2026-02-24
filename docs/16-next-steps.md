@@ -46,114 +46,51 @@ This document tracks remaining work and planned improvements for the weisssrv ho
 
 ---
 
-## Priority 1: High Availability
+## Priority 1: High Availability (COMPLETE)
 
-**Goal**: Implement comprehensive HA across both the k3s platform and critical base infrastructure services.
+**Status**: Fully implemented across both K3s and Proxmox infrastructure.
 
-This is a **two-part HA implementation**:
+### Part 1: K3s Cluster HA (COMPLETE)
 
-1. **K3s HA**: Expand the cluster from 1 server to 3+ servers for etcd fault tolerance
-2. **Proxmox HA**: Enable automatic failover for critical infrastructure VMs/containers
+**Achieved State**: 9-node cluster (3 servers + 6 agents) with full etcd quorum.
 
-### Part 1: K3s Cluster HA (5-6 Node Target)
+- [x] **pve-prec-01** (192.168.0.107) - Dell Precision 3630
+  - k3s-srv-prec-01 (.227) + k3s-agt-prec-01 (.207) deployed
+- [x] **pve-laptop-01** (192.168.0.103) - MSI GS60 2QD
+  - k3s-srv-laptop-01 (.223) + k3s-agt-laptop-01 (.203) deployed
+- [x] **pve-opt-01/pve-opt-02/pve-opt-03** - Additional agent capacity
+  - k3s-agt-opt-01 (.204), k3s-agt-opt-02 (.205), k3s-agt-opt-03 (.206) deployed
 
-**Current State**: Single server node (k3s-srv-nas-01). Cluster functions but server failure = complete cluster outage.
+**K3s HA Verified**:
+- 3 server nodes with Ready status
+- etcd quorum healthy (tolerates 1 server failure)
+- kube-vip API VIP (.161) survives server failures
 
-**Target State**: 3 server nodes for etcd quorum (tolerates 1 server failure), with path to 5-6 servers (tolerates 2 failures).
+### Part 2: Proxmox HA for Critical Infrastructure (COMPLETE)
 
-#### Tasks
+**Achieved State**: Full HA with ZFS replication and automatic failover.
 
-- [ ] **Bring up pve-prec-01** (192.168.0.107) - Dell Precision 3630
-  - Follow `docs/00-hardware-setup.md` for Proxmox installation
-  - Add to Proxmox cluster
-  - Create k3s-srv-prec-01 (.227) + k3s-agt-prec-01 (.207)
-  - This adds server #2 and a compute-class agent
+| Service | Type | Primary Host | Failover Targets | Status |
+|---------|------|--------------|------------------|--------|
+| dns-01 | LXC | pve-laptop-01 | pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
+| dns-02 | LXC | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 | HA Active |
+| smtp-relay | LXC | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
+| home-assistant | VM | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 | HA Active |
 
-- [ ] **Bring up pve-laptop-01** (192.168.0.103) - MSI GS60 2QD
-  - Configure laptop for server use (lid closed = no action, power-on after AC restore)
-  - Add to Proxmox cluster
-  - Create k3s-srv-laptop-01 (.223) + k3s-agt-laptop-01 (.203)
-  - This achieves 3-server HA quorum
+- [x] **Proxmox HA configured** via `proxmox_ha` role
+  - Node-affinity rules control placement
+  - Resources managed by HA manager
+- [x] **ZFS replication** configured (15-minute intervals)
+  - All critical services replicate to 2+ target nodes
+- [x] **Failover tested** and documented in `docs/12-runbooks.md`
 
-- [ ] **Optional: Add pve-opt-01/pve-opt-02** for additional agent capacity
-
-#### K3s HA Success Criteria
-
-- `kubectl get nodes` shows 3+ server nodes with status Ready
-- etcd cluster is healthy: `etcdctl endpoint health` shows 3 members
-- kube-vip continues functioning when any single server is stopped
-
-### Part 2: Proxmox HA for Critical Infrastructure
-
-**Goal**: Enable Proxmox HA for critical base infrastructure services that run outside k3s.
-
-**Critical Infrastructure VMs/Containers for HA**:
-
-| Service | Type | Current Host | IP | Purpose |
-|---------|------|--------------|-----|---------|
-| dns-01 | LXC | pve-nas-01 | 192.168.0.150 | AdGuard Home primary DNS |
-| dns-02 | LXC | pve-opt-03 | 192.168.0.160 | AdGuard Home secondary DNS |
-| smtp-relay | LXC | pve-nas-01 | 192.168.0.151 | Mail relay via Gmail |
-| home-assistant | VM | pve-nas-01 | 192.168.0.154 | Home Assistant OS |
-
-**Why these services need Proxmox HA**:
-- **DNS (dns-01, dns-02)**: Network-wide DNS resolution; already has redundancy via two instances, but HA ensures automatic recovery
-- **SMTP (smtp-relay)**: Mail delivery for alerts, notifications, and cron job output; single point of failure currently
-- **Home Assistant**: Smart home control; downtime impacts automations and device control
-
-#### Tasks
-
-- [ ] **Configure Proxmox HA** (requires 3+ Proxmox hosts)
-  - Enable ZFS replication between hosts for shared storage
-  - Add all Proxmox hosts to an HA cluster with quorum
-  - Create HA groups:
-    - `infra-critical`: dns-01, dns-02, smtp-relay
-    - `apps-critical`: home-assistant
-  - Configure migration settings (resource groups, priority)
-
-- [ ] **Enable HA for critical infrastructure**
-  - Add dns-01, dns-02, smtp-relay to HA management
-  - Add home-assistant VM to HA management
-  - Test failover procedures (graceful and forced)
-  - Document recovery procedures
-
-- [ ] **Storage replication for HA**
-  - Configure ZFS send/receive between hosts
-  - Set up replication schedules (e.g., every 15 minutes)
-  - Validate data consistency after failover
-
-#### Proxmox HA Success Criteria
-
-- Proxmox HA cluster shows healthy quorum status
-- HA resources show as "started" in the HA status view
-- Simulated host failure results in automatic VM/container migration
-- Services recover within acceptable timeframe (< 5 minutes)
-- DNS resolution continues working during failover (via dns-02 redundancy)
-
-### Combined HA Architecture
-
-```
-                    +------------------+
-                    |   Proxmox HA     |
-                    |   (3+ hosts)     |
-                    +--------+---------+
-                             |
-         +-------------------+-------------------+
-         |                                       |
-+--------v---------+                   +---------v--------+
-|   Base Infra     |                   |   K3s Platform   |
-|   (Proxmox HA)   |                   |   (etcd quorum)  |
-+------------------+                   +------------------+
-| - dns-01 (LXC)   |                   | - 3+ server nodes|
-| - dns-02 (LXC)   |                   | - kube-vip VIP   |
-| - smtp-relay     |                   | - MetalLB LB     |
-| - home-assistant |                   | - All k8s apps   |
-+------------------+                   +------------------+
+**Management Commands**:
+```bash
+task proxmox:ha         # Configure HA rules, resources, replication
+task proxmox:ha-status  # Show HA manager, rules, and replication status
 ```
 
-### Documentation
-
-- `docs/25-multi-node-expansion.md` - Complete expansion guide with IP/VMID allocation
+See `docs/25-multi-node-expansion.md` and `docs/26-multi-node-implementation.md` for details.
 
 ---
 
@@ -506,6 +443,7 @@ If desired, enhance `check-versions.py` to:
 - [ ] Network topology diagrams (draw.io or Mermaid)
 - [ ] Disaster recovery runbook updates
 - [ ] Troubleshooting flowcharts
+- [ ] Document ZFS scrub schedule details (see docs/06-zfs.md)
 
 ---
 

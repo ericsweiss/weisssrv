@@ -18,6 +18,7 @@
     owner: root
     group: www-data
     mode: "0640"
+    unsafe_writes: true  # Required for /etc/pve clustered filesystem
   when:
     - pve_firewall_enabled | default(true)
     - inventory_hostname in groups['proxmox'] | default([])
@@ -29,22 +30,14 @@
     owner: root
     group: www-data
     mode: "0640"
+    unsafe_writes: true  # Required for /etc/pve clustered filesystem
   when:
     - pve_firewall_enabled | default(true)
     - inventory_hostname in groups['proxmox'] | default([])
 
-- name: Ensure firewall is enabled at datacenter level
-  ansible.builtin.lineinfile:
-    path: /etc/pve/datacenter.cfg
-    regexp: "^firewall:"
-    line: "firewall: 1"
-    create: true
-    owner: root
-    group: www-data
-    mode: "0640"
-  when:
-    - pve_firewall_enabled | default(true)
-    - inventory_hostname in groups['proxmox'] | default([])
+# Note: The "firewall: 1" option in /etc/pve/datacenter.cfg is deprecated in Proxmox VE 8+
+# Firewall is now enabled via /etc/pve/firewall/cluster.fw (deployed above) and the pve-firewall service
+# The deprecated option causes parse errors: 'firewall': property is not defined in schema
 
 - name: Ensure pve-firewall service is enabled and running
   ansible.builtin.systemd:

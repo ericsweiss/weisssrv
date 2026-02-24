@@ -1,0 +1,90 @@
+---
+# Configure Proxmox HA groups and resources
+#
+# This playbook manages:
+# 1. HA rules (node-affinity) - which nodes can run which services
+# 2. HA resources - which VMs/CTs are managed by HA
+# 3. Storage replication - ZFS replication jobs for fast failover
+#
+# HA configuration is cluster-wide (runs on one node)
+# Replication jobs run on each source node
+
+- name: Configure Proxmox HA
+  hosts: proxmox
+  become: true
+  gather_facts: false
+  # Note: HA config is cluster-wide and only needs to run on ONE node.
+  # We use serial: 1 with max_fail_percentage to try hosts one at a time
+  # until we find a reachable one, rather than run_once which fails if
+  # the first host in inventory is down.
+  serial: 1
+  max_fail_percentage: 100  # Allow failures; we only need one success
+  any_errors_fatal: false
+  ignore_unreachable: true  # Skip unreachable hosts, try next in serial order
+
+  pre_tasks:
+    # Set a flag if HA config has already been applied this run
+    - name: Check if HA config already applied
+      vars:
+        _applied_hosts: >-
+          {{ hostvars | dict2items
+             | selectattr('value._ha_config_applied', 'defined')
+             | selectattr('value._ha_config_applied', 'equalto', true)
+             | list }}
+      ansible.builtin.set_fact:
+        _ha_config_done: "{{ _applied_hosts | length > 0 }}"
+
+    - name: Skip if already configured on another host
+      ansible.builtin.meta: end_host
+      when: _ha_config_done | default(false)
+
+  roles:
+    - role: proxmox_ha
+      tags: [proxmox_ha]
+
+  post_tasks:
+    - name: Mark HA config as applied
+      ansible.builtin.set_fact:
+        _ha_config_applied: true
+
+# Verify at least one host successfully applied HA configuration
+# This catches the case where all hosts were unreachable
+# Runs on localhost to avoid dependency on any Proxmox host being reachable
+- name: Verify HA configuration was applied
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  tasks:
+    - name: Check if any host applied HA config
+      vars:
+        _applied_hosts: >-
+          {{ hostvars | dict2items
+             | selectattr('value._ha_config_applied', 'defined')
+             | selectattr('value._ha_config_applied', 'equalto', true)
+             | list }}
+      ansible.builtin.fail:
+        msg: >-
+          No Proxmox host was reachable to apply HA configuration.
+          Ensure at least one host in the proxmox group is accessible.
+      when: _applied_hosts | length == 0
+      tags: [proxmox_ha]
+
+# Storage replication runs on ALL nodes that are replication sources
+# pve-laptop-01: dns-01 (150) primary
+# pve-opt-01: smtp-relay (151) primary
+# pve-opt-03: dns-02 (160) primary
+# pve-prec-01: home-assistant (154) primary
+# pve-opt-02: backup-only (no primary services, but included for completeness)
+- name: Configure Proxmox Storage Replication
+  hosts: pve-laptop-01,pve-opt-01,pve-opt-02,pve-opt-03,pve-prec-01
+  become: true
+  gather_facts: false
+  ignore_unreachable: true  # Skip unreachable hosts; replication jobs are node-specific
+
+  tasks:
+    - name: Include replication management
+      ansible.builtin.include_role:
+        name: proxmox_ha
+        tasks_from: replication
+      when: storage_replication_jobs is defined and storage_replication_jobs | length > 0
+      tags: [proxmox_ha, proxmox_ha_replication]

@@ -7,6 +7,56 @@ on:
     branches: [main]
 
 jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate shell scripts (syntax check)
+        run: |
+          echo "Checking shell script syntax with bash -n..."
+          for script in scripts/*.sh; do
+            if [ -f "$script" ]; then
+              echo "Syntax check: $script"
+              bash -n "$script"
+            fi
+          done
+          echo "All shell scripts have valid syntax"
+
+      - name: Run ShellCheck on scripts
+        run: |
+          echo "Running ShellCheck on scripts/*.sh..."
+          # ShellCheck with relaxed settings for scripts that may use bash-specific features
+          # SC1091: Don't follow sourced files (external dependencies)
+          # SC2034: Allow unused variables (may be used by sourced scripts)
+          shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+          echo "ShellCheck passed"
+
+      - name: Run ShellCheck on bootstrap script (strict)
+        run: |
+          # Stricter check specifically for bootstrap script (critical for new host setup)
+          # This step fails on warnings but not on info-level suggestions
+          echo "Running ShellCheck on bootstrap-proxmox-host.sh..."
+          shellcheck --severity=warning --exclude=SC1091 scripts/bootstrap-proxmox-host.sh
+          echo "ShellCheck passed (warning level)"
+
+      - name: ShellCheck info suggestions (non-blocking)
+        run: |
+          # Show info-level suggestions for review but don't fail the build
+          echo "ShellCheck info-level suggestions (informational only):"
+          shellcheck --severity=info --exclude=SC1091 scripts/bootstrap-proxmox-host.sh 2>&1 || {
+            echo ""
+            echo "Note: Info-level suggestions above are for consideration when modifying the script."
+            echo "They do not block CI."
+          }
+
   ansible-lint:
     name: Ansible Lint
     runs-on: ubuntu-latest
@@ -30,6 +80,11 @@ jobs:
 
       - name: Ansible syntax check
         working-directory: ansible
+        env:
+          # Placeholder values for syntax check only (inventory uses mandatory filter)
+          SSH_PUBLIC_KEY: "ssh-ed25519 AAAA_PLACEHOLDER_FOR_CI_SYNTAX_CHECK"
+          SMTP_RELAY_USER: "ci-placeholder"
+          SMTP_RELAY_PASSWORD: "ci-placeholder"
         run: |
           # Verify all playbooks have valid syntax
           set -e  # Exit immediately if any command fails
@@ -44,6 +99,68 @@ jobs:
         working-directory: ansible
         run: |
           ansible-lint playbooks/ roles/
+
+      # Verify proxmox_ha role files are syntactically valid
+      #
+      # Testing limitations for proxmox_ha role:
+      # - Full functional testing requires actual Proxmox cluster infrastructure
+      # - The role uses pvesh, ha-manager, and pvesr commands only available on Proxmox
+      # - Integration testing would require a multi-node Proxmox cluster in CI
+      #
+      # Manual testing available:
+      # - Dry-run: task proxmox:ha-check (runs playbook with --check)
+      # - Status verification: task proxmox:ha-status (shows HA rules, resources, replication)
+      # - Full deployment: task proxmox:ha (requires live cluster)
+      #
+      # What we validate here:
+      # 1. YAML syntax of all task files
+      # 2. Required task files exist (main.yml, rules.yml, resources.yml, replication.yml)
+      # 3. Ansible playbook syntax check (validates Jinja2 templates, variable references)
+      # 4. ansible-lint catches common issues
+      - name: Validate proxmox_ha role structure
+        working-directory: ansible
+        run: |
+          echo "Checking proxmox_ha role structure..."
+          echo ""
+          echo "Note: Full functional testing requires Proxmox infrastructure."
+          echo "Use 'task proxmox:ha-check' for manual check-mode validation."
+          echo ""
+
+          # Verify all task files exist and are valid YAML
+          for task_file in roles/proxmox_ha/tasks/*.yml; do
+            echo "Validating YAML: $task_file"
+            python3 -c "import yaml; yaml.safe_load(open('$task_file'))"
+          done
+
+          # Verify the role has required files
+          echo ""
+          echo "Checking required task files..."
+          for f in main.yml rules.yml resources.yml replication.yml; do
+            test -f "roles/proxmox_ha/tasks/$f" || { echo "ERROR: $f missing"; exit 1; }
+            echo "  Found: $f"
+          done
+
+          # Verify defaults and handlers if they exist
+          if [ -d "roles/proxmox_ha/defaults" ]; then
+            for default_file in roles/proxmox_ha/defaults/*.yml; do
+              if [ -f "$default_file" ]; then
+                echo "Validating YAML: $default_file"
+                python3 -c "import yaml; yaml.safe_load(open('$default_file'))"
+              fi
+            done
+          fi
+
+          echo ""
+          echo "proxmox_ha role validation passed"
+
+      # Explicit syntax check for proxmox-ha.yml playbook
+      # This validates Jinja2 templates and variable references without running
+      - name: Validate proxmox-ha playbook syntax
+        working-directory: ansible
+        run: |
+          echo "Checking proxmox-ha.yml playbook syntax..."
+          ansible-playbook --syntax-check -i inventories/prod playbooks/proxmox-ha.yml
+          echo "proxmox-ha.yml syntax check passed"
 
   terraform-fmt:
     name: Terraform Format

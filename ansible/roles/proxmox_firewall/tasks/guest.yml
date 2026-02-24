@@ -8,6 +8,7 @@
     owner: root
     group: www-data
     mode: "0640"
+    unsafe_writes: true  # Required for /etc/pve clustered filesystem
   become: true
   delegate_to: "{{ firewall_deploy_host | default(groups['proxmox'][0]) }}"
   when:

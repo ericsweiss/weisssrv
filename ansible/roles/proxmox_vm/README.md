@@ -1,9 +1,10 @@
 # Proxmox VM Role
 
-Provisions Debian VMs on Proxmox VE using cloud-init. Handles networking, storage, resource pool assignment, and optional persistent ZFS zvol disks.
+Provisions Debian VMs on Proxmox VE using cloud-init. Handles networking, storage selection, resource pool assignment, and optional persistent ZFS zvol disks.
 
 ## What This Role Manages
 
+- Automatic storage selection based on Proxmox host role
 - Resource pool creation and validation
 - Cloud-init template download (Debian Trixie)
 - VM creation with proper VMID, CPU, memory, disk
@@ -12,6 +13,18 @@ Provisions Debian VMs on Proxmox VE using cloud-init. Handles networking, storag
 - Autostart configuration (order, delay)
 - VM start after provisioning
 
+## Storage Selection
+
+Storage is automatically selected based on the Proxmox host's role:
+
+| Host Role | Default Storage | Use Case |
+|-----------|-----------------|----------|
+| `nas` | `ssd` | pve-nas-01: 3x 4TB SSDs (raidz1) |
+| `compute` | `local-ssd` | Compute nodes: 1TB SSD per host |
+| `general` | `local-ssd` | Same as compute |
+
+Override per-VM by setting `proxmox_storage` in the inventory.
+
 ## Configuration
 
 ```yaml
@@ -19,7 +32,7 @@ Provisions Debian VMs on Proxmox VE using cloud-init. Handles networking, storag
 k3s-agt-nas-01:
   vmid: 202
   proxmox_host: pve-nas-01
-  proxmox_storage: local-lvm
+  # proxmox_storage: ssd  # Optional: auto-selected based on host role
   proxmox_resource_pool: platform
   vm_cpu_type: host
   vm_cores: 4

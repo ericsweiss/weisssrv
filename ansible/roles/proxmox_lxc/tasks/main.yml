@@ -5,6 +5,32 @@
   ansible.builtin.set_fact:
     container_id: "{{ ansible_host.split('.')[-1] }}"
 
+# Storage selection logic: auto-select based on Proxmox host role if not specified
+- name: Determine Proxmox host role
+  ansible.builtin.set_fact:
+    _proxmox_host_role: "{{ hostvars[proxmox_host]['proxmox_role'] | default('compute') }}"
+  when: proxmox_host is defined
+
+- name: Auto-select storage based on Proxmox host role
+  ansible.builtin.set_fact:
+    _effective_lxc_storage: >-
+      {{
+        lxc_storage |
+        default(proxmox_storage_defaults[_proxmox_host_role] | default('local-ssd'))
+      }}
+  when: proxmox_host is defined
+
+- name: Use explicitly defined storage when proxmox_host not set
+  ansible.builtin.set_fact:
+    _effective_lxc_storage: "{{ lxc_storage | default('local-lvm') }}"
+  when: proxmox_host is not defined
+
+- name: Display storage selection
+  vars:
+    _host_info: "{% if proxmox_host is defined %} (host: {{ proxmox_host }}, role: {{ _proxmox_host_role }}){% endif %}"
+  ansible.builtin.debug:
+    msg: "Container {{ inventory_hostname }} will use storage: {{ _effective_lxc_storage }}{{ _host_info }}"
+
 - name: Check if container already exists
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -14,19 +40,60 @@
   failed_when: false
   check_mode: false
 
+# Verify storage pool exists on target host before proceeding
+# Only check when creating a new container - existing containers may be on different storage during migrations
+- name: Get available storage pools on target host
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command: pvesm status
+  register: storage_list
+  changed_when: false
+  check_mode: false
+  when:
+    - proxmox_host is defined
+    - container_exists.rc != 0
+
+- name: Check if required storage pool exists
+  ansible.builtin.set_fact:
+    _storage_exists: "{{ storage_list.stdout_lines | select('match', '^' + _effective_lxc_storage + '\\s') | list | length > 0 }}"
+  when:
+    - proxmox_host is defined
+    - container_exists.rc != 0
+
+- name: Fail if required storage pool does not exist
+  ansible.builtin.fail:
+    msg: |
+      Storage pool '{{ _effective_lxc_storage }}' not found on {{ proxmox_host }}.
+
+      For compute nodes, you must create the local-ssd ZFS pool first.
+      See docs/06-zfs.md for pool creation commands.
+
+      Available storage pools on {{ proxmox_host }}:
+      {{ storage_list.stdout | default('(unable to retrieve)') }}
+  when:
+    - proxmox_host is defined
+    - container_exists.rc != 0
+    - not _storage_exists | default(true)
+    - not ansible_check_mode
+
 # Ensure all standard resource pools exist on the Proxmox host
+# With loops + register, changed_when is evaluated per-iteration using the current result
+# We use 'item' in the shell command and check stdout for "created" to track changes
 - name: Ensure standard resource pools exist
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
-      pvesh create /pools --poolid {{ item }}
-      echo "created"
-    else
-      echo "exists"
-    fi
+  ansible.builtin.shell:
+    cmd: |
+      if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
+        pvesh create /pools --poolid {{ item }}
+        echo "created"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
   loop: "{{ proxmox_resource_pools | default([]) }}"
-  register: pool_creation
-  changed_when: pool_creation.results | map(attribute='stdout') | select('search', 'created') | list | length > 0
+  register: pool_creation_result
+  changed_when: "'created' in pool_creation_result.stdout"
+  loop_control:
+    label: "{{ item }}"
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
@@ -69,7 +136,6 @@
   changed_when: false
   check_mode: false
   when:
-    - container_exists.rc != 0
     - lxc_gpu_passthrough | default(false)
 
 - name: Get host render group GID
@@ -81,7 +147,6 @@
   changed_when: false
   check_mode: false
   when:
-    - container_exists.rc != 0
     - lxc_gpu_passthrough | default(false)
 
 - name: Set GPU group GID facts
@@ -89,23 +154,27 @@
     host_video_gid: "{{ host_video_gid_result.stdout | int }}"
     host_render_gid: "{{ host_render_gid_result.stdout | int }}"
   when:
-    - container_exists.rc != 0
     - lxc_gpu_passthrough | default(false)
     - host_video_gid_result.stdout is defined
     - host_render_gid_result.stdout is defined
 
 # Configure host UID/GID passthrough for unprivileged containers
+# Runs on every deployment to reconcile drift
 - name: Configure subuid/subgid for container UID/GID passthrough
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
+    CHANGED=false
+
     # Add eric user (UID 1000) passthrough if not present
     if ! grep -q "^root:1000:1" /etc/subuid; then
       echo "root:1000:1" >> /etc/subuid
+      CHANGED=true
     fi
 
     # Add media group (GID 2000) passthrough if not present
     if ! grep -q "^root:2000:1" /etc/subgid; then
       echo "root:2000:1" >> /etc/subgid
+      CHANGED=true
     fi
 
     {% if lxc_gpu_passthrough | default(false) %}
@@ -115,16 +184,20 @@
 
     if ! grep -q "^root:${VIDEO_GID}:1" /etc/subgid; then
       echo "root:${VIDEO_GID}:1" >> /etc/subgid
+      CHANGED=true
     fi
     if ! grep -q "^root:${RENDER_GID}:1" /etc/subgid; then
       echo "root:${RENDER_GID}:1" >> /etc/subgid
+      CHANGED=true
     fi
     {% endif %}
+
+    if [ "$CHANGED" = "true" ]; then echo "CHANGED"; fi
   when:
     - not ansible_check_mode
-    - container_exists.rc != 0
     - lxc_unprivileged | default(true)
-  changed_when: false
+  register: subuid_result
+  changed_when: "'CHANGED' in (subuid_result.stdout | default(''))"
 
 - name: Set resource pool argument
   ansible.builtin.set_fact:
@@ -140,7 +213,7 @@
       --cores {{ lxc_cores }} \
       --memory {{ lxc_memory }} \
       --swap {{ lxc_swap }} \
-      --rootfs {{ lxc_storage }}:{{ lxc_disk_size | regex_replace('G$', '') }} \
+      --rootfs {{ _effective_lxc_storage }}:{{ lxc_disk_size | regex_replace('G$', '') }} \
       --net0 name=eth0,bridge={{ lxc_bridge }},ip={{ ansible_host }}/24,gw={{ lxc_gateway }} \
       --nameserver "{{ lxc_nameserver }}" \
       --searchdomain "{{ lxc_searchdomain }}" \

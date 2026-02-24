@@ -1,0 +1,1038 @@
+# Multi-Node Implementation Plan
+
+This document provides step-by-step instructions for integrating 4 new Proxmox hosts, forming a 6-node Proxmox cluster, and expanding the k3s cluster from 3 to 9 nodes.
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Phase 1: Bootstrap New Proxmox Hosts](#phase-1-bootstrap-new-proxmox-hosts)
+3. [Phase 2: Form Proxmox Cluster](#phase-2-form-proxmox-cluster)
+4. [Phase 3: Expand k3s Cluster](#phase-3-expand-k3s-cluster)
+5. [Phase 4: Enable High Availability](#phase-4-enable-high-availability)
+6. [Validation and Testing](#validation-and-testing)
+7. [Rollback Procedures](#rollback-procedures)
+8. [Answers to Design Questions](#answers-to-design-questions)
+
+---
+
+## Overview
+
+### Current State (6-Node Cluster)
+
+> **Note**: This document was originally written as a planning guide for expanding
+> from 2 nodes to 6 nodes. The expansion has been completed and all 6 nodes are
+> now active members of the Proxmox cluster. The step-by-step instructions below
+> are retained for reference and for bootstrapping replacement hardware.
+
+**Active Proxmox hosts** (all 6 nodes are now in the `weisssrv` cluster):
+- pve-nas-01 (192.168.0.102) - NAS + storage, ZFS pools (ssd/tank/nvme/archive)
+- pve-laptop-01 (192.168.0.103) - Compute, local-ssd ZFS pool
+- pve-opt-01 (192.168.0.104) - Compute, local-ssd ZFS pool
+- pve-opt-02 (192.168.0.105) - Compute, local-ssd ZFS pool
+- pve-opt-03 (192.168.0.106) - Compute, local-ssd ZFS pool
+- pve-prec-01 (192.168.0.107) - Compute, local-ssd ZFS pool
+
+### Architecture
+
+**6-node Proxmox cluster** (`weisssrv`) with quorum (4+ nodes required for majority):
+- All nodes with ZFS pools for HA replication:
+  - pve-nas-01: Uses `ssd` pool (3x 4TB raidz1)
+  - All other hosts: Use `local-ssd` pool (1TB per host)
+
+**9-node k3s cluster**:
+- 3 server nodes (etcd quorum): k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01
+- 6 agent nodes: k3s-agt-nas-01, k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03, k3s-agt-prec-01
+
+---
+
+## Phase 1: Bootstrap New Proxmox Hosts
+
+### Prerequisites
+
+Before starting, ensure:
+- [ ] All 4 new hosts have Proxmox VE 9+ installed
+- [ ] All hosts are reachable at their expected IPs
+- [ ] 1TB Samsung 870 EVO SSD installed in each host (not yet formatted)
+- [ ] You have SSH access to your workstation
+
+### Step 1.1: Bootstrap Script Overview
+
+The bootstrap script (`scripts/bootstrap-proxmox-host.sh`) automates the creation of the `eric` user on fresh Proxmox hosts. It:
+
+1. Prompts for a password for the `eric` user (hidden input with confirmation)
+2. Creates the `eric` user with that password
+3. Configures passwordless sudo for `eric`
+4. Deploys your SSH public key
+5. Verifies SSH access works
+
+The password allows local console access while SSH keys provide secure remote access.
+
+### Step 1.2: Bootstrap Each Host
+
+Run the bootstrap script for each new host. You'll be prompted to:
+1. Enter a password for the `eric` user (same password for all hosts recommended)
+2. Enter the root password for SSH access to the target host
+
+```bash
+# Get your SSH public key from 1Password
+SSH_KEY=$(op read "op://Homelab/SSH Key/public key")
+
+# Bootstrap each host
+# You will be prompted for:
+#   1. Password for eric user (enter twice for confirmation)
+#   2. Root password for the target host
+./scripts/bootstrap-proxmox-host.sh 192.168.0.103 "$SSH_KEY"  # pve-laptop-01
+./scripts/bootstrap-proxmox-host.sh 192.168.0.104 "$SSH_KEY"  # pve-opt-01
+./scripts/bootstrap-proxmox-host.sh 192.168.0.105 "$SSH_KEY"  # pve-opt-02
+./scripts/bootstrap-proxmox-host.sh 192.168.0.107 "$SSH_KEY"  # pve-prec-01
+```
+
+**Note**: Using the same password for `eric` on all hosts makes management easier. The password is for local console access only - SSH authentication uses keys.
+
+### Step 1.3: Create local-ssd ZFS Pools
+
+SSH to each new host and create the ZFS pool:
+
+```bash
+# Template for each host - adjust serial number
+ssh eric@<host-ip> << 'EOF'
+# Identify the SSD
+echo "=== Available disks ==="
+lsblk -d -o NAME,SIZE,MODEL,SERIAL,ROTA
+
+echo ""
+echo "=== Samsung SSDs by-id paths ==="
+ls -la /dev/disk/by-id/ | grep -i samsung
+
+# IMPORTANT: Note the /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_<SERIAL> path
+# You'll need this for the zpool create command
+EOF
+```
+
+For each host, run (replacing SERIALNUMBER):
+
+```bash
+ssh eric@<host-ip> << 'EOF'
+# Create local-ssd pool (ADJUST SERIAL NUMBER!)
+sudo zpool create -f -o ashift=12 \
+    -O acltype=posixacl \
+    -O compression=lz4 \
+    -O normalization=formD \
+    -O atime=off \
+    -O xattr=sa \
+    local-ssd \
+    /dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_SERIALNUMBER
+
+# Enable autotrim for SSD longevity
+sudo zpool set autotrim=on local-ssd
+
+# Register as Proxmox storage
+sudo pvesm add zfspool local-ssd --pool local-ssd --content images,rootdir
+
+# Verify
+sudo zpool status local-ssd
+sudo pvesm status
+EOF
+```
+
+**Host-specific SSD serials** (collect during identification step):
+- pve-laptop-01: `ata-Samsung_SSD_870_EVO_1TB_<SERIAL>`
+- pve-opt-01: `ata-Samsung_SSD_870_EVO_1TB_<SERIAL>`
+- pve-opt-02: `ata-Samsung_SSD_870_EVO_1TB_<SERIAL>`
+- pve-prec-01: `ata-Samsung_SSD_870_EVO_1TB_<SERIAL>`
+
+### Step 1.4: Update Ansible Inventory
+
+Move hosts from `proxmox_unmanaged` to `proxmox` group in `ansible/inventories/prod/hosts.yml`:
+
+```yaml
+    # Proxmox VE hypervisors (managed by Ansible)
+    proxmox:
+      hosts:
+        pve-nas-01:
+          ansible_host: 192.168.0.102
+          proxmox_role: nas
+          firewall_ipsets:
+            - pve_hosts
+            - core-cluster
+            - nfs_clients
+        pve-laptop-01:
+          ansible_host: 192.168.0.103
+          proxmox_role: compute
+          firewall_ipsets:
+            - pve_hosts
+            - core-cluster
+            - nfs_clients
+        pve-opt-01:
+          ansible_host: 192.168.0.104
+          proxmox_role: compute
+          firewall_ipsets:
+            - pve_hosts
+            - core-cluster
+            - nfs_clients
+        pve-opt-02:
+          ansible_host: 192.168.0.105
+          proxmox_role: compute
+          firewall_ipsets:
+            - pve_hosts
+            - core-cluster
+            - nfs_clients
+        pve-opt-03:
+          ansible_host: 192.168.0.106
+          proxmox_role: compute
+          firewall_ipsets:
+            - pve_hosts
+            - core-cluster
+            - nfs_clients
+        pve-prec-01:
+          ansible_host: 192.168.0.107
+          proxmox_role: compute
+          firewall_ipsets:
+            - pve_hosts
+            - core-cluster
+            - nfs_clients
+
+    # Remove proxmox_unmanaged section entirely (all hosts now managed)
+```
+
+### Step 1.5: Test Ansible Connectivity
+
+```bash
+# Verify all hosts are reachable
+task ansible:ping
+
+# Expected output - all 6 hosts should respond with pong
+# pve-nas-01 | SUCCESS => {"changed": false, "ping": "pong"}
+# pve-laptop-01 | SUCCESS => {"changed": false, "ping": "pong"}
+# pve-opt-01 | SUCCESS => {"changed": false, "ping": "pong"}
+# pve-opt-02 | SUCCESS => {"changed": false, "ping": "pong"}
+# pve-opt-03 | SUCCESS => {"changed": false, "ping": "pong"}
+# pve-prec-01 | SUCCESS => {"changed": false, "ping": "pong"}
+```
+
+### Step 1.6: Deploy Base Infrastructure to New Hosts
+
+```bash
+# Deploy base configuration to all new hosts
+task deploy:all -- --limit pve-laptop-01,pve-opt-01,pve-opt-02,pve-prec-01
+
+# This deploys:
+# - base role (packages, SSH hardening, users, timezone)
+# - qol role (Oh My Zsh, neovim, fzf, ripgrep)
+# - tailscale role (VPN client)
+# - proxmox_firewall role (IPSets, security groups, host.fw)
+# - postfix_null_client (mail relay to smtp-relay)
+```
+
+### Step 1.7: Complete Tailscale Setup
+
+After deployment, manually authenticate each host with Tailscale:
+
+```bash
+# SSH to each host and run tailscale up
+ssh eric@192.168.0.103 "sudo tailscale up --accept-routes --accept-dns=false"
+ssh eric@192.168.0.104 "sudo tailscale up --accept-routes --accept-dns=false"
+ssh eric@192.168.0.105 "sudo tailscale up --accept-routes --accept-dns=false"
+ssh eric@192.168.0.107 "sudo tailscale up --accept-routes --accept-dns=false"
+```
+
+This will display a URL for each host - open in browser to authenticate.
+
+---
+
+## Phase 2: Form Proxmox Cluster
+
+### Important: Cluster Formation Order
+
+**Cluster formation must happen BEFORE deploying any VMs on new hosts.**
+
+Proxmox cluster join requires:
+1. The node must be "clean" (no VMs or containers)
+2. All nodes must have the same Proxmox VE version
+3. Network connectivity between all nodes on port 8006 (already configured via firewall)
+
+### Step 2.1: Create the Cluster (One-Time, on pve-nas-01)
+
+```bash
+# SSH to pve-nas-01 (will be the cluster creator)
+ssh eric@192.168.0.102
+
+# Create the cluster
+sudo pvecm create weisssrv
+
+# Verify cluster creation
+sudo pvecm status
+# Should show: Cluster information, Quorum: 1, Nodes: 1
+```
+
+### Step 2.2: Join Each New Node to the Cluster
+
+**Join in this order** (existing infra first, then new nodes):
+
+```bash
+# 1. Join pve-opt-03 (existing compute node)
+ssh eric@192.168.0.106
+sudo pvecm add 192.168.0.102
+# Enter root password of pve-nas-01 when prompted
+# Node will restart services and join cluster
+```
+
+Wait for join to complete, then verify:
+
+```bash
+# On any cluster member
+sudo pvecm status
+sudo pvecm nodes
+# Should show 2 nodes now
+```
+
+**Then join remaining nodes one by one:**
+
+```bash
+# 2. Join pve-laptop-01
+ssh eric@192.168.0.103
+sudo pvecm add 192.168.0.102
+# Wait for completion...
+
+# 3. Join pve-opt-01
+ssh eric@192.168.0.104
+sudo pvecm add 192.168.0.102
+# Wait for completion...
+
+# 4. Join pve-opt-02
+ssh eric@192.168.0.105
+sudo pvecm add 192.168.0.102
+# Wait for completion...
+
+# 5. Join pve-prec-01
+ssh eric@192.168.0.107
+sudo pvecm add 192.168.0.102
+# Wait for completion...
+```
+
+### Step 2.3: Verify Cluster Formation
+
+```bash
+# From any cluster member
+ssh eric@192.168.0.102
+
+# Check cluster status
+sudo pvecm status
+# Expected output:
+# Cluster information
+# -------------------
+# Name:             weisssrv
+# Config Version:   X
+# Transport:        knet
+# Secure auth:      on
+#
+# Quorum information
+# ------------------
+# Date:             <date>
+# Quorum provider:  corosync_votequorum
+# Nodes:            6
+# Node ID:          0x00000001
+# Ring ID:          1/X
+# Quorate:          Yes
+
+# Check all nodes
+sudo pvecm nodes
+# Should list all 6 nodes with Online status
+
+# Check from Proxmox Web UI
+# Datacenter > Cluster should show all 6 nodes
+```
+
+### Quorum Information
+
+With 6 nodes:
+- **Quorum requires 4 votes** (majority)
+- Cluster survives loss of up to 2 nodes
+- If exactly 3 nodes remain and split, neither partition has quorum
+
+---
+
+## Phase 3: Expand k3s Cluster
+
+### K3s Expansion Order Rationale
+
+**Order matters for etcd:**
+1. **Add server nodes first** - Establishes 3-node etcd quorum before adding agents
+2. **Add one server at a time** - Allows etcd to reach consensus before adding more members
+3. **Add agents after all servers** - Agents just connect, no etcd membership concerns
+
+### Step 3.1: Update Inventory with New k3s Nodes
+
+Uncomment and update the k3s node definitions in `hosts.yml`:
+
+```yaml
+    k3s_servers:
+      vars:
+        ansible_user: eric
+        k3s_role: server
+        k3s_labels:
+          esweiss.com/control-plane: "true"
+        k3s_taints:
+          - key: node-role.kubernetes.io/control-plane
+            value: "true"
+            effect: NoSchedule
+      hosts:
+        k3s-srv-nas-01:
+          ansible_host: 192.168.0.222
+          vmid: 222
+          k3s_is_first_server: true
+          proxmox_host: pve-nas-01
+          proxmox_storage: local-lvm
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 2
+          vm_memory: 4096
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 30
+          proxmox_startup_delay: 10
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+        k3s-srv-laptop-01:
+          ansible_host: 192.168.0.223
+          vmid: 223
+          k3s_is_first_server: false
+          proxmox_host: pve-laptop-01
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 2
+          vm_memory: 4096
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 30
+          proxmox_startup_delay: 10
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+        k3s-srv-prec-01:
+          ansible_host: 192.168.0.227
+          vmid: 227
+          k3s_is_first_server: false
+          proxmox_host: pve-prec-01
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 2
+          vm_memory: 4096
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 30
+          proxmox_startup_delay: 10
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+
+    k3s_agents:
+      vars:
+        ansible_user: eric
+        k3s_role: agent
+      hosts:
+        k3s-agt-nas-01:
+          ansible_host: 192.168.0.202
+          vmid: 202
+          proxmox_host: pve-nas-01
+          proxmox_storage: local-lvm
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 4
+          vm_memory: 8192
+          vm_disk_size: 64G
+          vm_additional_disks:
+            - name: postgres-data
+              size: 10G
+              zvol: ssd/appdata/authentik/postgres
+              mount_point: /mnt/postgres-data
+              fstype: ext4
+            - name: mealie-postgres-data
+              size: 32G
+              zvol: ssd/appdata/mealie/postgres
+              mount_point: /mnt/mealie-postgres-data
+              fstype: ext4
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 40
+          proxmox_startup_delay: 10
+          k3s_labels:
+            esweiss.com/nas: "true"
+            esweiss.com/general: "true"
+          k3s_taints:
+            - key: esweiss.com/nas
+              value: "true"
+              effect: PreferNoSchedule
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+        k3s-agt-laptop-01:
+          ansible_host: 192.168.0.203
+          vmid: 203
+          proxmox_host: pve-laptop-01
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 4
+          vm_memory: 8192
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 40
+          proxmox_startup_delay: 10
+          k3s_labels:
+            esweiss.com/general: "true"
+            esweiss.com/ingress: "true"
+          k3s_taints:
+            - key: esweiss.com/ingress
+              value: "true"
+              effect: PreferNoSchedule
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+            - sg-k3s-ingress-int
+            - sg-k3s-ingress-pub
+        k3s-agt-opt-01:
+          ansible_host: 192.168.0.204
+          vmid: 204
+          proxmox_host: pve-opt-01
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 3
+          vm_memory: 6144
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 40
+          proxmox_startup_delay: 10
+          k3s_labels:
+            esweiss.com/general: "true"
+            esweiss.com/ingress: "true"
+          k3s_taints:
+            - key: esweiss.com/ingress
+              value: "true"
+              effect: PreferNoSchedule
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+            - sg-k3s-ingress-int
+            - sg-k3s-ingress-pub
+        k3s-agt-opt-02:
+          ansible_host: 192.168.0.205
+          vmid: 205
+          proxmox_host: pve-opt-02
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 3
+          vm_memory: 6144
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 40
+          proxmox_startup_delay: 10
+          k3s_labels:
+            esweiss.com/general: "true"
+            esweiss.com/ingress: "true"
+          k3s_taints:
+            - key: esweiss.com/ingress
+              value: "true"
+              effect: PreferNoSchedule
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+            - sg-k3s-ingress-int
+            - sg-k3s-ingress-pub
+        k3s-agt-opt-03:
+          ansible_host: 192.168.0.206
+          vmid: 206
+          proxmox_host: pve-opt-03
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 3
+          vm_memory: 6144
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 40
+          proxmox_startup_delay: 10
+          k3s_labels:
+            esweiss.com/general: "true"
+            esweiss.com/ingress: "true"
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+            - sg-k3s-ingress-int
+            - sg-k3s-ingress-pub
+        k3s-agt-prec-01:
+          ansible_host: 192.168.0.207
+          vmid: 207
+          proxmox_host: pve-prec-01
+          proxmox_storage: local-ssd
+          proxmox_resource_pool: platform
+          vm_cpu_type: host
+          vm_cores: 6
+          vm_memory: 16384
+          vm_disk_size: 64G
+          proxmox_autostart_enabled: true
+          proxmox_startup_order: 40
+          proxmox_startup_delay: 10
+          k3s_labels:
+            esweiss.com/general: "true"
+            esweiss.com/compute: "true"
+          k3s_taints:
+            - key: esweiss.com/compute
+              value: "true"
+              effect: PreferNoSchedule
+          firewall_ipsets:
+            - k3s_nodes
+            - core-cluster
+            - nfs_clients
+          guest_security_groups:
+            - sg-vm-admin
+            - sg-k3s-core
+```
+
+### Step 3.2: Update DNS Records
+
+Verify DNS records exist for new k3s nodes in `ansible/inventories/prod/group_vars/dns.yml`. The records should already be present per docs/08-dns.md.
+
+Deploy DNS configuration:
+
+```bash
+task deploy:dns -- --limit dns-01
+# dns-02 syncs automatically via adguardhome-sync
+```
+
+### Step 3.3: Create etcd Snapshot (Safety Backup)
+
+Before expanding, back up the existing cluster:
+
+```bash
+task k3s:backup
+# Creates snapshot at /var/lib/rancher/k3s/server/db/snapshots/
+
+# Verify snapshot was created
+ssh eric@192.168.0.222 "sudo k3s etcd-snapshot ls"
+```
+
+### Step 3.4: Add Server Nodes (One at a Time)
+
+**Add k3s-srv-laptop-01 first:**
+
+```bash
+# Provision VM on pve-laptop-01
+task k3s:provision-vms -- --limit k3s-srv-laptop-01
+
+# Deploy k3s server (joins existing cluster)
+task k3s:deploy -- --limit k3s-srv-laptop-01
+
+# Verify it joined
+export KUBECONFIG=~/.kube/config-k3s
+kubectl get nodes
+# Should show 4 nodes now (3 original + 1 new server)
+
+# Verify etcd health
+kubectl get pods -n kube-system | grep etcd
+```
+
+**Wait 2-3 minutes for etcd to stabilize, then add k3s-srv-prec-01:**
+
+```bash
+# Provision VM on pve-prec-01
+task k3s:provision-vms -- --limit k3s-srv-prec-01
+
+# Deploy k3s server
+task k3s:deploy -- --limit k3s-srv-prec-01
+
+# Verify 3-node etcd cluster
+kubectl get nodes
+# Should show 5 nodes (3 servers + 2 agents)
+
+# Test kube-vip failover
+curl -sk https://192.168.0.161:6443/healthz
+# Should return "ok"
+```
+
+### Step 3.5: Add Agent Nodes
+
+With 3 server nodes running (etcd quorum established), add all agents at once:
+
+```bash
+# Provision all new agent VMs
+task k3s:provision-vms -- --limit k3s-agt-laptop-01,k3s-agt-opt-01,k3s-agt-opt-02,k3s-agt-prec-01
+
+# Deploy k3s agents
+task k3s:deploy -- --limit k3s-agt-laptop-01,k3s-agt-opt-01,k3s-agt-opt-02,k3s-agt-prec-01
+
+# Verify all 9 nodes
+kubectl get nodes
+# Expected: 3 servers + 6 agents = 9 nodes
+```
+
+### Step 3.6: Apply Node Labels and Taints
+
+Labels and taints are applied automatically by `task k3s:deploy`, but verify:
+
+```bash
+# Check labels
+kubectl get nodes --show-labels
+
+# Check specific taints
+kubectl describe node k3s-agt-nas-01 | grep -A 5 Taints
+kubectl describe node k3s-agt-laptop-01 | grep -A 5 Taints
+kubectl describe node k3s-agt-prec-01 | grep -A 5 Taints
+```
+
+### Step 3.7: Verify Full k3s Cluster
+
+```bash
+task k3s:status
+
+# Check all workloads are running
+kubectl get pods -A
+
+# Verify MetalLB speakers on new nodes
+kubectl get pods -n metallb-system -o wide
+
+# Verify Traefik can reach all ingress nodes
+kubectl get pods -n traefik -o wide
+```
+
+---
+
+## Phase 4: Enable High Availability
+
+HA configuration is managed by Ansible via the `proxmox_ha` role. This automates:
+1. Node-affinity rules (Proxmox 9+) - which nodes can run which services
+2. HA resources - which VMs/CTs are managed by HA
+3. Storage replication - multi-target ZFS replication for fast failover
+
+### Step 4.1: Deploy HA Configuration via Ansible
+
+The HA configuration is defined in `ansible/inventories/prod/group_vars/all.yml`:
+- `ha_rules`: Node-affinity rules to exclude pve-nas-01 (avoid I/O contention with NAS workloads)
+- `ha_resources`: VMs/CTs to be managed by HA (dns-01, dns-02, smtp-relay, home-assistant)
+- `storage_replication_jobs`: Multi-target replication (each service replicates to all 4 other nodes)
+
+```bash
+# Deploy HA configuration (check mode first)
+task proxmox:ha-check
+
+# Apply HA configuration
+task proxmox:ha
+
+# Verify HA status
+task proxmox:ha-status
+```
+
+### Step 4.2: What Gets Configured
+
+**Node-Affinity Rule** (`critical-services-no-nas`):
+- Excludes pve-nas-01 from running critical services
+- Services can float freely among 5 local-ssd nodes
+- `strict: false` allows NAS only if ALL other nodes unavailable
+
+**HA Resources**:
+- `ct:150` (dns-01) - AdGuard Home primary
+- `ct:151` (smtp-relay) - Postfix mail relay
+- `ct:160` (dns-02) - AdGuard Home secondary
+- `vm:154` (home-assistant) - HAOS VM
+
+**Multi-Target Replication** (every 15 minutes):
+- Each service replicates to ALL 4 other local-ssd nodes
+- When any node fails, HA can restart the service on ANY surviving node
+
+**Resources NOT managed by HA** (intentionally):
+- `plex` (VMID 152) - Depends on NAS bind mounts, cannot run elsewhere
+- `k3s-agt-nas-01` (VMID 202) - NFS mounts from NAS, pointless to migrate
+- Other k3s VMs - k3s handles node failures at the application layer
+
+### Step 4.3: Manual HA Commands (Reference)
+
+For manual operations or troubleshooting:
+
+```bash
+# Check HA status
+ssh eric@192.168.0.102 "sudo ha-manager status"
+
+# View HA rules
+ssh eric@192.168.0.102 "sudo ha-manager rules list"
+
+# View HA resources
+ssh eric@192.168.0.102 "sudo ha-manager config"
+
+# Check replication status
+ssh eric@192.168.0.102 "sudo pvesr status"
+
+# Manually migrate a service
+ssh eric@192.168.0.102 "sudo ha-manager migrate ct:150 pve-laptop-01"
+```
+
+### Step 4.4: Test HA Functionality
+
+```bash
+# Test DNS failover
+# 1. Note current location (should show pve-laptop-01 after migration)
+task proxmox:ha-status | grep 150
+
+# 2. Migrate dns-01 to pve-opt-03 (or any other available node)
+ssh pve-nas-01 "sudo ha-manager migrate ct:150 pve-opt-03"
+
+# 3. Wait for migration
+sleep 60
+
+# 4. Test DNS still works
+dig google.com @192.168.0.150
+# Should still resolve
+
+# 5. Migrate back to original node (pve-laptop-01)
+ssh pve-nas-01 "sudo ha-manager migrate ct:150 pve-laptop-01"
+
+# 6. Verify it moved back
+task proxmox:ha-status | grep 150
+```
+
+---
+
+## Validation and Testing
+
+### Full Cluster Validation
+
+```bash
+# 1. Verify all Proxmox nodes
+ssh eric@192.168.0.102 "sudo pvecm status"
+ssh eric@192.168.0.102 "sudo pvecm nodes"
+
+# 2. Verify k3s cluster
+task k3s:status
+kubectl get nodes -o wide
+
+# 3. Verify workloads
+kubectl get pods -A | grep -v Running | grep -v Completed
+# Should only show Running or Completed pods
+
+# 4. Verify HA
+ssh eric@192.168.0.102 "sudo ha-manager status"
+
+# 5. Test ingress
+curl -k https://auth.esweiss.com/
+curl -k https://food.esweiss.com/
+curl -k https://home.esweiss.com/
+
+# 6. Collect state
+task collect-state
+```
+
+### Server Node Failure Test
+
+**WARNING: This will cause brief downtime. Do during maintenance window.**
+
+```bash
+# 1. Identify current kube-vip leader
+kubectl get pods -n kube-system -l app=kube-vip -o wide
+
+# 2. Simulate server failure (stop one server VM)
+ssh eric@192.168.0.103 "sudo qm stop 223"  # Stop k3s-srv-laptop-01
+
+# 3. Verify API VIP fails over
+sleep 30
+curl -sk https://192.168.0.161:6443/healthz
+# Should return "ok" (VIP moved to another server)
+
+# 4. Verify cluster still operational
+kubectl get nodes
+# k3s-srv-laptop-01 should show NotReady
+
+# 5. Restore server
+ssh eric@192.168.0.103 "sudo qm start 223"
+
+# 6. Wait for rejoin
+sleep 60
+kubectl get nodes
+# All nodes should be Ready
+```
+
+---
+
+## Rollback Procedures
+
+### Rollback k3s Expansion
+
+If k3s expansion fails:
+
+```bash
+# 1. Drain and delete problem nodes from k3s
+kubectl drain k3s-agt-<name> --ignore-daemonsets --delete-emptydir-data
+kubectl delete node k3s-agt-<name>
+
+# 2. Stop and remove VMs
+ssh eric@<proxmox-host> "sudo qm stop <vmid> && sudo qm destroy <vmid>"
+
+# 3. Remove from Ansible inventory (comment out entries)
+
+# 4. If etcd is corrupted, restore from snapshot
+ssh eric@192.168.0.222 << 'EOF'
+sudo systemctl stop k3s
+sudo k3s server --cluster-reset --cluster-reset-restore-path=/var/lib/rancher/k3s/server/db/snapshots/<snapshot-name>
+sudo systemctl start k3s
+EOF
+```
+
+### Rollback Proxmox Cluster
+
+If a node causes cluster problems:
+
+```bash
+# On the problem node (if accessible)
+ssh eric@<problem-node> "sudo pvecm delnode <node-name>"
+
+# If node is not accessible, remove from existing member
+ssh eric@192.168.0.102 << 'EOF'
+sudo pvecm expected 1  # Temporarily lower expected votes
+sudo pvecm delnode <problem-node-name>
+sudo pvecm expected 6  # Restore expected votes (or adjust for remaining nodes)
+EOF
+```
+
+### Revert to Non-HA
+
+If HA causes issues:
+
+```bash
+# Remove all HA resources
+ssh eric@192.168.0.102 << 'EOF'
+sudo ha-manager remove ct:150
+sudo ha-manager remove ct:160
+sudo ha-manager remove ct:151
+sudo ha-manager remove vm:154
+
+# Remove HA rules (Proxmox 9+ with node-affinity rules)
+# List current rules first to see what exists
+sudo ha-manager rules list
+# Remove rules by name (check ha_rules in group_vars/all.yml for current rule names)
+sudo ha-manager rules remove critical-services-no-nas || true
+EOF
+```
+
+---
+
+## Answers to Design Questions
+
+### 1. Bootstrap Procedure
+
+**Exact sequence for creating eric user and deploying SSH keys:**
+
+1. SSH as root to new host (using password from Proxmox installation)
+2. Create user eric: `useradd -m -s /bin/bash -G sudo eric`
+3. Configure passwordless sudo: `echo 'eric ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/eric`
+4. Create SSH directory: `mkdir -p /home/eric/.ssh && chmod 700 /home/eric/.ssh`
+5. Deploy SSH key from 1Password
+6. Set permissions: `chmod 600 /home/eric/.ssh/authorized_keys && chown -R eric:eric /home/eric/.ssh`
+7. Test SSH as eric from workstation
+
+The bootstrap script automates this entire process.
+
+### 2. Cluster Formation Order
+
+**Create cluster first, then add nodes one at a time.**
+
+- Create cluster on pve-nas-01 (existing, most important node)
+- Join existing node pve-opt-03 first (already has VMs, proves join works)
+- Join new nodes one by one, verifying cluster health between each
+- Never join multiple nodes simultaneously
+
+### 3. k3s Expansion Order
+
+**Yes, servers MUST be added before agents. Order matters for etcd:**
+
+1. Add k3s-srv-laptop-01 (server 2) - wait for etcd sync
+2. Add k3s-srv-prec-01 (server 3) - establishes 3-node quorum
+3. Add all agents (can be parallel after quorum is established)
+
+The k3s role handles this automatically based on `k3s_is_first_server` flag.
+
+### 4. HA Migration Testing
+
+**Safest approach:**
+
+1. Start with DNS (redundant via dns-01/dns-02)
+2. Use `ha-manager migrate` command (not `fence` or host shutdown)
+3. Monitor with continuous ping to service IP
+4. Test one service at a time
+5. Full host failure testing only after all individual migrations work
+
+### 5. Inventory Structure
+
+**Move hosts from `proxmox_unmanaged` to `proxmox` group:**
+
+- Remove the `proxmox_unmanaged` group entirely
+- All 6 hosts go in `proxmox` group with `proxmox_role` variable
+- `proxmox_role: nas` for pve-nas-01, `proxmox_role: compute` for all others
+- `ansible_connection: local` removed (only used for unmanaged hosts)
+
+### 6. Storage Migration for Existing VMs
+
+**Not required immediately, but recommended:**
+
+Current VMs on pve-nas-01 use `local-lvm` (LVM thin pool). For HA:
+- `local-lvm` works for running VMs but cannot be replicated
+- Move to `ssd` pool (ZFS) for replication capability
+
+Migration procedure (per VM):
+```bash
+# Via Web UI: VM > Hardware > Disk > Disk Action > Move Storage > Target: ssd
+# Or CLI:
+qm move-disk <vmid> scsi0 ssd --delete
+```
+
+**Priority order:**
+1. home-assistant (VM 154) - High value, candidate for HA
+2. k3s-srv-nas-01 (VM 222) - Control plane
+3. k3s-agt-nas-01 (VM 202) - Has persistent data (postgres zvols)
+
+Plex (CT 152) should stay on pve-nas-01 only due to bind mounts.
+
+---
+
+## Related Documentation
+
+- `docs/00-hardware-setup.md` - Initial Proxmox installation
+- `docs/18-bootstrap-new-systems.md` - LXC/VM bootstrap procedures
+- `docs/19-k3s-deployment.md` - K3s deployment workflow
+- `docs/25-multi-node-expansion.md` - Expansion architecture and planning
+- [Proxmox Cluster Manager](https://pve.proxmox.com/wiki/Cluster_Manager)
+- [Proxmox HA Manager](https://pve.proxmox.com/wiki/High_Availability)
+- [Proxmox ZFS Replication](https://pve.proxmox.com/wiki/Storage_Replication)

@@ -5,6 +5,9 @@ vars:
   ANSIBLE_DIR: ./ansible
   TERRAFORM_DIR: ./terraform
   INVENTORY: ./inventories/prod
+  # Home Assistant VM configuration
+  HA_VM_ID: "154"
+  HA_VM_IP: "192.168.0.154"
 
 tasks:
   default:
@@ -231,6 +234,7 @@ tasks:
     desc: Deploy NAS storage configuration
     dir: "{{.ANSIBLE_DIR}}"
     env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/storage.yml {{.CLI_ARGS}}
@@ -755,6 +759,67 @@ tasks:
     dir: "{{.ANSIBLE_DIR}}"
     cmds:
       - ansible-playbook -i {{.INVENTORY}} playbooks/proxmox-enable-autostart.yml {{.CLI_ARGS}}
+
+  proxmox:ha:
+    desc: Configure Proxmox HA rules, resources, and storage replication
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/proxmox-ha.yml {{.CLI_ARGS}}
+
+  proxmox:ha-check:
+    desc: Check mode - show what Proxmox HA configuration would change
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/proxmox-ha.yml --check --diff {{.CLI_ARGS}}
+
+  proxmox:ha-status:
+    desc: Show Proxmox HA and replication status
+    cmds:
+      # First verify we can reach at least one Proxmox host
+      - |
+        REACHABLE_HOST=""
+        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            REACHABLE_HOST="$host"
+            break
+          fi
+        done
+        if [ -z "$REACHABLE_HOST" ]; then
+          echo "ERROR: Cannot reach any Proxmox host"
+          exit 1
+        fi
+        echo "Connected to cluster via $REACHABLE_HOST"
+        echo ""
+        echo "=== HA Manager Status ==="
+        ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status" 2>/dev/null || echo "(No HA manager status available)"
+        echo ""
+        echo "=== HA Resources ==="
+        OUTPUT=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager config" 2>/dev/null | grep -E '^(ct|vm):' || true)
+        if [ -n "$OUTPUT" ]; then
+          echo "$OUTPUT"
+        else
+          echo "(No HA resources configured)"
+        fi
+        echo ""
+        # Note: ha-manager rules list requires Proxmox 9+
+        echo "=== HA Rules (Node Affinity) ==="
+        ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager rules list" 2>/dev/null || echo "(No HA rules configured or Proxmox < 9)"
+        echo ""
+        echo "=== Storage Replication Jobs ==="
+        ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo pvesr list" 2>/dev/null || echo "(No replication jobs configured)"
+      - echo ""
+      # Replication status must be checked on source nodes (pve-nas-01 is not a source)
+      - echo "=== Replication Status (all source nodes) ==="
+      - |
+        for host in pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          echo "--- $host ---"
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            ssh -o BatchMode=yes "$host" "sudo pvesr status" 2>/dev/null || echo "(No replication status)"
+          else
+            echo "(Cannot reach $host)"
+          fi
+          echo ""
+        done
 
   # === Terraform Tasks ===
   terraform:init:
@@ -1485,12 +1550,42 @@ tasks:
     cmds:
       - echo "=== Home Assistant VM Status ==="
       - |
-        ssh pve-nas-01 "sudo qm status 154" 2>/dev/null || echo "Cannot reach Proxmox host"
+        # Find first reachable Proxmox host (HA-resilient)
+        REACHABLE_HOST=""
+        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            REACHABLE_HOST="$host"
+            break
+          fi
+        done
+        if [ -z "$REACHABLE_HOST" ]; then
+          echo "Cannot reach any Proxmox host"
+        else
+          # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
+          CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
+          if [ -z "$CURRENT_NODE" ]; then
+            # HA not configured or VM not in HA - query cluster resources for authoritative node
+            echo "HA not configured for VM {{.HA_VM_ID}}, querying cluster resources..."
+            CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null | \
+              python3 -c "import sys,json; data=json.load(sys.stdin); vms=[v for v in data if v.get('vmid')=={{.HA_VM_ID}}]; print(vms[0]['node'] if vms else '')" 2>/dev/null)
+            # Convert node name to hostname (e.g., pve-nas-01 format)
+            if [ -n "$CURRENT_NODE" ]; then
+              CURRENT_NODE="pve-${CURRENT_NODE#pve-}"  # Ensure pve- prefix
+            fi
+          fi
+          if [ -z "$CURRENT_NODE" ]; then
+            echo "Cannot find VM {{.HA_VM_ID}} on any node"
+          else
+            echo "Connected to cluster via $REACHABLE_HOST"
+            echo "VM {{.HA_VM_ID}} is on node: $CURRENT_NODE"
+            ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || echo "Cannot reach node $CURRENT_NODE"
+          fi
+        fi
       - echo ""
       - echo "=== Network Connectivity ==="
       - |
-        if curl -s --connect-timeout 2 http://192.168.0.154:8123 >/dev/null 2>&1; then
-          echo "Home Assistant HTTP: OK (192.168.0.154:8123)"
+        if curl -s --connect-timeout 2 http://{{.HA_VM_IP}}:8123 >/dev/null 2>&1; then
+          echo "Home Assistant HTTP: OK ({{.HA_VM_IP}}:8123)"
         else
           echo "Home Assistant HTTP: UNREACHABLE"
         fi
@@ -1510,11 +1605,42 @@ tasks:
   home-assistant:vm-start:
     desc: Start the Home Assistant VM
     cmds:
-      - ssh pve-nas-01 "sudo qm start 154"
+      - |
+        # Find first reachable Proxmox host (HA-resilient)
+        REACHABLE_HOST=""
+        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            REACHABLE_HOST="$host"
+            break
+          fi
+        done
+        if [ -z "$REACHABLE_HOST" ]; then
+          echo "ERROR: Cannot reach any Proxmox host"
+          exit 1
+        fi
+        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
+        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
+        if [ -z "$CURRENT_NODE" ]; then
+          # HA not configured or VM not in HA - fall back to checking each node directly
+          echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
+          for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
+              CURRENT_NODE="$host"
+              break
+            fi
+          done
+        fi
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
+          exit 1
+        fi
+        echo "Connected to cluster via $REACHABLE_HOST"
+        echo "Starting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm start {{.HA_VM_ID}}"
       - echo "Waiting for Home Assistant to be reachable..."
       - |
         for i in $(seq 1 30); do
-          if curl -s --connect-timeout 2 http://192.168.0.154:8123 >/dev/null 2>&1; then
+          if curl -s --connect-timeout 2 http://{{.HA_VM_IP}}:8123 >/dev/null 2>&1; then
             echo "Home Assistant is up!"
             exit 0
           fi
@@ -1526,14 +1652,82 @@ tasks:
   home-assistant:vm-stop:
     desc: Stop the Home Assistant VM gracefully
     cmds:
-      - ssh pve-nas-01 "sudo qm shutdown 154"
-      - echo "Sent shutdown signal to Home Assistant VM"
+      - |
+        # Find first reachable Proxmox host (HA-resilient)
+        REACHABLE_HOST=""
+        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            REACHABLE_HOST="$host"
+            break
+          fi
+        done
+        if [ -z "$REACHABLE_HOST" ]; then
+          echo "ERROR: Cannot reach any Proxmox host"
+          exit 1
+        fi
+        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
+        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
+        if [ -z "$CURRENT_NODE" ]; then
+          # HA not configured or VM not in HA - fall back to checking each node directly
+          echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
+          for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
+              CURRENT_NODE="$host"
+              break
+            fi
+          done
+        fi
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
+          exit 1
+        fi
+        echo "Connected to cluster via $REACHABLE_HOST"
+        echo "Stopping VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}}"
+        echo "Sent shutdown signal to Home Assistant VM"
 
   home-assistant:vm-restart:
     desc: Restart the Home Assistant VM
     cmds:
-      - ssh pve-nas-01 "sudo qm reboot 154"
-      - echo "Sent reboot signal to Home Assistant VM"
+      - |
+        # Find first reachable Proxmox host (HA-resilient)
+        REACHABLE_HOST=""
+        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            REACHABLE_HOST="$host"
+            break
+          fi
+        done
+        if [ -z "$REACHABLE_HOST" ]; then
+          echo "ERROR: Cannot reach any Proxmox host"
+          exit 1
+        fi
+        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
+        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
+        if [ -z "$CURRENT_NODE" ]; then
+          # HA not configured or VM not in HA - fall back to checking each node directly
+          echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
+          for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
+              CURRENT_NODE="$host"
+              break
+            fi
+          done
+        fi
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
+          exit 1
+        fi
+        echo "Connected to cluster via $REACHABLE_HOST"
+        echo "Restarting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        # Use reset instead of reboot to avoid QEMU Guest Agent timeout
+        # Home Assistant OS may not have guest agent properly configured
+        if ssh "$CURRENT_NODE" "sudo qm reset {{.HA_VM_ID}}"; then
+          echo "Sent reset signal to Home Assistant VM"
+        else
+          echo "ERROR: Failed to restart VM {{.HA_VM_ID}} on $CURRENT_NODE"
+          exit 1
+        fi
 
   home-assistant:console:
     desc: Open SSH console to Home Assistant (if SSH add-on installed)
@@ -1541,7 +1735,7 @@ tasks:
       - |
         echo "Connecting to Home Assistant..."
         echo "Note: Requires SSH add-on to be installed in Home Assistant"
-        ssh root@192.168.0.154 -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
+        ssh root@{{.HA_VM_IP}} -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
 
   home-assistant:logs:
     desc: View Home Assistant core logs via API (requires long-lived access token)
@@ -1571,12 +1765,41 @@ tasks:
       - |
         NAME="{{.NAME}}"
         DESC="{{.DESC}}"
-        echo "Creating snapshot '$NAME' of Home Assistant VM..."
-        ssh pve-nas-01 "sudo qm snapshot 154 '${NAME}' --description '${DESC}'"
+        # Find first reachable Proxmox host (HA-resilient)
+        REACHABLE_HOST=""
+        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            REACHABLE_HOST="$host"
+            break
+          fi
+        done
+        if [ -z "$REACHABLE_HOST" ]; then
+          echo "ERROR: Cannot reach any Proxmox host"
+          exit 1
+        fi
+        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
+        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
+        if [ -z "$CURRENT_NODE" ]; then
+          # HA not configured or VM not in HA - query cluster resources for authoritative node
+          echo "HA not configured for VM {{.HA_VM_ID}}, querying cluster resources..."
+          CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null | \
+            python3 -c "import sys,json; data=json.load(sys.stdin); vms=[v for v in data if v.get('vmid')=={{.HA_VM_ID}}]; print(vms[0]['node'] if vms else '')" 2>/dev/null)
+          # Convert node name to hostname (e.g., pve-nas-01 format)
+          if [ -n "$CURRENT_NODE" ]; then
+            CURRENT_NODE="pve-${CURRENT_NODE#pve-}"  # Ensure pve- prefix
+          fi
+        fi
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
+          exit 1
+        fi
+        echo "Connected to cluster via $REACHABLE_HOST"
+        echo "Creating snapshot '$NAME' of Home Assistant VM on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm snapshot {{.HA_VM_ID}} '${NAME}' --description '${DESC}'"
         echo "Snapshot created successfully"
         echo ""
-        echo "To list snapshots: ssh pve-nas-01 'sudo qm listsnapshot 154'"
-        echo "To rollback: ssh pve-nas-01 \"sudo qm rollback 154 '${NAME}'\""
+        echo "To list snapshots: ssh $CURRENT_NODE 'sudo qm listsnapshot {{.HA_VM_ID}}'"
+        echo "To rollback: ssh $CURRENT_NODE \"sudo qm rollback {{.HA_VM_ID}} '${NAME}'\""
 
   home-assistant:deploy:
     desc: Deploy Home Assistant ingress and configuration
