@@ -34,3 +34,62 @@ vm_packages:
 # SSH authorized keys to deploy
 # ssh_authorized_keys:
 #   - "ssh-ed25519 AAAA... user@host"
+
+# ============================================================================
+# Fail2ban Configuration
+# ============================================================================
+# Fail2ban provides intrusion prevention by banning IPs after failed auth attempts
+# Enabled by default on all hosts for SSH protection
+#
+# LXC Container Compatibility:
+# On unprivileged LXC containers, iptables/nftables cannot perform packet filtering
+# due to missing CAP_NET_ADMIN capabilities. The role automatically detects this
+# and uses the 'route' banaction (ip route add blackhole) instead.
+#
+# Container mode trade-offs:
+#   - Bans are IP-wide (cannot ban specific ports)
+#   - Recidive jail is automatically disabled
+#   - Single routing table shared across jails
+
+fail2ban_enabled: true
+
+# Trusted networks that should never be banned
+# Default: internal LAN and Tailscale networks
+fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - ::1
+  - 192.168.0.0/24      # Internal LAN
+  - 100.64.0.0/10       # Tailscale CGNAT range
+
+# Default jail settings (can be overridden per-jail)
+fail2ban_default_bantime: 1h       # Duration of IP ban
+fail2ban_default_findtime: 10m     # Window to count failures
+fail2ban_default_maxretry: 5       # Failures before ban
+
+# Progressive ban multiplier for recidivists
+# Each repeat offense multiplies bantime by this factor
+fail2ban_recidive_enabled: true
+fail2ban_recidive_bantime: 1w      # Ban repeat offenders for 1 week
+fail2ban_recidive_findtime: 1d     # Look back 1 day for repeat bans
+fail2ban_recidive_maxretry: 3      # 3 bans triggers recidive
+
+# SSH jail configuration
+fail2ban_sshd_enabled: true
+fail2ban_sshd_port: "{{ ssh_port }}"
+fail2ban_sshd_maxretry: 5
+fail2ban_sshd_bantime: 1h
+fail2ban_sshd_findtime: 10m
+
+# Proxmox web UI (pveproxy) jail - only for Proxmox hosts
+# Uses apache-auth filter since pveproxy logs auth failures to /var/log/daemon.log
+fail2ban_pveproxy_enabled: false  # Explicitly enabled on proxmox hosts
+fail2ban_pveproxy_port: 8006
+fail2ban_pveproxy_maxretry: 5
+fail2ban_pveproxy_bantime: 1h
+fail2ban_pveproxy_findtime: 10m
+
+# Email notifications (optional - uses local SMTP relay)
+fail2ban_email_enabled: false
+fail2ban_email_dest: "{{ admin_email | default('root@localhost') }}"
+fail2ban_email_sender: "fail2ban@{{ inventory_hostname }}"
+fail2ban_email_action: "%(action_mwl)s"  # Ban with email + whois + log lines

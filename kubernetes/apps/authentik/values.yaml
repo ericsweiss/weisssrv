@@ -86,6 +86,20 @@ worker:
 
   # Version set via Taskfile from ansible/inventories/prod/group_vars/all.yml
 
+  # Worker requires /dev/shm for PID file used by healthcheck
+  # Without this, healthcheck fails: "open /dev/shm/authentik-worker.pid: no such file or directory"
+  # NOTE: The Authentik Helm chart uses 'additionalVolumes' and 'additionalVolumeMounts' (not 'volumes')
+  # See: https://github.com/goauthentik/helm/blob/main/charts/authentik/values.yaml
+  additionalVolumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Mi
+
+  additionalVolumeMounts:
+    - name: shm
+      mountPath: /dev/shm
+
   # More generous probe timeouts - worker can be slow when processing tasks
   livenessProbe:
     exec:
@@ -126,11 +140,11 @@ worker:
 
   resources:
     requests:
-      cpu: 50m
-      memory: 256Mi
-    limits:
-      cpu: 500m
+      cpu: 100m
       memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
 
 # Bundled PostgreSQL - consider external for HA
 postgresql:

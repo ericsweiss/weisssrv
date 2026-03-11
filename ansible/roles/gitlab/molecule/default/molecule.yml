@@ -1,0 +1,134 @@
+---
+# Molecule configuration for gitlab role testing
+# Tests: apt repo setup, package installation, gitlab.rb template rendering
+# Skips: gitlab-ctl reconfigure (requires full GitLab), actual service startup
+#
+# Note: GitLab requires 4GB+ RAM and ~10GB disk space, so we mock the package
+# installation and focus on testing configuration template rendering with
+# various variable combinations (SAML, registry, pages, SMTP).
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: gitlab-test
+    image: ghcr.io/hifis-net/debian-systemd:trixie
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker compatibility with newer Ansible versions
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    # SMTP credentials (required by role)
+    SMTP_RELAY_USER: testsmtp@example.com
+    SMTP_RELAY_PASSWORD: testsmtppassword
+    # GitLab root password
+    GITLAB_ROOT_PASSWORD: testrootpassword123
+    # SAML fingerprint (mock)
+    GITLAB_SAML_CERT_FINGERPRINT: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # GitLab version (test)
+        gitlab_version: "18.9.1-ee.0"
+
+        # GitLab URLs
+        gitlab_external_url: "https://git.test.local"
+        gitlab_ssh_host: "git.test.local"
+        gitlab_ssh_port: 22
+
+        # Container Registry
+        gitlab_registry_enabled: true
+        gitlab_registry_external_url: "https://registry.git.test.local"
+
+        # GitLab Pages
+        gitlab_pages_enabled: true
+        gitlab_pages_external_url: "https://pages.git.test.local"
+
+        # SMTP configuration
+        gitlab_smtp_enabled: true
+        gitlab_smtp_address: "smtp-relay.test.local"
+        gitlab_smtp_port: 587
+        gitlab_smtp_domain: "test.local"
+        gitlab_smtp_authentication: "login"
+        gitlab_smtp_enable_starttls_auto: true
+        gitlab_email_from: "gitlab@test.local"
+        gitlab_email_display_name: "GitLab"
+        gitlab_email_reply_to: "noreply@test.local"
+
+        # SAML SSO (enabled for testing)
+        gitlab_saml_enabled: true
+        gitlab_saml_label: "Authentik"
+        gitlab_saml_idp_sso_url: "https://auth.test.local/application/saml/git/sso/binding/redirect/"
+        gitlab_saml_groups_attribute: "http://schemas.xmlsoap.org/claims/Group"
+        gitlab_saml_required_groups: []
+        gitlab_saml_admin_groups:
+          - "gitlab-admins"
+        gitlab_saml_external_groups: []
+
+        # NGINX configuration (for Traefik proxy)
+        gitlab_nginx_listen_https: false
+        gitlab_nginx_listen_port: 80
+        gitlab_nginx_real_ip_trusted_addresses:
+          - 192.168.0.0/24
+          - 10.42.0.0/16
+
+        # Backup configuration
+        gitlab_backup_path: "/var/opt/gitlab/backups"
+        gitlab_backup_keep_time: 604800
+
+        # Performance tuning
+        gitlab_puma_workers: 2
+        gitlab_sidekiq_concurrency: 10
+
+        # Custom repository storage (GitLab 18+)
+        gitlab_git_data_dir: "/mnt/gitlab-repos/git-data"
+
+        # Skip SSH and DNS configuration in base role (not applicable)
+        skip_ssh_config: true
+        skip_dns_config: true
+
+        # Note: We don't need skip_gitlab_install because prepare.yml creates
+        # a mock /opt/gitlab/bin/gitlab-ctl, so the role detects GitLab as
+        # "already installed" and skips the apt installation automatically.
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

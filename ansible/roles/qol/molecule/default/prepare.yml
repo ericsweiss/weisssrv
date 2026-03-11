@@ -1,5 +1,5 @@
 ---
-# Prepare playbook: Wait for systemd to be ready in the container
+# Prepare playbook: Initialize container for reliable testing
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -12,7 +12,6 @@
           fi
           sleep 1
         done
-        # Fallback: check if systemd is at least responding
         systemctl status >/dev/null 2>&1 && exit 0
         exit 1
       changed_when: false
@@ -20,3 +19,20 @@
       delay: 2
       register: systemd_ready
       until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        systemctl stop unattended-upgrades.service 2>/dev/null || true
+        systemctl disable apt-daily.timer 2>/dev/null || true
+        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    # Create ansible temp directory to prevent "Failed to create temporary directory" errors
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp
+        chmod 700 /root/.ansible/tmp
+      changed_when: false

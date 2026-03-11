@@ -24,6 +24,9 @@ spec:
 
 ---
 # L2Advertisement - Announce IPs via ARP on the local network
+# MetalLB automatically filters out non-physical interfaces (cni0, flannel.1, etc.)
+# so explicit interface restrictions are not needed and can cause VIP failures
+# if any node uses a different naming convention.
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:
@@ -33,3 +36,6 @@ spec:
   ipAddressPools:
     - public-pool
     - internal-pool
+  # No interface restrictions - MetalLB automatically ignores CNI/virtual interfaces
+  # Removing explicit interface list prevents VIP announcement failures when nodes
+  # use interface names other than eth0/ens18 (e.g., enp*, eno*, bond*)

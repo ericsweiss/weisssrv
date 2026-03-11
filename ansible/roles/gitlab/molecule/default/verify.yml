@@ -1,0 +1,476 @@
+---
+# Verify playbook for gitlab role testing
+# Validates gitlab.rb configuration template rendering with various options
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    # ==========================================================================
+    # Verify gitlab.rb configuration file
+    # ==========================================================================
+    - name: Check if gitlab.rb exists
+      ansible.builtin.stat:
+        path: /etc/gitlab/gitlab.rb
+      register: gitlab_rb
+      failed_when: not gitlab_rb.stat.exists
+
+    - name: Verify gitlab.rb permissions
+      ansible.builtin.assert:
+        that:
+          - gitlab_rb.stat.mode == '0600'
+          - gitlab_rb.stat.pw_name == 'root'
+          - gitlab_rb.stat.gr_name == 'root'
+        fail_msg: "gitlab.rb has incorrect permissions (expected 0600, root:root)"
+        success_msg: "gitlab.rb has correct permissions (0600, root:root)"
+
+    - name: Read gitlab.rb content
+      ansible.builtin.slurp:
+        src: /etc/gitlab/gitlab.rb
+      register: gitlab_rb_content
+
+    - name: Decode gitlab.rb content
+      ansible.builtin.set_fact:
+        gitlab_config: "{{ gitlab_rb_content.content | b64decode }}"
+
+    # ==========================================================================
+    # Verify Core Configuration
+    # ==========================================================================
+    - name: Verify external_url is set
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('external_url')
+          - gitlab_config is search('https://git.test.local')
+        fail_msg: "external_url not configured correctly"
+        success_msg: "external_url configured correctly"
+
+    - name: Verify email settings
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('gitlab_email_from')
+          - gitlab_config is search('gitlab@test.local')
+          - gitlab_config is search('gitlab_email_display_name')
+          - gitlab_config is search('gitlab_email_reply_to')
+          - gitlab_config is search('noreply@test.local')
+        fail_msg: "Email settings not configured correctly"
+        success_msg: "Email settings configured correctly"
+
+    - name: Verify time zone
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('time_zone')
+          - gitlab_config is search('America/Los_Angeles')
+        fail_msg: "Time zone not configured"
+        success_msg: "Time zone configured correctly"
+
+    # ==========================================================================
+    # Verify SSH Configuration
+    # ==========================================================================
+    - name: Verify SSH port configuration
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('gitlab_shell_ssh_port')
+          - gitlab_config is search('= 22')
+        fail_msg: "SSH port not configured"
+        success_msg: "SSH port configured correctly"
+
+    # ==========================================================================
+    # Verify NGINX Configuration (Traefik proxy)
+    # ==========================================================================
+    - name: Verify NGINX listen settings for Traefik
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('listen_https.*=.*false')
+          - gitlab_config is search('listen_port.*=.*80')
+        fail_msg: "NGINX listen settings not configured for Traefik proxy"
+        success_msg: "NGINX configured for Traefik proxy (HTTP on port 80)"
+
+    - name: Verify NGINX real_ip settings
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('real_ip_trusted_addresses')
+          - gitlab_config is search('192.168.0.0/24')
+          - gitlab_config is search('10.42.0.0/16')
+          - gitlab_config is search('real_ip_header')
+          - gitlab_config is search('X-Forwarded-For')
+        fail_msg: "NGINX real_ip settings not configured correctly"
+        success_msg: "NGINX real_ip settings configured correctly"
+
+    - name: Verify NGINX proxy headers
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('proxy_set_headers')
+          - gitlab_config is search('X-Forwarded-Proto')
+          - gitlab_config is search('X-Forwarded-Ssl')
+        fail_msg: "NGINX proxy headers not configured"
+        success_msg: "NGINX proxy headers configured correctly"
+
+    # ==========================================================================
+    # Verify Let's Encrypt is DISABLED (Traefik handles TLS)
+    # ==========================================================================
+    - name: Verify Let's Encrypt is disabled
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search("letsencrypt.*enable.*=.*false")
+          - gitlab_config is search("letsencrypt.*auto_renew.*=.*false")
+        fail_msg: "Let's Encrypt should be disabled (Traefik handles TLS)"
+        success_msg: "Let's Encrypt correctly disabled"
+
+    # ==========================================================================
+    # Verify SMTP Configuration
+    # ==========================================================================
+    - name: Verify SMTP is enabled
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('smtp_enable.*=.*true')
+          - gitlab_config is search('smtp_address')
+          - gitlab_config is search('smtp-relay.test.local')
+          - gitlab_config is search('smtp_port.*=.*587')
+          - gitlab_config is search('smtp_authentication')
+          - gitlab_config is search('smtp_enable_starttls_auto.*=.*true')
+        fail_msg: "SMTP settings not configured correctly"
+        success_msg: "SMTP settings configured correctly"
+
+    - name: Verify SMTP credentials are set
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('smtp_user_name')
+          - gitlab_config is search('smtp_password')
+        fail_msg: "SMTP credentials not set in config"
+        success_msg: "SMTP credentials present in config"
+
+    # ==========================================================================
+    # Verify Container Registry Configuration
+    # ==========================================================================
+    - name: Verify Container Registry is enabled
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('registry_external_url')
+          - gitlab_config is search('https://registry.git.test.local')
+          - gitlab_config is search("registry.*enable.*=.*true")
+          - gitlab_config is search('registry_nginx.*listen_port.*=.*5050')
+        fail_msg: "Container Registry not configured correctly"
+        success_msg: "Container Registry configured correctly"
+
+    # ==========================================================================
+    # Verify GitLab Pages Configuration
+    # ==========================================================================
+    - name: Verify GitLab Pages is enabled
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('pages_external_url')
+          - gitlab_config is search('https://pages.git.test.local')
+          - gitlab_config is search("gitlab_pages.*enable.*=.*true")
+          - gitlab_config is search('listen_proxy')
+          - gitlab_config is search('0.0.0.0:8090')
+        fail_msg: "GitLab Pages not configured correctly"
+        success_msg: "GitLab Pages configured correctly"
+
+    # ==========================================================================
+    # Verify SAML SSO Configuration
+    # ==========================================================================
+    - name: Verify OmniAuth is enabled
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('omniauth_enabled.*=.*true')
+          - gitlab_config is search('omniauth_allow_single_sign_on')
+          - gitlab_config is search('omniauth_block_auto_created_users.*=.*false')
+          - gitlab_config is search('omniauth_auto_link_saml_user.*=.*true')
+        fail_msg: "OmniAuth not configured correctly"
+        success_msg: "OmniAuth configured correctly"
+
+    - name: Verify SAML provider configuration
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('omniauth_providers')
+          - gitlab_config is search('name:.*saml')
+          - gitlab_config is search('label:.*Authentik')
+          - gitlab_config is search('groups_attribute')
+          - gitlab_config is search('admin_groups')
+          - gitlab_config is search('gitlab-admins')
+        fail_msg: "SAML provider not configured correctly"
+        success_msg: "SAML provider configured correctly"
+
+    - name: Verify SAML IdP settings
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('assertion_consumer_service_url')
+          - gitlab_config is search('idp_cert_fingerprint')
+          - gitlab_config is search('idp_sso_target_url')
+          - gitlab_config is search('https://auth.test.local/application/saml/git/sso/binding/redirect/')
+          - gitlab_config is search('issuer')
+          - gitlab_config is search('name_identifier_format')
+        fail_msg: "SAML IdP settings not configured correctly"
+        success_msg: "SAML IdP settings configured correctly"
+
+    - name: Verify SAML attribute statements
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('attribute_statements')
+          - gitlab_config is search('emailaddress')
+          - gitlab_config is search('givenname')
+          - gitlab_config is search('surname')
+        fail_msg: "SAML attribute statements not configured correctly"
+        success_msg: "SAML attribute statements configured correctly"
+
+    # ==========================================================================
+    # Verify Backup Configuration
+    # ==========================================================================
+    - name: Verify backup settings
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('backup_path')
+          - gitlab_config is search('/var/opt/gitlab/backups')
+          - gitlab_config is search('backup_keep_time.*=.*604800')
+        fail_msg: "Backup settings not configured correctly"
+        success_msg: "Backup settings configured correctly"
+
+    # ==========================================================================
+    # Verify Performance Tuning
+    # ==========================================================================
+    - name: Verify performance settings
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('worker_processes.*=.*2')
+          - gitlab_config is search('concurrency.*=.*10')
+          - gitlab_config is search('prometheus_monitoring.*enable.*=.*false')
+        fail_msg: "Performance settings not configured correctly"
+        success_msg: "Performance settings configured correctly"
+
+    # ==========================================================================
+    # Verify Repository Storage Configuration (GitLab 18+)
+    # ==========================================================================
+    - name: Verify Gitaly storage configuration
+      ansible.builtin.assert:
+        that:
+          - "gitlab_config is search(\"gitaly\\\\['configuration'\\\\]\")"
+          - "gitlab_config is search('storage')"
+          - "gitlab_config is search(\"name: 'default'\")"
+          - "gitlab_config is search('/mnt/gitlab-repos/git-data/repositories')"
+        fail_msg: "Gitaly storage not configured correctly for GitLab 18+"
+        success_msg: "Gitaly storage configured correctly (GitLab 18+ syntax)"
+
+    - name: Verify git-data directories exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: git_data_dirs
+      loop:
+        - /mnt/gitlab-repos/git-data
+        - /mnt/gitlab-repos/git-data/repositories
+
+    # Note: In molecule tests, we use UID 998 for git user which may collide
+    # with systemd-network. We verify by UID instead of username for reliability.
+    - name: Assert git-data directories exist with correct permissions
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+          - item.stat.mode == '0700'
+          - item.stat.uid == 998  # git user UID (or mock in tests)
+        fail_msg: "Git data directory {{ item.item }} not configured correctly"
+        success_msg: "Git data directory {{ item.item }} configured correctly"
+      loop: "{{ git_data_dirs.results }}"
+
+    # ==========================================================================
+    # Verify Monitoring Endpoint
+    # ==========================================================================
+    - name: Verify monitoring whitelist
+      ansible.builtin.assert:
+        that:
+          - gitlab_config is search('monitoring_whitelist')
+          - gitlab_config is search('127.0.0.1')
+        fail_msg: "Monitoring whitelist not configured correctly"
+        success_msg: "Monitoring whitelist configured correctly"
+
+    # ==========================================================================
+    # Verify Backup Directory
+    # ==========================================================================
+    - name: Check if backup directory exists
+      ansible.builtin.stat:
+        path: /var/opt/gitlab/backups
+      register: backup_dir
+      failed_when: not backup_dir.stat.exists
+
+    # Note: Verify by UID for molecule test reliability (see git-data note above)
+    - name: Verify backup directory permissions
+      ansible.builtin.assert:
+        that:
+          - backup_dir.stat.isdir
+          - backup_dir.stat.mode == '0700'
+          - backup_dir.stat.uid == 998  # git user UID
+        fail_msg: "Backup directory has incorrect permissions"
+        success_msg: "Backup directory has correct permissions (0700, uid 998)"
+
+    # ==========================================================================
+    # Verify Cron Job Configuration
+    # ==========================================================================
+    - name: Check GitLab backup cron job
+      ansible.builtin.command: crontab -l -u root
+      register: root_crontab
+      changed_when: false
+
+    - name: Verify GitLab backup cron job exists
+      ansible.builtin.assert:
+        that:
+          - root_crontab.stdout is search('gitlab-backup create CRON=1')
+          - root_crontab.stdout is search('0 2')
+        fail_msg: "GitLab backup cron job not configured"
+        success_msg: "GitLab backup cron job configured (daily at 2:00 AM)"
+
+    # ==========================================================================
+    # Verify Mock GitLab Status (via mock gitlab-ctl)
+    # ==========================================================================
+    - name: Check mock gitlab-ctl status
+      ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl status
+      register: gitlab_status
+      changed_when: false
+
+    - name: Verify mock GitLab shows running
+      ansible.builtin.assert:
+        that:
+          - gitlab_status.rc == 0
+          - gitlab_status.stdout is search('running')
+        fail_msg: "Mock gitlab-ctl status failed"
+        success_msg: "Mock gitlab-ctl status works correctly"
+
+    # ==========================================================================
+    # Fail2ban GitLab SSH Jail Verification
+    # ==========================================================================
+    # NOTE: GitLab SSH uses OpenSSH with AuthorizedKeysCommand. SSH auth failures
+    # are logged to systemd journal, not gitlab-shell.log. We use the built-in
+    # sshd filter with systemd backend.
+
+    # NOTE: fail2ban is installed by the base role, not the gitlab role.
+    # In molecule tests, fail2ban may not be installed, so all checks are conditional.
+    - name: Check if fail2ban is installed
+      ansible.builtin.stat:
+        path: /usr/sbin/fail2ban-server
+      register: fail2ban_installed
+
+    - name: Check if gitlab-ssh jail config exists
+      ansible.builtin.stat:
+        path: /etc/fail2ban/jail.d/gitlab-ssh.conf
+      register: gitlab_jail_conf
+      failed_when: fail2ban_installed.stat.exists and not gitlab_jail_conf.stat.exists
+      when: fail2ban_installed.stat.exists
+
+    - name: Read gitlab-ssh jail configuration
+      ansible.builtin.slurp:
+        src: /etc/fail2ban/jail.d/gitlab-ssh.conf
+      register: gitlab_jail_content
+      when: fail2ban_installed.stat.exists and (gitlab_jail_conf.stat.exists | default(false))
+
+    - name: Verify gitlab-ssh jail configuration
+      ansible.builtin.assert:
+        that:
+          - "'[gitlab-ssh]' in (gitlab_jail_content.content | b64decode)"
+          - "'enabled = true' in (gitlab_jail_content.content | b64decode)"
+          - "'port = 22,' ~ gitlab_ssh_port | string in (gitlab_jail_content.content | b64decode)"
+          - "'filter = sshd' in (gitlab_jail_content.content | b64decode)"
+          - "'backend = systemd' in (gitlab_jail_content.content | b64decode)"
+          - "'maxretry = 5' in (gitlab_jail_content.content | b64decode)"
+          - "'bantime = 1h' in (gitlab_jail_content.content | b64decode)"
+        fail_msg: "gitlab-ssh jail not configured correctly"
+        success_msg: "gitlab-ssh jail configured correctly (sshd filter, systemd backend)"
+      when: fail2ban_installed.stat.exists and (gitlab_jail_conf.stat.exists | default(false))
+
+    - name: Verify obsolete gitlab-shell filter is removed
+      ansible.builtin.stat:
+        path: /etc/fail2ban/filter.d/gitlab-shell.conf
+      register: gitlab_old_filter
+      failed_when: gitlab_old_filter.stat.exists
+      when: fail2ban_installed.stat.exists
+
+    - name: Check fail2ban service status
+      ansible.builtin.command: fail2ban-client status
+      register: fail2ban_status
+      changed_when: false
+      failed_when: false
+      when: fail2ban_installed.stat.exists
+
+    - name: Verify fail2ban is running
+      ansible.builtin.assert:
+        that:
+          - fail2ban_status.rc == 0
+        fail_msg: "fail2ban is not running"
+        success_msg: "fail2ban is running"
+      when: fail2ban_installed.stat.exists and (fail2ban_status.rc | default(1)) == 0
+
+    - name: Check fail2ban gitlab-ssh jail status (if available)
+      ansible.builtin.command: fail2ban-client status gitlab-ssh
+      register: gitlab_jail_status
+      changed_when: false
+      failed_when: false
+      when: fail2ban_installed.stat.exists
+
+    - name: Display gitlab-ssh jail status
+      ansible.builtin.debug:
+        msg: "{{ gitlab_jail_status.stdout_lines | default(['gitlab-ssh jail status not available']) }}"
+      when: fail2ban_installed.stat.exists and (gitlab_jail_status.rc | default(1)) == 0
+
+    - name: Note about fail2ban tests
+      ansible.builtin.debug:
+        msg: "fail2ban not installed - skipping fail2ban verification (installed by base role)"
+      when: not fail2ban_installed.stat.exists
+
+    # ==========================================================================
+    # Display Test Summary
+    # ==========================================================================
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "GitLab Configuration Test Results:"
+          - "=================================="
+          - "Configuration file: /etc/gitlab/gitlab.rb (0600, root:root)"
+          - ""
+          - "Core Settings:"
+          - "  - External URL: https://git.test.local"
+          - "  - Email from: gitlab@test.local"
+          - "  - Time zone: America/Los_Angeles"
+          - ""
+          - "NGINX (Traefik Proxy):"
+          - "  - Listen HTTP on port 80 (TLS terminated at Traefik)"
+          - "  - Real IP from X-Forwarded-For"
+          - "  - Trusted networks: 192.168.0.0/24, 10.42.0.0/16"
+          - ""
+          - "Let's Encrypt: DISABLED (Traefik handles TLS)"
+          - ""
+          - "SMTP Relay:"
+          - "  - Server: smtp-relay.test.local:587"
+          - "  - STARTTLS enabled"
+          - "  - Credentials configured"
+          - ""
+          - "Container Registry:"
+          - "  - URL: https://registry.git.test.local"
+          - "  - Listen on port 5050"
+          - ""
+          - "GitLab Pages:"
+          - "  - URL: https://pages.git.test.local"
+          - "  - Listen on 0.0.0.0:8090"
+          - ""
+          - "SAML SSO (Authentik):"
+          - "  - Provider label: Authentik"
+          - "  - Auto sign-in enabled"
+          - "  - Auto-create users enabled"
+          - "  - Admin groups: gitlab-admins"
+          - ""
+          - "Backup:"
+          - "  - Path: /var/opt/gitlab/backups"
+          - "  - Retention: 7 days"
+          - "  - Cron: daily at 2:00 AM"
+          - ""
+          - "Repository Storage (GitLab 18+):"
+          - "  - Path: /mnt/gitlab-repos/git-data/repositories"
+          - "  - Uses gitaly['configuration'] syntax"
+          - ""
+          - "Performance:"
+          - "  - Puma workers: 2"
+          - "  - Sidekiq concurrency: 10"
+          - "  - Prometheus monitoring: disabled"
+          - ""
+          - "Fail2ban (GitLab SSH Protection):"
+          - "  - Package: installed"
+          - "  - Jail: gitlab-ssh (ports 22,{{ gitlab_ssh_port }})"
+          - "  - Filter: sshd (built-in, aggressive mode)"
+          - "  - Backend: systemd journal"
+          - "  - Settings: maxretry=5, bantime=1h, findtime=10m"

@@ -1,0 +1,26 @@
+---
+- name: Reconfigure gitlab
+  ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl reconfigure
+  changed_when: true
+
+- name: Restart gitlab
+  ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl restart
+  changed_when: true
+
+- name: Save iptables rules
+  ansible.builtin.command: netfilter-persistent save
+  changed_when: true
+
+# Restart fail2ban if installed - check existence first since base role may have it disabled
+- name: Check if fail2ban service exists
+  ansible.builtin.stat:
+    path: /lib/systemd/system/fail2ban.service
+  register: gitlab_fail2ban_service_file
+  listen: Restart fail2ban
+
+- name: Restart fail2ban service
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: restarted
+  when: gitlab_fail2ban_service_file.stat.exists | default(false)
+  listen: Restart fail2ban

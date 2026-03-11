@@ -14,6 +14,15 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    capabilities:
+      - NET_ADMIN
+      - NET_RAW
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
     networks:
       - name: dns-stack-net
     groups:
@@ -28,6 +37,15 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    capabilities:
+      - NET_ADMIN
+      - NET_RAW
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
     networks:
       - name: dns-stack-net
     groups:
@@ -38,13 +56,28 @@ provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../../../roles
+    # Required for molecule_docker compatibility with newer Ansible versions
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
+  config_options:
+    defaults:
+      # Use /tmp for remote_tmp to avoid Docker container stability issues
+      # The ~/.ansible/tmp directory can become inaccessible when containers restart
+      remote_tmp: /tmp/.ansible-${USER}/tmp
   inventory:
     group_vars:
       dns:
         # Common DNS configuration
         timezone: "America/Chicago"
+        # Docker containers have /etc/resolv.conf as a bind mount that can't be replaced
+        skip_resolv_conf_update: true
+        # Disable PrivateTmp in systemd service for Docker container compatibility
+        # PrivateTmp can cause container crashes when systemd tries to create private mounts
+        adguard_use_private_tmp: false
+        # Disable ProtectSystem in systemd service for Docker container compatibility
+        # ProtectSystem=strict can crash containers when systemd creates private mounts over system directories
+        adguard_use_protect_system: false
         upstream_dns_servers:
           - 1.1.1.1
           - 8.8.8.8
@@ -72,10 +105,8 @@ provisioner:
         # Primary DNS server (dns-01)
         adguard_home_port: 3000
         adguard_admin_user: admin
-        # Password must match the bcrypt hash set in converge.yml via set_fact
-        # The hash is the canonical sample bcrypt hash for plaintext "password" (cost factor 10)
+        # bcrypt hash is generated automatically from password by adguard_home role
         adguard_admin_password: password
-        # Note: adguard_admin_password_hash set via set_fact in converge.yml to avoid YAML parsing issues
         adguard_bind_host: 0.0.0.0
         adguard_bind_port: 53
         unbound_port: 5335
@@ -101,7 +132,7 @@ provisioner:
         # Replica DNS server (dns-02)
         adguard_home_port: 3000
         adguard_admin_user: admin
-        # Password must match the bcrypt hash set in converge.yml via set_fact (plaintext "password")
+        # bcrypt hash is generated automatically from password by adguard_home role
         adguard_admin_password: password
         adguard_bind_host: 0.0.0.0
         adguard_bind_port: 53

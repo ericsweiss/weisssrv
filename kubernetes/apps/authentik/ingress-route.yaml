@@ -22,7 +22,7 @@ spec:
         - name: authentik-server
           port: 80
   tls:
-    secretName: ericsweiss-com-tls
+    secretName: authentik-ericsweiss-tls
 
 ---
 # Internal: auth.esweiss.com
@@ -46,7 +46,7 @@ spec:
         - name: authentik-server
           port: 80
   tls:
-    secretName: esweiss-com-tls
+    secretName: authentik-esweiss-tls
 
 ---
 # Forward auth endpoint for protected services (external)
@@ -65,7 +65,7 @@ spec:
         - name: authentik-server
           port: 80
   tls:
-    secretName: ericsweiss-com-tls
+    secretName: authentik-ericsweiss-tls
 
 ---
 # Forward auth endpoint for protected services (internal)
@@ -84,4 +84,4 @@ spec:
         - name: authentik-server
           port: 80
   tls:
-    secretName: esweiss-com-tls
+    secretName: authentik-esweiss-tls

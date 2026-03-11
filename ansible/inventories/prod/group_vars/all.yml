@@ -43,7 +43,7 @@ ssh_pubkey_authentication: true
 ssh_authorized_keys:
   - >-
     from="192.168.0.0/24,100.64.0.0/10"
-    {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') | mandatory }}
+    {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') or undef(hint='SSH_PUBLIC_KEY env var must be set') }}
 
 # 1Password secret references
 secrets:
@@ -54,8 +54,8 @@ secrets:
   smtp_relay_user: "op://Homelab/SMTP Relay Auth/username"
   smtp_relay_password: "op://Homelab/SMTP Relay Auth/password"
   root_email_alias: "op://Homelab/Email Config/root_alias"
+  # AdGuard password - bcrypt hash is generated at deploy time by the adguard_home role
   adguard_admin_password: "op://Homelab/AdGuard Home/password"
-  adguard_admin_password_hash: "op://Homelab/AdGuard Home/password_hash"
   tailscale_auth_key: "op://Homelab/Tailscale Auth Key/credential"
   ssh_public_key: "op://Homelab/SSH Key/public key"
   samba_nas_password: "op://Homelab/Samba NAS User/password"
@@ -74,6 +74,10 @@ secrets:
   # Bar Assistant SSO secrets
   bar_assistant_authentik_client_id: "op://Homelab/Bar Assistant SSO/authentik-client-id"
   bar_assistant_authentik_client_secret: "op://Homelab/Bar Assistant SSO/authentik-client-secret"
+  # GitLab secrets
+  gitlab_root_password: "op://Homelab/GitLab/root-password"
+  gitlab_saml_cert_fingerprint: "op://Homelab/GitLab SSO/saml-cert-fingerprint"
+  gitlab_runner_token: "op://Homelab/GitLab Runner/runner-token"
 
 # Timezone
 timezone: America/Los_Angeles
@@ -96,6 +100,7 @@ common_packages:
   - gnupg
   - lsb-release
   - sudo
+  - pciutils  # Required for lspci (e1000e NIC detection workaround)
 
 # Tailscale configuration
 tailscale_enabled: true
@@ -111,26 +116,26 @@ ntp_servers:
   - 3.pool.ntp.org
 
 # Application version pins
-adguard_home_version: "0.107.72"
-adguardhome_sync_version: "0.8.2"
-tailscale_version: "1.94.1"
+adguard_home_version: "0.107.73"
+adguardhome_sync_version: "0.9.0"
+tailscale_version: "1.94.2"
 debian_version: "13"
-k3s_version: "v1.35.1+k3s1"
-kube_vip_version: "v1.0.4"
+k3s_version: "v1.35.2+k3s1"
+kube_vip_version: "v1.1.0"
 
 # Authentik SSO identity provider
 # Latest stable version (released Feb 2, 2026)
-authentik_version: "2025.12.3"
+authentik_version: "2026.2.1"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
 # Available tags: https://hub.docker.com/_/postgres/tags
-postgresql_version: "18.2-trixie"
+postgresql_version: "18.3-trixie"
 
 # PostgreSQL version for Mealie (standalone deployment)
 # Using Alpine base for lighter footprint
 # Available tags: https://hub.docker.com/_/postgres/tags
-mealie_postgresql_version: "18.2-alpine"
+mealie_postgresql_version: "18.3-alpine"
 
 # Download clients and media stack versions
 # Pinned to specific versions for reproducible deployments and controlled updates
@@ -145,18 +150,26 @@ prowlarr_version: "2.3.0.5236"
 sonarr_version: "4.0.16.2944"
 radarr_version: "6.0.4.10291"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.12.2"
+pulsarr_version: "0.13.0"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
 # Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
-mealie_version: "v3.11.0"
-bar_assistant_version: "5.13.1"
+mealie_version: "v3.12.0"
+bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
 
 # Plex Media Server version (apt-managed via official repository)
-plex_version: "1.42.2.10156-f737b826c"
+plex_version: "1.43.0.10492-121068a07"
+
+# GitLab EE (using CE features) - Omnibus package
+# https://packages.gitlab.com/gitlab/gitlab-ee
+gitlab_version: "18.9.1-ee.0"
+
+# GitLab Runner version for k3s cluster
+# https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
+gitlab_runner_helm_version: "0.86.0"
 
 # Helm chart versions for k3s platform workloads
 # These versions are used by maintenance update tasks
@@ -169,7 +182,7 @@ plex_version: "1.42.2.10156-f737b826c"
 helm_chart_versions:
   metallb: "0.15.3"
   traefik: "39.1.0-ea.2"  # App version v3.6.7
-  cert_manager: "v1.19.3"
+  cert_manager: "v1.20.0"
   external_dns: "1.20.0"  # App version 0.20.0
 
 # Proxmox resource pools
@@ -257,28 +270,29 @@ storage_replication_jobs:
   # dns-01 (VMID 150) - Primary on pve-laptop-01
   # Replicate to all other local-ssd nodes
   # Staggered schedule: offset 0 (minutes 0,15,30,45)
+  # NOTE: Using explicit times instead of */15 to ensure proper staggering
   - id: "150-0"
     source_node: pve-laptop-01
     target_node: pve-opt-01
-    schedule: "*/15"
+    schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-01"
     enabled: true
   - id: "150-1"
     source_node: pve-laptop-01
     target_node: pve-opt-02
-    schedule: "*/15"
+    schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-02"
     enabled: true
   - id: "150-2"
     source_node: pve-laptop-01
     target_node: pve-opt-03
-    schedule: "*/15"
+    schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-03"
     enabled: true
   - id: "150-3"
     source_node: pve-laptop-01
     target_node: pve-prec-01
-    schedule: "*/15"
+    schedule: "0,15,30,45"
     comment: "dns-01 -> pve-prec-01"
     enabled: true
 

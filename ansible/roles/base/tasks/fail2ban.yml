@@ -1,0 +1,102 @@
+---
+# Fail2ban installation and configuration
+# Provides intrusion prevention for SSH and other services
+#
+# LXC Container Compatibility:
+# ============================================================================
+# Unprivileged LXC containers cannot use iptables/nftables for packet filtering
+# because they lack the CAP_NET_ADMIN capability for the netfilter subsystem.
+#
+# For containers, we use the 'route' banaction instead, which creates blackhole
+# routes via 'ip route add blackhole <ip>'. This works without elevated privileges
+# and effectively drops all traffic from banned IPs.
+#
+# Trade-offs in container mode:
+#   - Bans are IP-wide (cannot ban specific ports)
+#   - Recidive jail is disabled (route action doesn't support allports)
+#   - Single routing table shared across jails
+#
+# References:
+#   - https://pieterbakker.com/secure-debian-12-with-fail2ban-and-nftables/
+#   - https://www.faqforge.com/linux/controlpanels/ispconfig3/configure-fail2ban-to-use-route-instead-of-iptables-to-block-connections/
+#   - https://forum.proxmox.com/threads/iptables-inside-lxc-container-not-blocking-anything.123807/
+# ============================================================================
+
+- name: Install fail2ban
+  ansible.builtin.apt:
+    name: fail2ban
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Create fail2ban configuration directory
+  ansible.builtin.file:
+    path: /etc/fail2ban/jail.d
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Create fail2ban filter directory
+  ansible.builtin.file:
+    path: /etc/fail2ban/filter.d
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Deploy fail2ban jail configuration
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+
+# Deploy Proxmox filter only when pveproxy jail is enabled
+- name: Deploy Proxmox pveproxy filter
+  ansible.builtin.template:
+    src: proxmox.conf.j2
+    dest: /etc/fail2ban/filter.d/proxmox.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: fail2ban_pveproxy_enabled | default(false)
+  notify: Restart fail2ban
+
+# Ensure fail2ban log file exists for recidive jail
+- name: Ensure fail2ban log file exists
+  ansible.builtin.file:
+    path: /var/log/fail2ban.log
+    state: touch
+    mode: "0640"
+    owner: root
+    group: adm
+    modification_time: preserve
+    access_time: preserve
+  when: fail2ban_recidive_enabled | default(true)
+
+- name: Enable and start fail2ban service
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Verify fail2ban is working (non-blocking check)
+- name: Check fail2ban status
+  ansible.builtin.command: fail2ban-client status
+  register: fail2ban_status
+  changed_when: false
+  failed_when: false
+
+- name: Display fail2ban status and mode
+  vars:
+    banaction_mode: "{{ 'route (LXC container mode)' if (is_container | default(false)) else 'iptables (standard mode)' }}"
+    recidive_status: "{{ 'disabled (not supported with route action)' if (is_container | default(false)) else 'enabled' }}"
+  ansible.builtin.debug:
+    msg:
+      - "Fail2ban banaction: {{ banaction_mode }}"
+      - "Recidive jail: {{ recidive_status }}"
+      - "Status: {{ fail2ban_status.stdout_lines | default(['Not running']) }}"
+  when: fail2ban_status.rc == 0

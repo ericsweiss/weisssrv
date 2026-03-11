@@ -15,3 +15,82 @@ resource "cloudflare_record" "root" {
     ignore_changes = [content]
   }
 }
+
+# =============================================================================
+# GitLab DNS Records
+# These are managed by Terraform (not external-dns) because:
+# - Subdomains like registry.git require explicit management
+# - Wildcard domains (*.pages.git) aren't supported by external-dns annotations
+# =============================================================================
+
+# GitLab Web UI - git.ericsweiss.com
+resource "cloudflare_record" "git" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "git"
+  type    = "CNAME"
+  content = var.external_domain
+  proxied = true
+  comment = "GitLab Web UI - managed by Terraform"
+}
+
+# GitLab Container Registry - registry.git.ericsweiss.com
+# Nested subdomain - not covered by Universal SSL, use direct access
+resource "cloudflare_record" "registry_git" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "registry.git"
+  type    = "CNAME"
+  content = "direct.${var.external_domain}"
+  proxied = false
+  comment = "GitLab Container Registry - DNS only, TLS via Traefik"
+}
+
+# GitLab Pages - pages.git.ericsweiss.com (apex for pages)
+# Nested subdomain - not covered by Universal SSL, use direct access
+resource "cloudflare_record" "pages_git" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "pages.git"
+  type    = "CNAME"
+  content = "direct.${var.external_domain}"
+  proxied = false
+  comment = "GitLab Pages apex - DNS only, TLS via Traefik"
+}
+
+# Direct A record (DNS-only) for services that can't use Cloudflare proxy
+# Used by GitLab Pages wildcard which requires nested wildcard certificates
+#
+# SECURITY NOTE: This record intentionally exposes the origin IP (DNS-only mode).
+# This is required for:
+# - GitLab Pages wildcard TLS (Cloudflare can't proxy nested wildcards)
+# - GitLab SSH access on port 2222 (Cloudflare can't proxy non-HTTP)
+# - Container Registry access (requires direct TLS termination)
+#
+# Protection is provided by:
+# - Proxmox firewall restricts access (sg-gitlab, sg-k3s-workers security groups)
+# - Only specific ports are open (443, 2222, 5050)
+# - Services require authentication (GitLab, Container Registry)
+resource "cloudflare_record" "direct" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "direct"
+  type    = "A"
+  content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
+  proxied = false           # DNS-only mode (grey cloud) - intentionally exposes origin IP
+  comment = "Direct access (no proxy) - IP updated by DDNS"
+
+  lifecycle {
+    # Allow DDNS to update the IP without Terraform reverting it
+    ignore_changes = [content]
+  }
+}
+
+# GitLab Pages wildcard - *.pages.git.ericsweiss.com
+# Note: Cloudflare Universal SSL only covers first-level wildcards (*.ericsweiss.com).
+# Nested wildcards like *.pages.git require Advanced Certificate Manager ($10/mo).
+# Using DNS-only mode via direct.ericsweiss.com so Traefik handles TLS with Let's Encrypt cert.
+resource "cloudflare_record" "pages_git_wildcard" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "*.pages.git"
+  type    = "CNAME"
+  content = "direct.${var.external_domain}"
+  proxied = false
+  comment = "GitLab Pages wildcard - DNS only, TLS via Traefik"
+}

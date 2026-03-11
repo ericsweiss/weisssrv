@@ -1,0 +1,105 @@
+---
+# Certificates for GitLab services
+# The main *.ericsweiss.com cert doesn't cover nested subdomains like:
+# - registry.git.ericsweiss.com
+# - pages.git.ericsweiss.com
+# - *.pages.git.ericsweiss.com
+#
+# These certs are used by Traefik for TLS termination since nested subdomains
+# use DNS-only mode (not proxied through Cloudflare).
+
+# =============================================================================
+# GitLab Web UI and Registry - git.ericsweiss.com, registry.git.ericsweiss.com
+# =============================================================================
+
+# External domain - git.ericsweiss.com (covered by wildcard) + registry.git (nested)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-services
+  namespace: gitlab
+spec:
+  secretName: gitlab-services-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "git.ericsweiss.com"
+  dnsNames:
+    - "git.ericsweiss.com"
+    - "registry.git.ericsweiss.com"
+  renewBefore: 720h
+
+---
+# Internal domain - git.esweiss.com + registry.git.esweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-services-internal
+  namespace: gitlab
+spec:
+  secretName: gitlab-services-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "git.esweiss.com"
+  dnsNames:
+    - "git.esweiss.com"
+    - "registry.git.esweiss.com"
+  renewBefore: 720h
+
+---
+# =============================================================================
+# GitLab Pages - pages.git.ericsweiss.com and *.pages.git.ericsweiss.com
+# =============================================================================
+
+# GitLab Pages wildcard - external domain
+#
+# LIMITATION: Wildcard certs only cover single-label subdomains.
+# The cert *.pages.git.ericsweiss.com covers:
+#   - user.pages.git.ericsweiss.com      (YES - single label before pages)
+#   - project.pages.git.ericsweiss.com   (YES - single label before pages)
+#
+# It does NOT cover nested subdomains (groups with subgroups):
+#   - group.subgroup.pages.git.ericsweiss.com  (NO - two labels before pages)
+#
+# GitLab Pages URLs are: <namespace>.pages.git.ericsweiss.com/<project>
+# So nested GitLab groups (group/subgroup) would need group-subgroup (hyphenated)
+# as the namespace, not group.subgroup.
+#
+# If you have GitLab groups with subgroups that need Pages, either:
+# 1. Use hyphenated group names (group-subgroup) instead of nested groups
+# 2. Configure GitLab to generate Pages URLs with hyphens instead of dots
+# 3. Request individual certificates for specific nested subdomains
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-pages-wildcard
+  namespace: gitlab
+spec:
+  secretName: gitlab-pages-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "*.pages.git.ericsweiss.com"
+  dnsNames:
+    - "*.pages.git.ericsweiss.com"
+    - "pages.git.ericsweiss.com"
+  renewBefore: 720h
+
+---
+# GitLab Pages wildcard - internal domain
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-pages-wildcard-internal
+  namespace: gitlab
+spec:
+  secretName: gitlab-pages-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "*.pages.git.esweiss.com"
+  dnsNames:
+    - "*.pages.git.esweiss.com"
+    - "pages.git.esweiss.com"
+  renewBefore: 720h

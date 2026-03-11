@@ -13,6 +13,14 @@ adguard_admin_user: eric
 # Skip API configuration (useful for integration tests)
 skip_adguard_api_config: false
 
+# Use PrivateTmp in systemd service (disable for Docker containers)
+# Docker containers may have issues with PrivateTmp causing container crashes
+adguard_use_private_tmp: true
+
+# Use ProtectSystem=strict in systemd service (disable for Docker containers)
+# Docker containers may crash when systemd creates private mounts over system directories
+adguard_use_protect_system: true
+
 adguard_tls_enabled: true
 adguard_tls_server_name: "dns.esweiss.com"
 adguard_cert_path: "{{ adguard_install_path }}/certs"

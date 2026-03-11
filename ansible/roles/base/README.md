@@ -152,7 +152,7 @@ This ensures all infrastructure hosts have:
 - `tasks/main.yml` - Main task orchestration
 - `tasks/ssh.yml` - SSH hardening configuration
 - `tasks/dns.yml` - DNS server configuration
-- `templates/resolv.conf.j2` - DNS resolver configuration template
+- `../../templates/resolv.conf.j2` - DNS resolver configuration template (shared)
 - `defaults/main.yml` - Default variable values
 - `handlers/main.yml` - Service restart handlers
 

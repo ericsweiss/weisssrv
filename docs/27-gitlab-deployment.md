@@ -1,0 +1,533 @@
+# GitLab Deployment Guide
+
+Complete guide for deploying GitLab EE (using CE features) on the homelab.
+
+## Overview
+
+GitLab is deployed as a standalone VM on pve-nas-01 with:
+- **URL**: https://git.esweiss.com (internal) / https://git.ericsweiss.com (external)
+- **Container Registry**: https://registry.git.ericsweiss.com
+- **GitLab Pages**: https://*.pages.git.ericsweiss.com
+- **CI/CD Runners**: Helm-deployed on k3s cluster
+- **SSO**: Authentik SAML integration with group-based admin access
+
+## Architecture
+
+```
+                   +-----------------+
+                   |   Internet      |
+                   +--------+--------+
+                            |
+                   +--------v--------+
+                   |   Cloudflare    |
+                   |  (DNS + Proxy)  |
+                   +--------+--------+
+                            |
+                   +--------v--------+
+                   |    Traefik      |
+                   |  (k3s ingress)  |
+                   +--------+--------+
+                            |
+        +-------------------+-------------------+
+        |                   |                   |
++-------v-------+   +-------v-------+   +-------v-------+
+|   GitLab Web  |   |   Registry    |   |    Pages      |
+|    :80        |   |    :5050      |   |    :8090      |
++---------------+   +---------------+   +---------------+
+        |                   |                   |
+        +-------------------+-------------------+
+                            |
+                   +--------v--------+
+                   |   GitLab VM     |
+                   | 192.168.0.153   |
+                   |   pve-nas-01    |
+                   +-----------------+
+```
+
+## Specifications
+
+| Component | Value |
+|-----------|-------|
+| IP Address | 192.168.0.153 |
+| Proxmox Host | pve-nas-01 |
+| Root Disk | ssd pool (100GB) - OS, GitLab binaries, configs |
+| Repo Disk | ssd pool (200GB zvol) - Git repositories |
+| Resources | 6 vCPUs, 16GB RAM |
+| VMID | 153 |
+| GitLab Version | 18.9.1-ee.0 |
+| Git SSH Port | 22 (internal), 2222 (external via iptables redirect) |
+
+**SSH Port Redirect:** GitLab's SSH daemon runs on port 22. External access on port 2222 is handled via iptables NAT redirect (`PREROUTING -p tcp --dport 2222 -j REDIRECT --to-ports 22`). This allows internal LAN users to use port 22 directly while external users connect on port 2222.
+
+### Storage Architecture
+
+GitLab uses **separate storage** for Git repository data:
+
+```
+VM Root Disk (100GB on ssd pool)
+├── /                           # OS, packages
+├── /opt/gitlab/                # GitLab binaries
+├── /etc/gitlab/                # Configuration
+├── /var/opt/gitlab/            # Runtime data
+│   ├── backups/                # Backup files
+│   ├── postgresql/             # PostgreSQL database
+│   ├── redis/                  # Redis cache
+│   ├── gitlab-rails/uploads/   # Issue/MR attachments
+│   └── lfs-objects/            # Git LFS storage
+└── /var/log/gitlab/            # Logs
+
+Repository Disk (200GB zvol: ssd/appdata/gitlab/repos)
+└── /mnt/gitlab-repos/git-data/ # Git repositories only
+    └── repositories/           # Bare git repos (@hashed/)
+```
+
+**Note:** Only Gitaly repository storage is configured to use the separate disk.
+Uploads (issue/MR attachments) and LFS objects remain on the root disk. This is
+intentional - uploads and LFS are typically much smaller than repos, and keeping
+them on root disk simplifies configuration while the separate disk provides the
+primary benefit of isolating large repository I/O.
+
+**Benefits:**
+- Independent sizing - repos can grow without affecting root disk
+- Better I/O isolation - git operations don't compete with PostgreSQL
+- Easier backups - zvol can be snapshotted separately
+
+## Prerequisites
+
+1. **Authentik SSO** - Configure SAML provider before deployment
+2. **1Password Items** - Create required items (see below)
+3. **Terraform DNS** - Apply Cloudflare DNS records
+
+## 1Password Items Required
+
+Create these items in your **Homelab** vault:
+
+| Item | Type | Fields |
+|------|------|--------|
+| **GitLab** | Login | `root-password` |
+| **GitLab SSO** | Password | `saml-cert-fingerprint` |
+| **GitLab Runner** | Password | `runner-token` (runner authentication token, `glrt-*` format) |
+| **SMTP Relay Auth** | Login | `username`, `password` (for GitLab email notifications) |
+| **Email Config** | Login | `root_alias` (admin email address, e.g., `admin@example.com`) |
+| **SSH Key** | SSH Key | `public key` (for VM access via cloud-init) |
+
+**Note:** The SMTP Relay Auth, Email Config, and SSH Key items should already exist if you've deployed the base infrastructure. GitLab uses SMTP Relay Auth to send email notifications (merge requests, CI/CD alerts, etc.) through the smtp-relay service.
+
+## Deployment Steps
+
+### Step 1: Create 1Password Items
+
+```bash
+# Create GitLab item with root password
+op item create --vault Homelab --category login \
+  --title "GitLab" \
+  "root-password=$(openssl rand -base64 32)"
+
+# Create placeholder for SSO (populate after Authentik setup)
+op item create --vault Homelab --category password \
+  --title "GitLab SSO" \
+  "saml-cert-fingerprint=placeholder"
+
+# Create placeholder for Runner (populate after GitLab is running)
+op item create --vault Homelab --category password \
+  --title "GitLab Runner" \
+  "runner-token=placeholder"
+```
+
+### Step 2: Apply Terraform DNS Records
+
+The GitLab DNS records are defined in `terraform/cloudflare/dns.tf`. Apply them:
+
+```bash
+task terraform:plan
+task terraform:apply
+```
+
+This creates (or updates):
+- `git.ericsweiss.com` → CNAME to `ericsweiss.com` (proxied via Cloudflare)
+- `registry.git.ericsweiss.com` → CNAME to `direct.ericsweiss.com` (DNS-only, TLS via Traefik)
+- `pages.git.ericsweiss.com` → CNAME to `direct.ericsweiss.com` (DNS-only, TLS via Traefik)
+- `*.pages.git.ericsweiss.com` → CNAME to `direct.ericsweiss.com` (DNS-only wildcard, TLS via Traefik)
+- `direct.ericsweiss.com` → A record (DNS-only, IP updated by DDNS)
+
+**Note:** Nested subdomains (registry.git, pages.git, *.pages.git) use `direct.ericsweiss.com`
+because Cloudflare Universal SSL only covers first-level wildcards. Using DNS-only mode allows
+Traefik to handle TLS with Let's Encrypt certificates.
+
+### Step 3: Deploy AdGuard DNS Rewrites
+
+```bash
+task deploy:dns
+```
+
+This adds internal DNS rewrites for `git.esweiss.com`, `registry.git.esweiss.com`, etc.
+
+### Step 4: Configure Authentik SSO (SAML)
+
+1. Log into Authentik at https://auth.ericsweiss.com
+2. Navigate to **Applications → Providers**
+3. Click **Create** and select **SAML Provider**
+4. Configure:
+
+| Field | Value |
+|-------|-------|
+| Name | `GitLab` |
+| Authorization flow | `default-authorization-flow` |
+| ACS URL | `https://git.ericsweiss.com/users/auth/saml/callback` |
+| Issuer | `https://git.ericsweiss.com` |
+| Service Provider Binding | `Redirect` |
+| Signing Certificate | Select available certificate |
+
+5. Click **Finish** to create the provider
+6. Navigate to **System → Certificates**
+7. Expand the signing certificate and copy the **SHA1 Fingerprint**
+8. Update 1Password `GitLab SSO` item with the fingerprint as `saml-cert-fingerprint`
+9. Navigate to **Applications → Applications**
+10. Click **Create** and configure:
+
+| Field | Value |
+|-------|-------|
+| Name | `GitLab` |
+| Slug | `git` |
+| Provider | `GitLab` (SAML provider created above) |
+| Launch URL | `https://git.ericsweiss.com` |
+
+11. **Configure group-based access** (REQUIRED):
+
+    **IMPORTANT**: The default configuration enforces group-based access. Users must be in
+    one of the required groups to log in via SSO. Complete these steps BEFORE deploying:
+
+    - Create Authentik groups: `gitlab-users`, `gitlab-admins`
+    - Assign users to appropriate groups (at minimum, add yourself to `gitlab-users`)
+    - The groups are configured in `ansible/inventories/prod/group_vars/gitlab_servers.yml`:
+      ```yaml
+      gitlab_saml_required_groups:
+        - "gitlab-users"
+        - "gitlab-admins"
+      gitlab_saml_admin_groups:
+        - "gitlab-admins"
+      ```
+
+    If you skip this step, SSO login will fail with "User is not allowed" errors.
+
+### Step 5: Deploy GitLab VM and Application
+
+```bash
+# Full deployment (provisions VM + installs GitLab)
+task gitlab:deploy
+
+# Or check mode first
+task gitlab:deploy-check
+```
+
+### Step 6: Deploy Traefik IngressRoutes
+
+```bash
+task gitlab:deploy-ingress
+```
+
+### Step 7: Verify Deployment
+
+```bash
+# Check GitLab status
+task gitlab:status
+
+# Test web access
+curl -I https://git.esweiss.com
+```
+
+### Step 8: Get Runner Authentication Token
+
+**Note**: GitLab 16.0+ uses runner authentication tokens (`glrt-*` format) instead of the deprecated registration tokens. The old `runnerRegistrationToken` method was removed in GitLab 18.0.
+
+1. Log into GitLab as root (use password from 1Password)
+2. Navigate to **Admin Area → CI/CD → Runners**
+3. Click **New instance runner**
+4. Configure runner options (tags, run untagged jobs, etc.)
+5. Click **Create runner**
+6. Copy the runner authentication token (starts with `glrt-`)
+7. Update 1Password `GitLab Runner` item with this token as `runner-token`
+
+### Step 9: Deploy GitLab Runners
+
+```bash
+task gitlab:deploy-runner
+```
+
+## Task Commands
+
+```bash
+# Deployment
+task gitlab:deploy          # Full deployment (VM + GitLab)
+task gitlab:deploy-check    # Dry-run deployment
+task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
+task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
+
+# Operations
+task gitlab:status          # Show GitLab and runner status
+task gitlab:verify          # Run smoke tests (web UI, registry, pages, SSH)
+task gitlab:backup          # Create GitLab backup
+task gitlab:console         # SSH to GitLab VM
+task gitlab:logs            # View GitLab logs
+task gitlab:reconfigure     # Reconfigure GitLab after changes
+```
+
+## Backups
+
+GitLab backups run daily at 2:00 AM via cron:
+
+```bash
+# Manual backup
+task gitlab:backup
+
+# List backups
+ssh gitlab "sudo ls -la /var/opt/gitlab/backups/"
+
+# Restore from backup
+ssh gitlab "sudo gitlab-backup restore BACKUP=<timestamp>"
+```
+
+Proxmox VM snapshots provide additional disaster recovery capability.
+
+## Updates
+
+### Updating GitLab
+
+1. Update `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`
+2. Run deployment:
+   ```bash
+   task gitlab:deploy
+   ```
+
+### Updating GitLab Runner
+
+1. Update `gitlab_runner_helm_version` in `ansible/inventories/prod/group_vars/all.yml`
+2. Run runner deployment:
+   ```bash
+   task gitlab:deploy-runner
+   ```
+
+## Troubleshooting
+
+### GitLab Reconfigure Fails
+
+```bash
+ssh gitlab "sudo gitlab-ctl reconfigure"
+ssh gitlab "sudo gitlab-ctl status"
+```
+
+### SAML/SSO Issues
+
+1. Verify SAML certificate fingerprint matches Authentik certificate
+2. Check ACS URL matches exactly: `https://git.ericsweiss.com/users/auth/saml/callback`
+3. Verify Issuer matches `external_url`: `https://git.ericsweiss.com`
+4. Check GitLab logs:
+   ```bash
+   ssh gitlab "sudo gitlab-ctl tail puma"
+   ```
+5. **Admin groups not syncing**: Ensure users are in the Authentik group and `gitlab_saml_admin_groups` includes the group name
+
+### Container Registry Issues
+
+```bash
+# Check registry service
+ssh gitlab "sudo gitlab-ctl status registry"
+
+# Registry logs
+ssh gitlab "sudo gitlab-ctl tail registry"
+
+# Test registry access
+docker login registry.git.ericsweiss.com
+```
+
+### Pages Issues
+
+```bash
+# Check pages service
+ssh gitlab "sudo gitlab-ctl status gitlab-pages"
+
+# Pages logs
+ssh gitlab "sudo gitlab-ctl tail gitlab-pages"
+```
+
+### Runner Not Connecting
+
+**Important**: The runner must use the external URL `https://git.ericsweiss.com` because
+while k3s nodes are configured to use AdGuard DNS (192.168.0.150/160), the internal
+`*.esweiss.com` domains may not be reliably resolvable from within pods if CoreDNS
+configuration differs or caching causes issues. Using the external domain ensures
+consistent connectivity regardless of DNS configuration.
+
+```bash
+# Check runner pod status
+kubectl get pods -n gitlab-runner
+
+# Check runner logs
+kubectl logs -n gitlab-runner -l app=gitlab-runner
+
+# Verify CI_SERVER_URL is using external domain
+kubectl get deploy gitlab-runner -n gitlab-runner -o yaml | grep CI_SERVER_URL
+
+# Verify registration token
+kubectl get secret -n gitlab-runner
+```
+
+## Git SSH Access
+
+### Summary
+
+- **LAN (internal)**: Use `gitlab.esweiss.com` on port 22 (direct to GitLab VM)
+- **External (internet)**: Use `direct.ericsweiss.com` on port 2222 (DNS-only, not Cloudflare-proxied)
+- **HTTPS (everywhere)**: Use `git.ericsweiss.com` (Cloudflare-proxied, works everywhere)
+
+**Why different hosts?** Cloudflare cannot proxy SSH traffic, so `git.ericsweiss.com` (which is
+Cloudflare-proxied for web UI) cannot be used for SSH from external networks.
+
+### Internal Access (LAN)
+
+From the LAN, you can SSH directly to the GitLab VM using the internal domain:
+
+```bash
+# Clone via SSH using internal domain (port 22)
+git clone git@gitlab.esweiss.com:username/repo.git
+```
+
+Add to `~/.ssh/config` for seamless internal access:
+```
+Host gitlab.esweiss.com
+    Port 22
+    User git
+```
+
+### External Access (Public Internet)
+
+Git SSH access on port 2222 is open to the public internet, allowing collaborators and CI/CD
+systems to clone and push without requiring Tailscale or VPN access. The Proxmox firewall
+`sg-gitlab` security group allows port 2222 from any source.
+
+**SSH Host:** External SSH must use `direct.ericsweiss.com` because Cloudflare cannot proxy SSH
+traffic. The `git.ericsweiss.com` record is Cloudflare-proxied (for web UI only), while
+`direct.ericsweiss.com` is DNS-only and points directly to your public IP. GitLab is configured
+to display the correct SSH clone URL in project pages.
+
+```bash
+# Clone via SSH (port 2222) from external networks
+git clone ssh://git@direct.ericsweiss.com:2222/username/repo.git
+```
+
+Add to `~/.ssh/config` for seamless external SSH access:
+```
+Host direct.ericsweiss.com
+    Port 2222
+    User git
+```
+
+Then clone using standard syntax:
+```bash
+git clone git@direct.ericsweiss.com:username/repo.git
+```
+
+### Universal SSH Config (Works Everywhere)
+
+For a single config that works from any location, use `direct.ericsweiss.com` with port 2222:
+
+```
+Host direct.ericsweiss.com gitlab.esweiss.com
+    HostName direct.ericsweiss.com
+    Port 2222
+    User git
+```
+
+This routes both internal and external Git SSH operations through port 2222.
+
+### Recommended: HTTPS for Consistency
+
+For the simplest experience across all networks (LAN, Tailscale, external), use HTTPS:
+```bash
+git clone https://git.ericsweiss.com/username/repo.git
+```
+
+HTTPS works uniformly via `git.ericsweiss.com` from any location and supports GitLab
+personal access tokens for authentication.
+
+**Note:** Administrative SSH access to the GitLab VM (port 22) remains restricted to admin
+networks (LAN and Tailscale) for security.
+
+## Container Registry Usage
+
+### Authenticate
+
+```bash
+docker login registry.git.ericsweiss.com
+# Use GitLab username and personal access token
+```
+
+### Build and Push
+
+```bash
+# Build image
+docker build -t registry.git.ericsweiss.com/myproject/myapp:v1.0 .
+
+# Push to registry
+docker push registry.git.ericsweiss.com/myproject/myapp:v1.0
+```
+
+### Pull in k3s
+
+```yaml
+# In Kubernetes manifests
+image: registry.git.ericsweiss.com/myproject/myapp:v1.0
+imagePullSecrets:
+  - name: gitlab-registry-secret
+```
+
+## GitLab Pages
+
+### Enable for a Project
+
+1. Go to project **Settings → Pages**
+2. Enable Pages
+3. Configure `.gitlab-ci.yml`:
+
+```yaml
+pages:
+  stage: deploy
+  script:
+    - mkdir .public
+    - cp -r public/* .public/
+    - mv .public public
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
+```
+
+### Access Pages
+
+Pages are available at:
+- `https://<user>.pages.git.ericsweiss.com/<project>/`
+- Or with custom domain configured
+
+## Security Notes
+
+1. **SSH architecture**: GitLab uses a single OpenSSH service with `AuthorizedKeysCommand` for git user authentication. Both administrative SSH (user `eric`) and Git SSH (user `git`) use the same SSH daemon on port 22, with port 2222 NAT-redirected to port 22 for external access.
+2. **fail2ban protection**: Brute-force attacks on SSH are automatically blocked
+   - 5 failed attempts within 10 minutes = 1 hour ban
+   - Uses systemd journal backend with sshd filter (aggressive mode)
+   - Check status: `sudo fail2ban-client status gitlab-ssh`
+   - View banned IPs: `sudo fail2ban-client get gitlab-ssh banned`
+   - Test filter: `sudo fail2ban-regex systemd-journal /etc/fail2ban/filter.d/sshd.conf`
+3. **SAML authentication**: Consider disabling password auth after confirming SSO works
+4. **Firewall**: The `sg-gitlab` security group has differentiated access:
+   - Port 2222 (Git SSH): Open to WAN for external collaborators
+   - Port 22 (Admin SSH + LAN Git): Restricted to admin networks (LAN + Tailscale)
+   - Port 80 (GitLab Web): Restricted to k3s nodes and admin networks
+   - Ports 5050/8090 (Registry/Pages): Restricted to k3s nodes only (routed via Traefik)
+5. **Secrets**: All credentials via 1Password; never committed to git
+
+## Related Documentation
+
+- [Authentik SSO Setup](23-recipes-sso-setup.md) - Similar SSO configuration pattern
+- [K3s Deployment](19-k3s-deployment.md) - Cluster where runners are deployed
+- [Firewall Configuration](11-firewall.md) - Security group details

@@ -1,0 +1,118 @@
+# {{ ansible_managed }}
+# Fail2ban jail configuration
+#
+# This file is deployed by Ansible. Manual changes will be overwritten.
+# To customize, modify the fail2ban_* variables in Ansible inventory.
+
+[DEFAULT]
+# Whitelist trusted networks (LAN + Tailscale)
+ignoreip = {{ fail2ban_ignoreip | join(' ') }}
+
+# Default ban settings
+bantime = {{ fail2ban_default_bantime }}
+findtime = {{ fail2ban_default_findtime }}
+maxretry = {{ fail2ban_default_maxretry }}
+
+# Use systemd backend (preferred on Debian with journald)
+backend = systemd
+
+{% if is_container | default(false) %}
+# LXC Container Mode: Use route-based banning
+# ============================================================================
+# Unprivileged LXC containers cannot use iptables/nftables packet filtering
+# because they lack CAP_NET_ADMIN capabilities for netfilter subsystem.
+# The 'route' action uses kernel routing table (ip route add blackhole <ip>)
+# which works in containers without elevated privileges.
+#
+# Trade-offs vs iptables:
+#   - Cannot ban by port (IP-only bans)
+#   - Single routing table shared across jails (no duplicate routes)
+#   - Recidive jail disabled (requires banaction_allports)
+#
+# This is acceptable for homelab LXC containers because:
+#   - SSH is the primary attack vector we're protecting
+#   - Internal services have limited external exposure
+#   - Proxmox firewall provides network-level protection
+# ============================================================================
+banaction = route
+{% else %}
+# Physical/VM Mode: Use iptables for full packet filtering
+# ============================================================================
+# iptables-multiport allows per-port banning with full netfilter capabilities.
+# nftables is preferred on modern systems but iptables provides broader
+# compatibility and works well with the Proxmox firewall stack.
+# ============================================================================
+banaction = iptables-multiport
+banaction_allports = iptables-allports
+{% endif %}
+
+{% if fail2ban_email_enabled %}
+# Email notifications
+destemail = {{ fail2ban_email_dest }}
+sender = {{ fail2ban_email_sender }}
+mta = sendmail
+action = {{ fail2ban_email_action }}
+{% else %}
+# Email notifications disabled
+action = %(action_)s
+{% endif %}
+
+# ============================================================================
+# SSH Protection
+# ============================================================================
+# Protects against brute-force attacks on SSH (port {{ fail2ban_sshd_port }})
+
+[sshd]
+enabled = {{ fail2ban_sshd_enabled | lower }}
+port = {{ fail2ban_sshd_port }}
+filter = sshd
+maxretry = {{ fail2ban_sshd_maxretry }}
+bantime = {{ fail2ban_sshd_bantime }}
+findtime = {{ fail2ban_sshd_findtime }}
+# sshd logs to journal on systemd systems
+backend = systemd
+# Match aggressive mode for SSH attacks (catches more patterns)
+mode = aggressive
+
+{% if fail2ban_pveproxy_enabled %}
+# ============================================================================
+# Proxmox Web UI (pveproxy) Protection
+# ============================================================================
+# Protects against brute-force attacks on Proxmox web interface
+# Proxmox 9.x uses journald - daemon.log doesn't exist
+
+[proxmox]
+enabled = true
+port = {{ fail2ban_pveproxy_port }}
+filter = proxmox
+# Use systemd journal instead of log file (Proxmox 9.x uses journald)
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=pveproxy.service + _COMM=pveproxy
+maxretry = {{ fail2ban_pveproxy_maxretry }}
+bantime = {{ fail2ban_pveproxy_bantime }}
+findtime = {{ fail2ban_pveproxy_findtime }}
+{% endif %}
+
+{% if fail2ban_recidive_enabled and not (is_container | default(false)) %}
+# ============================================================================
+# Recidive Jail - Progressive Banning for Repeat Offenders
+# ============================================================================
+# Monitors fail2ban's own log for IPs that get banned multiple times
+# Escalates ban duration for persistent attackers
+#
+# Note: Disabled on LXC containers because:
+#   - The 'route' banaction doesn't support banaction_allports
+#   - Duplicate route entries cause errors when multiple jails ban the same IP
+#   - The base sshd jail with extended bantime (1h) provides sufficient protection
+
+[recidive]
+enabled = true
+filter = recidive
+logpath = /var/log/fail2ban.log
+bantime = {{ fail2ban_recidive_bantime }}
+findtime = {{ fail2ban_recidive_findtime }}
+maxretry = {{ fail2ban_recidive_maxretry }}
+backend = auto
+# Ban on all ports for repeat offenders
+banaction = iptables-allports
+{% endif %}

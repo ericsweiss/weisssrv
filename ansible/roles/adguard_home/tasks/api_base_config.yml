@@ -10,6 +10,15 @@
     msg: "Skipping AdGuard Home API base configuration in check mode (cannot query live API)"
   when: ansible_check_mode
 
+- name: Validate AdGuard admin password is set for API calls
+  ansible.builtin.assert:
+    that:
+      - adguard_admin_password is defined
+      - adguard_admin_password | length > 0
+    fail_msg: "AdGuard admin password not found! Ensure ADGUARD_ADMIN_PASSWORD is set in environment (from 1Password)."
+    success_msg: "AdGuard admin password is set"
+  when: not ansible_check_mode
+
 - name: Get current DNS configuration
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ adguard_http_port }}/control/dns_info"
@@ -69,6 +78,35 @@
   no_log: true
   register: dns_config_updated
 
+# Check if TLS certificates exist before attempting TLS configuration
+# Certificates are deployed by acme_certs role which runs AFTER adguard_home
+# On first deployment, skip TLS config; it will be configured on subsequent runs
+- name: Check if TLS certificate exists
+  ansible.builtin.stat:
+    path: "{{ adguard_cert_path }}/fullchain.pem"
+  register: tls_cert_exists
+  when:
+    - not ansible_check_mode
+    - adguard_tls_enabled
+
+- name: Check if TLS private key exists
+  ansible.builtin.stat:
+    path: "{{ adguard_cert_path }}/privkey.pem"
+  register: tls_key_exists
+  when:
+    - not ansible_check_mode
+    - adguard_tls_enabled
+
+- name: Skip TLS configuration if certificates not yet deployed
+  ansible.builtin.debug:
+    msg: "TLS certificates not yet deployed (will be configured by acme_certs role) - skipping TLS configuration"
+  when:
+    - not ansible_check_mode
+    - adguard_tls_enabled
+    - tls_cert_exists is defined
+    - tls_key_exists is defined
+    - not (tls_cert_exists.stat.exists | default(false) and tls_key_exists.stat.exists | default(false))
+
 - name: Get current TLS configuration
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ adguard_http_port }}/control/tls/status"
@@ -82,6 +120,10 @@
   when:
     - not ansible_check_mode
     - adguard_tls_enabled
+    - tls_cert_exists is defined
+    - tls_key_exists is defined
+    - tls_cert_exists.stat.exists | default(false)
+    - tls_key_exists.stat.exists | default(false)
 
 - name: Update TLS configuration
   ansible.builtin.uri:
@@ -106,6 +148,10 @@
   when:
     - not ansible_check_mode
     - adguard_tls_enabled
+    - tls_cert_exists is defined
+    - tls_key_exists is defined
+    - tls_cert_exists.stat.exists | default(false)
+    - tls_key_exists.stat.exists | default(false)
     # Check ALL fields that are being sent to detect any drift
     - >
       (current_tls_config.json.enabled | default(false)) != adguard_tls_enabled or
@@ -149,9 +195,24 @@
   no_log: true
   register: dhcp_config_updated
 
+- name: Set TLS certificates status
+  ansible.builtin.set_fact:
+    tls_certs_present: "{{ (tls_cert_exists.stat.exists | default(false)) and (tls_key_exists.stat.exists | default(false)) }}"
+  when:
+    - not ansible_check_mode
+    - tls_cert_exists is defined
+    - tls_key_exists is defined
+
 - name: Display configuration update summary
   ansible.builtin.debug:
     msg:
-      - "DNS configuration updated: {{ dns_config_updated.changed | default(false) if not ansible_check_mode else 'N/A (check mode)' }}"
-      - "TLS configuration updated: {{ tls_config_updated.changed | default(false) if not ansible_check_mode else 'N/A (check mode)' }}"
-      - "DHCP configuration updated: {{ dhcp_config_updated.changed | default(false) if not ansible_check_mode else 'N/A (check mode)' }}"
+      - "DNS config updated: {{ (dns_config_updated | default({})).changed | default(false) }}"
+      - "TLS certs present: {{ tls_certs_present | default('N/A') }}"
+      - "TLS config updated: {{ (tls_config_updated | default({})).changed | default(false) }}"
+      - "DHCP config updated: {{ (dhcp_config_updated | default({})).changed | default(false) }}"
+  when: not ansible_check_mode
+
+- name: Display check mode notice
+  ansible.builtin.debug:
+    msg: "Running in check mode - API configuration skipped"
+  when: ansible_check_mode

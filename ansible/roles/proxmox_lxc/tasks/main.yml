@@ -375,6 +375,60 @@
 # Bootstrap eric user for Ansible access
 # This replicates the manual bootstrap process from docs/18-bootstrap-new-systems.md
 
+- name: Wait for container network connectivity
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    # Use bash /dev/tcp to test connectivity (works without iputils-ping on minimal Debian)
+    for i in $(seq 1 30); do
+      # Test TCP connection to gateway on common ports (SSH or HTTP) or use /proc/net/route
+      # First check if we have an IP assigned and a default route
+      route_check='ip route show default 2>/dev/null | grep -q "via {{ lxc_gateway }}"'
+      if pct exec {{ container_id }} -- bash -c "$route_check"; then
+        # Gateway is in routing table, verify we can reach it via TCP on port 22 (SSH is common)
+        # Fall back to checking if the interface is up with an IP
+        tcp_check='timeout 2 bash -c "</dev/tcp/{{ lxc_gateway }}/22" 2>/dev/null'
+        ip_check='ip addr show eth0 2>/dev/null | grep -q "inet "'
+        if pct exec {{ container_id }} -- bash -c "$tcp_check || $ip_check"; then
+          echo "Gateway reachable"
+          exit 0
+        fi
+      fi
+      sleep 2
+    done
+    echo "Gateway unreachable after 60 seconds"
+    exit 1
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+  changed_when: false
+
+- name: Verify DNS resolution in container
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    # First check what nameservers are configured
+    echo "Current resolv.conf:"
+    pct exec {{ container_id }} -- cat /etc/resolv.conf
+    # Try apt-get update to test DNS (most reliable test)
+    echo "Testing DNS with apt-get update..."
+    if pct exec {{ container_id }} -- apt-get update >/dev/null 2>&1; then
+      echo "DNS working"
+      exit 0
+    fi
+    # If DNS fails, fall back to public DNS
+    echo "DNS not working with internal servers, using public DNS fallback..."
+    pct exec {{ container_id }} -- bash -c 'echo "nameserver 1.1.1.1" > /etc/resolv.conf'
+    if pct exec {{ container_id }} -- apt-get update >/dev/null 2>&1; then
+      echo "DNS working with public fallback"
+      exit 0
+    fi
+    echo "DNS resolution failed even with public DNS"
+    exit 1
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+  changed_when: false
+
 - name: Install required packages in container
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -412,12 +466,12 @@
     - lxc_ssh_public_keys | length > 0
   changed_when: true
 
-- name: Set permissions on authorized_keys
+- name: Set permissions on authorized_keys and home directory
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c '
       chmod 600 /home/{{ lxc_admin_user }}/.ssh/authorized_keys &&
-      chown -R {{ lxc_admin_user }}:{{ lxc_admin_user }} /home/{{ lxc_admin_user }}/.ssh
+      chown -R {{ lxc_admin_user }}:{{ lxc_admin_user }} /home/{{ lxc_admin_user }}
     '
   when:
     - not ansible_check_mode

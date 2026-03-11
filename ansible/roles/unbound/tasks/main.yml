@@ -25,6 +25,10 @@
       remote-control:
         control-enable: yes
         control-interface: /run/unbound.ctl
+        # Use Unix socket without TLS certificates (control-use-cert: no)
+        # This is required when not setting up separate control certificates
+        # and allows unbound-control to work via the Unix socket
+        control-use-cert: no
     dest: /etc/unbound/unbound.conf.d/remote-control.conf
     owner: root
     group: root
@@ -37,8 +41,28 @@
     state: started
     enabled: true
 
+# Flush handlers to ensure unbound is restarted with new config before verification
+- name: Flush handlers before verification
+  ansible.builtin.meta: flush_handlers
+
 - name: Verify Unbound is listening
   ansible.builtin.wait_for:
     host: "{{ unbound_interface }}"
     port: "{{ unbound_port }}"
     timeout: 30
+
+- name: Verify Unbound can resolve DNS queries
+  ansible.builtin.command:
+    cmd: dig @127.0.0.1 -p {{ unbound_port }} google.com +short +time=5
+  register: unbound_test
+  changed_when: false
+  retries: 3
+  delay: 2
+  # Check both exit code AND that we got an IP address in the output
+  # dig can return rc=0 with SERVFAIL/NXDOMAIN but no IP in +short output
+  until: unbound_test.rc == 0 and (unbound_test.stdout | regex_search('^\d+\.\d+\.\d+\.\d+', multiline=True) is not none)
+  when: not ansible_check_mode
+
+# NOTE: resolv.conf is NOT updated here because unbound listens on port 5335
+# The adguard_home role updates resolv.conf after AdGuard Home is running on port 53
+# Architecture: resolv.conf -> AdGuard Home (53) -> Unbound (5335) -> Internet (DoT)

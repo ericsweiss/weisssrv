@@ -5,6 +5,9 @@
 # Root login disabled for consistency with other LXC containers
 ssh_permit_root_login: "no"
 
+# LXC container settings
+lxc_nesting: true  # Required for systemd 257+
+
 # Boot order configuration
 proxmox_startup_order: 10
 proxmox_startup_delay: 30
@@ -23,8 +26,9 @@ adguard_dns_port: 53
 adguard_dot_port: 853
 adguard_https_port: 443
 adguard_admin_user: eric
+# Password from 1Password; bcrypt hash is generated at deploy time by the adguard_home role
+# This ensures password and hash are always in sync (single source of truth)
 adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD', default='') }}"
-adguard_admin_password_hash: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD_HASH', default='') }}"
 
 # TLS/Encryption configuration
 # TLS enabled for DoT (853) and DoQ (853) - AdGuard Home handles these directly
@@ -148,6 +152,15 @@ adguard_rewrites:
     answer: "192.168.0.101"
   - domain: "pulsarr.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # GitLab services via Traefik Internal VIP
+  - domain: "git.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "registry.git.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "pages.git.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "*.pages.git.{{ internal_domain }}"
+    answer: "192.168.0.101"
 
 # Custom filtering rules
 adguard_user_rules:
@@ -206,8 +219,9 @@ mail_aliases:
   root: "{{ admin_email }}"
 
 # SASL credentials for authenticating to smtp-relay (from 1Password)
-postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
-postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"
+# Credentials injected via 'op run --' (handled automatically by 'task deploy:dns')
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"
 
 # dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
 dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY', default='') }}"

@@ -1,0 +1,133 @@
+# GitLab Runner Helm Chart Values
+# https://docs.gitlab.com/runner/install/kubernetes.html
+
+# GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
+gitlabUrl: https://git.ericsweiss.com
+
+# Runner authentication token (new workflow, GitLab 16.0+)
+# Set via --set runnerToken during helm install
+# Token is created in GitLab UI: Admin > CI/CD > Runners > New instance runner
+# Token format: glrt-* (runner authentication token)
+# NOTE: runnerRegistrationToken is deprecated and removed in GitLab 18.0
+runnerToken: ""
+
+# Concurrent jobs
+concurrent: 4
+
+# Check interval (seconds)
+checkInterval: 30
+
+# Kubernetes executor configuration
+runners:
+  # Runner name prefix
+  name: k3s-runner
+
+  # Run untagged jobs
+  # NOTE: Permissive configuration intentional for single-user homelab
+  # This allows any job to run without requiring tags, which simplifies CI/CD setup.
+  # In a multi-user/team environment, set runUntagged: false and require tags.
+  runUntagged: true
+
+  # Protected branches only
+  # NOTE: Disabled for homelab convenience - allows running jobs on any branch
+  # In production/team environments, set protected: true to restrict to protected branches
+  protected: false
+
+  # Executor type
+  executor: kubernetes
+
+  # Kubernetes executor config
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "gitlab-runner"
+        image = "debian:trixie"
+        privileged = false
+
+        # CPU/Memory limits for job pods
+        cpu_limit = "2"
+        cpu_request = "500m"
+        memory_limit = "4Gi"
+        memory_request = "1Gi"
+
+        # Service account
+        service_account = "gitlab-runner"
+
+        # Pod security context - secure by default (non-root)
+        # Non-root execution is sufficient for homelab IaC CI/CD including:
+        #   - Linting: ansible-lint, terraform validate, kubeconform, pytest
+        #   - Deployments: ansible-playbook, kubectl apply, helm upgrade
+        #   - Secret injection: 1Password CLI (op run --)
+        #
+        # Deployment pipelines require secrets (configured as CI/CD variables):
+        #   - SSH_PRIVATE_KEY: For Ansible to reach target hosts
+        #   - KUBECONFIG: For kubectl/helm to reach the k3s cluster
+        #   - OP_SERVICE_ACCOUNT_TOKEN: For 1Password secret injection
+        #
+        # If future workloads require privileged execution (e.g., building Docker
+        # images with docker build, running containers in containers), add a second
+        # runner deployment with:
+        #   privileged = true
+        #   run_as_non_root = false
+        #   run_as_user = 0
+        # Use GitLab tags (e.g., "privileged") to target specific runners.
+        [runners.kubernetes.pod_security_context]
+          run_as_non_root = true
+          run_as_user = 1000
+
+        # Pull policy
+        pull_policy = ["if-not-present"]
+
+# RBAC configuration
+# clusterWideAccess: false restricts the runner to only manage resources in its own namespace.
+# This follows the principle of least privilege - CI jobs can only affect the gitlab-runner namespace.
+# If you need runners to deploy to other namespaces (e.g., staging, production), either:
+#   1. Set clusterWideAccess: true (grants cluster-wide permissions per 'rules' below)
+#   2. Create separate runners per namespace with namespace-scoped permissions
+#   3. Use GitLab's Kubernetes Agent (recommended for production deployments)
+# See: https://docs.gitlab.com/runner/install/kubernetes_helm_chart_configuration/
+rbac:
+  create: true
+  clusterWideAccess: false
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "pods/exec", "pods/attach", "pods/log", "secrets", "configmaps"]
+      verbs: ["get", "list", "watch", "create", "delete", "patch"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["get", "list", "watch"]
+
+# Service account
+serviceAccount:
+  create: true
+  name: gitlab-runner
+
+# Pod resources for the runner manager
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Node affinity - prefer non-NAS nodes for runner pods
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: esweiss.com/nas
+              operator: DoesNotExist
+
+# Tolerations for workload nodes
+tolerations:
+  - key: esweiss.com/ingress
+    operator: Equal
+    value: "true"
+    effect: PreferNoSchedule
+  - key: esweiss.com/compute
+    operator: Equal
+    value: "true"
+    effect: PreferNoSchedule

@@ -15,7 +15,9 @@ The homelab uses a consistent user management approach:
 
 ## SSH Configuration
 
-### Proxmox Hosts (pve-nas-01, pve-opt-03)
+### Proxmox Hosts
+
+Applies to all 6 cluster nodes: pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01
 
 **User**: `eric`
 
@@ -76,14 +78,19 @@ from="192.168.0.0/24,100.64.0.0/10" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esw
 ### From Local Network
 
 ```bash
-# Proxmox hosts
+# Proxmox hosts (examples - all 6 hosts use same pattern)
 ssh eric@192.168.0.102  # pve-nas-01
+ssh eric@192.168.0.103  # pve-laptop-01
+ssh eric@192.168.0.104  # pve-opt-01
+ssh eric@192.168.0.105  # pve-opt-02
 ssh eric@192.168.0.106  # pve-opt-03
+ssh eric@192.168.0.107  # pve-prec-01
 
 # LXC containers
 ssh eric@192.168.0.150  # dns-01
 ssh eric@192.168.0.160  # dns-02
 ssh eric@192.168.0.151  # smtp-relay
+ssh eric@192.168.0.152  # plex
 ```
 
 ### Via Tailscale VPN
@@ -126,31 +133,28 @@ dns:
 
 ### SSH Daemon Configuration
 
-Applied by the `base` role via `/etc/ssh/sshd_config.d/hardening.conf`:
+Applied by the `base` role via direct modification of `/etc/ssh/sshd_config` using `lineinfile`. This approach ensures compatibility across Debian versions and validates the configuration before applying changes.
+
+Settings applied:
 
 ```
-# Disable password authentication
+# Authentication
 PasswordAuthentication no
 PubkeyAuthentication yes
-
-# Disable root login entirely
 PermitRootLogin no
-
-# Disable empty passwords
-PermitEmptyPasswords no
-
-# Disable challenge-response
 ChallengeResponseAuthentication no
+UsePAM yes
 
-# Disable X11 forwarding
+# Security hardening
 X11Forwarding no
-
-# Limit auth attempts
 MaxAuthTries 3
 
-# Require public key auth
-AuthenticationMethods publickey
+# Connection keepalive
+ClientAliveInterval 300
+ClientAliveCountMax 2
 ```
+
+**Note**: The role uses `lineinfile` with `validate: "sshd -t -f %s"` to ensure the SSH config remains valid before applying changes. Settings can be customized via variables in `ansible/roles/base/defaults/main.yml`.
 
 ### Sudo Configuration
 
@@ -173,14 +177,79 @@ SSH keys include `from=` restrictions limiting access to:
 
 ## Firewall Integration
 
-SSH access is controlled by the Proxmox firewall `sg-host-admin` security group:
+SSH access is controlled by Proxmox firewall security groups:
+
+- **`sg-host-admin`**: Used for Proxmox hosts (pve-nas-01, pve-laptop-01, etc.)
+- **`sg-vm-admin`**: Used for VMs and LXC containers (dns-01, smtp-relay, gitlab, plex, k3s nodes, etc.)
+
+Both groups allow SSH from admin networks:
 
 ```
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
 ```
 
+Check which security group applies in `ansible/inventories/prod/hosts.yml` under `guest_security_groups` for each host.
+
 See [11-firewall.md](11-firewall.md) for details.
+
+## Fail2ban Protection
+
+All hosts are protected by fail2ban, which automatically bans IPs after repeated failed authentication attempts.
+
+### Trusted Networks
+
+The following networks are whitelisted and will never be banned:
+
+- **Loopback**: `127.0.0.0/8` - Localhost connections
+- **LAN**: `192.168.0.0/24` - Local network
+- **Tailscale**: `100.64.0.0/10` - VPN network
+
+### Common Commands
+
+**Check fail2ban status**:
+```bash
+sudo fail2ban-client status
+```
+
+**Check SSH jail status** (shows banned IPs and ban count):
+```bash
+sudo fail2ban-client status sshd
+```
+
+**Unban an IP address**:
+```bash
+sudo fail2ban-client set sshd unbanip <IP>
+```
+
+### Proxmox-Specific Jails
+
+Proxmox hosts have an additional `proxmox` jail that protects the web UI (port 8006) from brute-force attacks:
+
+```bash
+# Check proxmox jail status
+sudo fail2ban-client status proxmox
+```
+
+### Configuration
+
+Fail2ban is deployed via the `base` Ansible role with the following settings:
+
+**Standard Jails (sshd, proxmox)**:
+- **Ban time**: 1 hour (3600 seconds)
+- **Find time**: 10 minutes (600 seconds)
+- **Max retries**: 5 failed attempts before ban
+- **Backend**: systemd (uses journald for log parsing)
+
+**Recidive Jail** (repeat offenders):
+The recidive jail monitors fail2ban's own log for IPs that get banned repeatedly. If an IP is banned multiple times within 24 hours, the recidive jail issues a much longer ban:
+- **Ban time**: 1 week (`fail2ban_recidive_bantime: 1w`)
+- **Find time**: 1 day (`fail2ban_recidive_findtime: 1d`)
+- **Max retries**: 3 bans before recidive ban (`fail2ban_recidive_maxretry: 3`)
+
+This provides escalating protection: occasional failed logins result in a 1-hour ban, but persistent attackers get banned for a week after just 3 short bans.
+
+**LXC Container Exception**: The recidive jail is disabled on LXC containers (dns-01, dns-02, smtp-relay). This is because the `route` banaction used in containers does not support `banaction_allports`, and duplicate route entries cause errors when multiple jails ban the same IP. The base sshd jail with extended bantime (1 hour) provides sufficient protection for these low-exposure services.
 
 ## Adding a New SSH Key
 
@@ -285,7 +354,7 @@ No manual bootstrap required for new VMs provisioned via Ansible.
 
 2. **Check SSH service status**:
    ```bash
-   sudo systemctl status sshd
+   sudo systemctl status ssh
    ```
 
 3. **Verify SSH key is deployed**:

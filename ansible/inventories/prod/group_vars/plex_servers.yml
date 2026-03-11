@@ -1,6 +1,6 @@
 ---
 # Plex servers group configuration
 
-# Postfix null client configuration (for sending mail via smtp-relay)
-postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
-postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"
+# Postfix null client credentials (from 1Password via 'op run')
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"

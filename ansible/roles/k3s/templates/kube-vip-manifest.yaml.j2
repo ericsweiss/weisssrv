@@ -96,12 +96,14 @@ spec:
           value: "true"
         - name: vip_leasename
           value: plndr-cp-lock
+        # Leader election timing - conservative values for unmanaged switch environment
+        # Reduces ARP traffic from every 1s to every 10s, prevents ARP storms
         - name: vip_leaseduration
-          value: "5"
+          value: "30"
         - name: vip_renewdeadline
-          value: "3"
+          value: "20"
         - name: vip_retryperiod
-          value: "1"
+          value: "10"
         - name: address
           value: "{{ k3s_api_vip }}"
         - name: prometheus_server

@@ -15,6 +15,8 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
     tmpfs:
       - /run
       - /tmp
@@ -22,6 +24,8 @@ provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker compatibility with newer Ansible versions
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     SMTP_RELAY_USER: testrelay
     SMTP_RELAY_PASSWORD: testrelaypass
   config_options:

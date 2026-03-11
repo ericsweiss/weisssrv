@@ -13,36 +13,41 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 PROXMOX_HOSTS=("pve-nas-01" "pve-laptop-01" "pve-opt-01" "pve-opt-02" "pve-opt-03" "pve-prec-01")
 DNS_HOSTS=("192.168.0.150" "192.168.0.160")  # dns-01, dns-02 (use IPs since hostnames resolve to VIP)
 MAIL_HOSTS=("smtp-relay")
+GITLAB_HOST="gitlab"  # 192.168.0.153 (gitlab VM on pve-nas-01)
 # 9-node k3s cluster (3 servers + 6 agents)
 K3S_HOSTS=("k3s-srv-nas-01" "k3s-srv-laptop-01" "k3s-srv-prec-01" "k3s-agt-nas-01" "k3s-agt-laptop-01" "k3s-agt-opt-01" "k3s-agt-opt-02" "k3s-agt-opt-03" "k3s-agt-prec-01")
 HOME_ASSISTANT_HOST="192.168.0.154"  # home (HAOS VM)
 
-# Redaction patterns
+# Redaction patterns using POSIX-compatible character classes
+# Note: Use [[:space:]] instead of \s and [^[:space:]] instead of \S for portability
+# across BSD sed (macOS) and GNU sed (Linux)
+# SECURITY: Patterns use (^|[^[:alnum:]]) to match at line start OR after non-alphanumeric
+# This ensures patterns like "token: secret123" match even at the start of a line
 REDACT_PATTERNS=(
-    's/password\s*[:=]\s*\S+/password: <REDACTED>/gi'
-    's/\btoken\s*[:=]\s*\S+/token: <REDACTED>/gi'
-    's/access_token\s*[:=]\s*\S+/access_token: <REDACTED>/gi'
-    's/refresh_token\s*[:=]\s*\S+/refresh_token: <REDACTED>/gi'
-    's/id_token\s*[:=]\s*\S+/id_token: <REDACTED>/gi'
-    's/bearer\s+[A-Za-z0-9._~+\/=-]+/Bearer <REDACTED>/gi'
-    's/\bsecret\s*[:=]\s*\S+/secret: <REDACTED>/gi'
-    's/CF_Token=\S+/CF_Token=<REDACTED>/g'
-    's/CF_Account_ID=\S+/CF_Account_ID=<REDACTED>/g'
-    's/SAVED_CF_Token=\S+/SAVED_CF_Token=<REDACTED>/g'
-    's/SAVED_CF_Account_ID=\S+/SAVED_CF_Account_ID=<REDACTED>/g'
+    's/password[[:space:]]*[:=][[:space:]]*[^[:space:]]+/password: <REDACTED>/gi'
+    's/(^|[^[:alnum:]])token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1token: <REDACTED>/gi'
+    's/access_token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/access_token: <REDACTED>/gi'
+    's/refresh_token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/refresh_token: <REDACTED>/gi'
+    's/id_token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/id_token: <REDACTED>/gi'
+    's/bearer[[:space:]]+[A-Za-z0-9._~+\/=-]+/Bearer <REDACTED>/gi'
+    's/(^|[^[:alnum:]])secret[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1secret: <REDACTED>/gi'
+    's/CF_Token=[^[:space:]]+/CF_Token=<REDACTED>/g'
+    's/CF_Account_ID=[^[:space:]]+/CF_Account_ID=<REDACTED>/g'
+    's/SAVED_CF_Token=[^[:space:]]+/SAVED_CF_Token=<REDACTED>/g'
+    's/SAVED_CF_Account_ID=[^[:space:]]+/SAVED_CF_Account_ID=<REDACTED>/g'
     's/\$2[aby]\$[0-9]+\$[A-Za-z0-9.\/]+/<BCRYPT_HASH>/g'
-    's/client-certificate-data:\s*\S+/client-certificate-data: <REDACTED>/g'
-    's/client-key-data:\s*\S+/client-key-data: <REDACTED>/g'
-    's/certificate-authority-data:\s*\S+/certificate-authority-data: <REDACTED>/g'
-    's/OPENVPN_USER=\S+/OPENVPN_USER=<REDACTED>/g'
-    's/OPENVPN_PASSWORD=\S+/OPENVPN_PASSWORD=<REDACTED>/g'
-    's/openvpn-user:\s*\S+/openvpn-user: <REDACTED>/g'
-    's/openvpn-password:\s*\S+/openvpn-password: <REDACTED>/g'
-    's/api-token:\s*\S+/api-token: <REDACTED>/g'
-    's/oidc_client_id:\s*\S+/oidc_client_id: <REDACTED>/g'
-    's/oidc_client_secret:\s*\S+/oidc_client_secret: <REDACTED>/g'
-    's/client_id:\s*\S+/client_id: <REDACTED>/g'
-    's/client_secret:\s*\S+/client_secret: <REDACTED>/g'
+    's/client-certificate-data:[[:space:]]*[^[:space:]]+/client-certificate-data: <REDACTED>/g'
+    's/client-key-data:[[:space:]]*[^[:space:]]+/client-key-data: <REDACTED>/g'
+    's/certificate-authority-data:[[:space:]]*[^[:space:]]+/certificate-authority-data: <REDACTED>/g'
+    's/OPENVPN_USER=[^[:space:]]+/OPENVPN_USER=<REDACTED>/g'
+    's/OPENVPN_PASSWORD=[^[:space:]]+/OPENVPN_PASSWORD=<REDACTED>/g'
+    's/openvpn-user:[[:space:]]*[^[:space:]]+/openvpn-user: <REDACTED>/g'
+    's/openvpn-password:[[:space:]]*[^[:space:]]+/openvpn-password: <REDACTED>/g'
+    's/api-token:[[:space:]]*[^[:space:]]+/api-token: <REDACTED>/g'
+    's/oidc_client_id:[[:space:]]*[^[:space:]]+/oidc_client_id: <REDACTED>/g'
+    's/oidc_client_secret:[[:space:]]*[^[:space:]]+/oidc_client_secret: <REDACTED>/g'
+    's/client_id:[[:space:]]*[^[:space:]]+/client_id: <REDACTED>/g'
+    's/client_secret:[[:space:]]*[^[:space:]]+/client_secret: <REDACTED>/g'
 )
 
 redact() {
@@ -82,6 +87,19 @@ echo "--- Disk Usage ---"
 # LXC containers use rootfs/overlay paths that don't start with /
 df -h | grep -vE '^(tmpfs|devtmpfs|udev|overlay$)' | head -20
 echo ""
+echo "--- Fail2ban Status ---"
+if command -v fail2ban-client &>/dev/null; then
+    sudo fail2ban-client status 2>/dev/null || echo "fail2ban not running"
+    echo ""
+    echo "Active jails:"
+    for jail in $(sudo fail2ban-client status 2>/dev/null | grep "Jail list:" | sed 's/.*Jail list:[[:space:]]*//' | tr ',' ' '); do
+        echo "  $jail:"
+        sudo fail2ban-client status "$jail" 2>/dev/null | grep -E 'Currently banned:|Total banned:' | sed 's/^/    /'
+    done
+else
+    echo "fail2ban not installed"
+fi
+echo ""
 REMOTE_EOF
 )
     ssh_rc=$?
@@ -100,7 +118,7 @@ collect_proxmox() {
     local host=$1
     echo "=== Proxmox-specific: $host ==="
 
-    ssh -o ConnectTimeout=10 "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
+    ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
 echo "--- Proxmox Version ---"
 pveversion 2>/dev/null || echo "Not a Proxmox host"
 echo ""
@@ -302,7 +320,7 @@ collect_dns() {
     local host=$1
     echo "=== DNS-specific: $host ==="
 
-    ssh -o ConnectTimeout=10 "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
+    ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
 echo "--- Unbound Status ---"
 systemctl is-active unbound
 sudo unbound-checkconf 2>&1 | head -5
@@ -343,7 +361,7 @@ collect_mail() {
     local host=$1
     echo "=== Mail-specific: $host ==="
 
-    ssh -o ConnectTimeout=10 "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
+    ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
 echo "--- Postfix Status ---"
 systemctl is-active postfix
 postconf myhostname mynetworks relayhost 2>/dev/null
@@ -361,7 +379,7 @@ collect_k3s() {
     local host=$1
     echo "=== K3s-specific: $host ==="
 
-    ssh -o ConnectTimeout=10 "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
+    ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
 echo "--- K3s Service Status ---"
 if systemctl is-active k3s &>/dev/null; then
     echo "k3s server: active"
@@ -521,8 +539,8 @@ collect_home_assistant() {
     # Configuration files collected via SSH if SSH add-on is configured
 
     # Check if SSH is accessible (requires SSH add-on on port 22222)
-    if ssh -o ConnectTimeout=5 -p 22222 "root@${host}" "echo test" &>/dev/null; then
-        ssh -o ConnectTimeout=10 -p 22222 "root@${host}" bash << 'EOF' 2>/dev/null || echo "SSH command failed"
+    if ssh -o ConnectTimeout=5 -o BatchMode=yes -p 22222 "root@${host}" "echo test" &>/dev/null; then
+        ssh -o ConnectTimeout=10 -o BatchMode=yes -p 22222 "root@${host}" bash << 'EOF' 2>/dev/null || echo "SSH command failed"
 echo "--- Home Assistant System Info ---"
 ha info 2>/dev/null || echo "ha CLI unavailable"
 echo ""
@@ -557,6 +575,103 @@ EOF
         echo "Collecting VM status from Proxmox instead..."
     fi
     echo ""
+}
+
+collect_gitlab() {
+    local host=$1
+    echo "=== GitLab-specific: $host ==="
+
+    ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
+echo "--- GitLab Version ---"
+if [ -x /opt/gitlab/bin/gitlab-ctl ]; then
+    sudo gitlab-rake gitlab:env:info 2>/dev/null | grep -E 'GitLab.*:' | head -5 || \
+        cat /opt/gitlab/version-manifest.txt 2>/dev/null | grep gitlab-ee | head -1 || \
+        echo "Version check failed"
+else
+    echo "GitLab not installed"
+fi
+echo ""
+echo "--- GitLab Status ---"
+if [ -x /opt/gitlab/bin/gitlab-ctl ]; then
+    sudo /opt/gitlab/bin/gitlab-ctl status 2>/dev/null | head -20 || echo "gitlab-ctl status failed"
+else
+    echo "GitLab not installed"
+fi
+echo ""
+echo "--- GitLab Health Check ---"
+if command -v curl &>/dev/null; then
+    # Check GitLab health endpoint (internal, no TLS)
+    health=$(curl -s --connect-timeout 5 http://localhost/-/health 2>/dev/null)
+    if [ -n "$health" ]; then
+        echo "Health endpoint: $health"
+    else
+        echo "Health endpoint: unreachable"
+    fi
+fi
+echo ""
+echo "--- GitLab Disk Usage ---"
+echo "Repository storage:"
+sudo du -sh /mnt/gitlab-repos/git-data 2>/dev/null || echo "  External storage not configured or inaccessible"
+echo "Backups:"
+sudo du -sh /var/opt/gitlab/backups 2>/dev/null || echo "  Backup dir inaccessible"
+ls -la /var/opt/gitlab/backups/*.tar 2>/dev/null | tail -3 || echo "  No backup files found"
+echo ""
+echo "--- Container Registry ---"
+if [ -f /etc/gitlab/gitlab.rb ]; then
+    registry_enabled=$(sudo grep -E "^registry_external_url" /etc/gitlab/gitlab.rb 2>/dev/null | head -1)
+    if [ -n "$registry_enabled" ]; then
+        echo "Registry configured: $registry_enabled"
+        sudo /opt/gitlab/bin/gitlab-ctl status registry 2>/dev/null || echo "Registry status unavailable"
+    else
+        echo "Container registry not configured"
+    fi
+fi
+echo ""
+echo "--- GitLab Pages ---"
+if [ -f /etc/gitlab/gitlab.rb ]; then
+    pages_enabled=$(sudo grep -E "^pages_external_url" /etc/gitlab/gitlab.rb 2>/dev/null | head -1)
+    if [ -n "$pages_enabled" ]; then
+        echo "Pages configured: $pages_enabled"
+        sudo /opt/gitlab/bin/gitlab-ctl status gitlab-pages 2>/dev/null || echo "Pages status unavailable"
+    else
+        echo "GitLab Pages not configured"
+    fi
+fi
+echo ""
+echo "--- GitLab SSH (Port Redirect) ---"
+sudo iptables -t nat -L PREROUTING -n 2>/dev/null | grep -E '2222.*22' || echo "No port redirect configured"
+echo ""
+echo "--- Fail2ban GitLab SSH Jail ---"
+if command -v fail2ban-client &>/dev/null; then
+    sudo fail2ban-client status gitlab-ssh 2>/dev/null || echo "gitlab-ssh jail not configured"
+else
+    echo "fail2ban not installed"
+fi
+echo ""
+echo "--- Recent GitLab Logs ---"
+# NOTE: GitLab logs are NOT included in state collection because they may contain:
+# - Personal email addresses (user PII)
+# - Session tokens and API keys in request parameters
+# - OAuth tokens in callback URLs
+# - Git push/pull authentication details
+# To view GitLab errors manually, run on the GitLab host:
+#   sudo tail -100 /var/log/gitlab/gitlab-rails/production.log | grep -iE 'error|exception|fail'
+#   sudo gitlab-ctl tail
+echo "GitLab logs excluded from state collection (may contain PII/tokens)"
+echo "Run 'sudo gitlab-ctl tail' on gitlab host for live logs"
+echo ""
+echo "--- GitLab SMTP Test ---"
+# Test SMTP connectivity (non-blocking check)
+if [ -f /etc/gitlab/gitlab.rb ]; then
+    smtp_addr=$(sudo grep -E "gitlab_rails\['smtp_address'\]" /etc/gitlab/gitlab.rb 2>/dev/null | head -1)
+    if [ -n "$smtp_addr" ]; then
+        echo "SMTP configured: $smtp_addr"
+    else
+        echo "SMTP not configured in gitlab.rb"
+    fi
+fi
+echo ""
+EOF
 }
 
 echo "Collecting cluster state..."
@@ -595,6 +710,11 @@ echo ""
 
     # Home Assistant
     collect_home_assistant "$HOME_ASSISTANT_HOST"
+    echo ""
+
+    # GitLab
+    collect_host "$GITLAB_HOST"
+    collect_gitlab "$GITLAB_HOST"
     echo ""
 
 } > "$TEMP_DIR/raw.txt"

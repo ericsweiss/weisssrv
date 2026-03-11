@@ -8,3 +8,4 @@ resources:
   - mealie.yaml
   - bar-assistant.yaml
   - ingress-routes.yaml
+  - certificate.yaml

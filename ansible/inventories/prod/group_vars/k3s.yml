@@ -41,7 +41,6 @@ proxmox_resource_pool: platform
 # VM and cloud-init defaults inherited from proxmox_vm role
 # Override in host_vars if needed (see hosts.yml for per-host resources)
 
-# Postfix null client overrides (base config in role defaults)
-# Only override fields that differ from defaults
-postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER', default='relayuser') }}"
-postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD', default='changeme') }}"
+# Postfix null client credentials (from 1Password via 'op run')
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"

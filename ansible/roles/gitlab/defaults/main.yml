@@ -1,0 +1,95 @@
+---
+# GitLab EE (CE features) role defaults
+#
+# IMPORTANT: This role requires environment variables for secrets.
+# Always deploy using: task gitlab:deploy
+# Direct ansible-playbook usage will fail validation for SMTP and SAML secrets.
+# See docs/27-gitlab-deployment.md for deployment instructions.
+#
+# Required environment variables (set by Taskfile from 1Password):
+#   - GITLAB_ROOT_PASSWORD: Initial root user password
+#   - GITLAB_SAML_CERT_FINGERPRINT: Authentik SAML certificate SHA1 fingerprint
+#   - SMTP_RELAY_USER: SMTP relay username
+#   - SMTP_RELAY_PASSWORD: SMTP relay password
+#   - ROOT_EMAIL_ALIAS: Admin email address
+#   - SSH_PUBLIC_KEY: SSH public key for VM access
+
+# GitLab URLs (use external domain as canonical - internal access still works via AdGuard rewrites)
+gitlab_external_url: "https://git.ericsweiss.com"
+# SSH host for clone URLs - uses DNS-only hostname since Cloudflare won't proxy SSH traffic
+# direct.ericsweiss.com bypasses Cloudflare proxy, allowing SSH to work
+gitlab_ssh_host: "direct.ericsweiss.com"
+# SSH port displayed in clone URLs - external port (router forwards 2222 -> GitLab:22)
+gitlab_ssh_port: 2222
+
+# Repository storage path
+# Default: /var/opt/gitlab/git-data (on root disk)
+# Override to use separate storage: /mnt/gitlab-repos/git-data
+gitlab_git_data_dir: "/var/opt/gitlab/git-data"
+
+# Container Registry
+gitlab_registry_enabled: true
+gitlab_registry_external_url: "https://registry.git.ericsweiss.com"
+
+# GitLab Pages
+gitlab_pages_enabled: true
+gitlab_pages_external_url: "https://pages.git.ericsweiss.com"
+
+# SMTP configuration (via smtp-relay.esweiss.com)
+gitlab_smtp_enabled: true
+gitlab_smtp_address: "smtp-relay.esweiss.com"
+gitlab_smtp_port: 587
+gitlab_smtp_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}"
+gitlab_smtp_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') }}"
+gitlab_smtp_domain: "esweiss.com"
+gitlab_smtp_authentication: "login"
+gitlab_smtp_enable_starttls_auto: true
+gitlab_email_from: "gitlab@esweiss.com"
+gitlab_email_display_name: "GitLab"
+gitlab_email_reply_to: "noreply@esweiss.com"
+
+# SAML SSO (Authentik)
+gitlab_saml_enabled: true
+gitlab_saml_label: "Authentik"
+# Get fingerprint from Authentik: System → Certificates → expand cert → SHA1 Fingerprint
+gitlab_saml_idp_cert_fingerprint: "{{ lookup('ansible.builtin.env', 'GITLAB_SAML_CERT_FINGERPRINT') }}"
+# SSO URL from Authentik provider
+gitlab_saml_idp_sso_url: "https://auth.ericsweiss.com/application/saml/git/sso/binding/redirect/"
+
+# SAML Group-based access control (Authentik group names)
+gitlab_saml_groups_attribute: "http://schemas.xmlsoap.org/claims/Group"
+# required_groups: Only users in these groups can sign in (empty = allow all)
+gitlab_saml_required_groups: []
+# admin_groups: Users in these groups become GitLab admins
+gitlab_saml_admin_groups: []
+# external_groups: Users in these groups are marked as external (limited access)
+gitlab_saml_external_groups: []
+
+# Let's Encrypt: Disabled (Traefik handles TLS termination)
+# This is hardcoded in gitlab.rb.j2 - do NOT enable Let's Encrypt
+# as git.esweiss.com is an internal domain without public DNS records
+
+# NGINX configuration (listen on all interfaces for Traefik proxy)
+gitlab_nginx_listen_https: false
+gitlab_nginx_listen_port: 80
+
+# Trust proxy headers from Traefik
+gitlab_nginx_real_ip_trusted_addresses:
+  - 192.168.0.0/24
+  - 10.42.0.0/16
+  - 10.43.0.0/16
+
+# Backup configuration (local path, Proxmox VM snapshots for DR)
+gitlab_backup_path: "/var/opt/gitlab/backups"
+gitlab_backup_keep_time: 604800  # 7 days in seconds
+
+# Performance tuning for 16GB RAM
+gitlab_puma_workers: 3
+gitlab_sidekiq_concurrency: 15
+
+# Root password (from 1Password, used only on initial setup)
+gitlab_root_password: "{{ lookup('ansible.builtin.env', 'GITLAB_ROOT_PASSWORD') }}"
+
+# SSH security hardening
+# fail2ban protects against brute-force attacks on port 2222 (open to internet)
+gitlab_fail2ban_enabled: true

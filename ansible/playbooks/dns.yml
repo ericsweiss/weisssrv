@@ -2,11 +2,19 @@
 # DNS stack deployment playbook
 # Runs serially to avoid taking down both DNS servers simultaneously
 
+- name: Provision DNS LXC containers
+  hosts: dns
+  gather_facts: false
+  serial: 1  # Provision one at a time
+  roles:
+    - proxmox_lxc
+
 - name: Deploy DNS server configuration
   hosts: dns
   become: true
   serial: 1  # Deploy one DNS server at a time
   roles:
+    - base
     - postfix_null_client
     - unbound
     - adguard_home

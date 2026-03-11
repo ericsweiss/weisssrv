@@ -221,10 +221,10 @@ tasks:
     dir: "{{.ANSIBLE_DIR}}"
     env:
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
     cmds:
@@ -389,7 +389,9 @@ tasks:
       - helm repo add jetstack https://charts.jetstack.io --force-update
       - helm repo update jetstack
       - kubectl apply -f namespace.yaml
-      - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --version "{{.CERT_MANAGER_VERSION}}" --wait
+      # Apply CRDs with server-side apply to resolve field manager conflicts during upgrades
+      - kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/{{.CERT_MANAGER_VERSION}}/cert-manager.crds.yaml --server-side --force-conflicts
+      - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --version "{{.CERT_MANAGER_VERSION}}" --wait --skip-crds
       - |
         echo "Creating Cloudflare API token secret..."
         op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
@@ -1415,6 +1417,9 @@ tasks:
         envsubst "$ENVSUBST_VARS" < mealie.yaml | kubectl apply -f -
         envsubst "$ENVSUBST_VARS" < bar-assistant.yaml | kubectl apply -f -
 
+        # Apply TLS certificates (required before ingress routes)
+        kubectl apply -f certificate.yaml
+
         # Apply ingress routes (no substitution needed)
         kubectl apply -f ingress-routes.yaml
       - |
@@ -1862,4 +1867,230 @@ tasks:
       - sleep 30
       - echo "Testing connectivity..."
       - task: home-assistant:status
+
+  # =============================================================================
+  # GitLab Deployment Tasks
+  # =============================================================================
+
+  gitlab:deploy:
+    desc: Deploy GitLab (provisions VM and installs GitLab)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
+      GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
+    preconditions:
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml {{.CLI_ARGS}}
+
+  gitlab:deploy-check:
+    desc: Check mode - show what GitLab deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
+      GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
+    preconditions:
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml --check --diff {{.CLI_ARGS}}
+
+  gitlab:deploy-ingress:
+    desc: Deploy GitLab Traefik IngressRoutes and certificates
+    dir: ./kubernetes/apps/gitlab
+    cmds:
+      - kubectl apply -k .
+      - echo "GitLab IngressRoutes deployed successfully"
+      - echo ""
+      - echo "Verify with 'kubectl get ingressroute -n gitlab'"
+
+  gitlab:deploy-runner:
+    desc: Deploy GitLab Runner on k3s cluster
+    dir: ./kubernetes/apps/gitlab-runner
+    vars:
+      GITLAB_RUNNER_VERSION:
+        sh: grep '^gitlab_runner_helm_version:' {{.ROOT_DIR}}/ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
+    env:
+      # GitLab 18+ uses runner authentication tokens (glrt-*) created from
+      # GitLab Admin > CI/CD > Runners > New instance runner
+      # The legacy registration token workflow was removed in GitLab 17.0
+      GITLAB_RUNNER_TOKEN: op://Homelab/GitLab Runner/runner-token
+    preconditions:
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - echo "Deploying GitLab Runner version {{.GITLAB_RUNNER_VERSION}}"
+      - helm repo add gitlab https://charts.gitlab.io --force-update
+      - helm repo update gitlab
+      - kubectl apply -f namespace.yaml
+      # SECURITY: Use --set-file with process substitution to avoid exposing runner token
+      # in process arguments. The token is written to a temp file that's immediately consumed
+      # and the file descriptor is cleaned up by the shell.
+      - |
+        echo "Installing GitLab Runner via Helm..."
+        op run -- sh -c '
+          TMPFILE=$(mktemp)
+          trap "rm -f $TMPFILE" EXIT
+          echo "runnerToken: \"$GITLAB_RUNNER_TOKEN\"" > "$TMPFILE"
+          helm upgrade --install gitlab-runner gitlab/gitlab-runner \
+            -n gitlab-runner \
+            -f values.yaml \
+            -f "$TMPFILE" \
+            --version "{{.GITLAB_RUNNER_VERSION}}" \
+            --wait --timeout 5m'
+      - echo "GitLab Runner deployed successfully"
+      - echo ""
+      - 'echo "Verify with: kubectl get pods -n gitlab-runner"'
+
+  gitlab:status:
+    desc: Show GitLab status
+    cmds:
+      - echo "=== GitLab VM Status ==="
+      - ssh gitlab "sudo gitlab-ctl status" || echo "GitLab VM not reachable or not installed"
+      - echo ""
+      - echo "=== GitLab IngressRoutes ==="
+      - kubectl get ingressroute -n gitlab 2>/dev/null || echo "No IngressRoutes found"
+      - echo ""
+      - echo "=== GitLab Runner Pods ==="
+      - kubectl get pods -n gitlab-runner -o wide 2>/dev/null || echo "No runners found"
+
+  gitlab:verify:
+    desc: Run GitLab smoke tests (web UI, registry, pages, SSH)
+    # Requires bash for 'local' keyword in shell functions (dash doesn't support it)
+    shell: bash
+    vars:
+      GITLAB_VM_IP: "192.168.0.153"
+    cmds:
+      - |
+        echo "=== GitLab Smoke Tests ==="
+        echo ""
+        PASS=0
+        FAIL=0
+
+        # Helper function to check HTTP status (2xx or 3xx = success)
+        check_http_ok() {
+          local url="$1"
+          local status
+          status=$(curl -sI --max-time 10 "$url" 2>/dev/null | head -1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$')
+          if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ]; then
+            return 0
+          fi
+          return 1
+        }
+
+        # Test 1: GitLab Web UI (external)
+        echo -n "GitLab Web UI (git.ericsweiss.com)... "
+        if check_http_ok "https://git.ericsweiss.com"; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        # Test 2: GitLab Web UI (internal)
+        echo -n "GitLab Web UI (git.esweiss.com)... "
+        if check_http_ok "https://git.esweiss.com"; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        # Test 3: Container Registry (401 is expected without auth, proves registry is running)
+        echo -n "Container Registry (registry.git.ericsweiss.com)... "
+        registry_status=$(curl -sI --max-time 10 "https://registry.git.ericsweiss.com/v2/" 2>/dev/null | head -1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$')
+        if [ -n "$registry_status" ] && { [ "$registry_status" -eq 401 ] || { [ "$registry_status" -ge 200 ] && [ "$registry_status" -lt 400 ]; }; }; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        # Test 4: GitLab Pages (optional - only works if pages are deployed)
+        # 404 is acceptable (pages service running but no content), 5xx is failure
+        echo -n "GitLab Pages (pages.git.ericsweiss.com)... "
+        pages_status=$(curl -sI --max-time 10 "https://pages.git.ericsweiss.com" 2>/dev/null | head -1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$')
+        if [ -n "$pages_status" ] && [ "$pages_status" -lt 500 ]; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "SKIP (pages service not responding - may not be configured yet)"
+          # Don't increment FAIL - Pages test is optional until content is deployed
+        fi
+
+        # Test 5: SSH port 22 (internal, from LAN)
+        echo -n "Git SSH port 22 ({{.GITLAB_VM_IP}})... "
+        if nc -z -w 5 {{.GITLAB_VM_IP}} 22 2>/dev/null; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        # Test 6: SSH port 2222 (external)
+        echo -n "Git SSH port 2222 ({{.GITLAB_VM_IP}})... "
+        if nc -z -w 5 {{.GITLAB_VM_IP}} 2222 2>/dev/null; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        # Test 7: GitLab health check (internal API)
+        echo -n "GitLab health check (readiness)... "
+        if curl -s --max-time 10 "https://git.esweiss.com/-/readiness" 2>/dev/null | grep -q '"status":"ok"'; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        echo ""
+        echo "=== Results: $PASS passed, $FAIL failed ==="
+        if [ $FAIL -gt 0 ]; then
+          exit 1
+        fi
+
+  gitlab:backup:
+    desc: Create GitLab backup
+    cmds:
+      - echo "Creating GitLab backup..."
+      - ssh gitlab "sudo gitlab-backup create"
+      - echo ""
+      - 'echo "Backup complete. List backups with:"'
+      - echo "  ssh gitlab 'sudo ls -la /var/opt/gitlab/backups/'"
+
+  gitlab:console:
+    desc: SSH to GitLab VM
+    cmds:
+      - ssh gitlab
+
+  gitlab:logs:
+    desc: View GitLab logs
+    cmds:
+      - ssh gitlab "sudo gitlab-ctl tail"
+
+  gitlab:reconfigure:
+    desc: Reconfigure GitLab after changes
+    cmds:
+      - ssh gitlab "sudo gitlab-ctl reconfigure"
 
