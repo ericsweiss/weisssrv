@@ -1,0 +1,181 @@
+# {{ ansible_managed }}
+# GitLab EE Configuration
+# See https://docs.gitlab.com/omnibus/settings/configuration.html
+
+# =============================================================================
+# Core Configuration
+# =============================================================================
+
+external_url '{{ gitlab_external_url }}'
+
+# GitLab Rails configuration
+gitlab_rails['gitlab_email_from'] = '{{ gitlab_email_from }}'
+gitlab_rails['gitlab_email_display_name'] = '{{ gitlab_email_display_name }}'
+gitlab_rails['gitlab_email_reply_to'] = '{{ gitlab_email_reply_to }}'
+
+# Time zone
+gitlab_rails['time_zone'] = 'America/Los_Angeles'
+
+# =============================================================================
+# SSH Configuration
+# =============================================================================
+
+# SSH host for clone URLs - use DNS-only hostname since Cloudflare won't proxy SSH
+# This allows git.ericsweiss.com to remain proxied for web UI while SSH uses direct access
+gitlab_rails['gitlab_ssh_host'] = '{{ gitlab_ssh_host }}'
+gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
+
+# =============================================================================
+# NGINX Configuration (for Traefik reverse proxy)
+# =============================================================================
+
+nginx['listen_https'] = {{ gitlab_nginx_listen_https | lower }}
+nginx['listen_port'] = {{ gitlab_nginx_listen_port }}
+
+# Trust Traefik proxy headers
+nginx['real_ip_trusted_addresses'] = {{ gitlab_nginx_real_ip_trusted_addresses | to_json }}
+nginx['real_ip_header'] = 'X-Forwarded-For'
+nginx['real_ip_recursive'] = 'on'
+
+# Tell GitLab that external traffic is HTTPS (via Traefik reverse proxy)
+nginx['proxy_set_headers'] = {
+  "X-Forwarded-Proto" => "https",
+  "X-Forwarded-Ssl" => "on"
+}
+
+# =============================================================================
+# Let's Encrypt (Disabled - Traefik handles TLS)
+# =============================================================================
+
+# Completely disable Let's Encrypt since TLS is terminated at Traefik
+letsencrypt['enable'] = false
+letsencrypt['auto_renew'] = false
+
+# =============================================================================
+# SMTP Configuration
+# =============================================================================
+
+{% if gitlab_smtp_enabled %}
+gitlab_rails['smtp_enable'] = true
+gitlab_rails['smtp_address'] = '{{ gitlab_smtp_address }}'
+gitlab_rails['smtp_port'] = {{ gitlab_smtp_port }}
+gitlab_rails['smtp_user_name'] = '{{ gitlab_smtp_user }}'
+gitlab_rails['smtp_password'] = '{{ gitlab_smtp_password }}'
+gitlab_rails['smtp_domain'] = '{{ gitlab_smtp_domain }}'
+gitlab_rails['smtp_authentication'] = '{{ gitlab_smtp_authentication }}'
+gitlab_rails['smtp_enable_starttls_auto'] = {{ gitlab_smtp_enable_starttls_auto | lower }}
+gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
+{% endif %}
+
+# =============================================================================
+# Container Registry
+# =============================================================================
+
+{% if gitlab_registry_enabled %}
+registry_external_url '{{ gitlab_registry_external_url }}'
+registry['enable'] = true
+registry_nginx['listen_https'] = false
+registry_nginx['listen_port'] = 5050
+{% endif %}
+
+# =============================================================================
+# GitLab Pages
+# =============================================================================
+
+{% if gitlab_pages_enabled %}
+pages_external_url '{{ gitlab_pages_external_url }}'
+gitlab_pages['enable'] = true
+# GitLab Pages listens directly on 0.0.0.0:8090 for Traefik
+gitlab_pages['listen_proxy'] = "0.0.0.0:8090"
+# Disable pages_nginx (Traefik connects directly to gitlab_pages)
+pages_nginx['enable'] = false
+{% endif %}
+
+# =============================================================================
+# SAML SSO (Authentik)
+# =============================================================================
+
+{% if gitlab_saml_enabled %}
+gitlab_rails['omniauth_enabled'] = true
+gitlab_rails['omniauth_allow_single_sign_on'] = ['saml']
+gitlab_rails['omniauth_sync_email_from_provider'] = 'saml'
+gitlab_rails['omniauth_sync_profile_from_provider'] = ['saml']
+gitlab_rails['omniauth_sync_profile_attributes'] = ['email']
+gitlab_rails['omniauth_block_auto_created_users'] = false
+gitlab_rails['omniauth_auto_link_saml_user'] = true
+gitlab_rails['omniauth_auto_sign_in_with_provider'] = 'saml'
+
+gitlab_rails['omniauth_providers'] = [
+  {
+    name: "saml",
+    label: "{{ gitlab_saml_label }}",
+    icon: "https://auth.ericsweiss.com/static/dist/assets/icons/icon.svg",
+    groups_attribute: "{{ gitlab_saml_groups_attribute }}",
+{% if gitlab_saml_required_groups is defined and gitlab_saml_required_groups | length > 0 %}
+    required_groups: {{ gitlab_saml_required_groups | to_json }},
+{% endif %}
+{% if gitlab_saml_admin_groups is defined and gitlab_saml_admin_groups | length > 0 %}
+    admin_groups: {{ gitlab_saml_admin_groups | to_json }},
+{% endif %}
+{% if gitlab_saml_external_groups is defined and gitlab_saml_external_groups | length > 0 %}
+    external_groups: {{ gitlab_saml_external_groups | to_json }},
+{% endif %}
+    args: {
+      assertion_consumer_service_url: "{{ gitlab_external_url }}/users/auth/saml/callback",
+      idp_cert_fingerprint: "{{ gitlab_saml_idp_cert_fingerprint }}",
+      idp_sso_target_url: "{{ gitlab_saml_idp_sso_url }}",
+      issuer: "{{ gitlab_external_url }}",
+      name_identifier_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
+      attribute_statements: {
+        email: ["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"],
+        first_name: ["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname"],
+        last_name: ["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname"],
+        nickname: ["http://schemas.goauthentik.io/2021/02/saml/username"]
+      }
+    }
+  }
+]
+{% endif %}
+
+# =============================================================================
+# Repository Storage Configuration (GitLab 18+)
+# =============================================================================
+
+{% if gitlab_git_data_dir != '/var/opt/gitlab/git-data' %}
+# Custom repository storage on separate disk
+# Provides better I/O isolation and independent sizing
+# Note: GitLab 18+ requires gitaly['configuration'] instead of git_data_dirs
+# The /repositories suffix is required (previously added internally)
+gitaly['configuration'] = {
+  storage: [
+    {
+      name: 'default',
+      path: '{{ gitlab_git_data_dir }}/repositories',
+    },
+  ],
+}
+{% endif %}
+
+# =============================================================================
+# Backup Configuration
+# =============================================================================
+
+gitlab_rails['backup_path'] = '{{ gitlab_backup_path }}'
+gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_time }}
+
+# =============================================================================
+# Performance Tuning
+# =============================================================================
+
+puma['worker_processes'] = {{ gitlab_puma_workers }}
+sidekiq['concurrency'] = {{ gitlab_sidekiq_concurrency }}
+
+# Reduce memory usage - disable unused services
+prometheus_monitoring['enable'] = false
+# Note: grafana was removed from GitLab omnibus in 16.0+
+
+# =============================================================================
+# Monitoring Endpoint (for health checks)
+# =============================================================================
+
+gitlab_rails['monitoring_whitelist'] = ['127.0.0.1', '192.168.0.0/24']

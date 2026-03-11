@@ -59,14 +59,18 @@ This guide covers deploying the recipe management stack including Mealie (food r
 
 ### Node Placement
 
-| Component | Node | Reason |
-|-----------|------|--------|
-| Mealie | k3s-agt-opt-03 | General workload, prefer non-NAS |
-| Mealie PostgreSQL | k3s-agt-nas-01 | Pinned for local storage performance |
-| Bar Assistant | k3s-agt-nas-01 | Pinned for NFS data locality (SQLite) |
-| Redis | k3s-agt-nas-01 | Pinned alongside Bar Assistant |
-| Meilisearch | k3s-agt-nas-01 | Pinned alongside Bar Assistant |
-| Salt Rim | k3s-agt-opt-03 | General workload, prefer non-NAS |
+| Component | Placement Strategy | Reason |
+|-----------|-------------------|--------|
+| Mealie | `nodeSelector: esweiss.com/general` + prefer non-NAS | General workload, spreads across cluster |
+| Mealie PostgreSQL | Required hostname affinity: `k3s-agt-nas-01` | Pinned to NAS node for ZFS zvol storage |
+| Bar Assistant | Required hostname affinity: `k3s-agt-nas-01` | Pinned for NFS data locality (SQLite) |
+| Redis | Required hostname affinity: `k3s-agt-nas-01` | Pinned alongside Bar Assistant |
+| Meilisearch | Required hostname affinity: `k3s-agt-nas-01` | Pinned alongside Bar Assistant |
+| Salt Rim | `nodeSelector: esweiss.com/general` + prefer non-NAS | General workload, spreads across cluster |
+
+**Node placement details**:
+- **Mealie and Salt Rim** use `nodeSelector: esweiss.com/general: "true"` with `preferredDuringSchedulingIgnoredDuringExecution` affinity to prefer non-NAS nodes, allowing them to run anywhere if needed.
+- **Database and storage-dependent components** (Mealie PostgreSQL, Bar Assistant, Redis, Meilisearch) use `requiredDuringSchedulingIgnoredDuringExecution` with `kubernetes.io/hostname: k3s-agt-nas-01` to ensure they run on the NAS agent node where their persistent storage resides.
 
 ## Prerequisites
 
@@ -80,8 +84,8 @@ ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/mealie"
 ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/mealie"
 ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/mealie"
 
-# Create directories for Bar Assistant (includes SQLite database and Meilisearch data)
-ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/bar-assistant/{meilisearch,bar-assistant}"
+# Create directories for Bar Assistant (Meilisearch uses subPath within the NFS mount)
+ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/bar-assistant/meilisearch"
 ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/bar-assistant"
 ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/bar-assistant"
 ```
@@ -137,10 +141,12 @@ Both apps are accessible via internal and external domains with proper TLS certi
 
 | Domain | Type | DNS Provider | Traefik VIP | Certificate |
 |--------|------|--------------|-------------|-------------|
-| food.ericsweiss.com | External | Cloudflare (external-dns) | .100 (public) | `ericsweiss-com-tls` |
-| food.esweiss.com | Internal | AdGuard Home | .101 (internal) | `esweiss-com-tls` |
-| bar.ericsweiss.com | External | Cloudflare (external-dns) | .100 (public) | `ericsweiss-com-tls` |
-| bar.esweiss.com | Internal | AdGuard Home | .101 (internal) | `esweiss-com-tls` |
+| food.ericsweiss.com | External | Cloudflare (external-dns) | .100 (public) | `recipes-ericsweiss-tls` |
+| food.esweiss.com | Internal | AdGuard Home | .101 (internal) | `recipes-esweiss-tls` |
+| bar.ericsweiss.com | External | Cloudflare (external-dns) | .100 (public) | `recipes-ericsweiss-tls` |
+| bar.esweiss.com | Internal | AdGuard Home | .101 (internal) | `recipes-esweiss-tls` |
+
+**Note**: Per-namespace certificates are created by cert-manager via `certificate.yaml` in each namespace. This ensures certificate secrets exist in the same namespace as the IngressRoutes that reference them.
 
 **Add DNS rewrites in AdGuard Home:**
 
@@ -197,16 +203,20 @@ kubectl create secret generic bar-assistant-secrets \
 # 3. Deploy Mealie (with version substitution - manifests contain ${VERSION} placeholders)
 VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
 export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
+export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
 export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
 export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
 
-ENVSUBST_VARS='$MEALIE_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
+ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
 envsubst "$ENVSUBST_VARS" < kubernetes/apps/recipes/mealie.yaml | kubectl apply -f -
 
 # 4. Deploy Bar Assistant (with version substitution)
 envsubst "$ENVSUBST_VARS" < kubernetes/apps/recipes/bar-assistant.yaml | kubectl apply -f -
 
-# 5. Deploy ingress routes (no substitution needed)
+# 5. Create TLS certificates (required before ingress routes)
+kubectl apply -f kubernetes/apps/recipes/certificate.yaml
+
+# 6. Deploy ingress routes (no substitution needed)
 kubectl apply -f kubernetes/apps/recipes/ingress-routes.yaml
 ```
 
@@ -308,10 +318,14 @@ kubectl rollout restart deployment/bar-assistant -n recipes
 Update versions in `ansible/inventories/prod/group_vars/all.yml`:
 
 ```yaml
-mealie_version: "v2.0.0"  # or "latest"
-bar_assistant_version: "v4.0.0"  # or "latest"
-salt_rim_version: "v3.0.0"  # or "latest"
+# Current pinned versions (check for latest at maintenance:check-versions)
+mealie_version: "v3.12.0"
+mealie_postgresql_version: "18.3-alpine"  # PostgreSQL for Mealie database
+bar_assistant_version: "5.13.2"
+salt_rim_version: "4.14.1"
 ```
+
+Note: We pin to specific versions (not "latest") for reproducible deployments. Use `task maintenance:check-versions` to discover available updates. The PostgreSQL version should generally stay on stable major versions (17.x, 18.x) unless Mealie requires an upgrade.
 
 Then redeploy:
 
@@ -375,8 +389,12 @@ kubectl get ingressroute -n recipes
 # Check Traefik logs
 kubectl logs -n traefik -l app.kubernetes.io/name=traefik
 
-# Verify certificate
-kubectl get certificate -n cert-manager
+# Verify certificates exist in the recipes namespace
+kubectl get certificate -n recipes
+
+# Check certificate status and secrets
+kubectl describe certificate -n recipes
+kubectl get secrets -n recipes | grep tls
 ```
 
 ### Bar Assistant Search Not Working

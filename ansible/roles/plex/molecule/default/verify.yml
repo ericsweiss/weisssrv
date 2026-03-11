@@ -6,31 +6,31 @@
   become: true
   gather_facts: true
   tasks:
-    # Verify Plex apt repository is configured
-    - name: Check if Plex GPG key exists
+    # Verify Plex v2 apt repository is configured
+    - name: Check if Plex v2 GPG key exists
       ansible.builtin.stat:
-        path: /usr/share/keyrings/plex-archive-keyring.gpg
+        path: /etc/apt/keyrings/plexmediaserver.v2.gpg
       register: plex_gpg
       failed_when: not plex_gpg.stat.exists
 
     - name: Check if Plex apt repository file exists
       ansible.builtin.stat:
-        path: /etc/apt/sources.list.d/plexmediaserver.list
+        path: /etc/apt/sources.list.d/plex.list
       register: plex_repo
       failed_when: not plex_repo.stat.exists
 
     - name: Read Plex repository config
       ansible.builtin.slurp:
-        src: /etc/apt/sources.list.d/plexmediaserver.list
+        src: /etc/apt/sources.list.d/plex.list
       register: plex_repo_content
 
-    - name: Verify Plex repository config
+    - name: Verify Plex v2 repository config
       ansible.builtin.assert:
         that:
-          - "'downloads.plex.tv' in (plex_repo_content.content | b64decode)"
-          - "'signed-by=/usr/share/keyrings/plex-archive-keyring.gpg' in (plex_repo_content.content | b64decode)"
-        fail_msg: "Plex repository not configured correctly"
-        success_msg: "Plex repository configured correctly"
+          - "'repo.plex.tv' in (plex_repo_content.content | b64decode)"
+          - "'signed-by=/etc/apt/keyrings/plexmediaserver.v2.gpg' in (plex_repo_content.content | b64decode)"
+        fail_msg: "Plex v2 repository not configured correctly"
+        success_msg: "Plex v2 repository configured correctly"
 
     # Verify Plex package is installed
     - name: Check if Plex package is installed
@@ -216,9 +216,9 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "Plex apt repository configured:"
-          - "  - GPG key at /usr/share/keyrings/plex-archive-keyring.gpg"
-          - "  - Repository at /etc/apt/sources.list.d/plexmediaserver.list"
+          - "Plex v2 apt repository configured:"
+          - "  - GPG key at /etc/apt/keyrings/plexmediaserver.v2.gpg"
+          - "  - Repository at /etc/apt/sources.list.d/plex.list"
           - "Plex Media Server installed: {{ plex_version_check.stdout }}"
           - "Systemd service file: {{ 'found' if plex_service_file_exists else 'not found (container)' }}"
           - "Systemd override configured with:"

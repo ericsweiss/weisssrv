@@ -1,0 +1,23 @@
+---
+# GitLab Runner Kustomization
+#
+# NOTE: This kustomization only creates the namespace. The GitLab Runner itself
+# is deployed via Helm (not kustomize) using the 'task gitlab:deploy-runner' command.
+#
+# Deployment workflow:
+#   1. kubectl apply -k . (or task gitlab:deploy-runner does this automatically)
+#   2. helm upgrade --install gitlab-runner gitlab/gitlab-runner -n gitlab-runner -f values.yaml
+#
+# The namespace is managed separately to ensure it exists before Helm install.
+# This pattern allows Helm to manage the runner lifecycle while keeping namespace
+# creation idempotent and declarative.
+#
+# To deploy the runner: task gitlab:deploy-runner
+# To check status: task gitlab:status
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gitlab-runner
+
+resources:
+  - namespace.yaml

@@ -1,0 +1,40 @@
+---
+# Converge playbook for gitlab role testing
+# Tests configuration template rendering and directory/file management
+# Skips actual GitLab package installation (too heavy for CI)
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
+    - name: Wait for apt locks to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install minimal prerequisites for testing
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - systemd
+          - cron
+        state: present
+      when: ansible_os_family == "Debian"
+
+  roles:
+    - role: gitlab
+      vars:
+        skip_gitlab_install: true

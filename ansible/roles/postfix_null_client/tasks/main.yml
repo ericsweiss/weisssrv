@@ -2,6 +2,23 @@
 # Postfix null client configuration
 # Forwards all mail to the central SMTP relay
 
+# Validate SMTP credentials are present
+# This catches misconfiguration when env vars aren't injected via 'op run'
+- name: Validate SMTP relay credentials are present
+  ansible.builtin.assert:
+    that:
+      - postfix_sasl_user is defined
+      - postfix_sasl_user | length > 0
+      - postfix_sasl_password is defined
+      - postfix_sasl_password | length > 0
+    fail_msg: >-
+      SMTP relay credentials not set.
+      Ensure SMTP_RELAY_USER and SMTP_RELAY_PASSWORD are provided via 'op run --'.
+      Use the appropriate task command (e.g., 'task deploy:dns' or 'task gitlab:deploy')
+      which automatically injects secrets from 1Password.
+    success_msg: "SMTP relay credentials validated"
+  no_log: true
+
 - name: Install postfix and dependencies
   ansible.builtin.apt:
     name:
@@ -39,6 +56,12 @@
   notify:
     - Postmap sasl_passwd
     - Reload postfix
+  no_log: true
+
+- name: Ensure SASL password database exists
+  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
+  args:
+    creates: /etc/postfix/sasl_passwd.db
   no_log: true
 
 - name: Deploy virtual aliases

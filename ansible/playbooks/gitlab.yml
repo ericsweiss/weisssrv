@@ -1,0 +1,51 @@
+---
+# GitLab deployment playbook
+#
+# This playbook provisions the GitLab VM and deploys GitLab EE.
+#
+# Prerequisites:
+#   - Authentik SAML provider configured (for SSO)
+#   - 1Password items created (GitLab, GitLab SSO)
+#
+# Usage:
+#   task gitlab:deploy              # Full deployment (VM + GitLab)
+#   task gitlab:deploy-check        # Dry-run
+
+- name: Provision GitLab VM
+  hosts: gitlab
+  gather_facts: false
+  roles:
+    - proxmox_vm
+
+- name: Deploy GitLab
+  hosts: gitlab
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for GitLab VM to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      when: not ansible_check_mode
+
+    - name: Check if host is reachable (check mode safety)
+      ansible.builtin.wait_for_connection:
+        timeout: 10
+      register: host_reachable
+      ignore_errors: true
+      ignore_unreachable: true
+      when: ansible_check_mode
+
+    - name: Skip play if host unreachable in check mode
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - host_reachable is defined
+        - host_reachable is failed or host_reachable.unreachable | default(false)
+
+    - name: Gather facts after connection is established
+      ansible.builtin.setup:
+  roles:
+    - base
+    - postfix_null_client
+    - gitlab
+    - proxmox_firewall

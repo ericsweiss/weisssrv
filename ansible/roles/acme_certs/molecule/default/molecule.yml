@@ -18,18 +18,27 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
     tmpfs:
       - /run
-      - /tmp
+      - /run/lock
+    # Keep /tmp as regular directory (not tmpfs) to preserve state between test phases
+    # This allows git clone, ansible tmp files, etc. to persist through idempotence tests
 provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker compatibility with newer Ansible versions
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
   config_options:
     defaults:
       callbacks_enabled: profile_tasks, timer
       stdout_callback: ansible.builtin.default
       result_format: yaml
+      # Use /tmp for remote_tmp to avoid Docker container stability issues
+      # The ~/.ansible/tmp directory can become inaccessible when containers restart
+      remote_tmp: /tmp/.ansible-${USER}/tmp
   playbooks:
     prepare: prepare.yml
     converge: converge.yml

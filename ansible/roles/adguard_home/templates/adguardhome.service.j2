@@ -16,9 +16,19 @@ StartLimitBurst=10
 ExecStart={{ adguard_install_path }}/AdGuardHome "-s" "run"
 
 NoNewPrivileges=true
+{% if adguard_use_private_tmp | default(true) %}
 PrivateTmp=true
+{% else %}
+# PrivateTmp disabled for Docker container compatibility
+PrivateTmp=false
+{% endif %}
 ProtectHome=true
+{% if adguard_use_protect_system | default(true) %}
 ProtectSystem=strict
+{% else %}
+# ProtectSystem disabled for Docker container compatibility
+ProtectSystem=false
+{% endif %}
 ReadWritePaths={{ adguard_install_path }}
 
 WorkingDirectory={{ adguard_install_path }}

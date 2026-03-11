@@ -12,8 +12,8 @@ After={{ after_target }}
 Environment="PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR={{ plex_config_dir }}/Library/Application Support"
 
 # Set transcoder temp directory
+# Note: PLEX_MEDIA_SERVER_TMPDIR removed in Plex 1.43.0+ (now set in Preferences.xml)
 Environment="TMPDIR={{ plex_transcode_dir }}"
-Environment="PLEX_MEDIA_SERVER_TMPDIR={{ plex_transcode_dir }}"
 
 {% if plex_claim | length > 0 %}
 # Plex claim token for initial setup

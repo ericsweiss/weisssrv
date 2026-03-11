@@ -14,6 +14,11 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
     networks:
       - name: cert-stack-net
     groups:
@@ -28,6 +33,11 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
     networks:
       - name: cert-stack-net
     groups:
@@ -42,6 +52,11 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
     networks:
       - name: cert-stack-net
     groups:
@@ -52,6 +67,8 @@ provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../../../roles
+    # Required for molecule_docker compatibility with newer Ansible versions
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
   inventory:

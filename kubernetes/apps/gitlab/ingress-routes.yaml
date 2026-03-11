@@ -1,0 +1,184 @@
+---
+# IngressRoutes for GitLab services
+# Routes traffic from Traefik to GitLab VM (192.168.0.153)
+
+# =============================================================================
+# GitLab Web UI
+# =============================================================================
+
+# External - git.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-web
+  namespace: gitlab
+  # No external-dns annotation - DNS managed by Terraform
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`git.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-web
+          port: 80
+  tls:
+    secretName: gitlab-services-ericsweiss-tls
+
+---
+# Internal - git.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-web-internal
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`git.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: strip-www
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-web
+          port: 80
+  tls:
+    secretName: gitlab-services-esweiss-tls
+
+---
+# =============================================================================
+# GitLab Container Registry
+# =============================================================================
+
+# External - registry.git.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-registry
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`registry.git.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-registry
+          port: 5050
+  tls:
+    secretName: gitlab-services-ericsweiss-tls
+
+---
+# Internal - registry.git.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-registry-internal
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`registry.git.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-registry
+          port: 5050
+  tls:
+    secretName: gitlab-services-esweiss-tls
+
+---
+# =============================================================================
+# GitLab Pages
+# Uses HostRegexp for wildcard matching
+# =============================================================================
+#
+# LIMITATION: These routes only match single-label subdomains (e.g., user.pages.git.ericsweiss.com).
+# Nested subdomains like group.subgroup.pages.git.ericsweiss.com will NOT match and will NOT
+# have TLS (the wildcard cert doesn't cover them either).
+#
+# This is intentional - wildcard certs (*.pages.git.ericsweiss.com) only cover one level.
+# GitLab Pages for nested groups (group/subgroup) should use hyphenated names (group-subgroup).
+# See certificate.yaml for more details on this limitation.
+
+# External - *.pages.git.ericsweiss.com and pages.git.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-pages
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # Wildcard subdomain pages (user.pages.git.ericsweiss.com)
+    # Use [^.]+ to match single-label subdomains only (matches wildcard cert *.pages.git.ericsweiss.com)
+    # Traefik v3 syntax: HostRegexp uses Go regex directly without capture groups
+    - match: HostRegexp(`^[^.]+\.pages\.git\.ericsweiss\.com$`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-pages
+          port: 8090
+    # Apex pages domain
+    - match: Host(`pages.git.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-pages
+          port: 8090
+  tls:
+    secretName: gitlab-pages-ericsweiss-tls
+
+---
+# Internal - *.pages.git.esweiss.com and pages.git.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-pages-internal
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # Wildcard subdomain pages (user.pages.git.esweiss.com)
+    # Use [^.]+ to match single-label subdomains only (matches wildcard cert *.pages.git.esweiss.com)
+    # Traefik v3 syntax: HostRegexp uses Go regex directly without capture groups
+    - match: HostRegexp(`^[^.]+\.pages\.git\.esweiss\.com$`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-pages
+          port: 8090
+    # Apex pages domain
+    - match: Host(`pages.git.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-pages
+          port: 8090
+  tls:
+    secretName: gitlab-pages-esweiss-tls

@@ -10,12 +10,28 @@
     - ../../../../inventories/prod/group_vars/all.yml
 
   pre_tasks:
-    # IMPORTANT: This bcrypt hash MUST match the plaintext password in molecule.yml
-    # The hash below is the canonical sample bcrypt hash for plaintext "password" (cost factor 10)
-    # This enables adguardhome-sync to authenticate correctly in integration tests
-    - name: Set AdGuard admin password hash (workaround for Molecule YAML parser)
-      ansible.builtin.set_fact:
-        adguard_admin_password_hash: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+    # Note: adguard_admin_password_hash is now generated automatically by the adguard_home role
+    # from adguard_admin_password using password_hash('bcrypt'). No manual set_fact needed.
+
+    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
+    - name: Wait for apt locks to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    # Fix any interrupted dpkg state in Docker containers
+    - name: Fix any interrupted dpkg state
+      ansible.builtin.shell: |
+        dpkg --configure -a || true
+      args:
+        executable: /bin/bash
+      changed_when: false
 
     - name: Update apt cache
       ansible.builtin.apt:

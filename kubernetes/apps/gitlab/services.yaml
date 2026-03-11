@@ -1,0 +1,104 @@
+---
+# Services and EndpointSlices for GitLab VM (192.168.0.153)
+# GitLab runs outside the cluster; Traefik routes to it via these services
+
+# =============================================================================
+# GitLab Web UI (port 80)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-web
+  namespace: gitlab
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: gitlab-web
+  namespace: gitlab
+  labels:
+    kubernetes.io/service-name: gitlab-web
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - port: 80
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 192.168.0.153
+    conditions:
+      ready: true
+
+---
+# =============================================================================
+# GitLab Container Registry (port 5050)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-registry
+  namespace: gitlab
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5050
+      targetPort: 5050
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: gitlab-registry
+  namespace: gitlab
+  labels:
+    kubernetes.io/service-name: gitlab-registry
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - port: 5050
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 192.168.0.153
+    conditions:
+      ready: true
+
+---
+# =============================================================================
+# GitLab Pages (port 8090)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-pages
+  namespace: gitlab
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8090
+      targetPort: 8090
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: gitlab-pages
+  namespace: gitlab
+  labels:
+    kubernetes.io/service-name: gitlab-pages
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - port: 8090
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 192.168.0.153
+    conditions:
+      ready: true

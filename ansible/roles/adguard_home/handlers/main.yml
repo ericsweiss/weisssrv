@@ -5,7 +5,16 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# Restart AdGuardHome with serialized execution and connection resilience
+# Docker containers can have transient exec interface issues after systemd restarts
+# Using throttle: 1 ensures only one host restarts at a time, preventing race conditions
+# The retries handle transient connection failures in test environments
 - name: Restart AdGuardHome
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: AdGuardHome
     state: restarted
+  register: adguard_restart_result
+  retries: 3
+  delay: 3
+  until: adguard_restart_result is succeeded
+  throttle: 1

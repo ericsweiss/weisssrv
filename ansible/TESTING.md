@@ -103,15 +103,15 @@ ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule destroy
 **This environment variable is required for all molecule commands.** The `test-all-roles.sh`
 script and the Taskfile `ansible:test` task set it automatically.
 
-The reason: `molecule-docker`'s internal `create.yml` playbook contains a broken conditional:
+The reason: `molecule-docker`'s internal `create.yml` playbook contains a bare conditional:
 
 ```yaml
 # molecule-docker/playbooks/create.yml line 14
 when: (lookup('env', 'HOME'))
 ```
 
-Ansible 2.20+ requires boolean conditionals, but this evaluates to a string. The
-`ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1` flag allows this legacy behavior. This is an upstream
+Ansible 2.20+ requires boolean conditionals, but this evaluates to a string. Setting
+`ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1` allows this legacy behavior. This is an upstream
 issue with `molecule-docker`, not with our roles.
 
 ## Container Testing Considerations

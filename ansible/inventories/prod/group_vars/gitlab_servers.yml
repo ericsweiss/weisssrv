@@ -1,0 +1,46 @@
+---
+# GitLab servers configuration
+
+# Repository storage on separate ZFS zvol (200GB on ssd pool)
+# Mounted at /mnt/gitlab-repos, data stored in /mnt/gitlab-repos/git-data
+# This separates repo data from root disk for:
+#   - Better I/O isolation
+#   - Independent sizing and growth
+#   - Easier backup and migration
+gitlab_git_data_dir: "/mnt/gitlab-repos/git-data"
+
+# SAML Group-based access control (Authentik group names)
+# Only users in these groups can access GitLab
+gitlab_saml_required_groups:
+  - "gitlab-users"
+  - "gitlab-admins"
+
+# Users in this group become GitLab admins
+gitlab_saml_admin_groups:
+  - "gitlab-admins"
+
+# Postfix null client configuration (for sending mail via smtp-relay)
+postfix_config:
+  myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
+  myorigin: "/etc/mailname"
+  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
+  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
+  mynetworks: "127.0.0.0/8"
+  inet_interfaces: "loopback-only"
+  smtp_tls_security_level: "encrypt"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+
+# SASL credentials for authenticating to smtp-relay (from 1Password via 'op run')
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"
+
+# Mail aliases
+mail_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"

@@ -36,26 +36,42 @@
     state: present
   when: not (skip_gpu_drivers | default(false))
 
-- name: Download Plex GPG key
+# Plex repository v2 (as of Plex v1.43.0)
+# https://support.plex.tv/articles/235974187-enable-repository-updating-for-supported-linux-server-distributions/
+
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Remove legacy Plex repository configuration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/plexmediaserver.list
+    - /usr/share/keyrings/plex-archive-keyring.gpg
+    - /usr/share/keyrings/plexmediaserver.gpg
+
+- name: Download Plex v2 GPG key
   ansible.builtin.get_url:
-    url: https://downloads.plex.tv/plex-keys/PlexSign.key
-    dest: /tmp/PlexSign.key
+    url: https://downloads.plex.tv/plex-keys/PlexSign.v2.key
+    dest: /tmp/PlexSign.v2.key
     mode: "0644"
 
-- name: Add Plex GPG key to keyring
+- name: Add Plex v2 GPG key to keyring
   ansible.builtin.shell: |
-    gpg --dearmor < /tmp/PlexSign.key > /usr/share/keyrings/plex-archive-keyring.gpg
+    gpg --yes --dearmor -o /etc/apt/keyrings/plexmediaserver.v2.gpg < /tmp/PlexSign.v2.key
   args:
-    creates: /usr/share/keyrings/plex-archive-keyring.gpg
+    creates: /etc/apt/keyrings/plexmediaserver.v2.gpg
 
-- name: Add Plex repository
+- name: Add Plex v2 repository
   ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/plex-archive-keyring.gpg trusted=yes] https://downloads.plex.tv/repo/deb public main"
-    filename: plexmediaserver
+    repo: "deb [signed-by=/etc/apt/keyrings/plexmediaserver.v2.gpg] https://repo.plex.tv/deb/ public main"
+    filename: plex
     state: present
     update_cache: true
-  # Note: trusted=yes is required because Plex's GPG key uses SHA1 signatures
-  # which Debian Trixie (13) rejects. This only affects the Plex repository.
 
 - name: Install Plex Media Server (pinned version)
   ansible.builtin.apt:

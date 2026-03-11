@@ -14,11 +14,11 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                 # Configuration management
 │   ├── inventories/prod/    # Production inventory + vars
-│   ├── roles/               # 17 roles for all services
+│   ├── roles/               # 18 roles for all services
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
 ├── kubernetes/              # Future k3s manifests (Flux)
-├── docs/                    # Documentation (26 files)
+├── docs/                    # Documentation (27 files)
 ├── scripts/                 # Utility scripts
 └── .github/workflows/       # CI/CD automation
 ```
@@ -72,7 +72,7 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
-  - Version 2025.12.3 (latest stable)
+  - Version 2026.2.1
   - PostgreSQL data on persistent ZFS zvol (ssd/appdata/authentik/postgres, 10GB)
 - Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
 - Download clients + media stack (downloads namespace):
@@ -91,11 +91,20 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - OpenAI integration for Mealie recipe parsing
   - Mealie PostgreSQL on persistent ZFS zvol (ssd/appdata/mealie/postgres, 32GB)
 - Home Assistant (home.esweiss.com / home.ericsweiss.com):
-  - HAOS VM on pve-nas-01 (192.168.0.154)
+  - HAOS VM on pve-prec-01 (192.168.0.154, HA-managed with multi-node replication)
   - Traefik ingress with WebSocket support
   - Authentik SSO via hass-openid custom integration (OIDC)
   - API bypass routes for HA integrations (sonarr, radarr, lidarr, nzbget, qbittorrent)
   - NFS media mount (read-only access to unified media library)
+- GitLab (git.esweiss.com / git.ericsweiss.com):
+  - GitLab EE 18.9.1 (CE features) on pve-nas-01 (192.168.0.153)
+  - VM with 6 vCPUs, 16GB RAM, 100GB root disk
+  - Repository data on separate ZFS zvol (ssd/appdata/gitlab/repos, 200GB)
+  - Container Registry (registry.git.ericsweiss.com)
+  - GitLab Pages (*.pages.git.ericsweiss.com)
+  - CI/CD Runners on k3s cluster
+  - Authentik SSO integration
+  - Git SSH on port 22 (internal), port 2222 (external)
 
 **Future**:
 - GitOps via Flux
@@ -183,6 +192,18 @@ task home-assistant:vm-stop       # Stop the Home Assistant VM
 task home-assistant:vm-restart    # Restart the Home Assistant VM
 task home-assistant:console       # SSH to Home Assistant (requires SSH add-on)
 task home-assistant:snapshot      # Create Proxmox VM snapshot
+
+# GitLab (VM on pve-nas-01 with Traefik ingress)
+task gitlab:deploy                # Deploy GitLab (VM + application)
+task gitlab:deploy-check          # Dry-run deployment
+task gitlab:deploy-ingress        # Deploy Traefik IngressRoutes
+task gitlab:deploy-runner         # Deploy CI/CD runners on k3s
+task gitlab:status                # Show GitLab and runner status
+task gitlab:verify                # Run smoke tests (web UI, registry, pages, SSH)
+task gitlab:backup                # Create GitLab backup
+task gitlab:console               # SSH to GitLab VM
+task gitlab:logs                  # View GitLab logs
+task gitlab:reconfigure           # Reconfigure GitLab after changes
 
 # Version discovery (automated update checking)
 task maintenance:check-versions        # Check all 24 managed services for available updates
@@ -280,6 +301,9 @@ In vault "Homelab":
 - **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
 - **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
+- **GitLab** - root-password (initial GitLab root user password)
+- **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
+- **GitLab Runner** - runner-token (glrt-* format, from GitLab Admin > CI/CD > Runners > New instance runner)
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
 
 ### Using 1Password
@@ -331,7 +355,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 
 ## Ansible Roles
 
-1. **base** - Packages, SSH hardening, users, timezone, DNS configuration
+1. **base** - Packages, SSH hardening, fail2ban, users, timezone, DNS configuration
 2. **qol** - zsh + Oh My Zsh (20 plugins), neovim + Vundle, fzf, ripgrep
 3. **postfix_null_client** - Local mail relay to smtp-relay
 4. **tailscale** - VPN setup (manual `tailscale up` required)
@@ -348,6 +372,8 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 15. **plex** - Plex Media Server installation and configuration
 16. **home_assistant** - Home Assistant configuration deployment via SSH/SCP (HAOS cannot be managed traditionally)
 17. **proxmox_ha** - Proxmox HA rules, resources, and ZFS replication management
+18. **gitlab** - GitLab EE (CE features) installation and configuration
+19. **resolv_conf** - Shared /etc/resolv.conf management (used by base, adguard_home)
 
 ## User Management
 
@@ -386,35 +412,37 @@ Application versions centralized in `ansible/inventories/prod/group_vars/all.yml
 
 ```yaml
 # Base infrastructure
-adguard_home_version: "0.107.71"
-adguardhome_sync_version: "0.8.2"
-k3s_version: "v1.35.0+k3s3"
-kube_vip_version: "v1.0.4"
-authentik_version: "2025.12.3"
-plex_version: "1.42.2.10156-f737b826c"  # apt pinned (or "latest" for auto-update)
+adguard_home_version: "0.107.72"
+adguardhome_sync_version: "0.9.0"
+k3s_version: "v1.35.2+k3s1"
+kube_vip_version: "v1.1.0"
+authentik_version: "2026.2.1"
+plex_version: "1.43.0.10492-121068a07"  # apt pinned (or "latest" for auto-update)
 home_assistant_version: "17.0"       # HAOS, manual updates
+gitlab_version: "18.9.1-ee.0"        # GitLab EE (CE features)
+gitlab_runner_helm_version: "0.86.0" # GitLab Runner Helm chart
 
 # Helm charts (k3s platform)
 helm_chart_versions:
   metallb: "0.15.3"
-  traefik: "39.1.0-ea.1"
-  cert_manager: "v1.19.3"
+  traefik: "39.1.0-ea.2"
+  cert_manager: "v1.19.4"
   external_dns: "1.20.0"
 
 # Download clients (pinned to deployed versions)
-gluetun_version: "v3.41.0"
+gluetun_version: "v3.41.1"
 nzbget_version: "26.0"
 qbittorrent_version: "5.1.4"
 prowlarr_version: "2.3.0.5236"
 sonarr_version: "4.0.16.2944"
 radarr_version: "6.0.4.10291"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.10.1"
+pulsarr_version: "0.13.0"
 
 # Recipe stack
-mealie_version: "v3.10.2"
-bar_assistant_version: "5.13.1"
-salt_rim_version: "4.14.0"
+mealie_version: "v3.12.0"
+bar_assistant_version: "5.13.2"
+salt_rim_version: "4.14.1"
 ```
 
 **Automated version discovery** (`scripts/check-versions.py`):
@@ -466,10 +494,11 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 
 **Key Datasets**: tank/media, tank/share, ssd/appdata, nvme/media, nvme/fast
 
-**Persistent Database Storage (ZFS zvols)**:
+**Persistent Storage (ZFS zvols)**:
 - `ssd/appdata/authentik/postgres` - 10GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdb, mounted at /mnt/postgres-data
 - `ssd/appdata/mealie/postgres` - 32GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdc, mounted at /mnt/mealie-postgres-data
-- Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by k3s role
+- `ssd/appdata/gitlab/repos` - 200GB zvol, ext4, attached to gitlab VM as /dev/sdb, mounted at /mnt/gitlab-repos
+- Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by role
 - Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
 
 ### Compute Nodes - local-ssd ZFS Pool
@@ -528,6 +557,7 @@ See `docs/` for detailed guides:
 - 24-home-assistant-deployment.md - Home Assistant OS VM with Traefik ingress
 - 25-multi-node-expansion.md - Multi-node expansion and Proxmox HA guide
 - 26-multi-node-implementation.md - Step-by-step implementation for 6-node cluster
+- 27-gitlab-deployment.md - GitLab EE deployment (VM, registry, pages, runners)
 
 ## Important Context Files
 

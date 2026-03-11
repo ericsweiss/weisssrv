@@ -1,12 +1,8 @@
 # {{ ansible_managed }}
 
-{% if inventory_hostname in groups['dns'] %}
-nameserver 127.0.0.1
-{% else %}
 {% for nameserver in host_dns_servers %}
 nameserver {{ nameserver }}
 {% endfor %}
-{% endif %}
 
 # Domain configuration
 domain {{ internal_domain }}

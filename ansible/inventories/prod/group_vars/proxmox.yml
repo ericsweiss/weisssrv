@@ -22,5 +22,9 @@ ssh_permit_root_login: "prohibit-password"
 
 # Postfix null client SASL credentials (for relay to smtp-relay)
 # IMPORTANT: Must be set via 'op run' - invalid credentials will fail mail delivery
-postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') | mandatory }}"
-postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') | mandatory }}"
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"
+
+# Fail2ban configuration for Proxmox hosts
+# Enable pveproxy jail to protect Proxmox web UI (port 8006) from brute-force attacks
+fail2ban_pveproxy_enabled: true

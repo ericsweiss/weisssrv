@@ -5,6 +5,10 @@
 # Root login disabled for consistency with other LXC containers
 ssh_permit_root_login: "no"
 
+# LXC container settings
+# Nesting required for systemd 257+ (Debian 13) to function correctly
+lxc_nesting: true
+
 # Boot order configuration
 proxmox_startup_order: 20
 proxmox_startup_delay: 15

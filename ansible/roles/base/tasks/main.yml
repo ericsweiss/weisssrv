@@ -42,6 +42,39 @@
     - ansible_facts['os_family'] == "Debian"
     - is_virtual_machine | bool
 
+# Disable unattended-upgrades on VMs to prevent unexpected updates/reboots
+# We manage updates via controlled Task/Ansible workflows instead
+- name: Check if unattended-upgrades is installed
+  ansible.builtin.stat:
+    path: /etc/apt/apt.conf.d/20auto-upgrades
+  register: auto_upgrades_config
+  when: is_virtual_machine | bool
+
+- name: Disable unattended-upgrades auto-update
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      // Managed by Ansible - unattended-upgrades disabled
+      // Updates are managed via Task/Ansible workflows
+      APT::Periodic::Update-Package-Lists "0";
+      APT::Periodic::Unattended-Upgrade "0";
+      APT::Periodic::Download-Upgradeable-Packages "0";
+      APT::Periodic::AutocleanInterval "0";
+    mode: "0644"
+    owner: root
+    group: root
+  when:
+    - is_virtual_machine | bool
+    - auto_upgrades_config.stat.exists | default(false)
+
+- name: Stop and disable unattended-upgrades service
+  ansible.builtin.systemd:
+    name: unattended-upgrades
+    enabled: false
+    state: stopped
+  failed_when: false  # Service may not exist on all systems
+  when: is_virtual_machine | bool
+
 - name: Ensure admin user exists with sudo group
   ansible.builtin.user:
     name: "{{ admin_user }}"
@@ -123,3 +156,92 @@
   ansible.builtin.include_tasks: dns.yml
   when: not (skip_dns_config | default(false))
   tags: [dns, networking, base]
+
+# ============================================================================
+# Intel e1000e NIC workaround
+# The e1000e driver has known issues causing "Hardware Unit Hang" on
+# I219-LM/I219-V NICs. Disabling TSO/GSO prevents these hangs.
+# See: https://www.intel.com/content/www/us/en/support/articles/000057074/
+# ============================================================================
+
+- name: Check for Intel e1000e NIC
+  ansible.builtin.shell: |
+    set -o pipefail
+    lspci | grep -i ethernet | grep -i intel | grep -qE 'I219|I218|I217' && echo 'yes' || echo 'no'
+  args:
+    executable: /bin/bash
+  register: has_intel_e1000e
+  changed_when: false
+  failed_when: false
+  when: not is_virtual_machine | default(false)
+  tags: [networking, base]
+
+- name: Install ethtool for NIC configuration
+  ansible.builtin.apt:
+    name: ethtool
+    state: present
+  when:
+    - not is_virtual_machine | default(false)
+    - has_intel_e1000e.stdout | default('no') == 'yes'
+  tags: [networking, base]
+
+- name: Install e1000e TSO fix script
+  ansible.builtin.copy:
+    src: e1000e-tso-fix.sh
+    dest: /usr/local/sbin/e1000e-tso-fix.sh
+    mode: "0755"
+    owner: root
+    group: root
+  when:
+    - not is_virtual_machine | default(false)
+    - has_intel_e1000e.stdout | default('no') == 'yes'
+  tags: [networking, base]
+
+- name: Create e1000e TSO fix service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/e1000e-tso-fix.service
+    content: |
+      # Managed by Ansible - Intel e1000e Hardware Unit Hang workaround
+      # Disables TSO/GSO on Intel I219/I218/I217 NICs to prevent driver hangs
+      [Unit]
+      Description=Disable TSO/GSO on Intel e1000e NICs
+      After=network-pre.target
+      Before=network.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/e1000e-tso-fix.sh
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: "0644"
+    owner: root
+    group: root
+  when:
+    - not is_virtual_machine | default(false)
+    - has_intel_e1000e.stdout | default('no') == 'yes'
+  notify: Reload systemd
+  tags: [networking, base]
+
+- name: Enable and start e1000e TSO fix service
+  ansible.builtin.systemd:
+    name: e1000e-tso-fix
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - not is_virtual_machine | default(false)
+    - has_intel_e1000e.stdout | default('no') == 'yes'
+  tags: [networking, base]
+
+# ============================================================================
+# Fail2ban - Intrusion Prevention
+# ============================================================================
+# Protects against brute-force attacks on SSH and other services
+# Whitelists internal LAN (192.168.0.0/24) and Tailscale (100.64.0.0/10)
+
+- name: Include fail2ban tasks
+  ansible.builtin.include_tasks: fail2ban.yml
+  when: fail2ban_enabled | default(true)
+  tags: [security, fail2ban, base]

@@ -12,9 +12,10 @@
 #   - ansible-galaxy collections: community.docker, ansible.posix, community.general
 #
 # IMPORTANT: ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 is required because
-# molecule-docker's create.yml has a broken conditional that Ansible 2.20+
-# rejects. This is a molecule-docker upstream issue, not a problem with our
-# roles. See: https://github.com/ansible-community/molecule-plugins/issues/254
+# molecule-docker's internal playbooks (create.yml, destroy.yml) have bare
+# conditionals like `when: (lookup('env', 'HOME'))` that Ansible 2.20+ rejects.
+# This is a molecule-docker upstream issue, not a problem with our roles.
+# See: https://github.com/ansible-community/molecule-plugins/issues/254
 
 set -euo pipefail
 

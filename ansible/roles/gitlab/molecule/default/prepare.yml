@@ -1,0 +1,118 @@
+---
+# Prepare playbook: Initialize container for reliable testing
+# Sets up mock GitLab environment to test configuration template rendering
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to be ready
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        systemctl stop unattended-upgrades.service 2>/dev/null || true
+        systemctl disable apt-daily.timer 2>/dev/null || true
+        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    # Create ansible temp directory to prevent "Failed to create temporary directory" errors
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp
+        chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    # ==========================================================================
+    # Install fail2ban for GitLab SSH jail testing
+    # ==========================================================================
+    - name: Wait for apt locks to be released
+      ansible.builtin.raw: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      changed_when: false
+
+    - name: Install fail2ban for jail testing  # noqa: command-instead-of-module
+      ansible.builtin.shell:
+        cmd: |
+          apt-get update -q
+          apt-get install -y fail2ban iptables
+          mkdir -p /etc/fail2ban/jail.d
+          mkdir -p /etc/fail2ban/filter.d
+          systemctl enable fail2ban
+          systemctl start fail2ban || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    # ==========================================================================
+    # Create mock GitLab environment for template testing
+    # We skip actual GitLab installation but need the directory structure
+    # and git user to exist for testing configuration templates
+    # ==========================================================================
+
+    - name: Create mock GitLab environment
+      ansible.builtin.raw: |
+        # Create git group and user using numeric IDs directly
+        # This avoids dependency on shadow-utils which may not be installed
+        # GitLab uses UID/GID 998
+
+        # Create entry in /etc/group
+        if ! grep -q '^git:' /etc/group; then
+          echo 'git:x:998:' >> /etc/group
+        fi
+
+        # Create entry in /etc/passwd
+        if ! grep -q '^git:' /etc/passwd; then
+          echo 'git:x:998:998:GitLab:/var/opt/gitlab:/bin/sh' >> /etc/passwd
+        fi
+
+        # Create required directories
+        mkdir -p /etc/gitlab
+        mkdir -p /opt/gitlab/bin
+        mkdir -p /var/opt/gitlab/backups
+        mkdir -p /mnt/gitlab-repos/git-data/repositories
+
+        # Create gitlab-shell log directory for fail2ban jail
+        mkdir -p /var/log/gitlab/gitlab-shell
+
+        # Set ownership using numeric IDs (more reliable)
+        chown -R 998:998 /var/opt/gitlab/backups
+        chown -R 998:998 /mnt/gitlab-repos
+        chown -R 998:998 /var/log/gitlab
+        chmod 700 /var/opt/gitlab/backups
+        chmod 700 /mnt/gitlab-repos/git-data
+        chmod 700 /mnt/gitlab-repos/git-data/repositories
+
+        # Create mock gitlab-ctl script
+        cat > /opt/gitlab/bin/gitlab-ctl << 'EOF'
+        #!/bin/bash
+        case "$1" in
+          status) echo "run: puma: (pid 1234) 123s"; echo "All services running"; exit 0 ;;
+          start|restart|stop|reconfigure) echo "Mock: $1 executed"; exit 0 ;;
+          *) echo "Usage: gitlab-ctl {status|start|stop|restart|reconfigure}"; exit 1 ;;
+        esac
+        EOF
+        chmod +x /opt/gitlab/bin/gitlab-ctl
+
+        # Verify git user was created
+        id git || { echo "ERROR: Failed to create git user"; exit 1; }
+      changed_when: false

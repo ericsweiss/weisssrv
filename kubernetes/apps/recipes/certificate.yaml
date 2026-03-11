@@ -1,0 +1,38 @@
+---
+# TLS certificates for Recipes namespace (Mealie + Bar Assistant)
+# These must be in the same namespace as the IngressRoutes that reference them
+
+# External domains - food.ericsweiss.com, bar.ericsweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: recipes-tls
+  namespace: recipes
+spec:
+  secretName: recipes-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "food.ericsweiss.com"
+  dnsNames:
+    - "food.ericsweiss.com"
+    - "bar.ericsweiss.com"
+  renewBefore: 720h
+
+---
+# Internal domains - food.esweiss.com, bar.esweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: recipes-tls-internal
+  namespace: recipes
+spec:
+  secretName: recipes-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "food.esweiss.com"
+  dnsNames:
+    - "food.esweiss.com"
+    - "bar.esweiss.com"
+  renewBefore: 720h

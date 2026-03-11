@@ -1,0 +1,16 @@
+---
+# Shared role for /etc/resolv.conf management
+# Used by: base, adguard_home roles
+#
+# Required variables:
+#   - host_dns_servers: list of nameserver IPs
+#   - internal_domain: domain for search/domain directives
+
+- name: Configure /etc/resolv.conf
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: resolv_conf_result

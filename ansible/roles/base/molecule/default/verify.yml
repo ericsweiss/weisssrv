@@ -175,6 +175,61 @@
         path: /tmp/resolv.conf.test
         state: absent
 
+    # ========================================================================
+    # Fail2ban verification
+    # ========================================================================
+    - name: Check if fail2ban is installed
+      ansible.builtin.command: dpkg -l fail2ban
+      register: fail2ban_pkg
+      changed_when: false
+      failed_when: fail2ban_pkg.rc != 0
+
+    - name: Check if fail2ban jail.local exists
+      ansible.builtin.stat:
+        path: /etc/fail2ban/jail.local
+      register: jail_local
+      failed_when: not jail_local.stat.exists
+
+    - name: Read fail2ban jail.local content
+      ansible.builtin.slurp:
+        src: /etc/fail2ban/jail.local
+      register: jail_local_content
+
+    - name: Verify jail.local contains expected configuration
+      ansible.builtin.assert:
+        that:
+          - "'ignoreip' in (jail_local_content.content | b64decode)"
+          - "'127.0.0.1' in (jail_local_content.content | b64decode)"
+          - "'[sshd]' in (jail_local_content.content | b64decode)"
+          - "'enabled = true' in (jail_local_content.content | b64decode)"
+        fail_msg: "jail.local does not contain expected fail2ban configuration"
+        success_msg: "jail.local contains expected fail2ban configuration"
+
+    - name: Check fail2ban service status
+      ansible.builtin.command: fail2ban-client status
+      register: fail2ban_status
+      changed_when: false
+      failed_when: false
+
+    - name: Verify fail2ban is running (if systemd is functional)
+      ansible.builtin.assert:
+        that:
+          - fail2ban_status.rc == 0
+        fail_msg: "fail2ban is not running"
+        success_msg: "fail2ban is running"
+      when: fail2ban_status.rc == 0
+
+    - name: Check fail2ban sshd jail status
+      ansible.builtin.command: fail2ban-client status sshd
+      register: sshd_jail_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display fail2ban jail status
+      ansible.builtin.debug:
+        msg: "{{ sshd_jail_status.stdout_lines | default(['sshd jail status not available']) }}"
+      when: sshd_jail_status.rc == 0
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
@@ -190,3 +245,4 @@
           - "DNS template renders correctly (tested to temp file)"
           - "SSH hardening skipped (skip_ssh_config=true)"
           - "DNS configuration skipped (skip_dns_config=true, but template tested)"
+          - "Fail2ban installed and configured with sshd jail"

@@ -6,17 +6,17 @@ This document tracks remaining work and planned improvements for the weisssrv ho
 
 ### Phase 1: Base Infrastructure (COMPLETE)
 
-- [x] Proxmox hosts configured (pve-nas-01, pve-opt-03)
-- [x] ZFS storage pools configured (tank/ssd/nvme/archive)
+- [x] Proxmox cluster configured (6 nodes: pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01)
+- [x] ZFS storage pools configured (tank/ssd/nvme/archive on NAS; local-ssd on compute nodes)
 - [x] DNS stack (AdGuard Home + Unbound with DoT)
 - [x] SMTP relay via Gmail
 - [x] Certificates (acme.sh with Cloudflare DNS-01)
 - [x] Firewall rules (IPSets + Security Groups)
-- [x] Tailscale VPN on all hosts
+- [x] Tailscale VPN on Proxmox hosts only (remote access to cluster nodes)
 
 ### Phase 2: K3s Platform (COMPLETE)
 
-- [x] K3s cluster deployed (3 nodes: 1 server + 2 agents)
+- [x] K3s cluster deployed (9 nodes: 3 servers + 6 agents)
 - [x] kube-vip for API HA (192.168.0.161)
 - [x] MetalLB for LoadBalancer services (192.168.0.100-101)
 - [x] Traefik ingress controller
@@ -38,7 +38,7 @@ This document tracks remaining work and planned improvements for the weisssrv ho
   - Authentik SSO integration for both apps
   - OpenAI integration for Mealie recipe parsing
 - [x] Home Assistant deployed:
-  - HAOS VM on pve-nas-01 (192.168.0.154)
+  - HAOS VM on pve-prec-01 (192.168.0.154, HA-managed with multi-node replication)
   - Traefik ingress (internal + external domains)
   - Authentik SSO via hass-openid custom integration
   - API bypass routes for *arr integrations
@@ -94,53 +94,62 @@ See `docs/25-multi-node-expansion.md` and `docs/26-multi-node-implementation.md`
 
 ---
 
-## Priority 2: Local GitLab Instance
+## Priority 2: Local GitLab Instance (COMPLETE)
 
-**Goal**: Self-hosted GitLab for CI/CD pipelines, container registry, and code hosting.
+**Status**: Fully deployed as VM on pve-nas-01 with Traefik ingress.
 
-**Why GitLab**:
-- Unified platform (code + CI/CD + registry + packages)
-- GitLab Runner can run pipelines on k3s cluster
-- Integration with Flux for GitOps workflows
-- Alternative to GitHub for private/sensitive projects
-- Container registry for locally-built images
+### Deployment Summary
 
-**Note**: Personal GitHub will continue to be used for public repositories and external CI/CD. GitLab is for internal/private projects and the container registry.
+GitLab is deployed as a dedicated VM (not k3s) due to its resource requirements and complexity:
+- **VM**: 6 vCPU, 16GB RAM, 100GB root disk on pve-nas-01
+- **Repository storage**: 200GB ZFS zvol (`ssd/appdata/gitlab/repos`)
+- **Access**: `git.esweiss.com` (internal) / `git.ericsweiss.com` (external)
+- **Container Registry**: `registry.git.ericsweiss.com`
+- **GitLab Pages**: `*.pages.git.ericsweiss.com`
+- **Git SSH**: Port 22 (internal), Port 2222 (external via iptables NAT redirect)
 
-### Tasks
+### Completed Tasks
 
-- [ ] **Research deployment options**
-  - GitLab Helm chart vs. Omnibus package
-  - Resource requirements (minimum 4GB RAM, 2 vCPU)
-  - Storage sizing for registry and artifacts
-  - Backup strategy
+- [x] **GitLab EE deployed** (version 18.9.1, using CE features)
+  - Omnibus package on Debian 13 VM
+  - Repository data on separate ZFS zvol for persistence
+  - Traefik IngressRoutes via k3s cluster
+  - fail2ban protection for Git SSH on port 2222
 
-- [ ] **Deploy GitLab**
-  - Helm chart to k3s cluster (preferred)
-  - PostgreSQL on ZFS zvol (like Authentik/Mealie pattern)
-  - Object storage for artifacts (MinIO or NFS-backed)
-  - TLS via cert-manager
+- [x] **Authentik SSO integration**
+  - SAML provider configured in GitLab
+  - Users authenticate via Authentik
+  - Auto-provisioning from Authentik directory
 
-- [ ] **Configure GitLab Runner**
-  - Kubernetes executor for CI/CD jobs
-  - Resource limits to prevent cluster impact
-  - Cache configuration for faster builds
+- [x] **Container Registry configured**
+  - Accessible at `registry.git.ericsweiss.com`
+  - TLS via Let's Encrypt (cert-manager)
+  - Storage on local VM disk
 
-- [ ] **Integrate with Authentik SSO**
-  - SAML or OIDC provider in GitLab
-  - User provisioning from Authentik
+- [x] **GitLab Pages enabled**
+  - Wildcard domain: `*.pages.git.ericsweiss.com`
+  - Direct access via `direct.ericsweiss.com` (non-proxied for wildcard TLS)
 
-- [ ] **Set up container registry**
-  - `registry.esweiss.com` domain
-  - Storage backend (NFS or object storage)
-  - Image retention policies
+- [x] **CI/CD Runners on k3s**
+  - GitLab Runner Helm chart deployed
+  - Kubernetes executor for pipeline jobs
+  - Resource limits configured
 
-### Success Criteria
+### Management Commands
 
-- GitLab accessible at `gitlab.esweiss.com`
-- CI/CD pipelines run on k3s cluster
-- Container registry stores built images
-- SSO login works via Authentik
+```bash
+task gitlab:deploy          # Deploy GitLab (VM + application)
+task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
+task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
+task gitlab:status          # Show GitLab and runner status
+task gitlab:verify          # Run smoke tests
+task gitlab:backup          # Create GitLab backup
+task gitlab:console         # SSH to GitLab VM
+task gitlab:logs            # View GitLab logs
+task gitlab:reconfigure     # Reconfigure after changes
+```
+
+See `docs/27-gitlab-deployment.md` for complete deployment documentation.
 
 ---
 
@@ -202,7 +211,7 @@ See `docs/25-multi-node-expansion.md` and `docs/26-multi-node-implementation.md`
 The existing version management tasks serve a critical role for **Ansible-managed infrastructure**:
 
 ```bash
-task maintenance:check-versions        # Checks 24 services for updates
+task maintenance:check-versions        # Checks all managed services for updates
 task maintenance:update-version        # Updates single version in all.yml
 task maintenance:update-all-versions   # Updates all outdated versions
 ```
@@ -427,7 +436,7 @@ If desired, enhance `check-versions.py` to:
 
 ### Security Hardening
 
-- [ ] Add fail2ban to Proxmox hosts
+- [x] Add fail2ban to Proxmox hosts (deployed)
 - [ ] Network segmentation with VLANs (IoT, guest, management)
 - [ ] Implement Network Policies in k3s (default-deny ingress)
 - [ ] External Secrets Operator with 1Password Connect backend
@@ -481,6 +490,18 @@ task home-assistant:snapshot     # Create Proxmox snapshot
 
 # Plex
 task deploy:plex          # Deploy Plex LXC
+
+# GitLab
+task gitlab:deploy          # Deploy GitLab (VM + application)
+task gitlab:deploy-check    # Dry-run deployment
+task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
+task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
+task gitlab:status          # Show GitLab and runner status
+task gitlab:verify          # Run smoke tests
+task gitlab:backup          # Create GitLab backup
+task gitlab:console         # SSH to GitLab VM
+task gitlab:logs            # View GitLab logs
+task gitlab:reconfigure     # Reconfigure after changes
 
 # Maintenance
 task maintenance:check-versions   # Check for updates

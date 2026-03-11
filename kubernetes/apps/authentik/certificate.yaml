@@ -1,0 +1,36 @@
+---
+# TLS certificates for Authentik
+# These must be in the same namespace as the IngressRoutes that reference them
+
+# External domain - auth.ericsweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authentik-tls
+  namespace: authentik
+spec:
+  secretName: authentik-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "auth.ericsweiss.com"
+  dnsNames:
+    - "auth.ericsweiss.com"
+  renewBefore: 720h
+
+---
+# Internal domain - auth.esweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authentik-tls-internal
+  namespace: authentik
+spec:
+  secretName: authentik-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "auth.esweiss.com"
+  dnsNames:
+    - "auth.esweiss.com"
+  renewBefore: 720h

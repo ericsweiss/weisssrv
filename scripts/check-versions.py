@@ -24,6 +24,8 @@ Environment:
                  (unauthenticated: 60 req/hr, authenticated: 5000 req/hr)
 """
 
+import functools
+import gzip
 import json
 import os
 import re
@@ -32,6 +34,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -269,6 +272,22 @@ SERVICE_REGISTRY: list[dict] = [
         "strip_prefix": True,
         "source_url": "https://github.com/tailscale/tailscale/releases",
     },
+    # --- GitLab ---
+    {
+        "name": "GitLab EE",
+        "var_name": "gitlab_version",
+        "category": "gitlab",
+        "source_url": "https://packages.gitlab.com/gitlab/gitlab-ee",
+        "notes": "GitLab EE (CE features). Check packages.gitlab.com for apt versions.",
+    },
+    {
+        "name": "GitLab Runner",
+        "var_name": "gitlab_runner_helm_version",
+        "category": "helm",
+        "helm_repo": "https://charts.gitlab.io",
+        "helm_chart": "gitlab-runner",
+        "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-runner/tags",
+    },
     # --- APT / Manual ---
     {
         "name": "Plex Media Server",
@@ -320,6 +339,74 @@ def github_api(path: str) -> dict | list:
     return _make_request(f"{GITHUB_API}{path}", headers)
 
 
+def fetch_apt_packages(base_url: str) -> str:
+    """Fetch apt Packages file, trying uncompressed first then .gz fallback.
+
+    Some apt repositories only provide compressed Packages.gz files.
+    This function handles both cases for better reliability.
+
+    Args:
+        base_url: URL to the Packages file (without .gz extension)
+
+    Returns:
+        The contents of the Packages file as a string
+
+    Raises:
+        RuntimeError: If neither Packages nor Packages.gz can be fetched
+    """
+    req_headers = {"User-Agent": "weisssrv-version-checker/1.0"}
+
+    def _is_valid_packages_response(resp, content: str) -> bool:
+        """Check if response is a valid Packages file (not an HTML error page)."""
+        content_type = resp.headers.get("Content-Type", "")
+        # Packages files are text/plain or have no Content-Type
+        # HTML error pages will have text/html
+        if "text/html" in content_type.lower():
+            return False
+        # Also check content for HTML markers in case Content-Type is missing
+        if content.strip().startswith("<!DOCTYPE") or content.strip().startswith("<html"):
+            return False
+        # Valid Packages files contain "Package:" lines
+        if "Package:" not in content:
+            return False
+        return True
+
+    # Try uncompressed first
+    try:
+        req = urllib.request.Request(base_url, headers=req_headers)
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            content = resp.read().decode("utf-8")
+            if content.strip() and _is_valid_packages_response(resp, content):
+                return content
+    except (urllib.error.HTTPError, urllib.error.URLError, UnicodeDecodeError):
+        pass
+
+    # Fall back to .gz compressed version
+    gz_url = f"{base_url}.gz"
+    req = urllib.request.Request(gz_url, headers=req_headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            # Check Content-Type before attempting decompression
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/html" in content_type.lower():
+                raise RuntimeError(f"Received HTML error page instead of Packages.gz from {gz_url}")
+
+            compressed_data = resp.read()
+            with gzip.GzipFile(fileobj=BytesIO(compressed_data)) as gz:
+                content = gz.read().decode("utf-8")
+                # Validate the decompressed content
+                if not content.strip() or "Package:" not in content:
+                    raise RuntimeError(f"Invalid or empty Packages file from {gz_url}")
+                return content
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Failed to fetch {base_url} or {gz_url}: HTTP {e.code}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Connection error fetching apt Packages: {e.reason}") from e
+    except gzip.BadGzipFile as e:
+        raise RuntimeError(f"Invalid gzip data from {gz_url}") from e
+
+
 # ---------------------------------------------------------------------------
 # Cache helpers
 # ---------------------------------------------------------------------------
@@ -363,7 +450,14 @@ def parse_version_tuple(version_str: str) -> tuple:
     """Parse a version string into a comparable tuple.
 
     Handles formats like:
-      1.2.3, v1.2.3, 2025.12.3, 1.2.3.4567, v1.33.7+k3s1
+      1.2.3, v1.2.3, 2025.12.3, 1.2.3.4567, v1.33.7+k3s1, v1.35.2+k3s10
+
+    Numeric suffixes (like k3s1, k3s10) are handled by extracting all numeric
+    parts for proper ordering (so k3s10 > k3s9, not k3s10 < k3s9).
+
+    Returns a tuple of (type_rank, value) pairs where type_rank is 0 for ints
+    and 1 for strings. This ensures consistent comparison ordering: all ints
+    sort before all strings, and within each type, values compare naturally.
     """
     # Remove leading 'v' for comparison
     v = version_str.lstrip("v")
@@ -373,24 +467,110 @@ def parse_version_tuple(version_str: str) -> tuple:
     parts = re.split(r"[.\-]", v)
     result = []
     for part in parts:
-        # Extract leading numeric portion
-        m = re.match(r"(\d+)(.*)", part)
-        if m:
-            result.append(int(m.group(1)))
-            if m.group(2):
-                result.append(m.group(2))
-        else:
-            result.append(part)
+        # Split part into alternating text/numeric segments for proper ordering
+        # This handles both "123abc" and "abc123" patterns (e.g., "k3s1", "k3s10")
+        segments = re.findall(r"(\d+|\D+)", part)
+        for seg in segments:
+            if seg.isdigit():
+                # Tuple of (type_rank=0, int_value) - ints sort before strings
+                result.append((0, int(seg)))
+            else:
+                # Tuple of (type_rank=1, str_value) - strings sort after ints
+                result.append((1, seg))
     return tuple(result)
 
 
+def version_tuple_greater(a: tuple, b: tuple) -> bool:
+    """Compare two version tuples, handling different lengths correctly.
+
+    This handles the case where versions have different segment counts:
+    - "17.1" > "17" (17.1 is newer - more segments with matching prefix)
+    - "17.1-trixie" > "17-trixie" (17.1 is newer)
+    - "18-trixie" > "17.1-trixie" (18 is newer)
+
+    The key insight: when comparing version segments at the same position,
+    a numeric segment (like a minor version number) takes precedence over
+    a string segment (like a suffix). This handles the case where:
+    - "17.1-trixie" ((0,17),(0,1),(1,"trixie")) vs "17-trixie" ((0,17),(1,"trixie"))
+    - At index 1: (0,1) vs (1,"trixie") - numeric vs string
+
+    Comparison rules for (type_rank, value) tuples at same position:
+    - Same type_rank: compare values normally
+    - Different type_rank: numeric (0) beats string (1) for version purposes
+      because a numeric segment represents a version number, not a suffix
+
+    Returns True if tuple a represents a newer version than tuple b.
+    """
+    # Compare element by element up to the shorter length
+    min_len = min(len(a), len(b))
+    for i in range(min_len):
+        a_elem, b_elem = a[i], b[i]
+        a_type, a_val = a_elem
+        b_type, b_val = b_elem
+
+        # Same type: compare values
+        if a_type == b_type:
+            if a_val > b_val:
+                return True
+            if a_val < b_val:
+                return False
+            # Equal, continue to next element
+        else:
+            # Different types: numeric (0) beats string (1)
+            # This handles "17.1-trixie" vs "17-trixie" at position 1:
+            #   (0, 1) [numeric minor version] vs (1, "trixie") [string suffix]
+            #   Numeric segment = more specific version = newer
+            return a_type < b_type  # 0 < 1, so numeric wins
+
+    # All compared elements are equal; now check remaining elements
+    if len(a) == len(b):
+        return False  # Identical versions
+
+    # Versions have different lengths with matching prefix
+    # The longer version is newer IF its next element is numeric (type_rank=0)
+    # Examples:
+    #   "17.1" ((0,17),(0,1)) > "17" ((0,17)) - extra numeric = newer
+    #   "17-alpha" ((0,17),(1,"alpha")) < "17" ((0,17)) - extra string suffix = older (pre-release)
+    if len(a) > len(b):
+        # a has more segments - a is newer if next segment is numeric
+        return a[min_len][0] == 0  # type_rank 0 = numeric
+    else:
+        # b has more segments - b is newer if next segment is numeric, so a is NOT newer
+        return b[min_len][0] != 0  # a is newer only if b's extra is a string (pre-release)
+
+
 def version_greater(a: str, b: str) -> bool:
-    """Return True if version a is greater than version b."""
+    """Return True if version a is greater than version b.
+
+    Uses version_tuple_greater for proper handling of versions with different
+    segment counts (e.g., "17.1-trixie" > "17-trixie").
+    """
     try:
-        return parse_version_tuple(a) > parse_version_tuple(b)
+        return version_tuple_greater(parse_version_tuple(a), parse_version_tuple(b))
     except (TypeError, ValueError):
         # Fall back to string comparison
         return a > b
+
+
+def version_compare(a: str, b: str) -> int:
+    """Compare two version strings for sorting.
+
+    Returns:
+        -1 if a < b, 0 if a == b, 1 if a > b
+
+    This is a comparator function suitable for use with functools.cmp_to_key.
+    Uses semantic comparison via parsed tuples, so "1.0.0" and "v1.0.0" are equal.
+    """
+    # Parse both versions to tuples for semantic comparison
+    a_tuple = parse_version_tuple(a)
+    b_tuple = parse_version_tuple(b)
+
+    # If tuples are equal, versions are semantically identical
+    if a_tuple == b_tuple:
+        return 0
+    if version_tuple_greater(a_tuple, b_tuple):
+        return 1
+    return -1
 
 
 # ---------------------------------------------------------------------------
@@ -398,25 +578,57 @@ def version_greater(a: str, b: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def fetch_github_release(svc: dict) -> str:
-    """Fetch latest release version from GitHub."""
+    """Fetch latest release version from GitHub.
+
+    When tag_filter is specified, collects all matching releases and returns
+    the one with the highest version number (not the most recently published).
+    This handles projects like Authentik that maintain multiple release branches
+    and may publish patches to older branches after newer releases.
+
+    Pagination: GitHub returns max 100 releases per page. For repos with many
+    releases, we paginate up to 5 pages (500 releases) to ensure we find all
+    matching versions.
+    """
     repo = svc["github_repo"]
     tag_filter = svc.get("tag_filter")
     prefix = svc.get("version_prefix", "")
     strip_prefix = svc.get("strip_prefix", False)
 
     if tag_filter:
-        # Need to list releases and filter
-        releases = github_api(f"/repos/{repo}/releases?per_page=30")
-        for release in releases:
-            if release.get("draft") or release.get("prerelease"):
-                continue
-            tag = release.get("tag_name", "")
-            if re.match(tag_filter, tag):
-                version = tag
-                if strip_prefix and prefix and version.startswith(prefix):
-                    version = version[len(prefix):]
-                return version
-        raise RuntimeError(f"No release matching {tag_filter}")
+        # List releases and filter, then sort by version to get the highest
+        # Use per_page=100 (GitHub API maximum) and paginate to avoid missing
+        # versions in repos with many releases across multiple branches
+        matching_versions = []
+        max_pages = 5  # Limit pagination to avoid excessive API calls
+
+        for page in range(1, max_pages + 1):
+            releases = github_api(f"/repos/{repo}/releases?per_page=100&page={page}")
+
+            # Empty page means we've exhausted all releases
+            if not releases:
+                break
+
+            for release in releases:
+                if release.get("draft") or release.get("prerelease"):
+                    continue
+                tag = release.get("tag_name", "")
+                if re.match(tag_filter, tag):
+                    version = tag
+                    if strip_prefix and prefix and version.startswith(prefix):
+                        version = version[len(prefix):]
+                    matching_versions.append(version)
+
+            # If we got fewer than 100 releases, this is the last page
+            if len(releases) < 100:
+                break
+
+        if not matching_versions:
+            raise RuntimeError(f"No release matching {tag_filter}")
+
+        # Sort by semantic version comparison to get the highest version, not the most recent by date
+        # Uses version_compare for proper handling of mixed numeric/string segments
+        matching_versions.sort(key=functools.cmp_to_key(version_compare), reverse=True)
+        return matching_versions[0]
     else:
         # Use latest release endpoint
         release = github_api(f"/repos/{repo}/releases/latest")
@@ -471,10 +683,11 @@ def fetch_dockerhub_version(svc: dict) -> str:
             # TypeError when comparing tuples with mixed int/str elements (e.g.,
             # "17-trixie" vs "17.1-trixie" produces (17, "trixie") vs (17, 1, "trixie")).
             # Still return the full tag name since that's what's stored in all.yml.
+            # Use version_tuple_greater for proper semantic ordering with (type_rank, value) tuples.
             extracted_version = match.group(1)
             try:
                 vtuple = parse_version_tuple(extracted_version)
-                if best_tuple is None or vtuple > best_tuple:
+                if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
                     best_tuple = vtuple
                     best_tag = tag_name
             except (TypeError, ValueError):
@@ -514,7 +727,8 @@ def fetch_lsio_version(svc: dict) -> str:
             extracted = match.group(1)
             try:
                 vtuple = parse_version_tuple(extracted)
-                if best_tuple is None or vtuple > best_tuple:
+                # Use version_tuple_greater for proper semantic ordering with (type_rank, value) tuples
+                if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
                     best_tuple = vtuple
                     best_version = extracted
             except (TypeError, ValueError):
@@ -644,26 +858,114 @@ def fetch_helm_version(svc: dict) -> str:
     if not versions:
         raise RuntimeError(f"No versions found for chart {chart_name}")
 
-    versions.sort(key=parse_version_tuple, reverse=True)
+    # Sort by semantic version comparison for proper handling of mixed numeric/string segments
+    versions.sort(key=functools.cmp_to_key(version_compare), reverse=True)
     return versions[0]
 
 
 def fetch_plex_version(svc: dict) -> str:
-    """Fetch latest Plex Media Server version from Plex API.
+    """Fetch latest Plex Media Server version from Plex apt repository.
 
-    Uses the public Plex downloads API endpoint.
+    Queries the actual apt repository Packages file to get the version
+    that's available for installation, rather than the Plex downloads API
+    which may advertise versions not yet available in apt.
+
+    Collects all plexmediaserver versions and returns the highest one,
+    since the Packages file may contain multiple versions.
     """
-    api_url = "https://plex.tv/api/downloads/5.json"
-    data = _make_request(api_url)
+    # Fetch from the apt repository Packages file (where apt actually installs from)
+    # v2 repository URL (as of Plex v1.43.0)
+    # Uses fetch_apt_packages to handle both uncompressed and .gz formats
+    packages_url = "https://repo.plex.tv/deb/dists/public/main/binary-amd64/Packages"
+    raw = fetch_apt_packages(packages_url)
 
-    if not isinstance(data, dict):
-        raise RuntimeError("Unexpected response type from Plex API")
+    # Parse the Packages file format (debian control file)
+    # Looking for:
+    #   Package: plexmediaserver
+    #   Version: X.Y.Z.BUILD-hash
+    versions = []
+    in_plex_package = False
 
-    try:
-        version = data["computer"]["Linux"]["version"]
-        return version
-    except (KeyError, TypeError) as e:
-        raise RuntimeError(f"Could not parse Plex version from API: {e}") from e
+    for line in raw.split("\n"):
+        if line.startswith("Package:"):
+            package_name = line.split(":", 1)[1].strip()
+            in_plex_package = package_name == "plexmediaserver"
+        elif in_plex_package and line.startswith("Version:"):
+            version = line.split(":", 1)[1].strip()
+            versions.append(version)
+            in_plex_package = False  # Reset for next package block
+        elif line == "" and in_plex_package:
+            # End of package block without finding version
+            in_plex_package = False
+
+    if not versions:
+        raise RuntimeError("Could not find plexmediaserver version in apt repository")
+
+    # Sort by semantic version comparison for proper handling of mixed numeric/string segments
+    versions.sort(key=functools.cmp_to_key(version_compare), reverse=True)
+    return versions[0]
+
+
+def fetch_gitlab_version(svc: dict) -> str:
+    """Fetch latest GitLab EE version from GitLab apt repository.
+
+    Queries the actual apt repository Packages file to get the version
+    that's available for installation. Uses fetch_apt_packages to handle
+    both uncompressed and .gz formats.
+    """
+    # Fetch from the apt repository Packages file (Debian trixie/bookworm amd64)
+    # Try trixie first (Debian 13), fall back to bookworm (Debian 12)
+    packages_urls = [
+        "https://packages.gitlab.com/gitlab/gitlab-ee/debian/dists/trixie/main/binary-amd64/Packages",
+        "https://packages.gitlab.com/gitlab/gitlab-ee/debian/dists/bookworm/main/binary-amd64/Packages",
+    ]
+
+    raw = None
+    for url in packages_urls:
+        try:
+            raw = fetch_apt_packages(url)
+            if raw and raw.strip():
+                break
+        except RuntimeError:
+            continue
+
+    if not raw:
+        raise RuntimeError("Could not fetch GitLab apt repository Packages file")
+
+    # Parse the Packages file format (debian control file)
+    # Looking for:
+    #   Package: gitlab-ee
+    #   Version: X.Y.Z-ee.N
+    best_version = None
+    best_tuple = None
+    in_gitlab_package = False
+
+    for line in raw.split("\n"):
+        if line.startswith("Package:"):
+            package_name = line.split(":", 1)[1].strip()
+            in_gitlab_package = package_name == "gitlab-ee"
+        elif in_gitlab_package and line.startswith("Version:"):
+            version = line.split(":", 1)[1].strip()
+            # Skip RC/beta versions
+            if re.search(r"(rc|beta|alpha)", version, re.IGNORECASE):
+                in_gitlab_package = False
+                continue
+            try:
+                vtuple = parse_version_tuple(version)
+                # Use version_tuple_greater for proper semantic ordering with (type_rank, value) tuples
+                if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
+                    best_tuple = vtuple
+                    best_version = version
+            except (TypeError, ValueError):
+                pass
+            in_gitlab_package = False
+        elif line == "" and in_gitlab_package:
+            in_gitlab_package = False
+
+    if not best_version:
+        raise RuntimeError("Could not find gitlab-ee version in apt repository")
+
+    return best_version
 
 
 # ---------------------------------------------------------------------------
@@ -873,6 +1175,8 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
             latest = fetch_helm_version(svc_def)
         elif category == "plex":
             latest = fetch_plex_version(svc_def)
+        elif category == "gitlab":
+            latest = fetch_gitlab_version(svc_def)
         else:
             result.error = f"Unknown category: {category}"
             return result
@@ -961,6 +1265,7 @@ def format_table(results: list[ServiceVersion]) -> str:
         "ghcr": "Container Images (GHCR)",
         "lsio": "Container Images (LinuxServer.io)",
         "helm": "Helm Charts",
+        "gitlab": "GitLab (packages.gitlab.com)",
         "plex": "Plex Media Server",
         "manual": "Manual / APT Managed",
     }
@@ -1120,6 +1425,12 @@ def get_deploy_command(result: ServiceVersion) -> str:
     if var_name in ("authentik_version", "postgresql_version"):
         return "task k3s:deploy-authentik"
 
+    # GitLab
+    if var_name == "gitlab_version":
+        return "task gitlab:deploy"
+    if var_name == "gitlab_runner_helm_version":
+        return "task gitlab:deploy-runner"
+
     return "task deploy:all  # Or the appropriate deployment task"
 
 
@@ -1130,7 +1441,7 @@ def print_usage():
 Options:
   --help                Show this help message
   --service NAME        Check a specific service only
-  --category CAT        Check a category only (github, dockerhub, ghcr, helm, plex, manual)
+  --category CAT        Check a category only (github, dockerhub, ghcr, lsio, helm, gitlab, plex, manual)
   --json                Output as JSON
   --no-cache            Skip cache, force fresh lookups
   --clear-cache         Clear the version cache

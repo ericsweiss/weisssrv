@@ -16,17 +16,22 @@ platforms:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
     capabilities:
       - SYS_ADMIN
     tmpfs:
       - /run
-      - /tmp
+      - /run/lock
+    # Keep /tmp as regular directory (not tmpfs) to preserve state between test phases
     networks:
       - name: k3s-agent-test-net
 provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker compatibility with newer Ansible versions
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
   config_options:
     defaults:
       callbacks_enabled: profile_tasks, timer
