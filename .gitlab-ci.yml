@@ -1,0 +1,1688 @@
+# GitLab CI/CD Pipeline for weisssrv Homelab Infrastructure
+#
+# Canonical source: https://git.ericsweiss.com/eric/weisssrv
+# GitHub mirror: https://github.com/ericsweiss/weisssrv (read-only)
+#
+# Pipeline Features:
+# - Full validation suite (lint, test, security)
+# - Auto-deployment on merge to main (after tests pass)
+# - 1Password integration for all secrets
+# - Service restarts: automatic
+# - Machine reboots: manual approval required
+#
+# Required CI/CD Variables (Settings > CI/CD > Variables):
+# - OP_SERVICE_ACCOUNT_TOKEN (masked, protected) - 1Password service account
+#
+# Optional CI/CD Variables:
+# - GH_API_TOKEN (masked) - For version checker API rate limits
+#
+# Pipeline triggers:
+# - Merge requests: Validation only (no deploy)
+# - Push to main: Validation + auto-deploy
+# - Scheduled: Version checking and secret detection only (all other jobs excluded via when: never)
+# - Manual (web): Lint, validate, test, security stages only (deploy/gate/maintenance excluded)
+
+stages:
+  - lint
+  - ai-review
+  - validate
+  - test
+  - security
+  - gate
+  - deploy
+  - maintenance
+
+# ============================================================================
+# Default settings
+# ============================================================================
+default:
+  image: python:3.11-slim
+  # All weisssrv jobs run on the privileged infrastructure runner.
+  # The shared non-privileged runner (k8s-deploy) is for other GitLab projects.
+  tags: [infrastructure]
+
+# ============================================================================
+# Workflow rules - when to run the pipeline
+# ============================================================================
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# ============================================================================
+# Templates for reuse
+# ============================================================================
+.ansible-base:
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq git
+    - pip install --quiet ansible ansible-lint
+    - ansible-galaxy collection install -r ansible/requirements.yml
+
+.install-1password:
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq curl gnupg openssh-client
+    - |
+      # Install 1Password CLI
+      curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
+        gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
+        > /etc/apt/sources.list.d/1password.list
+      apt-get update -qq && apt-get install -y -qq 1password-cli
+    - op --version
+
+.deploy-base:
+  extends: .install-1password
+  before_script:
+    - !reference [.install-1password, before_script]
+    - pip install --quiet ansible
+    - |
+      # Setup SSH from 1Password
+      mkdir -p ~/.ssh
+      chmod 700 ~/.ssh
+      op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
+      chmod 600 ~/.ssh/id_ed25519
+      # Add known hosts for all infrastructure
+      ssh-keyscan -H 192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107 >> ~/.ssh/known_hosts 2>/dev/null || true
+      ssh-keyscan -H 192.168.0.150 192.168.0.151 192.168.0.152 192.168.0.153 192.168.0.154 192.168.0.160 >> ~/.ssh/known_hosts 2>/dev/null || true
+    - ansible-galaxy collection install -r ansible/requirements.yml
+
+.k3s-deploy-base:
+  extends: .install-1password
+  image: alpine/k8s:1.31.4
+  before_script:
+    - apk add --no-cache curl bash gnupg yq gettext
+    - |
+      # Install 1Password CLI for Alpine
+      curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor > /etc/apk/keys/1password.gpg
+      echo "https://downloads.1password.com/linux/alpinelinux/stable" >> /etc/apk/repositories
+      apk add --no-cache 1password-cli
+    - op --version
+    - |
+      # Setup kubeconfig from 1Password
+      mkdir -p ~/.kube
+      op read "op://Homelab/K3s Kubeconfig/kubeconfig" > ~/.kube/config
+      chmod 600 ~/.kube/config
+    - kubectl cluster-info
+
+.changes-ansible:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+.changes-terraform:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - terraform/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - terraform/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+.changes-kubernetes:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - kubernetes/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - kubernetes/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+.changes-scripts:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - scripts/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - scripts/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# ============================================================================
+# LINT STAGE - Code quality checks
+# ============================================================================
+
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    - echo "Running ShellCheck..."
+    - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+    - echo "ShellCheck passed"
+  rules:
+    - !reference [.changes-scripts, rules]
+
+yaml-lint:
+  stage: lint
+  before_script:
+    - apt-get update -qq
+    - pip install --quiet yamllint
+  script:
+    - yamllint -d relaxed ansible/
+    - yamllint -d relaxed kubernetes/
+    - yamllint -d relaxed .gitlab-ci.yml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/**
+        - kubernetes/**
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/**
+        - kubernetes/**
+        - .gitlab-ci.yml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+ansible-lint:
+  stage: lint
+  extends: .ansible-base
+  script:
+    - cd ansible
+    - |
+      export SSH_PUBLIC_KEY="ssh-ed25519 AAAA_PLACEHOLDER_FOR_CI_SYNTAX_CHECK"
+      export SMTP_RELAY_USER="ci-placeholder"
+      export SMTP_RELAY_PASSWORD="ci-placeholder"
+      for playbook in playbooks/*.yml playbooks/*/*.yml; do
+        if [ -f "$playbook" ]; then
+          echo "Checking syntax: $playbook"
+          ansible-playbook --syntax-check -i inventories/prod "$playbook"
+        fi
+      done
+    - ansible-lint playbooks/ roles/
+    - |
+      echo "Validating proxmox_ha role structure..."
+      for task_file in roles/proxmox_ha/tasks/*.yml; do
+        echo "Validating YAML: $task_file"
+        python3 -c "import yaml; yaml.safe_load(open('$task_file'))"
+      done
+      for f in main.yml rules.yml resources.yml replication.yml; do
+        test -f "roles/proxmox_ha/tasks/$f" || { echo "ERROR: $f missing"; exit 1; }
+        echo "  Found: $f"
+      done
+  rules:
+    - !reference [.changes-ansible, rules]
+
+terraform-fmt:
+  stage: lint
+  image:
+    name: hashicorp/terraform:1.5
+    entrypoint: [""]
+  script:
+    - cd terraform/cloudflare
+    - terraform fmt -check -recursive
+  rules:
+    - !reference [.changes-terraform, rules]
+
+# ============================================================================
+# AI-REVIEW STAGE - AI-powered code review on MRs
+# ============================================================================
+
+# PR-Agent by Qodo - AI code review
+# Requires: GitLab API Token and OpenAI API Key in 1Password
+pr-agent-review:
+  stage: ai-review
+  image: codiumai/pr-agent:latest
+  variables:
+    CONFIG__GIT_PROVIDER: "gitlab"
+    GITLAB__URL: "https://git.ericsweiss.com"
+    # Model configuration: GPT-5.3-Codex (OpenAI's most capable agentic coding model)
+    # GPT-5.4 is now available but gpt-5.3-codex is optimized specifically for code review
+    # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
+    CONFIG__MODEL: "gpt-5.3-codex"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl gnupg
+    - |
+      # Install 1Password CLI
+      curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
+        gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
+        > /etc/apt/sources.list.d/1password.list
+      apt-get update -qq && apt-get install -y -qq 1password-cli
+  script:
+    - |
+      # Get secrets from 1Password
+      export GITLAB__PERSONAL_ACCESS_TOKEN=$(op read "op://Homelab/GitLab API Token/credential")
+      export OPENAI__KEY=$(op read "op://Homelab/OpenAI API Key/api-key")
+
+      echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
+      echo "Model: gpt-5.3-codex"
+
+      # Run comprehensive review
+      python -m pr_agent.cli \
+        --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        review
+
+      # Suggest improvements
+      python -m pr_agent.cli \
+        --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        improve
+
+      echo "AI review complete"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
+  allow_failure: true  # Don't block MRs on AI review
+  timeout: 30m
+
+# ============================================================================
+# VALIDATE STAGE - Schema and configuration validation
+# ============================================================================
+
+terraform-validate:
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.5
+    entrypoint: [""]
+  script:
+    - cd terraform/cloudflare
+    - terraform init -backend=false
+    - terraform validate
+  rules:
+    - !reference [.changes-terraform, rules]
+
+terraform-plan:
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.5
+    entrypoint: [""]
+  before_script:
+    - apk add --no-cache curl bash gnupg
+    - |
+      curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor > /etc/apk/keys/1password.gpg
+      echo "https://downloads.1password.com/linux/alpinelinux/stable" >> /etc/apk/repositories
+      apk add --no-cache 1password-cli
+    - op --version
+  script:
+    - cd terraform/cloudflare
+    - terraform init
+    - |
+      export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+      export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
+      terraform plan -input=false -no-color -out=tfplan
+  artifacts:
+    paths:
+      - terraform/cloudflare/tfplan
+    expire_in: 1 hour
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - terraform/**
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - terraform/**
+
+kubeconform:
+  stage: validate
+  image:
+    name: ghcr.io/yannh/kubeconform:v0.6.7
+    entrypoint: [""]
+  script:
+    - |
+      find kubernetes/apps kubernetes/bootstrap -name "*.yaml" \
+        ! -name "values.yaml" \
+        ! -name "kustomization.yaml" \
+        -exec kubeconform -summary -strict \
+          -ignore-missing-schemas \
+          -kubernetes-version 1.35.0 \
+          -schema-location default \
+          -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+          {} +
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - kubernetes/**
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - kubernetes/**
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+helm-validate:
+  stage: validate
+  image:
+    name: alpine/helm:3.14.0
+    entrypoint: [""]
+  before_script:
+    - apk add --no-cache yq bash
+    - helm repo add traefik https://traefik.github.io/charts
+    - helm repo add metallb https://metallb.github.io/metallb
+    - helm repo add jetstack https://charts.jetstack.io
+    - helm repo add authentik https://charts.goauthentik.io
+    - helm repo add gitlab https://charts.gitlab.io
+    - helm repo update
+  script:
+    - |
+      VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
+      echo "Validating Helm charts against pinned versions..."
+    - |
+      helm template traefik traefik/traefik \
+        -f kubernetes/apps/traefik/values.yaml \
+        --namespace traefik \
+        --version "$(yq -r '.helm_chart_versions.traefik' ansible/inventories/prod/group_vars/all.yml)" \
+        > /dev/null && echo "Traefik: OK"
+    - |
+      helm template metallb metallb/metallb \
+        -f kubernetes/bootstrap/metallb/values.yaml \
+        --namespace metallb-system \
+        --version "$(yq -r '.helm_chart_versions.metallb' ansible/inventories/prod/group_vars/all.yml)" \
+        > /dev/null && echo "MetalLB: OK"
+    - |
+      helm template cert-manager jetstack/cert-manager \
+        -f kubernetes/apps/cert-manager/values.yaml \
+        --namespace cert-manager \
+        --version "$(yq -r '.helm_chart_versions.cert_manager' ansible/inventories/prod/group_vars/all.yml)" \
+        > /dev/null && echo "cert-manager: OK"
+    - |
+      helm template authentik authentik/authentik \
+        -f kubernetes/apps/authentik/values.yaml \
+        --namespace authentik \
+        --set authentik.secret_key=dummy-secret-key-for-validation \
+        --set authentik.postgresql.password=dummy-postgres-password \
+        > /dev/null && echo "Authentik: OK"
+    - |
+      # GitLab Runner charts
+      RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' ansible/inventories/prod/group_vars/all.yml)
+      helm template gitlab-runner gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner/values.yaml > /dev/null && echo "GitLab Runner: OK"
+      helm template gitlab-runner-privileged gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner-privileged/values.yaml > /dev/null && echo "GitLab Runner Privileged: OK"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - kubernetes/**
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - kubernetes/**
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# ============================================================================
+# TEST STAGE - Unit and integration tests
+# ============================================================================
+
+# NOTE: Molecule/integration tests require Docker-in-Docker, which needs a privileged
+# runner. All weisssrv jobs (including these) run on the infrastructure runner
+# (gitlab-runner-privileged Helm release, tags: infrastructure) which has privileged=true.
+# Deploy with: task gitlab:deploy-runner-privileged
+
+molecule-tests:
+  stage: test
+  image: python:3.11
+  services:
+    - docker:24.0-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    ANSIBLE_FORCE_COLOR: "1"
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    PY_COLORS: "1"
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq docker.io
+    - pip install --quiet -r requirements.txt
+    - ansible-galaxy collection install -r ansible/requirements.yml
+  script:
+    - cd ansible
+    - |
+      for role_dir in roles/*/molecule; do
+        role=$(dirname "$role_dir" | xargs basename)
+        cd "roles/$role"
+        for scenario_dir in molecule/*/; do
+          scenario=$(basename "$scenario_dir")
+          echo "Testing role: $role - scenario: $scenario"
+          molecule test -s "$scenario" || exit 1
+        done
+        cd ../..
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/roles/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/roles/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  timeout: 30m
+
+integration-tests:
+  stage: test
+  image: python:3.11
+  services:
+    - docker:24.0-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    ANSIBLE_FORCE_COLOR: "1"
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    PY_COLORS: "1"
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq docker.io
+    - pip install --quiet -r requirements.txt
+    - ansible-galaxy collection install -r ansible/requirements.yml
+  script:
+    - |
+      for test_dir in ansible/integration-tests/*/; do
+        if [ -f "${test_dir}molecule.yml" ] || [ -d "${test_dir}molecule" ]; then
+          test_name=$(basename "$test_dir")
+          echo "Running integration test: $test_name"
+          cd "ansible/integration-tests/$test_name"
+          molecule test || exit 1
+          cd ../../..
+        fi
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/integration-tests/**
+        - ansible/roles/**
+        - ansible/inventories/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/integration-tests/**
+        - ansible/roles/**
+        - ansible/inventories/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  timeout: 45m
+
+# ============================================================================
+# SECURITY STAGE - Secret detection and scanning
+# ============================================================================
+
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+secret_detection:
+  stage: security
+  variables:
+    SECRET_DETECTION_HISTORIC_SCAN: "false"
+    SECRET_DETECTION_EXCLUDED_PATHS: "docs/,ansible/roles/*/molecule/"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ============================================================================
+# GATE STAGE - Validation gate for deploy jobs
+# ============================================================================
+# All deploy jobs depend on this gate (non-optional). The gate lists every
+# lint/test/security job as a dependency. GitLab CI `optional: true` semantics
+# (https://docs.gitlab.com/ci/yaml/#needsoptional):
+#
+#   - If the needed job was NOT created (rules excluded it): dependency is ignored
+#   - If the needed job IS in the pipeline and SUCCEEDS: dependency satisfied
+#   - If the needed job IS in the pipeline and FAILS: the dependent job is BLOCKED
+#
+# Jobs with `changes:` path filters use optional:true (may not exist in pipeline).
+# Jobs that ALWAYS run on main pushes (no path filter) are non-optional.
+#
+# Net effect: all applicable checks must pass before any deploy job runs.
+
+validation-gate:
+  stage: gate
+  image: alpine:latest
+  needs:
+    # -- Path-filtered jobs (may not exist in pipeline) --
+    - job: shellcheck
+      optional: true
+    - job: yaml-lint
+      optional: true
+    - job: ansible-lint
+      optional: true
+    - job: terraform-fmt
+      optional: true
+    - job: terraform-validate
+      optional: true
+    - job: terraform-plan
+      optional: true
+    - job: kubeconform
+      optional: true
+    - job: helm-validate
+      optional: true
+    - job: molecule-tests
+      optional: true
+    - job: integration-tests
+      optional: true
+    # -- Always-run jobs (no path filter, always present on main pushes) --
+    - job: secret_detection
+  script:
+    - echo "All applicable checks passed - deploy jobs may proceed"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ============================================================================
+# DEPLOY STAGE - Auto-deploy on merge to main
+# ============================================================================
+
+# ------------------------------------------------------------------------------
+# Terraform
+# ------------------------------------------------------------------------------
+
+deploy-terraform:
+  stage: deploy
+  image:
+    name: hashicorp/terraform:1.5
+    entrypoint: [""]
+  needs:
+    - job: validation-gate
+    - job: terraform-plan
+      artifacts: true
+  before_script:
+    - apk add --no-cache curl bash gnupg
+    - |
+      curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor > /etc/apk/keys/1password.gpg
+      echo "https://downloads.1password.com/linux/alpinelinux/stable" >> /etc/apk/repositories
+      apk add --no-cache 1password-cli
+    - op --version
+  script:
+    - cd terraform/cloudflare
+    - terraform init
+    - |
+      export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+      export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
+      terraform apply -auto-approve tfplan
+  environment:
+    name: production/cloudflare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - terraform/**
+
+# ------------------------------------------------------------------------------
+# Ansible Infrastructure
+# ------------------------------------------------------------------------------
+
+deploy-ansible-base:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/base.yml
+  environment:
+    name: production/ansible-base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/base/**
+        - ansible/playbooks/base.yml
+
+# Proxmox host configuration (qol, postfix_null_client, tailscale)
+deploy-ansible-proxmox:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
+  script:
+    - cd ansible
+    # Deploy qol, postfix_null_client, tailscale to proxmox hosts
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit proxmox --tags qol,postfix_null_client,tailscale
+  environment:
+    name: production/ansible-proxmox
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/qol/**
+        - ansible/roles/tailscale/**
+        - ansible/roles/postfix_null_client/**
+
+deploy-ansible-firewall:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  script:
+    - cd ansible
+    # Firewall is applied to proxmox hosts, dns, and mail via site.yml
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --tags proxmox_firewall
+  environment:
+    name: production/ansible-firewall
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/proxmox_firewall/**
+
+deploy-ansible-dns:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
+    DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
+    DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/dns.yml
+  environment:
+    name: production/ansible-dns
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/unbound/**
+        - ansible/roles/adguard_home/**
+        - ansible/roles/adguard_sync/**
+        - ansible/roles/postfix_null_client/**
+        - ansible/playbooks/dns.yml
+
+deploy-ansible-storage:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SAMBA_NAS_PASSWORD: "op://Homelab/Samba NAS User/password"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/storage.yml
+  environment:
+    name: production/ansible-storage
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/nas_storage/**
+        - ansible/playbooks/storage.yml
+
+deploy-ansible-mail:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    SMTP_GMAIL_USER: "op://Homelab/SMTP Relay Gmail/username"
+    SMTP_GMAIL_PASSWORD: "op://Homelab/SMTP Relay Gmail/password"
+    DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
+  script:
+    - cd ansible
+    # Mail roles are deployed via site.yml with host targeting
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit mail
+  environment:
+    name: production/ansible-mail
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/smtp_relay/**
+        - ansible/roles/postfix_null_client/**
+
+deploy-ansible-certs:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
+    DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
+  script:
+    - cd ansible
+    # Certificate roles are deployed via site.yml with host targeting
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit dns --tags acme_certs
+  environment:
+    name: production/ansible-certs
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/acme_certs/**
+
+# ------------------------------------------------------------------------------
+# Ansible Applications (VMs/LXC)
+# ------------------------------------------------------------------------------
+
+deploy-plex:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/plex.yml
+  environment:
+    name: production/plex
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/plex/**
+        - ansible/roles/proxmox_lxc/**
+        - ansible/playbooks/plex.yml
+
+deploy-gitlab:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    # GitLab role reads secrets from env vars via lookup('ansible.builtin.env', ...)
+    # op run resolves op:// references in environment variables at runtime
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    GITLAB_ROOT_PASSWORD: "op://Homelab/GitLab/root-password"
+    GITLAB_SAML_CERT_FINGERPRINT: "op://Homelab/GitLab SSO/saml-cert-fingerprint"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/gitlab.yml
+  environment:
+    name: production/gitlab
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/gitlab/**
+        - ansible/playbooks/gitlab.yml
+
+deploy-home-assistant-config:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+  variables:
+    # Home Assistant role reads secrets from env vars via lookup('ansible.builtin.env', ...)
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    ADMIN_EMAIL: "op://Homelab/Email Config/root_alias"
+    HA_OIDC_CLIENT_ID: "op://Homelab/Home Assistant SSO/authentik-client-id"
+    HA_OIDC_CLIENT_SECRET: "op://Homelab/Home Assistant SSO/authentik-client-secret"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod -e "ansible_become=false" playbooks/home-assistant.yml
+  environment:
+    name: production/home-assistant
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/home_assistant/**
+        - ansible/playbooks/home-assistant.yml
+
+# ------------------------------------------------------------------------------
+# K3s Platform (MetalLB, Traefik, cert-manager, external-dns, DDNS)
+# ------------------------------------------------------------------------------
+
+deploy-k3s-platform:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-terraform
+      optional: true
+  script:
+    - |
+      VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
+
+      # Add Helm repos
+      helm repo add metallb https://metallb.github.io/metallb
+      helm repo add traefik https://traefik.github.io/charts
+      helm repo add jetstack https://charts.jetstack.io
+      helm repo add external-dns https://kubernetes-sigs.github.io/external-dns
+      helm repo update
+
+      # MetalLB
+      echo "Deploying MetalLB..."
+      helm upgrade --install metallb metallb/metallb \
+        -n metallb-system --create-namespace \
+        -f kubernetes/bootstrap/metallb/values.yaml \
+        --version "$(yq -r '.helm_chart_versions.metallb' $VARS_FILE)" \
+        --wait --timeout 5m
+      kubectl apply -f kubernetes/bootstrap/metallb/ip-pool.yaml
+
+      # cert-manager
+      echo "Deploying cert-manager..."
+      helm upgrade --install cert-manager jetstack/cert-manager \
+        -n cert-manager --create-namespace \
+        -f kubernetes/apps/cert-manager/values.yaml \
+        --version "$(yq -r '.helm_chart_versions.cert_manager' $VARS_FILE)" \
+        --wait --timeout 5m
+      kubectl apply -f kubernetes/apps/cert-manager/cluster-issuers.yaml
+
+      # Traefik
+      echo "Deploying Traefik..."
+      CF_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+      helm upgrade --install traefik traefik/traefik \
+        -n traefik --create-namespace \
+        -f kubernetes/apps/traefik/values.yaml \
+        --version "$(yq -r '.helm_chart_versions.traefik' $VARS_FILE)" \
+        --set env[0].name=CF_DNS_API_TOKEN \
+        --set env[0].value="$CF_TOKEN" \
+        --wait --timeout 5m
+
+      # external-dns
+      echo "Deploying external-dns..."
+      kubectl apply -f kubernetes/apps/external-dns/namespace.yaml
+      kubectl create secret generic cloudflare-api-token \
+        --namespace=external-dns \
+        --from-literal=api-token="$CF_TOKEN" \
+        --dry-run=client -o yaml | kubectl apply -f -
+      helm upgrade --install external-dns external-dns/external-dns \
+        -n external-dns \
+        -f kubernetes/apps/external-dns/values.yaml \
+        --version "$(yq -r '.helm_chart_versions.external_dns' $VARS_FILE)" \
+        --wait --timeout 5m
+
+      # DDNS CronJob
+      echo "Deploying DDNS..."
+      # One-time migration: clean up legacy DDNS resources from default namespace
+      kubectl delete cronjob cloudflare-ddns -n default --ignore-not-found
+      kubectl delete secret cloudflare-api-token -n default --ignore-not-found
+      kubectl create namespace cloudflare-ddns --dry-run=client -o yaml | kubectl apply -f -
+      kubectl create secret generic cloudflare-api-token \
+        --namespace=cloudflare-ddns \
+        --from-literal=api-token="$CF_TOKEN" \
+        --dry-run=client -o yaml | kubectl apply -f -
+      kubectl apply -f kubernetes/apps/cloudflare-ddns/cronjob.yaml
+
+      # External services (backend endpoints for non-cluster services)
+      echo "Deploying external service endpoints..."
+      kubectl apply -f kubernetes/apps/ingress-routes/services.yaml
+
+      # Base IngressRoutes and middleware
+      echo "Deploying IngressRoutes..."
+      kubectl apply -f kubernetes/apps/ingress-routes/middleware.yaml
+      kubectl apply -f kubernetes/apps/ingress-routes/router.yaml
+      kubectl apply -f kubernetes/apps/traefik/traefik-internal-service.yaml 2>/dev/null || true
+
+      echo "K3s platform deployment complete"
+  environment:
+    name: production/k3s-platform
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/bootstrap/**
+        - kubernetes/apps/traefik/**
+        - kubernetes/apps/cert-manager/**
+        - kubernetes/apps/external-dns/**
+        - kubernetes/apps/cloudflare-ddns/**
+        - kubernetes/apps/ingress-routes/middleware.yaml
+        - kubernetes/apps/ingress-routes/router.yaml
+        - kubernetes/apps/ingress-routes/services.yaml
+        - ansible/inventories/prod/group_vars/all.yml
+
+# ------------------------------------------------------------------------------
+# K3s Applications
+# ------------------------------------------------------------------------------
+
+deploy-k3s-authentik:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+  script:
+    - |
+      cd kubernetes/apps/authentik
+      helm repo add authentik https://charts.goauthentik.io
+      helm repo update
+
+      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+      AUTHENTIK_VERSION=$(yq -r '.authentik_version' $VARS_FILE)
+      POSTGRESQL_VERSION=$(yq -r '.postgresql_version' $VARS_FILE)
+
+      echo "Deploying Authentik ${AUTHENTIK_VERSION} (PostgreSQL ${POSTGRESQL_VERSION})..."
+
+      # Deploy namespace and storage first
+      kubectl apply -f namespace.yaml
+      kubectl apply -f storage.yaml
+
+      # Get secrets from 1Password
+      AUTHENTIK_SECRET_KEY=$(op read "op://Homelab/Authentik Secrets/secret-key")
+      AUTHENTIK_PG_PASS=$(op read "op://Homelab/Authentik Secrets/postgresql-password")
+      AUTHENTIK_PG_ADMIN_PASS=$(op read "op://Homelab/Authentik Secrets/postgresql-admin-password")
+      SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
+      SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
+
+      # Create/update authentik-secrets (required by values.yaml secretKeyRef)
+      kubectl create secret generic authentik-secrets \
+        --namespace=authentik \
+        --from-literal=secret-key="$AUTHENTIK_SECRET_KEY" \
+        --from-literal=postgresql-password="$AUTHENTIK_PG_PASS" \
+        --from-literal=postgresql-admin-password="$AUTHENTIK_PG_ADMIN_PASS" \
+        --from-literal=smtp-username="$SMTP_USER" \
+        --from-literal=smtp-password="$SMTP_PASS" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      # Deploy Helm chart with version pinning
+      helm upgrade --install authentik authentik/authentik \
+        -n authentik \
+        -f values.yaml \
+        --version "$AUTHENTIK_VERSION" \
+        --set authentik.secret_key="$AUTHENTIK_SECRET_KEY" \
+        --set authentik.postgresql.password="$AUTHENTIK_PG_PASS" \
+        --set server.image.tag="$AUTHENTIK_VERSION" \
+        --set worker.image.tag="$AUTHENTIK_VERSION" \
+        --set postgresql.image.tag="$POSTGRESQL_VERSION" \
+        --wait --timeout 10m
+
+      # Deploy middleware, certificate, and ingress routes
+      kubectl apply -f middleware.yaml
+      kubectl apply -f certificate.yaml
+      kubectl apply -f ingress-route.yaml
+
+      echo "Authentik deployment complete"
+  environment:
+    name: production/k3s-authentik
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/authentik/**
+        - ansible/inventories/prod/group_vars/all.yml
+
+deploy-downloads:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+  script:
+    - |
+      cd kubernetes/apps/download-clients
+      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+
+      # Export versions for envsubst
+      export GLUETUN_VERSION=$(yq -r '.gluetun_version' $VARS_FILE)
+      export NZBGET_VERSION=$(yq -r '.nzbget_version' $VARS_FILE)
+      export QBITTORRENT_VERSION=$(yq -r '.qbittorrent_version' $VARS_FILE)
+      export PROWLARR_VERSION=$(yq -r '.prowlarr_version' $VARS_FILE)
+      export SONARR_VERSION=$(yq -r '.sonarr_version' $VARS_FILE)
+      export RADARR_VERSION=$(yq -r '.radarr_version' $VARS_FILE)
+      export LIDARR_VERSION=$(yq -r '.lidarr_version' $VARS_FILE)
+      export PULSARR_VERSION=$(yq -r '.pulsarr_version' $VARS_FILE)
+
+      # Fail fast if any version variable is empty (prevents deploying with blank image tags)
+      test -n "$GLUETUN_VERSION" || { echo "ERROR: GLUETUN_VERSION is empty"; exit 1; }
+      test -n "$NZBGET_VERSION" || { echo "ERROR: NZBGET_VERSION is empty"; exit 1; }
+      test -n "$QBITTORRENT_VERSION" || { echo "ERROR: QBITTORRENT_VERSION is empty"; exit 1; }
+      test -n "$PROWLARR_VERSION" || { echo "ERROR: PROWLARR_VERSION is empty"; exit 1; }
+      test -n "$SONARR_VERSION" || { echo "ERROR: SONARR_VERSION is empty"; exit 1; }
+      test -n "$RADARR_VERSION" || { echo "ERROR: RADARR_VERSION is empty"; exit 1; }
+      test -n "$LIDARR_VERSION" || { echo "ERROR: LIDARR_VERSION is empty"; exit 1; }
+      test -n "$PULSARR_VERSION" || { echo "ERROR: PULSARR_VERSION is empty"; exit 1; }
+
+      echo "Deploying downloads stack..."
+      echo "Versions: Gluetun=$GLUETUN_VERSION, NZBGet=$NZBGET_VERSION, qBittorrent=$QBITTORRENT_VERSION"
+      echo "          Prowlarr=$PROWLARR_VERSION, Sonarr=$SONARR_VERSION, Radarr=$RADARR_VERSION"
+      echo "          Lidarr=$LIDARR_VERSION, Pulsarr=$PULSARR_VERSION"
+
+      kubectl apply -f namespace.yaml
+
+      # Create VPN secret
+      VPN_USER=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-user")
+      VPN_PASS=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-password")
+      kubectl create secret generic vpn-credentials \
+        --namespace=downloads \
+        --from-literal=openvpn-user="$VPN_USER" \
+        --from-literal=openvpn-password="$VPN_PASS" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      # Apply manifests with restricted envsubst (only substitute known version variables)
+      # Note: gluetun is a sidecar defined in nzbget.yaml and qbittorrent.yaml
+      ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
+      for manifest in storage.yaml vpn-common.yaml nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml certificate.yaml ingress-routes.yaml ingress-routes-ha-bypass.yaml; do
+        if [ -f "$manifest" ]; then
+          envsubst "$ENVSUBST_VARS" < "$manifest" | kubectl apply -f -
+        fi
+      done
+
+      echo "Downloads stack deployment complete"
+  environment:
+    name: production/k3s-downloads
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/download-clients/**
+        - ansible/inventories/prod/group_vars/all.yml
+
+deploy-recipes:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+  script:
+    - |
+      cd kubernetes/apps/recipes
+      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+
+      # Export versions for envsubst
+      export MEALIE_VERSION=$(yq -r '.mealie_version' $VARS_FILE)
+      export MEALIE_POSTGRESQL_VERSION=$(yq -r '.mealie_postgresql_version' $VARS_FILE)
+      export BAR_ASSISTANT_VERSION=$(yq -r '.bar_assistant_version' $VARS_FILE)
+      export SALT_RIM_VERSION=$(yq -r '.salt_rim_version' $VARS_FILE)
+
+      # Fail fast if any version variable is empty (prevents deploying with blank image tags)
+      test -n "$MEALIE_VERSION" || { echo "ERROR: MEALIE_VERSION is empty"; exit 1; }
+      test -n "$MEALIE_POSTGRESQL_VERSION" || { echo "ERROR: MEALIE_POSTGRESQL_VERSION is empty"; exit 1; }
+      test -n "$BAR_ASSISTANT_VERSION" || { echo "ERROR: BAR_ASSISTANT_VERSION is empty"; exit 1; }
+      test -n "$SALT_RIM_VERSION" || { echo "ERROR: SALT_RIM_VERSION is empty"; exit 1; }
+
+      echo "Deploying recipes stack..."
+      echo "Versions: Mealie=$MEALIE_VERSION (PG=$MEALIE_POSTGRESQL_VERSION), Bar Assistant=$BAR_ASSISTANT_VERSION, Salt Rim=$SALT_RIM_VERSION"
+
+      kubectl apply -f namespace.yaml
+      kubectl apply -f storage.yaml
+
+      # Create secrets
+      MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
+      MEALIE_OIDC_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
+      MEALIE_OIDC_SECRET=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
+      OPENAI_KEY=$(op read "op://Homelab/OpenAI API Key/api-key" 2>/dev/null || echo "")
+      BAR_MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
+      BAR_OIDC_ID=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-id")
+      BAR_OIDC_SECRET=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
+
+      kubectl create secret generic mealie-secrets \
+        --namespace=recipes \
+        --from-literal=postgres-password="$MEALIE_PG_PASS" \
+        --from-literal=oidc-client-id="$MEALIE_OIDC_ID" \
+        --from-literal=oidc-client-secret="$MEALIE_OIDC_SECRET" \
+        --from-literal=openai-api-key="$OPENAI_KEY" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      kubectl create secret generic bar-assistant-secrets \
+        --namespace=recipes \
+        --from-literal=meilisearch-master-key="$BAR_MEILI_KEY" \
+        --from-literal=authentik-client-id="$BAR_OIDC_ID" \
+        --from-literal=authentik-client-secret="$BAR_OIDC_SECRET" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      # Apply manifests with restricted envsubst (only substitute known version variables)
+      # Note: mealie-postgres is defined in mealie.yaml
+      ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
+      for manifest in mealie.yaml bar-assistant.yaml certificate.yaml ingress-routes.yaml; do
+        if [ -f "$manifest" ]; then
+          envsubst "$ENVSUBST_VARS" < "$manifest" | kubectl apply -f -
+        fi
+      done
+
+      echo "Recipes stack deployment complete"
+  environment:
+    name: production/k3s-recipes
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/recipes/**
+        - ansible/inventories/prod/group_vars/all.yml
+
+# ------------------------------------------------------------------------------
+# K3s IngressRoutes
+# ------------------------------------------------------------------------------
+
+deploy-gitlab-ingress:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+    - job: deploy-gitlab
+      optional: true
+  script:
+    - kubectl apply -k kubernetes/apps/gitlab/
+    - echo "GitLab IngressRoutes deployed"
+  environment:
+    name: production/k3s-gitlab-ingress
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/gitlab/**
+
+deploy-home-assistant-ingress:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+  script:
+    - |
+      kubectl apply -f kubernetes/apps/ingress-routes/home-assistant.yaml
+      echo "Home Assistant IngressRoutes deployed"
+  environment:
+    name: production/k3s-home-assistant-ingress
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/ingress-routes/home-assistant.yaml
+
+deploy-plex-ingress:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+    - job: deploy-plex
+      optional: true
+  script:
+    - |
+      kubectl apply -f kubernetes/apps/ingress-routes/plex.yaml
+      echo "Plex IngressRoutes deployed"
+  environment:
+    name: production/k3s-plex-ingress
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/ingress-routes/plex.yaml
+
+deploy-adguard-ingress:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+  script:
+    - |
+      kubectl apply -f kubernetes/apps/ingress-routes/adguard-home.yaml
+      echo "AdGuard Home IngressRoutes deployed"
+  environment:
+    name: production/k3s-adguard-ingress
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/ingress-routes/adguard-home.yaml
+
+deploy-gitlab-runner:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+    - job: deploy-gitlab
+      optional: true
+    - job: deploy-gitlab-ingress
+      optional: true
+  script:
+    - |
+      cd kubernetes/apps/gitlab-runner
+      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+      RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' $VARS_FILE)
+      RUNNER_TOKEN=$(op read "op://Homelab/GitLab Runner/runner-token")
+
+      echo "Deploying GitLab Runner ${RUNNER_VERSION}..."
+      helm repo add gitlab https://charts.gitlab.io
+      helm repo update
+
+      kubectl apply -f namespace.yaml
+
+      # Create temporary values file with token (avoids exposing token in process args)
+      echo "runnerToken: \"$RUNNER_TOKEN\"" > /tmp/runner-token.yaml
+      helm upgrade --install gitlab-runner gitlab/gitlab-runner \
+        -n gitlab-runner \
+        -f values.yaml \
+        -f /tmp/runner-token.yaml \
+        --version "$RUNNER_VERSION" \
+        --wait --timeout 5m
+      rm -f /tmp/runner-token.yaml
+
+      echo "GitLab Runner deployment complete"
+  environment:
+    name: production/k3s-gitlab-runner
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/gitlab-runner/**
+        - ansible/inventories/prod/group_vars/all.yml
+
+deploy-gitlab-runner-privileged:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+    - job: deploy-gitlab
+      optional: true
+    - job: deploy-gitlab-ingress
+      optional: true
+  script:
+    - |
+      cd kubernetes/apps/gitlab-runner-privileged
+      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
+      RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' $VARS_FILE)
+      RUNNER_TOKEN=$(op read "op://Homelab/GitLab Runner Privileged/runner-token")
+
+      echo "Deploying privileged GitLab Runner ${RUNNER_VERSION}..."
+      helm repo add gitlab https://charts.gitlab.io
+      helm repo update
+
+      kubectl apply -f namespace.yaml
+
+      # Create temporary values file with token (avoids exposing token in process args)
+      echo "runnerToken: \"$RUNNER_TOKEN\"" > /tmp/runner-token.yaml
+      helm upgrade --install gitlab-runner-privileged gitlab/gitlab-runner \
+        -n gitlab-runner \
+        -f values.yaml \
+        -f /tmp/runner-token.yaml \
+        --version "$RUNNER_VERSION" \
+        --wait --timeout 5m
+      rm -f /tmp/runner-token.yaml
+
+      echo "Privileged GitLab Runner deployment complete"
+  environment:
+    name: production/k3s-gitlab-runner-privileged
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/gitlab-runner-privileged/**
+        - ansible/inventories/prod/group_vars/all.yml
+
+deploy-gitlab-verify:
+  stage: deploy
+  extends: .deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-gitlab
+      optional: true
+    - job: deploy-gitlab-ingress
+      optional: true
+    - job: deploy-gitlab-runner
+      optional: true
+    - job: deploy-gitlab-runner-privileged
+      optional: true
+  script:
+    - |
+      echo "=== GitLab Verification ==="
+
+      # Test web UI accessibility
+      echo "Testing GitLab web UI..."
+      curl -sf --max-time 30 "https://git.ericsweiss.com/-/health" || \
+        echo "WARNING: GitLab health check failed (may need more time to start)"
+
+      # Test Container Registry
+      echo "Testing Container Registry..."
+      curl -sf --max-time 10 "https://registry.git.ericsweiss.com/v2/" || \
+        echo "WARNING: Registry check failed"
+
+      # Test SSH connectivity (port 22 internal)
+      echo "Testing SSH connectivity..."
+      timeout 5 bash -c 'cat < /dev/null > /dev/tcp/192.168.0.153/22' 2>&1 && echo "SSH port open" || echo "WARNING: SSH port check failed"
+
+      echo ""
+      echo "=== GitLab Verification Complete ==="
+      echo "Note: Some checks may fail if GitLab is still starting up"
+  environment:
+    name: production/gitlab-verify
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/gitlab/**
+        - kubernetes/apps/gitlab/**
+        - kubernetes/apps/gitlab-runner/**
+        - kubernetes/apps/gitlab-runner-privileged/**
+  allow_failure: true
+
+# ------------------------------------------------------------------------------
+# Post-Deploy Verification
+# ------------------------------------------------------------------------------
+
+deploy-verify:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-terraform
+      optional: true
+    - job: deploy-ansible-base
+      optional: true
+    - job: deploy-ansible-proxmox
+      optional: true
+    - job: deploy-ansible-firewall
+      optional: true
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-storage
+      optional: true
+    - job: deploy-ansible-mail
+      optional: true
+    - job: deploy-ansible-certs
+      optional: true
+    - job: deploy-plex
+      optional: true
+    - job: deploy-gitlab
+      optional: true
+    - job: deploy-home-assistant-config
+      optional: true
+    - job: deploy-k3s-platform
+      optional: true
+    - job: deploy-k3s-authentik
+      optional: true
+    - job: deploy-downloads
+      optional: true
+    - job: deploy-recipes
+      optional: true
+    - job: deploy-gitlab-ingress
+      optional: true
+    - job: deploy-home-assistant-ingress
+      optional: true
+    - job: deploy-plex-ingress
+      optional: true
+    - job: deploy-adguard-ingress
+      optional: true
+    - job: deploy-gitlab-runner
+      optional: true
+    - job: deploy-gitlab-runner-privileged
+      optional: true
+    - job: deploy-gitlab-verify
+      optional: true
+  script:
+    - |
+      echo "=== Post-Deployment Verification ==="
+
+      echo "Checking node status..."
+      kubectl get nodes
+
+      echo ""
+      echo "Checking critical pods..."
+      kubectl get pods -A | grep -E "(traefik|metallb|cert-manager|authentik)" | head -20
+
+      echo ""
+      echo "Checking LoadBalancer services..."
+      kubectl get svc -A | grep LoadBalancer
+
+      echo ""
+      echo "Checking IngressRoutes..."
+      kubectl get ingressroute -A 2>/dev/null | head -20 || echo "No IngressRoutes found"
+
+      echo ""
+      echo "=== Verification Complete ==="
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+  allow_failure: true
+
+# ============================================================================
+# MAINTENANCE STAGE - Manual approval required
+# ============================================================================
+
+# K3s VM provisioning - MANUAL (creates/modifies VMs)
+maintenance-k3s-provision:
+  stage: maintenance
+  extends: .deploy-base
+  variables:
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+  script:
+    - cd ansible
+    - |
+      echo "Provisioning K3s VMs and deploying k3s cluster..."
+      op run -- ansible-playbook -i inventories/prod playbooks/k3s-provision-vms.yml
+      op run -- ansible-playbook -i inventories/prod playbooks/k3s.yml
+  environment:
+    name: production/k3s-provision
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Full system update - MANUAL (may reboot machines)
+maintenance-update-full:
+  stage: maintenance
+  extends: .deploy-base
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+  script:
+    - cd ansible
+    - |
+      echo "Running full system update (may reboot machines)..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-full.yml
+  environment:
+    name: production/maintenance
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# K3s node updates - MANUAL (drains/cordons nodes)
+maintenance-update-k3s-nodes:
+  stage: maintenance
+  extends: .deploy-base
+  script:
+    - cd ansible
+    - |
+      echo "Running K3s node rolling update..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-k3s-nodes.yml
+  environment:
+    name: production/k3s-nodes
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Proxmox HA - MANUAL (affects VM placement)
+maintenance-proxmox-ha:
+  stage: maintenance
+  extends: .deploy-base
+  script:
+    - cd ansible
+    - |
+      echo "Configuring Proxmox HA rules and resources..."
+      op run -- ansible-playbook -i inventories/prod playbooks/proxmox-ha.yml
+  environment:
+    name: production/proxmox-ha
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Home Assistant restart - MANUAL (restarts HA VM)
+maintenance-home-assistant-restart:
+  stage: maintenance
+  extends: .deploy-base
+  script:
+    - cd ansible
+    - |
+      echo "Restarting Home Assistant VM..."
+      # Restart via ansible ad-hoc command to first Proxmox host
+      op run -- ansible proxmox[0] -i inventories/prod -m shell -a \
+        "pvesh create /nodes/\$(hostname -s)/qemu/154/status/reboot"
+      echo "Waiting for Home Assistant to come back online..."
+      sleep 30
+      echo "Restart complete - check status via GitLab environments or Home Assistant URL"
+  environment:
+    name: production/home-assistant-restart
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# ============================================================================
+# VERSION CHECK - Runs early, soft-fail on PRs
+# ============================================================================
+
+version-check:
+  stage: lint
+  image: python:3.11
+  script:
+    - pip install --quiet pyyaml requests
+    - python3 ./scripts/version-check-ci.py
+  artifacts:
+    paths:
+      - version-report.json
+    expire_in: 7 days
+    when: always
+  rules:
+    # Run on schedule (weekly check)
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    # Manual trigger on web pipelines (must precede main rule to avoid auto-run)
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    # Run on MRs as informational (soft-fail)
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      allow_failure: true
+    # Run on pushes to main as informational (soft-fail)
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      allow_failure: true

@@ -16,9 +16,9 @@
 
 # GitLab URLs (use external domain as canonical - internal access still works via AdGuard rewrites)
 gitlab_external_url: "https://git.ericsweiss.com"
-# SSH host for clone URLs - uses DNS-only hostname since Cloudflare won't proxy SSH traffic
-# direct.ericsweiss.com bypasses Cloudflare proxy, allowing SSH to work
-gitlab_ssh_host: "direct.ericsweiss.com"
+# SSH host for clone URLs - same as web URL since git.ericsweiss.com is DNS-only (not Cloudflare-proxied)
+# This provides a unified URL for both HTTPS and SSH access
+gitlab_ssh_host: "git.ericsweiss.com"
 # SSH port displayed in clone URLs - external port (router forwards 2222 -> GitLab:22)
 gitlab_ssh_port: 2222
 
@@ -65,9 +65,9 @@ gitlab_saml_admin_groups: []
 # external_groups: Users in these groups are marked as external (limited access)
 gitlab_saml_external_groups: []
 
-# Let's Encrypt: Disabled (Traefik handles TLS termination)
-# This is hardcoded in gitlab.rb.j2 - do NOT enable Let's Encrypt
-# as git.esweiss.com is an internal domain without public DNS records
+# Let's Encrypt: Disabled in GitLab (hardcoded in gitlab.rb.j2)
+# Traefik handles TLS termination using certs issued by cert-manager/Let's Encrypt.
+# GitLab listens on plain HTTP behind the Traefik reverse proxy.
 
 # NGINX configuration (listen on all interfaces for Traefik proxy)
 gitlab_nginx_listen_https: false

@@ -1,0 +1,137 @@
+# GitLab Runner Helm Chart Values - Infrastructure Runner (weisssrv project)
+# https://docs.gitlab.com/runner/install/kubernetes.html
+#
+# Dedicated privileged runner for the weisssrv infrastructure project.
+# Handles ALL CI/CD jobs for this repository:
+#   - Linting (ansible-lint, terraform fmt, shellcheck, yamllint)
+#   - Testing (Molecule unit tests, integration tests via Docker-in-Docker)
+#   - Deploying (Ansible to Proxmox/VMs/LXCs, kubectl/Helm to k3s, Terraform)
+#
+# Only triggered by jobs tagged "infrastructure" (runUntagged: false).
+# Other projects use the non-privileged shared runner (gitlab-runner).
+#
+# Security notes:
+#   - privileged = true is required for DinD (Docker socket access in test jobs)
+#   - Runs as root (UID 0) because Docker daemon requires root
+#   - Mitigated by: tag restriction (only "infrastructure" tagged jobs),
+#     single-user homelab, namespace isolation, and only running trusted
+#     CI code from this repository
+#   - blast radius is limited to gitlab-runner namespace (clusterWideAccess: false)
+
+# GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
+gitlabUrl: https://git.ericsweiss.com
+
+# Runner authentication token (new workflow, GitLab 16.0+)
+# Set via --set runnerToken during helm install
+# Token created in GitLab UI: Admin > CI/CD > Runners > New instance runner
+#   - Tags: infrastructure
+#   - Run untagged jobs: No
+# Token format: glrt-* (runner authentication token)
+# NOTE: Requires a SEPARATE token from the non-privileged runner.
+# Each runner instance needs its own authentication token in GitLab 16+.
+runnerToken: ""
+
+# Concurrent jobs - handles all weisssrv CI/CD (lint, test, deploy)
+concurrent: 4
+
+# Check interval (seconds)
+checkInterval: 30
+
+# Kubernetes executor configuration
+runners:
+  # Runner name prefix
+  name: k3s-runner-infrastructure
+
+  # Tags - ONLY run jobs tagged "infrastructure" (weisssrv project jobs)
+  tags: "infrastructure"
+
+  # Do NOT run untagged jobs - only explicitly tagged jobs land here
+  # Other projects' untagged jobs go to the shared non-privileged runner
+  runUntagged: false
+
+  # Protected branches only
+  # NOTE: Disabled for homelab convenience - allows test jobs on any branch
+  protected: false
+
+  # Executor type
+  executor: kubernetes
+
+  # Kubernetes executor config
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "gitlab-runner"
+        image = "python:3.11"
+        privileged = true
+
+        # CPU/Memory limits for job pods
+        # Higher limits for DinD test jobs; lint/deploy jobs use less
+        cpu_limit = "4"
+        cpu_request = "500m"
+        memory_limit = "8Gi"
+        memory_request = "1Gi"
+
+        # Service container resource limits (docker:dind sidecar for test jobs)
+        service_cpu_limit = "2"
+        service_cpu_request = "500m"
+        service_memory_limit = "4Gi"
+        service_memory_request = "1Gi"
+
+        # Service account
+        service_account = "gitlab-runner-privileged"
+
+        # No pod security context restrictions - DinD test jobs require root
+        # Docker daemon needs root privileges to function. Lint and deploy jobs
+        # also run as root here for simplicity since this runner is restricted
+        # to the trusted weisssrv project via the "infrastructure" tag.
+
+        # Pull policy
+        pull_policy = ["if-not-present"]
+
+# RBAC configuration
+# Restricted to gitlab-runner namespace (principle of least privilege)
+rbac:
+  create: true
+  clusterWideAccess: false
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "pods/exec", "pods/attach", "pods/log", "secrets", "configmaps"]
+      verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["get", "list", "watch"]
+
+# Service account - separate from non-privileged runner
+serviceAccount:
+  create: true
+  name: gitlab-runner-privileged
+
+# Pod resources for the runner manager (not the job pods)
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Node affinity - prefer non-NAS nodes for runner pods
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: esweiss.com/nas
+              operator: DoesNotExist
+
+# Tolerations for workload nodes
+tolerations:
+  - key: esweiss.com/ingress
+    operator: Equal
+    value: "true"
+    effect: PreferNoSchedule
+  - key: esweiss.com/compute
+    operator: Equal
+    value: "true"
+    effect: PreferNoSchedule

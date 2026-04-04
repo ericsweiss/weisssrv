@@ -429,10 +429,15 @@ tasks:
     env:
       CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
     cmds:
+      # One-time cleanup: DDNS was originally in the default namespace.
+      # Remove stale CronJob and secret if they exist from the previous deployment.
+      - kubectl delete cronjob cloudflare-ddns -n default --ignore-not-found
+      - kubectl delete secret cloudflare-api-token -n default --ignore-not-found
+      - kubectl create namespace cloudflare-ddns --dry-run=client -o yaml | kubectl apply -f -
       - |
-        echo "Creating Cloudflare API token secret in default namespace..."
+        echo "Creating Cloudflare API token secret..."
         op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
-          --namespace=default \
+          --namespace=cloudflare-ddns \
           --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
           --dry-run=client -o yaml | kubectl apply -f -'
       - kubectl apply -f cronjob.yaml
@@ -583,7 +588,7 @@ tasks:
       - kubectl get pods -n external-dns 2>/dev/null || echo "  Not installed"
       - echo ""
       - echo "DDNS CronJob -"
-      - kubectl get cronjob cloudflare-ddns -n default 2>/dev/null || echo "  Not installed"
+      - kubectl get cronjob cloudflare-ddns -n cloudflare-ddns 2>/dev/null || echo "  Not installed"
       - echo ""
       - echo "Authentik SSO -"
       - kubectl get pods -n authentik 2>/dev/null || echo "  Not installed"
@@ -1918,7 +1923,7 @@ tasks:
       - echo "Verify with 'kubectl get ingressroute -n gitlab'"
 
   gitlab:deploy-runner:
-    desc: Deploy GitLab Runner on k3s cluster
+    desc: Deploy shared GitLab Runner for multi-project k8s deploys (unprivileged)
     dir: ./kubernetes/apps/gitlab-runner
     vars:
       GITLAB_RUNNER_VERSION:
@@ -1936,9 +1941,8 @@ tasks:
       - helm repo add gitlab https://charts.gitlab.io --force-update
       - helm repo update gitlab
       - kubectl apply -f namespace.yaml
-      # SECURITY: Use --set-file with process substitution to avoid exposing runner token
-      # in process arguments. The token is written to a temp file that's immediately consumed
-      # and the file descriptor is cleaned up by the shell.
+      # SECURITY: Write runner token to a temp values file that's consumed by helm -f and
+      # immediately cleaned up via trap. This avoids exposing the token in process arguments.
       - |
         echo "Installing GitLab Runner via Helm..."
         op run -- sh -c '
@@ -1955,6 +1959,42 @@ tasks:
       - echo ""
       - 'echo "Verify with: kubectl get pods -n gitlab-runner"'
 
+  gitlab:deploy-runner-privileged:
+    desc: Deploy infrastructure runner for weisssrv (privileged, DinD + SSH + full deploy)
+    dir: ./kubernetes/apps/gitlab-runner-privileged
+    vars:
+      GITLAB_RUNNER_VERSION:
+        sh: grep '^gitlab_runner_helm_version:' {{.ROOT_DIR}}/ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
+    env:
+      # Separate runner token - each runner instance needs its own auth token (GitLab 16+)
+      # Created in GitLab Admin > CI/CD > Runners > New instance runner
+      #   - Tags: infrastructure
+      #   - Run untagged jobs: No
+      GITLAB_RUNNER_PRIVILEGED_TOKEN: op://Homelab/GitLab Runner Privileged/runner-token
+    preconditions:
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - echo "Deploying privileged GitLab Runner version {{.GITLAB_RUNNER_VERSION}}"
+      - helm repo add gitlab https://charts.gitlab.io --force-update
+      - helm repo update gitlab
+      - kubectl apply -f namespace.yaml
+      - |
+        echo "Installing privileged GitLab Runner via Helm..."
+        op run -- sh -c '
+          TMPFILE=$(mktemp)
+          trap "rm -f $TMPFILE" EXIT
+          echo "runnerToken: \"$GITLAB_RUNNER_PRIVILEGED_TOKEN\"" > "$TMPFILE"
+          helm upgrade --install gitlab-runner-privileged gitlab/gitlab-runner \
+            -n gitlab-runner \
+            -f values.yaml \
+            -f "$TMPFILE" \
+            --version "{{.GITLAB_RUNNER_VERSION}}" \
+            --wait --timeout 5m'
+      - echo "Privileged GitLab Runner deployed successfully"
+      - echo ""
+      - 'echo "Verify with: kubectl get pods -n gitlab-runner"'
+
   gitlab:status:
     desc: Show GitLab status
     cmds:
@@ -1966,6 +2006,9 @@ tasks:
       - echo ""
       - echo "=== GitLab Runner Pods ==="
       - kubectl get pods -n gitlab-runner -o wide 2>/dev/null || echo "No runners found"
+      - echo ""
+      - echo "=== GitLab Runner Helm Releases ==="
+      - helm list -n gitlab-runner 2>/dev/null || echo "No Helm releases found"
 
   gitlab:verify:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)
