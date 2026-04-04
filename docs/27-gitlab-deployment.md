@@ -107,6 +107,7 @@ Create these items in your **Homelab** vault:
 | **GitLab** | Login | `root-password` |
 | **GitLab SSO** | Password | `saml-cert-fingerprint` |
 | **GitLab Runner** | Password | `runner-token` (runner authentication token, `glrt-*` format) |
+| **GitLab Runner Privileged** | Password | `runner-token` (runner authentication token, `glrt-*` format, tags: `infrastructure`) |
 | **SMTP Relay Auth** | Login | `username`, `password` (for GitLab email notifications) |
 | **Email Config** | Login | `root_alias` (admin email address, e.g., `admin@example.com`) |
 | **SSH Key** | SSH Key | `public key` (for VM access via cloud-init) |
@@ -144,15 +145,35 @@ task terraform:apply
 ```
 
 This creates (or updates):
-- `git.ericsweiss.com` → CNAME to `ericsweiss.com` (proxied via Cloudflare)
+- `git.ericsweiss.com` → A record (DNS-only, IP updated by DDNS) - unified URL for web + SSH
 - `registry.git.ericsweiss.com` → CNAME to `direct.ericsweiss.com` (DNS-only, TLS via Traefik)
 - `pages.git.ericsweiss.com` → CNAME to `direct.ericsweiss.com` (DNS-only, TLS via Traefik)
 - `*.pages.git.ericsweiss.com` → CNAME to `direct.ericsweiss.com` (DNS-only wildcard, TLS via Traefik)
 - `direct.ericsweiss.com` → A record (DNS-only, IP updated by DDNS)
 
-**Note:** Nested subdomains (registry.git, pages.git, *.pages.git) use `direct.ericsweiss.com`
-because Cloudflare Universal SSL only covers first-level wildcards. Using DNS-only mode allows
-Traefik to handle TLS with Let's Encrypt certificates.
+**Note:** `git.ericsweiss.com` uses DNS-only mode (not Cloudflare-proxied) to allow both HTTPS
+and SSH access on the same hostname. Nested subdomains (registry.git, pages.git, *.pages.git)
+use `direct.ericsweiss.com` because Cloudflare Universal SSL only covers first-level wildcards.
+
+**DNS cutover verification:** If `git.ericsweiss.com` was previously a CNAME (e.g., pointing
+to `direct.ericsweiss.com`) and is being changed to an A record, verify the transition:
+
+```bash
+# 1. Preview the change
+task terraform:plan
+# Look for: cloudflare_record.git changing type from CNAME to A
+
+# 2. Apply the change
+task terraform:apply
+
+# 3. Verify DNS resolution (may take a few minutes for propagation)
+dig +short git.ericsweiss.com
+# Should return your public IP (same as direct.ericsweiss.com)
+
+# 4. Verify GitLab is accessible
+curl -sf --max-time 10 "https://git.ericsweiss.com/-/health"
+# Should return: GitLab OK
+```
 
 ### Step 3: Deploy AdGuard DNS Rewrites
 
@@ -240,18 +261,41 @@ curl -I https://git.esweiss.com
 
 **Note**: GitLab 16.0+ uses runner authentication tokens (`glrt-*` format) instead of the deprecated registration tokens. The old `runnerRegistrationToken` method was removed in GitLab 18.0.
 
+Two runners are needed:
+- **Shared runner** (unprivileged): For other GitLab projects and collaborators to deploy to k3s. Runs untagged jobs. Tag: `k8s-deploy`.
+- **Infrastructure runner** (privileged): Handles ALL weisssrv CI/CD jobs (lint, test, deploy). Uses DinD for Molecule tests, SSH for Ansible deploys. Tag: `infrastructure`.
+
+The weisssrv `.gitlab-ci.yml` sets `default: tags: [infrastructure]` so all its jobs route to the infrastructure runner.
+
+**Runner 1 (Shared - Non-privileged):**
 1. Log into GitLab as root (use password from 1Password)
 2. Navigate to **Admin Area → CI/CD → Runners**
 3. Click **New instance runner**
-4. Configure runner options (tags, run untagged jobs, etc.)
-5. Click **Create runner**
-6. Copy the runner authentication token (starts with `glrt-`)
-7. Update 1Password `GitLab Runner` item with this token as `runner-token`
+4. Configure: Tags = `k8s-deploy`, Run untagged jobs = **Yes**
+5. Click **Create runner** and copy the `glrt-*` token
+6. Update 1Password `GitLab Runner` item with this token as `runner-token`
+
+**Runner 2 (Infrastructure - Privileged):**
+1. Click **New instance runner** again
+2. Configure: Tags = `infrastructure`, Run untagged jobs = **No**
+3. Click **Create runner** and copy the `glrt-*` token
+4. Create 1Password item `GitLab Runner Privileged` with this token as `runner-token`
+
+> **Security note on privileged runner:** The infrastructure runner (`gitlab-runner-privileged`)
+> has `privileged = true` and `protected = false`, meaning it can run jobs from unprotected
+> branches. This is acceptable for a single-user homelab where you control all branches and
+> merge requests. If collaborators are added to the GitLab instance, switch to
+> `protected = true` so the privileged runner only executes jobs on protected branches (e.g.,
+> `main`). This prevents untrusted MR code from running with elevated privileges.
 
 ### Step 9: Deploy GitLab Runners
 
 ```bash
+# Shared runner (unprivileged, for other projects, runs untagged jobs)
 task gitlab:deploy-runner
+
+# Infrastructure runner (privileged, handles all weisssrv CI: lint, test, deploy)
+task gitlab:deploy-runner-privileged
 ```
 
 ## Task Commands
@@ -262,6 +306,7 @@ task gitlab:deploy          # Full deployment (VM + GitLab)
 task gitlab:deploy-check    # Dry-run deployment
 task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
 task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
+task gitlab:deploy-runner-privileged   # Deploy privileged runner for DinD tests
 
 # Operations
 task gitlab:status          # Show GitLab and runner status
@@ -301,10 +346,13 @@ Proxmox VM snapshots provide additional disaster recovery capability.
 
 ### Updating GitLab Runner
 
+Both runners share the same Helm chart version. Update both when changing versions:
+
 1. Update `gitlab_runner_helm_version` in `ansible/inventories/prod/group_vars/all.yml`
-2. Run runner deployment:
+2. Deploy both runners:
    ```bash
    task gitlab:deploy-runner
+   task gitlab:deploy-runner-privileged
    ```
 
 ## Troubleshooting
@@ -376,12 +424,13 @@ kubectl get secret -n gitlab-runner
 
 ### Summary
 
-- **LAN (internal)**: Use `gitlab.esweiss.com` on port 22 (direct to GitLab VM)
-- **External (internet)**: Use `direct.ericsweiss.com` on port 2222 (DNS-only, not Cloudflare-proxied)
-- **HTTPS (everywhere)**: Use `git.ericsweiss.com` (Cloudflare-proxied, works everywhere)
+- **Unified URL**: `git.ericsweiss.com` works for both HTTPS and SSH (port 2222)
+- **LAN (internal)**: Use `git.esweiss.com` on port 22 (direct to GitLab VM)
+- **External (internet)**: Use `git.ericsweiss.com` on port 2222 (DNS-only, same as web URL)
 
-**Why different hosts?** Cloudflare cannot proxy SSH traffic, so `git.ericsweiss.com` (which is
-Cloudflare-proxied for web UI) cannot be used for SSH from external networks.
+**Architecture:** `git.ericsweiss.com` is DNS-only (not Cloudflare-proxied), allowing both
+HTTPS (via Traefik) and SSH traffic on the same hostname. This provides a unified URL for
+clone operations regardless of protocol.
 
 ### Internal Access (LAN)
 
@@ -389,12 +438,12 @@ From the LAN, you can SSH directly to the GitLab VM using the internal domain:
 
 ```bash
 # Clone via SSH using internal domain (port 22)
-git clone git@gitlab.esweiss.com:username/repo.git
+git clone git@git.esweiss.com:username/repo.git
 ```
 
 Add to `~/.ssh/config` for seamless internal access:
 ```
-Host gitlab.esweiss.com
+Host git.esweiss.com
     Port 22
     User git
 ```
@@ -405,40 +454,53 @@ Git SSH access on port 2222 is open to the public internet, allowing collaborato
 systems to clone and push without requiring Tailscale or VPN access. The Proxmox firewall
 `sg-gitlab` security group allows port 2222 from any source.
 
-**SSH Host:** External SSH must use `direct.ericsweiss.com` because Cloudflare cannot proxy SSH
-traffic. The `git.ericsweiss.com` record is Cloudflare-proxied (for web UI only), while
-`direct.ericsweiss.com` is DNS-only and points directly to your public IP. GitLab is configured
-to display the correct SSH clone URL in project pages.
+**SSH Host:** External SSH uses `git.ericsweiss.com` - the same URL as the web UI. This is
+possible because `git.ericsweiss.com` is DNS-only (not Cloudflare-proxied), allowing both
+HTTPS and SSH traffic. GitLab displays this unified URL in clone URLs.
 
 ```bash
 # Clone via SSH (port 2222) from external networks
-git clone ssh://git@direct.ericsweiss.com:2222/username/repo.git
+git clone ssh://git@git.ericsweiss.com:2222/username/repo.git
 ```
 
 Add to `~/.ssh/config` for seamless external SSH access:
 ```
-Host direct.ericsweiss.com
+Host git.ericsweiss.com
     Port 2222
     User git
 ```
 
 Then clone using standard syntax:
 ```bash
-git clone git@direct.ericsweiss.com:username/repo.git
+git clone git@git.ericsweiss.com:username/repo.git
 ```
 
 ### Universal SSH Config (Works Everywhere)
 
-For a single config that works from any location, use `direct.ericsweiss.com` with port 2222:
+For a single config that works from any location, use `git.ericsweiss.com` with port 2222
+for both hostnames. This works because LAN clients can reach the external IP (hairpin NAT)
+and the iptables redirect on the GitLab VM maps port 2222 to port 22:
 
 ```
-Host direct.ericsweiss.com gitlab.esweiss.com
-    HostName direct.ericsweiss.com
+Host git.ericsweiss.com
+    Port 2222
+    User git
+
+Host git.esweiss.com
     Port 2222
     User git
 ```
 
-This routes both internal and external Git SSH operations through port 2222.
+**Note:** This universal config requires hairpin NAT (NAT reflection) on your router. If
+your router doesn't support hairpin NAT, LAN clients won't be able to reach
+`git.ericsweiss.com` via the external IP. In that case, use the split internal/external
+configs shown above instead.
+
+**Why port 2222 for internal too?** While `git.esweiss.com` resolves to the GitLab VM's
+internal IP (192.168.0.153), using port 2222 keeps the config consistent across networks.
+The iptables PREROUTING rule on the GitLab VM redirects port 2222 to port 22 regardless of
+source. If you prefer lower latency on LAN, use the split config shown above (port 22 for
+`git.esweiss.com`, port 2222 for `git.ericsweiss.com`).
 
 ### Recommended: HTTPS for Consistency
 

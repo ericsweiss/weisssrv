@@ -1,22 +1,29 @@
 ---
-name: Integration Tests
+name: Integration Tests (DISABLED - See GitLab CI)
+
+# =============================================================================
+# DISABLED: CI/CD has moved to self-hosted GitLab
+# Canonical source: https://git.ericsweiss.com/eric/weisssrv
+# This workflow is retained for reference only.
+# =============================================================================
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'ansible/integration-tests/**'
-      - 'ansible/roles/**'
-      - 'ansible/inventories/**'
-      - '.github/workflows/integration-tests.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'ansible/integration-tests/**'
-      - 'ansible/roles/**'
-      - 'ansible/inventories/**'
-      - '.github/workflows/integration-tests.yml'
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger only (disabled for normal operations)
+  # Previously triggered on push/PR - now handled by GitLab CI
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'ansible/integration-tests/**'
+  #     - 'ansible/roles/**'
+  #     - 'ansible/inventories/**'
+  #     - '.github/workflows/integration-tests.yml'
+  # pull_request:
+  #   branches: [main]
+  #   paths:
+  #     - 'ansible/integration-tests/**'
+  #     - 'ansible/roles/**'
+  #     - 'ansible/inventories/**'
+  #     - '.github/workflows/integration-tests.yml'
 
 env:
   ANSIBLE_FORCE_COLOR: '1'

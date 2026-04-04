@@ -48,7 +48,7 @@ CACHE_TTL = 3600  # 1 hour cache
 
 # GitHub API rate limit handling
 GITHUB_API = "https://api.github.com"
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GH_API_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = 15

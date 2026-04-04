@@ -1,19 +1,23 @@
 # weisssrv
 
+> **Note**: The canonical source for this repository is [git.ericsweiss.com](https://git.ericsweiss.com/eric/weisssrv).
+> GitHub is a read-only mirror updated automatically via GitLab push mirroring.
+> Please submit issues and merge requests on the GitLab instance.
+
 Homelab Infrastructure as Code - Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, and Kubernetes.
 
 ## Overview
 
 Multi-node Proxmox homelab with:
 
-- **Proxmox Cluster**: 2 active hosts (NAS + compute), 3 planned expansion hosts
+- **Proxmox Cluster**: 6-node cluster (NAS + 5 compute hosts) with HA enabled
 - **Storage**: ZFS pools (tank/ssd/nvme/archive) with NFS and Samba
 - **DNS**: Dual AdGuard Home + Unbound (DoT) for ad blocking and secure resolution
 - **Mail**: SMTP relay via Gmail for system notifications
 - **Certificates**: Let's Encrypt via acme.sh with automated distribution
 - **VPN**: Tailscale for secure remote access
 - **Firewall**: Proxmox firewall with IPSets and security groups
-- **K3s Cluster**: 3-node initial deployment (codified), expandable to 5-node HA
+- **K3s Cluster**: 9-node cluster (3 servers + 6 agents) with etcd HA
 
 ## Architecture
 
@@ -24,20 +28,32 @@ Internet
     |
 [192.168.0.0/24] -- Core LAN
     |
-    +-- Proxmox Hosts
+    +-- Proxmox Hosts (6-node cluster)
     |   +-- pve-nas-01    (.102) - NAS + Storage
+    |   +-- pve-laptop-01 (.103) - Compute
+    |   +-- pve-opt-01    (.104) - Compute
+    |   +-- pve-opt-02    (.105) - Compute
     |   +-- pve-opt-03    (.106) - Compute
+    |   +-- pve-prec-01   (.107) - Compute
     |
-    +-- Infrastructure LXC
+    +-- Infrastructure LXC/VMs
     |   +-- dns-01        (.150) - Primary DNS
     |   +-- dns-02        (.160) - Secondary DNS
     |   +-- smtp-relay    (.151) - Mail relay
     |   +-- plex          (.152) - Plex Media Server
+    |   +-- gitlab        (.153) - GitLab EE
+    |   +-- home-assistant (.154) - Home Assistant OS
     |
-    +-- K3s Cluster VMs
-        +-- k3s-srv-nas-01 (.222) - Server + etcd
-        +-- k3s-agt-nas-01 (.202) - Agent (NAS workloads)
-        +-- k3s-agt-opt-03 (.206) - Agent (ingress)
+    +-- K3s Cluster (9 nodes)
+        +-- k3s-srv-nas-01    (.222) - Server + etcd
+        +-- k3s-srv-laptop-01 (.223) - Server + etcd
+        +-- k3s-srv-prec-01   (.227) - Server + etcd
+        +-- k3s-agt-nas-01    (.202) - Agent (NAS workloads)
+        +-- k3s-agt-laptop-01 (.203) - Agent (ingress)
+        +-- k3s-agt-opt-01    (.204) - Agent (ingress)
+        +-- k3s-agt-opt-02    (.205) - Agent (ingress)
+        +-- k3s-agt-opt-03    (.206) - Agent (ingress)
+        +-- k3s-agt-prec-01   (.207) - Agent (compute)
 ```
 
 ## Quick Start
@@ -52,8 +68,12 @@ Internet
 ### Setup
 
 ```bash
-git clone https://github.com/ericsweiss/weisssrv.git
+# Clone from GitLab (canonical source)
+git clone https://git.ericsweiss.com/eric/weisssrv.git
 cd weisssrv
+
+# Or clone from GitHub (read-only mirror)
+# git clone https://github.com/ericsweiss/weisssrv.git
 
 # Install Ansible collections
 task ansible:install-collections
@@ -68,44 +88,70 @@ task ansible:ping
 ### Common Operations
 
 ```bash
-task --list                    # List all tasks
+task --list                    # List all available tasks
 
-task lint                      # Lint everything
-task deploy:check              # Dry-run deployment
-task deploy:all                # Deploy all infrastructure
-task deploy:verify             # Verify deployment
+# Validation and linting
+task lint                      # Lint everything (Ansible, Terraform, Kubernetes)
+task deploy:check              # Dry-run base infrastructure deployment
+task ansible:test              # Run Molecule unit tests
 
+# Base infrastructure deployment
+task deploy:all                # Deploy all base infrastructure
+task deploy:verify             # Verify deployment status
 task deploy:dns                # Deploy DNS stack
 task deploy:storage            # Deploy storage services
-task deploy:plex               # Deploy Plex Media Server
 
+# Application deployments
+task deploy:plex               # Deploy Plex Media Server (LXC)
+task gitlab:deploy             # Deploy GitLab (VM + application)
+task home-assistant:deploy     # Deploy Home Assistant config + ingress
+
+# K3s cluster operations
+task k3s:deploy                # Deploy/update k3s cluster (Ansible)
+task k3s:deploy-workloads      # Deploy all k3s platform workloads
+task k3s:status                # Show cluster and workload status
+
+# K3s application stacks
+task k3s:deploy-authentik      # Deploy Authentik SSO
 task downloads:deploy          # Deploy download clients and media stack
-task downloads:status          # Check downloads stack status
-task downloads:vpn-status      # Verify VPN connection
-
+task downloads:status          # Check downloads namespace status
+task downloads:vpn-status      # Verify VPN connection and public IP
 task recipes:deploy            # Deploy Mealie and Bar Assistant
-task recipes:status            # Check recipes stack status
+task recipes:status            # Check recipes namespace status
 
+# GitLab operations
+task gitlab:status             # Show GitLab and runner status
+task gitlab:verify             # Run GitLab smoke tests
+task gitlab:deploy-runner      # Deploy shared runner (multi-project k8s deploys)
+task gitlab:deploy-runner-privileged  # Deploy infrastructure runner (weisssrv CI/CD)
+
+# Terraform (Cloudflare DNS)
 task terraform:plan            # Plan Cloudflare DNS changes
 task terraform:apply           # Apply Cloudflare DNS changes
 
-task maintenance:update-full   # Full system update
-task collect-state             # Generate cluster state snapshot
+# Maintenance
+task maintenance:check-versions       # Check all services for updates
+task maintenance:update-full          # Full system update (interactive)
+task maintenance:update-k3s-nodes     # Rolling k3s node upgrades
+task maintenance:update-helm-charts   # Update Helm chart versions
+task collect-state                    # Generate cluster state snapshot
 ```
 
 ## Repository Structure
 
 ```
 weisssrv/
+├── .gitlab-ci.yml            # CI/CD pipeline (canonical)
 ├── ansible/
 │   ├── inventories/prod/     # Production inventory
 │   │   ├── hosts.yml         # Host definitions
 │   │   └── group_vars/       # Group variables
-│   ├── roles/                # 16 Ansible roles
+│   ├── roles/                # 19 Ansible roles
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/cloudflare/     # Cloudflare DNS management
 ├── kubernetes/               # K3s manifests (Flux-ready)
-├── docs/                     # Documentation (24 files)
+├── scripts/                  # Utility scripts (version checker, etc.)
+├── docs/                     # Documentation (29 files)
 └── Taskfile.yml              # Task runner commands
 ```
 
@@ -113,22 +159,25 @@ weisssrv/
 
 | Role | Purpose |
 |------|---------|
-| base | Packages, SSH hardening, users, timezone |
-| qol | zsh + Oh My Zsh, neovim, fzf |
-| postfix_null_client | Local mail relay |
+| base | Packages, SSH hardening, users, timezone, DNS configuration |
+| qol | zsh + Oh My Zsh, neovim, fzf, ripgrep |
+| postfix_null_client | Local mail relay to smtp-relay |
 | tailscale | VPN setup |
 | proxmox_firewall | IPSets and security groups |
-| proxmox_vm | VM provisioning with cloud-init |
-| proxmox_lxc | LXC container provisioning |
-| nas_storage | ZFS, NFS, Samba, MergerFS |
-| unbound | DoT recursive resolver |
-| adguard_home | DNS filtering (non-root) |
-| acme_certs | Let's Encrypt certificates |
-| smtp_relay | Gmail SMTP relay |
-| adguard_sync | DNS sync (dns-01 -> dns-02) |
-| k3s | K3s cluster deployment |
-| plex | Plex Media Server with GPU transcoding |
+| proxmox_vm | VM provisioning with cloud-init and autostart |
+| proxmox_lxc | LXC container provisioning with autostart |
+| proxmox_ha | Proxmox HA rules, resources, and ZFS replication |
+| nas_storage | ZFS, NFS, Samba, MergerFS, SMART monitoring |
+| unbound | DoT recursive resolver (port 5335) |
+| adguard_home | DNS filtering (non-root, port 53) |
+| acme_certs | Let's Encrypt certificates with distribution |
+| smtp_relay | Gmail SMTP relay with SASL auth |
+| adguard_sync | DNS sync (dns-01 -> dns-02) via systemd timer |
+| k3s | K3s cluster installation and configuration |
+| plex | Plex Media Server with Intel GPU transcoding |
 | home_assistant | Home Assistant OS configuration management |
+| gitlab | GitLab EE installation and configuration |
+| resolv_conf | Shared /etc/resolv.conf management |
 
 ## Secrets Management
 
@@ -150,17 +199,28 @@ Split-horizon DNS:
 
 ## K3s Platform
 
-Initial 3-node cluster with:
-- **kube-vip**: API VIP at 192.168.0.161
+9-node HA cluster (3 servers + 6 agents) with:
+- **kube-vip**: API VIP at 192.168.0.161 (tolerates 1 server failure)
 - **MetalLB**: LoadBalancer IPs (.100 public, .101 internal)
-- **Traefik**: Ingress controller
-- **external-dns**: Automatic Cloudflare DNS
+- **Traefik**: Ingress controller with Let's Encrypt
+- **external-dns**: Automatic Cloudflare DNS management
 - **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 
 ## Applications
+
+### Authentik SSO
+
+Identity provider for Single Sign-On across all applications:
+
+- **URL**: auth.esweiss.com
+- **Features**:
+  - OIDC/OAuth2 provider for Mealie, Bar Assistant, Home Assistant
+  - SAML provider for GitLab
+  - PostgreSQL data on persistent ZFS zvol
+- **Documentation**: [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md)
 
 ### Plex Media Server
 
@@ -213,6 +273,20 @@ Home automation platform running on Home Assistant OS:
   - Configuration managed via Ansible with 1Password secrets
 - **Documentation**: [docs/24-home-assistant-deployment.md](docs/24-home-assistant-deployment.md)
 
+### GitLab
+
+Self-hosted Git repository and CI/CD platform:
+
+- **URLs**: git.esweiss.com (internal), git.ericsweiss.com (external)
+- **Features**:
+  - GitLab EE 18.9.1 (CE features) on dedicated VM
+  - Container Registry (registry.git.ericsweiss.com)
+  - GitLab Pages (*.pages.git.ericsweiss.com)
+  - CI/CD Runners on k3s cluster (infrastructure + shared multi-project)
+  - Authentik SAML SSO integration
+  - Git SSH access on port 2222 (external)
+- **Documentation**: [docs/27-gitlab-deployment.md](docs/27-gitlab-deployment.md)
+
 ## Documentation
 
 ### Getting Started
@@ -242,7 +316,7 @@ Home automation platform running on Home Assistant OS:
 | Document | Description |
 |----------|-------------|
 | [12-runbooks](docs/12-runbooks.md) | Operational procedures |
-| [13-ci-cd](docs/13-ci-cd.md) | CI/CD pipelines and GitHub Actions |
+| [13-ci-cd](docs/13-ci-cd.md) | CI/CD pipelines (GitLab CI) |
 | [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning |
 | [15-credential-rotation](docs/15-credential-rotation.md) | Credential rotation procedures |
 | [16-next-steps](docs/16-next-steps.md) | TODO and feature roadmap |
@@ -255,6 +329,9 @@ Home automation platform running on Home Assistant OS:
 | [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration |
 | [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
 | [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA |
+| [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation |
+| [27-gitlab-deployment](docs/27-gitlab-deployment.md) | GitLab EE deployment (VM, registry, pages, runners) |
+| [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
 
 ## User Management
 

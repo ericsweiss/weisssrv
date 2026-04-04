@@ -23,14 +23,24 @@ resource "cloudflare_record" "root" {
 # - Wildcard domains (*.pages.git) aren't supported by external-dns annotations
 # =============================================================================
 
-# GitLab Web UI - git.ericsweiss.com
+# GitLab Web UI + SSH - git.ericsweiss.com
+# DNS-only mode allows both HTTPS (via Traefik) and SSH access on the same hostname
+# Note: Origin IP is already exposed via direct.ericsweiss.com, so no additional security impact
+# CUTOVER NOTE: On first apply, DNS may briefly resolve to the placeholder IP until
+# the DDNS CronJob updates it. Apply during low-traffic window and run
+# `task k3s:deploy-ddns` immediately after to trigger an update.
 resource "cloudflare_record" "git" {
   zone_id = data.cloudflare_zone.external.id
   name    = "git"
-  type    = "CNAME"
-  content = var.external_domain
-  proxied = true
-  comment = "GitLab Web UI - managed by Terraform"
+  type    = "A"
+  content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
+  proxied = false           # DNS-only to allow SSH traffic
+  comment = "GitLab Web + SSH - DNS only, TLS via Traefik, IP updated by DDNS"
+
+  lifecycle {
+    # Allow DDNS to update the IP without Terraform reverting it
+    ignore_changes = [content]
+  }
 }
 
 # GitLab Container Registry - registry.git.ericsweiss.com
@@ -56,13 +66,14 @@ resource "cloudflare_record" "pages_git" {
 }
 
 # Direct A record (DNS-only) for services that can't use Cloudflare proxy
-# Used by GitLab Pages wildcard which requires nested wildcard certificates
+# Used by GitLab Pages wildcard and Container Registry which require nested wildcard certificates
 #
 # SECURITY NOTE: This record intentionally exposes the origin IP (DNS-only mode).
 # This is required for:
 # - GitLab Pages wildcard TLS (Cloudflare can't proxy nested wildcards)
-# - GitLab SSH access on port 2222 (Cloudflare can't proxy non-HTTP)
 # - Container Registry access (requires direct TLS termination)
+#
+# Note: GitLab SSH now uses git.ericsweiss.com (also DNS-only) for a unified URL.
 #
 # Protection is provided by:
 # - Proxmox firewall restricts access (sg-gitlab, sg-k3s-workers security groups)

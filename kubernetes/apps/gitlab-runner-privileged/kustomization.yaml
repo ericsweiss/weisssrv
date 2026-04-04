@@ -1,0 +1,15 @@
+---
+# GitLab Runner (Privileged) Kustomization
+#
+# Defines the gitlab-runner namespace resource. The task applies namespace.yaml
+# directly (kubectl apply -f namespace.yaml), then installs the runner via Helm.
+#
+# To deploy: task gitlab:deploy-runner-privileged
+# To check status: task gitlab:status
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gitlab-runner
+
+resources:
+  - namespace.yaml

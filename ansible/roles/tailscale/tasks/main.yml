@@ -58,6 +58,7 @@
     reload: true
   when: tailscale_advertise_routes | length > 0
 
+
 - name: Check Tailscale status
   ansible.builtin.command: tailscale status --json
   register: tailscale_status

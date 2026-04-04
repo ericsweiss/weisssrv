@@ -6,8 +6,9 @@ You are working in the weisssrv homelab infrastructure repository. This reposito
 
 **Repository**: weisssrv (Weiss Server Infrastructure)
 **Tech Stack**: Ansible, Terraform, k3s, ZFS, Proxmox VE, Debian 13 (trixie)
-**Architecture**: 2 Proxmox hosts, 3 k3s nodes, 1 LXC container (Plex), multi-pool ZFS storage
-**Documentation**: Comprehensive markdown files in docs/
+**Architecture**: 6 Proxmox hosts, 9 k3s nodes (3 servers + 6 agents), 1 LXC container (Plex), multi-pool ZFS storage
+**CI/CD**: Self-hosted GitLab (canonical) with GitHub mirror (read-only)
+**Documentation**: Comprehensive markdown files in docs/ (29 files)
 
 See `CLAUDE.md` for complete project overview.
 
@@ -160,7 +161,7 @@ task maintenance:update-cluster      # Complete cluster update
 # Ansible
 task ansible:ping                    # Test connectivity
 task ansible:lint                    # Lint playbooks
-ansible-playbook site.yml --limit dns-01  # Deploy to one host
+ansible-playbook ansible/playbooks/site.yml -i ansible/inventories/prod --limit dns-01  # Deploy to one host
 
 # Terraform
 task terraform:plan                  # Plan DNS changes
@@ -199,12 +200,15 @@ ansible/
 
 ### Infrastructure
 
-- **Proxmox Hosts**: pve-nas-01 (.102), pve-opt-03 (.106)
-- **K3s Cluster**: k3s-srv-nas-01 (.222), k3s-agt-nas-01 (.202), k3s-agt-opt-03 (.206)
+- **Proxmox Hosts**: pve-nas-01 (.102), pve-laptop-01 (.103), pve-opt-01 (.104), pve-opt-02 (.105), pve-opt-03 (.106), pve-prec-01 (.107)
+- **K3s Servers**: k3s-srv-nas-01 (.222), k3s-srv-laptop-01 (.223), k3s-srv-prec-01 (.227)
+- **K3s Agents**: k3s-agt-nas-01 (.202), k3s-agt-laptop-01 (.203), k3s-agt-opt-01 (.204), k3s-agt-opt-02 (.205), k3s-agt-opt-03 (.206), k3s-agt-prec-01 (.207)
 - **DNS Servers**: dns-01 (.150), dns-02 (.160) - AdGuard + Unbound
 - **SMTP Relay**: smtp-relay (.151) - Postfix to Gmail
-- **Plex LXC**: plex (.154) - Media server with GPU passthrough
-- **VPN**: Tailscale on all hosts (100.64.0.0/10)
+- **Plex LXC**: plex (.152) - Media server
+- **GitLab VM**: gitlab (.153) - GitLab EE with CI/CD runners on k3s
+- **Home Assistant**: home-assistant (.154) - HAOS VM
+- **VPN**: Tailscale on Proxmox hosts (100.64.0.0/10)
 - **K3s VIPs**: API (.161), Public ingress (.100), Internal ingress (.101)
 
 ### Storage (pve-nas-01)
@@ -342,23 +346,23 @@ Complete documentation in `docs/`:
 
 **Getting Started** (00-03): Hardware setup, architecture, installation, SSH
 **Infrastructure** (04-11): QoL, Tailscale, ZFS, file services, DNS, certs, mail, firewall
-**Operations** (12-18): Runbooks, CI/CD, k3s plan, credentials, DR, bootstrap
-**Applications** (19-25): K3s deployment, Plex, download clients, recipes, SSO, Home Assistant, multi-node expansion
+**Operations** (12-18): Runbooks, CI/CD (GitLab), k3s plan, credentials, DR, bootstrap
+**Applications** (19-28): K3s deployment, Plex, download clients, recipes, SSO, Home Assistant, multi-node expansion/implementation, GitLab deployment, GitLab migration
 
 ## Debugging
 
 ```bash
-# Verbose Ansible
-ansible-playbook site.yml -vvv
+# Verbose Ansible (run from repo root)
+ansible-playbook ansible/playbooks/site.yml -i ansible/inventories/prod -vvv
 
 # Test single task
-ansible dns-01 -m shell -a "systemctl status AdGuardHome"
+ansible dns-01 -i ansible/inventories/prod -m shell -a "systemctl status AdGuardHome"
 
 # Check facts
-ansible dns-01 -m setup
+ansible dns-01 -i ansible/inventories/prod -m setup
 
 # Validate syntax
-ansible-playbook site.yml --syntax-check
+ansible-playbook ansible/playbooks/site.yml -i ansible/inventories/prod --syntax-check
 ```
 
 ## Important Design Decisions
@@ -381,6 +385,16 @@ Ansible configures ZFS properties but NEVER creates/destroys pools. Pool managem
 - Internal (*.esweiss.com) via AdGuard rewrites
 - External (*.ericsweiss.com) via Terraform/Cloudflare
 - HA with dns-01/dns-02, adguardhome-sync replication
+
+### CI/CD (GitLab)
+
+- **Canonical source**: https://git.ericsweiss.com/eric/weisssrv (GitLab)
+- **GitHub mirror**: https://github.com/ericsweiss/weisssrv (read-only, auto-synced)
+- **Pipeline**: `.gitlab-ci.yml` with stages: lint, ai-review, validate, test, security, gate, deploy, maintenance
+- **Infrastructure runner** (`gitlab-runner-privileged`): Tag `infrastructure`, privileged, handles ALL weisssrv CI/CD jobs
+- **Shared runner** (`gitlab-runner`): Tag `k8s-deploy`, unprivileged, `runUntagged: true`, for other GitLab projects
+- **Default tag**: `default: tags: [infrastructure]` routes all weisssrv jobs to infrastructure runner
+- **Secrets**: 1Password service account (`OP_SERVICE_ACCOUNT_TOKEN` CI variable)
 
 ## Getting Help
 

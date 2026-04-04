@@ -1,13 +1,14 @@
 ---
 # Home Assistant VM configuration
-# Running Home Assistant OS on pve-nas-01 (192.168.0.154)
+# Running Home Assistant OS on pve-prec-01 (192.168.0.154)
+# Primary on pve-prec-01, HA-managed with multi-node replication
 #
 # IMPORTANT: Home Assistant OS is NOT a standard Linux distribution
 # It cannot be managed by Ansible like other VMs/LXCs
 # This file documents operational configuration for reference
 
-# Proxmox host for this VM
-proxmox_host: pve-nas-01
+# Proxmox host for this VM (primary node for HA-managed resource)
+proxmox_host: pve-prec-01
 
 # Proxmox resource pool for organization
 proxmox_resource_pool: apps-public

@@ -6,21 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **weisssrv** - Homelab Infrastructure as Code
 
-Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, and (future) Kubernetes.
+Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, and Kubernetes.
 
 ## Repository Structure
+
+**Canonical source**: https://git.ericsweiss.com/eric/weisssrv (GitLab)
+**GitHub mirror**: https://github.com/ericsweiss/weisssrv (read-only)
 
 ```
 weisssrv/
 ├── ansible/                 # Configuration management
 │   ├── inventories/prod/    # Production inventory + vars
-│   ├── roles/               # 18 roles for all services
+│   ├── roles/               # 19 roles for all services
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
-├── kubernetes/              # Future k3s manifests (Flux)
-├── docs/                    # Documentation (27 files)
+├── kubernetes/              # K3s manifests
+├── docs/                    # Documentation (29 files)
 ├── scripts/                 # Utility scripts
-└── .github/workflows/       # CI/CD automation
+├── .gitlab-ci.yml           # CI/CD pipeline (canonical)
+└── .github/workflows/       # Legacy workflows (disabled)
 ```
 
 ## Architecture
@@ -102,7 +106,7 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - Repository data on separate ZFS zvol (ssd/appdata/gitlab/repos, 200GB)
   - Container Registry (registry.git.ericsweiss.com)
   - GitLab Pages (*.pages.git.ericsweiss.com)
-  - CI/CD Runners on k3s cluster
+  - CI/CD Runners on k3s cluster (infrastructure runner for weisssrv, shared runner for other projects)
   - Authentik SSO integration
   - Git SSH on port 22 (internal), port 2222 (external)
 
@@ -197,7 +201,8 @@ task home-assistant:snapshot      # Create Proxmox VM snapshot
 task gitlab:deploy                # Deploy GitLab (VM + application)
 task gitlab:deploy-check          # Dry-run deployment
 task gitlab:deploy-ingress        # Deploy Traefik IngressRoutes
-task gitlab:deploy-runner         # Deploy CI/CD runners on k3s
+task gitlab:deploy-runner         # Deploy shared runner for multi-project k8s deploys (unprivileged)
+task gitlab:deploy-runner-privileged  # Deploy infrastructure runner for weisssrv (privileged, DinD + SSH)
 task gitlab:status                # Show GitLab and runner status
 task gitlab:verify                # Run smoke tests (web UI, registry, pages, SSH)
 task gitlab:backup                # Create GitLab backup
@@ -302,9 +307,12 @@ In vault "Homelab":
 - **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
 - **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
 - **GitLab** - root-password (initial GitLab root user password)
+- **GitLab API Token** - credential (personal access token for PR-Agent AI code review)
 - **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
-- **GitLab Runner** - runner-token (glrt-* format, from GitLab Admin > CI/CD > Runners > New instance runner)
+- **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
+- **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
+- **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template for kubectl/Helm access)
 
 ### Using 1Password
 
@@ -340,8 +348,8 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 
 ### K3s Cluster
 - API VIP: .161
-- Servers: .22X range (.222, and future .223, .227)
-- Agents: .20X range (.202, .206, and future .203, .204, .205, .207)
+- Servers: .22X range (.222, .223, .227)
+- Agents: .20X range (.202, .203, .204, .205, .206, .207)
 - MetalLB: .100 (public), .101 (internal)
 
 ### Firewall IP Sets
@@ -543,7 +551,7 @@ See `docs/` for detailed guides:
 
 **Operations & Planning**:
 - 12-runbooks.md - Operational procedures
-- 13-ci-cd.md - CI/CD pipelines and GitHub Actions
+- 13-ci-cd.md - CI/CD pipelines (GitLab CI)
 - 14-post-base-plan.md - K3s platform roadmap and workload planning
 - 15-credential-rotation.md - Credential rotation procedures
 - 16-next-steps.md - TODO and feature roadmap
@@ -558,6 +566,7 @@ See `docs/` for detailed guides:
 - 25-multi-node-expansion.md - Multi-node expansion and Proxmox HA guide
 - 26-multi-node-implementation.md - Step-by-step implementation for 6-node cluster
 - 27-gitlab-deployment.md - GitLab EE deployment (VM, registry, pages, runners)
+- 28-gitlab-migration.md - GitHub to GitLab migration guide
 
 ## Important Context Files
 
