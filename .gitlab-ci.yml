@@ -101,15 +101,22 @@ workflow:
 
 .k3s-deploy-base:
   extends: .install-1password
-  image: alpine/k8s:1.31.4
+  # Use Debian-based image (Alpine musl resolver has issues with k8s ndots:5)
+  image: python:3.11-slim
   before_script:
-    - apk add --no-cache curl bash gnupg yq gettext
+    - !reference [.install-1password, before_script]
     - |
-      # Install 1Password CLI for Alpine
-      curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor > /etc/apk/keys/1password.gpg
-      echo "https://downloads.1password.com/linux/alpinelinux/stable" >> /etc/apk/repositories
-      apk add --no-cache 1password-cli
-    - op --version
+      # Install kubectl, helm, yq, and envsubst (pinned checksums for supply-chain integrity)
+      apt-get install -y -qq gettext-base
+      curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
+      echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
+      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+      curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz -o /tmp/helm.tar.gz
+      echo "f43e1c3387de24547506ab05d24e5309c0ce0b228c23bd8aa64e9ec4b8206651  /tmp/helm.tar.gz" | sha256sum -c -
+      tar xzf /tmp/helm.tar.gz -C /usr/local/bin --strip-components=1 linux-amd64/helm
+      curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_amd64 -o /tmp/yq
+      echo "6dc2d0cd4e0caca5aeffd0d784a48263591080e4a0895abe69f3a76eb50d1ba3  /tmp/yq" | sha256sum -c -
+      install -m 0755 /tmp/yq /usr/local/bin/yq
     - |
       # Setup kubeconfig from 1Password
       mkdir -p ~/.kube
