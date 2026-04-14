@@ -161,7 +161,7 @@ bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
 
 # Plex Media Server version (apt-managed via official repository)
-plex_version: "1.43.0.10492-121068a07"
+plex_version: "1.43.1.10611-1e34174b1"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
