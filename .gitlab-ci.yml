@@ -1639,6 +1639,7 @@ maintenance-k3s-provision:
   extends: .deploy-base
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
   script:
     - cd ansible
     - |
@@ -1687,6 +1688,8 @@ maintenance-update-full:
 maintenance-update-k3s-nodes:
   stage: maintenance
   extends: .deploy-base
+  variables:
+    K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
   script:
     - cd ansible
     - |
