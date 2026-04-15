@@ -58,6 +58,33 @@
     reload: true
   when: tailscale_advertise_routes | length > 0
 
+- name: Create tailscaled systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/tailscaled.service.d
+    state: directory
+    mode: '0755'
+  when: tailscale_advertise_routes | length > 0
+
+# On Proxmox hosts, ip_forward can be reset to 0 during boot by bridge/network
+# module initialization that occurs after systemd-sysctl. This drop-in ensures
+# ip_forward is re-applied after tailscaled starts (which is after networking).
+- name: Persist IP forwarding via tailscaled ExecStartPost
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tailscaled.service.d/ip-forward.conf
+    mode: '0644'
+    content: |
+      [Service]
+      ExecStartPost=-/sbin/sysctl -w net.ipv4.ip_forward=1
+  when: tailscale_advertise_routes | length > 0
+  notify: Reload and restart tailscaled
+
+- name: Remove IP forwarding drop-in when subnet routing disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/tailscaled.service.d/ip-forward.conf
+    state: absent
+  when: tailscale_advertise_routes | length == 0
+  notify: Reload and restart tailscaled
+
 
 - name: Check Tailscale status
   ansible.builtin.command: tailscale status --json
