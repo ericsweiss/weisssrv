@@ -877,6 +877,27 @@ deploy-gitlab:
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/gitlab.yml
+    - |
+      # Wait for GitLab API to come back after reconfigure (up to 5 min)
+      echo "Waiting for GitLab API..."
+      gitlab_healthy=false
+      start_ts=$(date +%s)
+      while true; do
+        if curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness > /dev/null 2>&1; then
+          elapsed=$(( $(date +%s) - start_ts ))
+          echo "GitLab API healthy after ${elapsed}s"
+          gitlab_healthy=true
+          break
+        fi
+        elapsed=$(( $(date +%s) - start_ts ))
+        if [ "$elapsed" -ge 300 ]; then break; fi
+        [ $((elapsed % 20)) -lt 3 ] && echo "Still waiting... (${elapsed}s)"
+        sleep 2
+      done
+      if [ "$gitlab_healthy" != "true" ]; then
+        echo "ERROR: GitLab API did not become healthy in 300s"
+        exit 1
+      fi
   environment:
     name: production/gitlab
   rules:
@@ -1367,11 +1388,10 @@ deploy-gitlab-runner:
         -n gitlab-runner \
         -f values.yaml \
         -f /tmp/runner-token.yaml \
-        --version "$RUNNER_VERSION" \
-        --wait --timeout 5m
+        --version "$RUNNER_VERSION"
       rm -f /tmp/runner-token.yaml
 
-      echo "GitLab Runner deployment complete"
+      echo "GitLab Runner upgrade submitted (pod will restart after this job completes)"
   environment:
     name: production/k3s-gitlab-runner
   rules:
@@ -1414,11 +1434,10 @@ deploy-gitlab-runner-privileged:
         -n gitlab-runner \
         -f values.yaml \
         -f /tmp/runner-token.yaml \
-        --version "$RUNNER_VERSION" \
-        --wait --timeout 5m
+        --version "$RUNNER_VERSION"
       rm -f /tmp/runner-token.yaml
 
-      echo "Privileged GitLab Runner deployment complete"
+      echo "Infrastructure Runner upgrade submitted (pod will restart after this job completes)"
   environment:
     name: production/k3s-gitlab-runner-privileged
   rules:
@@ -1450,7 +1469,7 @@ deploy-gitlab-verify:
 
       # Test web UI accessibility
       echo "Testing GitLab web UI..."
-      curl -sf --max-time 30 "https://git.ericsweiss.com/-/health" || \
+      curl -sf --max-time 30 "https://git.ericsweiss.com/-/readiness" || \
         echo "WARNING: GitLab health check failed (may need more time to start)"
 
       # Test Container Registry
@@ -1537,6 +1556,31 @@ deploy-verify:
     - |
       echo "=== Post-Deployment Verification ==="
 
+      # Wait for runner deployments to finish rolling out (guard for missing deployments)
+      echo "Waiting for GitLab Runner deployments to be ready..."
+      for dep in gitlab-runner gitlab-runner-privileged; do
+        if kubectl get deployment "$dep" -n gitlab-runner > /dev/null 2>&1; then
+          kubectl rollout status deployment/"$dep" -n gitlab-runner --timeout=300s
+          echo "  $dep: ready"
+        else
+          echo "  $dep: not deployed (skipping)"
+        fi
+      done
+      echo "Runner rollout checks complete"
+
+      if kubectl get namespace gitlab-runner > /dev/null 2>&1; then
+        echo ""
+        echo "Runner pod status:"
+        kubectl get pods -n gitlab-runner -o wide
+
+        echo ""
+        echo "Helm releases:"
+        helm list -n gitlab-runner
+      else
+        echo "gitlab-runner namespace not found (skipping runner checks)"
+      fi
+
+      echo ""
       echo "Checking node status..."
       kubectl get nodes
 
@@ -1551,6 +1595,27 @@ deploy-verify:
       echo ""
       echo "Checking IngressRoutes..."
       kubectl get ingressroute -A 2>/dev/null | head -20 || echo "No IngressRoutes found"
+
+      echo ""
+      echo "Checking GitLab health..."
+      gitlab_ok=false
+      start_ts=$(date +%s)
+      while true; do
+        if curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness > /dev/null 2>&1; then
+          gitlab_ok=true
+          break
+        fi
+        elapsed=$(( $(date +%s) - start_ts ))
+        if [ "$elapsed" -ge 60 ]; then break; fi
+        echo "GitLab health probe failed (${elapsed}s elapsed), retrying..."
+        sleep 3
+      done
+      if [ "$gitlab_ok" = "true" ]; then
+        echo "GitLab API: OK"
+      else
+        echo "ERROR: GitLab health check failed after 60s of retries"
+        exit 1
+      fi
 
       echo ""
       echo "=== Verification Complete ==="
