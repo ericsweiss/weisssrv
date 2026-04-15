@@ -85,9 +85,16 @@ workflow:
 
 .deploy-base:
   extends: .install-1password
+  variables:
+    ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
   before_script:
     - !reference [.install-1password, before_script]
     - pip install --quiet ansible
+    - |
+      # Copy ansible.cfg to secure temp path (world-writable checkout causes Ansible to ignore it)
+      export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
+      install -m 600 ansible/ansible.cfg "$ANSIBLE_CONFIG"
+      trap "rm -f '$ANSIBLE_CONFIG'" EXIT
     - |
       # Setup SSH from 1Password
       mkdir -p ~/.ssh
