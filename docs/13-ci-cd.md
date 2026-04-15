@@ -38,10 +38,10 @@ k3s. It picks up untagged jobs from any project.
 ```yaml
 stages:
   - lint          # Code quality checks
-  - ai-review     # AI-powered code review (MRs only)
   - validate      # Schema and configuration validation
   - test          # Unit and integration tests
   - security      # Secret detection scanning
+  - ai-review     # AI-powered code review (MRs only, after tests/security)
   - gate          # Validation gate (blocks deploys until all checks pass)
   - deploy        # Auto-deploy on merge to main
   - maintenance   # Manual approval required (reboots, HA changes)
@@ -92,21 +92,18 @@ stages:
 |-----|----------|-------------|
 | `validation-gate` | Pushes to main only (not schedule, web, or MR) | Blocks all deploy jobs until all *applicable* checks pass |
 
-The `validation-gate` job lists every lint, validate, test, and security job as an `optional: true`
-`needs` dependency. The `optional: true` flag means:
+The `validation-gate` job depends on `secret_detection` as a **required** (non-optional) dependency
+that must always pass. All path-filtered lint, validate, and test jobs are listed as `optional: true`
+dependencies:
 
-- If a check job was **not created** (its path filter didn't match the changeset): the dependency
+- If a path-filtered job was **not created** (its path filter didn't match): the dependency
   is silently skipped and does not block the gate.
-- If a check job **was created** (paths matched) and **failed**: the gate is blocked, which in turn
-  blocks all deploy jobs that depend on it.
+- If a path-filtered job **was created** (paths matched) and **failed**: the gate is blocked.
+- `secret_detection` must always pass — it is not optional.
 
-This enforces the guarantee that deployments only proceed when all *applicable* quality checks pass,
-while path-filtered jobs that aren't relevant to the current changeset don't prevent deployment.
-
-Most deploy jobs depend on the gate directly (non-optional `needs`), including all Terraform
-and Ansible deploy jobs, `deploy-k3s-platform`, `deploy-k3s-authentik`, `deploy-downloads`,
-`deploy-recipes`, `deploy-gitlab-ingress`, `deploy-verify`, and others. A few IngressRoute
-and runner jobs rely only on optional dependencies to other gated deploy jobs for ordering.
+All deploy jobs depend on `validation-gate` as a required (non-optional) `needs` dependency.
+Additional `optional: true` dependencies between deploy jobs are used only for ordering
+(e.g., `deploy-gitlab-runner` waits for `deploy-k3s-platform` if both run in the same pipeline).
 
 #### Deploy Stage - Terraform
 | Job | Triggers | Description |
@@ -167,21 +164,21 @@ and runner jobs rely only on optional dependencies to other gated deploy jobs fo
 | Job | Description |
 |-----|-------------|
 | `maintenance-k3s-provision` | Provision k3s VMs and deploy cluster |
-| `maintenance-update-full` | Full system update (may reboot) |
-| `maintenance-update-packages` | OS package updates on all hosts including k3s nodes and app VMs (auto-reboot enabled) |
+| `maintenance-update-packages` | OS package updates on all hosts (base, k3s, app VMs) with auto-reboot |
 | `maintenance-update-applications` | Application updates: AdGuard Home, Tailscale, Plex |
 | `maintenance-update-k3s-nodes` | K3s node rolling update (drain/cordon) |
 | `maintenance-proxmox-ha` | Proxmox HA configuration |
 | `maintenance-home-assistant-restart` | Restart Home Assistant after config deployment |
+| `maintenance-verify` | Post-maintenance cluster health validation (fails on critical issues) |
 
 ## Pipeline Triggers
 
 | Trigger | Runs |
 |---------|------|
-| Merge request | Lint, AI review, validate, test, security stages (no deploy) |
+| Merge request | Lint, validate, test, security, AI review stages (no deploy) |
 | Push to main | Full validation + auto-deploy |
-| Scheduled | Version checking and secret detection only. All other jobs (lint, validate, test, gate, deploy, maintenance) are explicitly excluded via `when: never` rules. |
-| Manual (web) | Lint, validate, test, and security stages. Deploy, gate, and maintenance jobs are explicitly excluded via `when: never` rules. Use push-to-main for deployments. |
+| Scheduled | Version checking only. All other jobs (lint, validate, test, security, ai-review, gate, deploy, maintenance) are explicitly excluded via `when: never` rules. |
+| Manual (web) | Lint, validate, test stages only. Security, AI review, deploy, gate, and maintenance jobs are excluded via `when: never` rules. |
 
 ## Deployment Pipeline
 
@@ -190,7 +187,7 @@ and runner jobs rely only on optional dependencies to other gated deploy jobs fo
 When a merge request is merged to `main`:
 
 1. **Validation stages run first** (lint, validate, test, security)
-2. **Validation gate blocks deploys** -- the `validation-gate` job in the `gate` stage must pass before any deploy job can start. The gate lists all lint, validate, test, and security jobs as `optional: true` dependencies: jobs that were not created (path filter didn't match) are skipped, but any job that *was* created must succeed or all deployments are blocked.
+2. **Validation gate blocks deploys** -- the `validation-gate` job in the `gate` stage must pass before any deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all deployments are blocked.
 3. **Only changed components deploy** (path-based triggers)
 4. **Service restarts are automatic** (AdGuard, Postfix, etc.)
 5. **Machine reboots require manual approval** (maintenance stage)
@@ -207,12 +204,15 @@ When a merge request is merged to `main`:
 | K3s IngressRoutes & Runners | `deploy-gitlab-ingress`, `deploy-home-assistant-ingress`, `deploy-plex-ingress`, `deploy-adguard-ingress`, `deploy-gitlab-runner`, `deploy-gitlab-runner-privileged` | Yes | No |
 | Verification | `deploy-gitlab-verify`, `deploy-verify` | Yes | No |
 | K3s Provisioning | `maintenance-k3s-provision` | No | **Yes** |
-| System Updates | `maintenance-update-full`, `maintenance-update-packages`, `maintenance-update-applications` | No | **Yes** |
+| System Updates | `maintenance-update-packages`, `maintenance-update-applications` | No | **Yes** |
 | K3s Node Updates | `maintenance-update-k3s-nodes` | No | **Yes** |
 | Proxmox HA | `maintenance-proxmox-ha` | No | **Yes** |
 | Home Assistant Restart | `maintenance-home-assistant-restart` | No | **Yes** |
+| Post-Maintenance Verification | `maintenance-verify` | No | **Yes** |
 
 ### How Deployment Works
+
+All deploy jobs depend on `validation-gate` (required, non-optional) as their quality gate. Additional `optional: true` dependencies between deploy jobs are used only for ordering (e.g., `deploy-gitlab-runner` waits for `deploy-k3s-platform` if both run).
 
 **Ansible deployments** use SSH to target hosts:
 - SSH key fetched from 1Password at runtime

@@ -24,10 +24,10 @@
 
 stages:
   - lint
-  - ai-review
   - validate
   - test
   - security
+  - ai-review
   - gate
   - deploy
   - maintenance
@@ -1701,12 +1701,15 @@ deploy-verify:
 
 # ============================================================================
 # MAINTENANCE STAGE - Manual approval required
+# All maintenance jobs use resource_group to prevent concurrent execution.
+# Only one maintenance job can run at a time across the entire infrastructure.
 # ============================================================================
 
 # K3s VM provisioning - MANUAL (creates/modifies VMs)
 maintenance-k3s-provision:
   stage: maintenance
   extends: .deploy-base
+  resource_group: infrastructure-maintenance
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
@@ -1728,36 +1731,15 @@ maintenance-k3s-provision:
       when: manual
       allow_failure: true
 
-# Full system update - MANUAL (may reboot machines)
-maintenance-update-full:
-  stage: maintenance
-  extends: .deploy-base
-  variables:
-    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
-    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
-    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
-    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
-  script:
-    - cd ansible
-    - |
-      echo "Running full system update (may reboot machines)..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-full.yml
-  environment:
-    name: production/maintenance
-    action: prepare
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+# NOTE: maintenance-update-full removed from CI — superseded by:
+#   maintenance-update-packages (broader host coverage) + maintenance-update-applications
+# The Taskfile still has task maintenance:update-full for local use.
 
 # K3s node updates - MANUAL (drains/cordons nodes)
 maintenance-update-k3s-nodes:
   stage: maintenance
   extends: .deploy-base
+  resource_group: infrastructure-maintenance
   variables:
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
   script:
@@ -1782,6 +1764,7 @@ maintenance-update-k3s-nodes:
 maintenance-update-packages:
   stage: maintenance
   extends: .deploy-base
+  resource_group: infrastructure-maintenance
   script:
     - cd ansible
     - |
@@ -1803,6 +1786,7 @@ maintenance-update-packages:
 maintenance-update-applications:
   stage: maintenance
   extends: .deploy-base
+  resource_group: infrastructure-maintenance
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
@@ -1831,6 +1815,7 @@ maintenance-update-applications:
 maintenance-proxmox-ha:
   stage: maintenance
   extends: .deploy-base
+  resource_group: infrastructure-maintenance
   script:
     - cd ansible
     - |
@@ -1852,6 +1837,7 @@ maintenance-proxmox-ha:
 maintenance-home-assistant-restart:
   stage: maintenance
   extends: .deploy-base
+  resource_group: infrastructure-maintenance
   script:
     - cd ansible
     - |
@@ -1865,6 +1851,96 @@ maintenance-home-assistant-restart:
   environment:
     name: production/home-assistant-restart
     action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Post-maintenance infrastructure verification - MANUAL
+# Trigger after maintenance jobs complete to validate cluster health.
+# Fails the job if critical checks don't pass (nodes not Ready, pods degraded, GitLab down).
+maintenance-verify:
+  stage: maintenance
+  extends: .k3s-deploy-base
+  resource_group: infrastructure-maintenance
+  script:
+    - |
+      echo "=== Post-Maintenance Verification ==="
+      ERRORS=0
+
+      echo "Checking k3s node status..."
+      kubectl get nodes -o wide
+      NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2 != "Ready" {count++} END {print count+0}')
+      if [ "$NOT_READY" -gt 0 ]; then
+        echo "ERROR: $NOT_READY node(s) not Ready"
+        ERRORS=$((ERRORS + 1))
+      else
+        echo "All nodes Ready"
+      fi
+
+      echo ""
+      echo "Checking for unhealthy pods..."
+      # Check non-Running/non-Succeeded pods
+      UNHEALTHY=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null | wc -l)
+      # Check for Running pods with non-ready containers (CrashLoopBackOff, etc.)
+      # $3 is READY column (e.g. "1/1"), split on "/" and compare numerator vs denominator
+      DEGRADED=$(kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Completed" && $4 != "Succeeded" {split($3, a, "/"); if (a[1] != a[2]) print}' | wc -l)
+      if [ "$UNHEALTHY" -gt 0 ] || [ "$DEGRADED" -gt 0 ]; then
+        echo "ERROR: $UNHEALTHY non-running + $DEGRADED degraded pod(s):"
+        kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null || true
+        kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Completed" && $4 != "Succeeded" {split($3, a, "/"); if (a[1] != a[2]) print}' || true
+        ERRORS=$((ERRORS + 1))
+      else
+        echo "All pods healthy"
+      fi
+
+      echo ""
+      echo "Checking critical deployments..."
+      for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb-controller:metallb-system authentik-server:authentik; do
+        name="${dep%%:*}"
+        ns="${dep##*:}"
+        AVAIL=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+        DESIRED=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+        if [ -n "$AVAIL" ] && [ "$AVAIL" -ge "${DESIRED:-1}" ] 2>/dev/null; then
+          echo "  $name ($ns): $AVAIL/$DESIRED available"
+        else
+          echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"
+          ERRORS=$((ERRORS + 1))
+        fi
+      done
+
+      echo ""
+      echo "Checking GitLab health..."
+      if curl -sf --max-time 10 https://git.ericsweiss.com/-/readiness > /dev/null 2>&1; then
+        echo "GitLab: OK"
+      else
+        echo "ERROR: GitLab health check failed"
+        ERRORS=$((ERRORS + 1))
+      fi
+
+      echo ""
+      echo "Checking cluster DNS (internal service resolution)..."
+      # Verify CoreDNS can resolve internal k8s services — uses nslookup exit code via marker
+      DNS_OUTPUT=$(kubectl run dns-verify-$CI_JOB_ID --attach --rm --restart=Never --timeout=30s \
+          --image=busybox:1.36 --command -- sh -c \
+          "nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" 2>&1 || true)
+      if echo "$DNS_OUTPUT" | grep -q "DNS_PASS"; then
+        echo "Cluster DNS: OK (kubernetes.default.svc.cluster.local resolves)"
+      else
+        echo "ERROR: Cluster DNS cannot resolve kubernetes.default.svc.cluster.local"
+        ERRORS=$((ERRORS + 1))
+      fi
+
+      echo ""
+      if [ "$ERRORS" -gt 0 ]; then
+        echo "=== VERIFICATION FAILED: $ERRORS critical issue(s) ==="
+        exit 1
+      fi
+      echo "=== Post-Maintenance Verification Passed ==="
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
