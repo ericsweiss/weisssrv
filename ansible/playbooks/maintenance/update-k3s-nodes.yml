@@ -68,93 +68,176 @@
       ansible.builtin.meta: end_host
       when: k3s_installed_version is defined and k3s_installed_version == k3s_version
 
-    # NOTE: Drain/cordon commands delegate to the first server node.
-    # With a single-server cluster, this means the server drains itself.
-    # For multi-server HA, consider delegating to a different healthy server.
-    - name: Cordon node before upgrade
-      ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+    # Wrapped in block/always to guarantee the node is uncordoned even if
+    # any task fails mid-sequence (e.g., upgrade failure, restart timeout).
+    - name: Upgrade k3s server with guaranteed uncordon
+      block:
+        # NOTE: Drain/cordon commands delegate to the first server node.
+        # With a single-server cluster, this means the server drains itself.
+        # For multi-server HA, consider delegating to a different healthy server.
+        - name: Cordon node before upgrade
+          ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
-    - name: Drain node (evict pods)
-      ansible.builtin.command: >
-        k3s kubectl drain {{ inventory_hostname }}
-        --ignore-daemonsets
-        --delete-emptydir-data
-        --timeout=5m
-        --grace-period=30
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
-      register: drain_result
-      failed_when: false
+        # CI Runner safety: prevent self-termination during k3s upgrade.
+        # The gitlab-runner-privileged pod may run the CI job executing this playbook.
+        # If we drain the runner's node without moving it first, the job dies.
+        # After cordoning, we delete the pod so k8s reschedules it to another node.
+        - name: Check if gitlab-runner-privileged pod runs on this node
+          ansible.builtin.command: >
+            k3s kubectl get pods -n gitlab-runner
+            -l release=gitlab-runner-privileged
+            --field-selector spec.nodeName={{ inventory_hostname }}
+            -o name
+          register: runner_pod_on_node
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          # rc=0 with empty stdout = no runner on this node (expected)
+          # rc!=0 = kubectl error (should not silently skip safety check)
 
-    - name: Display drain result
-      ansible.builtin.debug:
-        msg: "{{ drain_result.stdout_lines }}"
+        - name: Evict runner pod to trigger reschedule (node is cordoned)
+          ansible.builtin.command: >
+            k3s kubectl delete pods -n gitlab-runner
+            -l release=gitlab-runner-privileged
+            --field-selector spec.nodeName={{ inventory_hostname }}
+            --grace-period=30
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: runner_pod_on_node.stdout | default('') | length > 0
 
-    - name: Uncordon node if drain failed (restore scheduling)
-      ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
-      when: drain_result.rc != 0
+        - name: Wait for runner pod to be Running on a different node
+          ansible.builtin.shell: |
+            set -o pipefail
+            k3s kubectl get pods -n gitlab-runner \
+              -l release=gitlab-runner-privileged \
+              --field-selector status.phase=Running \
+              -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | \
+              grep -v '{{ inventory_hostname }}' | head -1
+          args:
+            executable: /bin/bash
+          register: runner_new_node
+          retries: 24
+          delay: 5
+          until: runner_new_node.stdout | default('') | length > 0
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: runner_pod_on_node.stdout | default('') | length > 0
+          failed_when: false
 
-    - name: Abort upgrade if drain failed
-      ansible.builtin.fail:
-        msg: >-
-          Node drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
-          Pods may be protected by PodDisruptionBudgets or stuck terminating.
-          The node has been uncordoned. Investigate and retry.
-          stderr: {{ drain_result.stderr | default('') }}
-      when: drain_result.rc != 0
+        - name: Display runner relocation status
+          ansible.builtin.debug:
+            msg: >-
+              {% if runner_pod_on_node.stdout | default('') | length == 0 %}
+              No CI runner pod on this node - proceeding with drain
+              {% elif runner_new_node.stdout | default('') | length > 0 %}
+              CI runner pod moved to {{ runner_new_node.stdout }} - safe to drain
+              {% else %}
+              WARNING: CI runner could not reschedule (all nodes may be full).
+              {% endif %}
 
-    - name: Upgrade k3s server binary
-      ansible.builtin.shell: |
-        set -o pipefail
-        curl -sfL {{ k3s_install_script_url }} | \
-          INSTALL_K3S_VERSION="{{ k3s_version }}" \
-          INSTALL_K3S_SKIP_START=true \
-          sh -
-      args:
-        executable: /bin/bash
-      changed_when: true
+        - name: Abort if runner could not be relocated (override with -e force_drain=true)
+          ansible.builtin.fail:
+            msg: >-
+              CI runner pod could not be relocated from {{ inventory_hostname }}.
+              Draining will kill the CI job. Override with: -e force_drain=true
+          when:
+            - runner_pod_on_node.stdout | default('') | length > 0
+            - runner_new_node.stdout | default('') | length == 0
+            - not (force_drain | default(false) | bool)
 
-    - name: Restart k3s service
-      ansible.builtin.systemd:
-        name: k3s
-        state: restarted
-        daemon_reload: true
+        - name: Drain node (evict pods)
+          ansible.builtin.command: >
+            k3s kubectl drain {{ inventory_hostname }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --timeout=5m
+            --grace-period=30
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          register: drain_result
+          failed_when: false
 
-    - name: Wait for k3s to be ready
-      ansible.builtin.command: k3s kubectl get nodes
-      register: k3s_ready
-      retries: 30
-      delay: 10
-      until: k3s_ready.rc == 0
-      changed_when: false
+        - name: Display drain result
+          ansible.builtin.debug:
+            msg: "{{ drain_result.stdout_lines }}"
 
-    - name: Uncordon node after upgrade
-      ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+        - name: Uncordon node if drain failed (restore scheduling)
+          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: drain_result.rc != 0
 
-    - name: Wait for node to be Ready
-      ansible.builtin.command: >
-        k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
-      register: node_ready
-      retries: 30
-      delay: 5
-      until: node_ready.stdout == "True"
-      changed_when: false
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+        - name: Abort upgrade if drain failed
+          ansible.builtin.fail:
+            msg: >-
+              Node drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
+              Pods may be protected by PodDisruptionBudgets or stuck terminating.
+              The node has been uncordoned. Investigate and retry.
+              stderr: {{ drain_result.stderr | default('') }}
+          when: drain_result.rc != 0
 
-    - name: Verify new k3s version
-      ansible.builtin.command: k3s --version
-      register: k3s_new_version
-      changed_when: false
+        - name: Upgrade k3s server binary
+          ansible.builtin.shell: |
+            set -o pipefail
+            curl -sfL {{ k3s_install_script_url }} | \
+              INSTALL_K3S_VERSION="{{ k3s_version }}" \
+              INSTALL_K3S_SKIP_START=true \
+              sh -
+          args:
+            executable: /bin/bash
+          changed_when: true
 
-    - name: Display upgrade result
-      ansible.builtin.debug:
-        msg: "Server {{ inventory_hostname }} upgraded to: {{ k3s_new_version.stdout }}"
+        - name: Restart k3s service
+          ansible.builtin.systemd:
+            name: k3s
+            state: restarted
+            daemon_reload: true
+
+        - name: Wait for k3s to be ready
+          ansible.builtin.command: k3s kubectl get nodes
+          register: k3s_ready
+          retries: 30
+          delay: 10
+          until: k3s_ready.rc == 0
+          changed_when: false
+
+        - name: Verify new k3s version
+          ansible.builtin.command: k3s --version
+          register: k3s_new_version
+          changed_when: false
+
+        - name: Display upgrade result
+          ansible.builtin.debug:
+            msg: "Server {{ inventory_hostname }} upgraded to: {{ k3s_new_version.stdout }}"
+
+      always:
+        - name: Uncordon node after upgrade (always runs, retries for API availability)
+          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          register: uncordon_result
+          retries: 12
+          delay: 10
+          until: uncordon_result.rc == 0
+          failed_when: false
+
+        - name: Fail if uncordon failed after retries
+          ansible.builtin.fail:
+            msg: >-
+              Failed to uncordon {{ inventory_hostname }} after {{ uncordon_result.attempts }} attempts.
+              Node may remain unschedulable. Run manually: kubectl uncordon {{ inventory_hostname }}
+          when: uncordon_result.rc | default(0) != 0
+
+        - name: Wait for node to be Ready
+          ansible.builtin.command: >
+            k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+          register: node_ready
+          retries: 30
+          delay: 5
+          until: node_ready.stdout == "True"
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
 - name: Update k3s agent nodes
   hosts: k3s_agents
@@ -205,117 +288,215 @@
         msg: "WARNING: Node {{ inventory_hostname }} has pods with persistent storage: {{ persistent_pods.stdout }}"
       when: persistent_pods.stdout != ""
 
-    - name: Cordon node before upgrade
-      ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+    # Wrapped in block/always to guarantee the node is uncordoned even if
+    # any task fails mid-sequence (e.g., upgrade failure, restart timeout).
+    - name: Upgrade k3s agent with guaranteed uncordon
+      block:
+        - name: Cordon node before upgrade
+          ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
-    - name: Drain node (evict pods)
-      ansible.builtin.command: >
-        k3s kubectl drain {{ inventory_hostname }}
-        --ignore-daemonsets
-        --delete-emptydir-data
-        --timeout=5m
-        --grace-period=30
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
-      register: drain_result
-      failed_when: false
+        # CI Runner safety: prevent self-termination during k3s upgrade.
+        # The gitlab-runner-privileged pod may run the CI job executing this playbook.
+        # If we drain the runner's node without moving it first, the job dies.
+        # After cordoning, we delete the pod so k8s reschedules it to another node.
+        - name: Check if gitlab-runner-privileged pod runs on this node
+          ansible.builtin.command: >
+            k3s kubectl get pods -n gitlab-runner
+            -l release=gitlab-runner-privileged
+            --field-selector spec.nodeName={{ inventory_hostname }}
+            -o name
+          register: runner_pod_on_node
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          # rc=0 with empty stdout = no runner on this node (expected)
+          # rc!=0 = kubectl error (should not silently skip safety check)
 
-    - name: Display drain result
-      ansible.builtin.debug:
-        msg: "{{ drain_result.stdout_lines }}"
+        - name: Evict runner pod to trigger reschedule (node is cordoned)
+          ansible.builtin.command: >
+            k3s kubectl delete pods -n gitlab-runner
+            -l release=gitlab-runner-privileged
+            --field-selector spec.nodeName={{ inventory_hostname }}
+            --grace-period=30
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: runner_pod_on_node.stdout | default('') | length > 0
 
-    - name: Uncordon node if drain failed (restore scheduling)
-      ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
-      when: drain_result.rc != 0
+        - name: Wait for runner pod to be Running on a different node
+          ansible.builtin.shell: |
+            set -o pipefail
+            k3s kubectl get pods -n gitlab-runner \
+              -l release=gitlab-runner-privileged \
+              --field-selector status.phase=Running \
+              -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | \
+              grep -v '{{ inventory_hostname }}' | head -1
+          args:
+            executable: /bin/bash
+          register: runner_new_node
+          retries: 24
+          delay: 5
+          until: runner_new_node.stdout | default('') | length > 0
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: runner_pod_on_node.stdout | default('') | length > 0
+          failed_when: false
 
-    - name: Abort upgrade if drain failed
-      ansible.builtin.fail:
-        msg: >-
-          Node drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
-          Pods may be protected by PodDisruptionBudgets or stuck terminating.
-          The node has been uncordoned. Investigate and retry.
-          stderr: {{ drain_result.stderr | default('') }}
-      when: drain_result.rc != 0
+        - name: Display runner relocation status
+          ansible.builtin.debug:
+            msg: >-
+              {% if runner_pod_on_node.stdout | default('') | length == 0 %}
+              No CI runner pod on this node - proceeding with drain
+              {% elif runner_new_node.stdout | default('') | length > 0 %}
+              CI runner pod moved to {{ runner_new_node.stdout }} - safe to drain
+              {% else %}
+              WARNING: CI runner could not reschedule (all nodes may be full).
+              {% endif %}
 
-    # CRITICAL: Must pass "agent" argument to install script, otherwise it installs
-    # as server mode and creates k3s.service instead of k3s-agent.service.
-    # The agent also needs K3S_URL and K3S_TOKEN to know which cluster to join.
-    - name: Upgrade k3s agent binary
-      ansible.builtin.shell: |
-        set -o pipefail
-        curl -sfL {{ k3s_install_script_url }} | \
-          INSTALL_K3S_VERSION="{{ k3s_version }}" \
-          INSTALL_K3S_SKIP_START=true \
-          K3S_URL="https://{{ k3s_api_vip }}:{{ k3s_api_port }}" \
-          K3S_TOKEN="{{ k3s_token }}" \
-          sh -s - agent
-      args:
-        executable: /bin/bash
-      environment:
-        K3S_TOKEN: "{{ k3s_token }}"
-      changed_when: true
+        - name: Abort if runner could not be relocated (override with -e force_drain=true)
+          ansible.builtin.fail:
+            msg: >-
+              CI runner pod could not be relocated from {{ inventory_hostname }}.
+              Draining will kill the CI job. Override with: -e force_drain=true
+          when:
+            - runner_pod_on_node.stdout | default('') | length > 0
+            - runner_new_node.stdout | default('') | length == 0
+            - not (force_drain | default(false) | bool)
 
-    # SAFEGUARD: Ensure k3s.service (server) is disabled and stopped on agent nodes.
-    # This protects against:
-    # 1. Previous incorrect upgrades that installed server mode on agents
-    # 2. Any future bugs that might accidentally install k3s server
-    # The k3s.service file may not exist on clean agent installs, so we check first.
-    - name: Check if k3s.service exists (server service on agent node)
-      ansible.builtin.stat:
-        path: /etc/systemd/system/k3s.service
-      register: k3s_server_service
+        - name: Drain node (evict pods)
+          ansible.builtin.command: >
+            k3s kubectl drain {{ inventory_hostname }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --timeout=5m
+            --grace-period=30
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          register: drain_result
+          failed_when: false
 
-    - name: Stop and disable k3s.service if present (wrong service for agent)
-      ansible.builtin.systemd:
-        name: k3s
-        state: stopped
-        enabled: false
-        daemon_reload: true
-      when: k3s_server_service.stat.exists
-      failed_when: false  # Don't fail if service doesn't exist in systemd
+        - name: Display drain result
+          ansible.builtin.debug:
+            msg: "{{ drain_result.stdout_lines }}"
 
-    - name: Restart k3s-agent service
-      ansible.builtin.systemd:
-        name: k3s-agent
-        state: restarted
-        daemon_reload: true
+        - name: Uncordon node if drain failed (restore scheduling)
+          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: drain_result.rc != 0
 
-    - name: Wait for agent to register
-      ansible.builtin.command: k3s kubectl get node {{ inventory_hostname }}
-      register: k3s_agent_ready
-      retries: 30
-      delay: 10
-      until: k3s_agent_ready.rc == 0
-      changed_when: false
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+        - name: Abort upgrade if drain failed
+          ansible.builtin.fail:
+            msg: >-
+              Node drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
+              Pods may be protected by PodDisruptionBudgets or stuck terminating.
+              The node has been uncordoned. Investigate and retry.
+              stderr: {{ drain_result.stderr | default('') }}
+          when: drain_result.rc != 0
 
-    - name: Uncordon node after upgrade
-      ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-      changed_when: true
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+        # CRITICAL: Must pass "agent" argument to install script, otherwise it installs
+        # as server mode and creates k3s.service instead of k3s-agent.service.
+        # The agent also needs K3S_URL and K3S_TOKEN to know which cluster to join.
+        - name: Upgrade k3s agent binary
+          ansible.builtin.shell: |
+            set -o pipefail
+            curl -sfL {{ k3s_install_script_url }} | \
+              INSTALL_K3S_VERSION="{{ k3s_version }}" \
+              INSTALL_K3S_SKIP_START=true \
+              K3S_URL="https://{{ k3s_api_vip }}:{{ k3s_api_port }}" \
+              sh -s - agent
+          args:
+            executable: /bin/bash
+          environment:
+            K3S_TOKEN: "{{ k3s_token }}"
+          changed_when: true
+          no_log: true
 
-    - name: Wait for node to be Ready
-      ansible.builtin.command: >
-        k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
-      register: node_ready
-      retries: 30
-      delay: 5
-      until: node_ready.stdout == "True"
-      changed_when: false
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+        # SAFEGUARD: Ensure k3s.service (server) is disabled and stopped on agent nodes.
+        # This protects against:
+        # 1. Previous incorrect upgrades that installed server mode on agents
+        # 2. Any future bugs that might accidentally install k3s server
+        # The k3s.service file may not exist on clean agent installs, so we check first.
+        - name: Check if k3s.service exists (server service on agent node)
+          ansible.builtin.stat:
+            path: /etc/systemd/system/k3s.service
+          register: k3s_server_service
 
-    - name: Verify new k3s version
-      ansible.builtin.command: k3s --version
-      register: k3s_new_version
-      changed_when: false
+        - name: Stop and disable k3s.service if present (wrong service for agent)
+          ansible.builtin.systemd:
+            name: k3s
+            state: stopped
+            enabled: false
+            daemon_reload: true
+          when: k3s_server_service.stat.exists
+          failed_when: false  # Don't fail if service doesn't exist in systemd
 
-    - name: Display upgrade result
-      ansible.builtin.debug:
-        msg: "Agent {{ inventory_hostname }} upgraded to: {{ k3s_new_version.stdout }}"
+        - name: Restart k3s-agent service
+          ansible.builtin.systemd:
+            name: k3s-agent
+            state: restarted
+            daemon_reload: true
+
+        - name: Wait for agent to register
+          ansible.builtin.command: k3s kubectl get node {{ inventory_hostname }}
+          register: k3s_agent_ready
+          retries: 30
+          delay: 10
+          until: k3s_agent_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+
+        - name: Wait for pods to stabilize on upgraded node
+          ansible.builtin.shell: |
+            set -o pipefail
+            k3s kubectl get pods --all-namespaces \
+              --field-selector spec.nodeName={{ inventory_hostname }},status.phase!=Running,status.phase!=Succeeded \
+              --no-headers 2>/dev/null | wc -l
+          args:
+            executable: /bin/bash
+          register: unhealthy_on_node
+          retries: 30
+          delay: 10
+          until: unhealthy_on_node.stdout | int == 0
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+
+        - name: Verify new k3s version
+          ansible.builtin.command: k3s --version
+          register: k3s_new_version
+          changed_when: false
+
+        - name: Display upgrade result
+          ansible.builtin.debug:
+            msg: "Agent {{ inventory_hostname }} upgraded to: {{ k3s_new_version.stdout }}"
+
+      always:
+        - name: Uncordon node after upgrade (always runs, retries for API availability)
+          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          register: uncordon_result
+          retries: 12
+          delay: 10
+          until: uncordon_result.rc == 0
+          failed_when: false
+
+        - name: Fail if uncordon failed after retries
+          ansible.builtin.fail:
+            msg: >-
+              Failed to uncordon {{ inventory_hostname }} after {{ uncordon_result.attempts }} attempts.
+              Node may remain unschedulable. Run manually: kubectl uncordon {{ inventory_hostname }}
+          when: uncordon_result.rc | default(0) != 0
+
+        - name: Wait for node to be Ready
+          ansible.builtin.command: >
+            k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+          register: node_ready
+          retries: 30
+          delay: 5
+          until: node_ready.stdout == "True"
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
 - name: Post-upgrade verification
   hosts: k3s_servers

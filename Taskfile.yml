@@ -334,6 +334,35 @@ tasks:
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
 
   # === K3s Workload Deployment Tasks ===
+  k3s:deploy-coredns:
+    desc: Apply CoreDNS HelmChartConfig (2 replicas for HA)
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
+    cmds:
+      - kubectl apply -f kubernetes/apps/coredns/helmchartconfig.yaml
+      - |
+        echo "Waiting for CoreDNS to reach 2 ready replicas..."
+        for i in $(seq 1 24); do
+          READY=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+          READY=${READY:-0}
+          if [ "$READY" -ge 2 ]; then
+            echo "CoreDNS has $READY ready replicas"
+            break
+          fi
+          echo "  readyReplicas: $READY/2 (attempt $i)..."
+          sleep 5
+        done
+        FINAL=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        FINAL=${FINAL:-0}
+        if [ "$FINAL" -lt 2 ]; then
+          echo "ERROR: CoreDNS only has $FINAL/2 ready replicas after 120s"
+          exit 1
+        fi
+      - echo "CoreDNS HelmChartConfig applied (2 replicas with topology spread)"
+
   k3s:deploy-metallb:
     desc: Deploy MetalLB load balancer with IP pools
     dir: ./kubernetes
@@ -537,6 +566,7 @@ tasks:
   k3s:deploy-workloads:
     desc: Deploy ALL k3s platform workloads in correct order
     cmds:
+      - task: k3s:deploy-coredns
       - task: k3s:deploy-metallb
       - task: k3s:deploy-traefik
       - task: k3s:deploy-cert-manager

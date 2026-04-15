@@ -8,7 +8,7 @@
 # - Auto-deployment on merge to main (after tests pass)
 # - 1Password integration for all secrets
 # - Service restarts: automatic
-# - Machine reboots: manual approval required
+# - Machine reboots: manual approval required (maintenance jobs auto-reboot when triggered)
 #
 # Required CI/CD Variables (Settings > CI/CD > Variables):
 # - OP_SERVICE_ACCOUNT_TOKEN (masked, protected) - 1Password service account
@@ -176,9 +176,11 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - scripts/**
+        - ansible/roles/**/*.sh
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - scripts/**
+        - ansible/roles/**/*.sh
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
@@ -191,6 +193,12 @@ shellcheck:
   script:
     - echo "Running ShellCheck..."
     - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+    - |
+      # Also lint shell scripts shipped in Ansible roles
+      find ansible/roles -name '*.sh' -type f | while read -r script; do
+        echo "Checking: $script"
+        shellcheck --severity=warning --exclude=SC1091,SC2034 "$script"
+      done
     - echo "ShellCheck passed"
   rules:
     - !reference [.changes-scripts, rules]
@@ -918,6 +926,9 @@ deploy-gitlab:
       changes:
         - ansible/roles/gitlab/**
         - ansible/playbooks/gitlab.yml
+        # all.yml triggers deploy for gitlab_version changes; may also trigger
+        # on unrelated version bumps but the playbook is idempotent and safe to re-run
+        - ansible/inventories/prod/group_vars/all.yml
 
 deploy-home-assistant-config:
   stage: deploy
@@ -1051,6 +1062,50 @@ deploy-k3s-platform:
         - kubernetes/apps/ingress-routes/router.yaml
         - kubernetes/apps/ingress-routes/services.yaml
         - ansible/inventories/prod/group_vars/all.yml
+
+# ------------------------------------------------------------------------------
+# K3s CoreDNS (HA configuration)
+# ------------------------------------------------------------------------------
+
+deploy-k3s-coredns:
+  stage: deploy
+  extends: .k3s-deploy-base
+  needs:
+    - job: validation-gate
+    - job: deploy-k3s-platform
+      optional: true
+  script:
+    - kubectl apply -f kubernetes/apps/coredns/helmchartconfig.yaml
+    - |
+      # Wait for HelmChartConfig reconciliation and verify ready replicas
+      echo "Waiting for CoreDNS to reach 2 ready replicas..."
+      for i in $(seq 1 24); do
+        READY=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        READY=${READY:-0}
+        if [ "$READY" -ge 2 ]; then
+          echo "CoreDNS has $READY ready replicas after $((i * 5))s"
+          break
+        fi
+        echo "CoreDNS readyReplicas: $READY/2 (attempt $i)..."
+        sleep 5
+      done
+      FINAL=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+      FINAL=${FINAL:-0}
+      if [ "$FINAL" -lt 2 ]; then
+        echo "ERROR: CoreDNS only has $FINAL/2 ready replicas after 120s"
+        exit 1
+      fi
+      echo "CoreDNS HelmChartConfig applied ($FINAL replicas ready with topology spread)"
+  environment:
+    name: production/k3s-coredns
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/apps/coredns/**
 
 # ------------------------------------------------------------------------------
 # K3s Applications
@@ -1226,11 +1281,13 @@ deploy-recipes:
       kubectl apply -f namespace.yaml
       kubectl apply -f storage.yaml
 
-      # Create secrets
+      # Create secrets (must include all keys referenced by manifests)
       MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
       MEALIE_OIDC_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
       MEALIE_OIDC_SECRET=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
       OPENAI_KEY=$(op read "op://Homelab/OpenAI API Key/api-key" 2>/dev/null || echo "")
+      SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
+      SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
       BAR_MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
       BAR_OIDC_ID=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-id")
       BAR_OIDC_SECRET=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
@@ -1238,6 +1295,8 @@ deploy-recipes:
       kubectl create secret generic mealie-secrets \
         --namespace=recipes \
         --from-literal=postgres-password="$MEALIE_PG_PASS" \
+        --from-literal=smtp-username="$SMTP_USER" \
+        --from-literal=smtp-password="$SMTP_PASS" \
         --from-literal=oidc-client-id="$MEALIE_OIDC_ID" \
         --from-literal=oidc-client-secret="$MEALIE_OIDC_SECRET" \
         --from-literal=openai-api-key="$OPENAI_KEY" \
@@ -1246,6 +1305,8 @@ deploy-recipes:
       kubectl create secret generic bar-assistant-secrets \
         --namespace=recipes \
         --from-literal=meilisearch-master-key="$BAR_MEILI_KEY" \
+        --from-literal=smtp-username="$SMTP_USER" \
+        --from-literal=smtp-password="$SMTP_PASS" \
         --from-literal=authentik-client-id="$BAR_OIDC_ID" \
         --from-literal=authentik-client-secret="$BAR_OIDC_SECRET" \
         --dry-run=client -o yaml | kubectl apply -f -
@@ -1561,6 +1622,8 @@ deploy-verify:
       optional: true
     - job: deploy-gitlab-verify
       optional: true
+    - job: deploy-k3s-coredns
+      optional: true
   script:
     - |
       echo "=== Post-Deployment Verification ==="
@@ -1704,6 +1767,56 @@ maintenance-update-k3s-nodes:
       op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-k3s-nodes.yml
   environment:
     name: production/k3s-nodes
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# OS package updates - MANUAL (updates all hosts including k3s nodes and app VMs)
+# Note: CI runs with auto_reboot=true (non-interactive). For interactive mode, use: task maintenance:update-packages
+maintenance-update-packages:
+  stage: maintenance
+  extends: .deploy-base
+  script:
+    - cd ansible
+    - |
+      echo "Running OS package updates on all hosts (rolling)..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
+  environment:
+    name: production/maintenance-packages
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Application updates - MANUAL (AdGuard, Tailscale, Plex)
+maintenance-update-applications:
+  stage: maintenance
+  extends: .deploy-base
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
+    TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
+  script:
+    - cd ansible
+    - |
+      echo "Running application updates (AdGuard, Tailscale, Plex)..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-applications.yml
+  environment:
+    name: production/maintenance-applications
     action: prepare
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'

@@ -1,12 +1,12 @@
 # K3s Cluster Deployment Guide
 
-This guide walks through deploying the initial 3-node k3s cluster and platform services.
+This guide walks through deploying the 9-node k3s cluster (3 servers + 6 agents) and platform services.
 
 ## Quick Reference: Complete Deployment Workflow
 
 **IMPORTANT**: K3s deployment uses a two-phase approach:
 - **Phase 1-2 (Ansible)**: Provisions VMs and deploys k3s + kube-vip
-- **Phase 3 (Task/Helm)**: Deploys MetalLB, Traefik, cert-manager, external-dns, DDNS, and IngressRoutes
+- **Phase 3 (Task/Helm)**: Deploys CoreDNS HA, MetalLB, Traefik, cert-manager, external-dns, DDNS, and IngressRoutes
 
 **All tasks are idempotent** - safe to re-run at any time.
 
@@ -16,12 +16,14 @@ This guide walks through deploying the initial 3-node k3s cluster and platform s
 |------|-----------|-------|
 | `task k3s:provision-vms` | Debian VMs | Cloud-init, SSH keys |
 | `task k3s:deploy` | K3s + kube-vip | Server, agents, node labels/taints |
+| `task k3s:deploy-coredns` | CoreDNS HA | 2 replicas with topology spread |
 | `task k3s:deploy-metallb` | MetalLB | LoadBalancer IPs .100/.101 |
 | `task k3s:deploy-traefik` | Traefik | Ingress controller on .100 + .101 |
 | `task k3s:deploy-cert-manager` | cert-manager | Let's Encrypt wildcard certs |
 | `task k3s:deploy-external-dns` | external-dns | Cloudflare DNS automation |
 | `task k3s:deploy-ddns` | DDNS CronJob | Updates public IP every 5 min |
 | `task k3s:deploy-ingress-routes` | IngressRoutes | Per-service routing |
+| `task k3s:deploy-authentik` | Authentik SSO | Identity provider for SSO/OIDC |
 | `task k3s:deploy-workloads` | **ALL of above** | Runs all workload tasks in order |
 
 ### Complete Command Sequence
@@ -41,12 +43,14 @@ kubectl get nodes  # Verify cluster
 task k3s:deploy-workloads
 
 # Option B: Deploy components individually
+task k3s:deploy-coredns
 task k3s:deploy-metallb
 task k3s:deploy-traefik
 task k3s:deploy-cert-manager
 task k3s:deploy-external-dns
 task k3s:deploy-ddns
 task k3s:deploy-ingress-routes
+task k3s:deploy-authentik
 
 # === VERIFY ===
 task k3s:status  # Show cluster and workload status
@@ -141,10 +145,20 @@ the k3s install script runs again (which handles in-place upgrades).
 
 ## Overview
 
-Initial cluster topology:
-- **k3s-srv-nas-01** (192.168.0.222) - Server node on pve-nas-01
-- **k3s-agt-nas-01** (192.168.0.202) - Agent node on pve-nas-01 (NAS workloads)
-- **k3s-agt-opt-03** (192.168.0.206) - Agent node on pve-opt-03 (general workloads)
+Cluster topology (9 nodes: 3 servers + 6 agents):
+
+**Server Nodes** (etcd quorum):
+- **k3s-srv-nas-01** (192.168.0.222) - Server on pve-nas-01
+- **k3s-srv-laptop-01** (192.168.0.223) - Server on pve-laptop-01
+- **k3s-srv-prec-01** (192.168.0.227) - Server on pve-prec-01
+
+**Agent Nodes**:
+- **k3s-agt-nas-01** (192.168.0.202) - Agent on pve-nas-01 (NAS workloads)
+- **k3s-agt-laptop-01** (192.168.0.203) - Agent on pve-laptop-01 (ingress + general)
+- **k3s-agt-opt-01** (192.168.0.204) - Agent on pve-opt-01 (ingress + general)
+- **k3s-agt-opt-02** (192.168.0.205) - Agent on pve-opt-02 (ingress + general)
+- **k3s-agt-opt-03** (192.168.0.206) - Agent on pve-opt-03 (ingress + general)
+- **k3s-agt-prec-01** (192.168.0.207) - Agent on pve-prec-01 (general + compute)
 
 Cluster features:
 - **kube-vip** - API VIP at 192.168.0.161
@@ -200,15 +214,17 @@ task ansible:ping -- --limit proxmox
 ### Step 1: Provision VMs
 
 ```bash
-# Provision all 3 k3s VMs
+# Provision all 9 k3s VMs (3 servers + 6 agents)
 task k3s:provision-vms
 
 # This will:
 # - Download Debian 13 cloud image
-# - Create VMs on pve-nas-01 (k3s-srv-nas-01 VMID 222, k3s-agt-nas-01 VMID 202)
-# - Create VM on pve-opt-03 (k3s-agt-opt-03)
+# - Create server VMs: k3s-srv-nas-01 (.222), k3s-srv-laptop-01 (.223), k3s-srv-prec-01 (.227)
+# - Create agent VMs: k3s-agt-nas-01 (.202), k3s-agt-laptop-01 (.203),
+#   k3s-agt-opt-01 (.204), k3s-agt-opt-02 (.205), k3s-agt-opt-03 (.206), k3s-agt-prec-01 (.207)
 # - Configure cloud-init with SSH keys
 # - Start VMs and wait for SSH
+# To provision a subset: task k3s:provision-vms -- --limit k3s-srv-nas-01,k3s-agt-nas-01
 ```
 
 ### Step 2: Verify VM Provisioning
@@ -236,8 +252,8 @@ task k3s:deploy
 
 # This will:
 # 1. Deploy base configuration (base, qol, postfix, tailscale)
-# 2. Deploy k3s server on k3s-srv-nas-01 (.222) with kube-vip
-# 3. Deploy k3s agents on k3s-agt-nas-01 (.202) and k3s-agt-opt-03 (.206)
+# 2. Deploy k3s servers (k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01) with kube-vip
+# 3. Deploy k3s agents (k3s-agt-nas-01, k3s-agt-laptop-01, k3s-agt-opt-01/02/03, k3s-agt-prec-01)
 # 4. Apply node labels and taints
 # 5. Verify cluster health
 ```
@@ -284,7 +300,17 @@ kubectl describe node k3s-agt-nas-01 | grep -A 5 Taints
 
 For individual deployments or troubleshooting, use the tasks below:
 
-### Step 6: Deploy MetalLB
+### Step 6: Deploy CoreDNS HA Configuration
+
+```bash
+# Using Task (recommended)
+task k3s:deploy-coredns
+
+# Verify CoreDNS
+kubectl get pods -n kube-system -l k8s-app=kube-dns
+```
+
+### Step 7: Deploy MetalLB
 
 ```bash
 # Using Task (recommended)
@@ -296,7 +322,7 @@ kubectl get ipaddresspool -n metallb-system
 kubectl get l2advertisement -n metallb-system
 ```
 
-### Step 7: Deploy Traefik
+### Step 8: Deploy Traefik
 
 ```bash
 # Using Task (recommended)
@@ -311,7 +337,7 @@ curl -k http://192.168.0.100
 # Should get Traefik 404 page
 ```
 
-### Step 8: Deploy cert-manager
+### Step 9: Deploy cert-manager
 
 ```bash
 # Using Task (recommended)
@@ -323,7 +349,7 @@ kubectl get clusterissuer
 kubectl get certificate -A
 ```
 
-### Step 9: Deploy external-dns
+### Step 10: Deploy external-dns
 
 ```bash
 # Using Task (recommended)
@@ -334,18 +360,18 @@ kubectl get pods -n external-dns
 kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns
 ```
 
-### Step 10: Deploy DDNS CronJob
+### Step 11: Deploy DDNS CronJob
 
 ```bash
 # Using Task (recommended)
 task k3s:deploy-ddns
 
 # Verify DDNS
-kubectl get cronjob -n default
-kubectl get jobs -n default
+kubectl get cronjob -n cloudflare-ddns
+kubectl get jobs -n cloudflare-ddns
 ```
 
-### Step 11: Deploy IngressRoutes
+### Step 12: Deploy IngressRoutes
 
 ```bash
 # Using Task (recommended)
@@ -354,6 +380,16 @@ task k3s:deploy-ingress-routes
 # Verify IngressRoutes
 kubectl get ingressroute -A
 kubectl get middleware -n traefik
+```
+
+### Step 13: Deploy Authentik SSO
+
+```bash
+# Using Task (recommended)
+task k3s:deploy-authentik
+
+# Verify Authentik
+kubectl get pods -n authentik
 ```
 
 ## Verification
@@ -405,7 +441,7 @@ ping 192.168.0.100  # Traefik LoadBalancer
 
 ```bash
 # Internal DNS (AdGuard Home)
-dig k3s-srv-01.esweiss.com @192.168.0.150
+dig k3s-srv-nas-01.esweiss.com @192.168.0.150
 dig k3s.esweiss.com @192.168.0.150
 
 # External DNS (verify external-dns logs)
@@ -505,9 +541,9 @@ kubectl get svc traefik -n traefik -o yaml
 kubectl describe svc traefik -n traefik
 ```
 
-## Expanding to HA (5 Server Nodes)
+## Expanding Beyond 3 Server Nodes
 
-The initial 3-node cluster can be expanded to full HA with 5 server nodes (required for etcd quorum in case of 2 server failures).
+The current 3-server cluster (k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01) with 6 agents provides etcd quorum tolerating 1 server failure. For full HA tolerating 2 server failures, expand to 5 server nodes.
 
 ### HA Expansion Nodes
 
@@ -522,57 +558,26 @@ The cluster uses a split IP scheme: servers in the .22X range, agents in the .20
 | k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General agent |
 | k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | General + compute agent |
 
-### Step 1: Uncomment Inventory Entries
+### Step 1: Add New Server Nodes to Inventory
 
-Edit `ansible/inventories/prod/hosts.yml` and uncomment the additional nodes:
+Edit `ansible/inventories/prod/hosts.yml` and add entries for the new server nodes under `k3s_servers`. Set `k3s_is_first_server: false` on all new servers.
 
-```yaml
-k3s_servers:
-  hosts:
-    k3s-srv-nas-01:
-      # ... existing first server (VMID 222, .222) ...
-    # Uncomment these for HA:
-    k3s-srv-laptop-01:
-      ansible_host: 192.168.0.223
-      vmid: 223
-      k3s_is_first_server: false
-      proxmox_host: pve-laptop-01
-      proxmox_storage: local-ssd
-      # ...
-```
-
-**Important**: Ensure `k3s_is_first_server: false` is set on all new servers.
-
-### Step 2: Deploy DNS (Already Configured)
-
-DNS records for all expansion nodes are already in `dns.yml` and deployed. Verify:
+### Step 2: Provision and Deploy
 
 ```bash
-dig k3s-srv-laptop-01.esweiss.com @192.168.0.150
-dig k3s-srv-prec-01.esweiss.com @192.168.0.150
-dig k3s-agt-laptop-01.esweiss.com @192.168.0.150
-```
+# Provision VMs for new servers only
+task k3s:provision-vms -- --limit <new-server-hosts>
 
-### Step 3: Provision New VMs
-
-```bash
-# Provision only the new server nodes
-task k3s:provision-vms -- --limit k3s-srv-laptop-01,k3s-srv-prec-01
-```
-
-### Step 4: Deploy k3s to New Servers
-
-```bash
 # Deploy k3s to new servers (joins existing cluster)
-task k3s:deploy -- --limit k3s-srv-laptop-01,k3s-srv-prec-01
+task k3s:deploy -- --limit <new-server-hosts>
 ```
 
-### Step 5: Verify HA Cluster
+### Step 3: Verify Expanded Cluster
 
 ```bash
-# All 3 servers should show as control-plane (expand to 5 for full HA)
+# All servers should show as control-plane with etcd role
 kubectl get nodes
-# Expected: 3 nodes with control-plane,master role
+# Current: 3 servers (srv-nas-01, srv-laptop-01, srv-prec-01) + 6 agents
 
 # Verify etcd cluster health
 kubectl get pods -n kube-system | grep etcd

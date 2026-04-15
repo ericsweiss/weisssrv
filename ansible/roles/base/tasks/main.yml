@@ -236,6 +236,84 @@
   tags: [networking, base]
 
 # ============================================================================
+# Aquantia/Marvell AQC113 NIC workaround
+# The atlantic driver has known issues with GRO causing bridge forwarding
+# hangs on Proxmox hosts. Disabling GRO prevents these hangs.
+# See: https://github.com/Aquantia/AQtion/issues/67
+# ============================================================================
+
+- name: Check for Aquantia/Marvell atlantic NIC
+  ansible.builtin.shell: |
+    set -o pipefail
+    lspci | grep -i ethernet | grep -qiE 'Aquantia|AQC|Marvell.*AQtion' && echo 'yes' || echo 'no'
+  args:
+    executable: /bin/bash
+  register: has_atlantic_nic
+  changed_when: false
+  failed_when: false
+  when: not is_virtual_machine | default(false)
+  tags: [networking, base]
+
+- name: Install ethtool for atlantic NIC configuration
+  ansible.builtin.apt:
+    name: ethtool
+    state: present
+  when:
+    - not is_virtual_machine | default(false)
+    - has_atlantic_nic.stdout | default('no') == 'yes'
+  tags: [networking, base]
+
+- name: Install atlantic GRO fix script
+  ansible.builtin.copy:
+    src: atlantic-gro-fix.sh
+    dest: /usr/local/sbin/atlantic-gro-fix.sh
+    mode: "0755"
+    owner: root
+    group: root
+  when:
+    - not is_virtual_machine | default(false)
+    - has_atlantic_nic.stdout | default('no') == 'yes'
+  tags: [networking, base]
+
+- name: Create atlantic GRO fix service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/atlantic-gro-fix.service
+    content: |
+      # Managed by Ansible - Aquantia/Marvell AQC113 GRO workaround
+      # Disables GRO on atlantic driver NICs to prevent bridge forwarding hangs
+      [Unit]
+      Description=Disable GRO on Aquantia/Marvell atlantic NICs
+      After=network-pre.target
+      Before=network.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/atlantic-gro-fix.sh
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: "0644"
+    owner: root
+    group: root
+  when:
+    - not is_virtual_machine | default(false)
+    - has_atlantic_nic.stdout | default('no') == 'yes'
+  notify: Reload systemd
+  tags: [networking, base]
+
+- name: Enable and start atlantic GRO fix service
+  ansible.builtin.systemd:
+    name: atlantic-gro-fix
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - not is_virtual_machine | default(false)
+    - has_atlantic_nic.stdout | default('no') == 'yes'
+  tags: [networking, base]
+
+# ============================================================================
 # Fail2ban - Intrusion Prevention
 # ============================================================================
 # Protects against brute-force attacks on SSH and other services

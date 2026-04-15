@@ -179,7 +179,8 @@ This document provides step-by-step procedures for common operational tasks.
 4. **Replace Disk** (hot-swap if supported):
    ```bash
    # Power off if necessary
-   sudo pct stop <vmid>  # Stop any VMs using the disk
+   sudo qm stop <vmid>   # Stop VMs using the disk
+   sudo pct stop <ctid>  # Stop containers using the disk
 
    # Physically replace disk
 
@@ -485,13 +486,15 @@ The infrastructure has two independent update scopes, each with rolling deployme
 1. **Base infrastructure** - Proxmox hosts, DNS servers, SMTP relay, Plex LXC (managed by Ansible)
 2. **K3s cluster** - k3s nodes, Helm charts, application workloads (managed by Helm/kubectl)
 
+**Note:** OS package updates (`task maintenance:update-packages`) span both scopes -- they cover base infrastructure hosts, k3s nodes, and application hosts (Plex + GitLab) in a single rolling run.
+
 ### Quick Reference
 
 | What to update | Command |
 |---|---|
 | Check for available updates | `task maintenance:check-versions` |
 | Update versions in all.yml | `task maintenance:update-all-versions` |
-| OS packages only | `task maintenance:update-packages` |
+| OS packages (all hosts: base, k3s, app VMs) | `task maintenance:update-packages` |
 | Base apps (AdGuard, Tailscale, Plex) | `task maintenance:update-applications` |
 | Full base update (packages + apps) | `task maintenance:update-full` |
 | Full base update (auto-reboot) | `task maintenance:update-full-auto` |
@@ -642,11 +645,16 @@ task deploy:verify
 
 **Security Updates**:
 ```bash
-# For urgent security patches: OS packages only
+# For urgent security patches: OS packages on all hosts (base infra, k3s nodes, app VMs)
 task maintenance:update-packages
 # Add -e auto_reboot=true for auto-reboot:
 task maintenance:update-packages -- -e auto_reboot=true
 task deploy:verify
+
+# After k3s node updates, verify cluster health
+task k3s:status
+kubectl get nodes
+kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
 ```
 
 #### Troubleshooting Base Updates
@@ -660,10 +668,10 @@ task maintenance:update-full -- --limit=pve-nas-01
 **AdGuard configuration corrupted**:
 ```bash
 # List backups
-ansible dns -i inventories/prod -m shell -a "ls -la /opt/adguardhome/AdGuardHome.yaml.backup-*"
+ansible dns -i inventories/prod -m shell -a "ls -la /opt/AdGuardHome/AdGuardHome.yaml.backup-*"
 
 # Restore on specific host
-ansible dns-01 -i inventories/prod -m copy -a "src=/opt/adguardhome/AdGuardHome.yaml.backup-TIMESTAMP dest=/opt/adguardhome/AdGuardHome.yaml remote_src=yes"
+ansible dns-01 -i inventories/prod -m copy -a "src=/opt/AdGuardHome/AdGuardHome.yaml.backup-TIMESTAMP dest=/opt/AdGuardHome/AdGuardHome.yaml remote_src=yes"
 
 # Restart service
 ansible dns-01 -i inventories/prod -m service -a "name=AdGuardHome state=restarted"
@@ -672,7 +680,7 @@ ansible dns-01 -i inventories/prod -m service -a "name=AdGuardHome state=restart
 **Service not starting after update**:
 ```bash
 # Check service status
-ansible <host> -i inventories/prod -m service -a "name=AdGuardHome state=status"
+ansible <host> -i inventories/prod -m command -a "systemctl status AdGuardHome"
 
 # Check logs
 ansible <host> -i inventories/prod -m shell -a "journalctl -u AdGuardHome -n 50"
@@ -762,7 +770,7 @@ This runs:
 ### Maintenance Windows
 
 **Recommended schedule:**
-- Monthly: OS package updates (`task maintenance:update-packages`)
+- Monthly: OS package updates on all hosts (`task maintenance:update-packages`)
 - Quarterly: Full base infrastructure update (`task maintenance:update-full`)
 - As needed: k3s cluster updates (`task maintenance:update-cluster`)
 - As needed: Individual workload updates
