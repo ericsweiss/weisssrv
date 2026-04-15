@@ -94,9 +94,11 @@ workflow:
       chmod 700 ~/.ssh
       op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
       chmod 600 ~/.ssh/id_ed25519
-      # Add known hosts for all infrastructure
+      # Add known hosts for all infrastructure (Proxmox hosts, services, k3s VMs)
       ssh-keyscan -H 192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107 >> ~/.ssh/known_hosts 2>/dev/null || true
       ssh-keyscan -H 192.168.0.150 192.168.0.151 192.168.0.152 192.168.0.153 192.168.0.154 192.168.0.160 >> ~/.ssh/known_hosts 2>/dev/null || true
+      ssh-keyscan -H 192.168.0.202 192.168.0.203 192.168.0.204 192.168.0.205 192.168.0.206 192.168.0.207 >> ~/.ssh/known_hosts 2>/dev/null || true
+      ssh-keyscan -H 192.168.0.222 192.168.0.223 192.168.0.227 >> ~/.ssh/known_hosts 2>/dev/null || true
     - ansible-galaxy collection install -r ansible/requirements.yml
 
 .k3s-deploy-base:
