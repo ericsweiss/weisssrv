@@ -6,6 +6,10 @@
 # Phase 1: OS packages (rolling, one host at a time)
 # Phase 2-5: Applications (imported from update-applications.yml)
 
+# NOTE: Ansible processes hosts in inventory order within each group.
+# For safety, pve-nas-01 (runs GitLab) and pve-prec-01 (often hosts the CI runner)
+# should be listed last in the inventory so they are updated after other nodes.
+# This reduces the chance of the CI job terminating itself mid-run.
 - name: Full system update - OS packages (rolling)
   hosts: base_managed
   become: true
@@ -155,7 +159,7 @@
           - "========================================="
           - "Full System Update Complete"
           - "========================================="
-          - "- OS packages updated on all hosts"
+          - "- OS packages updated on base infrastructure hosts (Proxmox, DNS, mail). K3s nodes and application VMs use separate update-packages.yml playbook."
           - "- AdGuard Home updated on DNS servers"
           - "- adguardhome-sync updated on dns-01"
           - "- Tailscale updated on Proxmox hosts"

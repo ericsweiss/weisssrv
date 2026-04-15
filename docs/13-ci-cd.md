@@ -53,7 +53,7 @@ stages:
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
-| `shellcheck` | scripts/** | Shell script linting |
+| `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
 | `terraform-fmt` | terraform/** | Terraform formatting |
@@ -128,13 +128,14 @@ and runner jobs rely only on optional dependencies to other gated deploy jobs fo
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `deploy-plex` | ansible/roles/plex/**, ansible/roles/proxmox_lxc/**, ansible/playbooks/plex.yml | Deploy Plex LXC container |
-| `deploy-gitlab` | ansible/roles/gitlab/**, ansible/playbooks/gitlab.yml | Deploy GitLab VM and application |
+| `deploy-gitlab` | ansible/roles/gitlab/**, ansible/playbooks/gitlab.yml, ansible/inventories/prod/group_vars/all.yml | Deploy GitLab VM and application |
 | `deploy-home-assistant-config` | ansible/roles/home_assistant/**, ansible/playbooks/home-assistant.yml | Deploy Home Assistant configuration |
 
 #### Deploy Stage - K3s Platform
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `deploy-k3s-platform` | kubernetes/bootstrap/**, kubernetes/apps/traefik/**, kubernetes/apps/cert-manager/**, kubernetes/apps/external-dns/**, kubernetes/apps/cloudflare-ddns/**, kubernetes/apps/ingress-routes/middleware.yaml, kubernetes/apps/ingress-routes/router.yaml, kubernetes/apps/ingress-routes/services.yaml, ansible/inventories/prod/group_vars/all.yml | Deploy MetalLB, Traefik, cert-manager, external-dns, DDNS, base services |
+| `deploy-k3s-coredns` | kubernetes/apps/coredns/** | Deploy CoreDNS HelmChartConfig (2 replicas with topology spread) |
 
 #### Deploy Stage - K3s Applications
 | Job | Triggers | Description |
@@ -167,6 +168,8 @@ and runner jobs rely only on optional dependencies to other gated deploy jobs fo
 |-----|-------------|
 | `maintenance-k3s-provision` | Provision k3s VMs and deploy cluster |
 | `maintenance-update-full` | Full system update (may reboot) |
+| `maintenance-update-packages` | OS package updates on all hosts including k3s nodes and app VMs (auto-reboot enabled) |
+| `maintenance-update-applications` | Application updates: AdGuard Home, Tailscale, Plex |
 | `maintenance-update-k3s-nodes` | K3s node rolling update (drain/cordon) |
 | `maintenance-proxmox-ha` | Proxmox HA configuration |
 | `maintenance-home-assistant-restart` | Restart Home Assistant after config deployment |
@@ -199,12 +202,12 @@ When a merge request is merged to `main`:
 | Terraform | `deploy-terraform` | Yes | No |
 | Ansible Infrastructure | `deploy-ansible-base`, `deploy-ansible-proxmox`, `deploy-ansible-firewall`, `deploy-ansible-dns`, `deploy-ansible-storage`, `deploy-ansible-mail`, `deploy-ansible-certs` | Yes | No |
 | Ansible Applications | `deploy-plex`, `deploy-gitlab`, `deploy-home-assistant-config` | Yes | No |
-| K3s Platform | `deploy-k3s-platform` | Yes | No |
+| K3s Platform | `deploy-k3s-platform`, `deploy-k3s-coredns` | Yes | No |
 | K3s Applications | `deploy-k3s-authentik`, `deploy-downloads`, `deploy-recipes` | Yes | No |
 | K3s IngressRoutes & Runners | `deploy-gitlab-ingress`, `deploy-home-assistant-ingress`, `deploy-plex-ingress`, `deploy-adguard-ingress`, `deploy-gitlab-runner`, `deploy-gitlab-runner-privileged` | Yes | No |
 | Verification | `deploy-gitlab-verify`, `deploy-verify` | Yes | No |
 | K3s Provisioning | `maintenance-k3s-provision` | No | **Yes** |
-| System Updates | `maintenance-update-full` | No | **Yes** |
+| System Updates | `maintenance-update-full`, `maintenance-update-packages`, `maintenance-update-applications` | No | **Yes** |
 | K3s Node Updates | `maintenance-update-k3s-nodes` | No | **Yes** |
 | Proxmox HA | `maintenance-proxmox-ha` | No | **Yes** |
 | Home Assistant Restart | `maintenance-home-assistant-restart` | No | **Yes** |
@@ -219,7 +222,7 @@ When a merge request is merged to `main`:
 **K3s platform deployments** (`deploy-k3s-platform`) use kubectl/helm:
 - Kubeconfig fetched from 1Password at runtime
 - Helm repos added and charts deployed with pinned versions from `all.yml`
-- Cloudflare API token injected via `--set` for Traefik and external-dns
+- Cloudflare API token injected via `--set` for Traefik; external-dns and DDNS use a Kubernetes secret created via `kubectl create secret`
 - Deploys in order: MetalLB → cert-manager → Traefik → external-dns → DDNS → IngressRoutes
 
 **K3s application deployments** (`deploy-k3s-authentik`, `deploy-downloads`, `deploy-recipes`):
@@ -297,8 +300,8 @@ op run -- ansible-playbook -i inventories/prod playbooks/site.yml
 
 **K3s platform jobs:**
 ```bash
-# Kubeconfig for kubectl/helm
-op read "op://Homelab/K3s Kubeconfig/kubeconfig" > ~/.kube/config
+# Kubeconfig for kubectl/helm (stored as base64 to preserve YAML formatting)
+op read "op://Homelab/K3s Kubeconfig/kubeconfig" | base64 -d > ~/.kube/config
 # Cloudflare token for Traefik, external-dns, DDNS
 CF_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
 ```
@@ -316,6 +319,8 @@ VPN_PASS=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-password")
 # Recipes (Mealie + Bar Assistant)
 MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
 MEALIE_OIDC_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
+SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
+SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
 BAR_MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
 
 # GitLab Runner
@@ -333,6 +338,7 @@ Core 1Password items used by CI/CD pipeline (see CLAUDE.md for the complete list
 | Cloudflare DNS Token | `credential`, `username` | Terraform, Traefik, external-dns, DDNS |
 | Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | `deploy-k3s-authentik` |
 | PrivadoVPN Credentials | `openvpn-user`, `openvpn-password` | `deploy-downloads` (Gluetun VPN sidecar) |
+| SMTP Relay Auth | `username`, `password` | `deploy-recipes` (Mealie + Bar Assistant email) |
 | Mealie Secrets | `postgres-password` | `deploy-recipes` |
 | Mealie SSO | `oidc-client-id`, `oidc-client-secret` | `deploy-recipes` |
 | Bar Assistant Secrets | `meilisearch-master-key` | `deploy-recipes` |
@@ -344,10 +350,15 @@ Core 1Password items used by CI/CD pipeline (see CLAUDE.md for the complete list
 
 **Creating the K3s Kubeconfig item:**
 1. Fetch kubeconfig: `task k3s:kubeconfig`
-2. Create new item in 1Password:
+2. Base64-encode the kubeconfig (preserves YAML formatting in 1Password):
+   ```bash
+   base64 < ~/.kube/config-k3s | pbcopy  # macOS (copies to clipboard)
+   # Or: base64 < ~/.kube/config-k3s      # Linux (prints to stdout)
+   ```
+3. Create new item in 1Password:
    - **Title**: `K3s Kubeconfig`
    - **Type**: Secure Note or API Credential
-   - **Field**: `kubeconfig` (paste entire kubeconfig content)
+   - **Field**: `kubeconfig` (paste the **base64-encoded** content)
 
 ## Scheduled Pipelines
 

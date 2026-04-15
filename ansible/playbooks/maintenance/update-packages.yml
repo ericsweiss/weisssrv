@@ -39,15 +39,74 @@
           - "Packages upgraded: {{ apt_upgrade.changed }}"
           - "{{ apt_upgrade.stdout_lines | default([]) }}"
 
-    - name: Check if reboot is required
+    # Check for reboot requirement using multiple methods:
+    # 1. /var/run/reboot-required (Debian/Ubuntu standard)
+    # 2. Kernel version mismatch (works on Proxmox which doesn't create reboot-required)
+    - name: Check if reboot-required file exists
       ansible.builtin.stat:
         path: /var/run/reboot-required
-      register: reboot_required
+      register: reboot_required_file
+
+    - name: Get running kernel version
+      ansible.builtin.command: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - name: Get latest installed kernel version (Proxmox)
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Match both signed (proxmox-kernel-X.Y.Z-N-pve-signed) and unsigned (proxmox-kernel-X.Y.Z-N-pve)
+        # kernels. Some Proxmox installations use unsigned kernels (especially on older hardware
+        # without Secure Boot or custom kernel builds).
+        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
+        dpkg -l | grep -E '^ii[[:space:]]+proxmox-kernel-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve(-signed)?[[:space:]]' | awk '{print $3}' | sort -V | tail -1
+      args:
+        executable: /bin/bash
+      register: installed_kernel_proxmox
+      changed_when: false
+      failed_when: false
+
+    - name: Get latest installed kernel version (Debian/VM)
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
+        dpkg -l | grep -E '^ii[[:space:]]+linux-image-[0-9]' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1
+      args:
+        executable: /bin/bash
+      register: installed_kernel_debian
+      changed_when: false
+      failed_when: false
+      when: installed_kernel_proxmox.stdout | default('') == ''
+
+    # For Proxmox: running kernel is "6.17.4-2-pve", installed version is "6.17.9-1"
+    # Strip "-pve" suffix from running kernel for comparison
+    - name: Normalize running kernel version for comparison
+      ansible.builtin.set_fact:
+        running_kernel_normalized: "{{ running_kernel.stdout | regex_replace('-pve$', '') }}"
+
+    - name: Determine if kernel was updated
+      ansible.builtin.set_fact:
+        kernel_updated: >-
+          {{
+            (installed_kernel_proxmox.stdout | default('') != '' and
+             running_kernel_normalized != installed_kernel_proxmox.stdout) or
+            ((installed_kernel_debian | default({})).stdout | default('') != '' and
+             running_kernel.stdout != (installed_kernel_debian | default({})).stdout | default(''))
+          }}
+
+    - name: Set reboot required flag
+      ansible.builtin.set_fact:
+        reboot_required: "{{ reboot_required_file.stat.exists or (kernel_updated | bool) }}"
 
     - name: Display reboot requirement
       ansible.builtin.debug:
-        msg: "WARNING: Reboot required for {{ inventory_hostname }}"
-      when: reboot_required.stat.exists
+        msg: |
+          WARNING: {{ inventory_hostname }} requires reboot
+          Running kernel: {{ running_kernel.stdout }} (normalized: {{ running_kernel_normalized }})
+          Installed kernel: {{ installed_kernel_proxmox.stdout | default((installed_kernel_debian | default({})).stdout | default('unknown')) }}
+          Reboot-required file: {{ reboot_required_file.stat.exists }}
+          Kernel mismatch: {{ kernel_updated }}
+      when: reboot_required | bool
 
     - name: Pause for manual reboot decision
       ansible.builtin.pause:
@@ -55,25 +114,375 @@
           {{ inventory_hostname }} requires a reboot.
           Press ENTER to reboot now, or Ctrl+C then 'A' to abort and reboot manually later.
       when:
-        - reboot_required.stat.exists
+        - reboot_required | bool
         - not (auto_reboot | default(false))
 
     - name: Reboot host if required
       ansible.builtin.reboot:
         reboot_timeout: 300
         msg: "Rebooting {{ inventory_hostname }} after package updates"
-      when: reboot_required.stat.exists
+      when: reboot_required | bool
 
     - name: Wait for host to come back online
       ansible.builtin.wait_for_connection:
         timeout: 300
-      when: reboot_required.stat.exists
+      when: reboot_required | bool
 
     - name: Verify services after reboot
       ansible.builtin.service:
         name: ssh
         state: started
-      when: reboot_required.stat.exists
+      when: reboot_required | bool
+
+- name: Update OS packages on k3s nodes (rolling with drain)
+  hosts: k3s
+  become: true
+  serial: 1  # One node at a time to maintain cluster availability
+  tasks:
+    - name: Display current k3s node being updated
+      ansible.builtin.debug:
+        msg: "=== Updating k3s node: {{ inventory_hostname }} ==="
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Check for available updates
+      ansible.builtin.command: apt list --upgradable
+      register: upgradable_packages
+      changed_when: false
+
+    - name: Display available updates
+      ansible.builtin.debug:
+        msg: "{{ upgradable_packages.stdout_lines }}"
+      when: upgradable_packages.stdout_lines | length > 1
+
+    - name: Upgrade packages (safe upgrade)
+      ansible.builtin.apt:
+        upgrade: safe
+        autoclean: true
+        autoremove: true
+      register: apt_upgrade
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "Packages upgraded: {{ apt_upgrade.changed }}"
+          - "{{ apt_upgrade.stdout_lines | default([]) }}"
+
+    # Check for reboot requirement using multiple methods:
+    # 1. /var/run/reboot-required (Debian/Ubuntu standard)
+    # 2. Kernel version mismatch (running vs installed)
+    - name: Check if reboot-required file exists
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Get running kernel version
+      ansible.builtin.command: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - name: Get latest installed kernel version (Debian)
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
+        dpkg -l | grep -E '^ii[[:space:]]+linux-image-[0-9]' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1
+      args:
+        executable: /bin/bash
+      register: installed_kernel_debian
+      changed_when: false
+      failed_when: false
+
+    - name: Determine if kernel was updated
+      ansible.builtin.set_fact:
+        kernel_updated: >-
+          {{
+            installed_kernel_debian.stdout | default('') != '' and
+            running_kernel.stdout != installed_kernel_debian.stdout
+          }}
+
+    - name: Set reboot required flag
+      ansible.builtin.set_fact:
+        reboot_required: "{{ reboot_required_file.stat.exists or (kernel_updated | bool) }}"
+
+    - name: Display reboot requirement
+      ansible.builtin.debug:
+        msg: |
+          WARNING: {{ inventory_hostname }} requires reboot
+          Running kernel: {{ running_kernel.stdout }}
+          Installed kernel: {{ installed_kernel_debian.stdout | default('unknown') }}
+          Reboot-required file: {{ reboot_required_file.stat.exists }}
+          Kernel mismatch: {{ kernel_updated }}
+      when: reboot_required | bool
+
+    # k3s nodes need cordon/drain before reboot to safely evacuate pods.
+    # Wrapped in block/always to guarantee the node is uncordoned even if
+    # the operator aborts at the pause or any task fails mid-sequence.
+    - name: Handle k3s node reboot with guaranteed uncordon
+      when: reboot_required | bool
+      block:
+        - name: Cordon node before reboot
+          ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+
+        # CI Runner safety: prevent self-termination during reboot.
+        # The gitlab-runner-privileged pod may run the CI job executing this playbook.
+        # If we drain the runner's node without moving it first, the job dies.
+        # After cordoning, we delete the pod so k8s reschedules it to another node.
+        - name: Check if gitlab-runner-privileged pod runs on this node
+          ansible.builtin.command: >
+            k3s kubectl get pods -n gitlab-runner
+            -l release=gitlab-runner-privileged
+            --field-selector spec.nodeName={{ inventory_hostname }}
+            -o name
+          register: runner_pod_on_node
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          # rc=0 with empty stdout = no runner on this node (expected)
+          # rc!=0 = kubectl error (should not silently skip safety check)
+
+        - name: Evict runner pod to trigger reschedule (node is cordoned)
+          ansible.builtin.command: >
+            k3s kubectl delete pods -n gitlab-runner
+            -l release=gitlab-runner-privileged
+            --field-selector spec.nodeName={{ inventory_hostname }}
+            --grace-period=30
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: runner_pod_on_node.stdout | default('') | length > 0
+
+        - name: Wait for runner pod to be Running on a different node
+          ansible.builtin.shell: |
+            set -o pipefail
+            k3s kubectl get pods -n gitlab-runner \
+              -l release=gitlab-runner-privileged \
+              --field-selector status.phase=Running \
+              -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | \
+              grep -v '{{ inventory_hostname }}' | head -1
+          args:
+            executable: /bin/bash
+          register: runner_new_node
+          retries: 24
+          delay: 5
+          until: runner_new_node.stdout | default('') | length > 0
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: runner_pod_on_node.stdout | default('') | length > 0
+          failed_when: false
+
+        - name: Display runner relocation status
+          ansible.builtin.debug:
+            msg: >-
+              {% if runner_pod_on_node.stdout | default('') | length == 0 %}
+              No CI runner pod on this node - proceeding with drain
+              {% elif runner_new_node.stdout | default('') | length > 0 %}
+              CI runner pod moved to {{ runner_new_node.stdout }} - safe to drain
+              {% else %}
+              WARNING: CI runner could not reschedule (all nodes may be full).
+              {% endif %}
+
+        - name: Abort if runner could not be relocated (override with -e force_drain=true)
+          ansible.builtin.fail:
+            msg: >-
+              CI runner pod could not be relocated from {{ inventory_hostname }}.
+              Draining will kill the CI job. Override with: -e force_drain=true
+          when:
+            - runner_pod_on_node.stdout | default('') | length > 0
+            - runner_new_node.stdout | default('') | length == 0
+            - not (force_drain | default(false) | bool)
+
+        - name: Drain node (evict pods before reboot)
+          ansible.builtin.command: >
+            k3s kubectl drain {{ inventory_hostname }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --timeout=5m
+            --grace-period=30
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          register: drain_result
+          failed_when: false
+
+        - name: Uncordon node if drain failed (restore scheduling)
+          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: drain_result.rc | default(0) != 0
+
+        - name: Abort if drain failed
+          ansible.builtin.fail:
+            msg: >-
+              Drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
+              Node has been uncordoned. Investigate and retry.
+          when: drain_result.rc | default(0) != 0
+
+        - name: Pause for manual reboot decision
+          ansible.builtin.pause:
+            prompt: |
+              {{ inventory_hostname }} (k3s node) requires a reboot. Node is cordoned and drained.
+              Press ENTER to reboot now, or Ctrl+C then 'A' to abort.
+          when: not (auto_reboot | default(false))
+
+        - name: Reboot k3s node if required
+          ansible.builtin.reboot:
+            reboot_timeout: 300
+            msg: "Rebooting {{ inventory_hostname }} after package updates"
+
+        - name: Wait for host to come back online
+          ansible.builtin.wait_for_connection:
+            timeout: 300
+
+        - name: Wait for k3s service to be active
+          ansible.builtin.command: >
+            systemctl is-active {{ 'k3s' if inventory_hostname in groups.get('k3s_servers', []) else 'k3s-agent' }}
+          register: k3s_service_status
+          retries: 30
+          delay: 5
+          until: k3s_service_status.rc == 0
+          changed_when: false
+
+      always:
+        - name: Uncordon node after reboot (always runs, retries for API availability)
+          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+          changed_when: true
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: reboot_required | bool
+          register: uncordon_result
+          retries: 12
+          delay: 10
+          until: uncordon_result.rc == 0
+          failed_when: false
+
+        - name: Fail if uncordon failed after retries
+          ansible.builtin.fail:
+            msg: >-
+              Failed to uncordon {{ inventory_hostname }} after {{ uncordon_result.attempts }} attempts.
+              Node may remain unschedulable. Run manually: kubectl uncordon {{ inventory_hostname }}
+          when: reboot_required | bool and uncordon_result.rc | default(0) != 0
+
+        - name: Wait for node to be Ready
+          ansible.builtin.command: >
+            k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+          register: node_ready
+          retries: 30
+          delay: 5
+          until: node_ready.stdout == "True"
+          changed_when: false
+          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          when: reboot_required | bool
+
+- name: Update OS packages on application hosts (rolling)
+  hosts: plex_servers:gitlab_servers
+  become: true
+  serial: 1  # One host at a time
+  tasks:
+    - name: Display current host being updated
+      ansible.builtin.debug:
+        msg: "=== Updating application host: {{ inventory_hostname }} ==="
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Check for available updates
+      ansible.builtin.command: apt list --upgradable
+      register: upgradable_packages
+      changed_when: false
+
+    - name: Display available updates
+      ansible.builtin.debug:
+        msg: "{{ upgradable_packages.stdout_lines }}"
+      when: upgradable_packages.stdout_lines | length > 1
+
+    - name: Upgrade packages (safe upgrade)
+      ansible.builtin.apt:
+        upgrade: safe
+        autoclean: true
+        autoremove: true
+      register: apt_upgrade
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "Packages upgraded: {{ apt_upgrade.changed }}"
+          - "{{ apt_upgrade.stdout_lines | default([]) }}"
+
+    # Check for reboot requirement using multiple methods:
+    # 1. /var/run/reboot-required (Debian/Ubuntu standard)
+    # 2. Kernel version mismatch (running vs installed)
+    # Note: Plex is LXC (Debian), GitLab is VM (Debian) — both use Debian kernel check
+    - name: Check if reboot-required file exists
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Get running kernel version
+      ansible.builtin.command: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - name: Get latest installed kernel version (Debian)
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
+        dpkg -l | grep -E '^ii[[:space:]]+linux-image-[0-9]' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1
+      args:
+        executable: /bin/bash
+      register: installed_kernel_debian
+      changed_when: false
+      failed_when: false
+
+    - name: Determine if kernel was updated
+      ansible.builtin.set_fact:
+        kernel_updated: >-
+          {{
+            installed_kernel_debian.stdout | default('') != '' and
+            running_kernel.stdout != installed_kernel_debian.stdout
+          }}
+
+    - name: Set reboot required flag
+      ansible.builtin.set_fact:
+        reboot_required: "{{ reboot_required_file.stat.exists or (kernel_updated | bool) }}"
+
+    - name: Display reboot requirement
+      ansible.builtin.debug:
+        msg: |
+          WARNING: {{ inventory_hostname }} requires reboot
+          Running kernel: {{ running_kernel.stdout }}
+          Installed kernel: {{ installed_kernel_debian.stdout | default('unknown') }}
+          Reboot-required file: {{ reboot_required_file.stat.exists }}
+          Kernel mismatch: {{ kernel_updated }}
+      when: reboot_required | bool
+
+    - name: Pause for manual reboot decision
+      ansible.builtin.pause:
+        prompt: |
+          {{ inventory_hostname }} (application host) requires a reboot.
+          Press ENTER to reboot now, or Ctrl+C then 'A' to abort.
+      when:
+        - reboot_required | bool
+        - not (auto_reboot | default(false))
+
+    - name: Reboot host if required
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting {{ inventory_hostname }} after package updates"
+      when: reboot_required | bool
+
+    - name: Wait for host to come back online
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      when: reboot_required | bool
+
+    - name: Verify services after reboot
+      ansible.builtin.service:
+        name: ssh
+        state: started
+      when: reboot_required | bool
 
 - name: Update summary
   hosts: localhost
@@ -85,5 +494,8 @@
           - "========================================="
           - "Package Update Complete"
           - "========================================="
-          - "All hosts have been updated."
+          - "Updated hosts:"
+          - "  - Base infrastructure (Proxmox, DNS, SMTP)"
+          - "  - K3s cluster nodes (with cordon/drain for reboots)"
+          - "  - Application hosts (Plex, GitLab)"
           - "Check the output above for any hosts that required reboots."

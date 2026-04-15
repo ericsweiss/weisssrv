@@ -1,0 +1,18 @@
+# CoreDNS HelmChartConfig - scales k3s built-in CoreDNS to 2 replicas for HA
+# Topology spread ensures replicas land on different nodes
+# Applied via k3s HelmChart controller (k3s-specific CRD)
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: coredns
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    replicaCount: 2
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            k8s-app: kube-dns
