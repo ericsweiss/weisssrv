@@ -118,9 +118,9 @@ workflow:
       echo "6dc2d0cd4e0caca5aeffd0d784a48263591080e4a0895abe69f3a76eb50d1ba3  /tmp/yq" | sha256sum -c -
       install -m 0755 /tmp/yq /usr/local/bin/yq
     - |
-      # Setup kubeconfig from 1Password
+      # Setup kubeconfig from 1Password (stored as base64 to preserve YAML formatting)
       mkdir -p ~/.kube
-      op read "op://Homelab/K3s Kubeconfig/kubeconfig" > ~/.kube/config
+      op read "op://Homelab/K3s Kubeconfig/kubeconfig" | base64 -d > ~/.kube/config
       chmod 600 ~/.kube/config
     - kubectl cluster-info
 
