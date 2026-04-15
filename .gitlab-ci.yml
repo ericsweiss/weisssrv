@@ -975,7 +975,7 @@ deploy-k3s-platform:
         -f kubernetes/apps/cert-manager/values.yaml \
         --version "$(yq -r '.helm_chart_versions.cert_manager' $VARS_FILE)" \
         --wait --timeout 5m
-      kubectl apply -f kubernetes/apps/cert-manager/cluster-issuers.yaml
+      kubectl apply -f kubernetes/apps/cert-manager/cluster-issuer.yaml
 
       # Traefik
       echo "Deploying Traefik..."
