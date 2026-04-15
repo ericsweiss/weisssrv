@@ -1708,9 +1708,104 @@ deploy-verify:
 # MAINTENANCE STAGE - Manual approval required
 # All maintenance jobs use resource_group to prevent concurrent execution.
 # Only one maintenance job can run at a time across the entire infrastructure.
+#
+# Recommended execution order (when running multiple):
+#   1. update-packages       — OS packages on all hosts (may reboot)
+#   2. update-applications   — App upgrades (needs clean OS)
+#   3. update-k3s-nodes      — k3s binary upgrade (needs stable OS)
+#   4. k3s-provision         — Only when adding new VMs
+#   5. proxmox-ha            — HA rules (rarely changes)
+#   6. home-assistant-restart — Only when needed
+#   7. verify                — Always last
+#
+# NOTE: maintenance-update-full removed from CI — superseded by
+# update-packages + update-applications. Taskfile version kept for local use.
 # ============================================================================
 
-# K3s VM provisioning - MANUAL (creates/modifies VMs)
+# 1. OS package updates - MANUAL (all hosts, auto-reboot in CI)
+# For interactive mode, use: task maintenance:update-packages
+maintenance-update-packages:
+  stage: maintenance
+  extends: .deploy-base
+  resource_group: infrastructure-maintenance
+  script:
+    - cd ansible
+    - |
+      echo "Running OS package updates on all hosts (rolling)..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
+  environment:
+    name: production/maintenance-packages
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Application updates - MANUAL (AdGuard, Tailscale, Plex)
+
+# 2. Application updates - MANUAL (AdGuard, Tailscale, Plex)
+maintenance-update-applications:
+  stage: maintenance
+  extends: .deploy-base
+  resource_group: infrastructure-maintenance
+  variables:
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
+    TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
+  script:
+    - cd ansible
+    - |
+      echo "Running application updates (AdGuard, Tailscale, Plex)..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-applications.yml
+  environment:
+    name: production/maintenance-applications
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# Proxmox HA - MANUAL (affects VM placement)
+
+# 3. K3s node updates - MANUAL (drains/cordons nodes)
+maintenance-update-k3s-nodes:
+  stage: maintenance
+  extends: .deploy-base
+  resource_group: infrastructure-maintenance
+  variables:
+    K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
+  script:
+    - cd ansible
+    - |
+      echo "Running K3s node rolling update..."
+      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-k3s-nodes.yml
+  environment:
+    name: production/k3s-nodes
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      allow_failure: true
+
+# OS package updates - MANUAL (updates all hosts including k3s nodes and app VMs)
+# Note: CI runs with auto_reboot=true (non-interactive). For interactive mode, use: task maintenance:update-packages
+
+# 4. K3s VM provisioning - MANUAL (creates/modifies VMs)
 maintenance-k3s-provision:
   stage: maintenance
   extends: .deploy-base
@@ -1741,82 +1836,8 @@ maintenance-k3s-provision:
 # The Taskfile still has task maintenance:update-full for local use.
 
 # K3s node updates - MANUAL (drains/cordons nodes)
-maintenance-update-k3s-nodes:
-  stage: maintenance
-  extends: .deploy-base
-  resource_group: infrastructure-maintenance
-  variables:
-    K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
-  script:
-    - cd ansible
-    - |
-      echo "Running K3s node rolling update..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-k3s-nodes.yml
-  environment:
-    name: production/k3s-nodes
-    action: prepare
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
 
-# OS package updates - MANUAL (updates all hosts including k3s nodes and app VMs)
-# Note: CI runs with auto_reboot=true (non-interactive). For interactive mode, use: task maintenance:update-packages
-maintenance-update-packages:
-  stage: maintenance
-  extends: .deploy-base
-  resource_group: infrastructure-maintenance
-  script:
-    - cd ansible
-    - |
-      echo "Running OS package updates on all hosts (rolling)..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
-  environment:
-    name: production/maintenance-packages
-    action: prepare
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
-
-# Application updates - MANUAL (AdGuard, Tailscale, Plex)
-maintenance-update-applications:
-  stage: maintenance
-  extends: .deploy-base
-  resource_group: infrastructure-maintenance
-  variables:
-    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
-    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
-    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
-    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
-    ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
-    TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
-  script:
-    - cd ansible
-    - |
-      echo "Running application updates (AdGuard, Tailscale, Plex)..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-applications.yml
-  environment:
-    name: production/maintenance-applications
-    action: prepare
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
-
-# Proxmox HA - MANUAL (affects VM placement)
+# 5. Proxmox HA - MANUAL (affects VM placement)
 maintenance-proxmox-ha:
   stage: maintenance
   extends: .deploy-base
@@ -1839,6 +1860,8 @@ maintenance-proxmox-ha:
       allow_failure: true
 
 # Home Assistant restart - MANUAL (restarts HA VM)
+
+# 6. Home Assistant restart - MANUAL (restarts HA VM)
 maintenance-home-assistant-restart:
   stage: maintenance
   extends: .deploy-base
@@ -1868,6 +1891,9 @@ maintenance-home-assistant-restart:
 # Post-maintenance infrastructure verification - MANUAL
 # Trigger after maintenance jobs complete to validate cluster health.
 # Fails the job if critical checks don't pass (nodes not Ready, pods degraded, GitLab down).
+
+# 7. Post-maintenance verification - MANUAL
+# Trigger after maintenance to validate cluster health. Fails on critical issues.
 maintenance-verify:
   stage: maintenance
   extends: .k3s-deploy-base
@@ -1954,6 +1980,8 @@ maintenance-verify:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
+
+
 
 # ============================================================================
 # VERSION CHECK - Runs early, soft-fail on PRs
