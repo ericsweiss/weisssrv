@@ -6,6 +6,7 @@ resources:
   - cluster-secret-store.yaml
   - cluster-issuer.yaml
   - metallb-ip-pools.yaml
+  - wildcard-certificates.yaml
   - coredns
   - cloudflare-ddns
   - shared-cloudflare-secrets

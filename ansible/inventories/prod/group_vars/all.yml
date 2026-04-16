@@ -139,8 +139,10 @@ postgresql_version: "18.3-trixie"
 mealie_postgresql_version: "18.3-alpine"
 
 # Download clients and media stack versions
-# Pinned to specific versions for reproducible deployments and controlled updates
-# Update these versions in group_vars, then run: task downloads:deploy
+# Pinned to specific versions for reproducible deployments and controlled updates.
+# After editing a version here, run `task flux:sync-versions` to regenerate
+# kubernetes/infrastructure/configs/versions-configmap.yaml, then commit +
+# push both files — Flux reconciles the new image tags into the running pods.
 # LinuxServer.io images: https://docs.linuxserver.io/images/
 # Gluetun: https://github.com/qdm12/gluetun/releases
 # Pulsarr: https://github.com/jamcalli/Pulsarr/releases

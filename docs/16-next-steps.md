@@ -138,9 +138,9 @@ GitLab is deployed as a dedicated VM (not k3s) due to its resource requirements 
 ### Management Commands
 
 ```bash
-task gitlab:deploy          # Deploy GitLab (VM + application)
-task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
-task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
+task gitlab:deploy          # Deploy GitLab (VM + application via Ansible)
+# IngressRoutes + runners + agent are Flux-managed (kubernetes/apps/gitlab-*
+# and kubernetes/apps/vm-ingress/gitlab*.yaml) — edit and git push.
 task gitlab:status          # Show GitLab and runner status
 task gitlab:verify          # Run smoke tests
 task gitlab:backup          # Create GitLab backup
@@ -153,180 +153,88 @@ See `docs/27-gitlab-deployment.md` for complete deployment documentation.
 
 ---
 
-## Priority 3: GitOps with Flux
+## Priority 3: GitOps with Flux (COMPLETE)
 
-**Goal**: Migrate from imperative Task/kubectl deployments to declarative GitOps.
+**Status**: Fully migrated. Flux reconciles every Kubernetes workload from this repo;
+External Secrets Operator (1Password SDK provider) supplies all k8s Secrets.
 
-**Why Flux over Helm tasks**:
-- Git as single source of truth for cluster state
-- Automatic drift detection and reconciliation
-- Webhook-triggered deployments on git push
-- Seamless integration with existing 1Password secrets workflow
+### Architecture
 
-**Prerequisites**: Local GitLab instance (Priority 2) should be deployed first to host the GitOps repository internally if desired, though Flux can also work with GitHub.
+- **Flux controllers** bootstrapped via `flux bootstrap gitlab` into
+  `kubernetes/clusters/weisssrv/flux-system/`.
+- **Platform** (`kubernetes/infrastructure/`): sources (HelmRepositories), controllers
+  (MetalLB, Traefik, cert-manager, external-dns, external-secrets), and configs
+  (ClusterSecretStore, ClusterIssuer, CoreDNS HelmChartConfig, DDNS CronJob,
+  versions-configmap).
+- **Apps** (`kubernetes/apps/`): `authentik/`, `download-clients/`, `recipes/`,
+  `gitlab-runner/`, `gitlab-runner-privileged/`, `gitlab-agent/`, `vm-ingress/`
+  (IngressRoutes for non-k8s services: Plex, Home Assistant, GitLab VM, AdGuard,
+  router, Traefik dashboard).
+- **Version flow**: `all.yml` → `task flux:sync-versions` → `cluster-versions`
+  ConfigMap → Flux `postBuild.substituteFrom` substitutes `${...}` placeholders.
+- **Secrets**: one bootstrap `onepassword-sdk-token` Secret in `external-secrets`
+  namespace; all other Secrets created by ExternalSecrets referencing 1Password
+  item IDs in the `Homelab` vault.
 
-### Tasks
+### Deploy workflow
 
-- [ ] **Bootstrap Flux CD**
-  ```bash
-  flux bootstrap github \
-    --owner=ericsweiss \
-    --repository=weisssrv \
-    --branch=main \
-    --path=kubernetes/flux \
-    --personal
-  ```
+Any Kubernetes change is a git commit under `kubernetes/`. On push, Flux reconciles
+(~1 minute, or immediately via the GitLab webhook to the Flux `Receiver`). Helm
+releases upgrade, Kustomizations re-apply, ExternalSecrets refresh, no manual
+kubectl/helm invocations.
 
-- [ ] **Migrate platform components to Flux**
-  - Convert Helm releases: MetalLB, Traefik, cert-manager, external-dns
-  - Create HelmRelease resources with values inline
-  - Organize under `kubernetes/apps/`
+### Reference
 
-- [ ] **Migrate application deployments**
-  - Convert Authentik deployment to HelmRelease
-  - Convert downloads stack (preserve VPN secrets handling)
-  - Convert recipes stack
-
-- [ ] **Configure Renovate Bot for automated updates**
-  - See "Renovate Bot Integration" section below for strategy
-  - Install Renovate GitHub App (or self-hosted on GitLab)
-  - Configure for Kubernetes manifests, Helm charts, and container images
-  - Set up auto-merge policies for minor/patch updates
-
-### Success Criteria
-
-- All k8s resources are defined in git under `kubernetes/`
-- `flux get all` shows all resources reconciled
-- Changes to git automatically deploy to cluster
-- Renovate creates PRs for version updates
+- [docs/29-flux-operations.md](./29-flux-operations.md) — operator guide (bootstrap,
+  adopt Helm releases, rotate secrets, add an app, troubleshoot, emergency stop)
+- [docs/30-multi-repo-onboarding.md](./30-multi-repo-onboarding.md) — onboarding
+  external repos that deploy into this cluster via Flux
+- Taskfile: `task flux:*` — status, verify, reconcile, suspend, resume,
+  refresh-secret, rotate-secret, sync-versions, dev-apply, lint
 
 ---
 
 ## Renovate Bot Integration
 
-**Question**: How does Renovate Bot complement or replace the existing `task maintenance:check-versions` automation?
+**Status**: Not yet implemented. `all.yml` remains the single source of truth for
+versions; the `cluster-versions` ConfigMap flows into Flux via substitutions.
 
 ### Current Automation (Keep)
 
-The existing version management tasks serve a critical role for **Ansible-managed infrastructure**:
+The existing version management tasks serve a critical role for **all managed versions**,
+both Ansible-deployed and Flux-deployed:
 
 ```bash
 task maintenance:check-versions        # Checks all managed services for updates
 task maintenance:update-version        # Updates single version in all.yml
 task maintenance:update-all-versions   # Updates all outdated versions
+task flux:sync-versions                # Regenerates kubernetes/infrastructure/configs/versions-configmap.yaml
 ```
 
 **What these tasks manage**:
 - Base infrastructure versions (AdGuard Home, Tailscale, Plex, k3s)
-- Helm chart versions for platform components
-- Container image tags for k8s workloads
-- All versions are centralized in `ansible/inventories/prod/group_vars/all.yml`
+- Helm chart versions for platform components (consumed by Flux HelmReleases via substitutions)
+- Container image tags for k8s workloads (consumed by Flux Kustomizations via substitutions)
+- All versions centralized in `ansible/inventories/prod/group_vars/all.yml`
 
 **Why keep them**:
 1. **Ansible-deployed services** (AdGuard, Unbound, Plex, SMTP) are not visible to Renovate
 2. **k3s binary version** requires coordinated rolling upgrades via Ansible
 3. **Centralized version file** (`all.yml`) enables atomic updates and easy rollback
 4. **Offline capability**: Works without external dependencies
+5. **Flux substitution**: workload manifests reference `${var}` placeholders, so a single
+   bump in `all.yml` + `task flux:sync-versions` + commit updates everything atomically.
 
-### Renovate Bot (Add for Kubernetes)
+### Renovate Bot (Future Addition)
 
-Renovate excels at **Kubernetes manifest and Helm chart updates** within git:
+Renovate could supplement `check-versions` by creating MRs automatically instead of
+requiring a manual `task maintenance:check-versions` run. If added, it must:
+- Edit `all.yml` (not individual manifests) to keep a single source of truth
+- Run `scripts/generate-versions-configmap.py` as part of each MR so the ConfigMap
+  stays in sync (already enforced by the `flux-versions-sync` CI job)
 
-**What Renovate would manage**:
-- Container image tags in `kubernetes/apps/**/*.yaml` manifests
-- HelmRelease version references (after Flux migration)
-- Terraform provider versions in `terraform/**/*.tf`
-- GitHub Actions versions in `.github/workflows/*.yml`
-
-**How it complements existing automation**:
-
-| Component | Current Automation | Renovate Bot |
-|-----------|-------------------|--------------|
-| AdGuard Home | `check-versions` | N/A (Ansible) |
-| Tailscale | `check-versions` | N/A (Ansible) |
-| Plex | `check-versions` | N/A (LXC/Ansible) |
-| k3s binary | `check-versions` | N/A (Ansible) |
-| Helm charts | `check-versions` | HelmRelease versions |
-| Container images | `check-versions` | Image tags in manifests |
-| Terraform providers | Manual | Terraform files |
-| GitHub Actions | Manual | Workflow files |
-
-### Recommended Integration Strategy
-
-**Phase 1: Keep Both (Recommended)**
-
-1. Continue using `task maintenance:check-versions` for all services
-2. Add Renovate for Kubernetes manifests and Terraform
-3. Renovate PRs update the manifest files; `check-versions` shows the same updates in all.yml
-4. Choose which workflow to apply updates from (either is valid)
-
-**Phase 2: After Flux Migration**
-
-Once Flux is managing Kubernetes deployments:
-1. Renovate becomes primary for k8s workloads (creates PRs against HelmReleases)
-2. `check-versions` continues for Ansible-managed infrastructure
-3. Update `check-versions` script to skip Flux-managed components (avoid duplicate tracking)
-
-**Phase 3: Full Integration (Optional)**
-
-If desired, enhance `check-versions.py` to:
-- Read versions from Kubernetes manifests (in addition to all.yml)
-- Understand which components are Renovate-managed
-- Provide unified dashboard across all version sources
-
-### Renovate Configuration (Post-Flux)
-
-```json
-{
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "kubernetes": {
-    "fileMatch": ["kubernetes/.+\\.ya?ml$"]
-  },
-  "flux": {
-    "fileMatch": ["kubernetes/.+\\.ya?ml$"]
-  },
-  "helm-values": {
-    "fileMatch": ["kubernetes/.+\\.ya?ml$"]
-  },
-  "terraform": {
-    "fileMatch": ["terraform/.+\\.tf$"]
-  },
-  "packageRules": [
-    {
-      "description": "Auto-merge patch updates for stable apps",
-      "matchUpdateTypes": ["patch"],
-      "matchPackagePatterns": ["linuxserver/*", "ghcr.io/onedr0p/*"],
-      "automerge": true
-    },
-    {
-      "description": "Group all download client updates",
-      "matchPackagePatterns": ["sonarr", "radarr", "lidarr", "prowlarr"],
-      "groupName": "arr-stack"
-    },
-    {
-      "description": "Require manual review for major updates",
-      "matchUpdateTypes": ["major"],
-      "automerge": false,
-      "labels": ["breaking-change"]
-    }
-  ]
-}
-```
-
-### Summary
-
-**Keep `task maintenance:check-versions`** for:
-- Ansible-managed infrastructure (always)
-- Centralized version visibility across all 24 services
-- Offline/air-gapped capability
-- Pre-Flux k8s workload version tracking
-
-**Add Renovate Bot** for:
-- Automated PR creation for Kubernetes manifests (post-Flux)
-- Terraform provider updates
-- GitHub Actions updates
-- Dependency grouping and auto-merge policies
+Decision: defer until operational overhead justifies it. `task maintenance:check-versions`
+runs on a weekly schedule and surfaces updates without noise.
 
 ---
 
@@ -402,6 +310,59 @@ If desired, enhance `check-versions.py` to:
 
 ---
 
+## Future: weisssrv-project-template GitLab template project
+
+Create a dedicated GitLab project template (separate repo) that new repos
+deploying to this cluster fork/copy. Pre-wired with:
+
+- `.gitlab-ci.yml` with standard stages (lint, validate, security,
+  AI review conditional on OP/openai secrets, Flux webhook trigger)
+- `.gitleaks.toml`, `.editorconfig`, `.pre-commit-config.yaml`, `renovate.json`
+- `Taskfile.yml` with flux:* and maintenance:* wrappers
+- `kubernetes/flux/` stub: namespace, Kustomization, ExternalSecret,
+  release.yaml/resource.yaml templates
+- `.cursorrules`, `CLAUDE.md`, `AGENTS.md` templates
+- `CODEOWNERS`, issue/MR templates, LICENSE, README scaffold
+
+Tracked in memory: project_weisssrv_template_repo.md.
+
+Onboarding flow: fork template → add CI vars → add wiring YAML under
+`kubernetes/clusters/weisssrv/tenants/` in this repo.
+
+---
+
+## Outstanding Follow-Ups
+
+### Complete k3s secrets-encryption
+
+The k3s Ansible role config template has `secrets-encryption: true`, but the
+currently-deployed `config.yaml` on the server nodes does not. Completing this
+requires a k3s role re-run that regenerates the config plus staggered server
+restarts (`systemctl restart k3s` on one server at a time, verifying etcd
+quorum between each). Once done, run `sudo k3s secrets-encrypt status` on
+k3s-srv-nas-01 and, if needed, `sudo k3s secrets-encrypt reencrypt` to
+re-encrypt existing Secrets with the active key.
+
+### AQC113 firmware update (pve-nas-01)
+
+Still outstanding: update the AQC113 NIC firmware from `1.5.38` to `1.5.45` on
+pve-nas-01. Requires the Windows flashing tool on a USB stick and a downtime
+window. The GRO disable (interim stability fix) is now codified via the
+`nic_tuning` Ansible role (`/etc/network/interfaces.d/99-nic-nic1-tuning.cfg` +
+`/etc/sysctl.d/99-nic-tuning-ip-forward.conf` — see `ansible/roles/nic_tuning/README.md`
+for exact filenames), so this is no longer an emergency — it
+remains a planned maintenance task.
+
+### pve-nas-01 stale manual config cleanup
+
+Earlier manual entries still exist in `/etc/network/interfaces` and
+`/etc/sysctl.conf` on pve-nas-01 (GRO off, `net.ipv4.ip_forward=1`). The
+`nic_tuning` role now manages these via drop-ins, so the manual entries are
+redundant (harmless but stale). Remove them in a scheduled cleanup pass and
+verify the role's drop-ins are still authoritative after reboot.
+
+---
+
 ## Priority 6: Additional Applications
 
 ### Immich (Photo Management)
@@ -459,45 +420,59 @@ If desired, enhance `check-versions.py` to:
 ## Commands Reference
 
 ```bash
-# Base infrastructure
+# Base infrastructure (Ansible)
 task deploy:all           # Deploy base infrastructure
 task deploy:check         # Dry-run
 task deploy:verify        # Post-deployment verification
 
-# K3s cluster
-task k3s:deploy           # Deploy k3s cluster
-task k3s:deploy-workloads # Deploy all platform workloads
+# K3s cluster (Ansible — cluster infrastructure only)
+task k3s:provision-vms    # Provision k3s VMs on Proxmox
+task k3s:deploy           # Deploy/upgrade k3s (idempotent)
+task k3s:kubeconfig       # Fetch kubeconfig
+task k3s:backup           # Create etcd snapshot
 task k3s:status           # Show cluster status
 
-# Downloads stack
-task downloads:deploy     # Deploy downloads stack
-task downloads:status     # Show stack status
+# Flux GitOps (all k8s workload deploys happen via git push)
+task flux:status          # Concise health summary
+task flux:verify          # flux check + get all -A
+task flux:reconcile       # Force full reconciliation
+task flux:suspend -- <ns>/<kind>/<name>   # Emergency pause
+task flux:resume -- <ns>/<kind>/<name>    # Resume
+task flux:refresh-secret -- <ns>/<name>   # Force ExternalSecret sync
+task flux:rotate-secret -- <app>          # Refresh secret + restart consumers
+task flux:sync-versions   # Regenerate versions-configmap.yaml from all.yml
+task flux:dev-apply -- <path>   # Local kubectl apply (Flux reverts on next cycle)
+task flux:lint            # flux build + kubeconform on every Kustomization
+
+# Operational (workload introspection)
+task downloads:status     # Show downloads namespace status
 task downloads:vpn-status # Check VPN connection
-task downloads:vpn        # Enable/disable VPN per-app (APP=nzbget ENABLED=true)
 task downloads:restart    # Restart all download/media apps
 task downloads:logs       # View app logs (APP=nzbget [CONTAINER=gluetun])
-task downloads:shell      # Shell into container (APP=nzbget [CONTAINER=gluetun])
-task downloads:delete     # Remove stack (preserves data)
+task downloads:shell      # Shell into container
+task downloads:delete     # Remove stack (preserves data; Flux will recreate)
+task recipes:status       # Show recipes namespace status
+task recipes:restart      # Restart all recipe apps
+task recipes:logs         # View app logs (APP=mealie)
+task recipes:shell        # Shell into app container
+task recipes:delete       # Remove stack (preserves data; Flux will recreate)
+task authentik:status     # Show Authentik pods/status
+task authentik:logs       # View Authentik logs
+task authentik:restart    # Restart Authentik pods
 
-# Recipes stack
-task recipes:deploy       # Deploy Mealie and Bar Assistant
-task recipes:status       # Show recipes status
+# Home Assistant (HAOS VM, configuration via Ansible)
+task home-assistant:deploy-config  # Deploy HA configuration via Ansible
+task home-assistant:status         # Show VM status
+task home-assistant:snapshot       # Create Proxmox snapshot
 
-# Home Assistant
-task home-assistant:deploy       # Deploy HA ingress + config
-task home-assistant:status       # Show VM and ingress status
-task home-assistant:snapshot     # Create Proxmox snapshot
-
-# Plex
+# Plex (LXC on NAS, managed by Ansible)
 task deploy:plex          # Deploy Plex LXC
 
-# GitLab
+# GitLab (VM on NAS, managed by Ansible; runners + agent managed by Flux)
 task gitlab:deploy          # Deploy GitLab (VM + application)
 task gitlab:deploy-check    # Dry-run deployment
-task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
-task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
 task gitlab:status          # Show GitLab and runner status
-task gitlab:verify          # Run smoke tests
+task gitlab:verify          # Run smoke tests (uses flux get for runner/agent health)
 task gitlab:backup          # Create GitLab backup
 task gitlab:console         # SSH to GitLab VM
 task gitlab:logs            # View GitLab logs
@@ -505,7 +480,8 @@ task gitlab:reconfigure     # Reconfigure after changes
 
 # Maintenance
 task maintenance:check-versions   # Check for updates
-task maintenance:update-full      # Full system update
+task maintenance:update-full      # Full base infrastructure update
+task maintenance:update-k3s-nodes # Rolling k3s node upgrades
 task collect-state                # Generate cluster snapshot
 ```
 

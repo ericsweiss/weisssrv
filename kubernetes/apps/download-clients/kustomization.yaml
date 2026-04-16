@@ -28,5 +28,5 @@ resources:
 labels:
   - pairs:
       app.kubernetes.io/part-of: media-stack
-      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/managed-by: flux
     includeSelectors: false

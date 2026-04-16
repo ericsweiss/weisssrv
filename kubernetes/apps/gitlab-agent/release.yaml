@@ -28,9 +28,10 @@ spec:
       tag: ""  # Use chart appVersion default
     config:
       kasAddress: wss://git.ericsweiss.com/-/kubernetes-agent/
-      # Chart reads key "token" from the referenced Secret (non-configurable in chart;
-      # tokenKey is set explicitly for clarity and forward compatibility). Our
-      # ExternalSecret above creates Secret "gitlab-agent-token" with data key "token".
+      # Chart reads key "token" from the referenced Secret (non-configurable
+      # in chart; tokenKey is set explicitly for clarity and forward
+      # compatibility). The sibling ExternalSecret (externalsecret.yaml)
+      # creates Secret "gitlab-agent-token" with data key "token".
       secretName: gitlab-agent-token
       tokenKey: token
     resources:

@@ -27,8 +27,10 @@ resource "cloudflare_record" "root" {
 # DNS-only mode allows both HTTPS (via Traefik) and SSH access on the same hostname
 # Note: Origin IP is already exposed via direct.ericsweiss.com, so no additional security impact
 # CUTOVER NOTE: On first apply, DNS may briefly resolve to the placeholder IP until
-# the DDNS CronJob updates it. Apply during low-traffic window and run
-# `task k3s:deploy-ddns` immediately after to trigger an update.
+# the Flux-managed DDNS CronJob (kubernetes/infrastructure/configs/cloudflare-ddns/)
+# runs on its */5-minute schedule. Apply during low-traffic window. To trigger
+# an immediate update:
+#   kubectl -n cloudflare-ddns create job --from=cronjob/cloudflare-ddns manual-$(date +%s)
 resource "cloudflare_record" "git" {
   zone_id = data.cloudflare_zone.external.id
   name    = "git"

@@ -115,8 +115,9 @@ workflow:
   before_script:
     - !reference [.install-1password, before_script]
     - |
-      # Install kubectl, helm, yq, and envsubst (pinned checksums for supply-chain integrity)
-      apt-get install -y -qq gettext-base
+      # Install kubectl, helm, yq (pinned checksums for supply-chain integrity).
+      # envsubst / gettext-base were dropped — Flux postBuild substitution
+      # replaces the imperative envsubst pipeline used pre-migration.
       curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
       echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
       install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
@@ -127,11 +128,15 @@ workflow:
       echo "6dc2d0cd4e0caca5aeffd0d784a48263591080e4a0895abe69f3a76eb50d1ba3  /tmp/yq" | sha256sum -c -
       install -m 0755 /tmp/yq /usr/local/bin/yq
     - |
-      # Setup kubeconfig from 1Password (stored as base64 to preserve YAML formatting)
+      # Setup kubeconfig from 1Password (stored as base64 to preserve YAML formatting).
+      # Only the verify jobs still need this; all workload deploys are Flux-managed.
       mkdir -p ~/.kube
       op read "op://Homelab/K3s Kubeconfig/kubeconfig" | base64 -d > ~/.kube/config
       chmod 600 ~/.kube/config
-    - kubectl cluster-info
+    # Skipping `kubectl cluster-info` — requires list perms on kube-system
+    # services, which the runner ServiceAccount lacks. Per-job kubectl calls
+    # target narrower scopes and use the K3s Kubeconfig credentials.
+    - kubectl version --output=yaml --request-timeout=5s
 
 .changes-ansible:
   rules:
@@ -394,95 +399,72 @@ terraform-plan:
       changes:
         - terraform/**
 
-kubeconform:
-  stage: validate
-  image: python:3.11-slim
+flux-versions-sync:
+  # Fails if kubernetes/infrastructure/configs/versions-configmap.yaml is out
+  # of sync with ansible/inventories/prod/group_vars/all.yml. Run
+  # `task flux:sync-versions` locally to regenerate and commit.
+  stage: lint
+  image: python:3.12-slim
   before_script:
-    - apt-get update -qq && apt-get install -y -qq curl
-    - |
-      # Download kubeconform binary and verify checksum
-      # Pinned checksum for supply-chain integrity (update when bumping version)
-      KUBECONFORM_SHA256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
-      curl -fsSL -o /tmp/kubeconform-linux-amd64.tar.gz \
-        https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-      echo "${KUBECONFORM_SHA256}  /tmp/kubeconform-linux-amd64.tar.gz" | sha256sum -c -
-      tar xzf /tmp/kubeconform-linux-amd64.tar.gz -C /usr/local/bin
-      kubeconform -v
+    - pip install --quiet pyyaml
   script:
+    - python3 scripts/generate-versions-configmap.py
     - |
-      find kubernetes/apps kubernetes/bootstrap -name "*.yaml" \
-        ! -name "values.yaml" \
-        ! -name "kustomization.yaml" \
-        -exec kubeconform -summary -strict \
-          -ignore-missing-schemas \
-          -kubernetes-version 1.35.0 \
-          -schema-location default \
-          -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-          {} +
+      if ! git diff --exit-code --quiet kubernetes/infrastructure/configs/versions-configmap.yaml; then
+        echo "ERROR: versions-configmap.yaml is out of sync with all.yml"
+        echo "Run: task flux:sync-versions (or python3 scripts/generate-versions-configmap.py) and commit the result."
+        git --no-pager diff kubernetes/infrastructure/configs/versions-configmap.yaml
+        exit 1
+      fi
+      echo "versions-configmap.yaml is in sync with all.yml"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - kubernetes/**
         - ansible/inventories/prod/group_vars/all.yml
+        - kubernetes/infrastructure/configs/versions-configmap.yaml
+        - scripts/generate-versions-configmap.py
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - kubernetes/**
         - ansible/inventories/prod/group_vars/all.yml
+        - kubernetes/infrastructure/configs/versions-configmap.yaml
+        - scripts/generate-versions-configmap.py
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
-helm-validate:
+flux-lint:
+  # Renders every top-level Flux Kustomization with postBuild substitution
+  # applied, then validates the output with kubeconform. Replaces the old
+  # per-chart helm template + find-based kubeconform jobs.
   stage: validate
-  image:
-    name: alpine/helm:3.14.0
-    entrypoint: [""]
+  image: python:3.11-slim
   before_script:
-    - apk add --no-cache yq bash
-    - helm repo add traefik https://traefik.github.io/charts
-    - helm repo add metallb https://metallb.github.io/metallb
-    - helm repo add jetstack https://charts.jetstack.io
-    - helm repo add authentik https://charts.goauthentik.io
-    - helm repo add gitlab https://charts.gitlab.io
-    - helm repo update
+    - apt-get update -qq && apt-get install -y -qq curl
+    - |
+      KUBECONFORM_SHA256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
+      curl -fsSL -o /tmp/kubeconform.tar.gz \
+        https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+      echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
+      tar xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+      curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
+      echo "fa2daf1d96c6cce7a91fb00380044a61f21d15c38fe3cacba7b1966b2466dec9  /tmp/kustomize.tar.gz" | sha256sum -c -
+      tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
+      kubeconform -v && kustomize version
   script:
     - |
-      VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
-      echo "Validating Helm charts against pinned versions..."
-    - |
-      helm template traefik traefik/traefik \
-        -f kubernetes/apps/traefik/values.yaml \
-        --namespace traefik \
-        --version "$(yq -r '.helm_chart_versions.traefik' ansible/inventories/prod/group_vars/all.yml)" \
-        --api-versions policy/v1/PodDisruptionBudget \
-        > /dev/null && echo "Traefik: OK"
-    - |
-      helm template metallb metallb/metallb \
-        -f kubernetes/bootstrap/metallb/values.yaml \
-        --namespace metallb-system \
-        --version "$(yq -r '.helm_chart_versions.metallb' ansible/inventories/prod/group_vars/all.yml)" \
-        --api-versions policy/v1/PodDisruptionBudget \
-        > /dev/null && echo "MetalLB: OK"
-    - |
-      helm template cert-manager jetstack/cert-manager \
-        -f kubernetes/apps/cert-manager/values.yaml \
-        --namespace cert-manager \
-        --version "$(yq -r '.helm_chart_versions.cert_manager' ansible/inventories/prod/group_vars/all.yml)" \
-        --api-versions policy/v1/PodDisruptionBudget \
-        > /dev/null && echo "cert-manager: OK"
-    - |
-      helm template authentik authentik/authentik \
-        -f kubernetes/apps/authentik/values.yaml \
-        --namespace authentik \
-        --set authentik.secret_key=dummy-secret-key-for-validation \
-        --set authentik.postgresql.password=dummy-postgres-password \
-        --api-versions policy/v1/PodDisruptionBudget \
-        > /dev/null && echo "Authentik: OK"
-    - |
-      # GitLab Runner charts
-      RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' ansible/inventories/prod/group_vars/all.yml)
-      helm template gitlab-runner gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner/values.yaml --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "GitLab Runner: OK"
-      helm template gitlab-runner-privileged gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner-privileged/values.yaml --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "GitLab Runner Privileged: OK"
+      set -e
+      FAILED=0
+      for path in kubernetes/infrastructure kubernetes/apps; do
+        echo "=== Building + validating $path ==="
+        if ! kustomize build "$path" | kubeconform -strict -ignore-missing-schemas \
+            -kubernetes-version 1.35.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -summary; then
+          FAILED=1
+        fi
+      done
+      exit $FAILED
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -638,9 +620,9 @@ validation-gate:
       optional: true
     - job: terraform-plan
       optional: true
-    - job: kubeconform
+    - job: flux-versions-sync
       optional: true
-    - job: helm-validate
+    - job: flux-lint
       optional: true
     - job: molecule-tests
       optional: true
@@ -996,570 +978,6 @@ deploy-home-assistant-config:
         - ansible/roles/home_assistant/**
         - ansible/playbooks/home-assistant.yml
 
-# ------------------------------------------------------------------------------
-# K3s Platform (MetalLB, Traefik, cert-manager, external-dns, DDNS)
-# ------------------------------------------------------------------------------
-
-deploy-k3s-platform:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-terraform
-      optional: true
-  script:
-    - |
-      VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
-
-      # Add Helm repos
-      helm repo add metallb https://metallb.github.io/metallb
-      helm repo add traefik https://traefik.github.io/charts
-      helm repo add jetstack https://charts.jetstack.io
-      helm repo add external-dns https://kubernetes-sigs.github.io/external-dns
-      helm repo update
-
-      # MetalLB
-      echo "Deploying MetalLB..."
-      helm upgrade --install metallb metallb/metallb \
-        -n metallb-system --create-namespace \
-        -f kubernetes/bootstrap/metallb/values.yaml \
-        --version "$(yq -r '.helm_chart_versions.metallb' $VARS_FILE)" \
-        --wait --timeout 5m
-      kubectl apply -f kubernetes/bootstrap/metallb/ip-pool.yaml
-
-      # cert-manager
-      echo "Deploying cert-manager..."
-      helm upgrade --install cert-manager jetstack/cert-manager \
-        -n cert-manager --create-namespace \
-        -f kubernetes/apps/cert-manager/values.yaml \
-        --version "$(yq -r '.helm_chart_versions.cert_manager' $VARS_FILE)" \
-        --wait --timeout 5m
-      kubectl apply -f kubernetes/apps/cert-manager/cluster-issuer.yaml
-
-      # Traefik
-      echo "Deploying Traefik..."
-      CF_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-      helm upgrade --install traefik traefik/traefik \
-        -n traefik --create-namespace \
-        -f kubernetes/apps/traefik/values.yaml \
-        --version "$(yq -r '.helm_chart_versions.traefik' $VARS_FILE)" \
-        --set env[0].name=CF_DNS_API_TOKEN \
-        --set env[0].value="$CF_TOKEN" \
-        --wait --timeout 5m
-
-      # external-dns
-      echo "Deploying external-dns..."
-      kubectl apply -f kubernetes/apps/external-dns/namespace.yaml
-      kubectl create secret generic cloudflare-api-token \
-        --namespace=external-dns \
-        --from-literal=api-token="$CF_TOKEN" \
-        --dry-run=client -o yaml | kubectl apply -f -
-      helm upgrade --install external-dns external-dns/external-dns \
-        -n external-dns \
-        -f kubernetes/apps/external-dns/values.yaml \
-        --version "$(yq -r '.helm_chart_versions.external_dns' $VARS_FILE)" \
-        --wait --timeout 5m
-
-      # DDNS CronJob
-      echo "Deploying DDNS..."
-      # One-time migration: clean up legacy DDNS resources from default namespace
-      kubectl delete cronjob cloudflare-ddns -n default --ignore-not-found
-      kubectl delete secret cloudflare-api-token -n default --ignore-not-found
-      kubectl create namespace cloudflare-ddns --dry-run=client -o yaml | kubectl apply -f -
-      kubectl create secret generic cloudflare-api-token \
-        --namespace=cloudflare-ddns \
-        --from-literal=api-token="$CF_TOKEN" \
-        --dry-run=client -o yaml | kubectl apply -f -
-      kubectl apply -f kubernetes/apps/cloudflare-ddns/cronjob.yaml
-
-      # External services (backend endpoints for non-cluster services)
-      echo "Deploying external service endpoints..."
-      kubectl apply -f kubernetes/apps/ingress-routes/services.yaml
-
-      # Base IngressRoutes and middleware
-      echo "Deploying IngressRoutes..."
-      kubectl apply -f kubernetes/apps/ingress-routes/middleware.yaml
-      kubectl apply -f kubernetes/apps/ingress-routes/router.yaml
-      kubectl apply -f kubernetes/apps/traefik/traefik-internal-service.yaml 2>/dev/null || true
-
-      echo "K3s platform deployment complete"
-  environment:
-    name: production/k3s-platform
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/bootstrap/**
-        - kubernetes/apps/traefik/**
-        - kubernetes/apps/cert-manager/**
-        - kubernetes/apps/external-dns/**
-        - kubernetes/apps/cloudflare-ddns/**
-        - kubernetes/apps/ingress-routes/middleware.yaml
-        - kubernetes/apps/ingress-routes/router.yaml
-        - kubernetes/apps/ingress-routes/services.yaml
-        - ansible/inventories/prod/group_vars/all.yml
-
-# ------------------------------------------------------------------------------
-# K3s CoreDNS (HA configuration)
-# ------------------------------------------------------------------------------
-
-deploy-k3s-coredns:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-  script:
-    - kubectl apply -f kubernetes/apps/coredns/helmchartconfig.yaml
-    - kubectl apply -f kubernetes/apps/coredns/pdb.yaml
-    - |
-      # Wait for HelmChartConfig reconciliation and verify ready replicas
-      echo "Waiting for CoreDNS to reach 2 ready replicas..."
-      for i in $(seq 1 24); do
-        READY=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-        READY=${READY:-0}
-        if [ "$READY" -ge 2 ]; then
-          echo "CoreDNS has $READY ready replicas after $((i * 5))s"
-          break
-        fi
-        echo "CoreDNS readyReplicas: $READY/2 (attempt $i)..."
-        sleep 5
-      done
-      FINAL=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-      FINAL=${FINAL:-0}
-      if [ "$FINAL" -lt 2 ]; then
-        echo "ERROR: CoreDNS only has $FINAL/2 ready replicas after 120s"
-        exit 1
-      fi
-      echo "CoreDNS HelmChartConfig applied ($FINAL replicas ready with topology spread)"
-  environment:
-    name: production/k3s-coredns
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/coredns/**
-
-# ------------------------------------------------------------------------------
-# K3s Applications
-# ------------------------------------------------------------------------------
-
-deploy-k3s-authentik:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-  script:
-    - |
-      cd kubernetes/apps/authentik
-      helm repo add authentik https://charts.goauthentik.io
-      helm repo update
-
-      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-      AUTHENTIK_VERSION=$(yq -r '.authentik_version' $VARS_FILE)
-      POSTGRESQL_VERSION=$(yq -r '.postgresql_version' $VARS_FILE)
-
-      echo "Deploying Authentik ${AUTHENTIK_VERSION} (PostgreSQL ${POSTGRESQL_VERSION})..."
-
-      # Deploy namespace and storage first
-      kubectl apply -f namespace.yaml
-      kubectl apply -f storage.yaml
-
-      # Get secrets from 1Password
-      AUTHENTIK_SECRET_KEY=$(op read "op://Homelab/Authentik Secrets/secret-key")
-      AUTHENTIK_PG_PASS=$(op read "op://Homelab/Authentik Secrets/postgresql-password")
-      AUTHENTIK_PG_ADMIN_PASS=$(op read "op://Homelab/Authentik Secrets/postgresql-admin-password")
-      SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
-      SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
-
-      # Create/update authentik-secrets (required by values.yaml secretKeyRef)
-      kubectl create secret generic authentik-secrets \
-        --namespace=authentik \
-        --from-literal=secret-key="$AUTHENTIK_SECRET_KEY" \
-        --from-literal=postgresql-password="$AUTHENTIK_PG_PASS" \
-        --from-literal=postgresql-admin-password="$AUTHENTIK_PG_ADMIN_PASS" \
-        --from-literal=smtp-username="$SMTP_USER" \
-        --from-literal=smtp-password="$SMTP_PASS" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      # Deploy Helm chart with version pinning
-      helm upgrade --install authentik authentik/authentik \
-        -n authentik \
-        -f values.yaml \
-        --version "$AUTHENTIK_VERSION" \
-        --set authentik.secret_key="$AUTHENTIK_SECRET_KEY" \
-        --set authentik.postgresql.password="$AUTHENTIK_PG_PASS" \
-        --set server.image.tag="$AUTHENTIK_VERSION" \
-        --set worker.image.tag="$AUTHENTIK_VERSION" \
-        --set postgresql.image.tag="$POSTGRESQL_VERSION" \
-        --wait --timeout 10m
-
-      # Deploy middleware, certificate, and ingress routes
-      kubectl apply -f middleware.yaml
-      kubectl apply -f certificate.yaml
-      kubectl apply -f ingress-route.yaml
-
-      echo "Authentik deployment complete"
-  environment:
-    name: production/k3s-authentik
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/authentik/**
-        - ansible/inventories/prod/group_vars/all.yml
-
-deploy-downloads:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-  script:
-    - |
-      cd kubernetes/apps/download-clients
-      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-
-      # Export versions for envsubst
-      export GLUETUN_VERSION=$(yq -r '.gluetun_version' $VARS_FILE)
-      export NZBGET_VERSION=$(yq -r '.nzbget_version' $VARS_FILE)
-      export QBITTORRENT_VERSION=$(yq -r '.qbittorrent_version' $VARS_FILE)
-      export PROWLARR_VERSION=$(yq -r '.prowlarr_version' $VARS_FILE)
-      export SONARR_VERSION=$(yq -r '.sonarr_version' $VARS_FILE)
-      export RADARR_VERSION=$(yq -r '.radarr_version' $VARS_FILE)
-      export LIDARR_VERSION=$(yq -r '.lidarr_version' $VARS_FILE)
-      export PULSARR_VERSION=$(yq -r '.pulsarr_version' $VARS_FILE)
-
-      # Fail fast if any version variable is empty (prevents deploying with blank image tags)
-      test -n "$GLUETUN_VERSION" || { echo "ERROR: GLUETUN_VERSION is empty"; exit 1; }
-      test -n "$NZBGET_VERSION" || { echo "ERROR: NZBGET_VERSION is empty"; exit 1; }
-      test -n "$QBITTORRENT_VERSION" || { echo "ERROR: QBITTORRENT_VERSION is empty"; exit 1; }
-      test -n "$PROWLARR_VERSION" || { echo "ERROR: PROWLARR_VERSION is empty"; exit 1; }
-      test -n "$SONARR_VERSION" || { echo "ERROR: SONARR_VERSION is empty"; exit 1; }
-      test -n "$RADARR_VERSION" || { echo "ERROR: RADARR_VERSION is empty"; exit 1; }
-      test -n "$LIDARR_VERSION" || { echo "ERROR: LIDARR_VERSION is empty"; exit 1; }
-      test -n "$PULSARR_VERSION" || { echo "ERROR: PULSARR_VERSION is empty"; exit 1; }
-
-      echo "Deploying downloads stack..."
-      echo "Versions: Gluetun=$GLUETUN_VERSION, NZBGet=$NZBGET_VERSION, qBittorrent=$QBITTORRENT_VERSION"
-      echo "          Prowlarr=$PROWLARR_VERSION, Sonarr=$SONARR_VERSION, Radarr=$RADARR_VERSION"
-      echo "          Lidarr=$LIDARR_VERSION, Pulsarr=$PULSARR_VERSION"
-
-      kubectl apply -f namespace.yaml
-
-      # Create VPN secret
-      VPN_USER=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-user")
-      VPN_PASS=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-password")
-      kubectl create secret generic vpn-credentials \
-        --namespace=downloads \
-        --from-literal=openvpn-user="$VPN_USER" \
-        --from-literal=openvpn-password="$VPN_PASS" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      # Apply manifests with restricted envsubst (only substitute known version variables)
-      # Note: gluetun is a sidecar defined in nzbget.yaml and qbittorrent.yaml
-      ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
-      for manifest in storage.yaml nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml certificate.yaml ingress-routes.yaml ingress-routes-ha-bypass.yaml; do
-        if [ -f "$manifest" ]; then
-          envsubst "$ENVSUBST_VARS" < "$manifest" | kubectl apply -f -
-        fi
-      done
-
-      echo "Downloads stack deployment complete"
-  environment:
-    name: production/k3s-downloads
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/download-clients/**
-        - ansible/inventories/prod/group_vars/all.yml
-
-deploy-recipes:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-  script:
-    - |
-      cd kubernetes/apps/recipes
-      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-
-      # Export versions for envsubst
-      export MEALIE_VERSION=$(yq -r '.mealie_version' $VARS_FILE)
-      export MEALIE_POSTGRESQL_VERSION=$(yq -r '.mealie_postgresql_version' $VARS_FILE)
-      export BAR_ASSISTANT_VERSION=$(yq -r '.bar_assistant_version' $VARS_FILE)
-      export SALT_RIM_VERSION=$(yq -r '.salt_rim_version' $VARS_FILE)
-
-      # Fail fast if any version variable is empty (prevents deploying with blank image tags)
-      test -n "$MEALIE_VERSION" || { echo "ERROR: MEALIE_VERSION is empty"; exit 1; }
-      test -n "$MEALIE_POSTGRESQL_VERSION" || { echo "ERROR: MEALIE_POSTGRESQL_VERSION is empty"; exit 1; }
-      test -n "$BAR_ASSISTANT_VERSION" || { echo "ERROR: BAR_ASSISTANT_VERSION is empty"; exit 1; }
-      test -n "$SALT_RIM_VERSION" || { echo "ERROR: SALT_RIM_VERSION is empty"; exit 1; }
-
-      echo "Deploying recipes stack..."
-      echo "Versions: Mealie=$MEALIE_VERSION (PG=$MEALIE_POSTGRESQL_VERSION), Bar Assistant=$BAR_ASSISTANT_VERSION, Salt Rim=$SALT_RIM_VERSION"
-
-      kubectl apply -f namespace.yaml
-      kubectl apply -f storage.yaml
-
-      # Create secrets (must include all keys referenced by manifests)
-      MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
-      MEALIE_OIDC_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
-      MEALIE_OIDC_SECRET=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
-      OPENAI_KEY=$(op read "op://Homelab/OpenAI API Key/api-key" 2>/dev/null || echo "")
-      SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
-      SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
-      BAR_MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
-      BAR_OIDC_ID=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-id")
-      BAR_OIDC_SECRET=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
-
-      kubectl create secret generic mealie-secrets \
-        --namespace=recipes \
-        --from-literal=postgres-password="$MEALIE_PG_PASS" \
-        --from-literal=smtp-username="$SMTP_USER" \
-        --from-literal=smtp-password="$SMTP_PASS" \
-        --from-literal=oidc-client-id="$MEALIE_OIDC_ID" \
-        --from-literal=oidc-client-secret="$MEALIE_OIDC_SECRET" \
-        --from-literal=openai-api-key="$OPENAI_KEY" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      kubectl create secret generic bar-assistant-secrets \
-        --namespace=recipes \
-        --from-literal=meilisearch-master-key="$BAR_MEILI_KEY" \
-        --from-literal=smtp-username="$SMTP_USER" \
-        --from-literal=smtp-password="$SMTP_PASS" \
-        --from-literal=authentik-client-id="$BAR_OIDC_ID" \
-        --from-literal=authentik-client-secret="$BAR_OIDC_SECRET" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      # Apply manifests with restricted envsubst (only substitute known version variables)
-      # Note: mealie-postgres is defined in mealie.yaml
-      ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
-      for manifest in mealie.yaml bar-assistant.yaml certificate.yaml ingress-routes.yaml; do
-        if [ -f "$manifest" ]; then
-          envsubst "$ENVSUBST_VARS" < "$manifest" | kubectl apply -f -
-        fi
-      done
-
-      echo "Recipes stack deployment complete"
-  environment:
-    name: production/k3s-recipes
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/recipes/**
-        - ansible/inventories/prod/group_vars/all.yml
-
-# ------------------------------------------------------------------------------
-# K3s IngressRoutes
-# ------------------------------------------------------------------------------
-
-deploy-gitlab-ingress:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-    - job: deploy-gitlab
-      optional: true
-  script:
-    - kubectl apply -k kubernetes/apps/gitlab/
-    - echo "GitLab IngressRoutes deployed"
-  environment:
-    name: production/k3s-gitlab-ingress
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/gitlab/**
-
-deploy-home-assistant-ingress:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-  script:
-    - |
-      kubectl apply -f kubernetes/apps/ingress-routes/home-assistant.yaml
-      echo "Home Assistant IngressRoutes deployed"
-  environment:
-    name: production/k3s-home-assistant-ingress
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/ingress-routes/home-assistant.yaml
-
-deploy-plex-ingress:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-    - job: deploy-plex
-      optional: true
-  script:
-    - |
-      kubectl apply -f kubernetes/apps/ingress-routes/plex.yaml
-      echo "Plex IngressRoutes deployed"
-  environment:
-    name: production/k3s-plex-ingress
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/ingress-routes/plex.yaml
-
-deploy-adguard-ingress:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-  script:
-    - |
-      kubectl apply -f kubernetes/apps/ingress-routes/adguard-home.yaml
-      echo "AdGuard Home IngressRoutes deployed"
-  environment:
-    name: production/k3s-adguard-ingress
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/ingress-routes/adguard-home.yaml
-
-deploy-gitlab-runner:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-    - job: deploy-gitlab
-      optional: true
-    - job: deploy-gitlab-ingress
-      optional: true
-  script:
-    - |
-      cd kubernetes/apps/gitlab-runner
-      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-      RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' $VARS_FILE)
-      RUNNER_TOKEN=$(op read "op://Homelab/GitLab Runner/runner-token")
-
-      echo "Deploying GitLab Runner ${RUNNER_VERSION}..."
-      helm repo add gitlab https://charts.gitlab.io
-      helm repo update
-
-      kubectl apply -f namespace.yaml
-
-      # Create temporary values file with token (avoids exposing token in process args)
-      echo "runnerToken: \"$RUNNER_TOKEN\"" > /tmp/runner-token.yaml
-      helm upgrade --install gitlab-runner gitlab/gitlab-runner \
-        -n gitlab-runner \
-        -f values.yaml \
-        -f /tmp/runner-token.yaml \
-        --version "$RUNNER_VERSION"
-      rm -f /tmp/runner-token.yaml
-
-      echo "GitLab Runner upgrade submitted (pod will restart after this job completes)"
-  environment:
-    name: production/k3s-gitlab-runner
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/gitlab-runner/**
-        - ansible/inventories/prod/group_vars/all.yml
-
-deploy-gitlab-runner-privileged:
-  stage: deploy
-  extends: .k3s-deploy-base
-  needs:
-    - job: validation-gate
-    - job: deploy-k3s-platform
-      optional: true
-    - job: deploy-gitlab
-      optional: true
-    - job: deploy-gitlab-ingress
-      optional: true
-  script:
-    - |
-      cd kubernetes/apps/gitlab-runner-privileged
-      VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-      RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' $VARS_FILE)
-      RUNNER_TOKEN=$(op read "op://Homelab/GitLab Runner Privileged/runner-token")
-
-      echo "Deploying privileged GitLab Runner ${RUNNER_VERSION}..."
-      helm repo add gitlab https://charts.gitlab.io
-      helm repo update
-
-      kubectl apply -f namespace.yaml
-
-      # Create temporary values file with token (avoids exposing token in process args)
-      echo "runnerToken: \"$RUNNER_TOKEN\"" > /tmp/runner-token.yaml
-      helm upgrade --install gitlab-runner-privileged gitlab/gitlab-runner \
-        -n gitlab-runner \
-        -f values.yaml \
-        -f /tmp/runner-token.yaml \
-        --version "$RUNNER_VERSION"
-      rm -f /tmp/runner-token.yaml
-
-      echo "Infrastructure Runner upgrade submitted (pod will restart after this job completes)"
-  environment:
-    name: production/k3s-gitlab-runner-privileged
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - kubernetes/apps/gitlab-runner-privileged/**
-        - ansible/inventories/prod/group_vars/all.yml
-
 deploy-gitlab-verify:
   stage: deploy
   extends: .deploy-base
@@ -1567,12 +985,8 @@ deploy-gitlab-verify:
     - job: validation-gate
     - job: deploy-gitlab
       optional: true
-    - job: deploy-gitlab-ingress
-      optional: true
-    - job: deploy-gitlab-runner
-      optional: true
-    - job: deploy-gitlab-runner-privileged
-      optional: true
+    # Ingress/runner deploys are now Flux-managed; reconciliation typically
+    # completes within 1-2 minutes of the push that triggered this pipeline.
   script:
     - |
       echo "=== GitLab Verification ==="
@@ -1604,7 +1018,8 @@ deploy-gitlab-verify:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/gitlab/**
-        - kubernetes/apps/gitlab/**
+        - kubernetes/apps/vm-ingress/gitlab*.yaml
+        - kubernetes/apps/vm-ingress/services-gitlab.yaml
         - kubernetes/apps/gitlab-runner/**
         - kubernetes/apps/gitlab-runner-privileged/**
   allow_failure: true
@@ -1640,73 +1055,80 @@ deploy-verify:
       optional: true
     - job: deploy-home-assistant-config
       optional: true
-    - job: deploy-k3s-platform
-      optional: true
-    - job: deploy-k3s-authentik
-      optional: true
-    - job: deploy-downloads
-      optional: true
-    - job: deploy-recipes
-      optional: true
-    - job: deploy-gitlab-ingress
-      optional: true
-    - job: deploy-home-assistant-ingress
-      optional: true
-    - job: deploy-plex-ingress
-      optional: true
-    - job: deploy-adguard-ingress
-      optional: true
-    - job: deploy-gitlab-runner
-      optional: true
-    - job: deploy-gitlab-runner-privileged
-      optional: true
     - job: deploy-gitlab-verify
       optional: true
-    - job: deploy-k3s-coredns
-      optional: true
+    # Kubernetes workloads (k3s platform, Authentik, downloads, recipes,
+    # ingress routes, runners) are Flux-managed; Flux typically reconciles
+    # within 1-2 minutes of this push. deploy-verify checks cluster health
+    # below and reports Flux reconciliation state via `flux get all -A`.
   script:
     - |
+      # Install flux CLI alongside the kubectl/helm already provisioned by
+      # .k3s-deploy-base. Flux is the source of truth for k8s workload state,
+      # so verification queries Flux CRs rather than individual Deployments.
+      FLUX_VERSION="2.8.5"
+      curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" -o /tmp/flux.tar.gz
+      tar xzf /tmp/flux.tar.gz -C /usr/local/bin flux
+      flux --version
+    - |
+      set -eo pipefail
       echo "=== Post-Deployment Verification ==="
 
-      # Wait for runner deployments to finish rolling out (guard for missing deployments)
-      echo "Waiting for GitLab Runner deployments to be ready..."
-      for dep in gitlab-runner gitlab-runner-privileged; do
-        if kubectl get deployment "$dep" -n gitlab-runner > /dev/null 2>&1; then
-          kubectl rollout status deployment/"$dep" -n gitlab-runner --timeout=300s
-          echo "  $dep: ready"
-        else
-          echo "  $dep: not deployed (skipping)"
-        fi
-      done
-      echo "Runner rollout checks complete"
-
-      if kubectl get namespace gitlab-runner > /dev/null 2>&1; then
-        echo ""
-        echo "Runner pod status:"
-        kubectl get pods -n gitlab-runner -o wide
-
-        echo ""
-        echo "Helm releases:"
-        helm list -n gitlab-runner
-      else
-        echo "gitlab-runner namespace not found (skipping runner checks)"
+      echo "Checking node status..."
+      kubectl get nodes
+      NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2 != "Ready" {count++} END {print count+0}')
+      if [ "$NOT_READY" -gt 0 ]; then
+        echo "ERROR: $NOT_READY node(s) not Ready"
+        exit 1
       fi
 
       echo ""
-      echo "Checking node status..."
-      kubectl get nodes
+      echo "Flux controllers:"
+      flux check
 
       echo ""
-      echo "Checking critical pods..."
-      kubectl get pods -A | grep -E "(traefik|metallb|cert-manager|authentik)" | head -20
+      echo "Flux Kustomizations:"
+      flux get kustomizations -A
 
       echo ""
-      echo "Checking LoadBalancer services..."
-      kubectl get svc -A | grep LoadBalancer
+      echo "Flux HelmReleases:"
+      flux get helmreleases -A
 
       echo ""
-      echo "Checking IngressRoutes..."
-      kubectl get ingressroute -A 2>/dev/null | head -20 || echo "No IngressRoutes found"
+      echo "ExternalSecrets:"
+      kubectl get externalsecrets -A
+
+      # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
+      # HelmRepository, etc.) is not Ready. Capture flux output and its exit
+      # status explicitly; silencing stderr and masking with `|| echo 0`
+      # would let a broken flux CLI / kubeconfig / CRDs pass the check.
+      echo ""
+      echo "Checking for non-Ready Flux resources..."
+      FLUX_NOT_READY=$(flux get all -A --status-selector ready=false 2>&1) || {
+        echo "ERROR: 'flux get all' failed:"
+        echo "$FLUX_NOT_READY"
+        exit 1
+      }
+      NOT_READY_COUNT=$(echo "$FLUX_NOT_READY" | tail -n +2 | grep -c . || true)
+      if [ "$NOT_READY_COUNT" -gt 0 ]; then
+        echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready"
+        echo "$FLUX_NOT_READY"
+        exit 1
+      fi
+
+      # Gate specifically on the top-level apps Kustomization — if it's stuck
+      # (any child HelmRelease failing), the above broad check catches it too,
+      # but this gives us an explicit, namable failure signal.
+      APPS_READY=$(kubectl -n flux-system get kustomization apps \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+      if [ "$APPS_READY" != "True" ]; then
+        echo "ERROR: flux-system/apps Kustomization not Ready (status=$APPS_READY)"
+        exit 1
+      fi
+
+      echo ""
+      echo "LoadBalancer services:"
+      kubectl get svc -A | grep LoadBalancer || true
 
       echo ""
       echo "Checking GitLab health..."
@@ -1742,7 +1164,9 @@ deploy-verify:
         - terraform/**
         - kubernetes/**
         - scripts/**
-  allow_failure: true
+  # No allow_failure: the verification explicitly fails if nodes aren't Ready,
+  # any Flux resource is not Ready, or GitLab is unreachable. These are
+  # conditions we want to block the pipeline on.
 
 # ============================================================================
 # MAINTENANCE STAGE - Manual approval required

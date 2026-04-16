@@ -13,6 +13,11 @@ metadata:
 spec:
   interval: 30m
   releaseName: authentik
+  # Authentik upgrades run PostgreSQL schema migrations that routinely take
+  # 5-10 minutes on this cluster. The old imperative deploy used
+  # `helm upgrade --timeout 10m`; Flux's default is 5m, which triggers
+  # remediation-uninstall/reinstall mid-migration and risks schema corruption.
+  timeout: 15m
   chart:
     spec:
       chart: authentik
@@ -23,17 +28,21 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
+    timeout: 15m
     remediation:
       retries: 3
   upgrade:
+    timeout: 15m
     remediation:
       retries: 3
       remediateLastFailure: true
   # Image tags substituted from cluster-versions ConfigMap via Kustomization
   # postBuild.substituteFrom (apps top-level Kustomization). Inline refs keep
-  # everything in one file and avoid Flux's cross-namespace valuesFrom limits
-  # (HelmRelease.spec.valuesFrom[].namespace is not supported — sourceRef is
-  # always same-namespace).
+  # everything in one file and avoid Flux's cross-namespace valuesFrom limits:
+  # HelmRelease.spec.valuesFrom[].namespace is not supported, so the referenced
+  # ConfigMap/Secret must live in the same namespace as the HelmRelease.
+  # (Note: chart sourceRef DOES support cross-namespace — this HelmRelease's
+  # sourceRef points at flux-system/HelmRepository/authentik, which works.)
   values:
     global:
       # Canonical external domain for AUTHENTIK_HOST and redirect URLs
@@ -238,7 +247,8 @@ spec:
             value: "true"
             effect: PreferNoSchedule
 
-    # Redis not required as of Authentik 2025.10
+    # Authentik dropped the bundled Redis dependency in 2025.10 — all state
+    # now lives in PostgreSQL.
     redis:
       enabled: false
 

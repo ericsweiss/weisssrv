@@ -1,32 +1,36 @@
 # K3s Cluster Deployment Guide
 
-This guide walks through deploying the 9-node k3s cluster (3 servers + 6 agents) and platform services.
+This guide walks through deploying the 9-node k3s cluster (3 servers + 6 agents) and the Flux GitOps platform that manages every workload on top of it.
 
 ## Quick Reference: Complete Deployment Workflow
 
-**IMPORTANT**: K3s deployment uses a two-phase approach:
-- **Phase 1-2 (Ansible)**: Provisions VMs and deploys k3s + kube-vip
-- **Phase 3 (Task/Helm)**: Deploys CoreDNS HA, MetalLB, Traefik, cert-manager, external-dns, DDNS, and IngressRoutes
+K3s deployment is a three-phase approach:
 
-**All tasks are idempotent** - safe to re-run at any time.
+- **Phase 1 (Ansible)**: Provisions the 9 k3s VMs on Proxmox.
+- **Phase 2 (Ansible)**: Deploys k3s + kube-vip to servers/agents.
+- **Phase 3 (Flux bootstrap)**: Bootstraps Flux, which then reconciles every
+  platform component (MetalLB, Traefik, cert-manager, external-dns,
+  external-secrets, CoreDNS HelmChartConfig, DDNS, cluster-issuer, IngressRoute
+  middlewares) and every application (Authentik, downloads, recipes, gitlab-*,
+  vm-ingress) from this repo.
 
-### What Each Task Installs
+**All Ansible tasks are idempotent** — safe to re-run at any time.
 
-| Task | Component | Notes |
-|------|-----------|-------|
-| `task k3s:provision-vms` | Debian VMs | Cloud-init, SSH keys |
-| `task k3s:deploy` | K3s + kube-vip | Server, agents, node labels/taints |
-| `task k3s:deploy-coredns` | CoreDNS HA | 2 replicas with topology spread |
-| `task k3s:deploy-metallb` | MetalLB | LoadBalancer IPs .100/.101 |
-| `task k3s:deploy-traefik` | Traefik | Ingress controller on .100 + .101 |
-| `task k3s:deploy-cert-manager` | cert-manager | Let's Encrypt wildcard certs |
-| `task k3s:deploy-external-dns` | external-dns | Cloudflare DNS automation |
-| `task k3s:deploy-ddns` | DDNS CronJob | Updates public IP every 5 min |
-| `task k3s:deploy-ingress-routes` | IngressRoutes | Per-service routing |
-| `task k3s:deploy-authentik` | Authentik SSO | Identity provider for SSO/OIDC |
-| `task k3s:deploy-workloads` | **ALL of above** | Runs all workload tasks in order |
+### What Each Step Does
 
-### Complete Command Sequence
+| Step | Component | Mechanism |
+|------|-----------|-----------|
+| `task k3s:provision-vms` | Debian VMs | Ansible + Proxmox API |
+| `task k3s:deploy` | K3s + kube-vip | Ansible (server, agents, node labels/taints) |
+| `task flux:bootstrap-onepassword` | `onepassword-sdk-token` Secret (bootstrap only) | `op read | kubectl create secret` |
+| `task flux:bootstrap` | Flux controllers committed to `kubernetes/clusters/weisssrv/flux-system/` | `flux bootstrap gitlab` |
+| (none — automatic) | All platform + apps reconcile from `kubernetes/infrastructure/` and `kubernetes/apps/` | Flux |
+
+Everything under `kubernetes/` is Flux-managed. To deploy or update a component,
+commit the YAML and push — Flux reconciles on a 1-minute interval (or immediately
+via the GitLab webhook). `task flux:reconcile` triggers a sync manually.
+
+### Complete Command Sequence (Initial Install)
 
 ```bash
 # === PHASE 1: VM Provisioning (Ansible) ===
@@ -38,69 +42,59 @@ task k3s:kubeconfig
 export KUBECONFIG=~/.kube/config-k3s
 kubectl get nodes  # Verify cluster
 
-# === PHASE 3: Platform Services (Task/Helm) ===
-# Option A: Deploy everything at once (recommended)
-task k3s:deploy-workloads
+# === PHASE 3: Flux bootstrap ===
+# 3a. Create the single bootstrap secret (1P SDK token for ESO)
+task flux:bootstrap-onepassword
 
-# Option B: Deploy components individually
-task k3s:deploy-coredns
-task k3s:deploy-metallb
-task k3s:deploy-traefik
-task k3s:deploy-cert-manager
-task k3s:deploy-external-dns
-task k3s:deploy-ddns
-task k3s:deploy-ingress-routes
-task k3s:deploy-authentik
+# 3b. Bootstrap Flux (reads Flux GitLab PAT from 1P, commits flux-system/ to this repo)
+task flux:bootstrap
+
+# 3c. Wait for reconciliation
+task flux:status      # watch until everything reports Ready: True
+flux get all -A       # detailed view
 
 # === VERIFY ===
-task k3s:status  # Show cluster and workload status
+task k3s:status       # cluster health
+task flux:verify      # flux check + get all -A
 ```
 
-### Manual Helm Commands (if needed)
+### Ongoing Operations
 
-<details>
-<summary>Click to expand manual Helm commands</summary>
+Any change to a workload (image tag, replicas, env var, ingress host, middleware, etc.)
+is now a git commit under `kubernetes/`:
 
 ```bash
-# MetalLB
-helm repo add metallb https://metallb.github.io/metallb && helm repo update
-helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace
-kubectl apply -f kubernetes/bootstrap/metallb/ip-pool.yaml
+# Edit the YAML (e.g., kubernetes/apps/authentik/release.yaml), then:
+git add kubernetes/apps/authentik/release.yaml
+git commit -m "Authentik: increase worker replicas"
+git push
 
-# Traefik
-helm repo add traefik https://traefik.github.io/charts && helm repo update
-kubectl apply -f kubernetes/apps/traefik/namespace.yaml
-helm upgrade --install traefik traefik/traefik -n traefik -f kubernetes/apps/traefik/values.yaml
+# Flux reconciles within ~1 minute. Speed up:
+task flux:reconcile
 
-# external-dns
-kubectl apply -f kubernetes/apps/external-dns/namespace.yaml
-kubectl create secret generic cloudflare-api-token -n external-dns \
-  --from-literal=api-token="$(op read 'op://Homelab/Cloudflare DNS Token/credential')" \
-  --dry-run=client -o yaml | kubectl apply -f -
-helm repo add external-dns https://kubernetes-sigs.github.io/external-dns && helm repo update
-helm upgrade --install external-dns external-dns/external-dns -n external-dns \
-  -f kubernetes/apps/external-dns/values.yaml
-
-# cert-manager
-helm repo add jetstack https://charts.jetstack.io && helm repo update
-kubectl apply -f kubernetes/apps/cert-manager/namespace.yaml
-helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager \
-  -f kubernetes/apps/cert-manager/values.yaml
-kubectl create secret generic cloudflare-api-token -n cert-manager \
-  --from-literal=api-token="$(op read 'op://Homelab/Cloudflare DNS Token/credential')" \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -k kubernetes/apps/cert-manager/
-
-# IngressRoutes and middleware
-kubectl apply -k kubernetes/apps/ingress-routes/
+# For fast local iteration without committing:
+task flux:dev-apply -- kubernetes/apps/authentik
+# (Flux will revert to the committed state on its next reconcile.)
 ```
-</details>
+
+For version bumps that flow through `all.yml`:
+
+```bash
+task maintenance:update-version SERVICE=authentik
+task flux:sync-versions    # regenerates kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git commit -m "Bump Authentik"
+git push
+```
+
+See `docs/29-flux-operations.md` for the full operator guide (bootstrap, adopt
+Helm releases, rotate secrets, add an app, suspend/resume, troubleshoot).
 
 ---
 
 ## Idempotency and Upgrades
 
-**All k3s deployment tasks are idempotent** - safe to re-run at any time without side effects.
+**All k3s Ansible tasks are idempotent** — safe to re-run at any time without side effects.
 
 ### Ansible Tasks (`task k3s:deploy`)
 
@@ -122,24 +116,21 @@ To upgrade k3s to a new version:
    k3s_version: "v1.33.8+k3s1"  # New version
    ```
 
-2. **Run the deploy task** - it will detect the version mismatch and upgrade:
+2. **Run the node upgrade task** - it drains and upgrades each node in turn:
    ```bash
-   task k3s:deploy
+   task maintenance:update-k3s-nodes
    ```
 
-The installer checks the current k3s version and compares it to the target version. If they differ,
-the k3s install script runs again (which handles in-place upgrades).
+### Flux-Managed Workloads
 
-### Helm Tasks (`task k3s:deploy-*`)
+| Operation | Mechanism |
+|-----------|-----------|
+| HelmReleases | helm-controller via `flux reconcile` (every 10 minutes by default) |
+| Kustomizations | kustomize-controller via `flux reconcile` (every 10 minutes by default) |
+| ExternalSecrets | ESO polls 1Password (24h refresh by default) or on-demand via `task flux:refresh-secret -- <ns>/<name>` |
+| Substitutions | Flux re-renders every reconcile using the `cluster-versions` ConfigMap |
 
-| Operation | Idempotency Mechanism |
-|-----------|----------------------|
-| Helm repos | `--force-update` flag - updates existing repos |
-| Helm charts | `helm upgrade --install` - creates or updates |
-| Kubernetes secrets | `--dry-run=client -o yaml | kubectl apply -f -` - creates or updates |
-| Kubernetes manifests | `kubectl apply` - declarative, creates or updates |
-
-**Safe to run**: You can run `task k3s:deploy` and `task k3s:deploy-workloads` repeatedly without issues.
+Flux is itself idempotent — safe to run `task flux:reconcile` anytime.
 
 ---
 
@@ -294,102 +285,96 @@ kubectl get nodes --show-labels
 kubectl describe node k3s-agt-nas-01 | grep -A 5 Taints
 ```
 
-## Phase 3: Platform Services
+## Phase 3: Flux Bootstrap + Platform Reconciliation
 
-**Recommended**: Use `task k3s:deploy-workloads` to deploy all platform services at once.
+Once the k3s cluster is up and `kubectl get nodes` shows all 9 nodes Ready, bootstrap
+Flux. Flux then reconciles every platform component and every application from this repo
+— there are no per-component deploy tasks.
 
-For individual deployments or troubleshooting, use the tasks below:
+### Step 6: Create the Bootstrap Secret (One Time)
 
-### Step 6: Deploy CoreDNS HA Configuration
+Flux's ExternalSecret ClusterSecretStore uses the 1Password SDK provider, which needs a
+single bootstrap Secret containing the service account token. This is the *only* Secret
+ever created by `kubectl create secret`.
 
 ```bash
-# Using Task (recommended)
-task k3s:deploy-coredns
+task flux:bootstrap-onepassword
+```
 
-# Verify CoreDNS
+This reads `op://Homelab/Service Account Auth Token weisssrv/credential` and creates
+`Secret/onepassword-sdk-token` in the `external-secrets` namespace.
+
+### Step 7: Bootstrap Flux
+
+```bash
+task flux:bootstrap
+```
+
+This:
+1. Reads `op://Homelab/Flux GitLab PAT/credential` (Maintainer role, scopes
+   `api,read_repository,write_repository`).
+2. Runs `flux bootstrap gitlab` against this repo and path
+   `kubernetes/clusters/weisssrv`.
+3. Installs the Flux controllers (source, kustomize, helm, notification) into
+   `flux-system`.
+4. Commits `flux-system/gotk-components.yaml`, `gotk-sync.yaml`,
+   `kustomization.yaml` to the current branch.
+5. Creates the `GitRepository` and top-level `Kustomization` CRs that watch this repo.
+
+After bootstrap, Flux reconciles the top-level Kustomizations:
+
+- `infrastructure` — sources, controllers (ESO, MetalLB, Traefik, cert-manager,
+  external-dns), configs (ClusterSecretStore, ClusterIssuer, CoreDNS HelmChartConfig,
+  MetalLB IP pools, DDNS CronJob, cluster-versions ConfigMap)
+- `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged,
+  gitlab-agent, vm-ingress (IngressRoutes for Plex, Home Assistant, AdGuard, GitLab VM,
+  router, Traefik dashboard)
+
+### Step 8: Register the GitLab Webhook (Optional, Recommended)
+
+The default reconcile interval is 10 minutes (1 minute on sources). Register a GitLab
+push webhook to Flux's `Receiver` for sub-second reconciliation after push:
+
+```bash
+task flux:webhook-register
+```
+
+### Step 9: Verify
+
+Watch reconciliation until everything is Ready:
+
+```bash
+task flux:status
+# or
+flux get all -A
+```
+
+Expected state:
+
+- `flux-system` `GitRepository` — Ready
+- `infrastructure` `Kustomization` — Ready
+- `apps` `Kustomization` — Ready (after `infrastructure` finishes)
+- Every `HelmRelease` — Ready
+- Every `ExternalSecret` — `SecretSynced: True`
+- Every `IngressRoute` resolved and responding
+
+Verify key endpoints:
+
+```bash
+# LoadBalancer VIPs
+kubectl get svc -n traefik    # EXTERNAL-IP 192.168.0.100
+curl -k http://192.168.0.100  # Traefik 404
+curl -k http://192.168.0.101  # Traefik 404
+
+# CoreDNS
 kubectl get pods -n kube-system -l k8s-app=kube-dns
-```
 
-### Step 7: Deploy MetalLB
+# cert-manager issued certificates
+kubectl get certificate -A    # all Ready: True
 
-```bash
-# Using Task (recommended)
-task k3s:deploy-metallb
-
-# Verify MetalLB
-kubectl get pods -n metallb-system
-kubectl get ipaddresspool -n metallb-system
-kubectl get l2advertisement -n metallb-system
-```
-
-### Step 8: Deploy Traefik
-
-```bash
-# Using Task (recommended)
-task k3s:deploy-traefik
-
-# Verify Traefik service has LoadBalancer IP
-kubectl get svc -n traefik
-# Should show EXTERNAL-IP: 192.168.0.100
-
-# Test LoadBalancer connectivity
-curl -k http://192.168.0.100
-# Should get Traefik 404 page
-```
-
-### Step 9: Deploy cert-manager
-
-```bash
-# Using Task (recommended)
-task k3s:deploy-cert-manager
-
-# Verify cert-manager
-kubectl get pods -n cert-manager
-kubectl get clusterissuer
-kubectl get certificate -A
-```
-
-### Step 10: Deploy external-dns
-
-```bash
-# Using Task (recommended)
-task k3s:deploy-external-dns
-
-# Verify external-dns
-kubectl get pods -n external-dns
-kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns
-```
-
-### Step 11: Deploy DDNS CronJob
-
-```bash
-# Using Task (recommended)
-task k3s:deploy-ddns
-
-# Verify DDNS
-kubectl get cronjob -n cloudflare-ddns
-kubectl get jobs -n cloudflare-ddns
-```
-
-### Step 12: Deploy IngressRoutes
-
-```bash
-# Using Task (recommended)
-task k3s:deploy-ingress-routes
-
-# Verify IngressRoutes
-kubectl get ingressroute -A
-kubectl get middleware -n traefik
-```
-
-### Step 13: Deploy Authentik SSO
-
-```bash
-# Using Task (recommended)
-task k3s:deploy-authentik
-
-# Verify Authentik
+# Authentik
 kubectl get pods -n authentik
+curl -k https://auth.esweiss.com  # login page
 ```
 
 ## Verification
@@ -397,8 +382,11 @@ kubectl get pods -n authentik
 ### Quick Status Check
 
 ```bash
-# Using Task (recommended) - shows all cluster and workload status
+# Cluster health (nodes, etcd, kube-vip, kubelet readiness)
 task k3s:status
+
+# Flux health (GitRepository, Kustomizations, HelmReleases, ExternalSecrets)
+task flux:status
 ```
 
 ### Detailed Cluster Health
@@ -596,16 +584,16 @@ kubectl get pods -n kube-system | grep etcd
 
 ## Next Steps
 
-1. **Configure TLS certificates** - Integrate cert-manager or extend acme.sh
-2. **Deploy Flux** - GitOps for application deployments
-3. **Deploy workloads** - Media stack, Nextcloud, Immich, etc.
-4. **Configure backups** - Velero for cluster backups
-5. **Set up monitoring** - Prometheus + Grafana stack
-6. **Configure Authentik** - SSO for cluster services
+1. **Deploy additional workloads** - Immich, Nextcloud, observability stack (all via Flux)
+2. **Configure backups** - Velero for cluster backups
+3. **Set up monitoring** - Prometheus + Grafana stack (future work)
+4. **Complete secrets-encryption** - see `docs/16-next-steps.md` Outstanding Follow-Ups
 
 ## Related Documentation
 
-- `docs/14-post-base-plan.md` - Full k3s platform roadmap
-- `kubernetes/bootstrap/README.md` - MetalLB installation
-- `kubernetes/apps/traefik/README.md` - Traefik configuration
-- `kubernetes/apps/external-dns/README.md` - external-dns setup
+- `docs/14-post-base-plan.md` - k3s platform roadmap (historical)
+- `docs/29-flux-operations.md` - Flux operator guide: bootstrap, adopt, rotate secrets, add an app, suspend, rollback
+- `docs/30-multi-repo-onboarding.md` - Adding external repos that deploy into this cluster
+- `kubernetes/README.md` - Top-level k8s layout guide (Flux-aware)
+- `kubernetes/infrastructure/` - Platform components (sources, controllers, configs)
+- `kubernetes/apps/` - Applications (authentik, download-clients, recipes, gitlab-*, vm-ingress)

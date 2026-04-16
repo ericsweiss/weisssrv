@@ -162,65 +162,93 @@ External DNS (ericsweiss.com) is managed automatically by external-dns via Cloud
 
 ## Deployment
 
-### Quick Deploy
+The recipes stack is Flux-managed. All files live under `kubernetes/apps/recipes/` and are reconciled on commit + push. Version placeholders (`${mealie_version}`, `${bar_assistant_version}`, etc.) are substituted by Flux from the `cluster-versions` ConfigMap — no `envsubst` is required.
 
-```bash
-# Deploy the full stack
-task recipes:deploy
+### Layout
+
+```
+kubernetes/apps/recipes/
+├── namespace.yaml
+├── externalsecret.yaml     # Single ExternalSecret consolidating all recipe keys (Mealie PG, SSO, OpenAI, SMTP, Bar Assistant meilisearch + SSO)
+├── storage.yaml            # PVCs + PVs (NFS for appdata, hostPath PV for Mealie PG zvol)
+├── mealie.yaml             # Deployment + Service (Mealie, Mealie Postgres)
+├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
+├── certificate.yaml        # cert-manager Certificates (recipes-esweiss-tls, recipes-ericsweiss-tls)
+├── ingress-routes.yaml     # Traefik IngressRoutes for food/bar domains
+└── kustomization.yaml
 ```
 
-### Step-by-Step Deploy
+### Deploying Changes
 
-> **WARNING**: The manifest files (`mealie.yaml`, `bar-assistant.yaml`) contain `${VERSION}` placeholders that require `envsubst` processing. Do NOT apply them directly with `kubectl apply -f` - the images will have literal `${...}` in their tags and fail to pull.
+1. Edit the appropriate YAML under `kubernetes/apps/recipes/`.
+2. Commit and push.
+3. Flux reconciles within ~1 minute.
 
-The `task recipes:deploy` command is **strongly recommended** as it handles version substitution, secret management, and 1Password authentication automatically. For manual deployment:
+For image-version bumps:
 
 ```bash
-# 1. Create namespace and storage
-kubectl apply -f kubernetes/apps/recipes/namespace.yaml
-kubectl apply -f kubernetes/apps/recipes/storage.yaml
-
-# 2. Create secrets from 1Password (SSO secrets are REQUIRED - password login is disabled)
-kubectl create secret generic mealie-secrets \
-  --namespace=recipes \
-  --from-literal=postgres-password="$(op read 'op://Homelab/Mealie Secrets/postgres-password')" \
-  --from-literal=smtp-username="$(op read 'op://Homelab/SMTP Relay Auth/username')" \
-  --from-literal=smtp-password="$(op read 'op://Homelab/SMTP Relay Auth/password')" \
-  --from-literal=oidc-client-id="$(op read 'op://Homelab/Mealie SSO/oidc-client-id')" \
-  --from-literal=oidc-client-secret="$(op read 'op://Homelab/Mealie SSO/oidc-client-secret')" \
-  --from-literal=openai-api-key="$(op read 'op://Homelab/OpenAI API Key/api-key' 2>/dev/null || echo '')" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl create secret generic bar-assistant-secrets \
-  --namespace=recipes \
-  --from-literal=meilisearch-master-key="$(op read 'op://Homelab/Bar Assistant Secrets/meilisearch-master-key')" \
-  --from-literal=smtp-username="$(op read 'op://Homelab/SMTP Relay Auth/username')" \
-  --from-literal=smtp-password="$(op read 'op://Homelab/SMTP Relay Auth/password')" \
-  --from-literal=authentik-client-id="$(op read 'op://Homelab/Bar Assistant SSO/authentik-client-id')" \
-  --from-literal=authentik-client-secret="$(op read 'op://Homelab/Bar Assistant SSO/authentik-client-secret')" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Deploy Mealie (with version substitution - manifests contain ${VERSION} placeholders)
-VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
-export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-
-ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
-envsubst "$ENVSUBST_VARS" < kubernetes/apps/recipes/mealie.yaml | kubectl apply -f -
-
-# 4. Deploy Bar Assistant (with version substitution)
-envsubst "$ENVSUBST_VARS" < kubernetes/apps/recipes/bar-assistant.yaml | kubectl apply -f -
-
-# 5. Create TLS certificates (required before ingress routes)
-kubectl apply -f kubernetes/apps/recipes/certificate.yaml
-
-# 6. Deploy ingress routes (no substitution needed)
-kubectl apply -f kubernetes/apps/recipes/ingress-routes.yaml
+task maintenance:update-version SERVICE=mealie
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git commit -m "Bump mealie" && git push
+task flux:reconcile  # optional: skip the 1-min poll
 ```
 
-**Important**: The `mealie.yaml` and `bar-assistant.yaml` files contain `${VERSION}` placeholders that must be substituted using `envsubst`. Applying them directly with `kubectl apply -f` will result in invalid image references.
+### Secrets (ExternalSecret)
+
+All recipe secrets are provided by one consolidated ExternalSecret. It references
+1Password item IDs (not titles — spaces break the SDK parser) with the format
+`<item-id>/<field>`:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: recipes-secrets
+  namespace: recipes
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword-homelab
+    kind: ClusterSecretStore
+  target:
+    name: recipes-secrets
+    creationPolicy: Owner
+  data:
+    - secretKey: mealie-postgres-password
+      remoteRef: { key: <MEALIE-SECRETS-ITEM-ID>/postgres-password }
+    - secretKey: mealie-oidc-client-id
+      remoteRef: { key: <MEALIE-SSO-ITEM-ID>/oidc-client-id }
+    - secretKey: mealie-oidc-client-secret
+      remoteRef: { key: <MEALIE-SSO-ITEM-ID>/oidc-client-secret }
+    - secretKey: mealie-openai-api-key
+      remoteRef: { key: <OPENAI-ITEM-ID>/api-key }
+    - secretKey: bar-assistant-meilisearch-master-key
+      remoteRef: { key: <BAR-ASSISTANT-SECRETS-ITEM-ID>/meilisearch-master-key }
+    - secretKey: bar-assistant-authentik-client-id
+      remoteRef: { key: <BAR-ASSISTANT-SSO-ITEM-ID>/authentik-client-id }
+    - secretKey: bar-assistant-authentik-client-secret
+      remoteRef: { key: <BAR-ASSISTANT-SSO-ITEM-ID>/authentik-client-secret }
+```
+
+(SMTP credentials are NOT in this ExternalSecret — the LAN SMTP relay
+accepts unauthenticated submissions from k3s pod CIDRs via Postfix's
+`permit_mynetworks`, so Mealie and Bar Assistant don't need SMTP creds.
+See `kubernetes/apps/recipes/{mealie,bar-assistant}.yaml` for the
+relevant env vars.)
+
+All 1P items referenced here must exist *before* the ExternalSecret reconciles
+successfully. If any are missing, the corresponding `data` entry fails and the
+Secret will not be created. See `docs/23-recipes-sso-setup.md` for how to create
+the SSO items from Authentik. See `docs/29-flux-operations.md` for how to look up
+item IDs and the `<item-id>/<field>` convention.
+
+To rotate any secret: change the value in 1Password, then either wait 24h or:
+
+```bash
+task flux:rotate-secret -- recipes
+# (forces ExternalSecret refresh and restarts Mealie + Bar Assistant Deployments)
+```
 
 ### Verify Deployment
 
@@ -327,10 +355,13 @@ salt_rim_version: "4.14.1"
 
 Note: We pin to specific versions (not "latest") for reproducible deployments. Use `task maintenance:check-versions` to discover available updates. The PostgreSQL version should generally stay on stable major versions (17.x, 18.x) unless Mealie requires an upgrade.
 
-Then redeploy:
+Then regenerate the ConfigMap and push — Flux rolls the Deployments:
 
 ```bash
-task recipes:deploy
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git commit -m "Bump mealie and bar-assistant"
+git push
 ```
 
 ### Backup
@@ -422,6 +453,8 @@ For production HA:
 ## Related Documentation
 
 - [K3s Deployment Guide](./19-k3s-deployment.md)
+- [Flux Operations](./29-flux-operations.md)
 - [Storage Configuration](./07-fileservices.md)
 - [DNS Configuration](./08-dns.md)
 - [Recipes SSO Setup](./23-recipes-sso-setup.md)
+- Manifests: `kubernetes/apps/recipes/`

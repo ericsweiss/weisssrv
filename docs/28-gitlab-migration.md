@@ -152,24 +152,20 @@ The service account needs read access to these items in the "Homelab" vault. The
 | Item Name | Required Fields | Used By |
 |-----------|----------------|---------|
 | SSH Key | `private key` | Ansible deployments |
-| K3s Kubeconfig | `kubeconfig` | K3s/Helm deployments |
-| Cloudflare DNS Token | `credential`, `username` | Terraform, Traefik, external-dns |
-| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | Authentik deployment |
-| PrivadoVPN Credentials | `openvpn-user`, `openvpn-password` | Downloads stack (Gluetun) |
-| Mealie Secrets | `postgres-password` | Recipes deployment |
-| Mealie SSO | `oidc-client-id`, `oidc-client-secret` | Recipes deployment |
-| Bar Assistant Secrets | `meilisearch-master-key` | Recipes deployment |
-| Bar Assistant SSO | `authentik-client-id`, `authentik-client-secret` | Recipes deployment |
-| OpenAI API Key | `api-key` | Recipes deployment (optional) |
-| GitLab Runner | `runner-token` | GitLab Runner deployment |
-| GitLab Runner Privileged | `runner-token` | Infrastructure Runner deployment |
+| Cloudflare DNS Token | `credential`, `username` | Terraform `deploy-terraform` |
 | GitLab API Token | `credential` | AI code review (PR-Agent) |
+| OpenAI API Key | `api-key` | AI code review (PR-Agent) |
 
-If any items are missing, create them in 1Password before proceeding.
+Most cluster secrets (Authentik, VPN, Mealie/Bar Assistant, runner tokens, agent
+token, SMTP, etc.) are consumed in-cluster by ExternalSecrets, not by CI — they do
+not need to be visible to the CI service account. See `CLAUDE.md` for the complete
+list of 1Password items.
 
-### Step 3.3: Create K3s Kubeconfig Item (If Missing)
+### Step 3.3: Create K3s Kubeconfig Item (Optional)
 
-If the `K3s Kubeconfig` item doesn't exist:
+The `K3s Kubeconfig` item is used by the `.k3s-deploy-base` CI template as a fallback
+mechanism — the GitLab Agent is the preferred path for CI-to-cluster access. If you
+want the fallback available:
 
 ```bash
 # Fetch kubeconfig from cluster
@@ -184,8 +180,11 @@ cat ~/.kube/config-k3s
 3. Add field:
    - **Label**: `kubeconfig`
    - **Type**: Password (or text)
-   - **Value**: Paste entire kubeconfig content
+   - **Value**: Paste entire kubeconfig content (base64-encoded to preserve YAML)
 4. Save the item
+
+For ongoing Flux-driven deploys, neither the kubeconfig nor the GitLab Agent is
+strictly needed — Flux reconciles from git directly.
 
 ### Step 3.4: Add Service Account Token to GitLab
 
@@ -262,35 +261,29 @@ The weisssrv `.gitlab-ci.yml` has `default: tags: [infrastructure]` so all jobs 
 
 ### Step 4.5: Deploy GitLab Runners on k3s
 
+GitLab Runners are Flux-managed. The Helm releases live under
+`kubernetes/apps/gitlab-runner/` (shared, unprivileged) and
+`kubernetes/apps/gitlab-runner-privileged/` (infrastructure, privileged). Each has
+its own ExternalSecret referencing the runner token in 1Password.
+
 ```bash
-# Deploy infrastructure runner (privileged, handles weisssrv CI)
-task gitlab:deploy-runner-privileged
+# First-time install: commit the folders + ExternalSecrets, push, and Flux deploys them
+git add kubernetes/apps/gitlab-runner kubernetes/apps/gitlab-runner-privileged
+git commit -m "Add GitLab runners"
+git push
+task flux:reconcile   # or wait ~1 minute
 
-# Deploy shared runner (unprivileged, for other projects)
-task gitlab:deploy-runner
-
-# Verify both runners are registered
+# Verify both runners are registered (reads HelmRelease status via flux get)
 task gitlab:status
+flux get hr -n gitlab-runner     # lists both the shared runner AND the privileged runner
+                                 # (both live in the gitlab-runner namespace)
 ```
 
-Or manually for the infrastructure runner (run from the repo root):
+Runner token rotation (glrt-* tokens):
 
-```bash
-kubectl apply -f kubernetes/apps/gitlab-runner-privileged/namespace.yaml
-
-# Get runner token from 1Password
-RUNNER_TOKEN=$(op read "op://Homelab/GitLab Runner Privileged/runner-token")
-
-# Install via Helm
-helm repo add gitlab https://charts.gitlab.io
-helm repo update
-helm upgrade --install gitlab-runner-privileged gitlab/gitlab-runner \
-  -n gitlab-runner \
-  -f kubernetes/apps/gitlab-runner-privileged/values.yaml \
-  --version "$(yq -r '.gitlab_runner_helm_version' ansible/inventories/prod/group_vars/all.yml)" \
-  --set runnerToken="$RUNNER_TOKEN" \
-  --wait
-```
+1. Regenerate the token in GitLab Admin Area > CI/CD > Runners.
+2. Update `op://Homelab/GitLab Runner/runner-token` (or `GitLab Runner Privileged/runner-token`).
+3. `task flux:rotate-secret -- gitlab-runner` (or `gitlab-runner-privileged`).
 
 ### Step 4.6: Verify Runner Status
 
@@ -616,7 +609,8 @@ old CronJob to avoid duplicate executions:
 kubectl delete cronjob cloudflare-ddns -n default --ignore-not-found
 ```
 
-This cleanup is also performed automatically by `task k3s:deploy-ddns`.
+(The DDNS CronJob itself is now part of `kubernetes/infrastructure/configs/cloudflare-ddns/`
+and Flux-managed.)
 
 ### Notify Collaborators
 

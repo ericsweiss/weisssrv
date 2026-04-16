@@ -4,7 +4,7 @@
 > GitHub is a read-only mirror updated automatically via GitLab push mirroring.
 > Please submit issues and merge requests on the GitLab instance.
 
-Homelab Infrastructure as Code - Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, and Kubernetes.
+Homelab Infrastructure as Code - Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, Kubernetes, and Flux.
 
 ## Overview
 
@@ -18,6 +18,7 @@ Multi-node Proxmox homelab with:
 - **VPN**: Tailscale for secure remote access
 - **Firewall**: Proxmox firewall with IPSets and security groups
 - **K3s Cluster**: 9-node cluster (3 servers + 6 agents) with etcd HA
+- **GitOps**: Flux reconciles all Kubernetes workloads from this repo; External Secrets Operator syncs all k8s Secrets from 1Password (SDK provider)
 
 ## Architecture
 
@@ -104,26 +105,29 @@ task deploy:storage            # Deploy storage services
 # Application deployments
 task deploy:plex               # Deploy Plex Media Server (LXC)
 task gitlab:deploy             # Deploy GitLab (VM + application)
-task home-assistant:deploy     # Deploy Home Assistant config + ingress
+task home-assistant:deploy-config # Deploy Home Assistant config (ingress is Flux-managed)
 
-# K3s cluster operations
+# K3s cluster operations (Ansible - cluster infrastructure)
 task k3s:deploy                # Deploy/update k3s cluster (Ansible)
-task k3s:deploy-workloads      # Deploy all k3s platform workloads
 task k3s:status                # Show cluster and workload status
+task k3s:backup                # Create etcd snapshot
 
-# K3s application stacks
-task k3s:deploy-authentik      # Deploy Authentik SSO
-task downloads:deploy          # Deploy download clients and media stack
+# Flux GitOps (all Kubernetes workloads deploy via git push)
+task flux:status               # Concise health summary
+task flux:verify               # flux check + get all -A
+task flux:reconcile            # Force reconciliation
+task flux:rotate-secret -- <app>  # Refresh ExternalSecret + restart consumers
+task flux:sync-versions        # Regenerate versions-configmap from all.yml
+
+# Operational tasks (non-deploy)
 task downloads:status          # Check downloads namespace status
 task downloads:vpn-status      # Verify VPN connection and public IP
-task recipes:deploy            # Deploy Mealie and Bar Assistant
 task recipes:status            # Check recipes namespace status
+task authentik:status          # Check Authentik status
 
 # GitLab operations
 task gitlab:status             # Show GitLab and runner status
 task gitlab:verify             # Run GitLab smoke tests
-task gitlab:deploy-runner      # Deploy shared runner (multi-project k8s deploys)
-task gitlab:deploy-runner-privileged  # Deploy infrastructure runner (weisssrv CI/CD)
 
 # Terraform (Cloudflare DNS)
 task terraform:plan            # Plan Cloudflare DNS changes
@@ -131,11 +135,16 @@ task terraform:apply           # Apply Cloudflare DNS changes
 
 # Maintenance
 task maintenance:check-versions       # Check all services for updates
-task maintenance:update-full          # Full system update (interactive)
+task maintenance:update-full          # Full base infrastructure update (interactive)
 task maintenance:update-k3s-nodes     # Rolling k3s node upgrades
-task maintenance:update-helm-charts   # Update Helm chart versions
 task collect-state                    # Generate cluster state snapshot
 ```
+
+> **Kubernetes deploys use Flux**: changes to `kubernetes/apps/<component>/` or
+> `kubernetes/infrastructure/` are reconciled automatically after `git push` (~1 minute,
+> or immediately via the GitLab webhook to Flux). `task flux:reconcile` forces a sync.
+> Helm chart versions and container image tags flow through `ansible/inventories/prod/group_vars/all.yml`
+> into the `cluster-versions` ConfigMap via `task flux:sync-versions`.
 
 ## Repository Structure
 
@@ -145,14 +154,19 @@ weisssrv/
 ├── ansible/
 │   ├── inventories/prod/     # Production inventory
 │   │   ├── hosts.yml         # Host definitions
-│   │   └── group_vars/       # Group variables
-│   ├── roles/                # 20 Ansible roles
+│   │   └── group_vars/       # Group variables (all.yml: single source of truth for versions)
+│   ├── roles/                # Ansible roles (base, k3s, gitlab, nic_tuning, etc.)
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/cloudflare/     # Cloudflare DNS management
-├── kubernetes/               # K3s manifests (Flux-ready)
-├── scripts/                  # Utility scripts (version checker, etc.)
-├── docs/                     # Documentation (29 files)
-└── Taskfile.yml              # Task runner commands
+├── kubernetes/               # Flux-managed cluster state
+│   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
+│   ├── infrastructure/       # Platform (sources, controllers, configs, versions-configmap)
+│   └── apps/                 # Applications (authentik, download-clients, recipes,
+│                             #   gitlab-runner, gitlab-runner-privileged, gitlab-agent,
+│                             #   vm-ingress)
+├── scripts/                  # Utility scripts (version checker, versions-configmap generator, etc.)
+├── docs/                     # Documentation
+└── Taskfile.yml              # Task runner commands (including flux:*)
 ```
 
 ## Ansible Roles
@@ -207,8 +221,13 @@ Split-horizon DNS:
 - **external-dns**: Automatic Cloudflare DNS management
 - **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
+- **Flux**: Reconciles all Kubernetes manifests from this repo
+- **External Secrets Operator**: Syncs k8s Secrets from 1Password (SDK provider, vault `Homelab`)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
+See also [docs/29-flux-operations.md](docs/29-flux-operations.md) (operator guide)
+and [docs/30-multi-repo-onboarding.md](docs/30-multi-repo-onboarding.md)
+(adding external repos that deploy into this cluster).
 
 ## Applications
 
@@ -333,6 +352,8 @@ Self-hosted Git repository and CI/CD platform:
 | [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation |
 | [27-gitlab-deployment](docs/27-gitlab-deployment.md) | GitLab EE deployment (VM, registry, pages, runners) |
 | [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
+| [29-flux-operations](docs/29-flux-operations.md) | Flux operator guide (bootstrap, adopt, rotate, add app, troubleshoot) |
+| [30-multi-repo-onboarding](docs/30-multi-repo-onboarding.md) | Adding external repos that deploy into this cluster via Flux |
 
 ## User Management
 

@@ -535,22 +535,26 @@ kubeconform -summary -strict \
   kubernetes/apps/**/*.yaml
 ```
 
-### Helm Values Testing
+### Flux + Helm Values Testing
 
-Helm values files are validated by templating against the actual charts:
+All Helm values are now inlined into `HelmRelease.spec.values` under
+`kubernetes/apps/*/release.yaml` and `kubernetes/infrastructure/controllers/*/release.yaml`.
+Validation is done by rendering the full Flux Kustomization tree with
+`kustomize build` and then running `kubeconform` on the output (which
+covers both HelmReleases and every other CR).
 
 ```bash
-# Test Traefik values
-helm template traefik traefik/traefik \
-  -f kubernetes/apps/traefik/values.yaml \
-  --namespace traefik > /dev/null
-
-# Test Authentik values (requires dummy secrets)
-helm template authentik authentik/authentik \
-  -f kubernetes/apps/authentik/values.yaml \
-  --set authentik.secret_key=dummy \
-  --set authentik.postgresql.password=dummy > /dev/null
+task flux:lint
+# Or directly:
+kustomize build kubernetes/infrastructure | \
+  kubeconform -strict -ignore-missing-schemas -summary
+kustomize build kubernetes/apps | \
+  kubeconform -strict -ignore-missing-schemas -summary
 ```
+
+The CI `flux-lint` job (`.gitlab-ci.yml`) runs this on every MR against
+`kubernetes/**` changes. `flux-versions-sync` additionally verifies that
+`cluster-versions` ConfigMap is in sync with `ansible/inventories/prod/group_vars/all.yml`.
 
 ## Production Verification
 

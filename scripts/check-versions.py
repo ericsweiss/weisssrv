@@ -1419,27 +1419,23 @@ def get_deploy_command(result: ServiceVersion) -> str:
     if var_name == "adguardhome_sync_version":
         return "task maintenance:update-applications --limit dns-01"
 
-    # Download clients and media stack
-    if var_name in ("gluetun_version", "nzbget_version", "qbittorrent_version",
-                    "prowlarr_version", "sonarr_version", "radarr_version",
-                    "lidarr_version", "pulsarr_version"):
-        return "task downloads:deploy"
+    # Flux-managed workloads: all k8s image + chart versions reach the
+    # cluster via the cluster-versions ConfigMap + git push + Flux.
+    flux_managed = (
+        "gluetun_version", "nzbget_version", "qbittorrent_version",
+        "prowlarr_version", "sonarr_version", "radarr_version",
+        "lidarr_version", "pulsarr_version",
+        "mealie_version", "mealie_postgresql_version",
+        "bar_assistant_version", "salt_rim_version",
+        "authentik_version", "postgresql_version",
+        "gitlab_runner_helm_version", "gitlab_agent_helm_version",
+    )
+    if var_name in flux_managed:
+        return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"
 
-    # Recipe management stack
-    if var_name in ("mealie_version", "mealie_postgresql_version", "bar_assistant_version", "salt_rim_version"):
-        return "task recipes:deploy"
-
-    # Authentik and bundled PostgreSQL
-    if var_name in ("authentik_version", "postgresql_version"):
-        return "task k3s:deploy-authentik"
-
-    # GitLab
+    # GitLab VM (Ansible-managed — not Flux)
     if var_name == "gitlab_version":
         return "task gitlab:deploy"
-    if var_name == "gitlab_runner_helm_version":
-        return "task gitlab:deploy-runner"
-    if var_name == "gitlab_agent_helm_version":
-        return "task gitlab:deploy-agent"
 
     return "task deploy:all  # Or the appropriate deployment task"
 

@@ -15,16 +15,22 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 
 ```
 weisssrv/
-├── ansible/                 # Configuration management
-│   ├── inventories/prod/    # Production inventory + vars
-│   ├── roles/               # 20 roles for all services
-│   └── playbooks/           # Deployment playbooks
-├── terraform/cloudflare/    # External DNS management
-├── kubernetes/              # K3s manifests
-├── docs/                    # Documentation (29 files)
-├── scripts/                 # Utility scripts
-├── .gitlab-ci.yml           # CI/CD pipeline (canonical)
-└── .github/workflows/       # Legacy workflows (disabled)
+├── ansible/                    # Configuration management
+│   ├── inventories/prod/       # Production inventory + vars
+│   ├── roles/                  # 21 roles for all services
+│   └── playbooks/              # Deployment playbooks
+├── terraform/cloudflare/       # External DNS management
+├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
+│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure.yaml, apps.yaml, tenants/)
+│   ├── infrastructure/         # Platform controllers and configs
+│   │   ├── sources/            # HelmRepository CRs
+│   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases)
+│   │   └── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, versions-configmap, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/
+│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml)
+├── docs/                       # Documentation
+├── scripts/                    # Utility scripts
+├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
+└── .github/workflows/          # Legacy workflows (disabled)
 ```
 
 ## Architecture
@@ -45,6 +51,8 @@ weisssrv/
 - **VPN**: Tailscale on Proxmox hosts (remote access)
 - **Firewall**: Proxmox firewall with IP Sets + Security Groups
 - **HA**: Proxmox HA for infrastructure services (DNS, SMTP, Home Assistant)
+- **GitOps**: Flux CD reconciles all Kubernetes state from `kubernetes/` on every push
+- **Secrets to k8s**: External Secrets Operator (ESO) with 1Password SDK provider (`ClusterSecretStore` `onepassword-homelab`)
 
 ### K3s Platform
 
@@ -64,15 +72,16 @@ weisssrv/
 - **k3s-agt-prec-01** (.207) - General + compute (esweiss.com/compute)
 
 **Deployment Model** (Two-phase approach):
-1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161)
-2. **Task/Helm** (`task k3s:deploy-workloads`): MetalLB, Traefik, cert-manager, external-dns, DDNS, IngressRoutes
+1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161). One-off and idempotent.
+2. **Flux GitOps**: Everything in-cluster (platform controllers + apps) is reconciled by Flux from `kubernetes/` on every push to `main`. Local iteration uses `task flux:dev-apply -- <path>` (changes are reverted on next reconcile cycle unless committed).
 
-All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for complete workflow.
+Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically within ~1 minute of a push; use `task flux:reconcile` to force immediately. See `docs/19-k3s-deployment.md` for the k3s layer and `docs/29-flux-operations.md` for Flux day-2 operations.
 
 **Features**:
 - kube-vip (API VIP .161), MetalLB (VIPs .100/.101)
 - Traefik ingress, external-dns (Cloudflare)
 - 3-node etcd quorum (tolerates 1 server failure)
+- Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password SDK backend
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
@@ -111,8 +120,8 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - Git SSH on port 22 (internal), port 2222 (external)
 
 **Planned**:
-- GitOps via Flux
 - Apps: Immich, Nextcloud
+- `weisssrv-project-template` GitLab template project for tenant-side scaffold (tracked in `docs/16-next-steps.md`)
 
 ## Common Development Commands
 
@@ -155,45 +164,48 @@ task proxmox:ha-status            # Show HA manager, rules, and replication stat
 task k3s:provision-vms            # Provision k3s VMs on Proxmox
 task k3s:deploy                   # Deploy k3s cluster (idempotent, safe to re-run)
 task k3s:kubeconfig               # Fetch kubeconfig from cluster
-
-# K3s workloads (Helm/kubectl - after cluster is running)
-task k3s:deploy-workloads         # Deploy ALL platform workloads in order
-task k3s:deploy-metallb           # Deploy MetalLB load balancer
-task k3s:deploy-traefik           # Deploy Traefik ingress controller
-task k3s:deploy-cert-manager      # Deploy cert-manager with Let's Encrypt
-task k3s:deploy-coredns           # Deploy CoreDNS HelmChartConfig
-task k3s:deploy-external-dns      # Deploy external-dns for Cloudflare
-task k3s:deploy-ddns              # Deploy DDNS CronJob
-task k3s:deploy-ingress-routes    # Deploy Traefik IngressRoutes
-task k3s:deploy-authentik         # Deploy Authentik SSO identity provider
 task k3s:backup                   # Create etcd snapshot
 task k3s:status                   # Show cluster and workload status
 
-# Download clients and media stack
-task downloads:deploy             # Deploy full media stack with VPN
-task downloads:check              # Dry-run (diff) media stack deployment
+# Flux GitOps (all Kubernetes workloads - edit YAML in kubernetes/ + git push)
+task flux:install-cli             # Install flux CLI (brew, macOS)
+task flux:bootstrap               # One-time: bootstrap Flux into the cluster
+task flux:bootstrap-onepassword   # One-time: create 1P SDK token secret in external-secrets ns
+task flux:reconcile               # Force immediate reconciliation of all Flux-managed resources
+task flux:verify                  # Run `flux check` + show status of all managed resources
+task flux:status                  # Concise health summary
+task flux:suspend -- <ns>/<kind>/<name>  # Suspend a Flux resource
+task flux:resume  -- <ns>/<kind>/<name>  # Resume a suspended Flux resource
+task flux:refresh-secret -- <ns>/<name>  # Force an ExternalSecret to re-fetch from 1Password
+task flux:rotate-secret  -- <app>        # Refresh ExternalSecret + restart consuming pods
+task flux:sync-versions           # Regenerate versions-configmap.yaml from all.yml
+task flux:dev-apply -- <path>     # Local iteration: kustomize build + kubectl apply (Flux will revert)
+task flux:lint                    # kustomize build + kubeconform on every Flux Kustomization path
+task flux:webhook-register        # One-time: register GitLab push webhook to Flux Receiver
+
+# Download clients and media stack (workload operations only; deployment via Flux)
 task downloads:status             # Show downloads namespace status
 task downloads:vpn-status         # Check VPN connection and public IP
-task downloads:vpn                # Toggle VPN per-app (APP=nzbget ENABLED=true PROVIDER=privado)
-task downloads:vpn-credentials    # Update VPN credentials secret
 task downloads:restart            # Restart all download/media apps
 task downloads:logs               # View app logs
 task downloads:shell              # Shell into app container
 task downloads:delete             # Remove stack (preserves data)
 
-# Recipe management stack (Mealie + Bar Assistant)
-task recipes:deploy               # Deploy Mealie and Bar Assistant
-task recipes:check                # Dry-run (diff) recipe stack deployment
+# Recipe management stack (workload operations only; deployment via Flux)
 task recipes:status               # Show recipes namespace status
 task recipes:restart              # Restart all recipe apps
 task recipes:logs                 # View app logs (APP=mealie)
 task recipes:shell                # Shell into app container (APP=mealie)
 task recipes:delete               # Remove stack (preserves data)
 
-# Home Assistant (VM on Proxmox with Traefik ingress, managed by Ansible)
-task home-assistant:deploy        # Deploy ingress and configuration
-task home-assistant:deploy-ingress # Deploy/update IngressRoute only
-task home-assistant:deploy-config # Deploy configuration via Ansible only
+# Authentik (workload operations only; deployment via Flux)
+task authentik:status             # Show Authentik status
+task authentik:logs               # View Authentik logs
+task authentik:restart            # Restart Authentik pods
+
+# Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
+task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
+task home-assistant:deploy        # DEPRECATED: aliased to deploy-config (ingress is now Flux)
 task home-assistant:restart-after-config # Restart after config deployment
 task home-assistant:status        # Show VM and ingress status
 task home-assistant:vm-start      # Start the Home Assistant VM
@@ -203,12 +215,10 @@ task home-assistant:console       # SSH to Home Assistant (requires SSH add-on)
 task home-assistant:snapshot      # Create Proxmox VM snapshot
 
 # GitLab (VM on pve-nas-01 with Traefik ingress)
+# Note: GitLab runners, agent, and ingress routes live in kubernetes/apps/gitlab-runner*, gitlab-agent, and vm-ingress
+# and are reconciled by Flux. The VM-side tasks below manage the GitLab server itself.
 task gitlab:deploy                # Deploy GitLab (VM + application)
 task gitlab:deploy-check          # Dry-run deployment
-task gitlab:deploy-ingress        # Deploy Traefik IngressRoutes
-task gitlab:deploy-runner         # Deploy shared runner for multi-project k8s deploys (unprivileged)
-task gitlab:deploy-runner-privileged  # Deploy infrastructure runner for weisssrv (privileged, DinD + SSH)
-task gitlab:deploy-agent          # Deploy GitLab Agent for Kubernetes (agentk)
 task gitlab:status                # Show GitLab and runner status
 task gitlab:verify                # Run smoke tests (web UI, registry, pages, SSH)
 task gitlab:backup                # Create GitLab backup
@@ -230,10 +240,11 @@ task maintenance:update-applications   # Applications only (AdGuard, Tailscale, 
 task maintenance:update-plex           # Plex Media Server only
 
 # Maintenance (K3s Cluster)
+# Helm chart + container image updates are now driven by Flux:
+# edit versions in ansible/inventories/prod/group_vars/all.yml, run `task flux:sync-versions`,
+# then commit + push — Flux reconciles the new versions within ~1 minute.
 task maintenance:update-k3s-nodes      # Rolling k3s node upgrades (drain/cordon)
-task maintenance:update-helm-charts    # Update platform Helm charts
-task maintenance:update-k3s-workloads  # Update container images (Authentik, downloads, recipes)
-task maintenance:update-cluster        # Complete cluster update (nodes + charts + workloads)
+task maintenance:update-cluster        # Complete cluster update (nodes only; workloads are Flux-managed)
 
 # Terraform
 task terraform:init               # Initialize Terraform
@@ -245,6 +256,7 @@ task terraform:validate           # Validate syntax
 task lint                         # Lint everything (Ansible, Terraform, Kubernetes)
 task kubernetes:lint              # Validate K8s manifests with kubeconform
 task kubernetes:validate-helm     # Validate Helm values by templating charts
+# (see also `task flux:lint` under Flux GitOps — kustomize build + kubeconform on every Flux Kustomization)
 
 # State collection
 task collect-state                # Generate cluster snapshot
@@ -282,15 +294,26 @@ terraform apply
 
 ## Secrets Management (1Password)
 
-All secrets reference 1Password items and are resolved at runtime via Task wrapper (`op run --`):
+Two consumers pull from the same 1Password "Homelab" vault:
 
-```yaml
-# Format in group_vars/all.yml
-secrets:
-  smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
-```
+1. **Ansible / Terraform / Task wrapper** — uses `op run --` to inject `op://Homelab/Item/field` references at runtime.
+   ```yaml
+   # Format in group_vars/all.yml
+   secrets:
+     smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
+     # Item names with spaces are fine here — `op run` parses the full path.
+   ```
 
-**NEVER commit secrets to git**. All sensitive values use 1Password references.
+2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password SDK provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. `ExternalSecret.spec.data[].remoteRef.key` uses the **1Password item ID** (not title, not `op://`-prefixed), and `remoteRef.property` is NOT used — the field name goes after the slash:
+   ```yaml
+   remoteRef:
+     key: <1Password item ID>/<field name>   # e.g. qwertyabc123/password
+   ```
+   Spaces in item titles break SDK parsing, so always reference by ID in `ExternalSecret` manifests.
+
+The bootstrap Secret `onepassword-sdk-token` in the `external-secrets` namespace is the **only manually created** Kubernetes Secret. Every other in-cluster Secret is produced by ESO from `ExternalSecret` manifests reconciled by Flux.
+
+**NEVER commit secrets to git**. All sensitive values use 1Password references (either `op://` for host-side tooling or ID-based ExternalSecrets for in-cluster).
 
 ### Required 1Password Items
 
@@ -323,6 +346,9 @@ In vault "Homelab":
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
 - **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
+- **Service Account Auth Token weisssrv** - 1Password Service Account token used by the ESO SDK provider (no colon in title — the old name broke `op://` parsing)
+- **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
+- **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
 
 ### Using 1Password
 
@@ -393,6 +419,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 18. **gitlab** - GitLab EE (CE features) installation and configuration
 19. **resolv_conf** - Shared /etc/resolv.conf management (used by base, adguard_home)
 20. **zvol_mount** - Shared ZFS zvol mounting with UUID-based fstab (used by k3s, gitlab)
+21. **nic_tuning** - NIC/kernel tuning on Proxmox hosts (codifies AQC113 GRO disable + `net.ipv4.ip_forward` sysctl)
 
 ## User Management
 
@@ -405,10 +432,13 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
 
 ## Testing / Deployment Workflow
 
+### Base infrastructure (Ansible/Terraform)
+
 1. **Pre-deployment**:
    ```bash
    task ansible:ping          # Verify connectivity
-   task lint                  # Validate syntax
+   task lint                  # Ansible + Terraform + kubernetes:lint + validate-helm
+   task flux:lint             # Build every Flux Kustomization + kubeconform (run separately)
    task deploy:check          # Dry-run
    ```
 
@@ -424,6 +454,32 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
    task deploy:verify         # Comprehensive verification
    task collect-state         # Snapshot current state
    ```
+
+### Kubernetes workloads (Flux GitOps)
+
+Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` or `helm upgrade` step in the normal workflow — edit YAML, commit, push:
+
+1. **Pre-change**:
+   ```bash
+   task flux:lint             # kustomize build + kubeconform on every Flux Kustomization
+   task flux:dev-apply -- kubernetes/apps/<app>   # Optional: preview change in-cluster (reverted on next reconcile)
+   ```
+
+2. **Ship**:
+   ```bash
+   git add kubernetes/...
+   git commit
+   git push                   # GitLab webhook triggers Flux Receiver, or wait ~1 min for poll
+   task flux:reconcile        # Optional: force immediate reconcile
+   ```
+
+3. **Verify**:
+   ```bash
+   task flux:status           # Concise health summary
+   task flux:verify           # `flux check` + all managed resources
+   ```
+
+See `docs/29-flux-operations.md` for day-2 operations including secret rotation, suspend/resume, and webhook troubleshooting. Multi-repo tenant onboarding is covered in `docs/30-multi-repo-onboarding.md`.
 
 ## Version Management
 
@@ -543,6 +599,8 @@ See `docs/` for detailed guides:
 - 26-multi-node-implementation.md - Step-by-step implementation for 6-node cluster
 - 27-gitlab-deployment.md - GitLab EE deployment (VM, registry, pages, runners)
 - 28-gitlab-migration.md - GitHub to GitLab migration guide
+- 29-flux-operations.md - Flux day-2 operations: reconcile, suspend/resume, secret rotation, webhook
+- 30-multi-repo-onboarding.md - Adding external tenant repos via `kubernetes/clusters/weisssrv/tenants/`
 
 ## Important Context Files
 

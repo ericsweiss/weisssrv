@@ -10,12 +10,14 @@ The repository uses **self-hosted GitLab** as the canonical source with CI/CD:
 - **GitHub mirror**: https://github.com/ericsweiss/weisssrv (read-only, auto-synced)
 
 CI/CD features:
-- **Linting**: Ansible playbooks, Terraform code, shell scripts, Kubernetes manifests
-- **Validation**: Terraform plan, Helm template validation, kubeconform
+- **Linting**: Ansible playbooks, Terraform code, shell scripts, Kubernetes manifests, Flux Kustomizations
+- **Validation**: Terraform plan, Helm template validation, kubeconform, `flux build` on every Kustomization
 - **Testing**: Molecule unit tests, multi-role integration tests
 - **Security**: GitLab native secret detection
-- **Auto-deployment**: Deploys to production on merge to main (after tests pass)
-- **Version checking**: Scheduled checks for available updates
+- **Auto-deployment**: Ansible + Terraform deploy on merge to main. **Kubernetes workloads
+  are reconciled by Flux directly from git** — there are no CI deploy jobs for k8s.
+- **Version checking**: Scheduled checks for available updates; CI fails if
+  `kubernetes/infrastructure/configs/versions-configmap.yaml` is out of sync with `all.yml`
 
 ## Runner Architecture
 
@@ -53,6 +55,7 @@ stages:
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
+| `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/configs/versions-configmap.yaml` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
 | `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
@@ -68,8 +71,9 @@ stages:
 |-----|----------|-------------|
 | `terraform-validate` | terraform/** | Terraform syntax |
 | `terraform-plan` | terraform/** + 1Password | Full plan with credentials |
-| `kubeconform` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | K8s manifest validation |
+| `kubeconform` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | K8s manifest validation (includes Flux CRD schemas) |
 | `helm-validate` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | Helm values validation |
+| `flux-lint` | kubernetes/** | `flux build kustomization` + `kubeconform` on rendered output for every top-level Kustomization |
 
 #### Test Stage
 | Job | Triggers | Description |
@@ -90,7 +94,7 @@ stages:
 #### Gate Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `validation-gate` | Pushes to main only (not schedule, web, or MR) | Blocks all deploy jobs until all *applicable* checks pass |
+| `validation-gate` | Pushes to main only (not schedule, web, or MR) | Blocks Ansible/Terraform deploy jobs until all *applicable* checks pass |
 
 The `validation-gate` job depends on `secret_detection` as a **required** (non-optional) dependency
 that must always pass. All path-filtered lint, validate, and test jobs are listed as `optional: true`
@@ -101,9 +105,10 @@ dependencies:
 - If a path-filtered job **was created** (paths matched) and **failed**: the gate is blocked.
 - `secret_detection` must always pass — it is not optional.
 
-All deploy jobs depend on `validation-gate` as a required (non-optional) `needs` dependency.
-Additional `optional: true` dependencies between deploy jobs are used only for ordering
-(e.g., `deploy-gitlab-runner` waits for `deploy-k3s-platform` if both run in the same pipeline).
+Ansible/Terraform deploy jobs depend on `validation-gate` as a required `needs`.
+**Kubernetes workloads are not gated by CI** — Flux reconciles from git regardless of
+pipeline state. CI's job for k8s is to validate (`flux-lint`, `kubeconform`,
+`flux-versions-sync`) and optionally trigger a webhook notification.
 
 #### Deploy Stage - Terraform
 | Job | Triggers | Description |
@@ -128,34 +133,26 @@ Additional `optional: true` dependencies between deploy jobs are used only for o
 | `deploy-gitlab` | ansible/roles/gitlab/**, ansible/playbooks/gitlab.yml, ansible/inventories/prod/group_vars/all.yml | Deploy GitLab VM and application |
 | `deploy-home-assistant-config` | ansible/roles/home_assistant/**, ansible/playbooks/home-assistant.yml | Deploy Home Assistant configuration |
 
-#### Deploy Stage - K3s Platform
-| Job | Triggers | Description |
-|-----|----------|-------------|
-| `deploy-k3s-platform` | kubernetes/bootstrap/**, kubernetes/apps/traefik/**, kubernetes/apps/cert-manager/**, kubernetes/apps/external-dns/**, kubernetes/apps/cloudflare-ddns/**, kubernetes/apps/ingress-routes/middleware.yaml, kubernetes/apps/ingress-routes/router.yaml, kubernetes/apps/ingress-routes/services.yaml, ansible/inventories/prod/group_vars/all.yml | Deploy MetalLB, Traefik, cert-manager, external-dns, DDNS, base services |
-| `deploy-k3s-coredns` | kubernetes/apps/coredns/** | Deploy CoreDNS HelmChartConfig (2 replicas with topology spread) |
+#### K3s Platform and Applications: Flux-Managed
 
-#### Deploy Stage - K3s Applications
-| Job | Triggers | Description |
-|-----|----------|-------------|
-| `deploy-k3s-authentik` | kubernetes/apps/authentik/**, ansible/inventories/prod/group_vars/all.yml | Deploy Authentik SSO |
-| `deploy-downloads` | kubernetes/apps/download-clients/**, ansible/inventories/prod/group_vars/all.yml | Deploy Gluetun, *arr apps, NZBGet, qBittorrent |
-| `deploy-recipes` | kubernetes/apps/recipes/**, ansible/inventories/prod/group_vars/all.yml | Deploy Mealie, Bar Assistant |
+**All Kubernetes workloads deploy via Flux, not CI jobs.** Every platform component
+(MetalLB, Traefik, cert-manager, external-dns, external-secrets, CoreDNS, DDNS,
+Authentik) and every application (downloads, recipes, gitlab-runner,
+gitlab-runner-privileged, gitlab-agent, vm-ingress) is reconciled by Flux from
+`kubernetes/` on every `git push` to `main`. CI only validates (`flux-lint`,
+`kubeconform`, `flux-versions-sync`).
 
-#### Deploy Stage - K3s IngressRoutes and Runners
-| Job | Triggers | Description |
-|-----|----------|-------------|
-| `deploy-gitlab-ingress` | kubernetes/apps/gitlab/** | Deploy GitLab IngressRoutes |
-| `deploy-home-assistant-ingress` | kubernetes/apps/ingress-routes/home-assistant.yaml | Deploy Home Assistant IngressRoutes |
-| `deploy-plex-ingress` | kubernetes/apps/ingress-routes/plex.yaml | Deploy Plex IngressRoutes |
-| `deploy-adguard-ingress` | kubernetes/apps/ingress-routes/adguard-home.yaml | Deploy AdGuard Home IngressRoutes |
-| `deploy-gitlab-runner` | kubernetes/apps/gitlab-runner/**, ansible/inventories/prod/group_vars/all.yml | Deploy shared GitLab Runner (unprivileged, for other projects) |
-| `deploy-gitlab-runner-privileged` | kubernetes/apps/gitlab-runner-privileged/**, ansible/inventories/prod/group_vars/all.yml | Deploy infrastructure GitLab Runner (privileged, for weisssrv CI) |
+The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
+`deploy-k3s-platform`, `deploy-k3s-coredns`, `deploy-k3s-authentik`,
+`deploy-downloads`, `deploy-recipes`, `deploy-gitlab-ingress`,
+`deploy-home-assistant-ingress`, `deploy-plex-ingress`, `deploy-adguard-ingress`,
+`deploy-gitlab-runner`, `deploy-gitlab-runner-privileged`.
 
 #### Deploy Stage - Verification
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab/**, kubernetes/apps/gitlab-runner/**, kubernetes/apps/gitlab-runner-privileged/** | GitLab smoke tests (health, registry, SSH) |
-| `deploy-verify` | All pushes to main (no path filter) | Post-deployment health check |
+| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (health, registry, SSH). Uses `flux get hr` to check runner/agent health. |
+| `deploy-verify` | All pushes to main (no path filter) | Post-deployment health check (includes `flux get all -A` summary) |
 
 > **Note:** Both verification jobs have `allow_failure: true` -- they are informational and non-blocking.
 > A verification failure reports status in the pipeline UI but does not fail the overall pipeline.
@@ -187,56 +184,57 @@ Additional `optional: true` dependencies between deploy jobs are used only for o
 When a merge request is merged to `main`:
 
 1. **Validation stages run first** (lint, validate, test, security)
-2. **Validation gate blocks deploys** -- the `validation-gate` job in the `gate` stage must pass before any deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all deployments are blocked.
-3. **Only changed components deploy** (path-based triggers)
-4. **Service restarts are automatic** (AdGuard, Postfix, etc.)
+2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked.
+3. **Only changed components deploy** (path-based triggers on Ansible/Terraform jobs)
+4. **Kubernetes workloads reconcile via Flux** — independent of CI. Flux polls git
+   every 1 minute, and the GitLab webhook triggers Flux's `Receiver` for sub-second sync.
 5. **Machine reboots require manual approval** (maintenance stage)
 
 ### Deployment Categories
 
-| Category | Jobs | Auto-Deploy | Manual Approval |
-|----------|------|-------------|-----------------|
-| Terraform | `deploy-terraform` | Yes | No |
-| Ansible Infrastructure | `deploy-ansible-base`, `deploy-ansible-proxmox`, `deploy-ansible-firewall`, `deploy-ansible-dns`, `deploy-ansible-storage`, `deploy-ansible-mail`, `deploy-ansible-certs` | Yes | No |
-| Ansible Applications | `deploy-plex`, `deploy-gitlab`, `deploy-home-assistant-config` | Yes | No |
-| K3s Platform | `deploy-k3s-platform`, `deploy-k3s-coredns` | Yes | No |
-| K3s Applications | `deploy-k3s-authentik`, `deploy-downloads`, `deploy-recipes` | Yes | No |
-| K3s IngressRoutes & Runners | `deploy-gitlab-ingress`, `deploy-home-assistant-ingress`, `deploy-plex-ingress`, `deploy-adguard-ingress`, `deploy-gitlab-runner`, `deploy-gitlab-runner-privileged` | Yes | No |
-| Verification | `deploy-gitlab-verify`, `deploy-verify` | Yes | No |
-| K3s Provisioning | `maintenance-k3s-provision` | No | **Yes** |
-| System Updates | `maintenance-update-packages`, `maintenance-update-applications` | No | **Yes** |
-| K3s Node Updates | `maintenance-update-k3s-nodes` | No | **Yes** |
-| Proxmox HA | `maintenance-proxmox-ha` | No | **Yes** |
-| Home Assistant Restart | `maintenance-home-assistant-restart` | No | **Yes** |
-| Post-Maintenance Verification | `maintenance-verify` | No | **Yes** |
+| Category | Mechanism | Jobs / Action | Auto-Deploy | Manual Approval |
+|----------|-----------|---------------|-------------|-----------------|
+| Terraform | CI job | `deploy-terraform` | Yes | No |
+| Ansible Infrastructure | CI jobs | `deploy-ansible-base`, `deploy-ansible-proxmox`, `deploy-ansible-firewall`, `deploy-ansible-dns`, `deploy-ansible-storage`, `deploy-ansible-mail`, `deploy-ansible-certs` | Yes | No |
+| Ansible Applications | CI jobs | `deploy-plex`, `deploy-gitlab`, `deploy-home-assistant-config` | Yes | No |
+| Kubernetes workloads (platform + apps) | Flux reconciliation from git | `kubernetes/infrastructure/`, `kubernetes/apps/*` | Yes (on push) | No |
+| Verification | CI jobs | `deploy-gitlab-verify`, `deploy-verify` | Yes | No |
+| K3s Provisioning | CI job (manual) | `maintenance-k3s-provision` | No | **Yes** |
+| System Updates | CI jobs (manual) | `maintenance-update-packages`, `maintenance-update-applications` | No | **Yes** |
+| K3s Node Updates | CI job (manual) | `maintenance-update-k3s-nodes` | No | **Yes** |
+| Proxmox HA | CI job (manual) | `maintenance-proxmox-ha` | No | **Yes** |
+| Home Assistant Restart | CI job (manual) | `maintenance-home-assistant-restart` | No | **Yes** |
+| Post-Maintenance Verification | CI job (manual) | `maintenance-verify` | No | **Yes** |
 
 ### How Deployment Works
 
-All deploy jobs depend on `validation-gate` (required, non-optional) as their quality gate. Additional `optional: true` dependencies between deploy jobs are used only for ordering (e.g., `deploy-gitlab-runner` waits for `deploy-k3s-platform` if both run).
+Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optional) as their quality gate.
 
 **Ansible deployments** use SSH to target hosts:
 - SSH key fetched from 1Password at runtime
 - Known hosts added automatically for all infrastructure IPs
 - Runs `op run -- ansible-playbook` to inject secrets
 
-**K3s platform deployments** (`deploy-k3s-platform`) use kubectl/helm:
-- Kubeconfig fetched from 1Password at runtime
-- Helm repos added and charts deployed with pinned versions from `all.yml`
-- Cloudflare API token injected via `--set` for Traefik; external-dns and DDNS use a Kubernetes secret created via `kubectl create secret`
-- Deploys in order: MetalLB → cert-manager → Traefik → external-dns → DDNS → IngressRoutes
-
-**K3s application deployments** (`deploy-k3s-authentik`, `deploy-downloads`, `deploy-recipes`):
-- Secrets fetched from 1Password and created as Kubernetes secrets
-- Container image versions read from `all.yml` and substituted via `envsubst`
-- VPN credentials injected for Gluetun sidecar in downloads namespace
-- SSO credentials injected for Mealie and Bar Assistant
+**Kubernetes workloads (platform + apps)** reconcile via Flux:
+- A commit under `kubernetes/` lands on `main`
+- The GitLab webhook POSTs to Flux's `Receiver` (or Flux's 1-minute poll catches it)
+- `flux-system` `GitRepository` syncs the new revision
+- Top-level `Kustomization`s (`infrastructure`, `apps`) reconcile
+- `helm-controller` upgrades HelmReleases; `kustomize-controller` applies Kustomizations
+- **All Secrets** are created by `external-secrets`' `ExternalSecret` CRs that
+  reference 1Password item IDs via the ClusterSecretStore `onepassword-homelab`
+  (SDK provider). CI does not inject any secrets into k8s.
+- Version substitutions flow from the `cluster-versions` ConfigMap
+  (`kubernetes/infrastructure/configs/versions-configmap.yaml`, generated from
+  `all.yml`). The `flux-versions-sync` lint job fails the pipeline if the
+  committed ConfigMap has drifted from `all.yml`.
 
 **Terraform deployments**:
 - Plan saved as artifact during validate stage
 - Apply uses saved plan on merge to main
 - Credentials fetched from 1Password
 
-**Version pinning**: All Helm chart versions and container image tags are centralized in `ansible/inventories/prod/group_vars/all.yml`. CI jobs extract these versions using `yq` and inject them during deployment.
+**Version pinning**: All Helm chart versions and container image tags are centralized in `ansible/inventories/prod/group_vars/all.yml`. Kubernetes manifests use `${var}` placeholders that Flux substitutes from the generated `cluster-versions` ConfigMap. Regenerate with `task flux:sync-versions` after bumping a value in `all.yml`.
 
 ## GitLab CI/CD Variables
 
@@ -292,73 +290,38 @@ export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token
 
 **Ansible deploy jobs:**
 ```bash
-# SSH key for Ansible
+# SSH key for Ansible (placed on disk outside of op run — ssh-agent reads it)
 op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
-# Then run with op run for additional secret injection
+chmod 600 ~/.ssh/id_ed25519
+
+# Run Ansible via op run so inline `op://...` env refs are injected at runtime
 op run -- ansible-playbook -i inventories/prod playbooks/site.yml
 ```
 
-**K3s platform jobs:**
-```bash
-# Kubeconfig for kubectl/helm (stored as base64 to preserve YAML formatting)
-op read "op://Homelab/K3s Kubeconfig/kubeconfig" | base64 -d > ~/.kube/config
-# Cloudflare token for Traefik, external-dns, DDNS
-CF_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-```
+**Kubernetes secrets (no CI involvement)**:
 
-**K3s application jobs:**
-```bash
-# Authentik
-AUTHENTIK_SECRET_KEY=$(op read "op://Homelab/Authentik Secrets/secret-key")
-AUTHENTIK_PG_PASS=$(op read "op://Homelab/Authentik Secrets/postgresql-password")
-
-# Downloads (VPN credentials)
-VPN_USER=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-user")
-VPN_PASS=$(op read "op://Homelab/PrivadoVPN Credentials/openvpn-password")
-
-# Recipes (Mealie + Bar Assistant)
-MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
-MEALIE_OIDC_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
-SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
-SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
-BAR_MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
-
-# GitLab Runner
-RUNNER_TOKEN=$(op read "op://Homelab/GitLab Runner/runner-token")
-```
+Kubernetes Secrets are not created by CI. External Secrets Operator watches
+`ExternalSecret` CRs in the cluster and syncs their values from 1Password (via
+the `onepassword-homelab` ClusterSecretStore, SDK provider). The only bootstrap
+secret in the cluster is `external-secrets/onepassword-sdk-token`, created once
+by `task flux:bootstrap-onepassword`. See `docs/29-flux-operations.md`.
 
 ### Required 1Password Items
 
-Core 1Password items used by CI/CD pipeline (see CLAUDE.md for the complete list):
+Core 1Password items used by the CI/CD pipeline (see CLAUDE.md for the complete list
+of items referenced by ExternalSecrets in the cluster):
 
 | Item | Fields | Used By |
 |------|--------|---------|
 | SSH Key | `private key` | Ansible deployments |
-| K3s Kubeconfig | `kubeconfig` | K3s/Helm deployments |
-| Cloudflare DNS Token | `credential`, `username` | Terraform, Traefik, external-dns, DDNS |
-| Authentik Secrets | `secret-key`, `postgresql-password`, `postgresql-admin-password` | `deploy-k3s-authentik` |
-| PrivadoVPN Credentials | `openvpn-user`, `openvpn-password` | `deploy-downloads` (Gluetun VPN sidecar) |
-| SMTP Relay Auth | `username`, `password` | `deploy-recipes` (Mealie + Bar Assistant email) |
-| Mealie Secrets | `postgres-password` | `deploy-recipes` |
-| Mealie SSO | `oidc-client-id`, `oidc-client-secret` | `deploy-recipes` |
-| Bar Assistant Secrets | `meilisearch-master-key` | `deploy-recipes` |
-| Bar Assistant SSO | `authentik-client-id`, `authentik-client-secret` | `deploy-recipes` |
-| OpenAI API Key | `api-key` | `deploy-recipes` (optional, for Mealie recipe parsing), `pr-agent-review` (AI code review) |
-| GitLab Runner | `runner-token` | `deploy-gitlab-runner` |
-| GitLab Runner Privileged | `runner-token` | `deploy-gitlab-runner-privileged` |
+| Cloudflare DNS Token | `credential`, `username` | Terraform `deploy-terraform` |
 | GitLab API Token | `credential` | `pr-agent-review` (AI code review) |
+| OpenAI API Key | `api-key` | `pr-agent-review` (AI code review) |
+| GitHub Token | `credential` | `version-check` (higher API rate limits) |
 
-**Creating the K3s Kubeconfig item:**
-1. Fetch kubeconfig: `task k3s:kubeconfig`
-2. Base64-encode the kubeconfig (preserves YAML formatting in 1Password):
-   ```bash
-   base64 < ~/.kube/config-k3s | pbcopy  # macOS (copies to clipboard)
-   # Or: base64 < ~/.kube/config-k3s      # Linux (prints to stdout)
-   ```
-3. Create new item in 1Password:
-   - **Title**: `K3s Kubeconfig`
-   - **Type**: Secure Note or API Credential
-   - **Field**: `kubeconfig` (paste the **base64-encoded** content)
+All other items (Authentik, PrivadoVPN, Mealie/Bar Assistant/SSO, GitLab Runner tokens,
+GitLab Agent token, SMTP Relay Auth, etc.) are consumed by **ExternalSecrets in the
+cluster**, not by CI jobs.
 
 ## Scheduled Pipelines
 

@@ -61,60 +61,88 @@ VPN-protected download clients and media management applications with flexible p
 
 ## Deployment
 
+This stack is Flux-managed. Everything in this folder is reconciled by the
+top-level `apps` Kustomization.
+
+- **Namespace**: `namespace.yaml` (labeled `pod-security.kubernetes.io/enforce: privileged` — required for Gluetun `CAP_NET_ADMIN`)
+- **Secret**: `externalsecret.yaml` — ExternalSecret `vpn-credentials` sourcing `openvpn-user` / `openvpn-password` from 1Password via ESO
+- **Workloads**: one YAML per app (`nzbget.yaml`, `qbittorrent.yaml`, `prowlarr.yaml`, `sonarr.yaml`, `radarr.yaml`, `lidarr.yaml`, `pulsarr.yaml`). Image tags use `${<app>_version}` placeholders substituted from the `cluster-versions` ConfigMap at reconcile time.
+- **Storage**: `storage.yaml` (PV/PVCs bound to NFS exports on pve-nas-01)
+- **Ingress**: `ingress-routes.yaml` (standard) + `ingress-routes-ha-bypass.yaml` (HA integration API-only routes)
+- **Certificate**: `certificate.yaml` (single wildcard cert for `*.esweiss.com`)
+
+Deploy workflow (edit + commit + push):
+
 ```bash
-# Deploy entire stack
-# Default VPN state: NZBGet=disabled, qBittorrent=enabled
-task downloads:deploy
+vim kubernetes/apps/download-clients/qbittorrent.yaml  # or any file
+git add kubernetes/apps/download-clients/
+git commit -m "..."
+git push
 
-# Check status
+# Force reconciliation instead of waiting for the ~1m poll
+task flux:reconcile
+
+# Ops checks (unchanged)
 task downloads:status
-
-# Check VPN connection for apps with VPN enabled
 task downloads:vpn-status
 ```
+
+Default VPN state: NZBGet sidecar VPN disabled, qBittorrent VPN enabled.
+Toggle by editing the `VPN_SERVICE_PROVIDER` / entrypoint config in the
+relevant pod spec and pushing.
 
 ## VPN Management
 
 ### Per-App VPN Control
 
-Each download client can be configured independently:
+Each download client has a per-app ConfigMap (e.g., `nzbget-vpn-config`,
+`qbittorrent-vpn-config`) that Gluetun reads. Edit the ConfigMap section of
+the app's YAML file to toggle `vpn_enabled` or change `vpn_provider`:
 
 ```bash
-# Disable VPN for NZBGet (use direct internet)
-task downloads:vpn APP=nzbget ENABLED=false
+vim kubernetes/apps/download-clients/qbittorrent.yaml
+# Find the ConfigMap section and edit:
+#   vpn_enabled: "true"          # or "false"
+#   vpn_provider: "privado"      # or "vpn unlimited" (note space for Gluetun)
+#   server_countries: "Netherlands"
 
-# Enable VPN for NZBGet with PrivadoVPN
-task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado
+git add kubernetes/apps/download-clients/qbittorrent.yaml
+git commit -m "Disable VPN on qbittorrent" # or similar
+git push
 
-# Enable VPN for qBittorrent with VPN Unlimited
-task downloads:vpn APP=qbittorrent ENABLED=true PROVIDER=vpn-unlimited
-
-# Disable VPN for qBittorrent
-task downloads:vpn APP=qbittorrent ENABLED=false
+# Roll the consumers to pick up the ConfigMap change (ConfigMap mounts don't
+# auto-reload on pod):
+task flux:rotate-secret -- downloads
 ```
 
 ### Check VPN Status
 
 ```bash
-# Show VPN status for all download clients
 task downloads:vpn-status
 ```
 
-This shows:
-- VPN enabled/disabled status
-- Current VPN provider
-- Gluetun logs (if VPN enabled)
-- Public IP (to verify VPN is working)
+Shows: VPN enabled/disabled, current provider, Gluetun logs (if enabled),
+and public IP (to verify VPN is working).
 
 ### Update VPN Credentials
 
-```bash
-# Update to PrivadoVPN credentials
-task downloads:vpn-credentials PROVIDER=privado
+Credentials live in 1Password and flow through the `vpn-credentials`
+ExternalSecret. To switch providers (PrivadoVPN vs VPN Unlimited), edit the
+ExternalSecret to point at the other 1Password item:
 
-# Update to VPN Unlimited credentials
-task downloads:vpn-credentials PROVIDER=vpn-unlimited
+```bash
+# Edit externalsecret.yaml to reference the desired provider's 1P item ID
+vim kubernetes/apps/download-clients/externalsecret.yaml
+# PrivadoVPN item ID:    5mctg3wrmykxmnjfis6f5l4ntu
+# VPN Unlimited item ID: bhy2hmrr5gz23a3ypeksjmwvju
+git commit -am "Switch downloads VPN to <provider>"
+git push
+task flux:rotate-secret -- downloads
 ```
+
+After editing, also update each app's ConfigMap `vpn_provider` to match
+(see previous section) — the credentials and the provider selector must
+agree.
 
 ## How the Sidecar Pattern Works
 
@@ -143,7 +171,9 @@ data:
   server_countries: "Netherlands"
 ```
 
-**Note**: The `task downloads:vpn` command accepts `PROVIDER=vpn-unlimited` (with hyphen) for CLI convenience and automatically normalizes it to `"vpn unlimited"` (with space) in the ConfigMap, which is the format Gluetun expects.
+**Note**: Gluetun expects the provider name with a space (`"vpn unlimited"`),
+not a hyphen. Set the ConfigMap value accordingly when switching to
+VPN Unlimited.
 
 ## Storage Layout
 
@@ -224,9 +254,9 @@ task downloads:shell APP=nzbget CONTAINER=gluetun
 # Restart all apps
 task downloads:restart
 
-# Delete and redeploy
+# Delete and redeploy (Flux redeploys on next reconcile)
 task downloads:delete
-task downloads:deploy
+task flux:reconcile
 ```
 
 ### Common Issues
@@ -235,28 +265,34 @@ task downloads:deploy
 
 1. Check Gluetun logs: `task downloads:logs APP=nzbget CONTAINER=gluetun`
 2. Verify credentials are correct in 1Password
-3. Try switching VPN providers: `task downloads:vpn APP=nzbget PROVIDER=vpn-unlimited`
+3. Try switching VPN providers: edit the app's ConfigMap (`vpn_provider`) and the `externalsecret.yaml` to reference the alternate 1P item (see "Update VPN Credentials" above), commit + push, then `task flux:rotate-secret -- downloads`
 
 #### App Has No Network When VPN Enabled
 
 This is the killswitch working correctly. If Gluetun can't establish VPN:
-1. Check VPN provider status
-2. Check credentials
-3. Temporarily disable VPN: `task downloads:vpn APP=nzbget ENABLED=false`
+1. Check VPN provider status.
+2. Check credentials in 1Password match what Gluetun expects.
+3. Temporarily disable VPN by editing the app's `vpn_enabled` ConfigMap entry in its YAML → commit + push → `task flux:rotate-secret -- downloads`.
 
 #### Need to Use Different VPN Providers for Each App
 
 Both apps share the same `vpn-credentials` secret. If you need different providers:
-1. Configure one app: `task downloads:vpn APP=nzbget PROVIDER=privado`
-2. Configure other app: `task downloads:vpn APP=qbittorrent PROVIDER=vpn-unlimited`
+1. Split the ExternalSecret into two separate ExternalSecrets (e.g., `vpn-credentials-privado`, `vpn-credentials-vpnunlimited`) referencing the different 1P items.
+2. Update each app's `envFrom`/`secretKeyRef` in the pod spec to point at its own secret.
+3. Commit + push.
 
-Note: The credentials secret is shared, so the last `PROVIDER` used will set the credentials for both. If apps need truly different credentials, you would need to modify the deployments to use separate secrets.
+Today both apps use the single `vpn-credentials` secret (see
+`externalsecret.yaml`), which is sourced from PrivadoVPN. Switching
+providers for the whole stack is documented above under "Update VPN
+Credentials"; switching providers per-app requires the split described
+in this section.
 
 ## Files
 
-- `namespace.yaml` - Downloads namespace
+- `namespace.yaml` - Downloads namespace (privileged PSS label for Gluetun CAP_NET_ADMIN)
 - `storage.yaml` - PV/PVC definitions for NFS storage
-- `vpn-common.yaml` - Shared VPN credentials secret
+- `externalsecret.yaml` - ExternalSecret `vpn-credentials` sourced from 1Password via ESO
+- `certificate.yaml` - Wildcard cert for *.esweiss.com (issued by cert-manager/letsencrypt-prod)
 - `nzbget.yaml` - NZBGet deployment with optional Gluetun sidecar
 - `qbittorrent.yaml` - qBittorrent deployment with optional Gluetun sidecar
 - `prowlarr.yaml` - Prowlarr deployment

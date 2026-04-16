@@ -11,6 +11,10 @@ metadata:
 spec:
   interval: 30m
   releaseName: cert-manager
+  # cert-manager CRD upgrades (CreateReplace mode) can take several minutes
+  # while the controller recreates the CRDs and validates existing resources.
+  # Give a generous timeout so Flux doesn't remediation-uninstall mid-upgrade.
+  timeout: 10m
   chart:
     spec:
       chart: cert-manager
@@ -22,10 +26,12 @@ spec:
       interval: 12h
   install:
     crds: CreateReplace
+    timeout: 10m
     remediation:
       retries: 3
   upgrade:
     crds: CreateReplace
+    timeout: 10m
     remediation:
       retries: 3
       remediateLastFailure: true

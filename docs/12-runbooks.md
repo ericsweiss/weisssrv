@@ -480,12 +480,13 @@ sudo qmrestore /path/to/backup.vma.zst 100 --storage local-lvm
 
 ### Update Strategy
 
-The infrastructure has two independent update scopes, each with rolling deployment (one host/node at a time) to maintain service availability:
+The infrastructure has three independent update scopes, each with rolling deployment (one host/node at a time) to maintain service availability:
 
 1. **Base infrastructure** - Proxmox hosts, DNS servers, SMTP relay, Plex LXC (managed by Ansible)
-2. **K3s cluster** - k3s nodes, Helm charts, application workloads (managed by Helm/kubectl)
+2. **K3s cluster nodes** - k3s binary on server/agent VMs (managed by Ansible, rolling drain/cordon)
+3. **K3s workloads** - Helm charts and application images (managed by Flux: update `all.yml`, `task flux:sync-versions`, commit, push)
 
-**Note:** OS package updates (`task maintenance:update-packages`) span both scopes -- they cover base infrastructure hosts, k3s nodes, and application hosts (Plex + GitLab) in a single rolling run.
+**Note:** OS package updates (`task maintenance:update-packages`) span base infrastructure hosts, k3s node VMs, and app hosts (Plex + GitLab) in a single rolling run.
 
 ### Quick Reference
 
@@ -498,10 +499,9 @@ The infrastructure has two independent update scopes, each with rolling deployme
 | Full base update (packages + apps) | `task maintenance:update-full` |
 | Full base update (auto-reboot) | `task maintenance:update-full-auto` |
 | Plex only | `task maintenance:update-plex` |
-| K3s nodes (rolling) | `task maintenance:update-k3s-nodes` |
-| Helm charts | `task maintenance:update-helm-charts` |
-| K3s workloads (Authentik, downloads, recipes) | `task maintenance:update-k3s-workloads` |
-| Full cluster update (all of the above k3s tasks) | `task maintenance:update-cluster` |
+| K3s nodes (rolling drain/cordon/upgrade) | `task maintenance:update-k3s-nodes` |
+| K3s Helm charts + workload images | Edit `all.yml` → `task flux:sync-versions` → `git commit` → `git push`. Flux reconciles. |
+| Full cluster update (nodes + complete update) | `task maintenance:update-cluster` (runs k3s node updates; Flux handles the rest via git) |
 
 ### Automated Version Discovery
 
@@ -537,11 +537,15 @@ task maintenance:update-version SERVICE=prowlarr
 task maintenance:update-all-versions
 ```
 
-After updating versions in `all.yml`, deploy with the appropriate task:
+After updating versions in `all.yml`, deploy with the appropriate mechanism:
 - **Ansible-managed** (AdGuard, Tailscale, Plex): `task maintenance:update-applications`
 - **k3s node binary**: `task maintenance:update-k3s-nodes`
-- **Helm charts** (MetalLB, Traefik, etc.): `task maintenance:update-helm-charts`
-- **K3s workloads** (Authentik, downloads, recipes): `task maintenance:update-k3s-workloads`
+- **K3s Helm charts and workloads** (Flux-managed — MetalLB, Traefik, cert-manager,
+  external-dns, Authentik, downloads, recipes, gitlab-runner, gitlab-agent):
+  `task flux:sync-versions` → commit `ansible/inventories/prod/group_vars/all.yml`
+  and `kubernetes/infrastructure/configs/versions-configmap.yaml` → `git push`.
+  Flux picks up the new ConfigMap within ~1 minute and rolls HelmReleases +
+  Kustomizations. Watch with `task flux:status` and `flux get all -A`.
 
 **GitHub API rate limits**: Unauthenticated requests are limited to 60/hour. Set `GITHUB_TOKEN` for 5000/hour:
 ```bash
@@ -568,24 +572,28 @@ task maintenance:check-versions -- --clear-cache
    git diff ansible/inventories/prod/group_vars/all.yml
    ```
 
-3. **Deploy updates** (choose as appropriate):
+3. **Regenerate Flux ConfigMap and deploy**:
    ```bash
-   # Base infrastructure (AdGuard, Tailscale, Plex, OS packages)
-   task maintenance:update-full
+   # Regenerate versions-configmap.yaml from all.yml
+   task flux:sync-versions
 
-   # K3s cluster (nodes + charts + workloads)
-   task maintenance:update-cluster
+   # Review and commit BOTH files
+   git diff ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+   git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+   git commit -m "Update service versions"
+   git push
+
+   # Flux reconciles Helm charts + workloads automatically (~1 min)
+   # For base infrastructure updates (AdGuard, Tailscale, Plex, k3s nodes, OS):
+   task maintenance:update-full       # base + apps (OS packages)
+   task maintenance:update-k3s-nodes  # k3s binary, rolling
    ```
 
 4. **Verify everything works**:
    ```bash
-   task deploy:verify
-   task k3s:status
-   ```
-
-5. **Commit**:
-   ```bash
-   git add -A && git commit -m "Update service versions"
+   task flux:status         # all HelmReleases + Kustomizations Ready
+   task deploy:verify       # base infrastructure health
+   task k3s:status          # cluster health
    ```
 
 ### Base Infrastructure Update Details
@@ -691,7 +699,10 @@ ansible <host> -i inventories/prod -m shell -a "journalctl -u AdGuardHome -n 50"
 
 ### Updating K3s Cluster
 
-The k3s cluster has three update layers, each with its own task.
+The k3s cluster has two update layers with different mechanisms:
+
+1. **k3s node binary** — Ansible rolling upgrade
+2. **Helm charts + workload images** — git push + Flux reconciliation
 
 #### 1. Node Updates (k3s binary)
 
@@ -720,51 +731,53 @@ task k3s:status
 - DaemonSets are ignored during drain (expected behavior)
 - If drain fails, the node is uncordoned and the upgrade aborts (investigate PDBs or stuck pods)
 
-#### 2. Helm Chart Updates
+#### 2. Helm Chart + Workload Image Updates (Flux)
+
+All platform Helm charts (MetalLB, Traefik, cert-manager, external-dns,
+external-secrets) and all application images (Authentik, downloads, recipes,
+gitlab-runner, gitlab-agent) are reconciled by Flux from substitutions in the
+`cluster-versions` ConfigMap.
 
 ```bash
-# Update chart versions in group_vars/all.yml
+# 1. Bump versions in all.yml
 task maintenance:update-version SERVICE=traefik
-
-# Update all charts at once
-task maintenance:update-helm-charts
-
-# Or update individually
-helm upgrade metallb metallb/metallb -n metallb-system --version X.Y.Z --reuse-values
-helm upgrade traefik traefik/traefik -n traefik --version X.Y.Z --reuse-values
-helm upgrade cert-manager jetstack/cert-manager -n cert-manager --version vX.Y.Z --reuse-values
-helm upgrade external-dns external-dns/external-dns -n external-dns --version X.Y.Z --reuse-values
-```
-
-#### 3. Workload Image Updates
-
-```bash
-# Update container versions in group_vars/all.yml
 task maintenance:update-version SERVICE=sonarr
+# (or: task maintenance:update-all-versions)
 
-# Update all k3s workloads (Authentik + downloads + recipes)
-task maintenance:update-k3s-workloads
+# 2. Regenerate versions-configmap.yaml
+task flux:sync-versions
 
-# Or update individual namespaces
-task k3s:deploy-authentik   # Authentik SSO
-task downloads:deploy       # Download clients + media stack
-task recipes:deploy         # Recipe management stack
+# 3. Review, commit, push
+git diff ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git commit -m "Bump traefik and sonarr"
+git push
+
+# 4. Watch Flux reconcile
+task flux:status            # Concise health summary
+flux get all -A             # Detailed view
+flux get hr -n traefik      # Watch specific release
 ```
 
-#### 4. Complete Cluster Update
+Flux typically reconciles within ~1 minute (GitLab webhook shortens this to
+seconds). Helm charts upgrade in-place; Deployments/StatefulSets roll with
+the image tag from the substituted `${version}` placeholder. For fast local
+iteration without committing, `task flux:dev-apply -- kubernetes/apps/<app>`
+applies a rendered Kustomization; Flux will revert to the committed state on
+its next reconcile (~1 minute) unless you `flux suspend` the Kustomization.
+
+#### 3. Complete Cluster Update
 
 ```bash
-# Update all versions in group_vars/all.yml first
+# Update all versions in group_vars/all.yml and regenerate ConfigMap
 task maintenance:update-all-versions
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git commit -m "Sweep cluster versions" && git push
 
-# Run complete update workflow (all 3 layers in order)
-task maintenance:update-cluster
+# Upgrade k3s node binary (rolling)
+task maintenance:update-cluster     # runs update-k3s-nodes; Flux handles the rest
 ```
-
-This runs:
-1. `task maintenance:update-k3s-nodes` (rolling node upgrades)
-2. `task maintenance:update-helm-charts` (platform components)
-3. `task maintenance:update-k3s-workloads` (Authentik + downloads + recipes)
 
 ### Maintenance Windows
 
@@ -793,31 +806,36 @@ task maintenance:update-version SERVICE=k3s
 task maintenance:update-k3s-nodes
 ```
 
-#### Rolling back Helm chart
+#### Rolling back Helm chart or workload image (Flux)
+
+The preferred rollback is `git revert`:
 
 ```bash
-# Rollback using Helm
-helm rollback <release-name> -n <namespace>
+# Revert the offending commit (typically bumps to all.yml + versions-configmap.yaml)
+git revert <commit-sha>
+git push
 
-# Examples
-helm rollback metallb -n metallb-system
-helm rollback traefik -n traefik
-helm rollback cert-manager -n cert-manager
-helm rollback external-dns -n external-dns
-
-# Or redeploy specific version
-helm upgrade traefik traefik/traefik -n traefik --version <old-version> --reuse-values
+# Flux reconciles the cluster back to the prior state (~1 min)
+task flux:reconcile   # Optional: don't wait for the poll interval
+task flux:status
 ```
 
-#### Rolling back workload images
+This is atomic — the ConfigMap flips back, every HelmRelease re-renders with
+the prior `${version}`, and helm-controller performs the downgrade.
+
+**Emergency stop** (skip git, pause Flux before reverting):
 
 ```bash
-# Update group_vars to previous versions (edit all.yml manually)
+# Pause a single HelmRelease (stops Flux from "fixing" your manual work)
+task flux:suspend -- traefik/HelmRelease/traefik
 
-# Redeploy
-task k3s:deploy-authentik
-task downloads:deploy
-task recipes:deploy
+# Manually roll back with helm while Flux is paused
+helm history traefik -n traefik
+helm rollback traefik <revision> -n traefik
+
+# After git revert + push, resume
+task flux:resume -- traefik/HelmRelease/traefik
+task flux:reconcile
 ```
 
 ### Troubleshooting Cluster Updates
@@ -854,20 +872,30 @@ kubectl describe node <node-name>
 kubectl delete pod <pod-name> -n <namespace>
 ```
 
-#### Helm upgrade fails
+#### HelmRelease upgrade fails (Flux)
 
 ```bash
-# Check release status
-helm list -n <namespace>
-helm history <release-name> -n <namespace>
+# Check the HelmRelease status
+flux get hr -n <namespace>
+kubectl describe hr <name> -n <namespace>
 
-# View pending upgrade
-kubectl get all -n <namespace>
+# View Flux events
+flux events --for HelmRelease/<name> -n <namespace>
 kubectl get events -n <namespace> --sort-by='.lastTimestamp'
 
-# Rollback
-helm rollback <release-name> -n <namespace>
+# Rollback via git revert (preferred):
+git revert <commit-sha> && git push
+task flux:reconcile
+
+# Or emergency manual rollback while suspending Flux:
+task flux:suspend -- <namespace>/HelmRelease/<name>
+helm history <name> -n <namespace>
+helm rollback <name> <revision> -n <namespace>
+# Then fix root cause in git, push, and:
+task flux:resume -- <namespace>/HelmRelease/<name>
 ```
+
+(See `docs/29-flux-operations.md` for the full Flux troubleshooting tree.)
 
 #### Node drain hangs
 

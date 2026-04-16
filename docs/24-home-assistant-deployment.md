@@ -177,19 +177,31 @@ curl -s http://192.168.0.154:8123 | head -5
 
 ## Phase 2: Deploy Kubernetes Resources
 
-The IngressRoute, Service, and EndpointSlice are already configured. Deploy them:
+The IngressRoute, ClusterIP Service, and manual EndpointSlice (pointing at
+the HAOS VM's IP) for Home Assistant live in `kubernetes/apps/vm-ingress/`
+(the consolidated "non-k8s services" bundle alongside Plex, AdGuard, GitLab
+VM, router, Traefik dashboard). Resources land in the `default` namespace
+(services) and `traefik` namespace (middleware); `vm-ingress` is a folder
+name, not a Kubernetes namespace. Flux reconciles them automatically once
+the files are committed.
+
+To deploy or update Home Assistant routing, edit
+`kubernetes/apps/vm-ingress/home-assistant.yaml` (or `services-default.yaml`
+/ `middleware.yaml` as appropriate), commit, and push:
 
 ```bash
-# Deploy IngressRoutes (includes Home Assistant)
-task k3s:deploy-ingress-routes
+vim kubernetes/apps/vm-ingress/home-assistant.yaml
+git add kubernetes/apps/vm-ingress/home-assistant.yaml
+git commit -m "Update Home Assistant ingress"
+git push
 
-# Or manually:
-kubectl apply -k kubernetes/apps/ingress-routes/
+# Flux reconciles within ~1 minute; force immediately:
+task flux:reconcile
 
-# Verify
+# Verify (resources are in the `default` namespace, NOT `vm-ingress`)
 kubectl get ingressroute -A | grep home
-kubectl get service home-assistant-backend
-kubectl get endpointslice home-assistant-backend
+kubectl get service home-assistant-backend -n default
+kubectl get endpointslice -n default | grep home-assistant-backend
 ```
 
 ### Verify Traefik Routing
@@ -271,12 +283,11 @@ Apps that do **not** need HA bypass routes (no Home Assistant integration):
 
 ### Step 1: Deploy HA Bypass Routes
 
-Bypass routes are deployed automatically as part of `task downloads:deploy`. To deploy or update them independently:
+Bypass routes are part of `kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml`
+and Flux-managed alongside the rest of the downloads stack. To update them, edit that
+file, commit, and push.
 
 ```bash
-# Deploy bypass routes
-kubectl apply -f kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml
-
 # Verify (should show 5 bypass routes: sonarr, radarr, lidarr, nzbget, qbittorrent)
 kubectl get ingressroute -n downloads | grep ha-bypass
 ```
@@ -315,27 +326,27 @@ Home Assistant configuration is managed via Ansible with 1Password secret inject
 
 **Step 1: Deploy Configuration**
 
-Configuration is managed by the `home_assistant` Ansible role with automatic secret injection from 1Password.
+Home Assistant has two independent surfaces that are managed separately:
 
-**Full Deployment (Recommended):**
+1. **HA configuration** (`configuration.yaml`, `secrets.yaml`, etc.) — managed by the
+   `home_assistant` Ansible role, deployed via SCP to the HAOS VM.
+2. **Traefik ingress** (`home-assistant.yaml`, middlewares, `ExternalName` Service) —
+   managed by Flux under `kubernetes/apps/vm-ingress/`.
+
+**Deploy/update HA configuration (Ansible):**
 
 ```bash
-# Deploy both ingress and configuration
-task home-assistant:deploy
+# Deploy configuration (regenerates configuration.yaml + secrets.yaml from templates)
+task home-assistant:deploy-config
 
-# Restart to apply changes
+# Restart to apply
 task home-assistant:restart-after-config
 ```
 
-**Granular Deployment (for specific updates):**
+**Deploy/update ingress (Flux):**
 
-```bash
-# Deploy configuration only (updates SMTP, HTTP, secrets)
-task home-assistant:deploy-config
-
-# Deploy ingress only (updates Traefik routing)
-task home-assistant:deploy-ingress
-```
+Edit `kubernetes/apps/vm-ingress/home-assistant.yaml`, commit, push. Flux reconciles.
+`task flux:reconcile` triggers immediate sync.
 
 This will:
 1. Read secrets from 1Password via environment variables (resolved by `op run`)
@@ -373,7 +384,7 @@ Templates are version-controlled in the Ansible role:
 1. Edit templates in `ansible/roles/home_assistant/templates/`
 2. Update variables in `defaults/main.yml` if needed
 3. Commit to Git
-4. Deploy: `task home-assistant:deploy` (or `deploy-config` for config only)
+4. Deploy configuration: `task home-assistant:deploy-config` (or `task home-assistant:deploy` — that task now only runs deploy-config). Ingress lives in Flux; edit `kubernetes/apps/vm-ingress/home-assistant.yaml` + `services-default.yaml`, commit, push.
 5. Restart: `task home-assistant:restart-after-config`
 
 **Direct Playbook Execution:**
@@ -953,7 +964,7 @@ kubectl logs -n traefik -l app.kubernetes.io/name=traefik -f
 
 ### WebSocket Connection Failed
 
-Verify the `home-assistant-headers` middleware is applied:
+Verify the `home-assistant-headers` middleware is applied (it lives in `kubernetes/apps/vm-ingress/middleware.yaml` but all middlewares declare `metadata.namespace: traefik`):
 
 ```bash
 kubectl get middleware home-assistant-headers -n traefik -o yaml

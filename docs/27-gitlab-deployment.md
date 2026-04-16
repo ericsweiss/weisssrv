@@ -241,11 +241,14 @@ task gitlab:deploy
 task gitlab:deploy-check
 ```
 
-### Step 6: Deploy Traefik IngressRoutes
+### Step 6: Traefik IngressRoutes (Flux-managed)
 
-```bash
-task gitlab:deploy-ingress
-```
+The Traefik IngressRoutes for `git.ericsweiss.com` (web + SSH port 2222),
+`registry.git.ericsweiss.com`, and `*.pages.git.ericsweiss.com` live under
+`kubernetes/apps/vm-ingress/gitlab.yaml`, with ExternalName Services in
+`services-gitlab.yaml` and certificates in `gitlab-certificate.yaml`. Flux
+reconciles them from the `apps` Kustomization. To change them, edit the
+YAML + commit + push; the change is live within ~1 minute.
 
 ### Step 7: Verify Deployment
 
@@ -288,25 +291,24 @@ The weisssrv `.gitlab-ci.yml` sets `default: tags: [infrastructure]` so all its 
 > `protected = true` so the privileged runner only executes jobs on protected branches (e.g.,
 > `main`). This prevents untrusted MR code from running with elevated privileges.
 
-### Step 9: Deploy GitLab Runners
+### Step 9: GitLab Runners (Flux-managed)
 
-```bash
-# Shared runner (unprivileged, for other projects, runs untagged jobs)
-task gitlab:deploy-runner
+Both runners (shared and privileged) are Flux `HelmRelease`s under
+`kubernetes/apps/gitlab-runner/` and `kubernetes/apps/gitlab-runner-privileged/`.
+Their runner tokens flow from 1Password through `ExternalSecret`s. To deploy
+or update them, edit the relevant `release.yaml` (or bump
+`gitlab_runner_helm_version` in `all.yml` + run `task flux:sync-versions`)
+and push. Flux reconciles the HelmRelease within ~1 minute.
 
-# Infrastructure runner (privileged, handles all weisssrv CI: lint, test, deploy)
-task gitlab:deploy-runner-privileged
-```
+See `docs/29-flux-operations.md` for the full workflow (rotating runner
+tokens, bumping chart versions, troubleshooting stuck releases).
 
 ## Task Commands
 
 ```bash
-# Deployment
-task gitlab:deploy          # Full deployment (VM + GitLab)
+# VM deployment (Ansible)
+task gitlab:deploy          # Full deployment (VM + GitLab application)
 task gitlab:deploy-check    # Dry-run deployment
-task gitlab:deploy-ingress  # Deploy Traefik IngressRoutes
-task gitlab:deploy-runner   # Deploy CI/CD runners on k3s
-task gitlab:deploy-runner-privileged   # Deploy privileged runner for DinD tests
 
 # Operations
 task gitlab:status          # Show GitLab and runner status
@@ -315,6 +317,10 @@ task gitlab:backup          # Create GitLab backup
 task gitlab:console         # SSH to GitLab VM
 task gitlab:logs            # View GitLab logs
 task gitlab:reconfigure     # Reconfigure GitLab after changes
+
+# Ingress, runners, agent — all Flux-managed: edit YAML + git push.
+# See kubernetes/apps/{gitlab-runner,gitlab-runner-privileged,gitlab-agent}/
+# and kubernetes/apps/vm-ingress/gitlab*.yaml.
 ```
 
 ## Backups
@@ -346,14 +352,19 @@ Proxmox VM snapshots provide additional disaster recovery capability.
 
 ### Updating GitLab Runner
 
-Both runners share the same Helm chart version. Update both when changing versions:
+Both runners share the same Helm chart version and are Flux-managed. Update:
 
-1. Update `gitlab_runner_helm_version` in `ansible/inventories/prod/group_vars/all.yml`
-2. Deploy both runners:
+1. Bump `gitlab_runner_helm_version` in `ansible/inventories/prod/group_vars/all.yml`
+2. Regenerate the ConfigMap and commit:
    ```bash
-   task gitlab:deploy-runner
-   task gitlab:deploy-runner-privileged
+   task flux:sync-versions
+   git add ansible/inventories/prod/group_vars/all.yml \
+           kubernetes/infrastructure/configs/versions-configmap.yaml
+   git commit -m "Bump GitLab Runner chart to <version>"
+   git push
    ```
+3. Flux reconciles both `gitlab-runner` and `gitlab-runner-privileged`
+   HelmReleases on the next cycle. Verify with `flux get hr -n gitlab-runner`.
 
 ## Troubleshooting
 
