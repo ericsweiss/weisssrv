@@ -1,0 +1,246 @@
+---
+# Authentik HelmRelease — adopts the existing release `authentik` in the
+# authentik namespace (matching releaseName + targetNamespace). Chart version
+# and image tags substituted from cluster-versions ConfigMap. Values inlined
+# from the previous kubernetes/apps/authentik/values.yaml (preserved verbatim
+# except for the authentik.secret_key placeholder — replaced with an env var
+# sourced from authentik-secrets).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: authentik
+  namespace: authentik
+spec:
+  interval: 30m
+  releaseName: authentik
+  chart:
+    spec:
+      chart: authentik
+      version: "${authentik_version}"
+      sourceRef:
+        kind: HelmRepository
+        name: authentik
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  # Image tags substituted from cluster-versions ConfigMap via Kustomization
+  # postBuild.substituteFrom (apps top-level Kustomization). Inline refs keep
+  # everything in one file and avoid Flux's cross-namespace valuesFrom limits
+  # (HelmRelease.spec.valuesFrom[].namespace is not supported — sourceRef is
+  # always same-namespace).
+  values:
+    global:
+      # Canonical external domain for AUTHENTIK_HOST and redirect URLs
+      # External clients (internet) access this; internal clients use auth.esweiss.com
+      # but SSO flows redirect to this domain for OAuth callbacks
+      domain: auth.ericsweiss.com
+
+    authentik:
+      # secret_key sourced from authentik-secrets via env (see server.env, worker.env below)
+
+      # SMTP relay for notifications
+      # smtp-relay.esweiss.com requires SASL authentication on port 587
+      email:
+        host: smtp-relay.esweiss.com
+        port: 587
+        use_tls: true
+        use_ssl: false
+        from: "Authentik SSO <authentik@esweiss.com>"
+        # Username/password injected from authentik-secrets via env vars
+        username: ""  # Set via AUTHENTIK_EMAIL__USERNAME env var
+        password: ""  # Set via AUTHENTIK_EMAIL__PASSWORD env var
+
+      error_reporting:
+        enabled: false
+
+      postgresql:
+        host: '{{ .Release.Name }}-postgresql'
+        name: authentik
+        user: authentik
+        password: ""  # From existingSecret
+
+    server:
+      replicas: 2
+
+      pdb:
+        enabled: true
+        minAvailable: 1
+
+      image:
+        tag: "${authentik_version}"
+
+      env:
+        - name: AUTHENTIK_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: secret-key
+        - name: AUTHENTIK_POSTGRESQL__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: postgresql-password
+        - name: AUTHENTIK_EMAIL__USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: smtp-username
+        - name: AUTHENTIK_EMAIL__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: smtp-password
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+      # Spread replicas across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/component: server
+                    app.kubernetes.io/name: authentik
+                topologyKey: kubernetes.io/hostname
+
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: false  # Enable with Prometheus Operator
+
+      ingress:
+        enabled: false  # Using Traefik IngressRoute
+
+    worker:
+      replicas: 1
+
+      image:
+        tag: "${authentik_version}"
+
+      # Worker requires /dev/shm for PID file used by healthcheck
+      # Without this, healthcheck fails: "open /dev/shm/authentik-worker.pid: no such file or directory"
+      # NOTE: The Authentik Helm chart uses 'additionalVolumes' and 'additionalVolumeMounts' (not 'volumes')
+      # See: https://github.com/goauthentik/helm/blob/main/charts/authentik/values.yaml
+      additionalVolumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+
+      additionalVolumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+
+      # More generous probe timeouts - worker can be slow when processing tasks
+      livenessProbe:
+        exec:
+          command:
+            - ak
+            - healthcheck
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 5
+
+      startupProbe:
+        exec:
+          command:
+            - ak
+            - healthcheck
+        initialDelaySeconds: 60
+        periodSeconds: 10
+        timeoutSeconds: 10
+        failureThreshold: 30
+
+      env:
+        - name: AUTHENTIK_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: secret-key
+        - name: AUTHENTIK_POSTGRESQL__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: postgresql-password
+        - name: AUTHENTIK_EMAIL__USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: smtp-username
+        - name: AUTHENTIK_EMAIL__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secrets
+              key: smtp-password
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # Bundled PostgreSQL - consider external for HA
+    postgresql:
+      enabled: true
+      image:
+        tag: "${postgresql_version}"
+      auth:
+        username: authentik
+        database: authentik
+        existingSecret: authentik-secrets
+        secretKeys:
+          adminPasswordKey: postgresql-admin-password
+          userPasswordKey: postgresql-password
+      primary:
+        persistence:
+          enabled: true
+          size: 10Gi
+          storageClass: ""
+          existingClaim: authentik-postgres-data  # Use dedicated ZFS zvol PVC
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        # Pin to NAS agent for local storage
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                        - k3s-agt-nas-01
+        # Tolerate NAS taint to run on k3s-agt-nas-01
+        tolerations:
+          - key: esweiss.com/nas
+            operator: Equal
+            value: "true"
+            effect: PreferNoSchedule
+
+    # Redis not required as of Authentik 2025.10
+    redis:
+      enabled: false
+
+    serviceAccount:
+      create: true

@@ -41,7 +41,7 @@ spec:
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: radarr
-          image: lscr.io/linuxserver/radarr:version-${RADARR_VERSION}
+          image: lscr.io/linuxserver/radarr:version-${radarr_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID

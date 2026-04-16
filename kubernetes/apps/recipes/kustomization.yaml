@@ -4,6 +4,7 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  - externalsecret.yaml
   - storage.yaml
   - mealie.yaml
   - bar-assistant.yaml

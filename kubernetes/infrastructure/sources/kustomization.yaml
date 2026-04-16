@@ -7,3 +7,5 @@ resources:
   - jetstack.yaml
   - traefik.yaml
   - external-dns.yaml
+  - authentik.yaml
+  - gitlab.yaml

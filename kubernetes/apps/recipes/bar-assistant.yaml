@@ -160,8 +160,8 @@ spec:
             - name: MEILI_MASTER_KEY
               valueFrom:
                 secretKeyRef:
-                  name: bar-assistant-secrets
-                  key: meilisearch-master-key
+                  name: recipes-secrets
+                  key: bar-assistant-meilisearch-master-key
             - name: MEILI_NO_ANALYTICS
               value: "true"
           ports:
@@ -261,7 +261,7 @@ spec:
       containers:
         - name: bar-assistant
           # Version managed in ansible/inventories/prod/group_vars/all.yml
-          image: barassistant/server:${BAR_ASSISTANT_VERSION}
+          image: barassistant/server:${bar_assistant_version}
           imagePullPolicy: IfNotPresent
           env:
             # Application URL - matches official docker-compose APP_URL=$API_URL
@@ -273,8 +273,8 @@ spec:
             - name: MEILISEARCH_KEY
               valueFrom:
                 secretKeyRef:
-                  name: bar-assistant-secrets
-                  key: meilisearch-master-key
+                  name: recipes-secrets
+                  key: bar-assistant-meilisearch-master-key
             # Redis configuration - matches official docker-compose
             - name: REDIS_HOST
               value: bar-assistant-redis
@@ -282,7 +282,7 @@ spec:
               value: redis
             - name: SESSION_DRIVER
               value: redis
-            # Mail configuration (uses existing SMTP relay)
+            # Mail configuration (uses existing SMTP relay; no auth required from LAN)
             - name: MAIL_MAILER
               value: smtp
             - name: MAIL_HOST
@@ -295,29 +295,19 @@ spec:
               value: bar-assistant@esweiss.com
             - name: MAIL_FROM_NAME
               value: Bar Assistant
-            - name: MAIL_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: bar-assistant-secrets
-                  key: smtp-username
-            - name: MAIL_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: bar-assistant-secrets
-                  key: smtp-password
             # Authentik SSO configuration
             - name: AUTHENTIK_BASE_URL
               value: https://auth.ericsweiss.com
             - name: AUTHENTIK_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: bar-assistant-secrets
-                  key: authentik-client-id
+                  name: recipes-secrets
+                  key: bar-assistant-authentik-client-id
             - name: AUTHENTIK_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: bar-assistant-secrets
-                  key: authentik-client-secret
+                  name: recipes-secrets
+                  key: bar-assistant-authentik-client-secret
             - name: AUTHENTIK_REDIRECT_URI
               value: https://bar.ericsweiss.com/oauth/callback
             # Allow registration for SSO auto-linking/creation
@@ -443,7 +433,7 @@ spec:
       containers:
         - name: salt-rim
           # Version managed in ansible/inventories/prod/group_vars/all.yml
-          image: barassistant/salt-rim:${SALT_RIM_VERSION}
+          image: barassistant/salt-rim:${salt_rim_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: API_URL

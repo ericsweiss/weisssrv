@@ -1,0 +1,155 @@
+---
+# Infrastructure (privileged) GitLab Runner HelmRelease — adopts the existing
+# Helm release `gitlab-runner-privileged` in the gitlab-runner namespace
+# (matching releaseName + targetNamespace). Both runners share the
+# `gitlab-runner` namespace; isolation is via separate ServiceAccount
+# (gitlab-runner-privileged), separate Secret, and the `infrastructure` job
+# tag. Chart version substituted from cluster-versions ConfigMap. Runner token
+# sourced via ExternalSecret (externalsecret.yaml); the chart reads it from
+# the Secret named `gitlab-runner-privileged-token` via runners.secret.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gitlab-runner-privileged
+  namespace: gitlab-runner
+spec:
+  interval: 30m
+  releaseName: gitlab-runner-privileged
+  # Runner liveness probe + GitLab connection handshake can take 6-8 minutes
+  # on a cold start; default 5m timeout times out prematurely.
+  timeout: 15m
+  chart:
+    spec:
+      chart: gitlab-runner
+      version: "${gitlab_runner_helm_version}"
+      sourceRef:
+        kind: HelmRepository
+        name: gitlab
+        namespace: flux-system
+      interval: 12h
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
+    gitlabUrl: https://git.ericsweiss.com
+
+    # Concurrent jobs - handles all weisssrv CI/CD (lint, test, deploy)
+    concurrent: 4
+
+    # Check interval (seconds)
+    checkInterval: 30
+
+    # Kubernetes executor configuration
+    runners:
+      # Runner name prefix
+      name: k3s-runner-infrastructure
+
+      # Existing Secret (created by ESO externalsecret.yaml) containing the
+      # runner-token. Replaces the previous imperative --set runnerToken flag.
+      secret: gitlab-runner-privileged-token
+
+      # Tags - ONLY run jobs tagged "infrastructure" (weisssrv project jobs)
+      tags: "infrastructure"
+
+      # Do NOT run untagged jobs - only explicitly tagged jobs land here
+      # Other projects' untagged jobs go to the shared non-privileged runner
+      runUntagged: false
+
+      # Protected branches only
+      # NOTE: Disabled for homelab convenience - allows test jobs on any branch
+      protected: false
+
+      # Executor type
+      executor: kubernetes
+
+      # Kubernetes executor config
+      config: |
+        [[runners]]
+          [runners.kubernetes]
+            namespace = "gitlab-runner"
+            image = "python:3.11"
+            privileged = true
+
+            # CPU/Memory limits for job pods
+            # Higher limits for DinD test jobs; lint/deploy jobs use less
+            cpu_limit = "4"
+            cpu_request = "500m"
+            memory_limit = "8Gi"
+            memory_request = "1Gi"
+
+            # Service container resource limits (docker:dind sidecar for test jobs)
+            service_cpu_limit = "2"
+            service_cpu_request = "500m"
+            service_memory_limit = "4Gi"
+            service_memory_request = "1Gi"
+
+            # Service account
+            service_account = "gitlab-runner-privileged"
+
+            # No pod security context restrictions - DinD test jobs require root
+            # Docker daemon needs root privileges to function. Lint and deploy jobs
+            # also run as root here for simplicity since this runner is restricted
+            # to the trusted weisssrv project via the "infrastructure" tag.
+
+            # Pull policy
+            pull_policy = ["if-not-present"]
+
+            # Allow individual CI jobs to override node selector for CPU-compatibility only.
+            # Restricted to esweiss.com/cpu=modern|legacy to prevent arbitrary node targeting.
+            # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
+            node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
+    # RBAC configuration
+    # Restricted to gitlab-runner namespace (principle of least privilege)
+    rbac:
+      create: true
+      clusterWideAccess: false
+      rules:
+        - apiGroups: [""]
+          resources: ["pods", "pods/exec", "pods/attach", "pods/log", "secrets", "configmaps"]
+          verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
+        - apiGroups: [""]
+          resources: ["services"]
+          verbs: ["get", "list", "watch"]
+
+    # Service account - separate from non-privileged runner
+    serviceAccount:
+      create: true
+      name: gitlab-runner-privileged
+
+    # Pod resources for the runner manager (not the job pods)
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Node affinity - prefer non-NAS nodes for runner pods
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: esweiss.com/nas
+                  operator: DoesNotExist
+
+    # Tolerations for workload nodes
+    tolerations:
+      - key: esweiss.com/ingress
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule
+      - key: esweiss.com/compute
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule

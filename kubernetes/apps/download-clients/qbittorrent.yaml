@@ -110,7 +110,7 @@ spec:
         # When VPN is disabled, this container exits immediately (no resources used)
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: gluetun
-          image: qmcgaw/gluetun:${GLUETUN_VERSION}
+          image: qmcgaw/gluetun:${gluetun_version}
           imagePullPolicy: Always
           command:
             - sh
@@ -161,7 +161,10 @@ spec:
             - name: HTTP_CONTROL_SERVER_ADDRESS
               value: ":8001"
             - name: DNS_ADDRESS
-              value: "192.168.0.150,192.168.0.160"
+              # Gluetun v3.41 rejects comma-separated values ("unexpected character").
+              # Use primary internal resolver; dns-02 is covered by pod's default
+              # CoreDNS resolver when gluetun allows fallback via DNS_KEEP_NAMESERVER.
+              value: "192.168.0.150"
             - name: TZ
               value: America/Los_Angeles
             - name: LOG_LEVEL
@@ -228,7 +231,7 @@ spec:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         # Note: qBittorrent uses bare version tags (not version- prefixed like other LinuxServer images)
         - name: qbittorrent
-          image: lscr.io/linuxserver/qbittorrent:${QBITTORRENT_VERSION}
+          image: lscr.io/linuxserver/qbittorrent:${qbittorrent_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID

@@ -4,11 +4,12 @@ kind: Kustomization
 namespace: downloads
 resources:
   - namespace.yaml
+  # VPN credentials secret is managed by External Secrets Operator (ESO) from
+  # 1Password "PrivadoVPN Credentials" via the onepassword-homelab
+  # ClusterSecretStore. See externalsecret.yaml.
+  - externalsecret.yaml
   - storage.yaml
   - certificate.yaml
-  # NOTE: VPN credentials secret is created by 'task downloads:deploy' before
-  # kustomize apply. Do NOT add vpn-common.yaml here - it contains placeholders
-  # that would overwrite the real credentials from 1Password.
   # Download clients with optional VPN sidecars
   - nzbget.yaml
   - qbittorrent.yaml

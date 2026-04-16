@@ -41,7 +41,7 @@ spec:
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: sonarr
-          image: lscr.io/linuxserver/sonarr:version-${SONARR_VERSION}
+          image: lscr.io/linuxserver/sonarr:version-${sonarr_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID
