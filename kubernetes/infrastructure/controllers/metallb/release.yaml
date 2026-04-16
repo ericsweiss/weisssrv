@@ -1,0 +1,38 @@
+---
+# MetalLB HelmRelease — adopts the existing release `metallb` in metallb-system
+# (matching releaseName + targetNamespace). Chart version substituted from
+# cluster-versions ConfigMap.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: metallb
+  namespace: metallb-system
+spec:
+  interval: 30m
+  releaseName: metallb
+  chart:
+    spec:
+      chart: metallb
+      version: "${helm_chart_versions_metallb}"
+      sourceRef:
+        kind: HelmRepository
+        name: metallb
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    speaker:
+      # Only run speakers on nodes labeled for ingress traffic.
+      nodeSelector:
+        esweiss.com/ingress: "true"
+      tolerations: []
+    controller:
+      # Controller can run anywhere (doesn't handle traffic directly).
+      nodeSelector: {}
+      tolerations: []
