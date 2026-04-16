@@ -2206,7 +2206,7 @@ tasks:
           --set resources.limits.memory=128Mi
       - |
         echo "Waiting for agent to be ready..."
-        kubectl rollout status deployment/weisssrv-k3s-gitlab-agent -n gitlab-agent --timeout=60s
+        kubectl rollout status deployment/weisssrv-k3s-gitlab-agent-v2 -n gitlab-agent --timeout=60s
         echo "GitLab Agent deployed successfully"
 
   gitlab:verify:
