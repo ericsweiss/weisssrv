@@ -20,7 +20,7 @@ metadata:
   namespace: traefik
 spec:
   headers:
-    stsSeconds: 15768000
+    stsSeconds: 31536000
     stsIncludeSubdomains: true
 
 ---

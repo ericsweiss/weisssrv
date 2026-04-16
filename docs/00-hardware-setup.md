@@ -75,7 +75,7 @@ This homelab currently consists of:
 - **RAM**: 16GB DDR3
 - **Storage**:
   - OS: 120GB SSD
-  - Additional: 1TB Samsung 870 EVO (planned)
+  - Additional: 1TB Samsung 870 EVO (installed, local-ssd ZFS pool)
 - **Network**: Gigabit Ethernet
 - **Role**: General compute, k3s workers, LXC containers
 
@@ -83,11 +83,25 @@ This homelab currently consists of:
 
 - **Hostname**: pve-laptop-01
 - **IP Address**: 192.168.0.103
+- **CPU**: Intel Core i7-5700HQ @ 2.70GHz (4 cores / 8 threads, Haswell)
 - **RAM**: 16GB
-- **CPU**: (Collect via `lscpu` after OS install)
-- **Storage**: (Collect via `lsblk` after OS install)
-- **Network**: Gigabit Ethernet / WiFi
-- **Role**: Portable compute node, development
+- **Storage**:
+  - OS: 128GB Toshiba THNSNJ128G8NU SSD
+  - Additional: 1TB Samsung 870 EVO (installed, local-ssd ZFS pool)
+- **Network**: Qualcomm Atheros Killer E220x Gigabit Ethernet (WiFi available but unused)
+- **Role**: Compute node, k3s server + agent
+
+### Compute Node: Dell Precision 3630
+
+- **Hostname**: pve-prec-01
+- **IP Address**: 192.168.0.107
+- **CPU**: Intel Core i7-8700K @ 3.70GHz (6 cores / 12 threads, Coffee Lake)
+- **RAM**: 32GB
+- **Storage**:
+  - OS: 512GB Toshiba KXG60ZNV512G NVMe SSD
+  - Additional: 1TB Samsung 870 EVO (installed, local-ssd ZFS pool)
+- **Network**: Intel I219-LM Gigabit Ethernet
+- **Role**: General compute, k3s server + agent, Home Assistant host
 
 ## UEFI/BIOS Configuration
 
@@ -168,7 +182,7 @@ Replace `/dev/sdX` with your USB device (use `lsblk` to identify).
 
 **Location and Time Zone**:
 - Country: United States
-- Time zone: America/New_York (or your local timezone)
+- Time zone: America/Los_Angeles (or your local timezone)
 - Keyboard layout: en-us
 
 **Password and Email**:
@@ -370,7 +384,7 @@ sudo -v  # Should not prompt for password
 
 ```bash
 # Set timezone
-timedatectl set-timezone America/New_York
+timedatectl set-timezone America/Los_Angeles
 
 # Verify
 timedatectl status
@@ -555,7 +569,7 @@ After bootstrap, verify SSH access: `ssh eric@<host-ip>`
 
 ### Proxmox Cluster
 
-- [ ] Proxmox VE version 7.0+ (`pveversion`)
+- [ ] Proxmox VE version 8.0+ (`pveversion`)
 - [ ] Cluster created (if HA) or node standalone
 - [ ] Web UI accessible (https://<node-ip>:8006)
 - [ ] Time synchronized across nodes (`timedatectl`)

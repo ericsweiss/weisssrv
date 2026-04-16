@@ -40,7 +40,7 @@ Traefik Internal VIP (192.168.0.101)          |
 | **VM ID** | 154 |
 | **Hostname** | home |
 | **IP Address** | 192.168.0.154 |
-| **Proxmox Host** | pve-nas-01 |
+| **Proxmox Host** | pve-prec-01 |
 | **Storage** | local-lvm |
 | **CPU Cores** | 4 |
 | **RAM** | 8 GB |
@@ -96,8 +96,8 @@ HAOS cannot use the standard `proxmox_vm` Ansible role because:
 ### Step 1: Create the VM
 
 ```bash
-# SSH to pve-nas-01
-ssh pve-nas-01
+# SSH to pve-prec-01
+ssh pve-prec-01
 
 # Create VM with proper settings
 qm create 154 \
@@ -146,7 +146,7 @@ qm start 154
 HAOS will initially get a DHCP address. Configure static IP via the console:
 
 1. Open Proxmox web UI
-2. Navigate to pve-nas-01 > 154 (home) > Console
+2. Navigate to pve-prec-01 > 154 (home) > Console
 3. Wait for HAOS to boot (shows `ha>` prompt)
 4. Configure network:
 
@@ -919,10 +919,10 @@ Home Assistant uses WebSockets for real-time updates. Verify they work:
 
 ```bash
 # Check VM status
-ssh pve-nas-01 "qm status 154"
+ssh pve-prec-01 "qm status 154"
 
 # Check VM config
-ssh pve-nas-01 "qm config 154"
+ssh pve-prec-01 "qm config 154"
 
 # View console output
 # Use Proxmox web UI Console viewer
@@ -994,10 +994,10 @@ Updates are managed through the Home Assistant UI:
 For major changes, take a Proxmox snapshot first:
 
 ```bash
-ssh pve-nas-01 "qm snapshot 154 pre-update --description 'Before HA update'"
+ssh pve-prec-01 "qm snapshot 154 pre-update --description 'Before HA update'"
 
 # To restore if needed:
-ssh pve-nas-01 "qm rollback 154 pre-update"
+ssh pve-prec-01 "qm rollback 154 pre-update"
 ```
 
 ## DNS Configuration Reference

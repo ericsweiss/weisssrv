@@ -210,18 +210,7 @@ postfix_config:
   smtp_sasl_security_options: "noanonymous"
   smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
 
-# Mail aliases for DNS LXCs
-mail_aliases:
-  postmaster: root
-  nobody: root
-  hostmaster: root
-  webmaster: root
-  root: "{{ admin_email }}"
-
-# SASL credentials for authenticating to smtp-relay (from 1Password)
-# Credentials injected via 'op run --' (handled automatically by 'task deploy:dns')
-postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
-postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"
+# postfix_sasl_user, postfix_sasl_password, and mail_aliases are defined in all.yml
 
 # dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
 dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY', default='') }}"

@@ -94,16 +94,16 @@ Internal services use AdGuard rewrites instead of split-horizon DNS. Configure t
 | smtp-relay.esweiss.com | 192.168.0.151 | SMTP relay |
 | pve-nas-01.esweiss.com | 192.168.0.102 | Proxmox NAS host |
 | pve-opt-03.esweiss.com | 192.168.0.106 | Proxmox compute host |
-| pve-prec-01.esweiss.com | 192.168.0.107 | Proxmox compute host (future) |
+| pve-prec-01.esweiss.com | 192.168.0.107 | Proxmox compute host |
 | k3s-srv-nas-01.esweiss.com | 192.168.0.222 | K3s server node |
-| k3s-srv-laptop-01.esweiss.com | 192.168.0.223 | K3s server (future HA) |
-| k3s-srv-prec-01.esweiss.com | 192.168.0.227 | K3s server (future HA) |
+| k3s-srv-laptop-01.esweiss.com | 192.168.0.223 | K3s server |
+| k3s-srv-prec-01.esweiss.com | 192.168.0.227 | K3s server |
 | k3s-agt-nas-01.esweiss.com | 192.168.0.202 | K3s agent (NAS) |
-| k3s-agt-laptop-01.esweiss.com | 192.168.0.203 | K3s agent (ingress + general, future) |
-| k3s-agt-opt-01.esweiss.com | 192.168.0.204 | K3s agent (general, future) |
-| k3s-agt-opt-02.esweiss.com | 192.168.0.205 | K3s agent (general, future) |
+| k3s-agt-laptop-01.esweiss.com | 192.168.0.203 | K3s agent (ingress + general) |
+| k3s-agt-opt-01.esweiss.com | 192.168.0.204 | K3s agent (general) |
+| k3s-agt-opt-02.esweiss.com | 192.168.0.205 | K3s agent (general) |
 | k3s-agt-opt-03.esweiss.com | 192.168.0.206 | K3s agent (ingress + general) |
-| k3s-agt-prec-01.esweiss.com | 192.168.0.207 | K3s agent (general + compute, future) |
+| k3s-agt-prec-01.esweiss.com | 192.168.0.207 | K3s agent (general + compute) |
 | k3s.esweiss.com | 192.168.0.161 | K3s API VIP (kube-vip) |
 | vip-public.esweiss.com | 192.168.0.100 | MetalLB public pool |
 | vip-internal.esweiss.com | 192.168.0.101 | MetalLB internal pool |

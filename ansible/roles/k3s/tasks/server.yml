@@ -81,22 +81,31 @@
       - "Needs install/upgrade: {{ k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version }}"
   tags: [debug]
 
+- name: Download k3s install script
+  ansible.builtin.get_url:
+    # Write to /root with 0700 to prevent local tampering/symlink abuse in /tmp.
+    # force: true ensures upgrades always use the current upstream installer.
+    url: "{{ k3s_install_script_url }}"
+    dest: /root/k3s-install.sh
+    owner: root
+    group: root
+    mode: "0700"
+    force: true
+  when:
+    - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+    - not (skip_k3s_install | default(false))
+
 - name: Install or upgrade k3s server
-  ansible.builtin.shell: |
-    set -o pipefail
-    curl -sfL {{ k3s_install_script_url }} | \
-      INSTALL_K3S_VERSION="{{ k3s_version }}" \
-      K3S_TOKEN="{{ k3s_token }}" \
-      sh -s - server
-  args:
-    executable: /bin/bash
+  ansible.builtin.command: /root/k3s-install.sh server
   environment:
     K3S_TOKEN: "{{ k3s_token }}"
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
   when:
     - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
     - not (skip_k3s_install | default(false))
   notify: Restart k3s
   changed_when: true
+  no_log: true
 
 - name: Wait for k3s to be ready
   ansible.builtin.command: k3s kubectl get nodes

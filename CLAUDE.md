@@ -17,7 +17,7 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                 # Configuration management
 │   ├── inventories/prod/    # Production inventory + vars
-│   ├── roles/               # 19 roles for all services
+│   ├── roles/               # 20 roles for all services
 │   └── playbooks/           # Deployment playbooks
 ├── terraform/cloudflare/    # External DNS management
 ├── kubernetes/              # K3s manifests
@@ -76,7 +76,7 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
-  - Version 2026.2.1
+  - Version managed in all.yml
   - PostgreSQL data on persistent ZFS zvol (ssd/appdata/authentik/postgres, 10GB)
 - Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
 - Download clients + media stack (downloads namespace):
@@ -101,7 +101,7 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - API bypass routes for HA integrations (sonarr, radarr, lidarr, nzbget, qbittorrent)
   - NFS media mount (read-only access to unified media library)
 - GitLab (git.esweiss.com / git.ericsweiss.com):
-  - GitLab EE 18.9.1 (CE features) on pve-nas-01 (192.168.0.153)
+  - GitLab EE (CE features) on pve-nas-01 (192.168.0.153) — version in all.yml
   - VM with 6 vCPUs, 16GB RAM, 100GB root disk
   - Repository data on separate ZFS zvol (ssd/appdata/gitlab/repos, 200GB)
   - Container Registry (registry.git.ericsweiss.com)
@@ -110,7 +110,7 @@ All tasks are idempotent - safe to re-run. See `docs/19-k3s-deployment.md` for c
   - Authentik SSO integration
   - Git SSH on port 22 (internal), port 2222 (external)
 
-**Future**:
+**Planned**:
 - GitOps via Flux
 - Apps: Immich, Nextcloud
 
@@ -161,17 +161,21 @@ task k3s:deploy-workloads         # Deploy ALL platform workloads in order
 task k3s:deploy-metallb           # Deploy MetalLB load balancer
 task k3s:deploy-traefik           # Deploy Traefik ingress controller
 task k3s:deploy-cert-manager      # Deploy cert-manager with Let's Encrypt
+task k3s:deploy-coredns           # Deploy CoreDNS HelmChartConfig
 task k3s:deploy-external-dns      # Deploy external-dns for Cloudflare
 task k3s:deploy-ddns              # Deploy DDNS CronJob
 task k3s:deploy-ingress-routes    # Deploy Traefik IngressRoutes
 task k3s:deploy-authentik         # Deploy Authentik SSO identity provider
+task k3s:backup                   # Create etcd snapshot
 task k3s:status                   # Show cluster and workload status
 
 # Download clients and media stack
 task downloads:deploy             # Deploy full media stack with VPN
+task downloads:check              # Dry-run (diff) media stack deployment
 task downloads:status             # Show downloads namespace status
 task downloads:vpn-status         # Check VPN connection and public IP
 task downloads:vpn                # Toggle VPN per-app (APP=nzbget ENABLED=true PROVIDER=privado)
+task downloads:vpn-credentials    # Update VPN credentials secret
 task downloads:restart            # Restart all download/media apps
 task downloads:logs               # View app logs
 task downloads:shell              # Shell into app container
@@ -179,6 +183,7 @@ task downloads:delete             # Remove stack (preserves data)
 
 # Recipe management stack (Mealie + Bar Assistant)
 task recipes:deploy               # Deploy Mealie and Bar Assistant
+task recipes:check                # Dry-run (diff) recipe stack deployment
 task recipes:status               # Show recipes namespace status
 task recipes:restart              # Restart all recipe apps
 task recipes:logs                 # View app logs (APP=mealie)
@@ -203,6 +208,7 @@ task gitlab:deploy-check          # Dry-run deployment
 task gitlab:deploy-ingress        # Deploy Traefik IngressRoutes
 task gitlab:deploy-runner         # Deploy shared runner for multi-project k8s deploys (unprivileged)
 task gitlab:deploy-runner-privileged  # Deploy infrastructure runner for weisssrv (privileged, DinD + SSH)
+task gitlab:deploy-agent          # Deploy GitLab Agent for Kubernetes (agentk)
 task gitlab:status                # Show GitLab and runner status
 task gitlab:verify                # Run smoke tests (web UI, registry, pages, SSH)
 task gitlab:backup                # Create GitLab backup
@@ -211,7 +217,7 @@ task gitlab:logs                  # View GitLab logs
 task gitlab:reconfigure           # Reconfigure GitLab after changes
 
 # Version discovery (automated update checking)
-task maintenance:check-versions        # Check all 24 managed services for available updates
+task maintenance:check-versions        # Check all 27 managed services for available updates
 task maintenance:check-versions-json   # JSON output for scripting
 task maintenance:update-version        # Update single service: SERVICE=gluetun
 task maintenance:update-all-versions   # Update all outdated versions in all.yml
@@ -265,6 +271,8 @@ ansible-playbook ansible/playbooks/base.yml --tags ssh
 
 ### Manual Terraform
 
+> **Prefer `task terraform:*` commands** -- they handle Cloudflare API credentials and GitLab HTTP state backend auth automatically via `op run`. Manual commands require exporting `TF_VAR_cloudflare_api_token`, `TF_VAR_cloudflare_account_id`, and `TF_HTTP_*` env vars.
+
 ```bash
 cd terraform/cloudflare
 terraform init
@@ -287,7 +295,7 @@ secrets:
 ### Required 1Password Items
 
 In vault "Homelab":
-- **Cloudflare DNS Token** - API token (credential) + account ID (username)
+- **Cloudflare DNS Token** - API token (credential) + account ID (username field)
 - **SMTP Relay Gmail** - username + app password
 - **SMTP Relay Auth** - username + password (for null client auth to smtp-relay)
 - **Email Config** - root_alias (ericsweiss1@gmail.com)
@@ -311,8 +319,10 @@ In vault "Homelab":
 - **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
 - **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
 - **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
+- **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
-- **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template for kubectl/Helm access)
+- **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
+- **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
 
 ### Using 1Password
 
@@ -364,7 +374,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 ## Ansible Roles
 
 1. **base** - Packages, SSH hardening, fail2ban, users, timezone, DNS configuration
-2. **qol** - zsh + Oh My Zsh (20 plugins), neovim + Vundle, fzf, ripgrep
+2. **qol** - zsh + Oh My Zsh (15 plugins), neovim + Vundle, fzf, ripgrep
 3. **postfix_null_client** - Local mail relay to smtp-relay
 4. **tailscale** - VPN setup (manual `tailscale up` required)
 5. **proxmox_firewall** - IPSets, security groups, cluster.fw
@@ -382,6 +392,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 17. **proxmox_ha** - Proxmox HA rules, resources, and ZFS replication management
 18. **gitlab** - GitLab EE (CE features) installation and configuration
 19. **resolv_conf** - Shared /etc/resolv.conf management (used by base, adguard_home)
+20. **zvol_mount** - Shared ZFS zvol mounting with UUID-based fstab (used by k3s, gitlab)
 
 ## User Management
 
@@ -416,45 +427,10 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
 
 ## Version Management
 
-Application versions centralized in `ansible/inventories/prod/group_vars/all.yml`:
-
-```yaml
-# Base infrastructure
-adguard_home_version: "0.107.72"
-adguardhome_sync_version: "0.9.0"
-k3s_version: "v1.35.2+k3s1"
-kube_vip_version: "v1.1.0"
-authentik_version: "2026.2.1"
-plex_version: "1.43.0.10492-121068a07"  # apt pinned (or "latest" for auto-update)
-home_assistant_version: "17.0"       # HAOS, manual updates
-gitlab_version: "18.9.1-ee.0"        # GitLab EE (CE features)
-gitlab_runner_helm_version: "0.86.0" # GitLab Runner Helm chart
-
-# Helm charts (k3s platform)
-helm_chart_versions:
-  metallb: "0.15.3"
-  traefik: "39.1.0-ea.2"
-  cert_manager: "v1.19.4"
-  external_dns: "1.20.0"
-
-# Download clients (pinned to deployed versions)
-gluetun_version: "v3.41.1"
-nzbget_version: "26.0"
-qbittorrent_version: "5.1.4"
-prowlarr_version: "2.3.0.5236"
-sonarr_version: "4.0.16.2944"
-radarr_version: "6.0.4.10291"
-lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.13.0"
-
-# Recipe stack
-mealie_version: "v3.12.0"
-bar_assistant_version: "5.13.2"
-salt_rim_version: "4.14.1"
-```
+Application versions are centralized in `ansible/inventories/prod/group_vars/all.yml`. See that file for current version pins — they include base infrastructure (k3s, kube-vip, Authentik, Plex, GitLab), Helm charts (MetalLB, Traefik, cert-manager, external-dns), download clients (Gluetun, NZBGet, qBittorrent, Prowlarr, Sonarr, Radarr, Lidarr, Pulsarr), recipe stack (Mealie, Bar Assistant, Salt Rim), and PostgreSQL versions. Home Assistant (HAOS) is updated manually via its UI and is not version-pinned in all.yml.
 
 **Automated version discovery** (`scripts/check-versions.py`):
-- Checks 24 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
+- Checks 27 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
 - Run `task maintenance:check-versions` to see available updates
 - Run `task maintenance:update-version SERVICE=<name>` to update a single version in all.yml
 - Run `task maintenance:update-all-versions` to update all outdated versions
@@ -570,7 +546,7 @@ See `docs/` for detailed guides:
 
 ## Important Context Files
 
-- `CLUSTER_STATUS.txt` - Full cluster state snapshot (generated via `task collect-state`)
+- `CLUSTER_STATUS.txt` - Full cluster state snapshot (gitignored; generated locally via `task collect-state`)
 
 ## Credits
 

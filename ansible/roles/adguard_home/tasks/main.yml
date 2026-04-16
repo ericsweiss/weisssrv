@@ -85,12 +85,14 @@
     - name: Download AdGuard Home
       ansible.builtin.get_url:
         url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
-        dest: /tmp/adguardhome.tar.gz
+        # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
+        dest: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
         mode: "0644"
+        checksum: "sha256:https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/checksums.txt"
 
     - name: Extract AdGuard Home
       ansible.builtin.unarchive:
-        src: /tmp/adguardhome.tar.gz
+        src: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
         dest: /tmp
         remote_src: true
 

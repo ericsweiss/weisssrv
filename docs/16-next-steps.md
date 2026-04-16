@@ -110,7 +110,7 @@ GitLab is deployed as a dedicated VM (not k3s) due to its resource requirements 
 
 ### Completed Tasks
 
-- [x] **GitLab EE deployed** (version 18.9.1, using CE features)
+- [x] **GitLab EE deployed** (CE features, version managed in all.yml)
   - Omnibus package on Debian 13 VM
   - Repository data on separate ZFS zvol for persistence
   - Traefik IngressRoutes via k3s cluster

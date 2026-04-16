@@ -288,6 +288,14 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_chart": "gitlab-runner",
         "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-runner/tags",
     },
+    {
+        "name": "GitLab Agent (Helm)",
+        "var_name": "gitlab_agent_helm_version",
+        "category": "helm",
+        "helm_repo": "https://charts.gitlab.io",
+        "helm_chart": "gitlab-agent",
+        "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-agent/tags",
+    },
     # --- APT / Manual ---
     {
         "name": "Plex Media Server",
@@ -1430,6 +1438,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
         return "task gitlab:deploy"
     if var_name == "gitlab_runner_helm_version":
         return "task gitlab:deploy-runner"
+    if var_name == "gitlab_agent_helm_version":
+        return "task gitlab:deploy-agent"
 
     return "task deploy:all  # Or the appropriate deployment task"
 

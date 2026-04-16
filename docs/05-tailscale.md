@@ -46,7 +46,6 @@ After installation, authenticate each host:
 sudo tailscale up \
   --ssh \
   --operator=eric \
-  --accept-routes \
   --accept-dns=false \
   --advertise-exit-node=false
 ```
@@ -54,9 +53,10 @@ sudo tailscale up \
 **Flags explained:**
 - `--ssh`: Enable Tailscale SSH for secure access
 - `--operator=eric`: Allow user `eric` to manage Tailscale
-- `--accept-routes`: Accept subnet routes from other nodes
 - `--accept-dns=false`: Use internal AdGuard DNS instead of Tailscale DNS
 - `--advertise-exit-node=false`: Do not advertise as exit node
+
+**Note**: `--accept-routes` is intentionally omitted to prevent routing loops. Hosts should not accept routes from other Tailscale nodes.
 
 ### Ansible Variables
 
@@ -64,7 +64,7 @@ Tailscale configuration is managed in `group_vars/all.yml`:
 
 ```yaml
 tailscale_enabled: true
-tailscale_accept_routes: true
+tailscale_accept_routes: false  # Prevents routing loops; hosts should not accept routes
 tailscale_accept_dns: false  # We use our own DNS
 
 secrets:

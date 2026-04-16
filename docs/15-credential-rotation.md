@@ -48,8 +48,9 @@ ssh eric@192.168.0.102 "echo 'Test' | mail -s 'Rotation Test' root"
 
 **Affected Hosts**:
 - `smtp-relay` - Both passwords
-- `pve-nas-01`, `pve-opt-03` - Relay auth password
+- `pve-nas-01`, `pve-laptop-01`, `pve-opt-01`, `pve-opt-02`, `pve-opt-03`, `pve-prec-01` - Relay auth password
 - `dns-01`, `dns-02` - Relay auth password
+- `plex`, `gitlab` - Relay auth password
 
 ---
 
@@ -103,14 +104,13 @@ ssh-add ~/.ssh/id_ed25519
 # Settings: Zone:DNS:Edit, Zone:Zone:Read
 
 # 2. Update in 1Password
-# Update both credential and account_id if needed
+# Update both credential and username (account ID) if needed
 
 # 3. Verify new token is readable
 op read "op://Homelab/Cloudflare DNS Token/credential"
 
 # 4. Test with Terraform
-cd terraform/cloudflare
-terraform plan
+task terraform:plan
 
 # 5. If plan succeeds, token is valid
 # No deployment needed - Terraform reads at runtime
@@ -396,10 +396,13 @@ unset CLOUDFLARE_ACCOUNT_ID
 
 # Re-read from 1Password
 eval $(op signin)
-export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
 
-# Retry
-terraform plan
+# Retry using Taskfile (preferred - handles all env vars)
+task terraform:plan
+
+# Or manually export and retry
+# export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+# cd terraform/cloudflare && terraform plan
 ```
 
 ---

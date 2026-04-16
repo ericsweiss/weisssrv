@@ -90,13 +90,15 @@
         - name: Download new AdGuard Home version
           ansible.builtin.get_url:
             url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
-            dest: /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
+            # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
+            dest: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
             mode: "0644"
             timeout: 60
+            checksum: "sha256:https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/checksums.txt"
 
         - name: Extract new version
           ansible.builtin.unarchive:
-            src: /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
+            src: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
             dest: /tmp
             remote_src: true
 
@@ -225,14 +227,16 @@
         - name: Download new adguardhome-sync version
           ansible.builtin.get_url:
             url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"  # noqa yaml[line-length]
-            dest: /tmp/adguardhome-sync.tar.gz
+            # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
+            dest: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
             mode: "0644"
             timeout: 60
+            checksum: "sha256:https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/checksums.txt"
           register: sync_download
 
         - name: Extract adguardhome-sync
           ansible.builtin.unarchive:
-            src: /tmp/adguardhome-sync.tar.gz
+            src: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
             dest: /tmp
             remote_src: true
 
@@ -262,7 +266,7 @@
         path: "{{ item }}"
         state: absent
       loop:
-        - /tmp/adguardhome-sync.tar.gz
+        - "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ adguard_sync_arch }}.tar.gz"
         - /tmp/adguardhome-sync
       when: needs_sync_upgrade
 

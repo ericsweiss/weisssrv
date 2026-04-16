@@ -1,5 +1,10 @@
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5, < 2.0"
+
+  # State stored in GitLab-managed Terraform state (HTTP backend)
+  # All configuration via TF_HTTP_* environment variables (see Taskfile / CI)
+  backend "http" {
+  }
 
   required_providers {
     cloudflare = {

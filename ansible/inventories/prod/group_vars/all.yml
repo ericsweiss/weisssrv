@@ -157,7 +157,7 @@ pulsarr_version: "0.15.2"
 # Mealie: https://github.com/mealie-recipes/mealie/releases
 # Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
-mealie_version: "v3.15.1"
+mealie_version: "v3.15.2"
 bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
 
@@ -171,6 +171,10 @@ gitlab_version: "18.10.3-ee.0"
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
 gitlab_runner_helm_version: "0.87.1"
+
+# GitLab Agent for Kubernetes Helm chart version
+# https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
+gitlab_agent_helm_version: "2.26.0"
 
 # Helm chart versions for k3s platform workloads
 # These versions are used by maintenance update tasks
@@ -380,3 +384,16 @@ storage_replication_jobs:
     schedule: "9,24,39,54"
     comment: "home-assistant -> pve-opt-03"
     enabled: true
+
+# Postfix null client SASL credentials (shared by all hosts running postfix_null_client)
+# Credentials injected via 'op run --' (handled automatically by task wrapper)
+postfix_sasl_user: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') or undef(hint='SMTP_RELAY_USER env var must be set') }}"
+postfix_sasl_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') or undef(hint='SMTP_RELAY_PASSWORD env var must be set') }}"
+
+# Mail aliases (shared by all hosts)
+mail_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"

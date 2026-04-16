@@ -5,50 +5,74 @@
   hosts: base_managed
   become: true
   roles:
-    - base
+    - role: base
+      tags: [base]
 
 - name: Deploy Proxmox host configuration
   hosts: proxmox
   become: true
   roles:
-    - qol
-    - postfix_null_client
-    - tailscale
-    - proxmox_firewall
+    - role: qol
+      tags: [qol]
+    - role: postfix_null_client
+      tags: [postfix_null_client]
+    - role: tailscale
+      tags: [tailscale]
+    - role: proxmox_firewall
+      tags: [proxmox_firewall]
 
 - name: Deploy NAS storage configuration
   hosts: pve-nas-01
   become: true
   roles:
-    - nas_storage
+    - role: nas_storage
+      tags: [nas_storage]
 
 - name: Deploy DNS server configuration
   hosts: dns
   become: true
   roles:
-    - postfix_null_client
-    - unbound
-    - adguard_home
+    - role: postfix_null_client
+      tags: [postfix_null_client]
+    - role: unbound
+      tags: [unbound]
+    - role: adguard_home
+      tags: [adguard_home]
 
 - name: Deploy certificate management and sync
   hosts: dns
   become: true
   roles:
-    - acme_certs
-    - adguard_sync
+    - role: acme_certs
+      tags: [acme_certs]
+    - role: adguard_sync
+      tags: [adguard_sync]
 
 - name: Deploy DNS guest firewall rules
   hosts: dns
   roles:
-    - proxmox_firewall
+    - role: proxmox_firewall
+      tags: [proxmox_firewall]
 
 - name: Deploy SMTP relay configuration
   hosts: mail
   become: true
   roles:
-    - smtp_relay
+    - role: smtp_relay
+      tags: [smtp_relay]
 
 - name: Deploy SMTP guest firewall rules
   hosts: mail
   roles:
-    - proxmox_firewall
+    - role: proxmox_firewall
+      tags: [proxmox_firewall]
+
+# Deploy guest firewall rules for unmanaged VMs (Home Assistant, etc.)
+# These VMs can't run Ansible directly; firewall rules are deployed via
+# delegation to a Proxmox host (the /etc/pve/ filesystem is clustered)
+- name: Deploy guest firewall rules for unmanaged VMs
+  hosts: services
+  gather_facts: false
+  roles:
+    - role: proxmox_firewall
+      tags: [proxmox_firewall]

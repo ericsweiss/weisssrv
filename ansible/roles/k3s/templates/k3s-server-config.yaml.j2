@@ -26,4 +26,9 @@ cluster-init: true
 server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
 {% endif %}
 
-write-kubeconfig-mode: "0644"
+write-kubeconfig-mode: "0600"
+
+# Encrypt secrets at rest in etcd
+# For existing clusters: after enabling, run on a server node:
+#   k3s secrets-encrypt reencrypt
+secrets-encryption: true

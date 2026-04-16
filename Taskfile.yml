@@ -5,6 +5,11 @@ vars:
   ANSIBLE_DIR: ./ansible
   TERRAFORM_DIR: ./terraform
   INVENTORY: ./inventories/prod
+  # Proxmox host list (used for HA status, Home Assistant VM discovery, etc.)
+  PVE_HOSTS: "pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01"
+  # GitLab project ID for Terraform state backend
+  # Find at: git.ericsweiss.com/eric/weisssrv (shown on project overview page)
+  GITLAB_PROJECT_ID: "1"
   # Home Assistant VM configuration
   HA_VM_ID: "154"
   HA_VM_IP: "192.168.0.154"
@@ -32,17 +37,26 @@ tasks:
     desc: Lint Ansible playbooks and roles
     dir: "{{.ANSIBLE_DIR}}"
     cmds:
-      - ansible-lint playbooks/ roles/
+      - |
+        if command -v ansible-lint >/dev/null 2>&1; then
+          ansible-lint playbooks/ roles/
+        else
+          PYENV_LINT="$(ls -1 ~/.pyenv/versions/*/bin/ansible-lint 2>/dev/null | head -n1)"
+          if [ -n "$PYENV_LINT" ]; then
+            "$PYENV_LINT" playbooks/ roles/
+          else
+            echo "ERROR: ansible-lint not found (pip install ansible-lint)"
+            exit 1
+          fi
+        fi
 
   ansible:test:
     desc: Run Molecule tests for Ansible roles (all or specific)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
       # Check for molecule in pyenv (preferred) or system python
       # Matches the logic in test-all-roles.sh
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running. Start Docker Desktop first."
@@ -53,10 +67,8 @@ tasks:
   ansible:test-integration:
     desc: Run all integration tests (multi-role scenarios)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running. Start Docker Desktop first."
@@ -70,67 +82,122 @@ tasks:
   ansible:test-integration-dns:
     desc: Run DNS stack integration test (unbound + adguard_home + adguard_sync)
     dir: "{{.ANSIBLE_DIR}}/integration-tests/dns-stack"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running"
     cmds:
-      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+      - |
+        if command -v molecule >/dev/null 2>&1; then
+          molecule test
+        elif python3 -m molecule --version >/dev/null 2>&1; then
+          python3 -m molecule test
+        else
+          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
+          if [ -n "$PYENV_MOL" ]; then
+            "$PYENV_MOL" test
+          else
+            echo "ERROR: molecule not found"
+            exit 1
+          fi
+        fi
 
   ansible:test-integration-mail:
     desc: Run mail stack integration test (smtp_relay + postfix_null_client)
     dir: "{{.ANSIBLE_DIR}}/integration-tests/mail-stack"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running"
     cmds:
-      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+      - |
+        if command -v molecule >/dev/null 2>&1; then
+          molecule test
+        elif python3 -m molecule --version >/dev/null 2>&1; then
+          python3 -m molecule test
+        else
+          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
+          if [ -n "$PYENV_MOL" ]; then
+            "$PYENV_MOL" test
+          else
+            echo "ERROR: molecule not found"
+            exit 1
+          fi
+        fi
 
   ansible:test-integration-base:
     desc: Run base infrastructure integration test (base + qol + tailscale)
     dir: "{{.ANSIBLE_DIR}}/integration-tests/base-infrastructure"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running"
     cmds:
-      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+      - |
+        if command -v molecule >/dev/null 2>&1; then
+          molecule test
+        elif python3 -m molecule --version >/dev/null 2>&1; then
+          python3 -m molecule test
+        else
+          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
+          if [ -n "$PYENV_MOL" ]; then
+            "$PYENV_MOL" test
+          else
+            echo "ERROR: molecule not found"
+            exit 1
+          fi
+        fi
 
   ansible:test-integration-storage:
     desc: Run storage stack integration test (nas_storage + Samba client, NFS server-side only)
     dir: "{{.ANSIBLE_DIR}}/integration-tests/storage-stack"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running"
     cmds:
-      - ~/.pyenv/versions/3.13.5/bin/molecule test || python3 -m molecule test
+      - |
+        if command -v molecule >/dev/null 2>&1; then
+          molecule test
+        elif python3 -m molecule --version >/dev/null 2>&1; then
+          python3 -m molecule test
+        else
+          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
+          if [ -n "$PYENV_MOL" ]; then
+            "$PYENV_MOL" test
+          else
+            echo "ERROR: molecule not found"
+            exit 1
+          fi
+        fi
 
   ansible:test-integration-certs:
     desc: Run certificate distribution integration test (acme_certs multi-host)
     dir: "{{.ANSIBLE_DIR}}/integration-tests/cert-distribution"
-    env:
-      ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     preconditions:
-      - sh: ~/.pyenv/versions/3.13.5/bin/molecule --version 2>/dev/null || python3 -m molecule --version 2>/dev/null
+      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running"
     cmds:
-      - if [ -x ~/.pyenv/versions/3.13.5/bin/molecule ]; then ~/.pyenv/versions/3.13.5/bin/molecule test; else python3 -m molecule test; fi
+      - |
+        if command -v molecule >/dev/null 2>&1; then
+          molecule test
+        elif python3 -m molecule --version >/dev/null 2>&1; then
+          python3 -m molecule test
+        else
+          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
+          if [ -n "$PYENV_MOL" ]; then
+            "$PYENV_MOL" test
+          else
+            echo "ERROR: molecule not found"
+            exit 1
+          fi
+        fi
 
   # === Kubernetes Validation Tasks ===
   kubernetes:lint:
@@ -162,13 +229,13 @@ tasks:
       - helm repo add authentik https://charts.goauthentik.io 2>/dev/null || true
       - helm repo update
       - echo "Validating Traefik values..."
-      - helm template traefik traefik/traefik -f kubernetes/apps/traefik/values.yaml --namespace traefik > /dev/null && echo "  OK"
+      - helm template traefik traefik/traefik -f kubernetes/apps/traefik/values.yaml --namespace traefik --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
       - echo "Validating MetalLB values..."
-      - helm template metallb metallb/metallb -f kubernetes/bootstrap/metallb/values.yaml --namespace metallb-system > /dev/null && echo "  OK"
+      - helm template metallb metallb/metallb -f kubernetes/bootstrap/metallb/values.yaml --namespace metallb-system --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
       - echo "Validating cert-manager values..."
-      - helm template cert-manager jetstack/cert-manager -f kubernetes/apps/cert-manager/values.yaml --namespace cert-manager > /dev/null && echo "  OK"
+      - helm template cert-manager jetstack/cert-manager -f kubernetes/apps/cert-manager/values.yaml --namespace cert-manager --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
       - echo "Validating Authentik values..."
-      - helm template authentik authentik/authentik -f kubernetes/apps/authentik/values.yaml --namespace authentik --set authentik.secret_key=dummy --set authentik.postgresql.password=dummy > /dev/null && echo "  OK"
+      - helm template authentik authentik/authentik -f kubernetes/apps/authentik/values.yaml --namespace authentik --set authentik.secret_key=dummy --set authentik.postgresql.password=dummy --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
       - echo "All Helm values validated successfully"
 
   # === Deployment Tasks ===
@@ -343,6 +410,7 @@ tasks:
         msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
     cmds:
       - kubectl apply -f kubernetes/apps/coredns/helmchartconfig.yaml
+      - kubectl apply -f kubernetes/apps/coredns/pdb.yaml
       - |
         echo "Waiting for CoreDNS to reach 2 ready replicas..."
         for i in $(seq 1 24); do
@@ -418,8 +486,12 @@ tasks:
       - helm repo add jetstack https://charts.jetstack.io --force-update
       - helm repo update jetstack
       - kubectl apply -f namespace.yaml
-      # Apply CRDs with server-side apply to resolve field manager conflicts during upgrades
-      - kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/{{.CERT_MANAGER_VERSION}}/cert-manager.crds.yaml --server-side --force-conflicts
+      # Download CRDs locally first, then apply with server-side apply to resolve field manager conflicts during upgrades
+      - |
+        CRDS_FILE="$(mktemp)"
+        trap 'rm -f "$CRDS_FILE"' EXIT
+        curl -fsSL -o "$CRDS_FILE" "https://github.com/cert-manager/cert-manager/releases/download/{{.CERT_MANAGER_VERSION}}/cert-manager.crds.yaml"
+        kubectl apply -f "$CRDS_FILE" --server-side --force-conflicts
       - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --version "{{.CERT_MANAGER_VERSION}}" --wait --skip-crds
       - |
         echo "Creating Cloudflare API token secret..."
@@ -815,7 +887,7 @@ tasks:
       # First verify we can reach at least one Proxmox host
       - |
         REACHABLE_HOST=""
-        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        for host in {{.PVE_HOSTS}}; do
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             REACHABLE_HOST="$host"
             break
@@ -859,11 +931,31 @@ tasks:
         done
 
   # === Terraform Tasks ===
+  # State stored in GitLab-managed Terraform state (HTTP backend)
+  # CI uses CI_JOB_TOKEN (automatic), local uses project access token from 1Password
   terraform:init:
-    desc: Initialize Terraform
+    desc: Initialize Terraform (with GitLab state backend)
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    env:
+      # GitLab Terraform state backend configuration
+      # IMPORTANT: Set GITLAB_PROJECT_ID to your weisssrv project ID
+      # Find it at: git.ericsweiss.com/eric/weisssrv (shown on project overview page)
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions:
+      - sh: command -v terraform
+        msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
-      - terraform init
+      - op run -- terraform init {{.CLI_ARGS}}
 
   terraform:plan:
     desc: Plan Terraform changes
@@ -871,6 +963,13 @@ tasks:
     env:
       TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
       TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
     preconditions:
       - sh: command -v terraform
         msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
@@ -887,6 +986,13 @@ tasks:
     env:
       TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
       TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
     preconditions:
       - sh: command -v terraform
         msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
@@ -898,10 +1004,9 @@ tasks:
       - op run -- terraform apply {{.CLI_ARGS}}
 
   terraform:validate:
-    desc: Validate Terraform configuration
-    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    desc: Validate Terraform configuration (alias for validate-local)
     cmds:
-      - terraform validate
+      - task: terraform:validate-local
 
   terraform:fmt:
     desc: Format Terraform files
@@ -915,6 +1020,18 @@ tasks:
     cmds:
       - terraform fmt -check -recursive
 
+  terraform:validate-local:
+    desc: Validate Terraform syntax (no backend auth required)
+    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    cmds:
+      - |
+        set -euo pipefail
+        # Use isolated data dir so backend-free init doesn't corrupt real state
+        TF_DATA_DIR="$(mktemp -d)" || { echo "ERROR: failed to create temp Terraform data dir"; exit 1; }
+        trap 'rm -rf "$TF_DATA_DIR"' EXIT
+        TF_DATA_DIR="$TF_DATA_DIR" terraform init -backend=false -input=false > /dev/null
+        TF_DATA_DIR="$TF_DATA_DIR" terraform validate
+
   # === Utility Tasks ===
   collect-state:
     desc: Collect redacted cluster state
@@ -922,12 +1039,11 @@ tasks:
       - ./scripts/collect-state.sh {{.CLI_ARGS}}
 
   lint:
-    desc: Run all linters
+    desc: Run all linters (no auth required)
     cmds:
       - task: ansible:lint
       - task: terraform:fmt-check
-      - task: terraform:init
-      - task: terraform:validate
+      - task: terraform:validate-local
       - task: kubernetes:lint
       - task: kubernetes:validate-helm
 
@@ -1592,7 +1708,7 @@ tasks:
       - |
         # Find first reachable Proxmox host (HA-resilient)
         REACHABLE_HOST=""
-        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        for host in {{.PVE_HOSTS}}; do
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             REACHABLE_HOST="$host"
             break
@@ -1648,7 +1764,7 @@ tasks:
       - |
         # Find first reachable Proxmox host (HA-resilient)
         REACHABLE_HOST=""
-        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        for host in {{.PVE_HOSTS}}; do
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             REACHABLE_HOST="$host"
             break
@@ -1663,7 +1779,7 @@ tasks:
         if [ -z "$CURRENT_NODE" ]; then
           # HA not configured or VM not in HA - fall back to checking each node directly
           echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
-          for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          for host in {{.PVE_HOSTS}}; do
             if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
               CURRENT_NODE="$host"
               break
@@ -1695,7 +1811,7 @@ tasks:
       - |
         # Find first reachable Proxmox host (HA-resilient)
         REACHABLE_HOST=""
-        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        for host in {{.PVE_HOSTS}}; do
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             REACHABLE_HOST="$host"
             break
@@ -1710,7 +1826,7 @@ tasks:
         if [ -z "$CURRENT_NODE" ]; then
           # HA not configured or VM not in HA - fall back to checking each node directly
           echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
-          for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          for host in {{.PVE_HOSTS}}; do
             if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
               CURRENT_NODE="$host"
               break
@@ -1732,7 +1848,7 @@ tasks:
       - |
         # Find first reachable Proxmox host (HA-resilient)
         REACHABLE_HOST=""
-        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        for host in {{.PVE_HOSTS}}; do
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             REACHABLE_HOST="$host"
             break
@@ -1747,7 +1863,7 @@ tasks:
         if [ -z "$CURRENT_NODE" ]; then
           # HA not configured or VM not in HA - fall back to checking each node directly
           echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
-          for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+          for host in {{.PVE_HOSTS}}; do
             if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
               CURRENT_NODE="$host"
               break
@@ -1807,7 +1923,7 @@ tasks:
         DESC="{{.DESC}}"
         # Find first reachable Proxmox host (HA-resilient)
         REACHABLE_HOST=""
-        for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        for host in {{.PVE_HOSTS}}; do
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             REACHABLE_HOST="$host"
             break
@@ -2039,6 +2155,59 @@ tasks:
       - echo ""
       - echo "=== GitLab Runner Helm Releases ==="
       - helm list -n gitlab-runner 2>/dev/null || echo "No Helm releases found"
+      - echo ""
+      - echo "=== GitLab Agent ==="
+      - kubectl get pods -n gitlab-agent 2>/dev/null || echo "No agent pods found"
+      - helm list -n gitlab-agent 2>/dev/null || echo "No agent Helm release found"
+
+  gitlab:deploy-agent:
+    desc: Deploy GitLab Agent for Kubernetes (agentk)
+    dir: ./kubernetes/apps/gitlab-agent
+    vars:
+      VARS_FILE: "../../../ansible/inventories/prod/group_vars/all.yml"
+    preconditions:
+      - sh: command -v kubectl
+        msg: "kubectl is not installed"
+      - sh: command -v helm
+        msg: "helm is not installed"
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
+    cmds:
+      - |
+        set -euo pipefail
+        # Parse chart version with fail-fast if not found
+        CHART_VERSION="$(awk -F': *' '/^gitlab_agent_helm_version:/ {gsub(/"/, "", $2); print $2; exit}' "{{.VARS_FILE}}")"
+        if [ -z "$CHART_VERSION" ]; then
+          echo "ERROR: gitlab_agent_helm_version not found in {{.VARS_FILE}}"
+          exit 1
+        fi
+        echo "Deploying GitLab Agent chart version: $CHART_VERSION"
+        helm repo add gitlab https://charts.gitlab.io --force-update
+        helm repo update gitlab
+        kubectl apply -f namespace.yaml
+        # Write token to temp file (avoid --set which exposes token in process list)
+        # Strip any trailing whitespace/newlines to avoid invalid tokens
+        TEMP_TOKEN="$(mktemp)"
+        trap 'rm -f "$TEMP_TOKEN"' EXIT
+        op read "op://Homelab/GitLab Agent Token/credential" | tr -d '\r\n' > "$TEMP_TOKEN"
+        [ -s "$TEMP_TOKEN" ] || { echo "ERROR: GitLab agent token is empty"; exit 1; }
+        helm upgrade --install weisssrv-k3s gitlab/gitlab-agent \
+          --namespace gitlab-agent \
+          --version "$CHART_VERSION" \
+          --set config.kasAddress="wss://git.ericsweiss.com/-/kubernetes-agent/" \
+          --set-file config.token="$TEMP_TOKEN" \
+          --set resources.requests.cpu=10m \
+          --set resources.requests.memory=64Mi \
+          --set resources.limits.cpu=100m \
+          --set resources.limits.memory=128Mi
+      - |
+        echo "Waiting for agent to be ready..."
+        kubectl rollout status deployment/weisssrv-k3s-gitlab-agent -n gitlab-agent --timeout=60s
+        echo "GitLab Agent deployed successfully"
 
   gitlab:verify:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)

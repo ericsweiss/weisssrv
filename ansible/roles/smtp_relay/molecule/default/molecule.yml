@@ -24,7 +24,7 @@ provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker compatibility with newer Ansible versions
+    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     SMTP_RELAY_USER: testrelay
     SMTP_RELAY_PASSWORD: testrelaypass

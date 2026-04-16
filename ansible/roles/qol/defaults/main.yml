@@ -3,6 +3,10 @@
 
 admin_user: eric
 
+# Oh My Zsh pinned commit (no release tags; pin to specific commit for reproducibility)
+# Update by checking: https://github.com/ohmyzsh/ohmyzsh/commits/master
+omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
+
 omz_theme: risto
 omz_plugins:
   - 1password

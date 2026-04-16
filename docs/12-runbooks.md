@@ -254,9 +254,8 @@ Managed via Terraform + Cloudflare.
 
 2. **Plan and Apply**:
    ```bash
-   cd terraform/cloudflare
-   terraform plan
-   terraform apply
+   task terraform:plan
+   task terraform:apply
    ```
 
 ---
@@ -297,7 +296,7 @@ Certificate expired or not renewing automatically.
 
 5. **Manual Distribution**:
    ```bash
-   sudo /usr/local/bin/homelab-cert-reload.sh
+   sudo /usr/local/sbin/homelab-cert-reload.sh
    ```
 
 6. **Restart Services**:
@@ -510,7 +509,7 @@ The version checker (`scripts/check-versions.py`) automatically queries official
 
 **Check for available updates**:
 ```bash
-# Check all 24 managed services
+# Check all 27 managed services
 task maintenance:check-versions
 
 # Check a specific service

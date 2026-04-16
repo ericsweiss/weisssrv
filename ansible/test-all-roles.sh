@@ -11,19 +11,10 @@
 #   - molecule, molecule-docker installed (pip)
 #   - ansible-galaxy collections: community.docker, ansible.posix, community.general
 #
-# IMPORTANT: ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 is required because
-# molecule-docker's internal playbooks (create.yml, destroy.yml) have bare
-# conditionals like `when: (lookup('env', 'HOME'))` that Ansible 2.20+ rejects.
-# This is a molecule-docker upstream issue, not a problem with our roles.
-# See: https://github.com/ansible-community/molecule-plugins/issues/254
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROLES_DIR="${SCRIPT_DIR}/roles"
-
-# Required environment variable for molecule-docker compatibility
-export ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1
 
 # Additional molecule options (e.g., --destroy=never)
 MOLECULE_OPTS="${MOLECULE_OPTS:-}"
@@ -76,16 +67,24 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-if ! ~/.pyenv/versions/3.13.5/bin/molecule --version &>/dev/null && ! python3 -m molecule --version &>/dev/null; then
-    echo -e "${RED}ERROR: molecule not found (pip install molecule molecule-docker)${NC}"
-    exit 1
+MOLECULE_CMD=""
+if command -v molecule &>/dev/null; then
+    MOLECULE_CMD=molecule
+elif python3 -m molecule --version &>/dev/null; then
+    MOLECULE_CMD="python3 -m molecule"
+else
+    # Fallback: search pyenv installations, validating each before selecting
+    for pyenv_mol in ~/.pyenv/versions/*/bin/molecule; do
+        if [ -x "$pyenv_mol" ] && "$pyenv_mol" --version &>/dev/null; then
+            MOLECULE_CMD="$pyenv_mol"
+            break
+        fi
+    done
 fi
 
-# Use molecule from pyenv if available, otherwise try system
-if ~/.pyenv/versions/3.13.5/bin/molecule --version &>/dev/null; then
-    MOLECULE_CMD=~/.pyenv/versions/3.13.5/bin/molecule
-else
-    MOLECULE_CMD="python3 -m molecule"
+if [ -z "$MOLECULE_CMD" ]; then
+    echo -e "${RED}ERROR: molecule not found (pip install molecule molecule-docker)${NC}"
+    exit 1
 fi
 
 if ! docker info &>/dev/null 2>&1; then

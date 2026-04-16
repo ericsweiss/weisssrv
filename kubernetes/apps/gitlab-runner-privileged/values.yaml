@@ -88,6 +88,11 @@ runners:
         # Pull policy
         pull_policy = ["if-not-present"]
 
+        # Allow individual CI jobs to override node selector for CPU-compatibility only.
+        # Restricted to esweiss.com/cpu=modern|legacy to prevent arbitrary node targeting.
+        # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
+        node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
 # RBAC configuration
 # Restricted to gitlab-runner namespace (principle of least privilege)
 rbac:

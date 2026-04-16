@@ -159,6 +159,7 @@ common_packages:
   - neovim
   - htop
   - tmux
+  - screen
   - git
   - jq              # JSON processor
   - unzip
@@ -168,6 +169,8 @@ common_packages:
   - ca-certificates
   - gnupg
   - lsb-release
+  - sudo
+  - pciutils        # lspci (e1000e NIC detection workaround)
 ```
 
 ### tmux

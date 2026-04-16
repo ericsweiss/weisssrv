@@ -34,13 +34,28 @@
   register: omz_installed
   when: admin_user != 'root'
 
-- name: Install Oh My Zsh
-  ansible.builtin.shell: |
-    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-  args:
+- name: Download Oh My Zsh installer
+  ansible.builtin.get_url:
+    # Download to admin user's home with tight perms to avoid /tmp symlink/race risk
+    url: "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/{{ omz_commit }}/tools/install.sh"
+    dest: "/home/{{ admin_user }}/.omz_install.sh"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0700"
+  when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
+
+- name: Install Oh My Zsh from downloaded script
+  ansible.builtin.command:
+    cmd: "sh /home/{{ admin_user }}/.omz_install.sh --unattended"
     creates: "/home/{{ admin_user }}/.oh-my-zsh"
   become: true
   become_user: "{{ admin_user }}"
+  when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
+
+- name: Remove Oh My Zsh installer
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.omz_install.sh"
+    state: absent
   when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
 
 - name: Deploy .zshrc configuration

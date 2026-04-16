@@ -23,7 +23,7 @@
   ansible.builtin.git:
     repo: https://github.com/VundleVim/Vundle.vim.git
     dest: "/home/{{ admin_user }}/.vim/bundle/Vundle.vim"
-    version: master
+    version: v0.10.2
     depth: 1
   become: true
   become_user: "{{ admin_user }}"

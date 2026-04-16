@@ -107,6 +107,7 @@
     url: "{{ cloud_image_url }}"
     dest: "/var/lib/vz/template/iso/{{ cloud_image_name }}"
     mode: "0644"
+    checksum: "sha512:https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS"
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0

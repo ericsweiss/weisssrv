@@ -146,7 +146,7 @@ weisssrv/
 │   ├── inventories/prod/     # Production inventory
 │   │   ├── hosts.yml         # Host definitions
 │   │   └── group_vars/       # Group variables
-│   ├── roles/                # 19 Ansible roles
+│   ├── roles/                # 20 Ansible roles
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/cloudflare/     # Cloudflare DNS management
 ├── kubernetes/               # K3s manifests (Flux-ready)
@@ -178,6 +178,7 @@ weisssrv/
 | home_assistant | Home Assistant OS configuration management |
 | gitlab | GitLab EE installation and configuration |
 | resolv_conf | Shared /etc/resolv.conf management |
+| zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
 
 ## Secrets Management
 
@@ -279,7 +280,7 @@ Self-hosted Git repository and CI/CD platform:
 
 - **URLs**: git.esweiss.com (internal), git.ericsweiss.com (external)
 - **Features**:
-  - GitLab EE 18.9.1 (CE features) on dedicated VM
+  - GitLab EE 18.10.3 (CE features) on dedicated VM
   - Container Registry (registry.git.ericsweiss.com)
   - GitLab Pages (*.pages.git.ericsweiss.com)
   - CI/CD Runners on k3s cluster (infrastructure + shared multi-project)
