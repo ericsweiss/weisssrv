@@ -1,0 +1,8 @@
+---
+# Apps top-level Kustomization.
+# Each app lives in its own folder (authentik/, download-clients/, recipes/,
+# gitlab-runner/, gitlab-runner-privileged/, gitlab-agent/, vm-ingress/).
+# Apps are added to `resources:` as they are migrated to Flux in Phase 3.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

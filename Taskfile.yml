@@ -699,6 +699,215 @@ tasks:
       - echo "IngressRoutes -"
       - kubectl get ingressroute -A 2>/dev/null || echo "  None configured"
 
+  # === Flux GitOps ===
+  # All Kubernetes workloads (platform + apps) are reconciled by Flux.
+  # Deployment is `git push` — these tasks are for bootstrap, validation,
+  # and operational control (suspend/resume, force reconcile, secret rotation).
+
+  flux:install-cli:
+    desc: Install flux CLI via brew (macOS)
+    cmds:
+      - |
+        if ! command -v flux &>/dev/null; then
+          brew install fluxcd/tap/flux
+        fi
+        flux --version
+
+  flux:bootstrap:
+    desc: One-time bootstrap of Flux into the cluster (commits to flux/migration branch, pushes to origin)
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot reach cluster. Ensure KUBECONFIG points at the k3s cluster"
+    cmds:
+      - |
+        echo "Bootstrapping Flux to git.ericsweiss.com/eric/weisssrv, branch flux/migration"
+        echo "This will create a commit on the branch and push it (first push of the branch)."
+        read -r -p "Continue? [y/N] " confirm
+        [ "$confirm" = "y" ] || exit 1
+      - |
+        GITLAB_TOKEN="$(op read 'op://Homelab/Flux GitLab PAT/credential')" \
+          flux bootstrap gitlab \
+            --hostname=git.ericsweiss.com \
+            --owner=eric \
+            --repository=weisssrv \
+            --branch=flux/migration \
+            --path=kubernetes/clusters/weisssrv \
+            --deploy-token-auth \
+            --interval=1m
+
+  flux:bootstrap-onepassword:
+    desc: One-time creation of the 1P SDK token secret in external-secrets namespace
+    preconditions:
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot reach cluster"
+    cmds:
+      - kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        TOKEN="$(op read 'op://Homelab/Service Account Auth Token weisssrv/credential')"
+        kubectl -n external-secrets create secret generic onepassword-sdk-token \
+          --from-literal=token="$TOKEN" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      - echo "1Password SDK bootstrap secret created in external-secrets namespace"
+
+  flux:reconcile:
+    desc: Trigger full reconciliation of Flux-managed resources
+    cmds:
+      - flux reconcile source git flux-system
+      - flux reconcile kustomization infrastructure --with-source
+      - flux reconcile kustomization apps --with-source
+
+  flux:verify:
+    desc: Run flux check and show status of all managed resources
+    cmds:
+      - flux check
+      - flux get all -A
+
+  flux:status:
+    desc: Concise health summary
+    cmds:
+      - flux get kustomizations -A
+      - flux get helmreleases -A
+      - kubectl get externalsecrets -A
+
+  flux:suspend:
+    desc: "Suspend a Flux resource (usage: task flux:suspend -- <ns>/<kind>/<name>)"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:suspend -- <ns>/<kind>/<name>"
+          echo "Example: task flux:suspend -- authentik/helmrelease/authentik"
+          exit 1
+        fi
+        set -e
+        IFS='/' read -r NS KIND NAME <<< "{{.CLI_ARGS}}"
+        flux suspend "$KIND" "$NAME" -n "$NS"
+
+  flux:resume:
+    desc: "Resume a suspended Flux resource (usage: task flux:resume -- <ns>/<kind>/<name>)"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:resume -- <ns>/<kind>/<name>"
+          exit 1
+        fi
+        set -e
+        IFS='/' read -r NS KIND NAME <<< "{{.CLI_ARGS}}"
+        flux resume "$KIND" "$NAME" -n "$NS"
+
+  flux:refresh-secret:
+    desc: "Force an ExternalSecret to re-fetch from 1Password (usage: task flux:refresh-secret -- <ns>/<name>)"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:refresh-secret -- <ns>/<name>"
+          exit 1
+        fi
+        IFS='/' read -r NS NAME <<< "{{.CLI_ARGS}}"
+        kubectl annotate --overwrite -n "$NS" externalsecret "$NAME" force-sync="$(date +%s)"
+        kubectl wait -n "$NS" externalsecret "$NAME" --for=condition=Ready --timeout=60s
+
+  flux:rotate-secret:
+    desc: "Refresh ExternalSecret + restart consuming pods (usage: task flux:rotate-secret -- <app>)"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:rotate-secret -- <app>"
+          echo "Known apps: authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent"
+          exit 1
+        fi
+        APP="{{.CLI_ARGS}}"
+        case "$APP" in
+          authentik)
+            task flux:refresh-secret -- authentik/authentik-secrets
+            kubectl rollout restart deployment -n authentik -l app.kubernetes.io/name=authentik
+            kubectl rollout restart statefulset -n authentik -l app.kubernetes.io/name=authentik
+            ;;
+          downloads|vpn)
+            task flux:refresh-secret -- downloads/vpn-credentials
+            kubectl rollout restart deployment -n downloads -l app.kubernetes.io/part-of=media-stack
+            ;;
+          recipes)
+            task flux:refresh-secret -- recipes/recipes-secrets
+            kubectl rollout restart deployment -n recipes
+            ;;
+          gitlab-runner)
+            task flux:refresh-secret -- gitlab-runner/gitlab-runner-token
+            kubectl rollout restart deployment/gitlab-runner -n gitlab-runner
+            ;;
+          gitlab-runner-privileged)
+            task flux:refresh-secret -- gitlab-runner/gitlab-runner-privileged-token
+            kubectl rollout restart deployment/gitlab-runner-privileged -n gitlab-runner
+            ;;
+          gitlab-agent)
+            task flux:refresh-secret -- gitlab-agent/gitlab-agent-token
+            kubectl rollout restart deployment -n gitlab-agent
+            ;;
+          *)
+            echo "Unknown app: $APP"
+            exit 1
+            ;;
+        esac
+
+  flux:sync-versions:
+    desc: Regenerate kubernetes/infrastructure/configs/versions-configmap.yaml from all.yml
+    cmds:
+      - python3 scripts/generate-versions-configmap.py
+
+  flux:dev-apply:
+    desc: "Dev helper: kustomize build + kubectl apply for a path (Flux will revert within ~1 cycle if committed state differs)"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:dev-apply -- <path-to-kustomization-dir>"
+          exit 1
+        fi
+        echo "WARNING: Flux will revert this if it differs from committed state."
+        kustomize build "{{.CLI_ARGS}}" | kubectl apply -f -
+
+  flux:lint:
+    desc: Validate every Flux Kustomization builds cleanly + kubeconform on rendered output
+    cmds:
+      - |
+        set -e
+        FAILED=0
+        for ks in kubernetes/clusters/weisssrv/*.yaml; do
+          [ -f "$ks" ] || continue
+          NAME=$(basename "$ks" .yaml)
+          [ "$NAME" = "kustomization" ] && continue
+          SRCPATH=$(yq '.spec.path' "$ks" 2>/dev/null || echo "")
+          [ -z "$SRCPATH" ] || [ "$SRCPATH" = "null" ] && continue
+          # strip leading ./
+          SRCPATH="${SRCPATH#./}"
+          echo "=== Validating $ks (path $SRCPATH) ==="
+          if ! kustomize build "$SRCPATH" | kubeconform -strict -ignore-missing-schemas -summary; then
+            FAILED=1
+          fi
+        done
+        exit $FAILED
+
+  flux:webhook-register:
+    desc: One-time registration of the GitLab push webhook to the Flux Receiver
+    cmds:
+      - |
+        set -e
+        RECEIVER_PATH=$(kubectl -n flux-system get receiver gitlab-push -o jsonpath='{.status.webhookPath}' 2>/dev/null || true)
+        if [ -z "$RECEIVER_PATH" ]; then
+          echo "ERROR: Flux Receiver 'gitlab-push' not found. Apply the receiver manifest first."
+          exit 1
+        fi
+        FLUX_HOST="https://flux-webhook.esweiss.com"
+        HOOK_URL="${FLUX_HOST}${RECEIVER_PATH}"
+        echo "Registering webhook at $HOOK_URL"
+        TOKEN="$(op read 'op://Homelab/Flux GitLab PAT/credential')"
+        WEBHOOK="$(op read 'op://Homelab/Flux Webhook Token/credential')"
+        curl -fsSL -X POST "https://git.ericsweiss.com/api/v4/projects/eric%2Fweisssrv/hooks" \
+          -H "PRIVATE-TOKEN: $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"url\":\"$HOOK_URL\",\"push_events\":true,\"token\":\"$WEBHOOK\",\"enable_ssl_verification\":true}" \
+          | jq '.id, .url'
+
   # === Maintenance Tasks ===
   # --- Base Infrastructure ---
   maintenance:update-packages:
