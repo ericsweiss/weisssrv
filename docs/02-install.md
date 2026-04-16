@@ -96,8 +96,12 @@ python3 --version     # Should be 3.8+
 ### 3. Clone Repository
 
 ```bash
-git clone https://github.com/ericsweiss/weisssrv.git
+# Primary (GitLab - canonical source)
+git clone https://git.ericsweiss.com/eric/weisssrv.git
 cd weisssrv
+
+# Alternative (GitHub mirror - read-only)
+# git clone https://github.com/ericsweiss/weisssrv.git
 ```
 
 ### 4. Install Ansible Collections
@@ -183,7 +187,7 @@ Title: Cloudflare DNS Token
 Type: API Credential
 Fields:
   - credential: [your-cloudflare-api-token]
-  - account_id: [your-cloudflare-account-id]
+  - username: [your-cloudflare-account-id]
 ```
 
 **SMTP Relay Gmail**:
@@ -265,7 +269,7 @@ Ensure SSH access and proper user configuration on all nodes before running Ansi
 
 All hosts use the `eric` user for SSH access with passwordless sudo:
 
-- **Proxmox Hosts** (pve-nas-01, pve-opt-03): User `eric` with sudo
+- **Proxmox Hosts** (pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01): User `eric` with sudo
 - **LXC Containers** (dns-01, dns-02, smtp-relay): User `eric` with sudo
 
 Root SSH login is disabled on all hosts.
@@ -455,12 +459,8 @@ task deploy:all
 ### Phase 8: Initialize Terraform
 
 ```bash
-# Initialize Terraform
+# Initialize Terraform (handles state backend auth via 1Password)
 task terraform:init
-
-# OR manually:
-cd terraform/cloudflare
-terraform init
 
 # Plan changes
 task terraform:plan
@@ -469,6 +469,8 @@ task terraform:plan
 # If it looks correct, apply
 task terraform:apply
 ```
+
+> **Note**: The `task terraform:*` commands are preferred because they inject Cloudflare API credentials and GitLab HTTP state backend auth via `op run`. For manual `terraform` commands, you must export `TF_VAR_cloudflare_api_token`, `TF_VAR_cloudflare_account_id`, and the `TF_HTTP_*` environment variables yourself.
 
 ## Testing and Validation
 
@@ -616,10 +618,10 @@ cat cluster-state-$(date +%Y%m%d).txt
    op read "op://Homelab/Cloudflare DNS Token/credential"
    ```
 
-2. **Export manually**:
+2. **Export manually** (if not using `task terraform:plan`):
    ```bash
    export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-   export CLOUDFLARE_ACCOUNT_ID=$(op read "op://Homelab/Cloudflare DNS Token/account_id")
+   export CLOUDFLARE_ACCOUNT_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
    cd terraform/cloudflare
    terraform plan
    ```

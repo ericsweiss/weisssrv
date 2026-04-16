@@ -262,7 +262,7 @@ spec:
         - name: bar-assistant
           # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: barassistant/server:${BAR_ASSISTANT_VERSION}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             # Application URL - matches official docker-compose APP_URL=$API_URL
             - name: APP_URL
@@ -444,7 +444,7 @@ spec:
         - name: salt-rim
           # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: barassistant/salt-rim:${SALT_RIM_VERSION}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: API_URL
               value: ""

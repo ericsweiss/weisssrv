@@ -34,6 +34,10 @@ authentik:
 server:
   replicas: 2
 
+  pdb:
+    enabled: true
+    minAvailable: 1
+
   # Version set via Taskfile from ansible/inventories/prod/group_vars/all.yml
 
   env:

@@ -2,7 +2,7 @@
 
 This document outlines the k3s platform architecture and deployment roadmap. It was originally written to plan the transition from base infrastructure to a production-grade k3s cluster with GitOps.
 
-**Status**: Phases 1-7 are COMPLETE. Phase 8 (HA Expansion) is the next major milestone, followed by Phase 9 (GitLab) and Phase 10 (GitOps with Flux).
+**Status**: Phases 1-9 are COMPLETE. Phase 10 (GitOps with Flux) is the next major milestone.
 
 ## Overview
 
@@ -41,36 +41,42 @@ The k3s platform is deployed on Proxmox-hosted VMs with a layered architecture: 
 
 ## K3s Cluster Design
 
-### Current Deployment (3 Nodes)
+### Current Deployment (9 Nodes: 3 Servers + 6 Agents)
 
 | Node | IP | VMID | Proxmox Host | Role | Status |
 |------|-----|------|--------------|------|--------|
 | k3s-srv-nas-01 | 192.168.0.222 | 222 | pve-nas-01 | Server (etcd) | ACTIVE |
+| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | Server (etcd) | ACTIVE |
+| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | Server (etcd) | ACTIVE |
 | k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | ACTIVE |
+| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | ACTIVE |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General | ACTIVE |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General | ACTIVE |
 | k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | ACTIVE |
+| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | ACTIVE |
 
-### Future Expansion: Two-Part HA Implementation
+### HA Implementation (COMPLETE)
 
 The HA implementation covers both the k3s platform and critical base infrastructure:
 
-#### Part 1: K3s HA (5-6 Node Target)
+#### Part 1: K3s HA (9-Node Cluster)
 
-Expand from 1 server to 3+ servers for etcd fault tolerance:
-- k3s-srv-laptop-01 (.223) + k3s-srv-prec-01 (.227) for 3-node HA quorum
-- Additional agents on opt-01, opt-02, prec-01 for capacity
-- kube-vip continues providing API VIP with leader election
+3-node etcd quorum with 6 agents:
+- k3s-srv-nas-01 (.222), k3s-srv-laptop-01 (.223), k3s-srv-prec-01 (.227) for etcd quorum
+- 6 agents across all compute nodes for capacity and workload distribution
+- kube-vip provides API VIP (.161) with leader election
 
 #### Part 2: Proxmox HA for Critical Infrastructure
 
-Enable automatic failover for base infrastructure VMs/containers:
+Automatic failover enabled for base infrastructure VMs/containers with ZFS replication:
 - **dns-01** (LXC, 192.168.0.150) - AdGuard Home primary
 - **dns-02** (LXC, 192.168.0.160) - AdGuard Home secondary
 - **smtp-relay** (LXC, 192.168.0.151) - Mail relay
 - **home-assistant** (VM, 192.168.0.154) - Home Assistant OS
 
-These services run outside k3s and require Proxmox-level HA for automatic recovery.
+These services run outside k3s and use Proxmox-level HA for automatic recovery.
 
-See `docs/25-multi-node-expansion.md` for the complete expansion plan including IP/VMID allocation, Proxmox HA configuration, and ZFS replication setup.
+See `docs/25-multi-node-expansion.md` for the expansion plan including IP/VMID allocation, Proxmox HA configuration, and ZFS replication setup.
 
 ### Node Roles
 
@@ -79,19 +85,19 @@ See `docs/25-multi-node-expansion.md` for the complete expansion plan including 
 | Node | IP | VMID | Proxmox Host | Resources | Status |
 |------|-----|------|--------------|-----------|--------|
 | k3s-srv-nas-01 | 192.168.0.222 | 222 | pve-nas-01 | 2 vCPU, 4GB RAM, 64GB disk | ACTIVE |
-| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | TBD | PLANNED |
-| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | TBD | PLANNED |
+| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | 2 vCPU, 4GB RAM, 64GB disk | ACTIVE |
+| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | 2 vCPU, 4GB RAM, 64GB disk | ACTIVE |
 
 #### Agents (.20X range - workers with specialized roles)
 
 | Node | IP | VMID | Proxmox Host | Role | Status |
 |------|-----|------|--------------|------|--------|
 | k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | ACTIVE |
-| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | PLANNED |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General | PLANNED |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General | PLANNED |
+| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | ACTIVE |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General | ACTIVE |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General | ACTIVE |
 | k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | ACTIVE |
-| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | PLANNED |
+| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | ACTIVE |
 
 ### Scheduling Model (Labels/Taints)
 
@@ -280,12 +286,12 @@ Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm r
 | Mealie | recipes | food.esweiss.com | DEPLOYED | Recipe management |
 | Bar Assistant | recipes | bar.esweiss.com | DEPLOYED | Cocktail recipes |
 | Home Assistant | VM (not k8s) | home.esweiss.com | DEPLOYED | HAOS VM with Traefik ingress |
+| GitLab | VM (not k8s) | git.esweiss.com | DEPLOYED | GitLab EE with registry, pages, CI runners |
 
 ### Planned Applications
 
 | Application | Namespace | Domain | Priority | Notes |
 |-------------|-----------|--------|----------|-------|
-| GitLab | gitlab | gitlab.esweiss.com | Priority 2 | Self-hosted Git/CI/Registry |
 | Prometheus/Grafana | monitoring | grafana.esweiss.com | Priority 5 | Observability stack |
 | Loki | monitoring | - | Priority 5 | Log aggregation |
 | Uptime Kuma | monitoring | status.esweiss.com | Priority 5 | Status page |
@@ -306,10 +312,10 @@ Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm r
 
 ### In Progress / Planned
 
-8. [ ] **HA Expansion** (Two-Part Implementation):
-   - **K3s HA**: Add 2 more server nodes for 3-node etcd quorum (5-6 node target)
-   - **Proxmox HA**: Enable automatic failover for critical infrastructure (dns-01, dns-02, smtp-relay, home-assistant)
-9. [ ] **GitLab**: Self-hosted Git + CI/CD + Container Registry
+8. [x] **HA Expansion** (Two-Part Implementation):
+   - **K3s HA**: 3 server nodes for etcd quorum, 6 agents (9-node cluster)
+   - **Proxmox HA**: Automatic failover for critical infrastructure (dns-01, dns-02, smtp-relay, home-assistant)
+9. [x] **GitLab**: Self-hosted Git + CI/CD + Container Registry (git.esweiss.com)
 10. [ ] **GitOps Controller** (Flux) + Renovate Bot
 11. [ ] **Observability**: Prometheus + Grafana + Loki
 12. [ ] **Photos/Cloud**: Immich + Nextcloud deployment

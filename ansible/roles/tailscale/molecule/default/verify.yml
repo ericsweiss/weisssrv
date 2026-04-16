@@ -36,6 +36,22 @@
       changed_when: false
       failed_when: tailscale_installed.rc != 0
 
+    - name: Verify version pinning was applied
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg -l tailscale | grep -oP '\d+\.\d+\.\d+'
+      args:
+        executable: /bin/bash
+      register: installed_version
+      changed_when: false
+
+    - name: Verify installed version matches pinned version
+      ansible.builtin.assert:
+        that:
+          - installed_version.stdout is search(tailscale_version | regex_replace('-.*$', ''))
+        fail_msg: "Installed version {{ installed_version.stdout }} does not match pinned {{ tailscale_version }}"
+        success_msg: "Version pinning verified: {{ installed_version.stdout }}"
+
     - name: Check if tailscaled service exists
       ansible.builtin.stat:
         path: /lib/systemd/system/tailscaled.service
@@ -60,12 +76,52 @@
       register: tailscale_binary
       failed_when: not tailscale_binary.stat.exists
 
+    # IP forwarding verification (exercised because tailscale_advertise_routes is set)
+    - name: Check IP forwarding is enabled
+      ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+      register: ip_forward_status
+      changed_when: false
+
+    - name: Verify IP forwarding is enabled
+      ansible.builtin.assert:
+        that:
+          - ip_forward_status.stdout == '1'
+        fail_msg: "IP forwarding is not enabled"
+        success_msg: "IP forwarding is enabled"
+
+    - name: Check systemd drop-in for IP forwarding persistence exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/tailscaled.service.d/ip-forward.conf
+      register: ip_forward_dropin
+
+    - name: Verify systemd drop-in exists and has correct content
+      ansible.builtin.assert:
+        that:
+          - ip_forward_dropin.stat.exists
+        fail_msg: "IP forwarding systemd drop-in not deployed"
+        success_msg: "IP forwarding systemd drop-in deployed"
+
+    - name: Read drop-in content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/tailscaled.service.d/ip-forward.conf
+      register: dropin_content
+
+    - name: Verify drop-in content
+      ansible.builtin.assert:
+        that:
+          - "'ExecStartPost' in (dropin_content.content | b64decode)"
+          - "'ip_forward=1' in (dropin_content.content | b64decode)"
+        fail_msg: "IP forwarding drop-in has incorrect content"
+        success_msg: "IP forwarding drop-in content verified"
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
           - "Tailscale GPG key deployed to /usr/share/keyrings/"
           - "Tailscale apt repository configured"
-          - "Tailscale package installed"
+          - "Tailscale package installed (version-pinned)"
           - "tailscaled systemd service exists and is enabled"
           - "tailscale binary present at /usr/bin/tailscale"
+          - "IP forwarding enabled via sysctl"
+          - "IP forwarding persistence drop-in deployed"
           - "NOTE: tailscale up skipped (requires auth key)"

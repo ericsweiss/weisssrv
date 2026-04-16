@@ -50,9 +50,7 @@
       ansible.builtin.stat:
         path: /etc/postfix/sasl_passwd
       register: sasl_passwd
-      failed_when:
-        - not sasl_passwd.stat.exists
-        - sasl_passwd.stat.mode != '0600'
+      failed_when: not sasl_passwd.stat.exists or sasl_passwd.stat.mode != '0600'
 
     - name: Check if sasl_passwd.db was generated
       ansible.builtin.stat:

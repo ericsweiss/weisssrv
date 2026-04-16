@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: zvol_mount
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Mount ZFS zvols attached as SCSI devices with stable device paths and UUID-based fstab
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

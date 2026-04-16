@@ -1,6 +1,11 @@
 # Traefik Helm Chart Values
 # Ingress controller for esweiss.com homelab k3s cluster
 
+# Pod Disruption Budget - prevent all replicas from being evicted during drains
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
 # Deployment configuration
 deployment:
   replicas: 3  # HA with 3 replicas across different ingress nodes

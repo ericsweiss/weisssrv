@@ -163,7 +163,7 @@ spec:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: mealie
           image: ghcr.io/mealie-recipes/mealie:${MEALIE_VERSION}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             # General settings
             - name: TZ

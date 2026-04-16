@@ -26,7 +26,7 @@ provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker compatibility with newer Ansible versions
+    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
     ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     # Empty auth key - tailscale up will be skipped
     TAILSCALE_AUTH_KEY: ""
@@ -48,7 +48,9 @@ provisioner:
         tailscale_enabled: true
         tailscale_accept_routes: false
         tailscale_accept_dns: false
-        tailscale_advertise_routes: []
+        # Set a test route so IP forwarding and systemd drop-in are exercised
+        tailscale_advertise_routes:
+          - "192.168.0.0/24"
         tailscale_additional_flags: []
 verifier:
   name: ansible

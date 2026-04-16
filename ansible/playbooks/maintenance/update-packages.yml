@@ -39,94 +39,8 @@
           - "Packages upgraded: {{ apt_upgrade.changed }}"
           - "{{ apt_upgrade.stdout_lines | default([]) }}"
 
-    # Check for reboot requirement using multiple methods:
-    # 1. /var/run/reboot-required (Debian/Ubuntu standard)
-    # 2. Kernel version mismatch (works on Proxmox which doesn't create reboot-required)
-    - name: Check if reboot-required file exists
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: reboot_required_file
-
-    - name: Get running kernel version
-      ansible.builtin.command: uname -r
-      register: running_kernel
-      changed_when: false
-
-    - name: Get latest installed kernel version (Proxmox)
-      ansible.builtin.shell: |
-        set -o pipefail
-        # Match both signed (proxmox-kernel-X.Y.Z-N-pve-signed) and unsigned (proxmox-kernel-X.Y.Z-N-pve)
-        # kernels. Some Proxmox installations use unsigned kernels (especially on older hardware
-        # without Secure Boot or custom kernel builds).
-        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
-        dpkg -l | grep -E '^ii[[:space:]]+proxmox-kernel-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve(-signed)?[[:space:]]' | awk '{print $3}' | sort -V | tail -1
-      args:
-        executable: /bin/bash
-      register: installed_kernel_proxmox
-      changed_when: false
-      failed_when: false
-
-    - name: Get latest installed kernel version (Debian/VM)
-      ansible.builtin.shell: |
-        set -o pipefail
-        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
-        dpkg -l | grep -E '^ii[[:space:]]+linux-image-[0-9]' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1
-      args:
-        executable: /bin/bash
-      register: installed_kernel_debian
-      changed_when: false
-      failed_when: false
-      when: installed_kernel_proxmox.stdout | default('') == ''
-
-    # For Proxmox: running kernel is "6.17.4-2-pve", installed version is "6.17.9-1"
-    # Strip "-pve" suffix from running kernel for comparison
-    - name: Normalize running kernel version for comparison
-      ansible.builtin.set_fact:
-        running_kernel_normalized: "{{ running_kernel.stdout | regex_replace('-pve$', '') }}"
-
-    - name: Determine if kernel was updated
-      ansible.builtin.set_fact:
-        kernel_updated: >-
-          {{
-            (installed_kernel_proxmox.stdout | default('') != '' and
-             running_kernel_normalized != installed_kernel_proxmox.stdout) or
-            ((installed_kernel_debian | default({})).stdout | default('') != '' and
-             running_kernel.stdout != (installed_kernel_debian | default({})).stdout | default(''))
-          }}
-
-    - name: Set reboot required flag
-      ansible.builtin.set_fact:
-        reboot_required: "{{ reboot_required_file.stat.exists or (kernel_updated | bool) }}"
-
-    - name: Display reboot requirement
-      ansible.builtin.debug:
-        msg: |
-          WARNING: {{ inventory_hostname }} requires reboot
-          Running kernel: {{ running_kernel.stdout }} (normalized: {{ running_kernel_normalized }})
-          Installed kernel: {{ installed_kernel_proxmox.stdout | default((installed_kernel_debian | default({})).stdout | default('unknown')) }}
-          Reboot-required file: {{ reboot_required_file.stat.exists }}
-          Kernel mismatch: {{ kernel_updated }}
-      when: reboot_required | bool
-
-    - name: Pause for manual reboot decision
-      ansible.builtin.pause:
-        prompt: |
-          {{ inventory_hostname }} requires a reboot.
-          Press ENTER to reboot now, or Ctrl+C then 'A' to abort and reboot manually later.
-      when:
-        - reboot_required | bool
-        - not (auto_reboot | default(false))
-
-    - name: Reboot host if required
-      ansible.builtin.reboot:
-        reboot_timeout: 300
-        msg: "Rebooting {{ inventory_hostname }} after package updates"
-      when: reboot_required | bool
-
-    - name: Wait for host to come back online
-      ansible.builtin.wait_for_connection:
-        timeout: 300
-      when: reboot_required | bool
+    - name: Check and reboot if needed
+      ansible.builtin.include_tasks: _reboot-if-needed.yml
 
     - name: Verify services after reboot
       ansible.builtin.service:
@@ -171,51 +85,10 @@
           - "Packages upgraded: {{ apt_upgrade.changed }}"
           - "{{ apt_upgrade.stdout_lines | default([]) }}"
 
-    # Check for reboot requirement using multiple methods:
-    # 1. /var/run/reboot-required (Debian/Ubuntu standard)
-    # 2. Kernel version mismatch (running vs installed)
-    - name: Check if reboot-required file exists
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: reboot_required_file
-
-    - name: Get running kernel version
-      ansible.builtin.command: uname -r
-      register: running_kernel
-      changed_when: false
-
-    - name: Get latest installed kernel version (Debian)
-      ansible.builtin.shell: |
-        set -o pipefail
-        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
-        dpkg -l | grep -E '^ii[[:space:]]+linux-image-[0-9]' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1
-      args:
-        executable: /bin/bash
-      register: installed_kernel_debian
-      changed_when: false
-      failed_when: false
-
-    - name: Determine if kernel was updated
-      ansible.builtin.set_fact:
-        kernel_updated: >-
-          {{
-            installed_kernel_debian.stdout | default('') != '' and
-            running_kernel.stdout != installed_kernel_debian.stdout
-          }}
-
-    - name: Set reboot required flag
-      ansible.builtin.set_fact:
-        reboot_required: "{{ reboot_required_file.stat.exists or (kernel_updated | bool) }}"
-
-    - name: Display reboot requirement
-      ansible.builtin.debug:
-        msg: |
-          WARNING: {{ inventory_hostname }} requires reboot
-          Running kernel: {{ running_kernel.stdout }}
-          Installed kernel: {{ installed_kernel_debian.stdout | default('unknown') }}
-          Reboot-required file: {{ reboot_required_file.stat.exists }}
-          Kernel mismatch: {{ kernel_updated }}
-      when: reboot_required | bool
+    - name: Check and detect if reboot needed (skip actual reboot - k3s handles it)
+      ansible.builtin.include_tasks: _reboot-if-needed.yml
+      vars:
+        skip_reboot: true
 
     # k3s nodes need cordon/drain before reboot to safely evacuate pods.
     # Wrapped in block/always to guarantee the node is uncordoned even if
@@ -336,12 +209,12 @@
             timeout: 300
 
         - name: Wait for k3s service to be active
-          ansible.builtin.command: >
-            systemctl is-active {{ 'k3s' if inventory_hostname in groups.get('k3s_servers', []) else 'k3s-agent' }}
+          ansible.builtin.systemd:
+            name: "{{ 'k3s' if inventory_hostname in groups.get('k3s_servers', []) else 'k3s-agent' }}"
           register: k3s_service_status
           retries: 30
           delay: 5
-          until: k3s_service_status.rc == 0
+          until: k3s_service_status.status.ActiveState == 'active'
           changed_when: false
 
       always:
@@ -411,72 +284,8 @@
           - "Packages upgraded: {{ apt_upgrade.changed }}"
           - "{{ apt_upgrade.stdout_lines | default([]) }}"
 
-    # Check for reboot requirement using multiple methods:
-    # 1. /var/run/reboot-required (Debian/Ubuntu standard)
-    # 2. Kernel version mismatch (running vs installed)
-    # Note: Plex is LXC (Debian), GitLab is VM (Debian) — both use Debian kernel check
-    - name: Check if reboot-required file exists
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: reboot_required_file
-
-    - name: Get running kernel version
-      ansible.builtin.command: uname -r
-      register: running_kernel
-      changed_when: false
-
-    - name: Get latest installed kernel version (Debian)
-      ansible.builtin.shell: |
-        set -o pipefail
-        # Note: Use [[:space:]] instead of \s for POSIX ERE compatibility
-        dpkg -l | grep -E '^ii[[:space:]]+linux-image-[0-9]' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1
-      args:
-        executable: /bin/bash
-      register: installed_kernel_debian
-      changed_when: false
-      failed_when: false
-
-    - name: Determine if kernel was updated
-      ansible.builtin.set_fact:
-        kernel_updated: >-
-          {{
-            installed_kernel_debian.stdout | default('') != '' and
-            running_kernel.stdout != installed_kernel_debian.stdout
-          }}
-
-    - name: Set reboot required flag
-      ansible.builtin.set_fact:
-        reboot_required: "{{ reboot_required_file.stat.exists or (kernel_updated | bool) }}"
-
-    - name: Display reboot requirement
-      ansible.builtin.debug:
-        msg: |
-          WARNING: {{ inventory_hostname }} requires reboot
-          Running kernel: {{ running_kernel.stdout }}
-          Installed kernel: {{ installed_kernel_debian.stdout | default('unknown') }}
-          Reboot-required file: {{ reboot_required_file.stat.exists }}
-          Kernel mismatch: {{ kernel_updated }}
-      when: reboot_required | bool
-
-    - name: Pause for manual reboot decision
-      ansible.builtin.pause:
-        prompt: |
-          {{ inventory_hostname }} (application host) requires a reboot.
-          Press ENTER to reboot now, or Ctrl+C then 'A' to abort.
-      when:
-        - reboot_required | bool
-        - not (auto_reboot | default(false))
-
-    - name: Reboot host if required
-      ansible.builtin.reboot:
-        reboot_timeout: 300
-        msg: "Rebooting {{ inventory_hostname }} after package updates"
-      when: reboot_required | bool
-
-    - name: Wait for host to come back online
-      ansible.builtin.wait_for_connection:
-        timeout: 300
-      when: reboot_required | bool
+    - name: Check and reboot if needed
+      ansible.builtin.include_tasks: _reboot-if-needed.yml
 
     - name: Verify services after reboot
       ansible.builtin.service:

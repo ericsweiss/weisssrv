@@ -95,7 +95,7 @@
 
 - name: Download acme.sh installer
   ansible.builtin.get_url:
-    url: https://get.acme.sh
+    url: "https://raw.githubusercontent.com/acmesh-official/acme.sh/{{ acme_sh_version }}/acme.sh"
     dest: /tmp/acme_installer.sh
     mode: '0755'
   when:

@@ -24,6 +24,19 @@
   register: gpg_download_result
   changed_when: gpg_download_result.changed and not tailscale_gpg_key.stat.exists
 
+- name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
+  ansible.builtin.shell: |
+    set -o pipefail
+    # Extract the primary key fingerprint (first fpr record after first pub)
+    # and verify it matches the expected value exactly (full-line match).
+    primary_fpr=$(gpg --show-keys --with-colons /usr/share/keyrings/tailscale-archive-keyring.gpg 2>/dev/null \
+        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
+    [ "$primary_fpr" = "2596A99EAAB33821893C0A79458CA832957F5868" ]
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: ansible_facts['os_family'] == "Debian"
+
 - name: Add Tailscale repository
   ansible.builtin.apt_repository:
     repo: >-

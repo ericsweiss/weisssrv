@@ -104,6 +104,10 @@ runners:
         # Pull policy
         pull_policy = ["if-not-present"]
 
+        # Allow individual CI jobs to override node selector for CPU-compatibility only.
+        # Restricted to the esweiss.com/cpu label to prevent jobs from targeting arbitrary nodes.
+        node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
 # RBAC configuration
 # clusterWideAccess: false restricts the runner to only manage resources in its own namespace.
 # This is appropriate for the shared runner - job pods are created in the gitlab-runner namespace.

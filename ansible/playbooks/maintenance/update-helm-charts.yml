@@ -68,10 +68,18 @@
     # NOTE: Helm does not update CRDs on upgrade by default. cert-manager CRDs
     # must be applied explicitly before the Helm upgrade to avoid broken upgrades
     # when CRD schemas change between versions.
+    - name: Download cert-manager CRDs before upgrade
+      ansible.builtin.get_url:
+        url: "https://github.com/cert-manager/cert-manager/releases/download/{{ helm_chart_versions.cert_manager }}/cert-manager.crds.yaml"
+        dest: /tmp/cert-manager-crds.yaml
+        mode: "0644"
+        force: true
+        # Note: cert-manager does not publish separate checksum files for CRDs.
+        # Downloaded locally first to avoid kubectl applying directly from URL.
+
     - name: Apply cert-manager CRDs before upgrade
       ansible.builtin.command: >
-        kubectl apply -f
-        https://github.com/cert-manager/cert-manager/releases/download/{{ helm_chart_versions.cert_manager }}/cert-manager.crds.yaml
+        kubectl apply -f /tmp/cert-manager-crds.yaml
       changed_when: true
       register: certmanager_crds
 

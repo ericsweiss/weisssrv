@@ -19,9 +19,14 @@
     group: www-data
     mode: "0640"
     unsafe_writes: true  # Required for /etc/pve clustered filesystem
+  # cluster.fw is on the shared /etc/pve filesystem - only deploy once, via a Proxmox node.
+  # delegate_to ensures this works even when the play runs for non-Proxmox groups (services, etc.)
+  # where inventory_hostname may not be in groups['proxmox'].
+  run_once: true
+  delegate_to: "{{ groups['proxmox'][0] }}"
   when:
     - pve_firewall_enabled | default(true)
-    - inventory_hostname in groups['proxmox'] | default([])
+    - (groups['proxmox'] | default([]) | length) > 0
 
 - name: Deploy node-specific host.fw configuration
   ansible.builtin.template:

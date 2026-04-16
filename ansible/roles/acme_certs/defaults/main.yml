@@ -3,6 +3,9 @@
 
 acme_email: "admin@esweiss.com"
 acme_dns_provider: dns_cf
+# Pin acme.sh installer to a specific release (avoid mutable get.acme.sh redirect)
+# Update by checking: https://github.com/acmesh-official/acme.sh/releases
+acme_sh_version: "3.1.2"
 
 internal_domain: esweiss.com
 local_cert_dir: /opt/AdGuardHome/certs

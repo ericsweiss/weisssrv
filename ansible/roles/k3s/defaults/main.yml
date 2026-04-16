@@ -4,8 +4,11 @@
 # K3s version and installation
 # Note: Version should be set in group_vars/k3s.yml or all.yml
 # This is a fallback default
-k3s_version: "v1.33.7+k3s1"
-k3s_install_script_url: "https://get.k3s.io"
+k3s_version: "v1.35.3+k3s1"
+# Pin to a specific k3s release tag instead of the mutable get.k3s.io redirect.
+# This makes the installer script content deterministic per version and reduces
+# supply-chain risk from unexpected changes to the install flow.
+k3s_install_script_url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
 
 # Role configuration
 k3s_role: agent  # or 'server'
@@ -28,5 +31,5 @@ k3s_taints: []
 
 # kube-vip configuration
 # Note: Version should be set in group_vars/k3s.yml or all.yml
-kube_vip_version: "v1.0.3"
+kube_vip_version: "v1.1.2"
 kube_vip_interface: "eth0"

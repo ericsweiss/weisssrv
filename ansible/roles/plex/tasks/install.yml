@@ -60,6 +60,18 @@
     dest: /tmp/PlexSign.v2.key
     mode: "0644"
 
+- name: Verify Plex v2 GPG key fingerprint (primary key must match exactly)
+  ansible.builtin.shell: |
+    set -o pipefail
+    # Extract the primary key fingerprint (first fpr record after first pub)
+    # and verify it matches the expected value exactly (full-line match).
+    primary_fpr=$(gpg --show-keys --with-colons /tmp/PlexSign.v2.key 2>/dev/null \
+        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
+    [ "$primary_fpr" = "6EFFEB478A6559D75C7C4FE706C521790B9CFFDE" ]
+  args:
+    executable: /bin/bash
+  changed_when: false
+
 - name: Add Plex v2 GPG key to keyring
   ansible.builtin.shell: |
     gpg --yes --dearmor -o /etc/apt/keyrings/plexmediaserver.v2.gpg < /tmp/PlexSign.v2.key

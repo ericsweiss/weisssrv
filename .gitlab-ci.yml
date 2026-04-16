@@ -67,7 +67,7 @@ workflow:
       export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
       install -m 600 ansible/ansible.cfg "$ANSIBLE_CONFIG"
       trap "rm -f '$ANSIBLE_CONFIG'" EXIT
-    - pip install --quiet ansible ansible-lint
+    - pip install --quiet ansible==11.6.0 ansible-lint==25.12.2
     - ansible-galaxy collection install -r ansible/requirements.yml
 
 .install-1password:
@@ -89,7 +89,7 @@ workflow:
     ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
   before_script:
     - !reference [.install-1password, before_script]
-    - pip install --quiet ansible
+    - pip install --quiet ansible==11.6.0
     - |
       # Copy ansible.cfg to secure temp path (world-writable checkout causes Ansible to ignore it)
       export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
@@ -207,7 +207,7 @@ yaml-lint:
   stage: lint
   before_script:
     - apt-get update -qq
-    - pip install --quiet yamllint
+    - pip install --quiet yamllint==1.37.1
   script:
     - yamllint -d relaxed ansible/
     - yamllint -d relaxed kubernetes/
@@ -238,6 +238,14 @@ ansible-lint:
       export SMTP_RELAY_PASSWORD="ci-placeholder"
       for playbook in playbooks/*.yml playbooks/*/*.yml; do
         if [ -f "$playbook" ]; then
+          # Skip task include files (convention: prefix with underscore)
+          # POSIX-compatible pattern match (works in sh, not just bash)
+          case "$(basename "$playbook")" in
+            _*)
+              echo "Skipping task include: $playbook"
+              continue
+              ;;
+          esac
           echo "Checking syntax: $playbook"
           ansible-playbook --syntax-check -i inventories/prod "$playbook"
         fi
@@ -340,8 +348,17 @@ terraform-plan:
   image:
     name: hashicorp/terraform:1.5
     entrypoint: [""]
+  variables:
+    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
+    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_USERNAME: "gitlab-ci-token"
+    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
+    TF_HTTP_LOCK_METHOD: "POST"
+    TF_HTTP_UNLOCK_METHOD: "DELETE"
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   before_script:
-    - apk add --no-cache curl bash gnupg
+    - apk add --no-cache curl bash gnupg jq
     - |
       curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor > /etc/apk/keys/1password.gpg
       echo "https://downloads.1password.com/linux/alpinelinux/stable" >> /etc/apk/repositories
@@ -354,9 +371,18 @@ terraform-plan:
       export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
       export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
       terraform plan -input=false -no-color -out=tfplan
+    # Generate plan report for MR widget (shows resource change counts in merge requests)
+    - terraform show -json tfplan | jq -r '
+        ([.resource_changes[]?.change.actions?]|flatten)|
+        {"create":(map(select(.=="create"))|length),
+         "update":(map(select(.=="update"))|length),
+         "delete":(map(select(.=="delete"))|length)}
+      ' > tfplan.json
   artifacts:
     paths:
       - terraform/cloudflare/tfplan
+    reports:
+      terraform: terraform/cloudflare/tfplan.json
     expire_in: 1 hour
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -428,18 +454,21 @@ helm-validate:
         -f kubernetes/apps/traefik/values.yaml \
         --namespace traefik \
         --version "$(yq -r '.helm_chart_versions.traefik' ansible/inventories/prod/group_vars/all.yml)" \
+        --api-versions policy/v1/PodDisruptionBudget \
         > /dev/null && echo "Traefik: OK"
     - |
       helm template metallb metallb/metallb \
         -f kubernetes/bootstrap/metallb/values.yaml \
         --namespace metallb-system \
         --version "$(yq -r '.helm_chart_versions.metallb' ansible/inventories/prod/group_vars/all.yml)" \
+        --api-versions policy/v1/PodDisruptionBudget \
         > /dev/null && echo "MetalLB: OK"
     - |
       helm template cert-manager jetstack/cert-manager \
         -f kubernetes/apps/cert-manager/values.yaml \
         --namespace cert-manager \
         --version "$(yq -r '.helm_chart_versions.cert_manager' ansible/inventories/prod/group_vars/all.yml)" \
+        --api-versions policy/v1/PodDisruptionBudget \
         > /dev/null && echo "cert-manager: OK"
     - |
       helm template authentik authentik/authentik \
@@ -447,12 +476,13 @@ helm-validate:
         --namespace authentik \
         --set authentik.secret_key=dummy-secret-key-for-validation \
         --set authentik.postgresql.password=dummy-postgres-password \
+        --api-versions policy/v1/PodDisruptionBudget \
         > /dev/null && echo "Authentik: OK"
     - |
       # GitLab Runner charts
       RUNNER_VERSION=$(yq -r '.gitlab_runner_helm_version' ansible/inventories/prod/group_vars/all.yml)
-      helm template gitlab-runner gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner/values.yaml > /dev/null && echo "GitLab Runner: OK"
-      helm template gitlab-runner-privileged gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner-privileged/values.yaml > /dev/null && echo "GitLab Runner Privileged: OK"
+      helm template gitlab-runner gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner/values.yaml --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "GitLab Runner: OK"
+      helm template gitlab-runner-privileged gitlab/gitlab-runner --version "$RUNNER_VERSION" -f kubernetes/apps/gitlab-runner-privileged/values.yaml --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "GitLab Runner Privileged: OK"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -484,7 +514,6 @@ molecule-tests:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
     ANSIBLE_FORCE_COLOR: "1"
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     PY_COLORS: "1"
   before_script:
     - apt-get update -qq
@@ -525,7 +554,6 @@ integration-tests:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
     ANSIBLE_FORCE_COLOR: "1"
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     PY_COLORS: "1"
   before_script:
     - apt-get update -qq
@@ -571,6 +599,8 @@ secret_detection:
   variables:
     SECRET_DETECTION_HISTORIC_SCAN: "false"
     SECRET_DETECTION_EXCLUDED_PATHS: "docs/,ansible/roles/*/molecule/"
+    # Require modern CPU (gitleaks binary uses POPCNT/SSE4.2 - OptiPlex Core 2 Quads crash with SIGILL)
+    KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -640,6 +670,15 @@ deploy-terraform:
   image:
     name: hashicorp/terraform:1.5
     entrypoint: [""]
+  variables:
+    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
+    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_USERNAME: "gitlab-ci-token"
+    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
+    TF_HTTP_LOCK_METHOD: "POST"
+    TF_HTTP_UNLOCK_METHOD: "DELETE"
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: validation-gate
     - job: terraform-plan
@@ -1076,6 +1115,7 @@ deploy-k3s-coredns:
       optional: true
   script:
     - kubectl apply -f kubernetes/apps/coredns/helmchartconfig.yaml
+    - kubectl apply -f kubernetes/apps/coredns/pdb.yaml
     - |
       # Wait for HelmChartConfig reconciliation and verify ready replicas
       echo "Waiting for CoreDNS to reach 2 ready replicas..."
@@ -1232,7 +1272,7 @@ deploy-downloads:
       # Apply manifests with restricted envsubst (only substitute known version variables)
       # Note: gluetun is a sidecar defined in nzbget.yaml and qbittorrent.yaml
       ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
-      for manifest in storage.yaml vpn-common.yaml nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml certificate.yaml ingress-routes.yaml ingress-routes-ha-bypass.yaml; do
+      for manifest in storage.yaml nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml certificate.yaml ingress-routes.yaml ingress-routes-ha-bypass.yaml; do
         if [ -f "$manifest" ]; then
           envsubst "$ENVSUBST_VARS" < "$manifest" | kubectl apply -f -
         fi
@@ -1991,7 +2031,7 @@ version-check:
   stage: lint
   image: python:3.11
   script:
-    - pip install --quiet pyyaml requests
+    - pip install --quiet pyyaml==6.0.2 requests==2.32.3
     - python3 ./scripts/version-check-ci.py
   artifacts:
     paths:

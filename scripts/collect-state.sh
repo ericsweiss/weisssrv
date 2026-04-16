@@ -1,8 +1,78 @@
 #!/usr/bin/env bash
 # collect-state.sh - Collect cluster state with automatic secret redaction
-# Usage: ./scripts/collect-state.sh [output_file]
+# Usage: ./scripts/collect-state.sh [--json] [output_file]
+#   --json: Output machine-readable JSON health summary to stdout (no file written)
 
 set -euo pipefail
+
+# Handle --json mode
+if [ "${1:-}" = "--json" ]; then
+    # Quick health check mode - outputs JSON summary to stdout
+    JSON_OUTPUT='{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","nodes":{},"k3s":{},"zfs":{},"services":{}}'
+
+    # Proxmox nodes reachability
+    PVE_UP=0; PVE_TOTAL=0
+    for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        PVE_TOTAL=$((PVE_TOTAL + 1))
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+            PVE_UP=$((PVE_UP + 1))
+        fi
+    done
+
+    # K3s nodes (use mktemp to avoid /tmp collision/symlink issues)
+    K3S_READY=0; K3S_TOTAL=0; K3S_VERSION=""
+    K3S_NODES_JSON=$(mktemp)
+    K3S_PODS_JSON=$(mktemp)
+    trap 'rm -f "$K3S_NODES_JSON" "$K3S_PODS_JSON"' EXIT
+    # All jq parses use fallbacks so malformed/partial JSON won't abort --json mode under set -e
+    if kubectl get nodes -o json 2>/dev/null > "$K3S_NODES_JSON" && [ -s "$K3S_NODES_JSON" ]; then
+        K3S_TOTAL=$(jq '.items | length' "$K3S_NODES_JSON" 2>/dev/null || echo 0)
+        # Use any() with ? for null safety when conditions array is missing
+        K3S_READY=$(jq '[.items[] | select(any(.status.conditions[]?; .type=="Ready" and .status=="True"))] | length' "$K3S_NODES_JSON" 2>/dev/null || echo 0)
+        K3S_VERSION=$(jq -r '.items[0].status.nodeInfo.kubeletVersion // "unknown"' "$K3S_NODES_JSON" 2>/dev/null || echo "unknown")
+    fi
+
+    # K3s pods
+    POD_TOTAL=0; POD_RUNNING=0
+    if kubectl get pods -A -o json 2>/dev/null > "$K3S_PODS_JSON" && [ -s "$K3S_PODS_JSON" ]; then
+        POD_TOTAL=$(jq '.items | length' "$K3S_PODS_JSON" 2>/dev/null || echo 0)
+        POD_RUNNING=$(jq '[.items[] | select(.status.phase=="Running" or .status.phase=="Succeeded")] | length' "$K3S_PODS_JSON" 2>/dev/null || echo 0)
+    fi
+
+    # ZFS pool health (from first reachable Proxmox host)
+    ZFS_POOLS="[]"
+    for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        if POOLS=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "zpool list -H -o name,health,size,alloc,free 2>/dev/null" 2>/dev/null); then
+            ZFS_POOLS=$(echo "$POOLS" | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {name:.[0], health:.[1], size:.[2], alloc:.[3], free:.[4]}]' 2>/dev/null || echo "[]")
+            break
+        fi
+    done
+
+    # Build final JSON
+    jq -n \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson pve_up "$PVE_UP" \
+        --argjson pve_total "$PVE_TOTAL" \
+        --argjson k3s_ready "$K3S_READY" \
+        --argjson k3s_total "$K3S_TOTAL" \
+        --arg k3s_version "$K3S_VERSION" \
+        --argjson pod_total "$POD_TOTAL" \
+        --argjson pod_running "$POD_RUNNING" \
+        --argjson zfs_pools "$ZFS_POOLS" \
+        '{
+            timestamp: $ts,
+            healthy: (($pve_up > 0) and ($k3s_ready > 0)),
+            proxmox: { reachable: $pve_up, total: $pve_total },
+            k3s: { nodes_ready: $k3s_ready, nodes_total: $k3s_total, version: $k3s_version, pods_running: $pod_running, pods_total: $pod_total },
+            zfs: { pools: $zfs_pools }
+        }'
+
+    # Exit non-zero if no infrastructure is reachable
+    if [ "$PVE_UP" -eq 0 ] && [ "$K3S_TOTAL" -eq 0 ]; then
+        exit 1
+    fi
+    exit 0
+fi
 
 OUTPUT_FILE="${1:-cluster-state-$(date +%Y%m%d-%H%M%S).txt}"
 TEMP_DIR=$(mktemp -d)
@@ -17,6 +87,9 @@ GITLAB_HOST="gitlab"  # 192.168.0.153 (gitlab VM on pve-nas-01)
 # 9-node k3s cluster (3 servers + 6 agents)
 K3S_HOSTS=("k3s-srv-nas-01" "k3s-srv-laptop-01" "k3s-srv-prec-01" "k3s-agt-nas-01" "k3s-agt-laptop-01" "k3s-agt-opt-01" "k3s-agt-opt-02" "k3s-agt-opt-03" "k3s-agt-prec-01")
 HOME_ASSISTANT_HOST="192.168.0.154"  # home (HAOS VM)
+
+# Flag to avoid collecting cluster-wide k3s data multiple times (runs on first server node only)
+K3S_CLUSTER_COLLECTED=false
 
 # Redaction patterns using POSIX-compatible character classes
 # Note: Use [[:space:]] instead of \s and [^[:space:]] instead of \S for portability
@@ -50,12 +123,14 @@ REDACT_PATTERNS=(
     's/client_secret:[[:space:]]*[^[:space:]]+/client_secret: <REDACTED>/g'
 )
 
-redact() {
-    local input="$1"
+redact_file() {
+    local infile="$1"
+    local outfile="$2"
+    local sed_args=()
     for pattern in "${REDACT_PATTERNS[@]}"; do
-        input=$(echo "$input" | sed -E "$pattern")
+        sed_args+=(-e "$pattern")
     done
-    echo "$input"
+    sed -E "${sed_args[@]}" "$infile" > "$outfile"
 }
 
 collect_host() {
@@ -75,6 +150,12 @@ echo "--- System Info ---"
 uname -a
 hostname -f
 uptime
+echo ""
+echo "--- Memory ---"
+free -h
+echo ""
+echo "--- CPU ---"
+nproc
 echo ""
 echo "--- Network ---"
 ip -4 addr show | grep -E 'inet|^[0-9]'
@@ -129,11 +210,11 @@ echo "--- Firewall Status ---"
 sudo pve-firewall status 2>/dev/null || echo "No firewall"
 echo ""
 echo "--- Firewall IP Sets ---"
-sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep -A 20 '\[IPSET' | head -100 || echo "No firewall config"
+sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep --no-group-separator -A 20 '\[IPSET' | head -100 || echo "No firewall config"
 echo ""
 echo "--- Firewall Guest Rules ---"
 # All VMIDs: DNS (150,160), SMTP (151), Plex (152), HA (154), k3s servers (222,223,227), k3s agents (202-207)
-for vmid in 150 151 152 154 160 202 203 204 205 206 207 222 223 227; do
+for vmid in 150 151 152 153 154 160 202 203 204 205 206 207 222 223 227; do
     if [ -f "/etc/pve/firewall/${vmid}.fw" ]; then
         echo "Guest ${vmid}:"
         sudo cat "/etc/pve/firewall/${vmid}.fw" 2>/dev/null || echo "  Cannot read"
@@ -145,7 +226,7 @@ zpool list 2>/dev/null || echo "No ZFS"
 echo ""
 echo "--- ZFS Pool Health (All Pools) ---"
 # Dynamically discover pools on this host (NAS has tank/ssd/nvme/archive, compute nodes have local-ssd)
-zpool list -H -o name 2>/dev/null | while IFS= read -r pool; do
+for pool in $(zpool list -H -o name 2>/dev/null); do
     echo "Pool: $pool"
     zpool status "$pool" 2>/dev/null | grep -E 'state:|scan:|errors:' || true
 done
@@ -161,7 +242,7 @@ sudo cat /etc/exports 2>/dev/null || echo "No exports"
 echo ""
 echo "--- Samba Status ---"
 systemctl is-active smbd 2>/dev/null || echo "No Samba"
-sudo testparm -s 2>/dev/null | grep -A 5 '\[' | head -20 || true
+sudo testparm -s 2>/dev/null | grep --no-group-separator -A 5 '\[' | head -20 || true
 echo ""
 echo "--- MergerFS Mounts ---"
 if mount | grep -q mergerfs; then
@@ -227,6 +308,9 @@ journalctl -u media-mover.service --since "1 day ago" --no-pager | tail -10 2>/d
 echo ""
 echo "--- LXC Containers ---"
 sudo pct list 2>/dev/null || echo "No LXC containers"
+echo ""
+echo "--- VM List ---"
+qm list 2>/dev/null || echo 'Cannot list VMs'
 echo ""
 echo "--- Plex LXC Status (VMID 152) ---"
 # Query cluster to find which node hosts LXC 152
@@ -295,7 +379,7 @@ echo "--- Oh My Zsh Plugins ---"
 # Plugins span multiple lines in .zshrc, extract the entire block
 if [ -f ~/.zshrc ]; then
     # Use sed to extract plugins=( ... ) block (handles multi-line)
-    sed -n '/^plugins=(/,/^)/p' ~/.zshrc 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g' || echo "No plugins found"
+    grep --no-group-separator -A 50 '^plugins=(' ~/.zshrc 2>/dev/null | sed -n '/^plugins=(/,/)/p' | head -20 || echo "Not found"
 else
     echo "No zsh config"
 fi
@@ -354,6 +438,13 @@ if [ "$(hostname)" = "dns-01" ]; then
     sudo /root/.acme.sh/acme.sh --list 2>/dev/null || echo "No acme.sh"
 fi
 echo ""
+echo "--- DNS Resolution Test ---"
+dig +short google.com @127.0.0.1 2>/dev/null || echo 'DNS resolution failed'
+dig +short esweiss.com @127.0.0.1 2>/dev/null || echo 'Internal DNS resolution failed'
+echo ""
+echo "--- AdGuard Sync Timer ---"
+systemctl list-timers adguardhome-sync* 2>/dev/null || echo 'No sync timer found'
+echo ""
 EOF
 }
 
@@ -372,6 +463,9 @@ echo ""
 echo "--- TLS Certs ---"
 ls -la /etc/postfix/tls/ 2>/dev/null || echo "No TLS dir"
 echo ""
+echo "--- Mail Queue ---"
+sudo postqueue -p 2>/dev/null | tail -1 || echo 'Cannot check mail queue'
+echo ""
 EOF
 }
 
@@ -379,6 +473,7 @@ collect_k3s() {
     local host=$1
     echo "=== K3s-specific: $host ==="
 
+    # Per-node data (always collected)
     ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed"
 echo "--- K3s Service Status ---"
 if systemctl is-active k3s &>/dev/null; then
@@ -394,15 +489,56 @@ echo ""
 echo "--- K3s Version ---"
 k3s --version 2>/dev/null || echo "k3s not installed"
 echo ""
-echo "--- Node Info (server only) ---"
+echo "--- K3s Config (sanitized, non-sensitive keys only) ---"
+if [ -f /etc/rancher/k3s/config.yaml ]; then
+    # Only show known-safe configuration keys; exclude token/secret-related fields
+    sudo grep -E '^(write-kubeconfig-mode|tls-san|node-ip|node-external-ip|cluster-cidr|service-cidr|cluster-domain|disable|secrets-encryption|node-label|node-taint|bind-address|advertise-address):' \
+        /etc/rancher/k3s/config.yaml 2>/dev/null || echo "Cannot read config file (permission denied)"
+else
+    echo "No config file (k3s using defaults or command-line args)"
+    echo "Note: Re-run 'task k3s:deploy' to create config from Ansible"
+fi
+echo ""
+echo "--- NFS Mounts ---"
+mount | grep nfs || echo "No NFS mounts on this node"
+echo ""
+echo "--- Disk Usage ---"
+df -h | grep -E '^/|Filesystem'
+echo ""
+echo "--- Tailscale ---"
+if command -v tailscale &>/dev/null; then
+    ts_output=$(sudo tailscale status 2>/dev/null | head -5)
+    if [ -n "$ts_output" ]; then
+        echo "$ts_output"
+    else
+        echo "Tailscale installed but not connected or no peers"
+    fi
+else
+    echo "Tailscale not installed"
+fi
+echo ""
+EOF
+
+    # Cluster-wide data (collected once from the first server node)
+    # Uses exit codes: 0 = collected, 2 = not a server (try next), other = SSH/remote failure
+    if [ "$K3S_CLUSTER_COLLECTED" = "false" ]; then
+        # Temporarily disable set -e so we can check the exit code
+        set +e
+        ssh -o ConnectTimeout=10 -o BatchMode=yes "eric@${host}" bash << 'EOF' 2>/dev/null
 if systemctl is-active k3s &>/dev/null; then
+    # Readiness probe: verify the kubectl API actually responds before
+    # proceeding. Without this, downstream failures are masked by || echo
+    # and K3S_CLUSTER_COLLECTED=true would be set with no actual data.
+    # rc=3 triggers retry on the next server node.
+    sudo k3s kubectl get nodes -o wide >/dev/null 2>&1 || exit 3
+    echo "--- Node Info (cluster-wide, collected once) ---"
     sudo k3s kubectl get nodes -o wide 2>/dev/null || echo "Cannot get nodes"
     echo ""
-    echo "--- Pod Status (server only) ---"
-    sudo k3s kubectl get pods -A 2>/dev/null | head -30 || echo "Cannot get pods"
+    echo "--- Pod Status ---"
+    sudo k3s kubectl get pods -A 2>/dev/null | head -60 || echo "Cannot get pods"
     echo ""
-    echo "--- Services (server only) ---"
-    sudo k3s kubectl get svc -A 2>/dev/null | head -20 || echo "Cannot get services"
+    echo "--- Services ---"
+    sudo k3s kubectl get svc -A 2>/dev/null | head -40 || echo "Cannot get services"
     echo ""
     echo "--- kube-vip Status ---"
     sudo k3s kubectl get pods -n kube-system 2>/dev/null | grep kube-vip || echo "kube-vip not found"
@@ -500,35 +636,36 @@ if systemctl is-active k3s &>/dev/null; then
     echo ""
     echo "Middleware:"
     sudo k3s kubectl get middleware -n traefik 2>/dev/null | grep -E "NAME|home-assistant" || echo "No Home Assistant middleware"
-fi
-echo ""
-echo "--- K3s Config ---"
-if [ -f /etc/rancher/k3s/config.yaml ]; then
-    sudo cat /etc/rancher/k3s/config.yaml 2>/dev/null || echo "Cannot read config file (permission denied)"
+    echo ""
+    echo "--- GitLab Runner (gitlab-runner namespace) ---"
+    sudo k3s kubectl get pods -n gitlab-runner 2>/dev/null || echo "Cannot get gitlab-runner pods"
+    sudo k3s kubectl get helmrelease -n gitlab-runner 2>/dev/null || true
+    echo ""
+    echo "--- cert-manager ---"
+    sudo k3s kubectl get clusterissuer 2>/dev/null || echo "Cannot get ClusterIssuers"
+    sudo k3s kubectl get certificate -A 2>/dev/null || echo "Cannot get certificates"
+    echo ""
+    echo "--- MetalLB Configuration ---"
+    sudo k3s kubectl get ipaddresspool -n metallb-system 2>/dev/null || echo "Cannot get IP pools"
+    sudo k3s kubectl get l2advertisement -n metallb-system 2>/dev/null || echo "Cannot get L2 advertisements"
 else
-    echo "No config file (k3s using defaults or command-line args)"
-    echo "Note: Re-run 'task k3s:deploy' to create config from Ansible"
-fi
-echo ""
-echo "--- NFS Mounts ---"
-mount | grep nfs || echo "No NFS mounts on this node"
-echo ""
-echo "--- Disk Usage ---"
-df -h | grep -E '^/|Filesystem'
-echo ""
-echo "--- Tailscale ---"
-if command -v tailscale &>/dev/null; then
-    ts_output=$(sudo tailscale status 2>/dev/null | head -5)
-    if [ -n "$ts_output" ]; then
-        echo "$ts_output"
-    else
-        echo "Tailscale installed but not connected or no peers"
-    fi
-else
-    echo "Tailscale not installed"
+    echo "(Not a k3s server node, skipping cluster-wide data)"
+    exit 2
 fi
 echo ""
 EOF
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then
+            K3S_CLUSTER_COLLECTED=true
+        elif [ "$rc" -eq 2 ]; then
+            echo "No cluster-wide data on $host (not a server), will try next server node"
+        elif [ "$rc" -eq 3 ]; then
+            echo "kubectl API unresponsive on $host, will retry on next server node"
+        else
+            echo "Failed to collect cluster-wide data from $host (rc=$rc), will retry on next server node"
+        fi
+    fi
 }
 
 collect_home_assistant() {
@@ -720,8 +857,42 @@ echo ""
 } > "$TEMP_DIR/raw.txt"
 
 # Apply redaction
-redact "$(cat "$TEMP_DIR/raw.txt")" > "$OUTPUT_FILE"
+redact_file "$TEMP_DIR/raw.txt" "$OUTPUT_FILE"
 
 echo ""
 echo "State collection complete: $OUTPUT_FILE"
 echo "File size: $(wc -c < "$OUTPUT_FILE") bytes"
+
+# Update CLUSTER_STATUS.txt with latest state
+if cp "$OUTPUT_FILE" CLUSTER_STATUS.txt 2>/dev/null; then
+    echo "Updated CLUSTER_STATUS.txt"
+else
+    echo "Warning: could not update CLUSTER_STATUS.txt (directory not writable?)"
+fi
+
+# Cleanup old state files (keep last 5)
+# Use find for robust handling under set -euo pipefail, safe for filenames
+# with special characters, and no-match safe. Scoped to output directory
+# (not CWD) to prevent accidental deletion of unrelated files.
+# Portable across macOS (bash 3.2) and Linux (bash 4+).
+STATE_DIR="$(cd "$(dirname "$OUTPUT_FILE")" 2>/dev/null && pwd)"
+STATE_DIR="${STATE_DIR:-.}"
+# Resolve current output file to absolute path to prevent accidental self-deletion
+# when a custom OUTPUT_FILE matches the cluster-state-*.txt pattern
+CURRENT_OUTPUT="$STATE_DIR/$(basename "$OUTPUT_FILE")"
+COUNT=0
+while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    # Never delete the file we just created
+    [ "$file" = "$CURRENT_OUTPUT" ] && continue
+    rm -f -- "$file"
+    COUNT=$((COUNT + 1))
+done < <(
+    find "$STATE_DIR" -maxdepth 1 -type f -name 'cluster-state-*.txt' 2>/dev/null \
+        | sort -r \
+        | tail -n +6 \
+        || true
+)
+if [ "$COUNT" -gt 0 ]; then
+    echo "Cleaned up $COUNT old state files (keeping last 5)"
+fi

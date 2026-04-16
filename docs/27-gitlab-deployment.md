@@ -54,7 +54,7 @@ GitLab is deployed as a standalone VM on pve-nas-01 with:
 | Repo Disk | ssd pool (200GB zvol) - Git repositories |
 | Resources | 6 vCPUs, 16GB RAM |
 | VMID | 153 |
-| GitLab Version | 18.9.1-ee.0 |
+| GitLab Version | See `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml` |
 | Git SSH Port | 22 (internal), 2222 (external via iptables redirect) |
 
 **SSH Port Redirect:** GitLab's SSH daemon runs on port 22. External access on port 2222 is handled via iptables NAT redirect (`PREROUTING -p tcp --dport 2222 -j REDIRECT --to-ports 22`). This allows internal LAN users to use port 22 directly while external users connect on port 2222.

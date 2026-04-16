@@ -293,15 +293,15 @@ If DNS-01 challenge fails:
    sudo /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt_test
    ```
 
-## Future: k3s Certificate Management
+## K3s Certificate Management (cert-manager)
 
-Once k3s is deployed, cert-manager will handle cluster certificates:
+cert-manager is deployed on the k3s cluster and manages certificates for all Kubernetes-hosted services:
 
-- **Internal services**: Internal CA or self-signed
-- **External ingress**: Let's Encrypt via DNS-01 (same Cloudflare API)
-- **Distribution**: Automatic via Kubernetes secrets
+- **Domains**: `*.ericsweiss.com` and `*.esweiss.com` (wildcard certificates)
+- **Issuer**: Let's Encrypt via DNS-01 challenge (Cloudflare API)
+- **Distribution**: Automatic via Kubernetes TLS secrets consumed by Traefik IngressRoutes
 
-The acme.sh pipeline will remain for non-k3s services (AdGuard, SMTP).
+The acme.sh pipeline remains active for non-k3s services (AdGuard Home, SMTP relay).
 
 ## Ansible Deployment
 
@@ -325,7 +325,7 @@ adguard_cert_path: /opt/AdGuardHome/certs
 
 secrets:
   cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
-  cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/account_id"
+  cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
 ```
 
 ## References

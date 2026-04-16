@@ -60,22 +60,22 @@ cd ansible && ./test-all-roles.sh unbound smtp_relay
 ```bash
 # Full test cycle (create -> converge -> verify -> destroy)
 cd ansible/roles/unbound
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule test
+python3 -m molecule test
 
 # Just converge (apply role) without destroying
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule converge
+python3 -m molecule converge
 
 # Run verification only (after converge)
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule verify
+python3 -m molecule verify
 
 # Keep container running after test (for debugging)
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule test --destroy=never
+python3 -m molecule test --destroy=never
 
 # Shell into test container for debugging
 docker exec -it <container-name> bash
 
 # Destroy test container
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule destroy
+python3 -m molecule destroy
 ```
 
 ### Keeping containers for debugging
@@ -95,24 +95,8 @@ docker exec unbound-test journalctl -u unbound --no-pager
 
 # Clean up when done
 cd ansible/roles/<role>
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule destroy
+python3 -m molecule destroy
 ```
-
-## Important: ANSIBLE_ALLOW_BROKEN_CONDITIONALS
-
-**This environment variable is required for all molecule commands.** The `test-all-roles.sh`
-script and the Taskfile `ansible:test` task set it automatically.
-
-The reason: `molecule-docker`'s internal `create.yml` playbook contains a bare conditional:
-
-```yaml
-# molecule-docker/playbooks/create.yml line 14
-when: (lookup('env', 'HOME'))
-```
-
-Ansible 2.20+ requires boolean conditionals, but this evaluates to a string. Setting
-`ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1` allows this legacy behavior. This is an upstream
-issue with `molecule-docker`, not with our roles.
 
 ## Container Testing Considerations
 
@@ -233,10 +217,10 @@ galaxy_info:
 
 ```bash
 cd ansible/roles/<role>
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule create    # Start container
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule converge  # Run role
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule verify    # Check results
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 python3 -m molecule destroy   # Cleanup
+python3 -m molecule create    # Start container
+python3 -m molecule converge  # Run role
+python3 -m molecule verify    # Check results
+python3 -m molecule destroy   # Cleanup
 ```
 
 ### Tips for writing tests
@@ -321,7 +305,7 @@ task ansible:test-integration-certs
 
 # Run directly with molecule
 cd ansible/integration-tests/dns-stack
-ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 molecule test
+molecule test
 ```
 
 **Version Management:** Integration tests automatically use production versions from `ansible/inventories/prod/group_vars/all.yml` via `vars_files` in each converge.yml. This ensures tests always use the same versions as production deployments, maintaining a single source of truth.
@@ -426,7 +410,7 @@ ANSIBLE_ALLOW_BROKEN_CONDITIONALS=1 molecule test
 - **Before major infrastructure changes** - Validate multi-role interactions
 - **When debugging production issues** - Reproduce cross-service problems
 - **During code review** - Ensure changes don't break integrations
-- **CI/CD** - Automatic testing via GitHub Actions when relevant roles change
+- **CI/CD** - Automatic testing via GitLab CI when relevant roles change
 
 ## Manual Testing Checklist
 

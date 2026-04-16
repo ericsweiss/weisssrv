@@ -1,0 +1,18 @@
+# GitLab Agent for Kubernetes configuration
+# Agent name: weisssrv-k3s
+# Cluster: 9-node k3s cluster (3 servers + 6 agents)
+#
+# This agent enables:
+# - CI/CD access to the k3s cluster without kubeconfig secrets
+# - Kubernetes dashboard in GitLab UI (Operate > Kubernetes clusters)
+# - Future Flux GitOps integration
+
+# Allow CI/CD pipelines from these projects to use this agent's kubeconfig
+ci_access:
+  projects:
+    - id: eric/weisssrv
+
+# Observability: allow GitLab to query cluster resources for the dashboard
+observability:
+  logging:
+    level: warn

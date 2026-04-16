@@ -157,14 +157,14 @@ The base infrastructure automation is complete and production-ready:
 - Monitoring: SMART disk health monitoring and backup jobs
 
 **Automation**:
-- 18 Ansible roles covering all infrastructure services
+- 20 Ansible roles covering all infrastructure services
 - Terraform for Cloudflare DNS (*.ericsweiss.com)
 - 1Password integration for secrets (no secrets in git)
 - Comprehensive update playbooks with rolling deployments
 - Post-deployment verification checks
 
 **Documentation**:
-- 28 comprehensive documentation files
+- 29 comprehensive documentation files
 - Operational runbooks covering common procedures
 - Disaster recovery procedures
 - Maintenance and update strategies

@@ -14,14 +14,16 @@
     - name: Download adguardhome-sync binary
       ansible.builtin.get_url:
         url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"  # noqa yaml[line-length]
-        dest: /tmp/adguardhome-sync.tar.gz
+        # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
+        dest: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
         mode: "0644"
         force: false
+        checksum: "sha256:https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/checksums.txt"
       when: not sync_binary.stat.exists
 
     - name: Extract adguardhome-sync
       ansible.builtin.unarchive:
-        src: /tmp/adguardhome-sync.tar.gz
+        src: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
         dest: /tmp
         remote_src: true
         creates: /tmp/adguardhome-sync

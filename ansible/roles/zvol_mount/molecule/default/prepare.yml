@@ -1,0 +1,86 @@
+---
+# Prepare playbook: Set up loopback device to simulate SCSI-attached ZFS zvol
+#
+# In production, Proxmox attaches zvols as SCSI devices with stable paths:
+#   /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+# Docker containers don't have real SCSI devices, so we simulate this with:
+#   1. A loopback device backed by a disk image file
+#   2. A symlink at the expected SCSI path pointing to the loopback device
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to be ready
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        systemctl stop unattended-upgrades.service 2>/dev/null || true
+        systemctl disable apt-daily.timer 2>/dev/null || true
+        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    # Create ansible temp directory to prevent "Failed to create temporary directory" errors
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp
+        chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    # Gather facts now that ansible temp dir exists
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    # Install packages needed by the role (filesystem formatting and mount checks)
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - e2fsprogs
+          - util-linux
+        state: present
+        update_cache: true
+
+    # Create a loopback block device simulating a SCSI-attached zvol
+    - name: Create test disk image (64MB)
+      ansible.builtin.command: dd if=/dev/zero of=/tmp/test-disk.img bs=1M count=64
+      args:
+        creates: /tmp/test-disk.img
+
+    - name: Create loopback device
+      ansible.builtin.command: losetup /dev/loop0 /tmp/test-disk.img
+      register: losetup_result
+      changed_when: losetup_result.rc == 0
+      failed_when:
+        - losetup_result.rc != 0
+        # Tolerate "device or resource busy" if loop0 is already set up (idempotence)
+        - "'busy' not in losetup_result.stderr"
+
+    # Create the /dev/disk/by-id/ directory and symlink
+    # This simulates what QEMU/Proxmox creates for SCSI-attached disks
+    - name: Create /dev/disk/by-id directory
+      ansible.builtin.file:
+        path: /dev/disk/by-id
+        state: directory
+        mode: "0755"
+
+    - name: Create symlink simulating SCSI device path
+      ansible.builtin.file:
+        src: /dev/loop0
+        dest: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+        state: link

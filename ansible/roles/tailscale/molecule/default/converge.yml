@@ -1,76 +1,14 @@
 ---
 # Converge playbook for tailscale role testing
+# Invokes the actual tailscale role to test:
+# - GPG key deployment and repository setup
+# - Version-pinned package installation
+# - Service enablement
+# - IP forwarding / sysctl configuration (when advertise_routes is set)
+# - systemd drop-in for IP forwarding persistence
+# Skips: tailscale up (requires auth key and network connectivity)
 - name: Converge
   hosts: all
   become: true
-  pre_tasks:
-    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: ansible_os_family == "Debian"
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-      when: ansible_os_family == "Debian"
-
-    - name: Install prerequisites
-      ansible.builtin.apt:
-        name:
-          - ca-certificates
-          - systemd
-          - gnupg
-          - curl
-        state: present
-      when: ansible_os_family == "Debian"
-
-    - name: Create keyrings directory
-      ansible.builtin.file:
-        path: /usr/share/keyrings
-        state: directory
-        mode: '0755'
-
-    - name: Download Tailscale GPG key
-      ansible.builtin.get_url:
-        url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
-        dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
-        mode: '0644'
-
-    - name: Add Tailscale repository
-      ansible.builtin.apt_repository:
-        repo: >-
-          deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg]
-          https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}
-          {{ ansible_facts['distribution_release'] }} main
-        state: present
-        filename: tailscale
-
-    # Install tailscale without version pinning (to avoid arm64 version mismatch)
-    - name: Install Tailscale (without version pinning for testing)
-      ansible.builtin.apt:
-        name: tailscale
-        state: present
-        update_cache: true
-
-    - name: Enable Tailscale service
-      ansible.builtin.service:
-        name: tailscaled
-        state: started
-        enabled: true
-
-  tasks:
-    - name: Display role completion message
-      ansible.builtin.debug:
-        msg: >
-          Tailscale installed and enabled.
-          Note: The full tailscale role was bypassed to avoid version pinning issues on arm64.
-          This test validates repository setup, package installation, and service management.
+  roles:
+    - role: tailscale

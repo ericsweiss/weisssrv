@@ -42,7 +42,7 @@ spec:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: prowlarr
           image: lscr.io/linuxserver/prowlarr:version-${PROWLARR_VERSION}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: PUID
               value: "1000"

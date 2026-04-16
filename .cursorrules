@@ -2,15 +2,9 @@
 
 You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, Kubernetes (k3s), and GitOps principles.
 
-## Project Overview
-
-**Repository**: weisssrv (Weiss Server Infrastructure)
 **Tech Stack**: Ansible, Terraform, k3s, ZFS, Proxmox VE, Debian 13 (trixie)
-**Architecture**: 6 Proxmox hosts, 9 k3s nodes (3 servers + 6 agents), 1 LXC container (Plex), multi-pool ZFS storage
-**CI/CD**: Self-hosted GitLab (canonical) with GitHub mirror (read-only)
-**Documentation**: Comprehensive markdown files in docs/ (29 files)
 
-See `CLAUDE.md` for complete project overview.
+See `CLAUDE.md` for the complete project overview, architecture, IP allocation, commands, storage architecture, secrets management, version management, and documentation index.
 
 ## Critical Rules
 
@@ -19,8 +13,7 @@ See `CLAUDE.md` for complete project overview.
 1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field`)
 2. **Automate ZFS pool creation/destruction** - Too critical, manual only
 3. **Skip deployment verification** - Always run `task deploy:verify` after changes
-4. **Use relative file paths in Ansible** - Always use absolute paths
-5. **Hardcode credentials** - Use 1Password references exclusively
+4. **Hardcode credentials** - Use 1Password references exclusively
 
 ### ALWAYS
 
@@ -45,14 +38,6 @@ See `CLAUDE.md` for complete project overview.
     mode: "0600"
   notify: Restart AdGuardHome
   no_log: true  # Contains passwords
-
-# Bad example
-- name: deploy config  # Not descriptive
-  template:  # Should be ansible.builtin.template
-    src: config.j2
-    dest: /opt/adguard/config.yaml  # Hardcoded path
-    mode: 600  # Should be quoted "0600"
-  # Missing: owner, group, no_log, notify
 ```
 
 ### Variable Organization
@@ -62,214 +47,32 @@ See `CLAUDE.md` for complete project overview.
 2. `group_vars/<group>.yml` - Group-specific config
 3. `host_vars/<host>.yml` - Host-specific overrides
 
-**Naming**:
-- Role-specific: `adguard_http_port`, `unbound_port`
-- Global: `internal_domain`, `admin_user`
-- Secrets: Always in `secrets:` dict with `op://` format
+**Naming**: Role-specific (`adguard_http_port`), Global (`internal_domain`), Secrets (in `secrets:` dict with `op://`)
 
 ### Secrets
 
 ```yaml
-# Correct - In group_vars/all.yml
+# In group_vars/all.yml
 secrets:
   smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
-  adguard_admin_password: "op://Homelab/AdGuard Home/password"
 
-# Usage in tasks
-- name: Deploy password file
-  ansible.builtin.template:
-    src: passwd.j2
-    dest: /etc/passwd
-  no_log: true  # Required for password tasks
+# Usage - always add no_log: true for password tasks
 ```
 
-### Inventory Structure
-
-```yaml
-# All hosts use eric user with sudo
-all:
-  vars:
-    ansible_user: eric
-    ansible_become: true
-
-dns:
-  hosts:
-    dns-01:
-      ansible_host: 192.168.0.150
-
-proxmox:
-  hosts:
-    pve-nas-01:
-      ansible_host: 192.168.0.102
-```
-
-## Common Tasks
+## Common Workflows
 
 ### Add New Service
-
-1. Bootstrap LXC (see docs/18-bootstrap-new-systems.md)
-2. Add to `ansible/inventories/prod/hosts.yml`
-3. Create role in `ansible/roles/<service>/`
-4. Deploy: `task deploy:all -- --limit <hostname>`
-5. Verify: `task deploy:verify -- --limit <hostname>`
+See `docs/18-bootstrap-new-systems.md`
 
 ### Update Application Version
+1. `task maintenance:check-versions` - Check for updates
+2. `task maintenance:update-version SERVICE=<name>` - Update version in all.yml
+3. Deploy with appropriate task (see `CLAUDE.md` for full task list)
+4. `task deploy:verify` and/or `task k3s:status`
 
-1. Check for updates: `task maintenance:check-versions`
-2. Update version in all.yml: `task maintenance:update-version SERVICE=<name>`
-   (or edit `ansible/inventories/prod/group_vars/all.yml` manually)
-3. Deploy the update:
-   - Base apps (AdGuard, Tailscale, Plex): `task maintenance:update-applications`
-   - K3s workloads: `task downloads:deploy` / `task recipes:deploy` / `task k3s:deploy-authentik`
-   - K3s nodes: `task maintenance:update-k3s-nodes`
-   - Helm charts: `task maintenance:update-helm-charts`
-4. Verify: `task deploy:verify` and/or `task k3s:status`
-
-### Modify Configuration
-
-1. Edit role template: `ansible/roles/<role>/templates/config.j2`
-2. Test: `task deploy:check -- --limit <hostname>`
-3. Deploy: `task deploy:all -- --limit <hostname>`
-4. Verify: `task deploy:verify -- --limit <hostname>`
-
-## Key Commands
-
-```bash
-# Deployment
-task deploy:check                    # Dry run (no changes)
-task deploy:all                      # Full deployment
-task deploy:verify                   # Verify services
-task deploy:base                     # Base config only
-
-# Version Discovery
-task maintenance:check-versions      # Check all services for updates
-task maintenance:update-version SERVICE=<name>  # Update single version in all.yml
-task maintenance:update-all-versions # Update all outdated versions
-
-# Maintenance (Base Infrastructure)
-task maintenance:update-full         # Full base update (OS + apps, interactive)
-task maintenance:update-full-auto    # Full base update (OS + apps, auto-reboot)
-task maintenance:update-applications # Base apps only (AdGuard, Tailscale, Plex)
-task maintenance:update-plex         # Plex Media Server only
-
-# Maintenance (K3s Cluster)
-task maintenance:update-k3s-nodes    # Rolling k3s node upgrades
-task maintenance:update-helm-charts  # Update platform Helm charts
-task maintenance:update-k3s-workloads # Update container images
-task maintenance:update-cluster      # Complete cluster update
-
-# Ansible
-task ansible:ping                    # Test connectivity
-task ansible:lint                    # Lint playbooks
-ansible-playbook ansible/playbooks/site.yml -i ansible/inventories/prod --limit dns-01  # Deploy to one host
-
-# Terraform
-task terraform:plan                  # Plan DNS changes
-task terraform:apply                 # Apply DNS changes
-
-# Testing
-task lint                            # Lint everything
-task collect-state                   # Generate cluster snapshot
-```
-
-## File Organization
-
-```
-ansible/
-├── inventories/prod/
-│   ├── hosts.yml                    # Host definitions
-│   ├── group_vars/
-│   │   ├── all.yml                  # Global vars, secrets, versions
-│   │   ├── dns.yml                  # DNS group vars
-│   │   └── proxmox.yml              # Proxmox group vars
-│   └── host_vars/                   # Host-specific overrides
-├── roles/
-│   └── <role>/
-│       ├── tasks/main.yml           # Main tasks
-│       ├── templates/               # Jinja2 templates
-│       ├── handlers/main.yml        # Service handlers
-│       └── files/                   # Static files
-└── playbooks/
-    ├── site.yml                     # Main playbook
-    ├── postflight.yml               # Verification
-    ├── maintenance/                 # Update playbooks
-    └── bootstrap/                   # Disaster recovery
-```
-
-## Architecture Quick Reference
-
-### Infrastructure
-
-- **Proxmox Hosts**: pve-nas-01 (.102), pve-laptop-01 (.103), pve-opt-01 (.104), pve-opt-02 (.105), pve-opt-03 (.106), pve-prec-01 (.107)
-- **K3s Servers**: k3s-srv-nas-01 (.222), k3s-srv-laptop-01 (.223), k3s-srv-prec-01 (.227)
-- **K3s Agents**: k3s-agt-nas-01 (.202), k3s-agt-laptop-01 (.203), k3s-agt-opt-01 (.204), k3s-agt-opt-02 (.205), k3s-agt-opt-03 (.206), k3s-agt-prec-01 (.207)
-- **DNS Servers**: dns-01 (.150), dns-02 (.160) - AdGuard + Unbound
-- **SMTP Relay**: smtp-relay (.151) - Postfix to Gmail
-- **Plex LXC**: plex (.152) - Media server
-- **GitLab VM**: gitlab (.153) - GitLab EE with CI/CD runners on k3s
-- **Home Assistant**: home-assistant (.154) - HAOS VM
-- **VPN**: Tailscale on Proxmox hosts (100.64.0.0/10)
-- **K3s VIPs**: API (.161), Public ingress (.100), Internal ingress (.101)
-
-### Storage (pve-nas-01)
-
-- **tank** - 6x 22TB raidz2 (~122TB) - Bulk media
-- **ssd** - 3x 4TB raidz1 (~11TB) - App data
-- **nvme** - 1x 4TB (~2TB) - Hot cache
-- **archive** - 4x 6TB raidz1 (~22TB) - Cold storage
-
-### Network
-
-- **Internal domain**: *.esweiss.com (AdGuard rewrites)
-- **External domain**: *.ericsweiss.com (Cloudflare DNS)
-- **Gateway**: 192.168.0.1
-- **DNS**: 192.168.0.150, 192.168.0.160
-
-## User Context
-
-- **User**: eric
-- **Workstation**: MacBook Pro M1 Pro, 32GB RAM
-- **OS**: macOS (ARM architecture)
-- **1Password**: CLI integration for secrets
-
-## Safety Patterns
-
-### Deployment Workflow
-
-```bash
-# 1. Pre-deployment checks
-task ansible:ping          # Verify connectivity
-task lint                  # Validate syntax
-task deploy:check          # Dry run
-
-# 2. Review changes in output
-
-# 3. Deploy (start with non-critical host)
-task deploy:all -- --limit dns-02  # Secondary DNS first
-
-# 4. Verify
-task deploy:verify -- --limit dns-02
-
-# 5. Deploy to critical systems
-task deploy:all -- --limit dns-01  # Primary DNS
-
-# 6. Final verification
-task deploy:verify
-```
-
-### Before Committing
-
-- [ ] `task lint` passes
-- [ ] `task deploy:check` looks reasonable
-- [ ] Deployed and verified on test host
-- [ ] Documentation updated
-- [ ] Git diff reviewed for secrets
-- [ ] Commit message is descriptive
-
-## Patterns to Follow
+## Ansible Patterns
 
 ### Handler Pattern
-
 ```yaml
 # tasks/main.yml
 - name: Deploy configuration
@@ -285,36 +88,11 @@ task deploy:verify
     state: restarted
 ```
 
-### Binary Installation Pattern
-
-```yaml
-- name: Check if binary exists
-  ansible.builtin.stat:
-    path: /usr/local/bin/binary
-  register: binary_exists
-
-- name: Download binary
-  ansible.builtin.get_url:
-    url: "https://example.com/v{{ version }}/binary.tar.gz"
-    dest: /tmp/binary.tar.gz
-  when: not binary_exists.stat.exists
-
-- name: Extract and install
-  ansible.builtin.unarchive:
-    src: /tmp/binary.tar.gz
-    dest: /tmp
-    remote_src: true
-  when: not binary_exists.stat.exists
-```
-
 ### Service Pattern
-
 ```yaml
 - name: Install packages
   ansible.builtin.apt:
-    name:
-      - package1
-      - package2
+    name: [package1, package2]
     state: present
     update_cache: true
 
@@ -329,9 +107,7 @@ task deploy:verify
   ansible.builtin.template:
     src: service.service.j2
     dest: /etc/systemd/system/service.service
-  notify:
-    - Reload systemd
-    - Restart service
+  notify: [Reload systemd, Restart service]
 
 - name: Enable service
   ansible.builtin.systemd:
@@ -340,78 +116,12 @@ task deploy:verify
     state: started
 ```
 
-## Documentation
+## Key References
 
-Complete documentation in `docs/`:
-
-**Getting Started** (00-03): Hardware setup, architecture, installation, SSH
-**Infrastructure** (04-11): QoL, Tailscale, ZFS, file services, DNS, certs, mail, firewall
-**Operations** (12-18): Runbooks, CI/CD (GitLab), k3s plan, credentials, DR, bootstrap
-**Applications** (19-28): K3s deployment, Plex, download clients, recipes, SSO, Home Assistant, multi-node expansion/implementation, GitLab deployment, GitLab migration
-
-## Debugging
-
-```bash
-# Verbose Ansible (run from repo root)
-ansible-playbook ansible/playbooks/site.yml -i ansible/inventories/prod -vvv
-
-# Test single task
-ansible dns-01 -i ansible/inventories/prod -m shell -a "systemctl status AdGuardHome"
-
-# Check facts
-ansible dns-01 -i ansible/inventories/prod -m setup
-
-# Validate syntax
-ansible-playbook ansible/playbooks/site.yml -i ansible/inventories/prod --syntax-check
-```
-
-## Important Design Decisions
-
-### Uniform User Management
-
-All hosts (Proxmox, LXC containers, VMs) use the `eric` user with:
-- SSH key authentication only (no passwords)
-- Passwordless sudo (`NOPASSWD: ALL`)
-- Root SSH disabled (`PermitRootLogin no`)
-
-LXC containers are unprivileged (UIDs mapped) and services run as non-root users (adguard, unbound). Postfix runs as root (standard for mail servers).
-
-### ZFS Safety
-
-Ansible configures ZFS properties but NEVER creates/destroys pools. Pool management is manual-only (too critical to automate).
-
-### Split DNS
-
-- Internal (*.esweiss.com) via AdGuard rewrites
-- External (*.ericsweiss.com) via Terraform/Cloudflare
-- HA with dns-01/dns-02, adguardhome-sync replication
-
-### CI/CD (GitLab)
-
-- **Canonical source**: https://git.ericsweiss.com/eric/weisssrv (GitLab)
-- **GitHub mirror**: https://github.com/ericsweiss/weisssrv (read-only, auto-synced)
-- **Pipeline**: `.gitlab-ci.yml` with stages: lint, ai-review, validate, test, security, gate, deploy, maintenance
-- **Infrastructure runner** (`gitlab-runner-privileged`): Tag `infrastructure`, privileged, handles ALL weisssrv CI/CD jobs
-- **Shared runner** (`gitlab-runner`): Tag `k8s-deploy`, unprivileged, `runUntagged: true`, for other GitLab projects
-- **Default tag**: `default: tags: [infrastructure]` routes all weisssrv jobs to infrastructure runner
-- **Secrets**: 1Password service account (`OP_SERVICE_ACCOUNT_TOKEN` CI variable)
-
-## Getting Help
-
-For homelab architecture questions, hardware recommendations, or infrastructure design guidance, reference the homelab-architect agent's expertise when needed.
-
-## Version Info
-
-- **Debian**: 13 (trixie)
-- **Proxmox VE**: Latest stable
-- **Python**: 3 (required for Ansible)
-- **Ansible Collections**: See ansible/requirements.yml
-
-## Quick Reference Links
-
-- Main playbook: `ansible/playbooks/site.yml`
-- Inventory: `ansible/inventories/prod/hosts.yml`
-- Global vars: `ansible/inventories/prod/group_vars/all.yml`
-- Task runner: `Taskfile.yml`
-- K3s manifests: `kubernetes/apps/` and `kubernetes/bootstrap/`
-- All docs: `docs/`
+- **Full project docs**: `CLAUDE.md`
+- **Main playbook**: `ansible/playbooks/site.yml`
+- **Inventory**: `ansible/inventories/prod/hosts.yml`
+- **Global vars / versions**: `ansible/inventories/prod/group_vars/all.yml`
+- **Task runner**: `Taskfile.yml` (run `task --list` for all tasks)
+- **K3s manifests**: `kubernetes/apps/` and `kubernetes/bootstrap/`
+- **All docs**: `docs/` (29 files covering hardware through GitLab migration)
