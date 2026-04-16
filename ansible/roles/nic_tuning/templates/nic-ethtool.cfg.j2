@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Interface: {{ item.interface }}
+# nic_tuning role — per-interface ethtool overrides applied at ifup.
+{% for opt in item.options %}
+post-up /sbin/ethtool -K {{ item.interface }} {{ opt.feature }} {{ opt.value }}
+{% endfor %}

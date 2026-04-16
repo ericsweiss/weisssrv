@@ -1,0 +1,21 @@
+---
+# nic_tuning role defaults.
+#
+# Per-NIC feature overrides via ethtool drop-ins in /etc/network/interfaces.d/,
+# plus an optional sysctl drop-in for ip_forward (needed for Tailscale subnet
+# routing on Proxmox hosts).
+#
+# Set `nic_tuning_overrides` per-host/group to apply ethtool overrides:
+#   nic_tuning_overrides:
+#     - interface: nic1
+#       options:
+#         - feature: gro
+#           value: "off"
+#         - feature: tso
+#           value: "on"
+#
+# Set `nic_tuning_ip_forward: true` on hosts that need ip_forward=1 at boot
+# (pve_firewall on Proxmox can otherwise reset sysctl values; this drop-in
+# lands in /etc/sysctl.d/ and is re-applied on each reboot).
+nic_tuning_overrides: []
+nic_tuning_ip_forward: false

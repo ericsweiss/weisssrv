@@ -5,4 +5,7 @@
   hosts: base_managed
   become: true
   roles:
-    - base
+    - role: base
+      tags: [base]
+    - role: nic_tuning
+      tags: [nic_tuning, network]
