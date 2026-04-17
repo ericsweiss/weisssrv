@@ -53,6 +53,10 @@
   loop_control:
     label: "{{ item.path | basename }}"
   when:
+    # Only clean up if this host has overrides declared — otherwise we'd
+    # delete drop-ins on hosts that legitimately have no overrides but
+    # had them previously (or had them set by another tool).
+    - nic_tuning_overrides | length > 0
     - item.path | basename not in (nic_tuning_overrides | map(attribute='interface') | map('regex_replace', '^(.*)$', '99-nic-\\1-tuning.cfg') | list)
 
 - name: Install per-NIC ethtool drop-ins

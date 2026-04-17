@@ -90,5 +90,14 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # temporary directory" errors during molecule prepare)
 RUN mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
 
-# Disable apt background services that race with molecule's apt calls
-RUN systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+# Disable services that auto-start on install — roles should be the ones
+# that enable/start them (mirrors real-world where packages are installed
+# but services don't auto-start until Ansible runs). Without this, the
+# idempotence check fails because systemd restarts them between plays.
+RUN systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true \
+    && systemctl disable postfix 2>/dev/null || true \
+    && systemctl disable unbound 2>/dev/null || true \
+    && systemctl disable nfs-kernel-server 2>/dev/null || true \
+    && systemctl disable smbd nmbd 2>/dev/null || true \
+    && systemctl disable ssh 2>/dev/null || true \
+    && systemctl disable fail2ban 2>/dev/null || true

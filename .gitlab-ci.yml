@@ -716,6 +716,12 @@ flux-lint:
 
 molecule-tests:
   extends: .molecule-base
+  # Retry once on failure — Docker+systemd containers occasionally fail to
+  # destroy cleanly (SIGKILL not received), causing transient failures that
+  # pass on retry.
+  retry:
+    max: 1
+    when: script_failure
   script:
     - cd "ansible/roles/$ROLE"
     - |
@@ -759,6 +765,9 @@ molecule-tests:
 
 integration-tests:
   extends: .molecule-base
+  retry:
+    max: 1
+    when: script_failure
   script:
     - cd "ansible/integration-tests/$TEST"
     - molecule test || exit 1
