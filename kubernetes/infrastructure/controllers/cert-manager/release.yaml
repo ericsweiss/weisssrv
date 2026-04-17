@@ -37,6 +37,8 @@ spec:
     replicaCount: 1
     prometheus:
       enabled: true
+      servicemonitor:
+        enabled: true
     resources:
       requests:
         cpu: 50m

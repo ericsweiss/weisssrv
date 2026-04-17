@@ -103,6 +103,9 @@ spec:
             - list
             - watch
 
+    serviceMonitor:
+      enabled: true
+
     # Resource limits
     resources:
       requests:

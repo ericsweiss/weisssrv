@@ -129,7 +129,7 @@ spec:
       metrics:
         enabled: true
         serviceMonitor:
-          enabled: false  # Enable with Prometheus Operator
+          enabled: true
 
       ingress:
         enabled: false  # Using Traefik IngressRoute

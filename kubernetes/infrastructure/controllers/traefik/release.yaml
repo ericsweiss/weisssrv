@@ -72,6 +72,8 @@ spec:
       prometheus:
         enabled: true
         entryPoint: metrics
+        serviceMonitor:
+          enabled: true
 
     # Providers
     providers:
