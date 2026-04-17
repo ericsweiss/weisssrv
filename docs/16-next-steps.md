@@ -208,7 +208,7 @@ both Ansible-deployed and Flux-deployed:
 task maintenance:check-versions        # Checks all managed services for updates
 task maintenance:update-version        # Updates single version in all.yml
 task maintenance:update-all-versions   # Updates all outdated versions
-task flux:sync-versions                # Regenerates kubernetes/infrastructure/configs/versions-configmap.yaml
+task flux:sync-versions                # Regenerates kubernetes/infrastructure/sources/versions-configmap.yaml
 ```
 
 **What these tasks manage**:
@@ -442,7 +442,7 @@ task flux:refresh-secret -- <ns>/<name>   # Force ExternalSecret sync
 task flux:rotate-secret -- <app>          # Refresh secret + restart consumers
 task flux:sync-versions   # Regenerate versions-configmap.yaml from all.yml
 task flux:dev-apply -- <path>   # Local kubectl apply (Flux reverts on next cycle)
-task flux:lint            # flux build + kubeconform on every Kustomization
+task flux:lint            # kustomize build + envsubst + kubeconform on every Kustomization
 
 # Operational (workload introspection)
 task downloads:status     # Show downloads namespace status

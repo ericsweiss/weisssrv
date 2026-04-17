@@ -102,8 +102,6 @@ Create the following items in your **Homelab** vault before deploying. The deplo
 
 | 1Password Item | Field | Purpose |
 |----------------|-------|---------|
-| **SMTP Relay Auth** | `username` | SMTP authentication for email notifications |
-| **SMTP Relay Auth** | `password` | SMTP authentication for email notifications |
 | **Mealie Secrets** | `postgres-password` | Mealie PostgreSQL database password |
 | **Bar Assistant Secrets** | `meilisearch-master-key` | Meilisearch search engine API key |
 | **Mealie SSO** | `oidc-client-id` | Authentik OAuth2 client ID for Mealie |
@@ -169,7 +167,7 @@ The recipes stack is Flux-managed. All files live under `kubernetes/apps/recipes
 ```
 kubernetes/apps/recipes/
 ├── namespace.yaml
-├── externalsecret.yaml     # Single ExternalSecret consolidating all recipe keys (Mealie PG, SSO, OpenAI, SMTP, Bar Assistant meilisearch + SSO)
+├── externalsecret.yaml     # Single ExternalSecret consolidating all recipe keys (Mealie PG, SSO, OpenAI, Bar Assistant meilisearch + SSO). SMTP creds not included — LAN relay accepts unauthenticated submissions from pod CIDRs.
 ├── storage.yaml            # PVCs + PVs (NFS for appdata, hostPath PV for Mealie PG zvol)
 ├── mealie.yaml             # Deployment + Service (Mealie, Mealie Postgres)
 ├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
@@ -189,7 +187,7 @@ For image-version bumps:
 ```bash
 task maintenance:update-version SERVICE=mealie
 task flux:sync-versions
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump mealie" && git push
 task flux:reconcile  # optional: skip the 1-min poll
 ```
@@ -359,7 +357,7 @@ Then regenerate the ConfigMap and push — Flux rolls the Deployments:
 
 ```bash
 task flux:sync-versions
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump mealie and bar-assistant"
 git push
 ```

@@ -114,10 +114,12 @@ workflow:
   image: python:3.11-slim
   before_script:
     - !reference [.install-1password, before_script]
+    - apt-get install -y -qq jq
     - |
       # Install kubectl, helm, yq (pinned checksums for supply-chain integrity).
       # envsubst / gettext-base were dropped — Flux postBuild substitution
       # replaces the imperative envsubst pipeline used pre-migration.
+      # jq comes from apt above — used by deploy-verify to parse `flux get all -o json`.
       curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
       echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
       install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
@@ -400,20 +402,20 @@ terraform-plan:
         - terraform/**
 
 flux-versions-sync:
-  # Fails if kubernetes/infrastructure/configs/versions-configmap.yaml is out
+  # Fails if kubernetes/infrastructure/sources/versions-configmap.yaml is out
   # of sync with ansible/inventories/prod/group_vars/all.yml. Run
   # `task flux:sync-versions` locally to regenerate and commit.
   stage: lint
-  image: python:3.12-slim
+  image: python:3.11-slim
   before_script:
     - pip install --quiet pyyaml
   script:
     - python3 scripts/generate-versions-configmap.py
     - |
-      if ! git diff --exit-code --quiet kubernetes/infrastructure/configs/versions-configmap.yaml; then
+      if ! git diff --exit-code --quiet kubernetes/infrastructure/sources/versions-configmap.yaml; then
         echo "ERROR: versions-configmap.yaml is out of sync with all.yml"
         echo "Run: task flux:sync-versions (or python3 scripts/generate-versions-configmap.py) and commit the result."
-        git --no-pager diff kubernetes/infrastructure/configs/versions-configmap.yaml
+        git --no-pager diff kubernetes/infrastructure/sources/versions-configmap.yaml
         exit 1
       fi
       echo "versions-configmap.yaml is in sync with all.yml"
@@ -423,23 +425,49 @@ flux-versions-sync:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - ansible/inventories/prod/group_vars/all.yml
-        - kubernetes/infrastructure/configs/versions-configmap.yaml
+        - kubernetes/infrastructure/sources/versions-configmap.yaml
         - scripts/generate-versions-configmap.py
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - ansible/inventories/prod/group_vars/all.yml
-        - kubernetes/infrastructure/configs/versions-configmap.yaml
+        - kubernetes/infrastructure/sources/versions-configmap.yaml
         - scripts/generate-versions-configmap.py
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
+python-tests:
+  # Runs pytest against scripts/. Both test files are kept near the scripts
+  # they exercise: test_check_versions.py for the version-update tooling and
+  # test_generate_versions_configmap.py for the ConfigMap generator.
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - pip install --quiet pytest pyyaml
+  script:
+    - pytest scripts/ -v
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - scripts/**
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - scripts/**
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
 flux-lint:
-  # Renders every top-level Flux Kustomization with postBuild substitution
-  # applied, then validates the output with kubeconform. Replaces the old
-  # per-chart helm template + find-based kubeconform jobs.
+  # Renders every top-level Flux Kustomization, substitutes postBuild vars
+  # from kubernetes/infrastructure/sources/versions-configmap.yaml, verifies
+  # zero unsubstituted ${var} placeholders remain, then validates with
+  # kubeconform. Replaces the old per-chart helm template + find-based
+  # kubeconform jobs.
   stage: validate
   image: python:3.11-slim
   before_script:
-    - apt-get update -qq && apt-get install -y -qq curl
+    - apt-get update -qq && apt-get install -y -qq curl gettext-base
+    - pip install --quiet pyyaml
     - |
       KUBECONFORM_SHA256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
       curl -fsSL -o /tmp/kubeconform.tar.gz \
@@ -449,14 +477,73 @@ flux-lint:
       curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
       echo "fa2daf1d96c6cce7a91fb00380044a61f21d15c38fe3cacba7b1966b2466dec9  /tmp/kustomize.tar.gz" | sha256sum -c -
       tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
-      kubeconform -v && kustomize version
+      kubeconform -v && kustomize version && envsubst --version | head -1
   script:
     - |
-      set -e
+      set -eo pipefail
       FAILED=0
-      for path in kubernetes/infrastructure kubernetes/apps; do
-        echo "=== Building + validating $path ==="
-        if ! kustomize build "$path" | kubeconform -strict -ignore-missing-schemas \
+      # Extract cluster-versions ConfigMap keys and export as env so envsubst
+      # can substitute ${var} placeholders in rendered manifests. This mirrors
+      # what Flux's kustomize-controller does at reconcile time (postBuild).
+      VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+      while IFS=$'\t' read -r k v; do
+        export "$k=$v"
+      done < <(python3 -c "
+      import yaml, sys
+      with open('$VERSIONS_CONFIGMAP') as f:
+          doc = yaml.safe_load(f)
+      for k, v in doc.get('data', {}).items():
+          print(f'{k}\t{v}')
+      ")
+
+      # Iterate every Flux Kustomization under clusters/weisssrv/ and validate
+      # the target path it points at. This picks up new top-level Kustomizations
+      # automatically without CI edits.
+      for ks in kubernetes/clusters/weisssrv/*.yaml; do
+        [ -f "$ks" ] || continue
+        NAME=$(basename "$ks" .yaml)
+        [ "$NAME" = "kustomization" ] && continue
+        if ! SRCPATH=$(python3 -c "
+      import yaml, sys
+      with open('$ks') as f:
+          doc = yaml.safe_load(f)
+      print(doc.get('spec', {}).get('path', '') or '')
+      "); then
+          echo "ERROR: failed to parse $ks"
+          FAILED=1
+          continue
+        fi
+        [ -z "$SRCPATH" ] && continue
+        SRCPATH="${SRCPATH#./}"
+        echo "=== Building + validating $ks (path $SRCPATH) ==="
+        if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
+          echo "ERROR: kustomize build failed for $SRCPATH:"
+          echo "$RAW"
+          FAILED=1
+          continue
+        fi
+        # Check every ${var} reference in the pre-substitution output against
+        # the exported ConfigMap keys. envsubst renders unknown vars as empty
+        # string (so post-substitution grep wouldn't catch them) — Flux has
+        # the same silent-empty default behavior. Our lint is intentionally
+        # stricter so typos in version keys fail CI.
+        MISSING=""
+        for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
+          varname=${ref#\$\{}
+          varname=${varname%\}}
+          if [ -z "${!varname+x}" ]; then
+            MISSING="$MISSING $varname"
+          fi
+        done
+        MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+        if [ -n "$MISSING" ]; then
+          echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
+          echo "$MISSING" | sed 's/^/  - /'
+          FAILED=1
+          continue
+        fi
+        RENDERED=$(echo "$RAW" | envsubst)
+        if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.35.0 \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
@@ -464,6 +551,15 @@ flux-lint:
           FAILED=1
         fi
       done
+
+      # Also build the cluster root to catch malformed top-level kustomization.yaml
+      # (the loop above validates target paths, not the cluster root itself).
+      echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
+      if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
+        echo "ERROR: cluster root kustomization failed to build"
+        FAILED=1
+      fi
+
       exit $FAILED
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -485,7 +581,8 @@ flux-lint:
 # NOTE: Molecule/integration tests require Docker-in-Docker, which needs a privileged
 # runner. All weisssrv jobs (including these) run on the infrastructure runner
 # (gitlab-runner-privileged Helm release, tags: infrastructure) which has privileged=true.
-# Deploy with: task gitlab:deploy-runner-privileged
+# The runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/release.yaml
+# and push; Flux reconciles within ~1 min (or run `task flux:reconcile` to force).
 
 molecule-tests:
   stage: test
@@ -520,10 +617,18 @@ molecule-tests:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
+        # Playbook + inventory changes can affect role wiring (which roles
+        # run, which vars they receive) even without touching roles/** —
+        # include them so regressions in composition are caught, not just
+        # regressions in individual roles.
         - ansible/roles/**
+        - ansible/playbooks/**
+        - ansible/inventories/prod/group_vars/**
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - ansible/roles/**
+        - ansible/playbooks/**
+        - ansible/inventories/prod/group_vars/**
     - if: '$CI_PIPELINE_SOURCE == "web"'
   timeout: 30m
 
@@ -623,6 +728,8 @@ validation-gate:
     - job: flux-versions-sync
       optional: true
     - job: flux-lint
+      optional: true
+    - job: python-tests
       optional: true
     - job: molecule-tests
       optional: true
@@ -990,24 +1097,40 @@ deploy-gitlab-verify:
   script:
     - |
       echo "=== GitLab Verification ==="
+      # Each check records its own failure instead of exiting immediately —
+      # an operator wants to see EVERY failing component in one run, not
+      # stop at the first one. Final summary surfaces exit code.
+      # With allow_failure: true on the job, a non-zero exit yields a yellow
+      # warning-style status in the pipeline UI but doesn't block the pipeline.
+      EXIT=0
 
-      # Test web UI accessibility
       echo "Testing GitLab web UI..."
-      curl -sf --max-time 30 "https://git.ericsweiss.com/-/readiness" || \
-        echo "WARNING: GitLab health check failed (may need more time to start)"
+      if ! curl_err=$(curl -sf --max-time 30 "https://git.ericsweiss.com/-/readiness" 2>&1); then
+        echo "ERROR: GitLab readiness check failed: $curl_err"
+        EXIT=1
+      else
+        echo "GitLab web UI: OK"
+      fi
 
-      # Test Container Registry
       echo "Testing Container Registry..."
-      curl -sf --max-time 10 "https://registry.git.ericsweiss.com/v2/" || \
-        echo "WARNING: Registry check failed"
+      if ! curl_err=$(curl -sf --max-time 10 "https://registry.git.ericsweiss.com/v2/" 2>&1); then
+        echo "ERROR: Registry check failed: $curl_err"
+        EXIT=1
+      else
+        echo "Container Registry: OK"
+      fi
 
-      # Test SSH connectivity (port 22 internal)
       echo "Testing SSH connectivity..."
-      timeout 5 bash -c 'cat < /dev/null > /dev/tcp/192.168.0.153/22' 2>&1 && echo "SSH port open" || echo "WARNING: SSH port check failed"
+      if timeout 5 bash -c 'cat < /dev/null > /dev/tcp/192.168.0.153/22' 2>/dev/null; then
+        echo "SSH port 22: OK"
+      else
+        echo "ERROR: SSH port 22 on 192.168.0.153 not reachable"
+        EXIT=1
+      fi
 
       echo ""
-      echo "=== GitLab Verification Complete ==="
-      echo "Note: Some checks may fail if GitLab is still starting up"
+      echo "=== GitLab Verification Complete (exit=$EXIT) ==="
+      exit $EXIT
   environment:
     name: production/gitlab-verify
   rules:
@@ -1068,6 +1191,7 @@ deploy-verify:
       # so verification queries Flux CRs rather than individual Deployments.
       FLUX_VERSION="2.8.5"
       curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" -o /tmp/flux.tar.gz
+      echo "63c178ba938a5443265b2ce02691c005acf4ef6188d4dbb9b9d87333558948c4  /tmp/flux.tar.gz" | sha256sum -c -
       tar xzf /tmp/flux.tar.gz -C /usr/local/bin flux
       flux --version
     - |
@@ -1075,8 +1199,12 @@ deploy-verify:
       echo "=== Post-Deployment Verification ==="
 
       echo "Checking node status..."
-      kubectl get nodes
-      NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2 != "Ready" {count++} END {print count+0}')
+      # Fetch kubectl output into a variable so a kubectl connection failure
+      # (bad kubeconfig, unreachable API) surfaces loudly instead of being
+      # silenced by `2>/dev/null | awk`, which would count 0 NotReady nodes.
+      NODE_OUTPUT=$(kubectl get nodes --no-headers)
+      echo "$NODE_OUTPUT"
+      NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 != "Ready" {count++} END {print count+0}')
       if [ "$NOT_READY" -gt 0 ]; then
         echo "ERROR: $NOT_READY node(s) not Ready"
         exit 1
@@ -1099,32 +1227,43 @@ deploy-verify:
       kubectl get externalsecrets -A
 
       # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
-      # HelmRepository, etc.) is not Ready. Capture flux output and its exit
-      # status explicitly; silencing stderr and masking with `|| echo 0`
-      # would let a broken flux CLI / kubeconfig / CRDs pass the check.
+      # HelmRepository, etc.) is not Ready.
+      #
+      # Query the CRDs directly via kubectl -o json because `flux get all`
+      # only produces tabular output (json output was requested in fluxcd/flux2
+      # discussions #1904 / #3535 but hasn't been implemented). An earlier
+      # text-based implementation merged stderr into stdout and counted
+      # warnings as outages — we use structured jq against the API instead.
       echo ""
       echo "Checking for non-Ready Flux resources..."
-      FLUX_NOT_READY=$(flux get all -A --status-selector ready=false 2>&1) || {
-        echo "ERROR: 'flux get all' failed:"
-        echo "$FLUX_NOT_READY"
+      FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
+      FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json) || {
+        echo "ERROR: failed to fetch Flux CRs via kubectl"
         exit 1
       }
-      NOT_READY_COUNT=$(echo "$FLUX_NOT_READY" | tail -n +2 | grep -c . || true)
+      NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq '[.items[] | select(
+        (.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")
+      )] | length')
       if [ "$NOT_READY_COUNT" -gt 0 ]; then
-        echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready"
-        echo "$FLUX_NOT_READY"
+        echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
+        echo "$FLUX_ALL" | jq -r '.items[] | select(
+          (.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")
+        ) | "  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == "Ready")) | .[0].message // "no Ready condition")"'
         exit 1
       fi
 
-      # Gate specifically on the top-level apps Kustomization — if it's stuck
-      # (any child HelmRelease failing), the above broad check catches it too,
-      # but this gives us an explicit, namable failure signal.
-      APPS_READY=$(kubectl -n flux-system get kustomization apps \
-        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-      if [ "$APPS_READY" != "True" ]; then
-        echo "ERROR: flux-system/apps Kustomization not Ready (status=$APPS_READY)"
-        exit 1
-      fi
+      # Gate specifically on the top-level Flux Kustomizations — if any is
+      # stuck (any child HelmRelease failing), the above broad check catches
+      # it too, but naming them explicitly yields clear failure signals in
+      # the pipeline output.
+      for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs apps; do
+        KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        if [ "$KS_READY" != "True" ]; then
+          echo "ERROR: flux-system/$ks_name Kustomization not Ready (status=$KS_READY)"
+          exit 1
+        fi
+      done
 
       echo ""
       echo "LoadBalancer services:"
@@ -1134,11 +1273,13 @@ deploy-verify:
       echo "Checking GitLab health..."
       gitlab_ok=false
       start_ts=$(date +%s)
+      last_err=""
       while true; do
-        if curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness > /dev/null 2>&1; then
+        if curl_out=$(curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness 2>&1); then
           gitlab_ok=true
           break
         fi
+        last_err=$curl_out
         elapsed=$(( $(date +%s) - start_ts ))
         if [ "$elapsed" -ge 60 ]; then break; fi
         echo "GitLab health probe failed (${elapsed}s elapsed), retrying..."
@@ -1148,6 +1289,7 @@ deploy-verify:
         echo "GitLab API: OK"
       else
         echo "ERROR: GitLab health check failed after 60s of retries"
+        echo "Last curl error: ${last_err:-<empty>}"
         exit 1
       fi
 
@@ -1368,8 +1510,9 @@ maintenance-verify:
       ERRORS=0
 
       echo "Checking k3s node status..."
-      kubectl get nodes -o wide
-      NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2 != "Ready" {count++} END {print count+0}')
+      NODE_OUTPUT=$(kubectl get nodes --no-headers)
+      echo "$NODE_OUTPUT"
+      NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 != "Ready" {count++} END {print count+0}')
       if [ "$NOT_READY" -gt 0 ]; then
         echo "ERROR: $NOT_READY node(s) not Ready"
         ERRORS=$((ERRORS + 1))
@@ -1421,7 +1564,7 @@ maintenance-verify:
       echo "Checking cluster DNS (internal service resolution)..."
       # Verify CoreDNS can resolve internal k8s services — uses nslookup exit code via marker
       DNS_OUTPUT=$(kubectl run dns-verify-$CI_JOB_ID --attach --rm --restart=Never --timeout=30s \
-          --image=busybox:1.36 --command -- sh -c \
+          --image=busybox:1.37 --command -- sh -c \
           "nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" 2>&1 || true)
       if echo "$DNS_OUTPUT" | grep -q "DNS_PASS"; then
         echo "Cluster DNS: OK (kubernetes.default.svc.cluster.local resolves)"

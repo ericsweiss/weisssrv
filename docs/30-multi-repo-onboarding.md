@@ -336,8 +336,8 @@ The 1Password Families plan shares **1,000 reads per day across the entire accou
 
 ### Current Budget
 
-- This repo's ExternalSecrets: ~25 across all apps, 24h refreshInterval = ~25 reads/day.
-- Headroom: ~975 reads/day.
+- This repo's ExternalSecrets: 9 across all apps (~20 distinct fields), 24h refreshInterval = ~20 reads/day.
+- Headroom: ~980 reads/day.
 
 ### Adding a Tenant on 1Password
 

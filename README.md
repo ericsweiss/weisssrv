@@ -193,6 +193,7 @@ weisssrv/
 | gitlab | GitLab EE installation and configuration |
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
+| nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in) |
 
 ## Secrets Management
 

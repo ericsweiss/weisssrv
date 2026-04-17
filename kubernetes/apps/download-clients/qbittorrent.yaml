@@ -98,7 +98,7 @@ spec:
       # Init container verifies VPN prerequisites when VPN is enabled
       initContainers:
         - name: check-vpn-config
-          image: busybox:1.37
+          image: busybox:${busybox_version}
           command:
             - sh
             - -c
@@ -151,18 +151,18 @@ spec:
                 configMapKeyRef:
                   name: qbittorrent-vpn-config
                   key: vpn_provider
+            # VPN credentials: NOT optional. See nzbget.yaml for rationale.
+            # Fail-fast is preferred to silent Gluetun auth failures.
             - name: OPENVPN_USER
               valueFrom:
                 secretKeyRef:
                   name: vpn-credentials
                   key: openvpn-user
-                  optional: true
             - name: OPENVPN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: vpn-credentials
                   key: openvpn-password
-                  optional: true
             - name: SERVER_COUNTRIES
               valueFrom:
                 configMapKeyRef:

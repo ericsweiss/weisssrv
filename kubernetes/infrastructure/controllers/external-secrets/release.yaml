@@ -3,6 +3,18 @@
 # Chart version substituted from cluster-versions ConfigMap (from all.yml).
 # The onepasswordSDK provider (used by our ClusterSecretStore) is part of the
 # core ESO image in 2.x; no extra feature flag needed.
+#
+# Scheduling:
+# - nodeSelector esweiss.com/cpu: modern — the Go binary uses CPU extensions
+#   (POPCNT/SSE4.2) not available on the Core 2 Quad opt nodes; it SIGILLs on
+#   those hosts (observed 2026-04-16).
+# - tolerations for PreferNoSchedule taints on nas/compute — otherwise all ESO
+#   replicas crowd onto one node; soft taints are fine to ignore.
+# - podAntiAffinity (preferred) spreads the 2 replicas across modern-CPU nodes
+#   so a single-node drain doesn't take secret-sync offline.
+#
+# Only the main controller, webhook, and certController are pinned this way.
+# crds-operator (if ever enabled) has the same constraint.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -30,20 +42,71 @@ spec:
       remediateLastFailure: true
   values:
     installCRDs: true
-    replicaCount: 1
-    # Constrain ESO to modern-CPU nodes. The Go binary uses CPU extensions
-    # (POPCNT/SSE4.2) not available on the Core 2 Quad opt nodes; it SIGILLs
-    # on those hosts (observed 2026-04-16).
+    replicaCount: 2
     nodeSelector:
       esweiss.com/cpu: modern
+    tolerations:
+      - key: esweiss.com/nas
+        operator: Exists
+        effect: PreferNoSchedule
+      - key: esweiss.com/compute
+        operator: Exists
+        effect: PreferNoSchedule
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values: [external-secrets]
+              topologyKey: kubernetes.io/hostname
     webhook:
-      replicaCount: 1
+      replicaCount: 2
       nodeSelector:
         esweiss.com/cpu: modern
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: esweiss.com/compute
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values: [external-secrets-webhook]
+                topologyKey: kubernetes.io/hostname
     certController:
-      replicaCount: 1
+      replicaCount: 2
       nodeSelector:
         esweiss.com/cpu: modern
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: esweiss.com/compute
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values: [external-secrets-cert-controller]
+                topologyKey: kubernetes.io/hostname
     resources:
       requests:
         cpu: 50m

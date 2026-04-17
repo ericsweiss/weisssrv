@@ -482,7 +482,9 @@ tasks:
         flux --version
 
   flux:bootstrap:
-    desc: One-time bootstrap of Flux into the cluster (commits to flux/migration branch, pushes to origin)
+    desc: "One-time bootstrap of Flux into the cluster. Accepts BRANCH (default: main) to target a different branch."
+    vars:
+      BRANCH: '{{.BRANCH | default "main"}}'
     preconditions:
       - sh: command -v flux
         msg: "flux CLI not installed. Run: task flux:install-cli"
@@ -490,14 +492,21 @@ tasks:
         msg: "Cannot reach cluster. Ensure KUBECONFIG points at the k3s cluster"
       - sh: op whoami 2>/dev/null
         msg: "1Password CLI not signed in. Run: eval $(op signin)"
+      - sh: kubectl -n external-secrets get secret onepassword-sdk-token 2>/dev/null
+        msg: "Bootstrap Secret 'onepassword-sdk-token' not found in external-secrets namespace. Run `task flux:bootstrap-onepassword` first."
     cmds:
       - |
-        echo "Bootstrapping Flux to git.ericsweiss.com/eric/weisssrv, branch flux/migration"
+        set -eo pipefail
+        if [ ! -t 0 ]; then
+          echo "ERROR: flux:bootstrap requires an interactive TTY (prompts for confirmation)."
+          exit 1
+        fi
+        echo "Bootstrapping Flux to git.ericsweiss.com/eric/weisssrv, branch {{.BRANCH}}"
         echo "This will create a commit on the branch and push it (first push of the branch)."
         read -r -p "Continue? [y/N] " confirm
-        [ "$confirm" = "y" ] || exit 1
+        [ "$confirm" = "y" ] || { echo "Aborted by user"; exit 1; }
       - |
-        set -euo pipefail
+        set -eo pipefail
         # Explicit read + non-empty validation. Otherwise a silent op read
         # failure would run flux bootstrap with GITLAB_TOKEN="" and fail with
         # an opaque auth error instead of surfacing the real cause.
@@ -511,7 +520,7 @@ tasks:
           --hostname=git.ericsweiss.com \
           --owner=eric \
           --repository=weisssrv \
-          --branch=flux/migration \
+          --branch={{.BRANCH}} \
           --path=kubernetes/clusters/weisssrv \
           --deploy-token-auth \
           --interval=1m
@@ -524,7 +533,9 @@ tasks:
       - sh: op whoami 2>/dev/null
         msg: "1Password CLI not signed in. Run: eval $(op signin)"
     cmds:
-      - kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        set -eo pipefail
+        kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
       - |
         set -euo pipefail
         TOKEN="$(op read 'op://Homelab/Service Account Auth Token weisssrv/credential')"
@@ -538,11 +549,13 @@ tasks:
       - echo "1Password SDK bootstrap secret created in external-secrets namespace"
 
   flux:reconcile:
-    desc: Trigger full reconciliation of Flux-managed resources
+    desc: Trigger full reconciliation of Flux-managed resources (source → infra chain → apps)
     cmds:
       - flux reconcile source git flux-system
-      - flux reconcile kustomization infrastructure --with-source
-      - flux reconcile kustomization apps --with-source
+      - flux reconcile kustomization infrastructure-sources
+      - flux reconcile kustomization infrastructure-controllers
+      - flux reconcile kustomization infrastructure-configs
+      - flux reconcile kustomization apps
 
   flux:verify:
     desc: Run flux check and show status of all managed resources
@@ -566,7 +579,7 @@ tasks:
           echo "Example: task flux:suspend -- authentik/helmrelease/authentik"
           exit 1
         fi
-        set -e
+        set -eo pipefail
         IFS='/' read -r NS KIND NAME <<< "{{.CLI_ARGS}}"
         flux suspend "$KIND" "$NAME" -n "$NS"
 
@@ -578,7 +591,7 @@ tasks:
           echo "Usage: task flux:resume -- <ns>/<kind>/<name>"
           exit 1
         fi
-        set -e
+        set -eo pipefail
         IFS='/' read -r NS KIND NAME <<< "{{.CLI_ARGS}}"
         flux resume "$KIND" "$NAME" -n "$NS"
 
@@ -586,8 +599,13 @@ tasks:
     desc: "Force an ExternalSecret to re-fetch from 1Password (usage: task flux:refresh-secret -- <ns>/<name>)"
     cmds:
       - |
+        set -eo pipefail
         if [ -z "{{.CLI_ARGS}}" ]; then
           echo "Usage: task flux:refresh-secret -- <ns>/<name>"
+          exit 1
+        fi
+        if ! [[ "{{.CLI_ARGS}}" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]]; then
+          echo "ERROR: CLI_ARGS must be <namespace>/<name> (lowercase, dashes, digits only)"
           exit 1
         fi
         IFS='/' read -r NS NAME <<< "{{.CLI_ARGS}}"
@@ -598,6 +616,10 @@ tasks:
     desc: "Refresh ExternalSecret + restart consuming pods (usage: task flux:rotate-secret -- <app>)"
     cmds:
       - |
+        # `set -e` is critical: without it, a failed flux:refresh-secret would
+        # still proceed to rollout-restart pods that then come back up with
+        # the OLD cached secret, and the operator would think rotation worked.
+        set -eo pipefail
         if [ -z "{{.CLI_ARGS}}" ]; then
           echo "Usage: task flux:rotate-secret -- <app>"
           echo "Known apps: authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent"
@@ -607,12 +629,18 @@ tasks:
         case "$APP" in
           authentik)
             task flux:refresh-secret -- authentik/authentik-secrets
-            kubectl rollout restart deployment -n authentik -l app.kubernetes.io/name=authentik
-            kubectl rollout restart statefulset -n authentik -l app.kubernetes.io/name=authentik
+            # Bitnami postgresql subchart labels its StatefulSet with
+            # app.kubernetes.io/name=postgresql (NOT authentik); match by
+            # instance label instead so we catch both server and postgres.
+            kubectl rollout restart deployment -n authentik -l app.kubernetes.io/instance=authentik
+            kubectl rollout restart statefulset -n authentik -l app.kubernetes.io/instance=authentik
             ;;
           downloads|vpn)
             task flux:refresh-secret -- downloads/vpn-credentials
-            kubectl rollout restart deployment -n downloads -l app.kubernetes.io/part-of=media-stack
+            # Only nzbget + qbittorrent consume vpn-credentials (Gluetun sidecars);
+            # the other *arr apps don't need VPN creds and restarting them wastes time.
+            kubectl rollout restart deployment -n downloads -l app.kubernetes.io/name=nzbget
+            kubectl rollout restart deployment -n downloads -l app.kubernetes.io/name=qbittorrent
             ;;
           recipes)
             task flux:refresh-secret -- recipes/recipes-secrets
@@ -637,62 +665,161 @@ tasks:
         esac
 
   flux:sync-versions:
-    desc: Regenerate kubernetes/infrastructure/configs/versions-configmap.yaml from all.yml
+    desc: Regenerate kubernetes/infrastructure/sources/versions-configmap.yaml from all.yml
     cmds:
       - python3 scripts/generate-versions-configmap.py
 
   flux:dev-apply:
-    desc: "Dev helper: kustomize build + kubectl apply for a path (Flux will revert within ~1 cycle if committed state differs)"
+    desc: "Dev helper: kustomize build + envsubst + kubectl apply for a path (Flux will revert if it differs from committed state)"
     cmds:
       - |
+        set -eo pipefail
         if [ -z "{{.CLI_ARGS}}" ]; then
           echo "Usage: task flux:dev-apply -- <path-to-kustomization-dir>"
           exit 1
         fi
+        # Load versions-configmap into env so ${var} placeholders resolve
+        # the same way Flux's kustomize-controller does at reconcile time.
+        # Without this, `kustomize build` emits literal ${gluetun_version}
+        # etc. and kubectl applies a broken image tag to the cluster.
+        VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+        while IFS=$'\t' read -r k v; do
+          [ -n "$k" ] && export "$k=$v"
+        done < <(python3 -c "
+        import yaml
+        with open('$VERSIONS_CONFIGMAP') as f:
+            doc = yaml.safe_load(f)
+        for k, v in doc.get('data', {}).items():
+            print(f'{k}\t{v}')
+        ")
         echo "WARNING: Flux will revert this if it differs from committed state."
-        kustomize build "{{.CLI_ARGS}}" | kubectl apply -f -
+        kustomize build "{{.CLI_ARGS}}" | envsubst | kubectl apply -f -
 
   flux:lint:
-    desc: Validate every Flux Kustomization builds cleanly + kubeconform on rendered output
+    desc: Build every Flux Kustomization + envsubst from versions ConfigMap + kubeconform
     cmds:
       - |
-        set -e
+        set -eo pipefail
         FAILED=0
+        # Mirror CI's postBuild substitution: extract cluster-versions keys,
+        # export as env so envsubst resolves ${var} placeholders before
+        # kubeconform runs. Without this, a typo in a placeholder slips past
+        # lint because kubeconform sees the literal string as a valid string.
+        VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+        if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
+          echo "ERROR: $VERSIONS_CONFIGMAP not found"; exit 1
+        fi
+        while IFS=$'\t' read -r k v; do
+          [ -n "$k" ] && export "$k=$v"
+        done < <(python3 -c "
+        import yaml
+        with open('$VERSIONS_CONFIGMAP') as f:
+            doc = yaml.safe_load(f)
+        for k, v in doc.get('data', {}).items():
+            print(f'{k}\t{v}')
+        ")
+
         for ks in kubernetes/clusters/weisssrv/*.yaml; do
           [ -f "$ks" ] || continue
           NAME=$(basename "$ks" .yaml)
           [ "$NAME" = "kustomization" ] && continue
-          SRCPATH=$(yq '.spec.path' "$ks" 2>/dev/null || echo "")
-          [ -z "$SRCPATH" ] || [ "$SRCPATH" = "null" ] && continue
-          # strip leading ./
+          SRCPATH=$(python3 -c "
+        import yaml
+        with open('$ks') as f:
+            doc = yaml.safe_load(f)
+        print(doc.get('spec', {}).get('path', '') or '')
+        ") || { echo "ERROR: failed to parse $ks"; FAILED=1; continue; }
+          if [ -z "$SRCPATH" ]; then continue; fi
           SRCPATH="${SRCPATH#./}"
           echo "=== Validating $ks (path $SRCPATH) ==="
-          if ! kustomize build "$SRCPATH" | kubeconform -strict -ignore-missing-schemas -summary; then
+          if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
+            echo "ERROR: kustomize build failed for $SRCPATH:"
+            echo "$RAW"
+            FAILED=1
+            continue
+          fi
+          # Check every ${var} placeholder in the pre-substitution output
+          # against the exported ConfigMap keys. envsubst renders missing vars
+          # as empty string, so we must validate against the RAW input to catch
+          # typos (Flux's kustomize-controller does the same thing silently by
+          # default — our lint is intentionally stricter).
+          MISSING=""
+          for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
+            varname=${ref#\$\{}
+            varname=${varname%\}}
+            if [ -z "${!varname+x}" ]; then
+              MISSING="$MISSING $varname"
+            fi
+          done
+          MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+          if [ -n "$MISSING" ]; then
+            echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
+            echo "$MISSING" | sed 's/^/  - /'
+            FAILED=1
+            continue
+          fi
+          RENDERED=$(echo "$RAW" | envsubst)
+          if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
+              -kubernetes-version 1.35.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{`{{.Group}}`}}/{{`{{.ResourceKind}}`}}_{{`{{.ResourceAPIVersion}}`}}.json' \
+              -summary; then
             FAILED=1
           fi
         done
+
+        echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
+        if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
+          echo "ERROR: cluster root kustomization failed to build"
+          FAILED=1
+        fi
+
         exit $FAILED
+    preconditions:
+      - sh: command -v kustomize
+        msg: "kustomize not installed. brew install kustomize or see https://kubectl.docs.kubernetes.io/installation/kustomize/"
+      - sh: command -v kubeconform
+        msg: "kubeconform not installed. brew install kubeconform or see https://github.com/yannh/kubeconform"
+      - sh: command -v envsubst
+        msg: "envsubst not installed. brew install gettext"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "Python PyYAML not installed. pip install pyyaml"
 
   flux:webhook-register:
-    desc: One-time registration of the GitLab push webhook to the Flux Receiver
+    desc: "One-time: register GitLab push webhook to Flux Receiver (requires Receiver manifest — planned follow-up, see docs/29-flux-operations.md § Webhook Setup)"
     cmds:
       - |
-        set -e
+        set -eo pipefail
         RECEIVER_PATH=$(kubectl -n flux-system get receiver gitlab-push -o jsonpath='{.status.webhookPath}' 2>/dev/null || true)
         if [ -z "$RECEIVER_PATH" ]; then
-          echo "ERROR: Flux Receiver 'gitlab-push' not found. Apply the receiver manifest first."
+          echo "ERROR: Flux Receiver 'gitlab-push' not found."
+          echo "The Receiver + IngressRoute manifests are a planned follow-up; see"
+          echo "docs/29-flux-operations.md § Webhook Setup for status."
           exit 1
         fi
-        FLUX_HOST="https://flux-webhook.esweiss.com"
+        FLUX_HOST="https://flux-webhook.ericsweiss.com"
         HOOK_URL="${FLUX_HOST}${RECEIVER_PATH}"
         echo "Registering webhook at $HOOK_URL"
         TOKEN="$(op read 'op://Homelab/Flux GitLab PAT/credential')"
+        [ -n "$TOKEN" ] || { echo "ERROR: op read returned empty Flux GitLab PAT"; exit 1; }
         WEBHOOK="$(op read 'op://Homelab/Flux Webhook Token/credential')"
-        curl -fsSL -X POST "https://git.ericsweiss.com/api/v4/projects/eric%2Fweisssrv/hooks" \
+        [ -n "$WEBHOOK" ] || { echo "ERROR: op read returned empty Flux Webhook Token"; exit 1; }
+        # -f makes curl fail on HTTP 4xx/5xx so we get a non-zero exit on auth /
+        # validation errors; the -w line captures the status code for clear
+        # diagnostics instead of a silent "null null" from jq on empty stdin.
+        HTTP_CODE=$(curl -fsSL -X POST "https://git.ericsweiss.com/api/v4/projects/eric%2Fweisssrv/hooks" \
           -H "PRIVATE-TOKEN: $TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"url\":\"$HOOK_URL\",\"push_events\":true,\"token\":\"$WEBHOOK\",\"enable_ssl_verification\":true}" \
-          | jq '.id, .url'
+          -w "%{http_code}" \
+          -o /tmp/flux-webhook-register.json \
+          -d "{\"url\":\"$HOOK_URL\",\"push_events\":true,\"token\":\"$WEBHOOK\",\"enable_ssl_verification\":true}")
+        if [ "$HTTP_CODE" != "201" ]; then
+          echo "ERROR: webhook registration failed (HTTP $HTTP_CODE):"
+          cat /tmp/flux-webhook-register.json
+          exit 1
+        fi
+        jq '.id, .url' /tmp/flux-webhook-register.json
+        rm -f /tmp/flux-webhook-register.json
 
   # === Maintenance Tasks ===
   # --- Base Infrastructure ---
@@ -1017,13 +1144,21 @@ tasks:
       - ./scripts/collect-state.sh {{.CLI_ARGS}}
 
   lint:
-    desc: Run all linters (no auth required)
+    desc: Run all linters (no auth required) — Ansible, Terraform, Flux, Python scripts
     cmds:
       - task: ansible:lint
       - task: terraform:fmt-check
       - task: terraform:validate-local
-      - task: kubernetes:lint
-      - task: kubernetes:validate-helm
+      - task: flux:lint
+      - task: scripts:test
+
+  scripts:test:
+    desc: Run Python unit tests for scripts/ (pytest)
+    cmds:
+      - pytest scripts/ -v
+    preconditions:
+      - sh: python3 -c "import pytest" 2>/dev/null
+        msg: "pytest not installed. pip install pytest"
 
   # === 1Password Integration ===
   op:check:
@@ -1186,8 +1321,9 @@ tasks:
     cmds:
       - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
       - |
-        # Delete only workload resources, NOT namespace/storage/secrets
-        # This allows safe redeploy with 'task downloads:deploy'
+        # Delete only workload resources, NOT namespace/storage/secrets.
+        # Flux will recreate these within ~1 minute on the next reconcile
+        # unless the apps Kustomization is suspended first (see echo block below).
         kubectl delete -f nzbget.yaml --ignore-not-found
         kubectl delete -f qbittorrent.yaml --ignore-not-found
         kubectl delete -f prowlarr.yaml --ignore-not-found

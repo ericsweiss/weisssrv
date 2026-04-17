@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Generate kubernetes/infrastructure/configs/versions-configmap.yaml from all.yml.
+"""Generate kubernetes/infrastructure/sources/versions-configmap.yaml from all.yml.
 
 Reads version-related keys from ansible/inventories/prod/group_vars/all.yml and
 emits a ConfigMap consumed by Flux Kustomizations via postBuild.substituteFrom.
+
+The ConfigMap lives in sources/ (not configs/) so it reconciles before
+infrastructure-controllers, which depends on it for ${helm_chart_versions_*}
+substitution into HelmReleases.
 
 Keys are flattened:
   - Top-level keys ending in _version pass through (e.g., authentik_version)
   - Nested keys under helm_chart_versions.* become helm_chart_versions_<name>
     (e.g., helm_chart_versions.traefik -> helm_chart_versions_traefik)
 
-Idempotent. Run via `task flux:sync-versions`. CI fails if the committed output
-differs from what this script produces.
+Produced keys MUST match the Flux postBuild identifier grammar
+  [A-Za-z_][A-Za-z0-9_]*
+or kustomize-controller rejects them (silently, before 0.x; today it logs).
+
+Idempotent. Run via `task flux:sync-versions`. CI fails if the committed
+output differs from what this script produces.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -24,20 +33,55 @@ except ImportError:
 
 REPO = Path(__file__).resolve().parent.parent
 ALL_YML = REPO / "ansible" / "inventories" / "prod" / "group_vars" / "all.yml"
-OUT = REPO / "kubernetes" / "infrastructure" / "configs" / "versions-configmap.yaml"
+OUT = REPO / "kubernetes" / "infrastructure" / "sources" / "versions-configmap.yaml"
 
 VERSION_SUFFIX = "_version"
 NESTED_KEYS = ("helm_chart_versions",)
+# Flux postBuild variable names: Go envsubst identifier rules (isLetter|isDigit|_).
+FLUX_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _scalar_str(key: str, value: object) -> str:
+    """Coerce a YAML scalar to the str form that Flux will substitute.
+
+    Rejects bool because `isinstance(True, int)` is True and str(True) == "True",
+    which silently ships as an image tag or chart version — obviously wrong
+    but hard to debug. Also rejects anything non-scalar (lists, dicts) that
+    could sneak through a refactor of all.yml.
+    """
+    if isinstance(value, bool):
+        raise ValueError(
+            f"key {key!r} has bool value {value!r} — quote the value in all.yml "
+            "(YAML's unquoted 'true'/'yes' parse to bool)"
+        )
+    if not isinstance(value, (str, int, float)):
+        raise ValueError(
+            f"key {key!r} has non-scalar value (type {type(value).__name__}) — "
+            "only strings, ints, and floats are supported"
+        )
+    return str(value)
 
 
 def flatten(data: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     for k, v in data.items():
-        if isinstance(v, (str, int, float)) and k.endswith(VERSION_SUFFIX):
-            out[k] = str(v)
+        if k.endswith(VERSION_SUFFIX) and not isinstance(v, bool):
+            if isinstance(v, (str, int, float)):
+                out[k] = _scalar_str(k, v)
+            else:
+                print(f"WARNING: {k!r} has non-scalar value (type {type(v).__name__}) — skipped", file=sys.stderr)
+        elif k.endswith(VERSION_SUFFIX) and isinstance(v, bool):
+            print(f"WARNING: {k!r} is bool ({v!r}) — probably an unquoted YAML value; skipped", file=sys.stderr)
         elif k in NESTED_KEYS and isinstance(v, dict):
             for sub_k, sub_v in v.items():
-                out[f"{k}_{sub_k}"] = str(sub_v)
+                flat_key = f"{k}_{sub_k}"
+                if not FLUX_VAR_RE.match(flat_key):
+                    raise ValueError(
+                        f"flattened key {flat_key!r} is not a valid Flux "
+                        "postBuild variable name (needs [A-Za-z_][A-Za-z0-9_]*). "
+                        f"Offending input: {k}.{sub_k}"
+                    )
+                out[flat_key] = _scalar_str(flat_key, sub_v)
     return out
 
 
@@ -45,12 +89,33 @@ def main() -> int:
     if not ALL_YML.exists():
         print(f"ERROR: {ALL_YML} not found", file=sys.stderr)
         return 1
-    with ALL_YML.open() as f:
-        data = yaml.safe_load(f)
-    flat = flatten(data)
+    try:
+        with ALL_YML.open() as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        print(f"ERROR: failed to parse {ALL_YML.relative_to(REPO)}: {e}", file=sys.stderr)
+        return 1
+    if data is None:
+        print(f"ERROR: {ALL_YML.relative_to(REPO)} is empty", file=sys.stderr)
+        return 1
+    if not isinstance(data, dict):
+        print(
+            f"ERROR: {ALL_YML.relative_to(REPO)} top-level is not a mapping "
+            f"(got {type(data).__name__})",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        flat = flatten(data)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
     if not flat:
         print("ERROR: no version keys extracted; check all.yml structure", file=sys.stderr)
         return 1
+
     cm = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
@@ -63,8 +128,12 @@ def main() -> int:
         "# ansible/inventories/prod/group_vars/all.yml. Do NOT edit by hand.\n"
         "# Run `task flux:sync-versions` to regenerate. CI fails if out of sync.\n"
     )
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(header + yaml.safe_dump(cm, default_flow_style=False, sort_keys=True))
+    try:
+        OUT.parent.mkdir(parents=True, exist_ok=True)
+        OUT.write_text(header + yaml.safe_dump(cm, default_flow_style=False, sort_keys=True))
+    except OSError as e:
+        print(f"ERROR: failed to write {OUT}: {e}", file=sys.stderr)
+        return 1
     print(f"Wrote {len(flat)} keys to {OUT.relative_to(REPO)}")
     return 0
 

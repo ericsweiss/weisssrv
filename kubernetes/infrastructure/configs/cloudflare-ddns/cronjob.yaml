@@ -28,6 +28,11 @@ spec:
       activeDeadlineSeconds: 300
       # Automatically delete completed/failed jobs after 1 hour
       ttlSecondsAfterFinished: 3600
+      # Default backoffLimit is 6, which is far too many retries for a 5-min
+      # CronJob — a transient Cloudflare API outage would quickly queue 6
+      # failing pods. Two retries gives API blips a chance to recover while
+      # keeping the failure visible in the next scheduled run.
+      backoffLimit: 2
       template:
         spec:
           # NOTE: hostNetwork removed - not required for making outbound API calls
@@ -73,10 +78,19 @@ spec:
                       with urllib.request.urlopen(req, timeout=30) as resp:
                           return json.loads(resp.read().decode())
                   except urllib.error.HTTPError as e:
-                      print(f"ERROR: HTTP {e.code}: {e.read().decode()}")
+                      # Include method + URL so the failure is greppable in logs.
+                      # Cloudflare returns structured JSON errors; capture the body.
+                      try:
+                          body_txt = e.read().decode(errors='replace')
+                      except Exception:
+                          body_txt = '<unreadable>'
+                      print(f"ERROR: HTTP {e.code} {e.reason} on {method} {url}: {body_txt}", file=sys.stderr)
+                      return None
+                  except urllib.error.URLError as e:
+                      print(f"ERROR: network error on {method} {url}: {e.reason}", file=sys.stderr)
                       return None
                   except Exception as e:
-                      print(f"ERROR: {e}")
+                      print(f"ERROR: unexpected {type(e).__name__} on {method} {url}: {e}", file=sys.stderr)
                       return None
 
               def get_public_ip():

@@ -1,12 +1,21 @@
-# Post-Base Cluster Plan
+# Post-Base Cluster Plan (SUPERSEDED — historical)
 
-This document outlines the k3s platform architecture and deployment roadmap. It was originally written to plan the transition from base infrastructure to a production-grade k3s cluster with GitOps.
-
-**Status**: Phases 1-9 are COMPLETE. Phase 10 (GitOps with Flux) is the next major milestone.
+> **Status**: All 10 planned phases are COMPLETE, including Phase 10 (Flux
+> GitOps). This doc is retained as a record of the original architectural
+> planning; current operational state lives in:
+>
+> - `docs/19-k3s-deployment.md` — k3s cluster deployment
+> - `docs/29-flux-operations.md` — Flux operations (day-2, rotation, rollback)
+> - `docs/30-multi-repo-onboarding.md` — tenant onboarding
+> - `docs/16-next-steps.md` — ongoing/next work (observability, alerting, etc.)
+>
+> Do NOT follow any "deploy" commands below — they predate the Flux
+> migration and will either no longer exist or do the wrong thing. Treat
+> this page as read-only architectural history.
 
 ## Overview
 
-The k3s platform is deployed on Proxmox-hosted VMs with a layered architecture: cluster bootstrap, ingress/certificates, identity/auth, and application workloads. The cluster is managed via Ansible for VM provisioning and k3s installation, with Task/Helm for workload deployment. Migration to Flux GitOps is planned as the next major phase.
+The k3s platform is deployed on Proxmox-hosted VMs with a layered architecture: cluster bootstrap, ingress/certificates, identity/auth, and application workloads. Ansible provisions VMs and installs k3s; Flux reconciles all in-cluster state from `kubernetes/` in this repo.
 
 ## Guiding Principles
 
@@ -178,7 +187,7 @@ Namespace: `esweiss.com/*`
     - Dynamic PVC provisioning if needed
     - Evaluate when application count increases
 
-## GitOps with Flux (PLANNED - Phase 10)
+## GitOps with Flux (COMPLETE - Phase 10)
 
 **Note**: Local GitLab (Phase 9) should be deployed before Flux to enable internal GitOps repository hosting. Personal GitHub continues to be used for public repositories and external CI/CD.
 
@@ -225,6 +234,7 @@ kubernetes/
 ### Flux Bootstrap
 
 ```bash
+# STALE — see docs/19-k3s-deployment.md Step 7 for the actual command
 flux bootstrap github \
   --owner=ericsweiss \
   --repository=weisssrv \
@@ -316,7 +326,7 @@ Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm r
    - **K3s HA**: 3 server nodes for etcd quorum, 6 agents (9-node cluster)
    - **Proxmox HA**: Automatic failover for critical infrastructure (dns-01, dns-02, smtp-relay, home-assistant)
 9. [x] **GitLab**: Self-hosted Git + CI/CD + Container Registry (git.esweiss.com)
-10. [ ] **GitOps Controller** (Flux) + Renovate Bot
+10. [x] **GitOps Controller** (Flux)
 11. [ ] **Observability**: Prometheus + Grafana + Loki
 12. [ ] **Photos/Cloud**: Immich + Nextcloud deployment
 13. [ ] **Hardening**: Network policies, RBAC, backup validation drills

@@ -4,13 +4,52 @@ This document explains how to rotate passwords, API tokens, and SSH keys stored 
 
 ## Overview
 
-All secrets are stored in 1Password and injected at deployment time. To rotate a credential:
+All secrets are stored in 1Password and injected at use time. There are two
+consumer paths and they rotate differently:
 
-1. Update the secret in 1Password
-2. Run the appropriate Ansible playbook
-3. Verify the change took effect
+- **Kubernetes workloads** (Authentik, download clients, recipes, GitLab
+  runners / agent, cert-manager DNS-01 token, etc.) consume 1Password via
+  the External Secrets Operator (ESO). Rotate via `task flux:rotate-secret
+  -- <app>` — see § "Kubernetes workloads (External Secrets Operator)"
+  below and `docs/29-flux-operations.md` for the full day-2 playbook.
+- **Host-side / Ansible-managed state** (SMTP, SSH keys, acme.sh, Tailscale
+  auth keys, GitLab VM root password, etc.) uses `op run --` to inject
+  secrets at playbook-run time. Rotate by updating 1Password, then
+  re-running the relevant Ansible playbook.
 
-## Credential Types
+## Kubernetes workloads (External Secrets Operator)
+
+For any secret consumed inside the k3s cluster (every `ExternalSecret` in
+`kubernetes/apps/*/externalsecret.yaml` and
+`kubernetes/infrastructure/configs/shared-cloudflare-secrets/`):
+
+```bash
+# 1. Update the 1Password item (web/desktop app or CLI).
+eval $(op signin)   # if needed
+# op item edit <item-id> <field>[password]=<new-value>
+
+# 2. Refresh ExternalSecret + restart consuming pods in one go:
+task flux:rotate-secret -- authentik    # or: downloads, recipes, gitlab-runner,
+                                        #     gitlab-runner-privileged, gitlab-agent
+
+# 3. (Optional) Refresh an ExternalSecret without restarting pods — useful
+#    for secrets that don't require a pod restart to take effect.
+task flux:refresh-secret -- authentik/authentik-secrets
+```
+
+The `task flux:rotate-secret -- <app>` command annotates the ExternalSecret
+with a force-sync timestamp, waits for ESO to re-fetch from 1Password, then
+restarts the Deployments/StatefulSets that consume the produced Secret. See
+`docs/29-flux-operations.md` § Secret Operations for the full dispatch table
+and rate-limit considerations.
+
+The single exception is `external-secrets/onepassword-sdk-token` — that's
+the bootstrap token ESO uses to talk to 1Password itself. Rotate by
+updating the 1P service-account token, then `task flux:bootstrap-onepassword`
+to write the new value into the cluster (the old ExternalSecret machinery
+can't self-rotate its own auth source).
+
+## Host-side / Ansible-managed credentials
 
 ### SMTP Passwords
 
@@ -117,11 +156,19 @@ task terraform:plan
 ```
 
 **What Happens**:
-- Terraform reads token directly from 1Password at runtime
-- No deployment needed, takes effect immediately
-- Old token can be revoked in Cloudflare after verification
+- Terraform reads token directly from 1Password at runtime.
+- In-cluster consumers (cert-manager DNS-01, external-dns, cloudflare-ddns)
+  pick up the new token on the next ESO refresh (default: 24h). To rotate
+  immediately across all three namespaces, force refresh each ExternalSecret:
+  ```bash
+  task flux:refresh-secret -- cert-manager/cloudflare-api-token
+  task flux:refresh-secret -- external-dns/cloudflare-api-token
+  task flux:refresh-secret -- cloudflare-ddns/cloudflare-api-token
+  ```
+- Old token can be revoked in Cloudflare after verification.
 
-**Affected Systems**: Terraform (local laptop only)
+**Affected Systems**: Terraform (local laptop), cert-manager, external-dns,
+cloudflare-ddns (all three read it via ESO from 1Password).
 
 ---
 

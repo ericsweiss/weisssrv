@@ -7,7 +7,7 @@ This document describes the Molecule-based testing infrastructure for weisssrv A
 Molecule tests run each role inside a Docker container (Debian Trixie with systemd) to verify
 that tasks execute correctly, configurations are deployed as expected, and services start properly.
 
-**Tested roles (12 roles, 13 scenarios):**
+**Tested roles (15 roles, 16 scenarios):**
 
 | Role | Scenarios | What it tests | Container notes |
 |------|-----------|--------------|-----------------|
@@ -23,6 +23,9 @@ that tasks execute correctly, configurations are deployed as expected, and servi
 | unbound | default | Package install, config, DoT forwarders, listening port | DNS resolution may fail |
 | postfix_null_client | default | Postfix config, SASL credentials, aliases, mailname | Uses test credentials |
 | smtp_relay | default | Gmail relay config, dual SASL, TLS dirs, SASL database | Mock TLS certs |
+| gitlab | default | VM-side GitLab install config (Omnibus, ports, SSO, registry) | Skips actual Omnibus run |
+| zvol_mount | default | Loopback→by-id symlink, mkfs, fstab by-UUID, mount | Loopback replaces Proxmox SCSI zvol |
+| nic_tuning | default | sysctl.d drop-in for ip_forward, per-NIC ethtool cfg with `logger` guard, idempotence | Uses loopback interface + ansible.posix.sysctl |
 
 ## Prerequisites
 
@@ -242,7 +245,10 @@ python3 -m molecule destroy   # Cleanup
 | proxmox_firewall | Requires Proxmox API (pve-firewall commands) |
 | proxmox_vm | Requires Proxmox API (qm commands, cloud-init) |
 | proxmox_lxc | Requires Proxmox API (pct commands) |
+| proxmox_ha | Requires Proxmox cluster (ha-manager, replication) |
 | home_assistant | Requires HAOS VM (SSH/SCP based management) |
+| resolv_conf | Shared helper role (exercised transitively by base + adguard_home tests) |
+| nic_tuning-integration | Wiring with `base` playbook is covered by `integration-tests/base-infrastructure` |
 
 ## Idempotency Testing
 
@@ -454,9 +460,15 @@ df -h /tank/media/unified             # Mergerfs mount
 
 ## CI/CD Integration
 
-### GitHub Actions Workflows
+### GitHub Actions Workflows (DISABLED — historical reference only)
 
-The repository includes several CI/CD workflows:
+> **Status**: GitLab is now the canonical CI/CD. `.github/workflows/*.yml`
+> files are retained in the repo but disabled. See `.gitlab-ci.yml` for the
+> active pipeline definitions and `docs/13-ci-cd.md` for the current jobs
+> and rules. This section is kept for anyone investigating the legacy
+> GitHub Actions setup.
+
+The legacy workflows were:
 
 | Workflow | File | Purpose |
 |----------|------|---------|
@@ -545,16 +557,16 @@ covers both HelmReleases and every other CR).
 
 ```bash
 task flux:lint
-# Or directly:
-kustomize build kubernetes/infrastructure | \
-  kubeconform -strict -ignore-missing-schemas -summary
-kustomize build kubernetes/apps | \
-  kubeconform -strict -ignore-missing-schemas -summary
+# flux:lint iterates every Flux Kustomization under kubernetes/clusters/weisssrv/,
+# loads cluster-versions ConfigMap values via envsubst (so ${var} typos are caught),
+# then runs kubeconform against the rendered output. It also builds the cluster
+# root kustomization to verify all references are valid.
 ```
 
-The CI `flux-lint` job (`.gitlab-ci.yml`) runs this on every MR against
-`kubernetes/**` changes. `flux-versions-sync` additionally verifies that
-`cluster-versions` ConfigMap is in sync with `ansible/inventories/prod/group_vars/all.yml`.
+The CI `flux-lint` job (`.gitlab-ci.yml`) mirrors `task flux:lint` and runs on
+every MR against `kubernetes/**` or `all.yml` changes. `flux-versions-sync`
+additionally verifies that `cluster-versions` ConfigMap is in sync with
+`ansible/inventories/prod/group_vars/all.yml`.
 
 ## Production Verification
 
@@ -614,7 +626,7 @@ The testing strategy follows a pyramid structure:
                / Integr.  \      <- Multi-role integration tests (5 scenarios)
               /------------\
              /              \
-            /   Unit Tests   \   <- Individual role molecule tests (12 roles, 13 scenarios)
+            /   Unit Tests   \   <- Individual role molecule tests (15 roles, 16 scenarios)
            /------------------\
           /                    \
          /    Static Analysis   \  <- ansible-lint, kubeconform, terraform validate
@@ -623,7 +635,7 @@ The testing strategy follows a pyramid structure:
 
 **Test Coverage:**
 - **Static Analysis:** ansible-lint, yamllint, kubeconform, terraform validate
-- **Unit Tests:** 12 roles with 13 Molecule scenarios (including idempotency)
+- **Unit Tests:** 15 roles with 16 Molecule scenarios (including idempotency)
 - **Integration Tests:** 5 multi-role scenarios testing cross-service interactions
 - **E2E Tests:** Production verification via postflight.yml playbook
 

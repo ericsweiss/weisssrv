@@ -434,20 +434,32 @@ def _read_cache(service_name: str) -> Optional[str]:
         data = json.loads(cache_file.read_text())
         if time.time() - data.get("timestamp", 0) < CACHE_TTL:
             return data.get("version")
-    except (json.JSONDecodeError, KeyError):
-        pass
+    except (json.JSONDecodeError, KeyError, OSError) as e:
+        # Delete corrupted cache so _write_cache can overwrite cleanly and
+        # we don't keep hitting the same broken entry on every run.
+        print(
+            f"Warning: corrupted cache {cache_file.name}, removing: {e}",
+            file=sys.stderr,
+        )
+        try:
+            cache_file.unlink()
+        except OSError as e2:
+            print(f"Warning: could not remove corrupted cache {cache_file.name}: {e2}", file=sys.stderr)
     return None
 
 
 def _write_cache(service_name: str, version: str) -> None:
     """Write version to cache."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = _cache_key(service_name)
-    cache_file.write_text(json.dumps({
-        "version": version,
-        "timestamp": time.time(),
-        "service": service_name,
-    }))
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file = _cache_key(service_name)
+        cache_file.write_text(json.dumps({
+            "version": version,
+            "timestamp": time.time(),
+            "service": service_name,
+        }))
+    except OSError as e:
+        print(f"Warning: failed to write cache for {service_name}: {e}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +568,8 @@ def version_greater(a: str, b: str) -> bool:
     try:
         return version_tuple_greater(parse_version_tuple(a), parse_version_tuple(b))
     except (TypeError, ValueError):
-        # Fall back to string comparison
+        # Fallback to lexicographic — log so operators know comparison quality may be degraded
+        print(f"Warning: falling back to string comparison for {a!r} vs {b!r}", file=sys.stderr)
         return a > b
 
 
@@ -782,7 +795,7 @@ def fetch_ghcr_version(svc: dict) -> str:
             if re.match(tag_filter, tag):
                 try:
                     vtuple = parse_version_tuple(tag)
-                    if best_tuple is None or vtuple > best_tuple:
+                    if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
                         best_tuple = vtuple
                         best_version = tag
                 except (TypeError, ValueError):
@@ -929,16 +942,21 @@ def fetch_gitlab_version(svc: dict) -> str:
     ]
 
     raw = None
+    errors = []
     for url in packages_urls:
         try:
             raw = fetch_apt_packages(url)
             if raw and raw.strip():
                 break
-        except RuntimeError:
+        except RuntimeError as e:
+            errors.append(f"{url}: {e}")
             continue
 
     if not raw:
-        raise RuntimeError("Could not fetch GitLab apt repository Packages file")
+        raise RuntimeError(
+            ("Could not fetch GitLab apt repository Packages file; attempts: "
+             + "; ".join(errors)) if errors else "Could not fetch GitLab apt Packages"
+        )
 
     # Parse the Packages file format (debian control file)
     # Looking for:
@@ -1202,7 +1220,14 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
     except RuntimeError as e:
         result.error = str(e)
     except Exception as e:
-        result.error = f"Unexpected error: {e}"
+        # Include the exception type so unknown failures ('NoneType' object
+        # has no attribute 'foo') are diagnosable without re-running under
+        # a debugger. Set DEBUG=1 in the environment to also print the
+        # full traceback.
+        result.error = f"Unexpected {type(e).__name__}: {e}"
+        if os.environ.get("DEBUG"):
+            import traceback
+            traceback.print_exc(file=sys.stderr)
 
     return result
 
@@ -1395,43 +1420,46 @@ def get_deploy_command(result: ServiceVersion) -> str:
     var_name = result.var_name
     category = result.category
 
-    # Helm charts
-    if category == "helm" or var_name.startswith("helm_chart"):
-        return "task maintenance:update-helm-charts"
-
-    # K3s infrastructure
-    if var_name == "k3s_version":
-        return "task maintenance:update-k3s-nodes"
-    if var_name == "kube_vip_version":
-        return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
-
-    # Plex
-    if var_name == "plex_version":
-        return "task maintenance:update-plex"
-
-    # Tailscale
-    if var_name == "tailscale_version":
-        return "task maintenance:update-applications"
-
-    # AdGuard Home
-    if var_name == "adguard_home_version":
-        return "task maintenance:update-applications --limit dns"
-    if var_name == "adguardhome_sync_version":
-        return "task maintenance:update-applications --limit dns-01"
-
-    # Flux-managed workloads: all k8s image + chart versions reach the
-    # cluster via the cluster-versions ConfigMap + git push + Flux.
+    # Flux-managed workloads: all Helm charts and app container images reach
+    # the cluster via the cluster-versions ConfigMap + git push + Flux.
+    # Keep this list in sync with versions tracked by the Flux ConfigMap.
     flux_managed = (
+        # Helm charts (from helm_chart_versions.*)
+        "helm_chart_versions_metallb", "helm_chart_versions_traefik",
+        "helm_chart_versions_cert_manager", "helm_chart_versions_external_dns",
+        "helm_chart_versions_external_secrets",
+        # App container images / helm chart pins
         "gluetun_version", "nzbget_version", "qbittorrent_version",
         "prowlarr_version", "sonarr_version", "radarr_version",
         "lidarr_version", "pulsarr_version",
         "mealie_version", "mealie_postgresql_version",
         "bar_assistant_version", "salt_rim_version",
+        "meilisearch_version", "redis_version", "busybox_version",
         "authentik_version", "postgresql_version",
         "gitlab_runner_helm_version", "gitlab_agent_helm_version",
     )
-    if var_name in flux_managed:
+    if var_name in flux_managed or var_name.startswith("helm_chart") or category == "helm":
         return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"
+
+    # K3s infrastructure (Ansible-managed, not Flux)
+    if var_name == "k3s_version":
+        return "task maintenance:update-k3s-nodes"
+    if var_name == "kube_vip_version":
+        return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
+
+    # Plex (LXC, Ansible-managed)
+    if var_name == "plex_version":
+        return "task maintenance:update-plex"
+
+    # Tailscale (apt, Ansible-managed)
+    if var_name == "tailscale_version":
+        return "task maintenance:update-applications"
+
+    # AdGuard Home (LXC, Ansible-managed)
+    if var_name == "adguard_home_version":
+        return "task maintenance:update-applications --limit dns"
+    if var_name == "adguardhome_sync_version":
+        return "task maintenance:update-applications --limit dns-01"
 
     # GitLab VM (Ansible-managed — not Flux)
     if var_name == "gitlab_version":
@@ -1532,21 +1560,41 @@ def main():
                 print(f"  1. Review the change: git diff ansible/inventories/prod/group_vars/all.yml")
                 print(f"  2. Deploy the update: {get_deploy_command(result)}")
                 print(f"  3. Verify deployment: task k3s:status  # Or appropriate status check")
+                sys.exit(0)
             else:
-                print(f"Warning: Could not find {result.var_name} in {VARS_FILE.name}")
-            sys.exit(0)
+                # The file didn't change — var_name may have been renamed or
+                # the file format changed. Fail loudly so CI / Taskfile can
+                # catch it instead of silently reporting success.
+                print(f"ERROR: Could not find {result.var_name} in {VARS_FILE.name}", file=sys.stderr)
+                sys.exit(1)
 
         elif args[i] == "--update-all":
             current_versions = read_current_versions()
             results = check_all(use_cache=False)
             updated = []
+            write_failed = []
+            errored = [r for r in results if r.error]
             for r in results:
                 if r.update_available and not r.error:
                     print(f"Updating {r.name}: {r.current_version} -> {r.latest_version}")
                     if update_version_in_file(r.var_name, r.latest_version):
                         updated.append(r)
                     else:
-                        print(f"  Warning: Could not update {r.var_name}")
+                        print(f"  ERROR: Could not find {r.var_name} in {VARS_FILE.name}")
+                        write_failed.append(r)
+
+            # Surface errors FIRST — an operator looking at a long successful
+            # update list could easily miss that 5 other services failed their
+            # version check. Previous behavior silently swallowed errors.
+            if write_failed:
+                print(f"\nERROR: {len(write_failed)} service(s) could not be updated in {VARS_FILE.name}:")
+                for r in write_failed:
+                    print(f"  - {r.var_name}")
+
+            if errored:
+                print(f"\nWARNING: {len(errored)} service(s) had errors and were NOT checked:")
+                for r in errored:
+                    print(f"  - {r.name}: {r.error}")
 
             if updated:
                 print(f"\nUpdated {len(updated)} services in {VARS_FILE.name}")
@@ -1578,8 +1626,12 @@ def main():
                 print("\n  4. Commit changes:")
                 print("     git add -A && git commit -m 'Update service versions'")
             else:
-                print("\nAll services are up to date!")
-            sys.exit(0)
+                if not errored:
+                    print("\nAll services are up to date!")
+            # Exit code convention:
+            #   2 — at least one service errored or couldn't be written
+            #   0 — all checks succeeded (whether or not we updated anything)
+            sys.exit(2 if (errored or write_failed) else 0)
         else:
             i += 1
 

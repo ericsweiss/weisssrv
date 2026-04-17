@@ -543,7 +543,7 @@ After updating versions in `all.yml`, deploy with the appropriate mechanism:
 - **K3s Helm charts and workloads** (Flux-managed — MetalLB, Traefik, cert-manager,
   external-dns, Authentik, downloads, recipes, gitlab-runner, gitlab-agent):
   `task flux:sync-versions` → commit `ansible/inventories/prod/group_vars/all.yml`
-  and `kubernetes/infrastructure/configs/versions-configmap.yaml` → `git push`.
+  and `kubernetes/infrastructure/sources/versions-configmap.yaml` → `git push`.
   Flux picks up the new ConfigMap within ~1 minute and rolls HelmReleases +
   Kustomizations. Watch with `task flux:status` and `flux get all -A`.
 
@@ -578,8 +578,8 @@ task maintenance:check-versions -- --clear-cache
    task flux:sync-versions
 
    # Review and commit BOTH files
-   git diff ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
-   git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+   git diff ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
+   git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
    git commit -m "Update service versions"
    git push
 
@@ -748,8 +748,8 @@ task maintenance:update-version SERVICE=sonarr
 task flux:sync-versions
 
 # 3. Review, commit, push
-git diff ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git diff ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump traefik and sonarr"
 git push
 
@@ -772,7 +772,7 @@ its next reconcile (~1 minute) unless you `flux suspend` the Kustomization.
 # Update all versions in group_vars/all.yml and regenerate ConfigMap
 task maintenance:update-all-versions
 task flux:sync-versions
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Sweep cluster versions" && git push
 
 # Upgrade k3s node binary (rolling)

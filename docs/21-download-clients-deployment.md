@@ -162,7 +162,6 @@ kubernetes/apps/download-clients/
 ├── radarr.yaml
 ├── lidarr.yaml
 ├── pulsarr.yaml
-├── certificate.yaml            # cert-manager Certificate for namespace
 ├── ingress-routes.yaml         # Traefik IngressRoutes for all apps
 ├── ingress-routes-ha-bypass.yaml  # High-priority routes bypassing SSO for Home Assistant's IP
 └── kustomization.yaml
@@ -178,7 +177,7 @@ kubernetes/apps/download-clients/
 # Example: bump Sonarr image tag
 vim ansible/inventories/prod/group_vars/all.yml  # bump sonarr_version
 task flux:sync-versions                            # regenerate versions-configmap
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump sonarr"
 git push
 
@@ -571,7 +570,7 @@ task maintenance:update-version SERVICE=sonarr
 
 # Regenerate the ConfigMap and push
 task flux:sync-versions
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump sonarr" && git push
 
 # Flux rolls the Deployments within ~1 minute

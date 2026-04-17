@@ -55,7 +55,7 @@ spec:
           effect: PreferNoSchedule
       containers:
         - name: redis
-          image: redis:7-alpine
+          image: redis:${redis_version}
           imagePullPolicy: IfNotPresent
           env:
             # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes
@@ -151,8 +151,7 @@ spec:
           effect: PreferNoSchedule
       containers:
         - name: meilisearch
-          # Using v1.15 per official docker-compose
-          image: getmeili/meilisearch:v1.15
+          image: getmeili/meilisearch:${meilisearch_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: MEILI_ENV

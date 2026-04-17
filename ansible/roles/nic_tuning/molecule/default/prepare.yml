@@ -1,0 +1,16 @@
+---
+# Install ethtool + iproute2 in the test container so the role's Apply-ethtool
+# task has a binary to exec. `logger` comes from bsdutils, which is already
+# present on Debian base images (but installed defensively).
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install ethtool, iproute2, and bsdutils (logger)
+      ansible.builtin.apt:
+        name:
+          - ethtool
+          - iproute2
+          - bsdutils
+        state: present
+        update_cache: true

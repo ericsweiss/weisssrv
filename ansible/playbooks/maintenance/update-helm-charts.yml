@@ -1,6 +1,12 @@
 ---
-# Helm chart update playbook
-# Updates k3s platform Helm charts to versions in group_vars/all.yml
+# DEPRECATED — retained for historical reference only. DO NOT RUN.
+# Platform Helm charts are now Flux-managed. Update workflow:
+#   1. Edit versions in ansible/inventories/prod/group_vars/all.yml
+#   2. Run: task flux:sync-versions
+#   3. Commit and push — Flux reconciles the new chart versions.
+# See docs/29-flux-operations.md § "Updating an App Version".
+#
+# Original description: Updates k3s platform Helm charts to versions in group_vars/all.yml
 # Run this from your workstation with kubectl configured to k3s cluster
 
 - name: Update k3s Helm charts
@@ -10,6 +16,10 @@
   vars:
     ansible_become: false
   tasks:
+    - name: DEPRECATED — use Flux
+      ansible.builtin.fail:
+        msg: "This playbook is deprecated. Edit versions in all.yml, run 'task flux:sync-versions', commit and push."
+
     - name: Verify kubectl access
       ansible.builtin.command: kubectl get nodes
       changed_when: false

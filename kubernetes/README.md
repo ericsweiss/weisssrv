@@ -10,19 +10,21 @@ ongoing operations — edit YAML, commit, push, Flux reconciles within ~1m.
 kubernetes/
 ├── clusters/weisssrv/             # Flux entrypoint (written by `flux bootstrap`)
 │   ├── flux-system/               # gotk-components + gotk-sync (DO NOT edit gotk-sync.yaml ref.branch during migration)
-│   ├── infrastructure.yaml        # Top-level Kustomization → ../../infrastructure
-│   ├── apps.yaml                  # Top-level Kustomization → ../../apps (dependsOn: infrastructure)
-│   ├── kustomization.yaml         # Lists flux-system + infrastructure.yaml + apps.yaml
+│   ├── infrastructure-sources.yaml       # Flux Kustomization → ../../infrastructure/sources (no deps)
+│   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources)
+│   ├── infrastructure-configs.yaml       # Flux Kustomization → ../../infrastructure/configs (dependsOn: controllers)
+│   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-configs)
+│   ├── kustomization.yaml         # Lists flux-system + the 4 top-level Kustomizations + tenants/
 │   └── tenants/                   # One-file-per-tenant wiring (GitRepository + Kustomization + ClusterSecretStore)
 │       └── README.md              # Onboarding examples
 ├── infrastructure/                # Platform (reconciled before apps)
-│   ├── sources/                   # HelmRepository CRs (jetstack, traefik, metallb, eso, external-dns, authentik, gitlab)
+│   ├── sources/                   # HelmRepository CRs + versions-configmap.yaml (needed by controllers)
 │   ├── controllers/               # HelmReleases: external-secrets, metallb, cert-manager, traefik, external-dns
-│   └── configs/                   # Cluster-wide objects
-│       ├── cluster-secret-store.yaml
+│   └── configs/                   # Cluster-wide CRs that require controllers' CRDs to exist first
+│       ├── cluster-secret-store.yaml          # ESO CR
 │       ├── cluster-issuer.yaml                # Let's Encrypt + Cloudflare DNS-01
 │       ├── metallb-ip-pools.yaml              # .100 (public), .101 (internal)
-│       ├── versions-configmap.yaml            # Generated from ansible/inventories/prod/group_vars/all.yml
+│       ├── wildcard-certificates.yaml         # *.esweiss.com / *.ericsweiss.com (default ns)
 │       ├── coredns/                           # HelmChartConfig override + PDB
 │       ├── cloudflare-ddns/                   # CronJob + namespace
 │       └── shared-cloudflare-secrets/         # ExternalSecrets for the Cloudflare token in 3 namespaces

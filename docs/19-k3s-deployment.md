@@ -81,8 +81,8 @@ For version bumps that flow through `all.yml`:
 
 ```bash
 task maintenance:update-version SERVICE=authentik
-task flux:sync-versions    # regenerates kubernetes/infrastructure/configs/versions-configmap.yaml
-git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/configs/versions-configmap.yaml
+task flux:sync-versions    # regenerates kubernetes/infrastructure/sources/versions-configmap.yaml
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump Authentik"
 git push
 ```
@@ -125,7 +125,7 @@ To upgrade k3s to a new version:
 
 | Operation | Mechanism |
 |-----------|-----------|
-| HelmReleases | helm-controller via `flux reconcile` (every 10 minutes by default) |
+| HelmReleases | helm-controller via `flux reconcile` (every 30 minutes by default) |
 | Kustomizations | kustomize-controller via `flux reconcile` (every 10 minutes by default) |
 | ExternalSecrets | ESO polls 1Password (24h refresh by default) or on-demand via `task flux:refresh-secret -- <ns>/<name>` |
 | Substitutions | Flux re-renders every reconcile using the `cluster-versions` ConfigMap |
@@ -321,19 +321,19 @@ This:
    `kustomization.yaml` to the current branch.
 5. Creates the `GitRepository` and top-level `Kustomization` CRs that watch this repo.
 
-After bootstrap, Flux reconciles the top-level Kustomizations:
+After bootstrap, Flux reconciles four Kustomizations in `dependsOn` order:
 
-- `infrastructure` — sources, controllers (ESO, MetalLB, Traefik, cert-manager,
-  external-dns), configs (ClusterSecretStore, ClusterIssuer, CoreDNS HelmChartConfig,
-  MetalLB IP pools, DDNS CronJob, cluster-versions ConfigMap)
-- `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged,
-  gitlab-agent, vm-ingress (IngressRoutes for Plex, Home Assistant, AdGuard, GitLab VM,
-  router, Traefik dashboard)
+1. `infrastructure-sources` — HelmRepository CRs + `cluster-versions` ConfigMap (no deps).
+2. `infrastructure-controllers` — HelmReleases for ESO, MetalLB, cert-manager, Traefik, external-dns (dependsOn sources; CRDs installed here).
+3. `infrastructure-configs` — ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS HelmChartConfig, DDNS CronJob, shared-cloudflare-secrets (dependsOn controllers; uses CRDs installed above).
+4. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (dependsOn infrastructure-configs).
 
 ### Step 8: Register the GitLab Webhook (Optional, Recommended)
 
-The default reconcile interval is 10 minutes (1 minute on sources). Register a GitLab
+The default Kustomization reconcile interval is 10 minutes (the GitRepository source is polled every 1 minute). Register a GitLab
 push webhook to Flux's `Receiver` for sub-second reconciliation after push:
+
+**Note**: Requires the Flux Receiver manifest (planned follow-up; not part of this initial deployment). Skip until available.
 
 ```bash
 task flux:webhook-register
@@ -352,8 +352,10 @@ flux get all -A
 Expected state:
 
 - `flux-system` `GitRepository` — Ready
-- `infrastructure` `Kustomization` — Ready
-- `apps` `Kustomization` — Ready (after `infrastructure` finishes)
+- `infrastructure-sources` `Kustomization` — Ready
+- `infrastructure-controllers` `Kustomization` — Ready (after sources)
+- `infrastructure-configs` `Kustomization` — Ready (after controllers)
+- `apps` `Kustomization` — Ready (after infrastructure-configs)
 - Every `HelmRelease` — Ready
 - Every `ExternalSecret` — `SecretSynced: True`
 - Every `IngressRoute` resolved and responding

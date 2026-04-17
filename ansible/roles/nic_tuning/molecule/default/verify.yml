@@ -1,0 +1,78 @@
+---
+# Verify the nic_tuning role's observable state:
+#   1. ip_forward sysctl drop-in is written with the right content and perms
+#   2. kernel's actual net.ipv4.ip_forward is 1
+#   3. per-interface ethtool drop-in exists in /etc/network/interfaces.d/ and
+#      contains the expected post-up line(s) + the `logger` failure guard
+#   4. (idempotence is enforced by the test_sequence step in molecule.yml)
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Stat sysctl drop-in
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+      register: sysctl_dropin
+
+    - name: Assert sysctl drop-in exists with expected perms
+      ansible.builtin.assert:
+        that:
+          - sysctl_dropin.stat.exists
+          - sysctl_dropin.stat.pw_name == 'root'
+          - sysctl_dropin.stat.gr_name == 'root'
+          - sysctl_dropin.stat.mode == '0644'
+        fail_msg: "99-nic-tuning-ip-forward.conf missing or has wrong owner/perms"
+
+    - name: Read sysctl drop-in content
+      ansible.builtin.slurp:
+        src: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+      register: sysctl_content
+
+    - name: Assert sysctl drop-in sets ip_forward=1
+      ansible.builtin.assert:
+        that:
+          - "'net.ipv4.ip_forward=1' in (sysctl_content.content | b64decode)"
+        fail_msg: "sysctl drop-in missing ip_forward=1 directive"
+
+    - name: Read current kernel ip_forward
+      ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+      register: ip_forward_active
+      changed_when: false
+
+    - name: Assert kernel has ip_forward=1 active
+      ansible.builtin.assert:
+        that:
+          - ip_forward_active.stdout == '1'
+        fail_msg: "kernel net.ipv4.ip_forward is not 1 — handler didn't apply"
+
+    - name: Stat ethtool drop-in for lo
+      ansible.builtin.stat:
+        path: /etc/network/interfaces.d/99-nic-lo-tuning.cfg
+      register: ethtool_dropin
+
+    - name: Assert ethtool drop-in exists
+      ansible.builtin.assert:
+        that:
+          - ethtool_dropin.stat.exists
+          - ethtool_dropin.stat.mode == '0644'
+        fail_msg: "99-nic-lo-tuning.cfg missing or has wrong perms"
+
+    - name: Read ethtool drop-in content
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces.d/99-nic-lo-tuning.cfg
+      register: ethtool_content
+
+    - name: Assert ethtool drop-in includes both features
+      ansible.builtin.assert:
+        that:
+          - "'post-up /sbin/ethtool -K lo rx on' in (ethtool_content.content | b64decode)"
+          - "'post-up /sbin/ethtool -K lo tx on' in (ethtool_content.content | b64decode)"
+        fail_msg: "ethtool drop-in missing expected post-up lines"
+
+    - name: Assert ethtool drop-in pipes failures to logger
+      ansible.builtin.assert:
+        that:
+          - "'|| logger -t nic-tuning-ifup' in (ethtool_content.content | b64decode)"
+        fail_msg: >-
+          ethtool post-up line lacks the `|| logger` failure guard — silent
+          regressions on interface rename would go unlogged

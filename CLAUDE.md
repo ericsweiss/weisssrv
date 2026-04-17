@@ -21,12 +21,12 @@ weisssrv/
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
-│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure.yaml, apps.yaml, tenants/)
-│   ├── infrastructure/         # Platform controllers and configs
-│   │   ├── sources/            # HelmRepository CRs
-│   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases)
-│   │   └── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, versions-configmap, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/
-│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml)
+│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs}.yaml, apps.yaml, tenants/)
+│   ├── infrastructure/         # Platform — reconciled in three stages via dependsOn ordering
+│   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
+│   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
+│   │   └── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
+│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-configs)
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
@@ -179,9 +179,9 @@ task flux:resume  -- <ns>/<kind>/<name>  # Resume a suspended Flux resource
 task flux:refresh-secret -- <ns>/<name>  # Force an ExternalSecret to re-fetch from 1Password
 task flux:rotate-secret  -- <app>        # Refresh ExternalSecret + restart consuming pods
 task flux:sync-versions           # Regenerate versions-configmap.yaml from all.yml
-task flux:dev-apply -- <path>     # Local iteration: kustomize build + kubectl apply (Flux will revert)
-task flux:lint                    # kustomize build + kubeconform on every Flux Kustomization path
-task flux:webhook-register        # One-time: register GitLab push webhook to Flux Receiver
+task flux:dev-apply -- <path>     # Local iteration: kustomize build + envsubst + kubectl apply (Flux reverts on next reconcile)
+task flux:lint                    # Build + envsubst + kubeconform on every Flux Kustomization path (fails on unknown ${var})
+task flux:webhook-register        # One-time: register GitLab push webhook to Flux Receiver (requires Receiver manifest — planned follow-up)
 
 # Download clients and media stack (workload operations only; deployment via Flux)
 task downloads:status             # Show downloads namespace status
@@ -244,7 +244,7 @@ task maintenance:update-plex           # Plex Media Server only
 # edit versions in ansible/inventories/prod/group_vars/all.yml, run `task flux:sync-versions`,
 # then commit + push — Flux reconciles the new versions within ~1 minute.
 task maintenance:update-k3s-nodes      # Rolling k3s node upgrades (drain/cordon)
-task maintenance:update-cluster        # Complete cluster update (nodes only; workloads are Flux-managed)
+task maintenance:update-cluster        # Check all service versions + update all.yml + regenerate versions ConfigMap (commit + push to reconcile via Flux)
 
 # Terraform
 task terraform:init               # Initialize Terraform
@@ -437,8 +437,7 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
 1. **Pre-deployment**:
    ```bash
    task ansible:ping          # Verify connectivity
-   task lint                  # Ansible + Terraform + kubernetes:lint + validate-helm
-   task flux:lint             # Build every Flux Kustomization + kubeconform (run separately)
+   task lint                  # Ansible + Terraform + flux:lint + scripts:test (all in one)
    task deploy:check          # Dry-run
    ```
 

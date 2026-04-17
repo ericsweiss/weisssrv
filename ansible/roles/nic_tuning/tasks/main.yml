@@ -20,7 +20,7 @@
     group: root
     mode: "0644"
   when: nic_tuning_ip_forward | bool
-  notify: Reload sysctl
+  notify: Reload sysctl ip_forward
 
 - name: Ensure /etc/network/interfaces.d exists
   ansible.builtin.file:

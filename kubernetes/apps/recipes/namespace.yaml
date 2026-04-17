@@ -4,4 +4,6 @@ kind: Namespace
 metadata:
   name: recipes
   labels:
+    app.kubernetes.io/name: recipes
     app.kubernetes.io/part-of: recipes
+    app.kubernetes.io/managed-by: flux

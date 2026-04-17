@@ -221,39 +221,40 @@ The pipeline uses two GitLab Runners deployed on the k3s cluster:
 
 The weisssrv `.gitlab-ci.yml` has `default: tags: [infrastructure]` so all jobs route to the infrastructure runner.
 
-### Step 4.1: Create Infrastructure Runner Token
+> **Ordering note**: the order below matches `docs/27-gitlab-deployment.md`
+> § Step 8 — shared runner first, infrastructure runner second.
+
+### Step 4.1: Create Shared Runner Token
 
 1. Navigate to **Admin Area** > **CI/CD** > **Runners**
 2. Click **New instance runner**
 3. Configure:
-   - **Operating system**: Linux
-   - **Tags**: `infrastructure`
-   - **Run untagged jobs**: No
-4. Click **Create runner**
-5. **Copy the runner token** (format: `glrt-...`)
-
-### Step 4.2: Store Infrastructure Runner Token in 1Password
-
-1. In 1Password, create item **GitLab Runner Privileged** in "Homelab" vault
-2. Add field:
-   - **Label**: `runner-token`
-   - **Value**: (paste the `glrt-...` token)
-3. Save the item
-
-### Step 4.3: Create Shared Runner Token
-
-1. Navigate to **Admin Area** > **CI/CD** > **Runners**
-2. Click **New instance runner** again
-3. Configure:
-   - **Operating system**: Linux
    - **Tags**: `k8s-deploy`
    - **Run untagged jobs**: Yes
 4. Click **Create runner**
 5. **Copy the runner token** (format: `glrt-...`)
 
-### Step 4.4: Store Shared Runner Token in 1Password
+### Step 4.2: Store Shared Runner Token in 1Password
 
 1. In 1Password, create item **GitLab Runner** in "Homelab" vault
+2. Add field:
+   - **Label**: `runner-token`
+   - **Value**: (paste the `glrt-...` token)
+3. Save the item
+
+### Step 4.3: Create Infrastructure Runner Token
+
+1. Navigate to **Admin Area** > **CI/CD** > **Runners**
+2. Click **New instance runner** again
+3. Configure:
+   - **Tags**: `infrastructure`
+   - **Run untagged jobs**: No
+4. Click **Create runner**
+5. **Copy the runner token** (format: `glrt-...`)
+
+### Step 4.4: Store Infrastructure Runner Token in 1Password
+
+1. In 1Password, create item **GitLab Runner Privileged** in "Homelab" vault
 2. Add field:
    - **Label**: `runner-token`
    - **Value**: (paste the `glrt-...` token)

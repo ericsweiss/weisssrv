@@ -102,7 +102,7 @@ For bumping the Authentik or PostgreSQL image version:
 # Edit ansible/inventories/prod/group_vars/all.yml (authentik_version / postgresql_version)
 task flux:sync-versions
 git add ansible/inventories/prod/group_vars/all.yml \
-        kubernetes/infrastructure/configs/versions-configmap.yaml
+        kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump Authentik to <version>"
 git push
 ```
@@ -300,12 +300,12 @@ The current deployment balances availability with simplicity:
 |-----------|-----------|-------|
 | Authentik Server | **2 replicas** | Spread across nodes via anti-affinity |
 | Authentik Worker | **1 replica** | Single instance for background tasks |
-| PostgreSQL | **Not HA** | Single instance with local PVC (ReadWriteOnce) |
+| PostgreSQL | **Not HA** | Single instance on hostPath PV backed by ZFS zvol (`ssd/appdata/authentik/postgres`) on k3s-agt-nas-01 |
 
 **Key Limitations**:
-1. **PostgreSQL PVC**: Uses k3s local-path storage (ReadWriteOnce) - bound to a single node
+1. **PostgreSQL PV**: hostPath PV on k3s-agt-nas-01, backed by ZFS zvol `ssd/appdata/authentik/postgres` (10GB, ext4). Data survives pod and VM recreation (zvol persists on the Proxmox host's SSD pool) but is NOT replicated to other nodes.
 2. **No database replication**: Single PostgreSQL instance is a SPOF
-3. **Pod rescheduling risk**: If the PostgreSQL node fails, data is unavailable until node recovers
+3. **Pod rescheduling risk**: If k3s-agt-nas-01 is down, PostgreSQL (and thus all SSO) is unavailable until the node recovers
 
 **Why This Works**:
 - Server/Worker are stateless - all state in PostgreSQL
@@ -473,13 +473,12 @@ Deploy PostgreSQL in an LXC container on pve-nas-01 with ZFS storage:
    helm search repo authentik/authentik --versions | head -5
    ```
 3. Update `ansible/inventories/prod/group_vars/all.yml`:
-   - `authentik_version` (chart appVersion — server/worker/postgres image tags)
-   - `helm_chart_versions.authentik` (if the chart version key exists — or set under `authentik_chart_version`; see what's currently there)
+   - `authentik_version` — this single variable pins **both** the chart version and the server/worker image tags (Authentik chart appVersion matches the image tag by convention)
 4. Regenerate the Flux ConfigMap and commit:
    ```bash
    task flux:sync-versions
    git add ansible/inventories/prod/group_vars/all.yml \
-           kubernetes/infrastructure/configs/versions-configmap.yaml
+           kubernetes/infrastructure/sources/versions-configmap.yaml
    git commit -m "Bump Authentik to <version>"
    git push
    ```

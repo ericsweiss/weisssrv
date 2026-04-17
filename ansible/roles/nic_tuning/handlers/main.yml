@@ -1,5 +1,13 @@
 ---
-- name: Reload sysctl
-  ansible.builtin.command:
-    cmd: sysctl --system
-  changed_when: true
+# Apply the ip_forward sysctl from the drop-in we just wrote.
+# Using the ansible.posix.sysctl module (instead of shelling to `sysctl --system`)
+# scopes the apply to JUST the ip_forward key — if some unrelated file under
+# /etc/sysctl.d/ has a bad entry, our handler still succeeds and the operator
+# isn't misled into thinking the nic_tuning apply itself failed.
+- name: Reload sysctl ip_forward
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+    reload: true

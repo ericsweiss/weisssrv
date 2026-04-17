@@ -11,13 +11,13 @@ The repository uses **self-hosted GitLab** as the canonical source with CI/CD:
 
 CI/CD features:
 - **Linting**: Ansible playbooks, Terraform code, shell scripts, Kubernetes manifests, Flux Kustomizations
-- **Validation**: Terraform plan, Helm template validation, kubeconform, `flux build` on every Kustomization
+- **Validation**: Terraform plan, `kustomize build` + envsubst + kubeconform on every Flux Kustomization, Python script unit tests
 - **Testing**: Molecule unit tests, multi-role integration tests
 - **Security**: GitLab native secret detection
 - **Auto-deployment**: Ansible + Terraform deploy on merge to main. **Kubernetes workloads
   are reconciled by Flux directly from git** — there are no CI deploy jobs for k8s.
 - **Version checking**: Scheduled checks for available updates; CI fails if
-  `kubernetes/infrastructure/configs/versions-configmap.yaml` is out of sync with `all.yml`
+  `kubernetes/infrastructure/sources/versions-configmap.yaml` is out of sync with `all.yml`
 
 ## Runner Architecture
 
@@ -55,7 +55,7 @@ stages:
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
-| `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/configs/versions-configmap.yaml` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
+| `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/sources/versions-configmap.yaml` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
 | `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
@@ -71,9 +71,8 @@ stages:
 |-----|----------|-------------|
 | `terraform-validate` | terraform/** | Terraform syntax |
 | `terraform-plan` | terraform/** + 1Password | Full plan with credentials |
-| `kubeconform` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | K8s manifest validation (includes Flux CRD schemas) |
-| `helm-validate` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | Helm values validation |
-| `flux-lint` | kubernetes/** | `flux build kustomization` + `kubeconform` on rendered output for every top-level Kustomization |
+| `flux-lint` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | `kustomize build` + envsubst (from versions ConfigMap) + kubeconform on every Flux Kustomization; also validates cluster root builds |
+| `python-tests` | scripts/** | pytest on check-versions.py and generate-versions-configmap.py |
 
 #### Test Stage
 | Job | Triggers | Description |
@@ -84,7 +83,8 @@ stages:
 > **Note:** Test jobs require Docker-in-Docker and a runner with `privileged = true`.
 > All weisssrv jobs (including tests) run on the **infrastructure runner**
 > (`gitlab-runner-privileged` Helm release, tag: `infrastructure`) which has `privileged = true`.
-> Deploy with `task gitlab:deploy-runner-privileged`.
+> Runner is Flux-managed at `kubernetes/apps/gitlab-runner-privileged/release.yaml`;
+> push changes to reconcile.
 
 #### Security Stage
 | Job | Triggers | Description |
@@ -149,13 +149,15 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 `deploy-gitlab-runner`, `deploy-gitlab-runner-privileged`.
 
 #### Deploy Stage - Verification
-| Job | Triggers | Description |
-|-----|----------|-------------|
-| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (health, registry, SSH). Uses `flux get hr` to check runner/agent health. |
-| `deploy-verify` | All pushes to main (no path filter) | Post-deployment health check (includes `flux get all -A` summary) |
+| Job | Triggers | Description | Blocks pipeline? |
+|-----|----------|-------------|------------------|
+| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (HTTP readiness, container registry, GitLab Pages, SSH port 22/2222). | No (`allow_failure: true`) |
+| `deploy-verify` | All pushes to main (no path filter) | Installs `flux` CLI, checks all nodes `Ready`, asserts zero Flux resources are `Ready=false`, verifies cluster DNS, critical deployments, GitLab HTTP. | Yes — fails the pipeline on any issue |
 
-> **Note:** Both verification jobs have `allow_failure: true` -- they are informational and non-blocking.
-> A verification failure reports status in the pipeline UI but does not fail the overall pipeline.
+> **Note:** The two jobs have different semantics:
+> - `deploy-gitlab-verify` is informational (`allow_failure: true`) — pipeline continues on failure.
+> - `deploy-verify` is blocking — any `NotReady` node, non-Ready Flux resource, or GitLab outage
+>   fails the pipeline. There is no `allow_failure` on this job.
 
 #### Maintenance Stage (Manual Only)
 | Job | Description |
@@ -219,13 +221,14 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
 - A commit under `kubernetes/` lands on `main`
 - The GitLab webhook POSTs to Flux's `Receiver` (or Flux's 1-minute poll catches it)
 - `flux-system` `GitRepository` syncs the new revision
-- Top-level `Kustomization`s (`infrastructure`, `apps`) reconcile
+- Top-level `Kustomization`s reconcile in dependency order:
+  `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `apps`
 - `helm-controller` upgrades HelmReleases; `kustomize-controller` applies Kustomizations
 - **All Secrets** are created by `external-secrets`' `ExternalSecret` CRs that
   reference 1Password item IDs via the ClusterSecretStore `onepassword-homelab`
   (SDK provider). CI does not inject any secrets into k8s.
 - Version substitutions flow from the `cluster-versions` ConfigMap
-  (`kubernetes/infrastructure/configs/versions-configmap.yaml`, generated from
+  (`kubernetes/infrastructure/sources/versions-configmap.yaml`, generated from
   `all.yml`). The `flux-versions-sync` lint job fails the pipeline if the
   committed ConfigMap has drifted from `all.yml`.
 
@@ -250,7 +253,7 @@ Configure in **Settings > CI/CD > Variables**:
 
 | Variable | Type | Protected | Masked | Description |
 |----------|------|-----------|--------|-------------|
-| `GITHUB_TOKEN` | Variable | No | Yes | GitHub API token for version checker rate limits |
+| `GH_API_TOKEN` | Variable | No | Yes | GitHub API token for version checker rate limits (check-versions.py accepts either `GH_API_TOKEN` or `GITHUB_TOKEN`; CI sets `GH_API_TOKEN` as the canonical name) |
 
 ## 1Password Service Account Setup
 
@@ -464,7 +467,8 @@ To view the legacy workflows:
 1. Check Docker-in-Docker is available:
    - All weisssrv jobs run on the infrastructure runner (`gitlab-runner-privileged` Helm release, tag: `infrastructure`)
    - This runner has `privileged = true` which enables Docker-in-Docker
-   - Deploy/redeploy the infrastructure runner: `task gitlab:deploy-runner-privileged`
+   - To change runner config: edit `kubernetes/apps/gitlab-runner-privileged/release.yaml`,
+     commit, push; Flux reconciles within ~1 min (or `task flux:reconcile` to force).
    - Check runner pods: `kubectl get pods -n gitlab-runner -l release=gitlab-runner-privileged`
 
 2. Run tests locally:

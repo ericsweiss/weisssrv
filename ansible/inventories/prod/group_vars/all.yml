@@ -141,11 +141,13 @@ mealie_postgresql_version: "18.3-alpine"
 # Download clients and media stack versions
 # Pinned to specific versions for reproducible deployments and controlled updates.
 # After editing a version here, run `task flux:sync-versions` to regenerate
-# kubernetes/infrastructure/configs/versions-configmap.yaml, then commit +
+# kubernetes/infrastructure/sources/versions-configmap.yaml, then commit +
 # push both files — Flux reconciles the new image tags into the running pods.
 # LinuxServer.io images: https://docs.linuxserver.io/images/
 # Gluetun: https://github.com/qdm12/gluetun/releases
 # Pulsarr: https://github.com/jamcalli/Pulsarr/releases
+# busybox: init container utility image used by VPN sidecar pre-checks
+busybox_version: "1.37"
 gluetun_version: "v3.41.1"
 nzbget_version: "26.1"
 qbittorrent_version: "5.1.4"
@@ -159,9 +161,13 @@ pulsarr_version: "0.15.2"
 # Mealie: https://github.com/mealie-recipes/mealie/releases
 # Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
+# Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
+# Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
 mealie_version: "v3.15.2"
 bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
+meilisearch_version: "v1.15.2"
+redis_version: "7.4.8-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.1.10611-1e34174b1"
@@ -179,8 +185,11 @@ gitlab_runner_helm_version: "0.87.1"
 gitlab_agent_helm_version: "2.26.0"
 
 # Helm chart versions for k3s platform workloads
-# These versions are used by maintenance update tasks
-# Update these versions, then run: task maintenance:update-helm-charts
+# These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
+# via scripts/generate-versions-configmap.py, and Flux substitutes them into
+# HelmReleases at reconcile time.
+# Update workflow: edit these versions → task flux:sync-versions → commit → push.
+# Flux reconciles within ~1 minute (or run `task flux:reconcile` to force).
 # Check ArtifactHub or chart repos for latest stable versions:
 # - MetalLB: https://artifacthub.io/packages/helm/metallb/metallb
 # - Traefik: https://github.com/traefik/traefik-helm-chart/releases

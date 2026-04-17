@@ -359,7 +359,7 @@ Both runners share the same Helm chart version and are Flux-managed. Update:
    ```bash
    task flux:sync-versions
    git add ansible/inventories/prod/group_vars/all.yml \
-           kubernetes/infrastructure/configs/versions-configmap.yaml
+           kubernetes/infrastructure/sources/versions-configmap.yaml
    git commit -m "Bump GitLab Runner chart to <version>"
    git push
    ```

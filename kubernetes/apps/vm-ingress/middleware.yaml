@@ -8,7 +8,10 @@ metadata:
 spec:
   redirectRegex:
     regex: "^https?://www\\.(.+)"
-    replacement: "https://${1}"
+    # $${1} escapes the dollar so Flux postBuild envsubst leaves "${1}" literal
+    # for Traefik's regex backreference. Without the escape, Flux would replace
+    # it with the empty string and every www-redirect would resolve to "https://".
+    replacement: "https://$${1}"
     permanent: true
 
 ---

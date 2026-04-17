@@ -37,12 +37,14 @@ Flux runs in the `flux-system` namespace. Four controllers:
 - **helm-controller** — reconciles `HelmRelease` CRs (renders chart + values, installs/upgrades, tracks history).
 - **notification-controller** — receives GitLab webhooks, triggers on-demand reconciliation.
 
-Top-level Kustomizations that Flux owns (both in `flux-system` namespace):
+Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order:
 
-- `infrastructure` → `kubernetes/infrastructure/` (sources, controllers, configs — ESO, MetalLB, cert-manager, Traefik, external-dns, DDNS, CoreDNS override).
-- `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress). `dependsOn: infrastructure`.
+1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + `cluster-versions` ConfigMap). No dependencies. No postBuild substitution (no placeholders).
+2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, MetalLB, cert-manager, Traefik, external-dns). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
+3. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
+4. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress). `dependsOn: infrastructure-configs`. Substitutes image/chart versions from `cluster-versions`.
 
-Each Kustomization applies `postBuild.substituteFrom` against the `cluster-versions` ConfigMap in `flux-system` so `${var_name}` placeholders (chart versions, image tags) resolve at reconcile time.
+The three-way infrastructure split ensures CRDs are installed before CRD-dependent configs are applied — first bootstrap converges cleanly without "no matches for kind" transient errors.
 
 Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml` and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
 
@@ -80,7 +82,7 @@ task flux:sync-versions
 
 # 3. Commit + push both files together
 git add ansible/inventories/prod/group_vars/all.yml \
-        kubernetes/infrastructure/configs/versions-configmap.yaml
+        kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump Authentik to <new-version>"
 git push
 
@@ -247,9 +249,17 @@ task flux:refresh-secret -- <namespace>/<externalsecret-name>
 
 1Password Families plan: **1,000 reads per day, account-wide**.
 
-Current footprint: approximately 25 ExternalSecrets × 1 refresh per day = ~25 reads/day. Comfortable headroom.
+Current footprint: 9 ExternalSecrets spanning ~20 distinct fields
+(authentik 5, recipes 7, vpn 2, runner tokens 3, cloudflare token 3). The
+1Password SDK provider reads fields on each refresh, not whole items, so the
+per-refresh cost is one read per field, not one read per ExternalSecret.
+On the default `refreshInterval: 24h` that's ~20 reads/day — comfortable
+headroom against the 1,000 limit.
 
-Every manual `task flux:refresh-secret` or `task flux:rotate-secret` adds one extra read per ExternalSecret. Rotating a single app a few times a day is fine. Loops are not — if you find yourself scripting refreshes, raise the refreshInterval instead.
+Every manual `task flux:refresh-secret` or `task flux:rotate-secret` adds
+fields_in_that_ExternalSecret extra reads. Rotating a single app a few times
+a day is fine. Loops are not — if you find yourself scripting refreshes,
+raise the refreshInterval instead.
 
 Adding tenants on the 1Password backend (see `docs/30-multi-repo-onboarding.md`) shares this budget. Friends without 1Password accounts should use the GitLab-variables path.
 
@@ -315,7 +325,7 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    ```bash
    git add kubernetes/apps/<name>/ kubernetes/apps/kustomization.yaml
    git add ansible/inventories/prod/group_vars/all.yml \
-           kubernetes/infrastructure/configs/versions-configmap.yaml
+           kubernetes/infrastructure/sources/versions-configmap.yaml
    git commit -m "Add <name> app"
    git push
 
@@ -353,8 +363,12 @@ For a full cluster freeze (maintenance window, investigating a broad issue):
 task flux:suspend -- flux-system/kustomization/apps
 
 # Pause everything, including platform
-task flux:suspend -- flux-system/kustomization/infrastructure
+# Suspend from leaf to root so no Kustomization reconciles into an
+# inconsistent half-suspended state.
 task flux:suspend -- flux-system/kustomization/apps
+task flux:suspend -- flux-system/kustomization/infrastructure-configs
+task flux:suspend -- flux-system/kustomization/infrastructure-controllers
+task flux:suspend -- flux-system/kustomization/infrastructure-sources
 ```
 
 While suspended:
@@ -464,7 +478,7 @@ flux reconcile helmrelease <name> -n <ns> --with-source
 
 ### Kustomization stuck `Reconciling`
 
-The `apps` or `infrastructure` Kustomization is in progress but never reaches Ready.
+A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-controllers`, or `infrastructure-configs`) is in progress but never reaches Ready.
 
 ```bash
 kubectl describe kustomization <name> -n flux-system
@@ -486,14 +500,14 @@ Most common cause: `wait: true` + a health check failing. The Kustomization wait
 A placeholder like `${authentik_version}` is showing up as a literal string in a deployed resource.
 
 - **ConfigMap missing or key typo**: `kubectl get configmap cluster-versions -n flux-system -o yaml` — confirm the key exists.
-- **`substituteFrom` missing on the Kustomization**: check `kubernetes/clusters/weisssrv/apps.yaml` and `infrastructure.yaml` both have the `postBuild.substituteFrom` block referencing `cluster-versions`.
-- **`optional: true` hiding a real failure during bootstrap**: during the initial bootstrap the `optional` flag lets Flux reconcile before the ConfigMap exists. Once the cluster is steady, that option shouldn't hide missing keys — the key needs to be present.
+- **`substituteFrom` missing on the Kustomization**: check `kubernetes/clusters/weisssrv/{apps,infrastructure-controllers,infrastructure-configs}.yaml` all have the `postBuild.substituteFrom` block referencing `cluster-versions`. (`infrastructure-sources.yaml` intentionally does NOT — sources/ defines the ConfigMap itself and has no placeholders.)
+- **ConfigMap not yet reconciled**: the ConfigMap lives in `kubernetes/infrastructure/sources/versions-configmap.yaml` and is created by the `infrastructure-sources` Flux Kustomization. On a cold bootstrap, if that Kustomization hasn't reconciled yet, controllers/configs substitution fails loudly (`optional: false`) — check `flux get ks infrastructure-sources -n flux-system`.
 
 Regenerate from scratch if in doubt:
 
 ```bash
 task flux:sync-versions
-git diff kubernetes/infrastructure/configs/versions-configmap.yaml
+git diff kubernetes/infrastructure/sources/versions-configmap.yaml
 ```
 
 ### Flux Logs
@@ -530,6 +544,60 @@ Until webhook is live, the 1-minute poll is the latency floor. That's fine for d
 
 ---
 
+## First-time Flux bootstrap: delete pre-existing manually-created Secrets
+
+Before running `task flux:bootstrap` for the first time, delete any Secrets
+that were previously created imperatively (e.g., via `op run -- kubectl create
+secret ...`). ESO's `ExternalSecret` resources in this repo use `creationPolicy:
+Owner`, which means ESO refuses to take over Secrets it didn't create. If the
+pre-existing Secrets are left in place, every `ExternalSecret` goes `NotReady`
+with `SecretAlreadyExists`/`NotManaged`, and consumer workloads keep using the
+stale (or re-rolled-at-cluster-time-unknown) values.
+
+This applies only to the initial migration from the imperative world. On a
+green-field cluster (fresh `task k3s:deploy`), this section is a no-op.
+
+Run these BEFORE `task flux:bootstrap`:
+
+```bash
+# ESO / 1Password bootstrap token is the only hand-managed Secret in the
+# post-Flux model — do NOT delete it.
+# Everything else below is safe to delete; Flux will recreate via ESO from
+# 1Password on the first reconcile.
+
+kubectl delete secret authentik-secrets -n authentik --ignore-not-found
+kubectl delete secret vpn-credentials -n downloads --ignore-not-found
+kubectl delete secret recipes-secrets -n recipes --ignore-not-found
+kubectl delete secret mealie-secrets -n recipes --ignore-not-found  # legacy name if present
+kubectl delete secret bar-assistant-secrets -n recipes --ignore-not-found  # legacy
+kubectl delete secret gitlab-runner-token -n gitlab-runner --ignore-not-found
+kubectl delete secret gitlab-runner-privileged-token -n gitlab-runner --ignore-not-found
+kubectl delete secret gitlab-agent-token -n gitlab-agent --ignore-not-found
+
+# The cloudflare-api-token Secret is replicated by ESO into three namespaces.
+# Delete from all three so ESO can re-create owned copies from 1Password.
+kubectl delete secret cloudflare-api-token -n cert-manager --ignore-not-found
+kubectl delete secret cloudflare-api-token -n external-dns --ignore-not-found
+kubectl delete secret cloudflare-api-token -n cloudflare-ddns --ignore-not-found
+```
+
+Pods using the deleted Secrets will not actually restart until next rollout
+— Kubernetes only re-reads Secrets on pod restart, not on Secret update.
+You can leave them running on the old (cached) values while ESO re-populates;
+then `task flux:rotate-secret -- <app>` (or a pod rollout) picks up the
+ESO-managed replacement.
+
+If you suspect any are missing from this list, a quick inventory:
+```bash
+# Anything not owned by an ExternalSecret (no ESO managed-by labels)
+# in an app namespace likely needs the same treatment.
+kubectl get secret -A -o json \
+  | jq -r '.items[] | select(.metadata.labels["reconcile.external-secrets.io/created-by"]==null)
+    | "\(.metadata.namespace)/\(.metadata.name)  \(.type)"'
+```
+
+---
+
 ## Post-merge branch switch (ONE-TIME, DO THIS AFTER THE MIGRATION MR MERGES)
 
 The initial Flux bootstrap pointed the `flux-system` `GitRepository` at the
@@ -545,36 +613,57 @@ revert the cluster.
 
 **Correct sequence after MR merge**:
 
-1. On a developer machine, checked out at `main` (post-merge), edit
-   `kubernetes/clusters/weisssrv/flux-system/gotk-sync.yaml`:
-   ```yaml
-   spec:
-     ref:
-       branch: main   # was: flux/migration
-   ```
-2. Commit and push directly to `main` (small, mechanical change):
+Important context: at merge time, the cluster's `flux-system` GitRepository
+is still tracking `flux/migration`. If you push the `branch: main` change
+directly to `main`, Flux never sees it because it's not watching `main` yet.
+If you then delete `flux/migration`, Flux starts failing with "couldn't find
+remote ref refs/heads/flux/migration". The only safe way is to push the
+branch-ref change to `flux/migration` FIRST (the branch Flux is currently
+watching) so Flux self-migrates, then delete `flux/migration`.
+
+1. Merge the migration MR to `main` via the GitLab UI (ff or squash merge).
+2. Locally, push the branch-ref switch commit to `flux/migration` (Flux picks it up):
    ```bash
-   git add kubernetes/clusters/weisssrv/flux-system/gotk-sync.yaml
-   git commit -m "Flux: switch GitRepository ref from flux/migration to main"
-   git push origin main
+   git checkout flux/migration
+   git merge main --ff-only          # bring flux/migration to the merged state
+   $EDITOR kubernetes/clusters/weisssrv/flux-system/gotk-sync.yaml
+   # change spec.ref.branch: flux/migration → main
+   git commit -am "Flux: switch GitRepository ref from flux/migration to main"
+   git push origin flux/migration
    ```
-3. Force a reconcile so Flux picks up the new `ref.branch`:
+3. Force reconcile so Flux picks up the ref change while still watching `flux/migration`:
    ```bash
    task flux:reconcile
    ```
-4. Verify:
+4. Verify the GitRepository now tracks main:
    ```bash
    kubectl -n flux-system get gitrepository flux-system -o jsonpath='{.spec.ref.branch}'
    # expected: main
    ```
-5. Delete the `flux/migration` branch on GitLab:
+5. Now push the SAME commit to `main` so the branches agree and post-merge
+   git history shows the switch:
+   ```bash
+   git checkout main
+   git merge flux/migration --ff-only
+   git push origin main
+   ```
+6. Delete the migration branch on GitLab (Flux no longer tracks it):
    ```bash
    git push origin --delete flux/migration
    ```
-6. Tidy the local branch:
+7. Tidy the local branch:
    ```bash
    git branch -D flux/migration
    ```
+
+**Alternative**: if step 2 is awkward (e.g., the branch was already deleted),
+you can patch the GitRepository directly in-cluster and then commit the
+matching change to `main`:
+```bash
+kubectl patch -n flux-system gitrepository flux-system --type=merge \
+  -p '{"spec":{"ref":{"branch":"main"}}}'
+# Then edit gotk-sync.yaml on main to match, commit, push.
+```
 
 Post-switch, all further GitOps work targets `main` as usual.
 
