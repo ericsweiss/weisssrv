@@ -18,7 +18,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-sonarr
 spec:
-  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-sonarr
@@ -36,12 +36,11 @@ spec:
               value: "9707"
             - name: URL
               value: "http://sonarr.downloads.svc.cluster.local:8989"
-            # Uncomment after creating "Download Client API Keys" 1Password item:
-            # - name: API_KEY
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: observability-exporter-secrets
-            #       key: sonarr-api-key
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: sonarr-api-key
           ports:
             - name: metrics
               containerPort: 9707
@@ -104,7 +103,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-radarr
 spec:
-  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-radarr
@@ -122,12 +121,11 @@ spec:
               value: "9708"
             - name: URL
               value: "http://radarr.downloads.svc.cluster.local:7878"
-            # Uncomment after creating "Download Client API Keys" 1Password item:
-            # - name: API_KEY
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: observability-exporter-secrets
-            #       key: radarr-api-key
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: radarr-api-key
           ports:
             - name: metrics
               containerPort: 9708
@@ -190,7 +188,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-lidarr
 spec:
-  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-lidarr
@@ -208,12 +206,11 @@ spec:
               value: "9709"
             - name: URL
               value: "http://lidarr.downloads.svc.cluster.local:8686"
-            # Uncomment after creating "Download Client API Keys" 1Password item:
-            # - name: API_KEY
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: observability-exporter-secrets
-            #       key: lidarr-api-key
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: lidarr-api-key
           ports:
             - name: metrics
               containerPort: 9709
@@ -276,7 +273,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-prowlarr
 spec:
-  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-prowlarr
@@ -294,12 +291,11 @@ spec:
               value: "9710"
             - name: URL
               value: "http://prowlarr.downloads.svc.cluster.local:9696"
-            # Uncomment after creating "Download Client API Keys" 1Password item:
-            # - name: API_KEY
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: observability-exporter-secrets
-            #       key: prowlarr-api-key
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: prowlarr-api-key
           ports:
             - name: metrics
               containerPort: 9710
