@@ -53,6 +53,8 @@ spec:
         max_query_length: 720h
       compactor:
         retention_enabled: true
+        delete_request_store: filesystem
+        working_directory: /var/loki/compactor
 
     singleBinary:
       replicas: 1
