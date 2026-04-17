@@ -4,9 +4,10 @@
 # download-clients, recipes, gitlab-runner, gitlab-runner-privileged,
 # gitlab-agent, vm-ingress).
 #
-# dependsOn infrastructure-configs: apps will not reconcile until the full
-# infrastructure chain (sources → controllers → configs) is Ready, which
-# transitively waits for all platform controllers and CRDs.
+# dependsOn infrastructure-observability: apps will not reconcile until the
+# full infrastructure chain (sources → controllers → configs → observability)
+# is Ready, which transitively waits for all platform controllers, CRDs, and
+# observability CRDs (ServiceMonitor, PodMonitor, PrometheusRule).
 #
 # optional: false — the cluster-versions ConfigMap is applied by
 # infrastructure-sources, which must be Ready before this Kustomization runs.
@@ -22,7 +23,7 @@ spec:
   retryInterval: 1m
   timeout: 15m
   dependsOn:
-    - name: infrastructure-configs
+    - name: infrastructure-observability
   sourceRef:
     kind: GitRepository
     name: flux-system
