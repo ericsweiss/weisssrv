@@ -1,0 +1,98 @@
+---
+# Grafana Alloy — log collector DaemonSet (successor to Promtail).
+# Tails container logs from /var/log/pods on every node and ships to Loki.
+# Tolerates all taints to run on every node including NAS, ingress, compute,
+# and control-plane nodes.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  interval: 30m
+  releaseName: alloy
+  chart:
+    spec:
+      chart: alloy
+      version: "${helm_chart_versions_alloy}"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    alloy:
+      configMap:
+        content: |
+          // Discover all pods on this node
+          discovery.kubernetes "pods" {
+            role = "pod"
+            selectors {
+              role = "pod"
+              field = "spec.nodeName=" + sys.env("HOSTNAME")
+            }
+          }
+
+          // Relabel discovered pods to extract useful labels
+          discovery.relabel "pods" {
+            targets = discovery.kubernetes.pods.targets
+
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_node_name"]
+              target_label  = "node"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name"]
+              separator     = "/"
+              target_label  = "job"
+            }
+          }
+
+          // Collect logs from discovered pods
+          loki.source.kubernetes "pods" {
+            targets    = discovery.relabel.pods.output
+            forward_to = [loki.write.default.receiver]
+          }
+
+          // Ship logs to Loki
+          loki.write "default" {
+            endpoint {
+              url = "http://loki.observability.svc.cluster.local:3100/loki/api/v1/push"
+            }
+          }
+
+    controller:
+      type: daemonset
+
+    tolerations:
+      - operator: Exists
+
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+    mounts:
+      varlog: true
