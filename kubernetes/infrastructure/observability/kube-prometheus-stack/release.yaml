@@ -98,7 +98,7 @@ spec:
 
       config:
         global:
-          smtp_smarthost: "192.168.0.151:587"
+          smtp_smarthost: "smtp-relay.esweiss.com:587"
           smtp_from: "Alertmanager <alertmanager@esweiss.com>"
           smtp_require_tls: true
           smtp_auth_username_file: /etc/alertmanager/secrets/observability-secrets/smtp-username

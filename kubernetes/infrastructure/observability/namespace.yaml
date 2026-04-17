@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: observability
     app.kubernetes.io/managed-by: flux
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/audit: baseline
-    pod-security.kubernetes.io/warn: baseline
+    # node-exporter DaemonSet requires hostPID, hostNetwork, and hostPath
+    # which are only permitted under the 'privileged' Pod Security Standard
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

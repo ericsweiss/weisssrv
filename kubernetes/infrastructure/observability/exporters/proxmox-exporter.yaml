@@ -79,7 +79,7 @@ spec:
       params:
         target: ["192.168.0.102"]
         module: ["default"]
-      metricRelabelings:
+      relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
     # pve-laptop-01
@@ -89,7 +89,7 @@ spec:
       params:
         target: ["192.168.0.103"]
         module: ["default"]
-      metricRelabelings:
+      relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
     # pve-opt-01
@@ -99,7 +99,7 @@ spec:
       params:
         target: ["192.168.0.104"]
         module: ["default"]
-      metricRelabelings:
+      relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
     # pve-opt-02
@@ -109,7 +109,7 @@ spec:
       params:
         target: ["192.168.0.105"]
         module: ["default"]
-      metricRelabelings:
+      relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
     # pve-opt-03
@@ -119,7 +119,7 @@ spec:
       params:
         target: ["192.168.0.106"]
         module: ["default"]
-      metricRelabelings:
+      relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
     # pve-prec-01
@@ -129,6 +129,6 @@ spec:
       params:
         target: ["192.168.0.107"]
         module: ["default"]
-      metricRelabelings:
+      relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
