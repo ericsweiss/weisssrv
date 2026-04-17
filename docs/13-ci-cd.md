@@ -113,7 +113,7 @@ dependencies:
 Ansible/Terraform deploy jobs depend on `validation-gate` as a required `needs`.
 **Kubernetes workloads are not gated by CI** — Flux reconciles from git regardless of
 pipeline state. CI's job for k8s is to validate (`flux-lint`, `kubeconform`,
-`flux-versions-sync`) and optionally trigger a webhook notification.
+`flux-versions-sync`). A planned webhook will allow CI to trigger Flux reconciliation on push.
 
 #### Deploy Stage - Terraform
 | Job | Triggers | Description |
@@ -182,7 +182,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 | Merge request | Lint, validate, test, security, AI review stages (no deploy) |
 | Push to main | Full validation + auto-deploy |
 | Scheduled | Version checking and secret detection. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded. |
-| Manual (web) | Lint, validate, test stages only. Security, AI review, deploy, gate, and maintenance jobs are excluded via `when: never` rules. |
+| Manual (web) | Lint, validate, test stages only. AI review, deploy, gate, and maintenance jobs are excluded. Security (`secret_detection`) runs if branch is `main`. |
 
 ## Deployment Pipeline
 
@@ -224,7 +224,7 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
 
 **Kubernetes workloads (platform + apps)** reconcile via Flux:
 - A commit under `kubernetes/` lands on `main`
-- The GitLab webhook POSTs to Flux's `Receiver` (or Flux's 1-minute poll catches it)
+- Flux's 1-minute poll catches the new commit (a planned GitLab webhook to Flux's `Receiver` will reduce this to seconds)
 - `flux-system` `GitRepository` syncs the new revision
 - Top-level `Kustomization`s reconcile in dependency order:
   `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `apps`

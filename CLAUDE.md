@@ -468,7 +468,7 @@ Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` o
    ```bash
    git add kubernetes/...
    git commit
-   git push                   # GitLab webhook triggers Flux Receiver, or wait ~1 min for poll
+   git push                   # Flux polls every ~1 min; planned webhook will make this sub-second
    task flux:reconcile        # Optional: force immediate reconcile
    ```
 
@@ -478,7 +478,7 @@ Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` o
    task flux:verify           # `flux check` + all managed resources
    ```
 
-See `docs/29-flux-operations.md` for day-2 operations including secret rotation, suspend/resume, and webhook troubleshooting. Multi-repo tenant onboarding is covered in `docs/30-multi-repo-onboarding.md`.
+See `docs/29-flux-operations.md` for day-2 operations including secret rotation, suspend/resume, and webhook setup. Multi-repo tenant onboarding is covered in `docs/30-multi-repo-onboarding.md`.
 
 ## Version Management
 

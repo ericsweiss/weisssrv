@@ -178,9 +178,9 @@ External Secrets Operator (1Password SDK provider) supplies all k8s Secrets.
 
 ### Deploy workflow
 
-Any Kubernetes change is a git commit under `kubernetes/`. On push, Flux reconciles
-(~1 minute, or immediately via the GitLab webhook to the Flux `Receiver`). Helm
-releases upgrade, Kustomizations re-apply, ExternalSecrets refresh, no manual
+Any Kubernetes change is a git commit under `kubernetes/`. On push, Flux polls
+and reconciles within ~1 minute (a planned webhook will reduce this to seconds).
+Helm releases upgrade, Kustomizations re-apply, ExternalSecrets refresh, no manual
 kubectl/helm invocations.
 
 ### Reference
@@ -316,7 +316,7 @@ Create a dedicated GitLab project template (separate repo) that new repos
 deploying to this cluster fork/copy. Pre-wired with:
 
 - `.gitlab-ci.yml` with standard stages (lint, validate, security,
-  AI review conditional on OP/openai secrets, Flux webhook trigger)
+  AI review conditional on OP/openai secrets, Flux webhook trigger (planned))
 - `.gitleaks.toml`, `.editorconfig`, `.pre-commit-config.yaml`, `renovate.json`
 - `Taskfile.yml` with flux:* and maintenance:* wrappers
 - `kubernetes/flux/` stub: namespace, Kustomization, ExternalSecret,

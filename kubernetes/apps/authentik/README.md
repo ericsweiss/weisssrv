@@ -76,9 +76,9 @@ Add DNS rewrite in AdGuard Home:
 Authentik is Flux-managed. Everything in this folder is reconciled by the
 top-level `apps` Kustomization on every push.
 
-- **HelmRelease**: `release.yaml` — chart `goauthentik/authentik`, release name `authentik`, values inlined (including image tags via `${authentik_version}` / `${postgresql_version}` substituted from the `cluster-versions` ConfigMap)
-- **Secret**: `externalsecret.yaml` — ExternalSecret `authentik-secrets` sourcing `secret-key`, `postgresql-password`, `postgresql-admin-password`, `smtp-username`, `smtp-password` from 1Password via ESO
-- **Storage**: `storage.yaml` — PV + PVC binding the ZFS zvol `ssd/appdata/authentik/postgres` on k3s-agt-nas-01
+- **HelmRelease**: `release.yaml` -- chart `goauthentik/authentik`, release name `authentik`, values inlined (including image tags via `${authentik_version}` / `${postgresql_version}` substituted from the `cluster-versions` ConfigMap)
+- **Secret**: `externalsecret.yaml` -- ExternalSecret `authentik-secrets` sourcing `secret-key`, `postgresql-password`, `postgresql-admin-password`, `smtp-username`, `smtp-password` from 1Password via ESO
+- **Storage**: `storage.yaml` -- PV + PVC binding the ZFS zvol `ssd/appdata/authentik/postgres` on k3s-agt-nas-01
 - **Ingress**: `ingress-route.yaml` + `middleware.yaml` + `certificate.yaml`
 
 Deploy workflow:
@@ -317,7 +317,7 @@ The current deployment balances availability with simplicity:
 
 Server and Worker are stateless and support horizontal scaling ([docs](https://docs.goauthentik.io/install-config/high-availability/)). The Helm chart supports HPA.
 
-To scale replicas, update `values.yaml`:
+To scale replicas, edit `release.yaml`:
 ```yaml
 server:
   replicas: 2  # or more
@@ -326,7 +326,13 @@ worker:
   replicas: 2  # or more
 ```
 
-### HA Upgrade Path
+Then commit and push -- Flux reconciles the change.
+
+### Future HA Upgrade Path
+
+The following options are not currently deployed. When implemented, they would
+be Flux-managed (Helm charts or CRDs in `kubernetes/infrastructure/` or
+`kubernetes/apps/`), following the standard version-pinning and deploy workflow.
 
 #### Option 1: CloudNativePG Operator (Recommended)
 
@@ -345,39 +351,12 @@ worker:
 - Requires shared storage or storage replication for true HA
 - More complex initial setup
 
-**Implementation Steps**:
-```bash
-# 1. Install CloudNativePG operator
-kubectl apply -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.22/releases/cnpg-1.22.yaml
-
-# 2. Create HA PostgreSQL cluster
-cat <<EOF | kubectl apply -f -
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: authentik-pg
-  namespace: authentik
-spec:
-  instances: 3
-  primaryUpdateStrategy: unsupervised
-  storage:
-    size: 8Gi
-  postgresql:
-    parameters:
-      shared_buffers: "256MB"
-      max_connections: "100"
-EOF
-
-# 3. Update Authentik values.yaml to use external PostgreSQL
-# postgresql:
-#   enabled: false
-# authentik:
-#   postgresql:
-#     host: authentik-pg-rw.authentik.svc
-#     name: app
-#     user: app
-#     password: ""  # From CNPG secret
-```
+**Implementation approach**: Deploy the CNPG operator as a HelmRelease in
+`kubernetes/infrastructure/controllers/`, pin the version in `all.yml`, and
+create a `Cluster` CR in `kubernetes/apps/authentik/`. Migrate data from the
+existing subchart PostgreSQL, then disable the subchart in `release.yaml`
+(`postgresql.enabled: false`) and point Authentik at the CNPG-managed
+`authentik-pg-rw` service.
 
 #### Option 2: External PostgreSQL (Existing Infrastructure)
 
@@ -394,20 +373,8 @@ Use existing PostgreSQL infrastructure outside Kubernetes:
 - Network latency (minimal for LAN)
 - Separate backup strategy needed
 
-**Implementation**:
-```yaml
-# values.yaml
-postgresql:
-  enabled: false
-
-authentik:
-  postgresql:
-    host: "nas.esweiss.com"  # External PostgreSQL
-    port: 5432
-    name: authentik
-    user: authentik
-    password: ""  # From existingSecret
-```
+**Implementation**: Set `postgresql.enabled: false` in `release.yaml` and
+configure `authentik.postgresql.host` to point at the external instance.
 
 #### Option 3: PostgreSQL on NAS with ZFS (Homelab-Specific)
 
@@ -473,7 +440,7 @@ Deploy PostgreSQL in an LXC container on pve-nas-01 with ZFS storage:
    helm search repo authentik/authentik --versions | head -5
    ```
 3. Update `ansible/inventories/prod/group_vars/all.yml`:
-   - `authentik_version` — this single variable pins **both** the chart version and the server/worker image tags (Authentik chart appVersion matches the image tag by convention)
+   - `authentik_version` -- this single variable pins **both** the chart version and the server/worker image tags (Authentik chart appVersion matches the image tag by convention)
 4. Regenerate the Flux ConfigMap and commit:
    ```bash
    task flux:sync-versions
@@ -483,7 +450,7 @@ Deploy PostgreSQL in an LXC container on pve-nas-01 with ZFS storage:
    git push
    ```
 5. Flux reconciles the HelmRelease; watch with `flux get hr authentik -n authentik` and `task authentik:status`.
-6. Rollback (if needed): `git revert <commit>; git push` — Flux reconciles the reverted manifest. Alternatively `flux suspend hr authentik -n authentik` to freeze the current state while you investigate.
+6. Rollback (if needed): `git revert <commit>; git push` -- Flux reconciles the reverted manifest. Alternatively `flux suspend hr authentik -n authentik` to freeze the current state while you investigate.
 
 ## References
 

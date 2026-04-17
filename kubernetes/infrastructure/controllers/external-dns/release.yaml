@@ -6,11 +6,13 @@
 # infrastructure/configs/shared-cloudflare-secrets/.
 # Bootstrap ordering: the cloudflare-api-token Secret referenced by
 # env.CF_API_TOKEN is created by an ExternalSecret in configs stage (which
-# depends on controllers). disableWait: true prevents a deadlock —
+# depends on controllers). install.disableWait prevents a deadlock —
 # without it, Helm --wait blocks on pod readiness, pods need the Secret,
 # Secret needs configs, configs needs controllers Ready. With disableWait
 # the HelmRelease reports Ready immediately after manifest apply; pods
 # crashloop briefly until configs creates the Secret (~2 minutes).
+# Only install needs this; upgrades run in steady-state where the Secret
+# already exists.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -29,11 +31,15 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
+    # disableWait prevents bootstrap deadlock: the cloudflare-api-token Secret
+    # is created by configs stage (which depends on controllers). Without this,
+    # Helm --wait blocks on pod readiness → pods need Secret → deadlock.
+    # Only needed for install (fresh bootstrap); upgrades run in steady-state
+    # where the Secret already exists.
     disableWait: true
     remediation:
       retries: 3
   upgrade:
-    disableWait: true
     remediation:
       retries: 3
       remediateLastFailure: true

@@ -141,8 +141,9 @@ task collect-state                    # Generate cluster state snapshot
 ```
 
 > **Kubernetes deploys use Flux**: changes to `kubernetes/apps/<component>/` or
-> `kubernetes/infrastructure/` are reconciled automatically after `git push` (~1 minute,
-> or immediately via the GitLab webhook to Flux). `task flux:reconcile` forces a sync.
+> `kubernetes/infrastructure/` are reconciled automatically after `git push`.
+> Flux polls git every ~1 minute (a planned webhook will reduce this to seconds).
+> `task flux:reconcile` forces a sync.
 > Helm chart versions and container image tags flow through `ansible/inventories/prod/group_vars/all.yml`
 > into the `cluster-versions` ConfigMap via `task flux:sync-versions`.
 
