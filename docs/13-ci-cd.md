@@ -72,7 +72,6 @@ stages:
 | `terraform-validate` | terraform/** | Terraform syntax |
 | `terraform-plan` | terraform/** + 1Password | Full plan with credentials |
 | `flux-lint` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | `kustomize build` + envsubst (from versions ConfigMap) + kubeconform on every Flux Kustomization; also validates cluster root builds |
-| `python-tests` | scripts/** | pytest on check-versions.py and generate-versions-configmap.py |
 
 > **Limitation**: `flux-lint` validates HelmRelease CRD schemas and envsubst placeholders but does
 > not perform server-side Helm template rendering. Chart value compatibility issues (e.g., a renamed
@@ -84,6 +83,7 @@ stages:
 |-----|----------|-------------|
 | `molecule-tests` | ansible/roles/** | Role unit tests (requires Docker-in-Docker) |
 | `integration-tests` | ansible/integration-tests/**, ansible/roles/**, ansible/inventories/** | Multi-role tests (requires Docker-in-Docker) |
+| `python-tests` | scripts/**, ansible/inventories/prod/group_vars/all.yml | pytest on check-versions.py and generate-versions-configmap.py |
 
 > **Note:** Test jobs require Docker-in-Docker and a runner with `privileged = true`.
 > All weisssrv jobs (including tests) run on the **infrastructure runner**
