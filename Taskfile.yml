@@ -956,7 +956,7 @@ tasks:
       - op run -- python3 ./scripts/check-versions.py --json {{.CLI_ARGS}}; RC=$?; [ $RC -le 1 ] || exit $RC
 
   maintenance:update-version:
-    desc: "Update a single service version in all.yml (task maintenance:update-version SERVICE=gluetun)"
+    desc: "Update a single service version in all.yml + regenerate ConfigMap (task maintenance:update-version SERVICE=gluetun)"
     vars:
       SERVICE: '{{.SERVICE | default ""}}'
     env:
@@ -972,13 +972,17 @@ tasks:
           exit 1
         fi
         op run -- python3 ./scripts/check-versions.py --update "$SERVICE"
+      - task: flux:sync-versions
+      - echo "all.yml + versions-configmap.yaml updated. Commit both and raise MR."
 
   maintenance:update-all-versions:
-    desc: Update all outdated service versions in all.yml (review changes before deploying)
+    desc: Update all outdated service versions in all.yml + regenerate ConfigMap
     env:
       GITHUB_TOKEN: op://Homelab/GitHub Token/credential
     cmds:
       - op run -- python3 ./scripts/check-versions.py --update-all
+      - task: flux:sync-versions
+      - echo "all.yml + versions-configmap.yaml updated. Commit both and raise MR."
 
   maintenance:update-cluster:
     desc: Complete k3s cluster update (nodes + version bump + Flux reconcile)
