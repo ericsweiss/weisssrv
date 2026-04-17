@@ -440,6 +440,27 @@ tasks:
       - kubectl rollout restart statefulset -n observability
       - kubectl rollout restart daemonset -n observability
 
+  observability:silence:
+    desc: Create an Alertmanager silence (ALERT=alertname, DURATION=2h)
+    vars:
+      ALERT: '{{.ALERT | default "Watchdog"}}'
+      DURATION: '{{.DURATION | default "2h"}}'
+    cmds:
+      - |
+        END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || date -u -d '+{{.DURATION}}' '+%Y-%m-%dT%H:%M:%S.000Z')
+        START=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+        kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093 &
+        PF_PID=$!
+        sleep 2
+        curl -s -X POST http://localhost:9093/api/v2/silences -H "Content-Type: application/json" -d "{
+          \"matchers\": [{\"name\": \"alertname\", \"value\": \"{{.ALERT}}\", \"isRegex\": false}],
+          \"startsAt\": \"$START\",
+          \"endsAt\": \"$END\",
+          \"createdBy\": \"task-cli\",
+          \"comment\": \"Silenced via task observability:silence\"
+        }" | python3 -m json.tool
+        kill $PF_PID 2>/dev/null
+
   k3s:backup:
     desc: Create etcd snapshot on k3s server
     cmds:

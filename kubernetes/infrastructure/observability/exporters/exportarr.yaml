@@ -273,3 +273,139 @@ spec:
   endpoints:
     - port: metrics
       interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# NZBGet
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-nzbget
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-nzbget
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-nzbget
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-nzbget
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["nzbget"]
+          env:
+            - name: PORT
+              value: "9711"
+            - name: URL
+              value: "http://nzbget.downloads.svc.cluster.local:6789"
+          ports:
+            - name: metrics
+              containerPort: 9711
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-nzbget
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-nzbget
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-nzbget
+  ports:
+    - name: metrics
+      port: 9711
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-nzbget
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-nzbget
+  endpoints:
+    - port: metrics
+      interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# qBittorrent
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-qbittorrent
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-qbittorrent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-qbittorrent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-qbittorrent
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["qbittorrent"]
+          env:
+            - name: PORT
+              value: "9712"
+            - name: URL
+              value: "http://qbittorrent.downloads.svc.cluster.local:8080"
+          ports:
+            - name: metrics
+              containerPort: 9712
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-qbittorrent
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-qbittorrent
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-qbittorrent
+  ports:
+    - name: metrics
+      port: 9712
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-qbittorrent
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-qbittorrent
+  endpoints:
+    - port: metrics
+      interval: 60s

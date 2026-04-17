@@ -1,0 +1,70 @@
+---
+# Plex Exporter — Prometheus metrics for Plex Media Server.
+# Uses jsclayton/prometheus-plex-exporter because exportarr does not support Plex.
+# NOTE: This image has no versioned releases on Docker Hub — pinned to "latest".
+# Consider replacing with a tagged alternative when one becomes available.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: plex-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plex-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plex-exporter
+    spec:
+      containers:
+        - name: plex-exporter
+          image: docker.io/jsclayton/prometheus-plex-exporter:latest
+          env:
+            - name: PLEX_SERVER
+              value: "http://192.168.0.152:32400"
+            - name: PLEX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: plex-token
+          ports:
+            - name: metrics
+              containerPort: 9594
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: plex-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: plex-exporter
+  ports:
+    - name: metrics
+      port: 9594
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: plex-exporter
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plex-exporter
+  endpoints:
+    - port: metrics
+      interval: 60s

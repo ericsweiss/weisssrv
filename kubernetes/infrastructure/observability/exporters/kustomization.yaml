@@ -9,3 +9,4 @@ resources:
   - zfs-exporter.yaml
   - adguard-exporter.yaml
   - unbound-exporter.yaml
+  - plex-exporter.yaml
