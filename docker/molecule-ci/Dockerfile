@@ -10,10 +10,15 @@
 #   docker push registry.git.ericsweiss.com/eric/weisssrv/molecule-ci:latest
 FROM python:3.11
 
-# docker-cli for talking to the DinD sidecar
-RUN apt-get update -qq \
-    && apt-get install -y --no-install-recommends docker.io \
-    && rm -rf /var/lib/apt/lists/*
+# docker CLI for talking to the DinD sidecar. Install the static binary
+# directly — the Debian docker.io package on Trixie doesn't include the
+# CLI (only the daemon), and docker-ce-cli isn't in the default repos.
+# Detect arch for multi-platform builds.
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) DOCKER_ARCH=x86_64;; arm64) DOCKER_ARCH=aarch64;; *) echo "unsupported: $ARCH"; exit 1;; esac \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-27.5.1.tgz" \
+    | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
+    && docker --version
 
 # pip dependencies (molecule + ansible + plugins)
 COPY requirements.txt /tmp/requirements.txt

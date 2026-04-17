@@ -203,7 +203,7 @@ build-molecule-images:
   before_script:
     - apt-get update -qq && apt-get install -y -qq docker.io
   script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     # molecule-test: the container roles run inside
     - docker build -t "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}" docker/molecule-test/
     - docker push "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}"
@@ -706,7 +706,7 @@ flux-lint:
     JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
     MOLECULE_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test"
   before_script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - |
       if docker pull "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" 2>/dev/null; then
         docker tag "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" "${MOLECULE_IMAGE}:latest"
