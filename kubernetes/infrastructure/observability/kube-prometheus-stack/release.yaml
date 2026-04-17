@@ -1,0 +1,358 @@
+---
+# kube-prometheus-stack HelmRelease — deploys Prometheus, Grafana, Alertmanager,
+# node-exporter, and kube-state-metrics into the observability namespace.
+# Chart version substituted from cluster-versions ConfigMap.
+# Prometheus pinned to NAS node for local ZFS zvol storage.
+# Grafana configured with Authentik OIDC and Loki datasource.
+# Alertmanager sends alerts via email (SMTP relay) and Discord webhook.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: observability
+spec:
+  interval: 30m
+  releaseName: kube-prometheus-stack
+  # CRD installation and Prometheus startup can take several minutes
+  timeout: 15m
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      version: "${helm_chart_versions_kube_prometheus_stack}"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      interval: 12h
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # -------------------------------------------------------------------------
+    # Prometheus
+    # -------------------------------------------------------------------------
+    prometheus:
+      prometheusSpec:
+        # Pin to NAS node for local ZFS zvol storage
+        nodeSelector:
+          esweiss.com/nas: "true"
+        tolerations:
+          - key: esweiss.com/nas
+            operator: Equal
+            value: "true"
+            effect: PreferNoSchedule
+
+        # Use existing PVC backed by ZFS zvol on k3s-agt-nas-01
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: ""
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 150Gi
+              volumeName: prometheus-data
+
+        # Retention
+        retention: 365d
+        retentionSize: 140GB
+
+        # Discover ServiceMonitors, PodMonitors, and PrometheusRules in ALL namespaces
+        serviceMonitorSelectorNilUsesHelmValues: false
+        serviceMonitorNamespaceSelector: {}
+        podMonitorSelectorNilUsesHelmValues: false
+        podMonitorNamespaceSelector: {}
+        ruleSelectorNilUsesHelmValues: false
+        ruleNamespaceSelector: {}
+
+        resources:
+          requests:
+            cpu: 200m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+
+    # -------------------------------------------------------------------------
+    # Alertmanager
+    # -------------------------------------------------------------------------
+    alertmanager:
+      alertmanagerSpec:
+        # Mount observability-secrets for file-based secret references
+        secrets:
+          - observability-secrets
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+
+      config:
+        global:
+          smtp_smarthost: "192.168.0.151:587"
+          smtp_from: "Alertmanager <alertmanager@esweiss.com>"
+          smtp_require_tls: true
+          smtp_auth_username_file: /etc/alertmanager/secrets/observability-secrets/smtp-username
+          smtp_auth_password_file: /etc/alertmanager/secrets/observability-secrets/smtp-password
+
+        route:
+          receiver: discord-default
+          group_by:
+            - alertname
+            - namespace
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+          routes:
+            - receiver: email-and-discord
+              matchers:
+                - severity="critical"
+              continue: false
+            - receiver: discord-default
+              matchers:
+                - severity="warning"
+              continue: false
+
+        receivers:
+          - name: discord-default
+            discord_configs:
+              - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
+                send_resolved: true
+                title: '{{ "{{" }} .Status | toUpper {{ "}}" }}: {{ "{{" }} .CommonLabels.alertname {{ "}}" }}'
+                message: >-
+                  {{ "{{" }} range .Alerts {{ "}}" }}
+                  **{{ "{{" }} .Labels.alertname {{ "}}" }}** ({{ "{{" }} .Labels.severity {{ "}}" }})
+                  {{ "{{" }} if .Annotations.summary {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }}{{ "{{" }} end {{ "}}" }}
+                  {{ "{{" }} if .Annotations.description {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} end {{ "}}" }}
+                  {{ "{{" }} end {{ "}}" }}
+
+          - name: email-and-discord
+            email_configs:
+              - to: "ericsweiss1@gmail.com"
+                send_resolved: true
+            discord_configs:
+              - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
+                send_resolved: true
+                title: '{{ "{{" }} .Status | toUpper {{ "}}" }}: {{ "{{" }} .CommonLabels.alertname {{ "}}" }}'
+                message: >-
+                  {{ "{{" }} range .Alerts {{ "}}" }}
+                  **{{ "{{" }} .Labels.alertname {{ "}}" }}** ({{ "{{" }} .Labels.severity {{ "}}" }})
+                  {{ "{{" }} if .Annotations.summary {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }}{{ "{{" }} end {{ "}}" }}
+                  {{ "{{" }} if .Annotations.description {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} end {{ "}}" }}
+                  {{ "{{" }} end {{ "}}" }}
+
+    # -------------------------------------------------------------------------
+    # Grafana
+    # -------------------------------------------------------------------------
+    grafana:
+      # Ingress handled by Traefik IngressRoute
+      ingress:
+        enabled: false
+
+      grafana.ini:
+        server:
+          root_url: https://grafana.esweiss.com
+
+      # Static OIDC configuration (Authentik)
+      env:
+        GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+        GF_AUTH_GENERIC_OAUTH_NAME: "Authentik"
+        GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+        GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
+        GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.esweiss.com/application/o/authorize/"
+        GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.esweiss.com/application/o/token/"
+        GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.esweiss.com/application/o/userinfo/"
+
+      # Secret OIDC credentials from observability-secrets
+      envValueFrom:
+        GF_AUTH_GENERIC_OAUTH_CLIENT_ID:
+          secretKeyRef:
+            name: observability-secrets
+            key: grafana-oidc-client-id
+        GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+          secretKeyRef:
+            name: observability-secrets
+            key: grafana-oidc-client-secret
+
+      # Dashboard sidecar — auto-discovers ConfigMaps with grafana_dashboard label
+      sidecar:
+        dashboards:
+          enabled: true
+          label: grafana_dashboard
+          labelValue: "1"
+          searchNamespace: ALL
+          folderAnnotation: grafana_folder
+
+      # Additional datasource: Loki for log queries
+      additionalDataSources:
+        - name: Loki
+          type: loki
+          url: http://loki.observability.svc.cluster.local:3100
+          access: proxy
+          isDefault: false
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    # -------------------------------------------------------------------------
+    # node-exporter
+    # -------------------------------------------------------------------------
+    nodeExporter:
+      enabled: true
+
+    prometheus-node-exporter:
+      # Tolerate ALL taints so node-exporter runs on every node in the cluster
+      tolerations:
+        - operator: Exists
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 64Mi
+
+    # -------------------------------------------------------------------------
+    # kube-state-metrics
+    # -------------------------------------------------------------------------
+    kube-state-metrics:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    # -------------------------------------------------------------------------
+    # Custom alert rules
+    # -------------------------------------------------------------------------
+    additionalPrometheusRulesMap:
+      homelab-storage:
+        groups:
+          - name: homelab.storage
+            rules:
+              - alert: DiskUsageWarning
+                expr: (1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 > 80
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Disk usage above 80% on {{ "{{" }} $labels.instance {{ "}}" }}:{{ "{{" }} $labels.mountpoint {{ "}}" }}'
+                  description: 'Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% on {{ "{{" }} $labels.instance {{ "}}" }} mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.'
+
+              - alert: DiskUsageCritical
+                expr: (1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 > 90
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'Disk usage above 90% on {{ "{{" }} $labels.instance {{ "}}" }}:{{ "{{" }} $labels.mountpoint {{ "}}" }}'
+                  description: 'Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% on {{ "{{" }} $labels.instance {{ "}}" }} mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.'
+
+              - alert: PVCUsageWarning
+                expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 80
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'PVC {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} above 80%'
+                  description: 'PVC usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}%.'
+
+              - alert: PVCUsageCritical
+                expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 90
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'PVC {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} above 90%'
+                  description: 'PVC usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}%.'
+
+      homelab-infrastructure:
+        groups:
+          - name: homelab.infrastructure
+            rules:
+              - alert: VPNDown
+                expr: gluetun_vpn_status == 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'VPN tunnel is down on {{ "{{" }} $labels.instance {{ "}}" }}'
+                  description: 'Gluetun VPN status has been 0 (disconnected) for more than 5 minutes.'
+
+              - alert: FluxReconciliationFailure
+                expr: gotk_reconcile_condition{type="Ready", status="False"} == 1
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Flux reconciliation failing for {{ "{{" }} $labels.kind {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}'
+                  description: '{{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} has been failing for 15 minutes.'
+
+              - alert: ExternalSecretSyncFailure
+                expr: externalsecret_status_condition{condition="Ready", status="False"} == 1
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'ExternalSecret {{ "{{" }} $labels.name {{ "}}" }} sync failing'
+                  description: 'ExternalSecret {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} has not synced for 15 minutes.'
+
+              - alert: CertExpiringWarning
+                expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} expiring in less than 14 days'
+                  description: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.'
+
+              - alert: CertExpiringCritical
+                expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 3
+                for: 1h
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} expiring in less than 3 days'
+                  description: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.'
+
+              - alert: TraefikHighErrorRate
+                expr: >-
+                  sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
+                  /
+                  sum(rate(traefik_service_requests_total[5m]))
+                  > 0.05
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Traefik 5xx error rate above 5%'
+                  description: 'Traefik is returning 5xx errors at {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% over the last 5 minutes.'
+
+      homelab-backup:
+        groups:
+          - name: homelab.backup
+            rules:
+              - alert: ZFSSnapshotStale
+                expr: time() - zfs_snapshot_creation_timestamp_seconds > 86400
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'ZFS snapshot older than 24 hours on {{ "{{" }} $labels.instance {{ "}}" }}'
+                  description: 'Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }} dataset {{ "{{" }} $labels.dataset {{ "}}" }} is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.'
