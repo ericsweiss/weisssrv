@@ -101,7 +101,8 @@ spec:
           smtp_smarthost: "smtp-relay.esweiss.com:587"
           smtp_from: "Alertmanager <alertmanager@esweiss.com>"
           smtp_require_tls: true
-          # smtp_auth_username does not support _file suffix — inline is fine (not sensitive)
+          # smtp_auth_username does not support _file suffix — inline is fine (not sensitive).
+          # Must match the 'username' field in 1Password item "SMTP Relay Auth".
           smtp_auth_username: relayuser
           smtp_auth_password_file: /etc/alertmanager/secrets/observability-secrets/smtp-password
 
@@ -200,6 +201,7 @@ spec:
       additionalDataSources:
         - name: Loki
           type: loki
+          uid: loki
           url: http://loki.observability.svc.cluster.local:3100
           access: proxy
           isDefault: false
@@ -251,7 +253,7 @@ spec:
           - name: homelab.storage
             rules:
               - alert: DiskUsageWarning
-                expr: (1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 > 80
+                expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 > 80
                 for: 10m
                 labels:
                   severity: warning
@@ -260,7 +262,7 @@ spec:
                   description: 'Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% on {{ "{{" }} $labels.instance {{ "}}" }} mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.'
 
               - alert: DiskUsageCritical
-                expr: (1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 > 90
+                expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 > 90
                 for: 5m
                 labels:
                   severity: critical
@@ -290,14 +292,16 @@ spec:
         groups:
           - name: homelab.infrastructure
             rules:
-              - alert: VPNDown
-                expr: gluetun_vpn_status == 0
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: 'VPN tunnel is down on {{ "{{" }} $labels.instance {{ "}}" }}'
-                  description: 'Gluetun VPN status has been 0 (disconnected) for more than 5 minutes.'
+              # VPNDown alert placeholder — uncomment after adding a Gluetun
+              # Prometheus exporter or blackbox probe that produces gluetun_vpn_status.
+              # - alert: VPNDown
+              #   expr: gluetun_vpn_status == 0
+              #   for: 5m
+              #   labels:
+              #     severity: warning
+              #   annotations:
+              #     summary: 'VPN tunnel is down on {{ "{{" }} $labels.instance {{ "}}" }}'
+              #     description: 'Gluetun VPN status has been 0 (disconnected) for more than 5 minutes.'
 
               - alert: FluxReconciliationFailure
                 expr: gotk_reconcile_condition{type="Ready", status="False"} == 1
@@ -354,7 +358,6 @@ spec:
           - name: homelab.backup
             rules:
               - alert: ZFSSnapshotStale
-                # Metric name from pdf/zfs_exporter — verify after deployment
                 expr: time() - max by (dataset) (zfs_dataset_snapshot_creation_seconds) > 86400
                 for: 1h
                 labels:

@@ -11,6 +11,7 @@ metadata:
 spec:
   interval: 30m
   releaseName: alloy
+  timeout: 10m
   chart:
     spec:
       chart: alloy

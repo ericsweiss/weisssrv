@@ -10,6 +10,7 @@ metadata:
 spec:
   interval: 30m
   releaseName: loki
+  timeout: 10m
   chart:
     spec:
       chart: loki
@@ -52,7 +53,6 @@ spec:
         max_query_length: 720h
       compactor:
         retention_enabled: true
-        delete_request_store: filesystem
 
     singleBinary:
       replicas: 1

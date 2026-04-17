@@ -3,5 +3,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - flux-system.yaml
-  - gitlab.yaml
-  - home-assistant.yaml
+  # Re-enable after setting prometheus_monitoring['enable'] = true in gitlab.rb:
+  # - gitlab.yaml
+  # Re-enable after adding 'prometheus:' to HA configuration.yaml:
+  # - home-assistant.yaml

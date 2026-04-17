@@ -247,8 +247,8 @@ runs on a weekly schedule and surfaces updates without noise.
 - [x] **kube-prometheus-stack** -- Prometheus, Grafana, Alertmanager, node-exporter, kube-state-metrics
 - [x] **Loki** -- Log aggregation (single-binary mode, 30-day retention, 75GB ZFS zvol)
 - [x] **Alloy** -- DaemonSet log collector on all nodes (successor to Promtail)
-- [x] **Exporters** -- Proxmox (all 6 hosts), ZFS, AdGuard, Unbound, Blackbox, Exportarr (*arr apps)
-- [x] **Service Monitors** -- Flux controllers, GitLab VM, Home Assistant VM
+- [x] **Exporters** -- Proxmox (all 6 hosts), ZFS, AdGuard, Unbound, Blackbox, Plex, Exportarr (NZBGet + qBittorrent active; Sonarr/Radarr/Lidarr/Prowlarr staged at replicas:0 pending API keys)
+- [x] **Service Monitors** -- Flux controllers (GitLab VM and Home Assistant VM manifests ready, activate after enabling metrics on each)
 - [x] **Alerting** -- Discord webhook + email via smtp-relay, custom alert rules for storage, infrastructure, and backups
 - [x] **Grafana** -- `grafana.esweiss.com` with Authentik OIDC, Loki datasource, dashboard sidecar
 - [x] **Persistent storage** -- Prometheus 150GB zvol, Loki 75GB zvol (both on NAS SSD pool)

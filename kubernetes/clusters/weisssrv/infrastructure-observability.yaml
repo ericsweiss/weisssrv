@@ -6,7 +6,11 @@
 #      apps create ServiceMonitor resources via serviceMonitor.enabled: true.
 #   2. ExternalSecrets work (ClusterSecretStore from configs is already up).
 #   3. A failed observability deploy does NOT block the core infrastructure
-#      chain (cert-manager, traefik, MetalLB).
+#      chain (cert-manager, traefik, MetalLB) but DOES block all apps
+#      (apps.yaml dependsOn infrastructure-observability).
+#   4. Controller HelmReleases enable serviceMonitor.enabled — these charts
+#      use .Capabilities checks and silently skip ServiceMonitor creation
+#      when the CRD is absent during bootstrap.
 #
 # optional: false — same rationale as other stages: the ConfigMap is guaranteed
 # to exist at this point. A missing ConfigMap here means a real bug.

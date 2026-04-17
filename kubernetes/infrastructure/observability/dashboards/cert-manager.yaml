@@ -193,7 +193,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "sum(rate(certmanager_certificate_renewal_timestamp_seconds[1h]))",
+              "expr": "sum(changes(certmanager_certificate_renewal_timestamp_seconds[1h]))",
               "legendFormat": "renewals",
               "refId": "A"
             }

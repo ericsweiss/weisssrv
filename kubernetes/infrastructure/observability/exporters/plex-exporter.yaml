@@ -23,6 +23,7 @@ spec:
       containers:
         - name: plex-exporter
           image: docker.io/jsclayton/prometheus-plex-exporter:latest
+          imagePullPolicy: Always
           env:
             - name: PLEX_SERVER
               value: "http://192.168.0.152:32400"
@@ -34,6 +35,18 @@ spec:
           ports:
             - name: metrics
               containerPort: 9594
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m

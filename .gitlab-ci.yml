@@ -1501,9 +1501,9 @@ deploy-verify:
 
       echo ""
       echo "ExternalSecret readiness:"
-      ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))] | length')
+      ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))] | length' 2>/dev/null || echo "999")
       if [ "$ES_NOT_READY" -gt 0 ]; then
-        kubectl get externalsecrets -A -o json | jq -r '.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")) | "  \(.metadata.namespace)/\(.metadata.name)"'
+        kubectl get externalsecrets -A -o json 2>/dev/null | jq -r '.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")) | "  \(.metadata.namespace)/\(.metadata.name)"' 2>/dev/null || echo "  (failed to list non-ready ExternalSecrets)"
         if [ "$STEADY_STATE" = "true" ]; then
           echo "ERROR: $ES_NOT_READY ExternalSecret(s) not Ready on a steady-state cluster"
           EXIT=1
@@ -1544,7 +1544,7 @@ deploy-verify:
       # stuck (any child HelmRelease failing), the above broad check catches
       # it too, but naming them explicitly yields clear failure signals in
       # the pipeline output.
-      for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs apps; do
+      for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
         KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
           -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
         if [ "$KS_READY" != "True" ]; then
@@ -1555,8 +1555,51 @@ deploy-verify:
 
       echo ""
       echo "=== Observability Stack ==="
-      kubectl get pods -n observability --no-headers 2>/dev/null | grep -v Running && echo "WARNING: Not all observability pods are Running" || echo "All observability pods running"
-      kubectl get helmreleases -n observability --no-headers 2>/dev/null | grep -v "True" && echo "WARNING: Not all observability HelmReleases are Ready" || echo "All observability HelmReleases ready"
+      OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
+      if [ -z "$OBS_PODS" ]; then
+        if [ "$STEADY_STATE" = "true" ]; then
+          echo "ERROR: No pods in observability namespace on a steady-state cluster"
+          EXIT=1
+        else
+          echo "WARNING: No pods in observability namespace (bootstrap/recovery)"
+        fi
+      else
+        # Check STATUS column (column 3) for non-healthy states
+        OBS_BAD=$(echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/')
+        if [ -n "$OBS_BAD" ]; then
+          echo "ERROR: Not all observability pods are Running/Completed:"
+          echo "$OBS_BAD"
+          EXIT=1
+        else
+          # Also check READY column (column 2) for containers not ready (e.g., "0/1")
+          OBS_UNREADY=$(echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) print}')
+          if [ -n "$OBS_UNREADY" ]; then
+            echo "WARNING: Some observability pods have unready containers:"
+            echo "$OBS_UNREADY"
+            if [ "$STEADY_STATE" = "true" ]; then EXIT=1; fi
+          else
+            echo "All observability pods healthy"
+          fi
+        fi
+      fi
+      # HelmRelease readiness via JSON (avoids fragile column-position parsing)
+      OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
+      OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r '.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")) | .metadata.name' 2>/dev/null || true)
+      OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
+      if [ "${OBS_HR_COUNT:-0}" -eq 0 ]; then
+        if [ "$STEADY_STATE" = "true" ]; then
+          echo "ERROR: No HelmReleases in observability namespace on a steady-state cluster"
+          EXIT=1
+        else
+          echo "WARNING: No HelmReleases in observability namespace (bootstrap/recovery)"
+        fi
+      elif [ -n "$OBS_HR_BAD" ]; then
+        echo "ERROR: Not all observability HelmReleases are Ready:"
+        echo "$OBS_HR_BAD"
+        EXIT=1
+      else
+        echo "All observability HelmReleases ready"
+      fi
 
       echo ""
       echo "LoadBalancer services:"

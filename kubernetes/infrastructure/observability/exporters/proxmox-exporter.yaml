@@ -29,7 +29,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: observability-exporter-secrets
-                  key: proxmox-token-id
+                  key: proxmox-user
+            - name: PVE_TOKEN_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: proxmox-token-name
             - name: PVE_TOKEN_VALUE
               valueFrom:
                 secretKeyRef:
@@ -37,6 +42,18 @@ spec:
                   key: proxmox-token-secret
             - name: PVE_VERIFY_SSL
               value: "false"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 25m

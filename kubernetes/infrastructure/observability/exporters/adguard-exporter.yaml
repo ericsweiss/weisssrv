@@ -22,7 +22,7 @@ spec:
           image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
           env:
             - name: ADGUARD_SERVERS
-              value: "http://192.168.0.150,http://192.168.0.160"
+              value: "http://192.168.0.150:3000,http://192.168.0.160:3000"
             - name: ADGUARD_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -36,6 +36,18 @@ spec:
           ports:
             - name: metrics
               containerPort: 9618
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m

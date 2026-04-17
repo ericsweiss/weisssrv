@@ -190,11 +190,11 @@ data:
             },
             "tooltip": { "mode": "multi", "sort": "desc" }
           },
-          "title": "Reconciliation Errors",
+          "title": "Resources Not Ready by Kind",
           "type": "timeseries",
           "targets": [
             {
-              "expr": "sum by (kind) (rate(gotk_reconcile_condition{type=\"Ready\", status=\"False\"}[5m]))",
+              "expr": "sum by (kind) (gotk_reconcile_condition{type=\"Ready\", status=\"False\"} == 1)",
               "legendFormat": "{{ kind }}",
               "refId": "A"
             }

@@ -510,7 +510,7 @@ The version checker (`scripts/check-versions.py`) automatically queries official
 
 **Check for available updates**:
 ```bash
-# Check all 27 managed services
+# Check all 40 managed services
 task maintenance:check-versions
 
 # Check a specific service
@@ -1180,7 +1180,7 @@ sudo zfs destroy local-ssd/data/images/<vmid>  # ON TARGET NODE ONLY
    ssh k3s-agt-nas-01
    sudo resize2fs /dev/sdX   # device for prometheus zvol
    ```
-   Then update the PV/PVC manifests in `kubernetes/infrastructure/observability/kube-prometheus-stack/storage.yaml`.
+   Then update sizes in two places: PV capacity in `.../kube-prometheus-stack/storage.yaml` and VolumeClaimTemplate request in `.../kube-prometheus-stack/release.yaml` (under `prometheusSpec.storageSpec`).
 
 ### Loki WAL Issues
 
@@ -1215,11 +1215,18 @@ sudo zfs destroy local-ssd/data/images/<vmid>  # ON TARGET NODE ONLY
    kubectl logs -n observability -l app.kubernetes.io/name=<exporter>
    ```
 
-3. **External exporters** (ZFS on pve-nas-01, Unbound on dns-01/dns-02):
+3. **External exporters** (ZFS on pve-nas-01, Unbound on dns-01/dns-02).
+   Service names may vary by installation method -- check with `systemctl list-units '*exporter*'`:
    ```bash
+   # ZFS exporter on pve-nas-01
    ssh pve-nas-01
    sudo systemctl status zfs_exporter
    sudo journalctl -u zfs_exporter -n 50
+
+   # Unbound exporter on dns-01 / dns-02
+   ssh dns-01  # or dns-02
+   sudo systemctl status unbound_exporter
+   sudo journalctl -u unbound_exporter -n 50
    ```
 
 4. **Test connectivity** from cluster to external target:

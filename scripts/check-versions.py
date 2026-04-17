@@ -1559,6 +1559,10 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "meilisearch_version", "redis_version", "busybox_version",
         "authentik_version", "postgresql_version",
         "gitlab_runner_helm_version", "gitlab_agent_helm_version",
+        # Observability exporter container images
+        "exportarr_version", "proxmox_exporter_version",
+        "zfs_exporter_version", "adguard_exporter_version",
+        "unbound_exporter_version",
     )
     if var_name in flux_managed or var_name.startswith("helm_chart") or category == "helm":
         return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"

@@ -1,5 +1,5 @@
 ---
-# Scrape Flux controller metrics (all 4 controllers expose :8080/metrics)
+# Scrape Flux controller metrics (controllers expose :8080/metrics)
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

@@ -1,7 +1,11 @@
 ---
-# Exportarr — Prometheus exporters for *arr applications.
+# Exportarr — Prometheus exporters for *arr applications and download clients.
 # Each app gets a Deployment + Service + ServiceMonitor.
-# API keys omitted for now (exportarr works without them for basic metrics).
+# Sonarr/Radarr/Lidarr/Prowlarr require API keys (from observability-exporter-secrets)
+# for full metrics. Uncomment the API_KEY env blocks after creating the
+# "Download Client API Keys" 1Password item and uncommenting the corresponding
+# entries in externalsecret.yaml.
+# NZBGet and qBittorrent do not require API keys for basic metrics.
 
 # ---------------------------------------------------------------------------
 # Sonarr
@@ -14,7 +18,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-sonarr
 spec:
-  replicas: 1
+  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-sonarr
@@ -32,9 +36,27 @@ spec:
               value: "9707"
             - name: URL
               value: "http://sonarr.downloads.svc.cluster.local:8989"
+            # Uncomment after creating "Download Client API Keys" 1Password item:
+            # - name: API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: observability-exporter-secrets
+            #       key: sonarr-api-key
           ports:
             - name: metrics
               containerPort: 9707
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m
@@ -82,7 +104,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-radarr
 spec:
-  replicas: 1
+  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-radarr
@@ -100,9 +122,27 @@ spec:
               value: "9708"
             - name: URL
               value: "http://radarr.downloads.svc.cluster.local:7878"
+            # Uncomment after creating "Download Client API Keys" 1Password item:
+            # - name: API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: observability-exporter-secrets
+            #       key: radarr-api-key
           ports:
             - name: metrics
               containerPort: 9708
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m
@@ -150,7 +190,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-lidarr
 spec:
-  replicas: 1
+  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-lidarr
@@ -168,9 +208,27 @@ spec:
               value: "9709"
             - name: URL
               value: "http://lidarr.downloads.svc.cluster.local:8686"
+            # Uncomment after creating "Download Client API Keys" 1Password item:
+            # - name: API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: observability-exporter-secrets
+            #       key: lidarr-api-key
           ports:
             - name: metrics
               containerPort: 9709
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m
@@ -218,7 +276,7 @@ metadata:
   labels:
     app.kubernetes.io/name: exportarr-prowlarr
 spec:
-  replicas: 1
+  replicas: 0  # Set to 1 after enabling API_KEY (requires "Download Client API Keys" 1Password item)
   selector:
     matchLabels:
       app.kubernetes.io/name: exportarr-prowlarr
@@ -236,9 +294,27 @@ spec:
               value: "9710"
             - name: URL
               value: "http://prowlarr.downloads.svc.cluster.local:9696"
+            # Uncomment after creating "Download Client API Keys" 1Password item:
+            # - name: API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: observability-exporter-secrets
+            #       key: prowlarr-api-key
           ports:
             - name: metrics
               containerPort: 9710
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m
@@ -307,6 +383,18 @@ spec:
           ports:
             - name: metrics
               containerPort: 9711
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m
@@ -375,6 +463,18 @@ spec:
           ports:
             - name: metrics
               containerPort: 9712
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
           resources:
             requests:
               cpu: 10m

@@ -22,7 +22,8 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **ZFS Exporter** | `zfs_exporter` (on pve-nas-01) | ZFS pool and dataset metrics |
 | **AdGuard Exporter** | `adguard-exporter` | DNS query and filter metrics (dns-01 + dns-02) |
 | **Unbound Exporter** | `unbound_exporter` (on dns-01 + dns-02) | Recursive resolver metrics |
-| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
+| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (NZBGet, qBittorrent active; Sonarr, Radarr, Lidarr, Prowlarr disabled until API keys configured) |
+| **Plex Exporter** | `jsclayton/prometheus-plex-exporter` | Plex Media Server metrics |
 
 ### Service Monitors
 
@@ -31,9 +32,20 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Target | Namespace | Scrape Path | Interval |
 |--------|-----------|-------------|----------|
 | Flux controllers | flux-system | `/metrics` | 30s |
-| GitLab VM | observability (external endpoint) | `/-/metrics` | 60s |
-| Home Assistant VM | observability (external endpoint) | `/api/prometheus` | 60s |
 | Proxmox hosts (x6) | observability | `/pve` | 60s |
+| ZFS exporter (pve-nas-01) | observability | `/metrics` | 60s |
+| Unbound exporter (dns-01 + dns-02) | observability | `/metrics` | 60s |
+| AdGuard exporter | observability | `/metrics` | 60s |
+| Plex exporter | observability | `/metrics` | 60s |
+| Exportarr (Sonarr, Radarr, Lidarr, Prowlarr, NZBGet, qBittorrent) | observability | `/metrics` | 60s |
+| Blackbox exporter (HTTP/DNS probes) | observability | `/probe` | 60s |
+| cert-manager | cert-manager | `/metrics` | (chart default) |
+| Traefik | traefik | `/metrics` | (chart default) |
+| MetalLB | metallb-system | `/metrics` | (chart default) |
+| external-dns | external-dns | `/metrics` | (chart default) |
+| external-secrets | external-secrets | `/metrics` | (chart default) |
+
+Manifests for GitLab and Home Assistant ServiceMonitors exist on disk but are not active until their prerequisites are met (see [Pre-deployment Steps](#pre-deployment-steps)). Controller ServiceMonitors (cert-manager, Traefik, MetalLB, external-dns, external-secrets) are created by their respective Helm charts when `serviceMonitor.enabled: true`; the CRD is provisioned by kube-prometheus-stack and Helm charts gracefully skip the resource if the CRD is absent during initial bootstrap.
 
 ## Architecture
 
@@ -74,8 +86,8 @@ Both Prometheus and Loki pods are pinned to the NAS node via `nodeSelector: eswe
 
 Two ExternalSecrets pull credentials from 1Password:
 
-1. **observability-secrets** -- Alertmanager SMTP credentials, Discord webhook URL, and Grafana OIDC client ID/secret.
-2. **observability-exporter-secrets** -- Proxmox API token (token-id + token-secret) for the PVE exporter.
+1. **observability-secrets** -- Alertmanager SMTP password, Discord webhook URL, and Grafana OIDC client ID/secret.
+2. **observability-exporter-secrets** -- Proxmox API token (user + token-name + token-secret), Plex token, and AdGuard Home credentials. *arr application API key entries are commented out pending creation of the "Download Client API Keys" 1Password item (see [Pre-deployment Steps](#pre-deployment-steps)).
 
 ### Ingress
 
@@ -83,26 +95,42 @@ Grafana is exposed internally at `grafana.esweiss.com` via a Traefik IngressRout
 
 ## Pre-deployment Steps
 
-These manual steps must be completed before the observability Kustomization can reconcile successfully.
+Steps 1--3 and 6 are **required** for the observability Kustomization to reconcile successfully. Steps 4, 5, and 7 are **post-deploy / optional** and can be completed after the stack is running.
 
 ### 1. Create 1Password Items
 
-Create two items in the "Homelab" vault:
+Create the following items in the "Homelab" vault (if they do not already exist):
 
 **Grafana SSO** (new item):
 - Field: `oidc-client-id` -- Authentik OIDC provider client ID
 - Field: `oidc-client-secret` -- Authentik OIDC provider client secret
 
 **Proxmox API Token** (new item):
-- Field: `token-id` -- Proxmox API token ID (format: `user@realm!tokenname`)
-- Field: `token-secret` -- Proxmox API token secret (UUID)
+- Field: `user` -- Proxmox user (e.g., `monitoring@pve`)
+- Field: `token-name` -- API token name (e.g., `exporter`)
+- Field: `token-secret` -- API token secret (UUID)
 
 **Discord Alert Webhook** (new item):
 - Field: `url` -- Discord channel webhook URL for alert notifications
 
-After creating the items, update the ExternalSecret manifests with the actual 1Password item IDs:
-- `kubernetes/infrastructure/observability/kube-prometheus-stack/externalsecret.yaml` -- replace `<GRAFANA_SSO_ITEM_ID>` with the real ID
-- `kubernetes/infrastructure/observability/exporters/externalsecret.yaml` -- replace `<PROXMOX_API_TOKEN_ITEM_ID>` with the real ID
+**Plex Token** (new item):
+- Field: `token` -- X-Plex-Token for Plex exporter metrics
+
+**Download Client API Keys** (new item):
+- Field: `sonarr-api-key` -- from Sonarr Settings > General > API Key
+- Field: `radarr-api-key` -- from Radarr Settings > General > API Key
+- Field: `lidarr-api-key` -- from Lidarr Settings > General > API Key
+- Field: `prowlarr-api-key` -- from Prowlarr Settings > General > API Key
+
+After creating the "Download Client API Keys" item:
+1. Uncomment the *arr API key entries in `kubernetes/infrastructure/observability/exporters/externalsecret.yaml` and replace `<ITEM_ID>` with the real 1Password item ID
+2. Uncomment the `API_KEY` env blocks in `kubernetes/infrastructure/observability/exporters/exportarr.yaml` for Sonarr, Radarr, Lidarr, and Prowlarr
+3. Set `replicas: 1` on the four *arr exportarr Deployments (they default to `replicas: 0` until API keys are available)
+4. Commit and push — Flux will reconcile the changes
+
+The other ExternalSecret manifests already contain real 1Password item IDs. If you recreate items, update the IDs in:
+- `kubernetes/infrastructure/observability/kube-prometheus-stack/externalsecret.yaml`
+- `kubernetes/infrastructure/observability/exporters/externalsecret.yaml`
 
 ### 2. Create Proxmox API Token
 
@@ -110,7 +138,7 @@ On any Proxmox host:
 1. Open the Proxmox web UI (Datacenter > Permissions > API Tokens)
 2. Create a token for `monitoring@pve` (or another dedicated user) with the **PVEAuditor** role
 3. Uncheck "Privilege Separation" if using the same user's permissions
-4. Copy the token ID and secret into the 1Password item created above
+4. In the 1Password item, store the user (e.g., `monitoring@pve`), token name (e.g., `exporter`), and the secret UUID as separate fields
 
 ### 3. Configure Authentik OIDC for Grafana
 
@@ -122,7 +150,7 @@ In the Authentik admin UI (`auth.esweiss.com`):
 2. Create an **Application** named "Grafana" linked to the provider
 3. Copy the Client ID and Client Secret into the "Grafana SSO" 1Password item
 
-### 4. Enable Home Assistant Prometheus Integration
+### 4. Enable Home Assistant Prometheus Integration (optional)
 
 Add to Home Assistant `configuration.yaml` (deployed via `task home-assistant:deploy-config`):
 
@@ -130,11 +158,21 @@ Add to Home Assistant `configuration.yaml` (deployed via `task home-assistant:de
 prometheus:
 ```
 
-This enables the `/api/prometheus` endpoint that the Home Assistant ServiceMonitor scrapes.
+This enables the `/api/prometheus` endpoint. After enabling, uncomment `home-assistant.yaml` in `kubernetes/infrastructure/observability/service-monitors/kustomization.yaml` and commit.
 
-### 5. Provision ZFS zvols
+### 5. Enable GitLab Prometheus Metrics (optional)
 
-The Prometheus and Loki zvols must exist on pve-nas-01 and be attached to k3s-agt-nas-01. Add the zvol definitions to `ansible/inventories/prod/host_vars/k3s-agt-nas-01.yml` under `vm_additional_disks`, then run:
+In `gitlab.rb` on the GitLab VM:
+
+```ruby
+prometheus_monitoring['enable'] = true
+```
+
+Then `sudo gitlab-ctl reconfigure`. After enabling, uncomment `gitlab.yaml` in `kubernetes/infrastructure/observability/service-monitors/kustomization.yaml` and commit.
+
+### 6. Provision ZFS zvols
+
+The Prometheus and Loki zvols must exist on pve-nas-01 and be attached to k3s-agt-nas-01. Add the zvol definitions to `ansible/inventories/prod/hosts.yml` under the `k3s-agt-nas-01` host's `vm_additional_disks`, then run:
 
 ```bash
 task k3s:deploy
@@ -142,13 +180,14 @@ task k3s:deploy
 
 This provisions the zvols, attaches them to the VM, formats them as ext4, and mounts them.
 
-### 6. Add AdGuard DNS Rewrite
+### 7. Add AdGuard DNS Rewrite
 
 Add an internal DNS entry so `grafana.esweiss.com` resolves to the MetalLB internal VIP:
 
 ```yaml
-# ansible/inventories/prod/group_vars/dns.yml
+# ansible/inventories/prod/group_vars/dns.yml — append to existing list
 adguard_rewrites:
+  # ... existing rewrites ...
   - domain: "grafana.esweiss.com"
     answer: "192.168.0.101"
 ```
@@ -255,8 +294,8 @@ pve_cpu_usage_ratio
 # cert-manager certificates expiring soon
 certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
 
-# VPN tunnel status (Gluetun)
-gluetun_vpn_status
+# VPN tunnel status (Gluetun — not yet available, requires exporter)
+# gluetun_vpn_status
 ```
 
 ### LogQL Tips
@@ -299,7 +338,9 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
    sudo resize2fs /dev/sdX   # The device for the prometheus zvol
    ```
 
-3. **Update the PV/PVC manifests** in `kubernetes/infrastructure/observability/kube-prometheus-stack/storage.yaml` to reflect the new size.
+3. **Update sizes in two places:**
+   - PV capacity in `kubernetes/infrastructure/observability/kube-prometheus-stack/storage.yaml`
+   - VolumeClaimTemplate request in `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml` (under `prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage`)
 
 4. **Update `retentionSize`** in the HelmRelease if needed (currently `140GB`).
 
@@ -343,7 +384,7 @@ Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m g
 
 | Alert | Condition | Severity | For |
 |-------|-----------|----------|-----|
-| VPNDown | Gluetun VPN status == 0 | warning | 5m |
+| ~~VPNDown~~ | ~~Gluetun VPN status == 0~~ | ~~warning~~ | ~~5m~~ (disabled -- requires Gluetun exporter) |
 | FluxReconciliationFailure | Flux resource Ready=False | warning | 15m |
 | ExternalSecretSyncFailure | ExternalSecret Ready=False | warning | 15m |
 | CertExpiringWarning | Certificate expires in < 14 days | warning | 1h |
@@ -436,16 +477,23 @@ The kube-prometheus-stack chart also ships a comprehensive set of built-in alert
    kubectl logs -n observability -l app.kubernetes.io/name=<exporter-name>
    ```
 
-3. For external exporters (ZFS exporter on pve-nas-01, Unbound exporter on dns-01/dns-02):
+3. For external exporters (ZFS exporter on pve-nas-01, Unbound exporter on dns-01/dns-02).
+   Service names may vary by installation method -- check with `systemctl list-units '*exporter*'`:
    ```bash
+   # ZFS exporter on pve-nas-01
    ssh pve-nas-01
    sudo systemctl status zfs_exporter
    sudo journalctl -u zfs_exporter -n 50
+
+   # Unbound exporter on dns-01 / dns-02
+   ssh dns-01  # or dns-02
+   sudo systemctl status unbound_exporter
+   sudo journalctl -u unbound_exporter -n 50
    ```
 
 4. Verify network connectivity from the cluster to the external target:
    ```bash
-   kubectl run -it --rm debug --image=busybox -- wget -q -O- http://192.168.0.102:9221/metrics
+   kubectl run -it --rm debug --image=busybox -- wget -q -O- http://192.168.0.102:9134/metrics
    ```
 
 ### Alert Routing Debug
@@ -517,6 +565,7 @@ The kube-prometheus-stack chart also ships a comprehensive set of built-in alert
 task observability:status    # Show pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors
 task observability:logs      # View logs (COMPONENT=prometheus|loki|alloy|grafana|alertmanager)
 task observability:restart   # Restart all observability workloads
+task observability:silence   # Create Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units)
 ```
 
 ## Related Documentation

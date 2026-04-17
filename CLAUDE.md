@@ -21,8 +21,8 @@ weisssrv/
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
-│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs}.yaml, apps.yaml, tenants/)
-│   ├── infrastructure/         # Platform — reconciled in three stages via dependsOn ordering
+│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
+│   ├── infrastructure/         # Platform — reconciled in four stages via dependsOn ordering
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
 │   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
 │   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
@@ -215,6 +215,7 @@ task authentik:restart            # Restart Authentik pods
 task observability:status         # Show observability namespace health (pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors)
 task observability:logs           # View component logs (COMPONENT=prometheus|loki|alloy|grafana|alertmanager)
 task observability:restart        # Restart all observability workloads
+task observability:silence        # Create Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units)
 
 # Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
 task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
@@ -241,7 +242,7 @@ task gitlab:logs                  # View GitLab logs
 task gitlab:reconfigure           # Reconfigure GitLab after changes
 
 # Version discovery (automated update checking)
-task maintenance:check-versions        # Check all 27 managed services for available updates
+task maintenance:check-versions        # Check all 40 managed services for available updates
 task maintenance:check-versions-json   # JSON output for scripting
 task maintenance:update-version        # Update single service: SERVICE=gluetun
 task maintenance:update-all-versions   # Update all outdated versions in all.yml
@@ -362,8 +363,10 @@ In vault "Homelab":
 - **Service Account Auth Token weisssrv** - 1Password Service Account token used by the ESO SDK provider (no colon in title — the old name broke `op://` parsing)
 - **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
 - **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
+- **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
+- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General)
 - **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
-- **Proxmox API Token** - token-id, token-secret (PVEAuditor role, for Proxmox exporter)
+- **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
 - **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
 
 ### Using 1Password
@@ -501,7 +504,7 @@ See `docs/29-flux-operations.md` for day-2 operations including secret rotation,
 Application versions are centralized in `ansible/inventories/prod/group_vars/all.yml`. See that file for current version pins — they include base infrastructure (k3s, kube-vip, Authentik, Plex, GitLab), Helm charts (MetalLB, Traefik, cert-manager, external-dns), download clients (Gluetun, NZBGet, qBittorrent, Prowlarr, Sonarr, Radarr, Lidarr, Pulsarr), recipe stack (Mealie, Bar Assistant, Salt Rim), and PostgreSQL versions. Home Assistant (HAOS) is updated manually via its UI and is not version-pinned in all.yml.
 
 **Automated version discovery** (`scripts/check-versions.py`):
-- Checks 27 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
+- Checks 40 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
 - Run `task maintenance:check-versions` to see available updates
 - Run `task maintenance:update-version SERVICE=<name>` to update a single version in all.yml
 - Run `task maintenance:update-all-versions` to update all outdated versions
