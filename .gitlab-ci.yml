@@ -126,9 +126,16 @@ workflow:
     - |
       # Setup kubeconfig from 1Password (stored as base64 to preserve YAML formatting).
       # Only the verify jobs still need this; all workload deploys are Flux-managed.
+      set -eo pipefail
       mkdir -p ~/.kube
-      op read "op://Homelab/K3s Kubeconfig/kubeconfig" | base64 -d > ~/.kube/config
+      KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
+      if [ -z "$KUBECONFIG_B64" ]; then
+        echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
+        exit 1
+      fi
+      echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
       chmod 600 ~/.kube/config
+      echo "Kubeconfig written ($(wc -c < ~/.kube/config) bytes)"
     # Skipping `kubectl cluster-info` — requires list perms on kube-system
     # services, which the runner ServiceAccount lacks. Per-job kubectl calls
     # target narrower scopes and use the K3s Kubeconfig credentials.
@@ -979,6 +986,8 @@ deploy-ansible-proxmox:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
@@ -1007,6 +1016,8 @@ deploy-ansible-firewall:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-proxmox
+      optional: true
   script:
     - cd ansible
     # Firewall is applied to proxmox hosts, dns, and mail via site.yml
@@ -1027,6 +1038,8 @@ deploy-ansible-dns:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
@@ -1058,6 +1071,8 @@ deploy-ansible-storage:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     SAMBA_NAS_PASSWORD: "op://Homelab/Samba NAS User/password"
@@ -1081,6 +1096,8 @@ deploy-ansible-mail:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-dns
+      optional: true
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
@@ -1109,6 +1126,10 @@ deploy-ansible-certs:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-dns
+      optional: true
+    - job: deploy-ansible-mail
+      optional: true
   variables:
     DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
     DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
@@ -1136,6 +1157,8 @@ deploy-plex:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
   script:
@@ -1159,6 +1182,8 @@ deploy-gitlab:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
   variables:
     # GitLab role reads secrets from env vars via lookup('ansible.builtin.env', ...)
     # op run resolves op:// references in environment variables at runtime
@@ -1212,6 +1237,8 @@ deploy-home-assistant-config:
   extends: .deploy-base
   needs:
     - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
   variables:
     # Home Assistant role reads secrets from env vars via lookup('ansible.builtin.env', ...)
     SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
