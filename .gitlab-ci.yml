@@ -618,9 +618,14 @@ flux-lint:
 # The runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/release.yaml
 # and push; Flux reconciles within ~1 min (or run `task flux:reconcile` to force).
 
-molecule-tests:
+# Molecule unit tests — one parallel job per role. Each role that has a
+# molecule/ directory gets its own CI job via parallel:matrix, so all 15
+# roles test simultaneously instead of sequentially (~3-5 min each vs
+# ~45 min total serial). The zvol_mount role needs kernel loopback devices
+# unavailable in DinD; it's excluded here and tested locally only.
+.molecule-base:
   stage: test
-  needs: []  # run in parallel with lint stage
+  needs: []
   image: python:3.11
   services:
     - docker:24.0-dind
@@ -629,43 +634,53 @@ molecule-tests:
     DOCKER_TLS_CERTDIR: ""
     ANSIBLE_FORCE_COLOR: "1"
     PY_COLORS: "1"
-    # Ansible's built-in junit callback writes one XML file per playbook
-    # run into JUNIT_OUTPUT_DIR. Molecule invokes Ansible internally, so
-    # every converge/verify/idempotence step produces JUnit output.
     ANSIBLE_CALLBACKS_ENABLED: junit
-    JUNIT_OUTPUT_DIR: /tmp/junit
+    JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq docker.io
     - pip install --quiet -r requirements.txt
     - ansible-galaxy collection install -r ansible/requirements.yml
-    - mkdir -p /tmp/junit
-  script:
-    - cd ansible
-    - |
-      for role_dir in roles/*/molecule; do
-        role=$(dirname "$role_dir" | xargs basename)
-        cd "roles/$role"
-        for scenario_dir in molecule/*/; do
-          scenario=$(basename "$scenario_dir")
-          echo "Testing role: $role - scenario: $scenario"
-          molecule test -s "$scenario" || exit 1
-        done
-        cd ../..
-      done
+    - mkdir -p "$CI_PROJECT_DIR/junit"
   artifacts:
     when: always
     reports:
-      junit: /tmp/junit/*.xml
+      junit: junit/*.xml
+  timeout: 15m
+
+molecule-tests:
+  extends: .molecule-base
+  script:
+    - cd "ansible/roles/$ROLE"
+    - |
+      for scenario_dir in molecule/*/; do
+        scenario=$(basename "$scenario_dir")
+        echo "Testing role: $ROLE - scenario: $scenario"
+        molecule test -s "$scenario" || exit 1
+      done
+  parallel:
+    matrix:
+      - ROLE:
+          - acme_certs
+          - adguard_home
+          - adguard_sync
+          - base
+          - gitlab
+          - k3s
+          - nas_storage
+          - nic_tuning
+          - plex
+          - postfix_null_client
+          - qol
+          - smtp_relay
+          - tailscale
+          - unbound
+          # zvol_mount excluded: needs kernel loopback devices (test locally)
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        # Playbook + inventory changes can affect role wiring (which roles
-        # run, which vars they receive) even without touching roles/** —
-        # include them so regressions in composition are caught, not just
-        # regressions in individual roles.
         - ansible/roles/**
         - ansible/playbooks/**
         - ansible/inventories/prod/group_vars/**
@@ -675,42 +690,20 @@ molecule-tests:
         - ansible/playbooks/**
         - ansible/inventories/prod/group_vars/**
     - if: '$CI_PIPELINE_SOURCE == "web"'
-  timeout: 30m
 
 integration-tests:
-  stage: test
-  needs: []  # run in parallel with lint stage
-  image: python:3.11
-  services:
-    - docker:24.0-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    ANSIBLE_FORCE_COLOR: "1"
-    PY_COLORS: "1"
-    ANSIBLE_CALLBACKS_ENABLED: junit
-    JUNIT_OUTPUT_DIR: /tmp/junit
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq docker.io
-    - pip install --quiet -r requirements.txt
-    - ansible-galaxy collection install -r ansible/requirements.yml
-    - mkdir -p /tmp/junit
+  extends: .molecule-base
   script:
-    - |
-      for test_dir in ansible/integration-tests/*/; do
-        if [ -f "${test_dir}molecule.yml" ] || [ -d "${test_dir}molecule" ]; then
-          test_name=$(basename "$test_dir")
-          echo "Running integration test: $test_name"
-          cd "ansible/integration-tests/$test_name"
-          molecule test || exit 1
-          cd ../../..
-        fi
-      done
-  artifacts:
-    when: always
-    reports:
-      junit: /tmp/junit/*.xml
+    - cd "ansible/integration-tests/$TEST"
+    - molecule test || exit 1
+  parallel:
+    matrix:
+      - TEST:
+          - base-infrastructure
+          - cert-distribution
+          - dns-stack
+          - mail-stack
+          - storage-stack
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -725,7 +718,7 @@ integration-tests:
         - ansible/roles/**
         - ansible/inventories/**
     - if: '$CI_PIPELINE_SOURCE == "web"'
-  timeout: 45m
+  timeout: 20m
 
 # ============================================================================
 # SECURITY STAGE - Secret detection and scanning

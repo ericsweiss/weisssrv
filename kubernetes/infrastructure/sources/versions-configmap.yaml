@@ -24,7 +24,7 @@ data:
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.3-alpine
   mealie_version: v3.15.2
-  meilisearch_version: v1.42.1
+  meilisearch_version: v1.15.2
   nzbget_version: '26.1'
   plex_version: 1.43.1.10611-1e34174b1
   postgresql_version: 18.3-trixie

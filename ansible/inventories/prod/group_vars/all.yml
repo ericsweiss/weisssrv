@@ -166,7 +166,7 @@ pulsarr_version: "0.15.3"
 mealie_version: "v3.15.2"
 bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
-meilisearch_version: "v1.42.1"
+meilisearch_version: "v1.15.2"
 redis_version: "8.6.2-alpine"
 
 # Plex Media Server version (apt-managed via official repository)

@@ -186,6 +186,10 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "dockerhub",
         "docker_image": "getmeili/meilisearch",
         "tag_regex": r"^v(\d+\.\d+\.\d+)$",
+        # Bar Assistant requires Meilisearch 1.15.x — the database format is
+        # version-locked and newer majors/minors refuse to open old data.
+        # Only suggest patch updates within the 1.15 series.
+        "version_prefix": "v1.15.",
     },
     {
         "name": "Redis",
@@ -723,6 +727,12 @@ def fetch_dockerhub_version(svc: dict) -> str:
         tag_name = result.get("name", "")
         match = re.match(tag_regex, tag_name)
         if match:
+            # version_prefix: only consider tags starting with this prefix
+            # (e.g., "v1.15." restricts to patch updates within 1.15.x)
+            version_prefix = svc.get("version_prefix")
+            if version_prefix and not tag_name.startswith(version_prefix):
+                continue
+
             # If pinning major version, check if this tag matches
             if major_version_filter:
                 tag_major = re.match(r"^(\d+)", tag_name)
