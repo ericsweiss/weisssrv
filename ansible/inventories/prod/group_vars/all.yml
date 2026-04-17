@@ -117,7 +117,7 @@ ntp_servers:
   - 3.pool.ntp.org
 
 # Application version pins
-adguard_home_version: "0.107.73"
+adguard_home_version: "0.107.74"
 adguardhome_sync_version: "0.9.0"
 tailscale_version: "1.96.4"
 debian_version: "13"
@@ -155,7 +155,7 @@ prowlarr_version: "2.3.5.5327"
 sonarr_version: "4.0.17.2952"
 radarr_version: "6.1.1.10360"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.15.2"
+pulsarr_version: "0.15.3"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
@@ -166,19 +166,19 @@ pulsarr_version: "0.15.2"
 mealie_version: "v3.15.2"
 bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
-meilisearch_version: "v1.15.2"
-redis_version: "7.4.8-alpine"
+meilisearch_version: "v1.42.1"
+redis_version: "8.6.2-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.1.10611-1e34174b1"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "18.10.3-ee.0"
+gitlab_version: "18.11.0-ee.0"
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.87.1"
+gitlab_runner_helm_version: "0.88.0"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags

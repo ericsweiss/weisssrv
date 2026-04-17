@@ -173,6 +173,27 @@ SERVICE_REGISTRY: list[dict] = [
         "docker_image": "barassistant/salt-rim",
         "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
     },
+    {
+        "name": "BusyBox",
+        "var_name": "busybox_version",
+        "category": "dockerhub",
+        "docker_image": "library/busybox",
+        "tag_regex": r"^(\d+\.\d+)$",
+    },
+    {
+        "name": "Meilisearch",
+        "var_name": "meilisearch_version",
+        "category": "dockerhub",
+        "docker_image": "getmeili/meilisearch",
+        "tag_regex": r"^v(\d+\.\d+\.\d+)$",
+    },
+    {
+        "name": "Redis",
+        "var_name": "redis_version",
+        "category": "dockerhub",
+        "docker_image": "library/redis",
+        "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
+    },
     # --- LinuxServer.io container images ---
     # LinuxServer.io tags follow these patterns:
     #   version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
@@ -262,6 +283,14 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_repo": "https://kubernetes-sigs.github.io/external-dns",
         "helm_chart": "external-dns",
         "source_url": "https://artifacthub.io/packages/helm/external-dns/external-dns",
+    },
+    {
+        "name": "External Secrets Operator",
+        "var_name": "helm_chart_versions.external_secrets",
+        "category": "helm",
+        "helm_repo": "https://charts.external-secrets.io",
+        "helm_chart": "external-secrets",
+        "source_url": "https://artifacthub.io/packages/helm/external-secrets-operator/external-secrets",
     },
     {
         "name": "Tailscale",

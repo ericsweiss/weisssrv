@@ -473,6 +473,15 @@ class TestGetDeployCommand(unittest.TestCase):
         cmd = check_versions.get_deploy_command(self._mk("adguard_home_version"))
         self.assertIn("maintenance:update-applications", cmd)
 
+    def test_new_flux_services_route_correctly(self):
+        """Verify busybox, meilisearch, redis, and external-secrets route to Flux."""
+        for var_name in ["busybox_version", "meilisearch_version", "redis_version",
+                         "helm_chart_versions_external_secrets"]:
+            result = self._mk(var_name=var_name, category="dockerhub")
+            cmd = check_versions.get_deploy_command(result)
+            self.assertIn("flux:sync-versions", cmd,
+                          f"{var_name} should route to Flux sync")
+
 
 if __name__ == "__main__":
     if PYTEST_AVAILABLE:
