@@ -25,8 +25,9 @@ weisssrv/
 │   ├── infrastructure/         # Platform — reconciled in three stages via dependsOn ordering
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
 │   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
-│   │   └── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
-│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-configs)
+│   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
+│   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, service-monitors, dashboards, ingress (dependsOn configs)
+│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability)
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
@@ -82,6 +83,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 - Traefik ingress, external-dns (Cloudflare)
 - 3-node etcd quorum (tolerates 1 server failure)
 - Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password SDK backend
+- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting)
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
@@ -118,6 +120,12 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
   - CI/CD Runners on k3s cluster (infrastructure runner for weisssrv, shared runner for other projects)
   - Authentik SSO integration
   - Git SSH on port 22 (internal), port 2222 (external)
+
+- Grafana (grafana.esweiss.com):
+  - Dashboards for cluster, node, and application metrics
+  - Authentik OIDC SSO integration
+  - Loki datasource for log queries
+  - Dashboard sidecar auto-discovers ConfigMaps with `grafana_dashboard` label
 
 **Planned**:
 - Apps: Immich, Nextcloud
@@ -202,6 +210,11 @@ task recipes:delete               # Remove stack (preserves data)
 task authentik:status             # Show Authentik status
 task authentik:logs               # View Authentik logs
 task authentik:restart            # Restart Authentik pods
+
+# Observability stack (workload operations only; deployment via Flux)
+task observability:status         # Show observability namespace health (pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors)
+task observability:logs           # View component logs (COMPONENT=prometheus|loki|alloy|grafana|alertmanager)
+task observability:restart        # Restart all observability workloads
 
 # Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
 task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
@@ -349,6 +362,9 @@ In vault "Homelab":
 - **Service Account Auth Token weisssrv** - 1Password Service Account token used by the ESO SDK provider (no colon in title — the old name broke `op://` parsing)
 - **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
 - **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
+- **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
+- **Proxmox API Token** - token-id, token-secret (PVEAuditor role, for Proxmox exporter)
+- **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
 
 ### Using 1Password
 
@@ -537,6 +553,8 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 - `ssd/appdata/authentik/postgres` - 10GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdb, mounted at /mnt/postgres-data
 - `ssd/appdata/mealie/postgres` - 32GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdc, mounted at /mnt/mealie-postgres-data
 - `ssd/appdata/gitlab/repos` - 200GB zvol, ext4, attached to gitlab VM as /dev/sdb, mounted at /mnt/gitlab-repos
+- `ssd/appdata/prometheus/data` - 150GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/prometheus-data
+- `ssd/appdata/loki/data` - 75GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/loki-data
 - Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by role
 - Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
 
@@ -600,6 +618,7 @@ See `docs/` for detailed guides:
 - 28-gitlab-migration.md - GitHub to GitLab migration guide
 - 29-flux-operations.md - Flux day-2 operations: reconcile, suspend/resume, secret rotation, webhook
 - 30-multi-repo-onboarding.md - Adding external tenant repos via `kubernetes/clusters/weisssrv/tenants/`
+- 31-observability.md - Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting)
 
 ## Important Context Files
 

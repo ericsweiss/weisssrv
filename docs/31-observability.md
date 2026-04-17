@@ -1,0 +1,524 @@
+# Observability Stack
+
+This guide covers the observability platform: Prometheus for metrics, Grafana for dashboards, Loki for logs, Alloy for log collection, and a suite of exporters for infrastructure and application metrics.
+
+## Overview
+
+The observability stack runs entirely in the `observability` namespace and is reconciled by Flux as a single Kustomization (`infrastructure-observability`). It sits between `infrastructure-configs` and `apps` in the reconciliation chain, so CRDs like ServiceMonitor and PrometheusRule are available before application namespaces attempt to create them.
+
+### Components
+
+| Component | Chart / Image | Purpose |
+|-----------|---------------|---------|
+| **Prometheus** | `kube-prometheus-stack` (prometheus-community) | Metrics collection, storage, and evaluation |
+| **Alertmanager** | (bundled with kube-prometheus-stack) | Alert routing to email and Discord |
+| **Grafana** | (bundled with kube-prometheus-stack) | Dashboards at `grafana.esweiss.com` with Authentik OIDC |
+| **node-exporter** | (bundled with kube-prometheus-stack) | Host-level metrics on every k3s node |
+| **kube-state-metrics** | (bundled with kube-prometheus-stack) | Kubernetes object state metrics |
+| **Loki** | `loki` (grafana) | Log aggregation, single-binary mode |
+| **Alloy** | `alloy` (grafana) | DaemonSet log collector (successor to Promtail) |
+| **Blackbox Exporter** | `prometheus-blackbox-exporter` (prometheus-community) | HTTP/TCP endpoint probing |
+| **Proxmox Exporter** | `prompve/prometheus-pve-exporter` | Proxmox host metrics (all 6 nodes) |
+| **ZFS Exporter** | `zfs_exporter` (on pve-nas-01) | ZFS pool and dataset metrics |
+| **AdGuard Exporter** | `adguard-exporter` | DNS query and filter metrics (dns-01 + dns-02) |
+| **Unbound Exporter** | `unbound_exporter` (on dns-01 + dns-02) | Recursive resolver metrics |
+| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
+
+### Service Monitors
+
+In addition to the built-in scrape targets, custom ServiceMonitors collect metrics from:
+
+| Target | Namespace | Scrape Path | Interval |
+|--------|-----------|-------------|----------|
+| Flux controllers | flux-system | `/metrics` | 30s |
+| GitLab VM | observability (external endpoint) | `/-/metrics` | 60s |
+| Home Assistant VM | observability (external endpoint) | `/api/prometheus` | 60s |
+| Proxmox hosts (x6) | observability | `/pve` | 60s |
+
+## Architecture
+
+### Reconciliation Chain
+
+```
+infrastructure-sources
+        |
+infrastructure-controllers
+        |
+infrastructure-configs
+        |
+infrastructure-observability    <-- this stack
+        |
+      apps
+```
+
+Flux reconciles the observability stack after `infrastructure-configs` is Ready (so the ClusterSecretStore, ClusterIssuer, and MetalLB IP pools exist) but before `apps` (so ServiceMonitor CRDs are available for application namespaces).
+
+### Namespace
+
+All resources deploy into the `observability` namespace with Pod Security Standards set to `baseline`.
+
+### Storage
+
+Both Prometheus and Loki use persistent ZFS zvols on pve-nas-01, attached to k3s-agt-nas-01 as SCSI disks and exposed via hostPath PVs:
+
+| Component | ZFS zvol | Size | Mount Point | Node |
+|-----------|----------|------|-------------|------|
+| Prometheus TSDB | `ssd/appdata/prometheus/data` | 150GB | `/mnt/prometheus-data` | k3s-agt-nas-01 |
+| Loki chunks + WAL | `ssd/appdata/loki/data` | 75GB | `/mnt/loki-data` | k3s-agt-nas-01 |
+
+Both Prometheus and Loki pods are pinned to the NAS node via `nodeSelector: esweiss.com/nas: "true"` for local disk performance.
+
+### Secrets
+
+Two ExternalSecrets pull credentials from 1Password:
+
+1. **observability-secrets** -- Alertmanager SMTP credentials, Discord webhook URL, and Grafana OIDC client ID/secret.
+2. **observability-exporter-secrets** -- Proxmox API token (token-id + token-secret) for the PVE exporter.
+
+### Ingress
+
+Grafana is exposed internally at `grafana.esweiss.com` via a Traefik IngressRoute with a dedicated cert-manager Certificate. OIDC authentication is handled natively by Grafana (no forward-auth middleware).
+
+## Pre-deployment Steps
+
+These manual steps must be completed before the observability Kustomization can reconcile successfully.
+
+### 1. Create 1Password Items
+
+Create two items in the "Homelab" vault:
+
+**Grafana SSO** (new item):
+- Field: `oidc-client-id` -- Authentik OIDC provider client ID
+- Field: `oidc-client-secret` -- Authentik OIDC provider client secret
+
+**Proxmox API Token** (new item):
+- Field: `token-id` -- Proxmox API token ID (format: `user@realm!tokenname`)
+- Field: `token-secret` -- Proxmox API token secret (UUID)
+
+**Discord Alert Webhook** (new item):
+- Field: `url` -- Discord channel webhook URL for alert notifications
+
+After creating the items, update the ExternalSecret manifests with the actual 1Password item IDs:
+- `kubernetes/infrastructure/observability/kube-prometheus-stack/externalsecret.yaml` -- replace `<GRAFANA_SSO_ITEM_ID>` with the real ID
+- `kubernetes/infrastructure/observability/exporters/externalsecret.yaml` -- replace `<PROXMOX_API_TOKEN_ITEM_ID>` with the real ID
+
+### 2. Create Proxmox API Token
+
+On any Proxmox host:
+1. Open the Proxmox web UI (Datacenter > Permissions > API Tokens)
+2. Create a token for `monitoring@pve` (or another dedicated user) with the **PVEAuditor** role
+3. Uncheck "Privilege Separation" if using the same user's permissions
+4. Copy the token ID and secret into the 1Password item created above
+
+### 3. Configure Authentik OIDC for Grafana
+
+In the Authentik admin UI (`auth.esweiss.com`):
+1. Create an **OAuth2/OpenID Provider** named "Grafana"
+   - Client type: Confidential
+   - Redirect URIs: `https://grafana.esweiss.com/login/generic_oauth`
+   - Scopes: `openid`, `profile`, `email`
+2. Create an **Application** named "Grafana" linked to the provider
+3. Copy the Client ID and Client Secret into the "Grafana SSO" 1Password item
+
+### 4. Enable Home Assistant Prometheus Integration
+
+Add to Home Assistant `configuration.yaml` (deployed via `task home-assistant:deploy-config`):
+
+```yaml
+prometheus:
+```
+
+This enables the `/api/prometheus` endpoint that the Home Assistant ServiceMonitor scrapes.
+
+### 5. Provision ZFS zvols
+
+The Prometheus and Loki zvols must exist on pve-nas-01 and be attached to k3s-agt-nas-01. Add the zvol definitions to `ansible/inventories/prod/host_vars/k3s-agt-nas-01.yml` under `vm_additional_disks`, then run:
+
+```bash
+task k3s:deploy
+```
+
+This provisions the zvols, attaches them to the VM, formats them as ext4, and mounts them.
+
+### 6. Add AdGuard DNS Rewrite
+
+Add an internal DNS entry so `grafana.esweiss.com` resolves to the MetalLB internal VIP:
+
+```yaml
+# ansible/inventories/prod/group_vars/dns.yml
+adguard_rewrites:
+  - domain: "grafana.esweiss.com"
+    answer: "192.168.0.101"
+```
+
+Then deploy: `task deploy:dns`
+
+Or add the rewrite manually via the AdGuard Home UI at `https://192.168.0.150:3000` (Filters > DNS rewrites). It will sync to dns-02 automatically.
+
+## Day-2 Operations
+
+### Adding a ServiceMonitor
+
+To add Prometheus scraping for a new application:
+
+1. Create a `ServiceMonitor` resource in the observability namespace (or the application's own namespace -- Prometheus is configured to discover ServiceMonitors across all namespaces):
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: my-app
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - my-namespace
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: my-app
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+2. Add the file to the appropriate kustomization.yaml and commit.
+
+For external (non-k8s) services, create a headless Service + Endpoints pair pointing at the external IP (see `service-monitors/home-assistant.yaml` or `exporters/zfs-exporter.yaml` for examples).
+
+### Adding a Grafana Dashboard
+
+Grafana's sidecar auto-discovers ConfigMaps with the `grafana_dashboard: "1"` label:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-dashboard
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "My Folder"
+data:
+  my-dashboard.json: |
+    { ... Grafana dashboard JSON ... }
+```
+
+Add the ConfigMap to `kubernetes/infrastructure/observability/dashboards/` and reference it in the dashboards kustomization.yaml. Export dashboards from Grafana UI (Share > Export > Save to file) and paste the JSON into the ConfigMap.
+
+### Silencing Alerts
+
+To temporarily silence an alert:
+
+```bash
+# Port-forward to Alertmanager
+kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093
+
+# Open http://localhost:9093 in a browser
+# Navigate to Silences > New Silence
+# Set matchers (e.g., alertname="DiskUsageWarning", instance="k3s-agt-nas-01:9100")
+# Set duration and comment
+```
+
+### PromQL Tips
+
+Common queries for this cluster:
+
+```promql
+# CPU usage per node (percentage)
+100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+
+# Memory usage per node (percentage)
+(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100
+
+# Disk usage per mountpoint (percentage)
+(1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100
+
+# Pod restart count (last hour)
+increase(kube_pod_container_status_restarts_total[1h]) > 0
+
+# Flux reconciliation failures
+gotk_reconcile_condition{type="Ready", status="False"} == 1
+
+# Traefik request rate (by service)
+sum by(service) (rate(traefik_service_requests_total[5m]))
+
+# Traefik 5xx error rate
+sum(rate(traefik_service_requests_total{code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total[5m]))
+
+# Proxmox host CPU usage
+pve_cpu_usage_ratio
+
+# cert-manager certificates expiring soon
+certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
+
+# VPN tunnel status (Gluetun)
+gluetun_vpn_status
+```
+
+### LogQL Tips
+
+Common Loki queries:
+
+```logql
+# All logs from a namespace
+{namespace="downloads"}
+
+# Error logs from a specific pod
+{namespace="authentik", pod=~"authentik-server.*"} |= "error"
+
+# Logs from a container, case-insensitive regex
+{namespace="observability", container="prometheus"} |~ "(?i)warn|error"
+
+# Count log lines per namespace (for volume analysis)
+sum by(namespace) (count_over_time({namespace=~".+"}[1h]))
+
+# Filter by JSON log fields
+{namespace="downloads"} | json | level="error"
+
+# Traefik access logs with status code filter
+{namespace="traefik"} | json | status >= 500
+```
+
+### Storage Expansion
+
+To expand a zvol (e.g., Prometheus needs more than 150GB):
+
+1. **Resize the ZFS zvol on pve-nas-01:**
+   ```bash
+   ssh pve-nas-01
+   sudo zfs set volsize=200G ssd/appdata/prometheus/data
+   ```
+
+2. **Resize the partition inside the VM:**
+   ```bash
+   ssh k3s-agt-nas-01
+   sudo resize2fs /dev/sdX   # The device for the prometheus zvol
+   ```
+
+3. **Update the PV/PVC manifests** in `kubernetes/infrastructure/observability/kube-prometheus-stack/storage.yaml` to reflect the new size.
+
+4. **Update `retentionSize`** in the HelmRelease if needed (currently `140GB`).
+
+5. Commit and push. Flux will reconcile the updated PV/PVC sizes.
+
+### Retention Tuning
+
+**Prometheus:**
+- Time-based: `retention: 365d` (in kube-prometheus-stack HelmRelease)
+- Size-based: `retentionSize: 140GB` (whichever limit hits first)
+- Adjust in `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml` under `prometheusSpec`
+
+**Loki:**
+- `retention_period: 720h` (30 days)
+- Compactor runs retention enforcement
+- Adjust in `kubernetes/infrastructure/observability/loki/release.yaml` under `loki.limits_config`
+
+## Alerting
+
+### Routing Table
+
+| Severity | Receivers | Repeat Interval |
+|----------|-----------|-----------------|
+| **critical** | Email (`ericsweiss1@gmail.com`) + Discord webhook | 4h |
+| **warning** | Discord webhook only | 4h |
+
+Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m group interval.
+
+### Alert Rules
+
+#### Storage Alerts (`homelab.storage`)
+
+| Alert | Condition | Severity | For |
+|-------|-----------|----------|-----|
+| DiskUsageWarning | Filesystem usage > 80% | warning | 10m |
+| DiskUsageCritical | Filesystem usage > 90% | critical | 5m |
+| PVCUsageWarning | PVC usage > 80% | warning | 10m |
+| PVCUsageCritical | PVC usage > 90% | critical | 5m |
+
+#### Infrastructure Alerts (`homelab.infrastructure`)
+
+| Alert | Condition | Severity | For |
+|-------|-----------|----------|-----|
+| VPNDown | Gluetun VPN status == 0 | warning | 5m |
+| FluxReconciliationFailure | Flux resource Ready=False | warning | 15m |
+| ExternalSecretSyncFailure | ExternalSecret Ready=False | warning | 15m |
+| CertExpiringWarning | Certificate expires in < 14 days | warning | 1h |
+| CertExpiringCritical | Certificate expires in < 3 days | critical | 1h |
+| TraefikHighErrorRate | 5xx rate > 5% | warning | 5m |
+
+#### Backup Alerts (`homelab.backup`)
+
+| Alert | Condition | Severity | For |
+|-------|-----------|----------|-----|
+| ZFSSnapshotStale | Latest snapshot > 24 hours old | warning | 1h |
+
+### Built-in Alerts
+
+The kube-prometheus-stack chart also ships a comprehensive set of built-in alerts for Kubernetes components (kubelet, apiserver, etcd, scheduler, CoreDNS), node health, and Prometheus self-monitoring. These are enabled by default.
+
+## Troubleshooting
+
+### Prometheus Disk Full
+
+**Symptoms:** Prometheus pod in CrashLoopBackOff, logs show "no space left on device" or "WAL: write failed".
+
+**Resolution:**
+
+1. Check current disk usage:
+   ```bash
+   ssh k3s-agt-nas-01
+   df -h /mnt/prometheus-data
+   ```
+
+2. If full, reduce retention temporarily:
+   - Edit `release.yaml`: set `retentionSize: 130GB` (or lower)
+   - Commit and push, or use `task flux:dev-apply -- kubernetes/infrastructure/observability`
+
+3. Force compaction by restarting Prometheus:
+   ```bash
+   kubectl delete pod -n observability -l app.kubernetes.io/name=prometheus
+   ```
+
+4. For immediate relief, expand the zvol (see [Storage Expansion](#storage-expansion) above).
+
+5. Long-term: reduce scrape frequency for high-cardinality exporters, or increase zvol size.
+
+### Loki WAL Issues
+
+**Symptoms:** Loki pod restarts, log ingestion stops, errors mentioning WAL or "context deadline exceeded".
+
+**Resolution:**
+
+1. Check Loki pod logs:
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=loki --tail=200
+   ```
+
+2. Check disk space on the Loki zvol:
+   ```bash
+   ssh k3s-agt-nas-01
+   df -h /mnt/loki-data
+   ```
+
+3. If the WAL is corrupted, delete the WAL directory and restart:
+   ```bash
+   # Scale down Loki first
+   kubectl scale statefulset -n observability loki --replicas=0
+   # On the NAS node:
+   ssh k3s-agt-nas-01
+   sudo rm -rf /mnt/loki-data/wal
+   # Scale back up
+   kubectl scale statefulset -n observability loki --replicas=1
+   ```
+   Note: this loses in-flight log data that was not yet flushed to chunks.
+
+4. If disk is full, reduce retention or expand the zvol.
+
+### Exporter Down
+
+**Symptoms:** `up == 0` in Prometheus for a scrape target, gaps in dashboard data.
+
+**Resolution:**
+
+1. Identify the down target:
+   ```bash
+   # From PromQL
+   up == 0
+   ```
+
+2. For in-cluster exporters (Proxmox exporter, AdGuard exporter, Exportarr):
+   ```bash
+   kubectl get pods -n observability -l app.kubernetes.io/name=<exporter-name>
+   kubectl logs -n observability -l app.kubernetes.io/name=<exporter-name>
+   ```
+
+3. For external exporters (ZFS exporter on pve-nas-01, Unbound exporter on dns-01/dns-02):
+   ```bash
+   ssh pve-nas-01
+   sudo systemctl status zfs_exporter
+   sudo journalctl -u zfs_exporter -n 50
+   ```
+
+4. Verify network connectivity from the cluster to the external target:
+   ```bash
+   kubectl run -it --rm debug --image=busybox -- wget -q -O- http://192.168.0.102:9221/metrics
+   ```
+
+### Alert Routing Debug
+
+**Symptoms:** Alerts not arriving on Discord or email.
+
+**Resolution:**
+
+1. Check Alertmanager is receiving alerts:
+   ```bash
+   kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093
+   # Open http://localhost:9093 and check the Alerts tab
+   ```
+
+2. Verify the `observability-secrets` ExternalSecret synced:
+   ```bash
+   kubectl get externalsecret -n observability observability-secrets
+   kubectl get secret -n observability observability-secrets -o jsonpath='{.data}' | jq 'keys'
+   ```
+
+3. Check Alertmanager logs for delivery failures:
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=alertmanager --tail=100
+   ```
+
+4. For SMTP issues, verify the smtp-relay is reachable from the cluster:
+   ```bash
+   kubectl run -it --rm debug --image=busybox -- nc -zv 192.168.0.151 587
+   ```
+
+5. For Discord issues, test the webhook URL manually:
+   ```bash
+   curl -X POST -H "Content-Type: application/json" \
+     -d '{"content": "Test alert from weisssrv"}' \
+     "$(kubectl get secret -n observability observability-secrets -o jsonpath='{.data.discord-webhook-url}' | base64 -d)"
+   ```
+
+### Grafana OIDC Issues
+
+**Symptoms:** "Login failed" or redirect loop when logging into Grafana via Authentik.
+
+**Resolution:**
+
+1. Verify the OIDC credentials are set:
+   ```bash
+   kubectl get secret -n observability observability-secrets -o jsonpath='{.data.grafana-oidc-client-id}' | base64 -d
+   ```
+
+2. Check Grafana logs:
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=grafana --tail=100
+   ```
+
+3. Verify the Authentik OIDC provider configuration:
+   - Redirect URI must be exactly `https://grafana.esweiss.com/login/generic_oauth`
+   - Client type must be Confidential
+   - Scopes must include `openid`, `profile`, `email`
+
+4. Verify DNS resolution of `auth.esweiss.com` from inside the cluster:
+   ```bash
+   kubectl run -it --rm debug --image=busybox -- nslookup auth.esweiss.com
+   ```
+
+5. If all else fails, disable OIDC temporarily by setting `GF_AUTH_GENERIC_OAUTH_ENABLED: "false"` in the HelmRelease (use `task flux:dev-apply` for quick iteration).
+
+## Management Commands
+
+```bash
+task observability:status    # Show pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors
+task observability:logs      # View logs (COMPONENT=prometheus|loki|alloy|grafana|alertmanager)
+task observability:restart   # Restart all observability workloads
+```
+
+## Related Documentation
+
+- `docs/12-runbooks.md` -- Observability-specific runbook entries
+- `docs/29-flux-operations.md` -- Flux day-2 operations (reconcile, suspend/resume)
+- `docs/19-k3s-deployment.md` -- K3s cluster deployment (zvol provisioning)

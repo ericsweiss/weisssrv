@@ -16,6 +16,7 @@ This document provides step-by-step procedures for common operational tasks.
 10. [System Maintenance](#system-maintenance)
 11. [Understanding Skipped Tasks](#understanding-skipped-tasks)
 12. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
+13. [Observability Stack](#observability-stack)
 
 ---
 
@@ -1147,6 +1148,135 @@ sudo pvesr run <vmid>-<seq>
 sudo zfs destroy local-ssd/data/images/<vmid>  # ON TARGET NODE ONLY
 # Next replication job will create a fresh full copy
 ```
+
+---
+
+## Observability Stack
+
+### Prometheus Disk Full
+
+**Symptoms:** Prometheus pod in CrashLoopBackOff, logs show "no space left on device" or WAL write failures.
+
+1. **Check disk usage:**
+   ```bash
+   ssh k3s-agt-nas-01
+   df -h /mnt/prometheus-data
+   ```
+
+2. **Reduce retention temporarily** (edit `release.yaml`, set `retentionSize` lower):
+   ```bash
+   task flux:dev-apply -- kubernetes/infrastructure/observability
+   ```
+
+3. **Force compaction** by restarting Prometheus:
+   ```bash
+   kubectl delete pod -n observability -l app.kubernetes.io/name=prometheus
+   ```
+
+4. **Expand the zvol** if needed:
+   ```bash
+   ssh pve-nas-01
+   sudo zfs set volsize=200G ssd/appdata/prometheus/data
+   ssh k3s-agt-nas-01
+   sudo resize2fs /dev/sdX   # device for prometheus zvol
+   ```
+   Then update the PV/PVC manifests in `kubernetes/infrastructure/observability/kube-prometheus-stack/storage.yaml`.
+
+### Loki WAL Issues
+
+**Symptoms:** Loki pod restarts, log ingestion stops, WAL errors in logs.
+
+1. **Check logs and disk:**
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=loki --tail=200
+   ssh k3s-agt-nas-01
+   df -h /mnt/loki-data
+   ```
+
+2. **If WAL is corrupted**, delete and restart (loses in-flight data):
+   ```bash
+   kubectl scale statefulset -n observability loki --replicas=0
+   ssh k3s-agt-nas-01
+   sudo rm -rf /mnt/loki-data/wal
+   kubectl scale statefulset -n observability loki --replicas=1
+   ```
+
+3. **If disk is full**, reduce retention in `loki/release.yaml` (`retention_period`) or expand the zvol.
+
+### Exporter Down
+
+**Symptoms:** `up == 0` in Prometheus for a scrape target, gaps in dashboards.
+
+1. **Identify the down target** (PromQL: `up == 0`).
+
+2. **In-cluster exporters** (Proxmox, AdGuard, Exportarr):
+   ```bash
+   kubectl get pods -n observability -l app.kubernetes.io/name=<exporter>
+   kubectl logs -n observability -l app.kubernetes.io/name=<exporter>
+   ```
+
+3. **External exporters** (ZFS on pve-nas-01, Unbound on dns-01/dns-02):
+   ```bash
+   ssh pve-nas-01
+   sudo systemctl status zfs_exporter
+   sudo journalctl -u zfs_exporter -n 50
+   ```
+
+4. **Test connectivity** from cluster to external target:
+   ```bash
+   kubectl run -it --rm debug --image=busybox -- wget -q -O- http://<host-ip>:<port>/metrics
+   ```
+
+### Alert Routing Debug
+
+**Symptoms:** Alerts not arriving on Discord or email.
+
+1. **Check Alertmanager** has pending/firing alerts:
+   ```bash
+   kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093
+   # Open http://localhost:9093
+   ```
+
+2. **Verify secrets synced:**
+   ```bash
+   kubectl get externalsecret -n observability observability-secrets
+   ```
+
+3. **Check Alertmanager logs** for delivery errors:
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=alertmanager --tail=100
+   ```
+
+4. **SMTP connectivity:**
+   ```bash
+   kubectl run -it --rm debug --image=busybox -- nc -zv 192.168.0.151 587
+   ```
+
+### Grafana OIDC Issues
+
+**Symptoms:** "Login failed" or redirect loop when logging in via Authentik.
+
+1. **Verify OIDC credentials exist:**
+   ```bash
+   kubectl get secret -n observability observability-secrets -o jsonpath='{.data.grafana-oidc-client-id}' | base64 -d
+   ```
+
+2. **Check Grafana logs:**
+   ```bash
+   kubectl logs -n observability -l app.kubernetes.io/name=grafana --tail=100
+   ```
+
+3. **Verify Authentik config:**
+   - Redirect URI: `https://grafana.esweiss.com/login/generic_oauth`
+   - Client type: Confidential
+   - Scopes: `openid`, `profile`, `email`
+
+4. **Test DNS** from inside the cluster:
+   ```bash
+   kubectl run -it --rm debug --image=busybox -- nslookup auth.esweiss.com
+   ```
+
+See [docs/31-observability.md](./31-observability.md) for the full observability guide.
 
 ---
 

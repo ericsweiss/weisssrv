@@ -238,75 +238,24 @@ runs on a weekly schedule and surfaces updates without noise.
 
 ---
 
-## Priority 5: Observability Stack
+## Priority 5: Observability Stack (DONE -- 2026-04-17)
 
-**Goal**: Comprehensive monitoring, alerting, and log aggregation.
+**Status**: Fully deployed. See [docs/31-observability.md](./31-observability.md) for the complete guide.
 
-### Metrics: Prometheus + Grafana
+### Deployed Components
 
-- [ ] **Deploy kube-prometheus-stack** (Helm chart)
-  - Prometheus for metrics collection
-  - Grafana for dashboards
-  - Alertmanager for notifications
-  - Node exporters on all hosts
-  - ServiceMonitors for k8s components
+- [x] **kube-prometheus-stack** -- Prometheus, Grafana, Alertmanager, node-exporter, kube-state-metrics
+- [x] **Loki** -- Log aggregation (single-binary mode, 30-day retention, 75GB ZFS zvol)
+- [x] **Alloy** -- DaemonSet log collector on all nodes (successor to Promtail)
+- [x] **Exporters** -- Proxmox (all 6 hosts), ZFS, AdGuard, Unbound, Blackbox, Exportarr (*arr apps)
+- [x] **Service Monitors** -- Flux controllers, GitLab VM, Home Assistant VM
+- [x] **Alerting** -- Discord webhook + email via smtp-relay, custom alert rules for storage, infrastructure, and backups
+- [x] **Grafana** -- `grafana.esweiss.com` with Authentik OIDC, Loki datasource, dashboard sidecar
+- [x] **Persistent storage** -- Prometheus 150GB zvol, Loki 75GB zvol (both on NAS SSD pool)
 
-- [ ] **Configure alerting**
-  - Discord/Slack webhook for alerts
-  - Email via smtp-relay
-  - Alert rules for:
-    - Node down
-    - Pod crash loops
-    - High resource usage
-    - Certificate expiration
-    - etcd health
+### Remaining (Future)
 
-- [ ] **Create dashboards**
-  - Cluster overview
-  - Per-namespace resource usage
-  - Application-specific (Traefik, Authentik, *arr apps)
-  - ZFS pool health (custom exporter needed)
-
-### Logging: Options Analysis
-
-| Solution | Pros | Cons | Resource Requirements |
-|----------|------|------|----------------------|
-| **Loki + Promtail** | Native Grafana integration, label-based queries, lightweight | No full-text search, limited features | Low (1-2GB RAM) |
-| **Vector + Loki** | High-performance agent, flexible routing | Additional component to manage | Low-Medium |
-| **OpenSearch** | Full-text search, Kibana-like UI, feature-rich | High resource usage, complex | High (4GB+ RAM) |
-| **Elasticsearch** | Industry standard, excellent search | Very high resources, licensing concerns | Very High (8GB+ RAM) |
-
-**Recommendation**: Start with **Loki + Promtail** for low overhead, evaluate OpenSearch later if advanced log search is needed.
-
-- [ ] **Deploy Loki** (via Helm)
-  - Single-binary mode initially (simple)
-  - Storage on NFS-backed PV
-  - Retention: 30 days
-
-- [ ] **Deploy Promtail** (or Vector as alternative)
-  - DaemonSet on all nodes
-  - Scrape container logs
-  - Add labels for namespace, pod, container
-
-- [ ] **Integrate with Grafana**
-  - Add Loki as data source
-  - Create log exploration dashboard
-  - Correlate logs with metrics
-
-### Uptime Monitoring
-
-- [ ] **Deploy Uptime Kuma** (simple, self-hosted)
-  - Monitor external endpoints
-  - Monitor internal services via internal VIP
-  - Status page at `status.esweiss.com`
-
-### Success Criteria
-
-- Grafana accessible at `grafana.esweiss.com`
-- All nodes and pods have metrics visible
-- Alerts fire correctly (test with intentional failure)
-- Logs searchable from Grafana
-- Status page shows all service health
+- [ ] **Uptime Kuma** -- External endpoint monitoring and status page at `status.esweiss.com`
 
 ---
 
