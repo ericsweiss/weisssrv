@@ -31,6 +31,7 @@ spec:
       serviceMonitor:
         enabled: true
       serviceAccount: metallb-controller
+      namespace: metallb-system
     speaker:
       # Only run speakers on nodes labeled for ingress traffic.
       nodeSelector:
