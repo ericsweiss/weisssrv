@@ -122,13 +122,9 @@ Create the following items in the "Homelab" vault (if they do not already exist)
 - Field: `lidarr-api-key` -- from Lidarr Settings > General > API Key
 - Field: `prowlarr-api-key` -- from Prowlarr Settings > General > API Key
 
-After creating the "Download Client API Keys" item:
-1. Uncomment the *arr API key entries in `kubernetes/infrastructure/observability/exporters/externalsecret.yaml` and replace `<ITEM_ID>` with the real 1Password item ID
-2. Uncomment the `API_KEY` env blocks in `kubernetes/infrastructure/observability/exporters/exportarr.yaml` for Sonarr, Radarr, Lidarr, and Prowlarr
-3. Set `replicas: 1` on the four *arr exportarr Deployments (they default to `replicas: 0` until API keys are available)
-4. Commit and push — Flux will reconcile the changes
+All *arr API keys are configured and their exportarr Deployments are active (replicas: 1). If you need to rotate API keys, update the values in the "Download Client API Keys" 1Password item and run `task flux:rotate-secret -- observability/observability-exporter-secrets`.
 
-The other ExternalSecret manifests already contain real 1Password item IDs. If you recreate items, update the IDs in:
+All ExternalSecret manifests contain real 1Password item IDs. If you recreate items, update the IDs in:
 - `kubernetes/infrastructure/observability/kube-prometheus-stack/externalsecret.yaml`
 - `kubernetes/infrastructure/observability/exporters/externalsecret.yaml`
 

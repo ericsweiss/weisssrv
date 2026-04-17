@@ -40,6 +40,7 @@ spec:
                 secretKeyRef:
                   name: observability-exporter-secrets
                   key: proxmox-token-secret
+            # Proxmox uses self-signed certs; TLS verification disabled intentionally
             - name: PVE_VERIFY_SSL
               value: "false"
           livenessProbe:

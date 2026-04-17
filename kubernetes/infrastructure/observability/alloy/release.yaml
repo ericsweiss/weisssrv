@@ -37,7 +37,7 @@ spec:
             role = "pod"
             selectors {
               role = "pod"
-              field = "spec.nodeName=" + sys.env("HOSTNAME")
+              field = "spec.nodeName=" + sys.env("NODE_NAME")
             }
           }
 
@@ -83,6 +83,14 @@ spec:
 
     controller:
       type: daemonset
+
+    # Inject node name for node-scoped pod discovery
+    # (HOSTNAME in a pod is the pod name, not the node name)
+    extraEnv:
+      - name: NODE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: spec.nodeName
 
     tolerations:
       - operator: Exists
