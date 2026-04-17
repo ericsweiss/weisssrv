@@ -821,7 +821,10 @@ deploy-ansible-base:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/base/**
+        - ansible/roles/nic_tuning/**
         - ansible/playbooks/base.yml
+        - ansible/inventories/prod/group_vars/proxmox.yml
+        - ansible/inventories/prod/host_vars/pve-nas-01.yml
 
 # Proxmox host configuration (qol, postfix_null_client, tailscale)
 deploy-ansible-proxmox:
@@ -1112,11 +1115,12 @@ deploy-gitlab-verify:
       fi
 
       echo "Testing Container Registry..."
-      if ! curl_err=$(curl -sf --max-time 10 "https://registry.git.ericsweiss.com/v2/" 2>&1); then
-        echo "ERROR: Registry check failed: $curl_err"
-        EXIT=1
+      REGISTRY_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://registry.git.ericsweiss.com/v2/)
+      if [ "$REGISTRY_CODE" = "200" ] || [ "$REGISTRY_CODE" = "401" ]; then
+        echo "Container registry: OK (HTTP $REGISTRY_CODE)"
       else
-        echo "Container Registry: OK"
+        echo "Container registry: FAILED (HTTP $REGISTRY_CODE)"
+        EXIT=1
       fi
 
       echo "Testing SSH connectivity..."

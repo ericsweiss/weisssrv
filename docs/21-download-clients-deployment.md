@@ -171,7 +171,7 @@ kubernetes/apps/download-clients/
 
 1. Edit the appropriate YAML under `kubernetes/apps/download-clients/`.
 2. Commit and push.
-3. Flux reconciles within ~1 minute (or instantly via the GitLab webhook).
+3. Flux polls every ~1 minute (a planned webhook will reduce this to seconds).
 
 ```bash
 # Example: bump Sonarr image tag

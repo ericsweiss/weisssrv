@@ -76,3 +76,15 @@
         fail_msg: >-
           ethtool post-up line lacks the `|| logger` failure guard — silent
           regressions on interface rename would go unlogged
+
+    - name: Check stale NIC drop-in was removed
+      ansible.builtin.stat:
+        path: /etc/network/interfaces.d/99-nic-stale0-tuning.cfg
+      register: stale_dropin
+
+    - name: Assert stale NIC drop-in was cleaned up
+      ansible.builtin.assert:
+        that:
+          - not stale_dropin.stat.exists
+        fail_msg: "Stale NIC tuning drop-in was not removed by the role"
+        success_msg: "Stale NIC tuning drop-in correctly removed"

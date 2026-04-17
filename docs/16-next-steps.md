@@ -472,7 +472,7 @@ task deploy:plex          # Deploy Plex LXC
 task gitlab:deploy          # Deploy GitLab (VM + application)
 task gitlab:deploy-check    # Dry-run deployment
 task gitlab:status          # Show GitLab and runner status
-task gitlab:verify          # Run smoke tests (uses flux get for runner/agent health)
+task gitlab:verify          # Run smoke tests (HTTP readiness, registry, pages, SSH)
 task gitlab:backup          # Create GitLab backup
 task gitlab:console         # SSH to GitLab VM
 task gitlab:logs            # View GitLab logs

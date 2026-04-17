@@ -27,8 +27,8 @@ K3s deployment is a three-phase approach:
 | (none — automatic) | All platform + apps reconcile from `kubernetes/infrastructure/` and `kubernetes/apps/` | Flux |
 
 Everything under `kubernetes/` is Flux-managed. To deploy or update a component,
-commit the YAML and push — Flux reconciles on a 1-minute interval (or immediately
-via the GitLab webhook). `task flux:reconcile` triggers a sync manually.
+commit the YAML and push — Flux polls every ~1 minute (a planned webhook will
+reduce this to seconds). `task flux:reconcile` triggers a sync manually.
 
 ### Complete Command Sequence (Initial Install)
 
@@ -330,8 +330,8 @@ After bootstrap, Flux reconciles four Kustomizations in `dependsOn` order:
 
 ### Step 8: Register the GitLab Webhook (Optional, Recommended)
 
-The default Kustomization reconcile interval is 10 minutes (the GitRepository source is polled every 1 minute). Register a GitLab
-push webhook to Flux's `Receiver` for sub-second reconciliation after push:
+Flux polls the GitRepository source every 1 minute. A planned GitLab push webhook
+to Flux's `Receiver` will reduce reconciliation delay to seconds after push.
 
 **Note**: Requires the Flux Receiver manifest (planned follow-up; not part of this initial deployment). Skip until available.
 

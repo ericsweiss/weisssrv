@@ -14,3 +14,13 @@
           - bsdutils
         state: present
         update_cache: true
+
+    - name: Seed stale NIC tuning drop-in for cleanup test
+      ansible.builtin.copy:
+        dest: /etc/network/interfaces.d/99-nic-stale0-tuning.cfg
+        content: |
+          # Stale drop-in - should be removed by nic_tuning role
+          post-up /sbin/ethtool -K stale0 gro off || true
+        owner: root
+        group: root
+        mode: "0644"
