@@ -1,0 +1,84 @@
+---
+# AdGuard Home Exporter — scrapes both AdGuard instances (dns-01 + dns-02).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adguard-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: adguard-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: adguard-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: adguard-exporter
+    spec:
+      containers:
+        - name: adguard-exporter
+          image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
+          env:
+            - name: ADGUARD_SERVERS
+              value: "http://192.168.0.150:3000,http://192.168.0.160:3000"
+            - name: ADGUARD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: adguard-username
+            - name: ADGUARD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: adguard-password
+          ports:
+            - name: metrics
+              containerPort: 9618
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adguard-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: adguard-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: adguard-exporter
+  ports:
+    - name: metrics
+      port: 9618
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: adguard-exporter
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: adguard-exporter
+  endpoints:
+    - port: metrics
+      interval: 60s

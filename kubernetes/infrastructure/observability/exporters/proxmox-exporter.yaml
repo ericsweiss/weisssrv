@@ -1,0 +1,152 @@
+---
+# Proxmox VE Exporter — scrapes all 6 Proxmox hosts via API.
+# API credentials sourced from observability-exporter-secrets (ExternalSecret).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxmox-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: proxmox-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxmox-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: proxmox-exporter
+    spec:
+      containers:
+        - name: pve-exporter
+          image: prompve/prometheus-pve-exporter:${proxmox_exporter_version}
+          ports:
+            - name: metrics
+              containerPort: 9221
+          env:
+            - name: PVE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: proxmox-user
+            - name: PVE_TOKEN_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: proxmox-token-name
+            - name: PVE_TOKEN_VALUE
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: proxmox-token-secret
+            # Proxmox uses self-signed certs; TLS verification disabled intentionally
+            - name: PVE_VERIFY_SSL
+              value: "false"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxmox-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: proxmox-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: proxmox-exporter
+  ports:
+    - name: metrics
+      port: 9221
+---
+# Multi-target ServiceMonitor: one endpoint per Proxmox host, each with
+# params.target pointing at the host IP. The exporter uses the ?target=
+# query parameter to decide which PVE node to scrape.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: proxmox-exporter
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxmox-exporter
+  endpoints:
+    # pve-nas-01
+    - port: metrics
+      interval: 60s
+      path: /pve
+      params:
+        target: ["192.168.0.102"]
+        module: ["default"]
+      relabelings:
+        - sourceLabels: [__param_target]
+          targetLabel: target
+    # pve-laptop-01
+    - port: metrics
+      interval: 60s
+      path: /pve
+      params:
+        target: ["192.168.0.103"]
+        module: ["default"]
+      relabelings:
+        - sourceLabels: [__param_target]
+          targetLabel: target
+    # pve-opt-01
+    - port: metrics
+      interval: 60s
+      path: /pve
+      params:
+        target: ["192.168.0.104"]
+        module: ["default"]
+      relabelings:
+        - sourceLabels: [__param_target]
+          targetLabel: target
+    # pve-opt-02
+    - port: metrics
+      interval: 60s
+      path: /pve
+      params:
+        target: ["192.168.0.105"]
+        module: ["default"]
+      relabelings:
+        - sourceLabels: [__param_target]
+          targetLabel: target
+    # pve-opt-03
+    - port: metrics
+      interval: 60s
+      path: /pve
+      params:
+        target: ["192.168.0.106"]
+        module: ["default"]
+      relabelings:
+        - sourceLabels: [__param_target]
+          targetLabel: target
+    # pve-prec-01
+    - port: metrics
+      interval: 60s
+      path: /pve
+      params:
+        target: ["192.168.0.107"]
+        module: ["default"]
+      relabelings:
+        - sourceLabels: [__param_target]
+          targetLabel: target

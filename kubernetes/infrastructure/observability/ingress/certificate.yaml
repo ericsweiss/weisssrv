@@ -1,0 +1,16 @@
+---
+# TLS certificate for grafana.esweiss.com (internal only)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: grafana-tls
+  namespace: observability
+spec:
+  secretName: grafana-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "grafana.esweiss.com"
+  dnsNames:
+    - "grafana.esweiss.com"
+  renewBefore: 720h

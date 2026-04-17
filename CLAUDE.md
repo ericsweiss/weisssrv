@@ -21,12 +21,13 @@ weisssrv/
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
-│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs}.yaml, apps.yaml, tenants/)
-│   ├── infrastructure/         # Platform — reconciled in three stages via dependsOn ordering
+│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
+│   ├── infrastructure/         # Platform — reconciled in four stages via dependsOn ordering
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
 │   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
-│   │   └── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
-│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-configs)
+│   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
+│   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, service-monitors, dashboards, ingress (dependsOn configs)
+│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability)
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
@@ -82,6 +83,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 - Traefik ingress, external-dns (Cloudflare)
 - 3-node etcd quorum (tolerates 1 server failure)
 - Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password SDK backend
+- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting)
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
@@ -118,6 +120,12 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
   - CI/CD Runners on k3s cluster (infrastructure runner for weisssrv, shared runner for other projects)
   - Authentik SSO integration
   - Git SSH on port 22 (internal), port 2222 (external)
+
+- Grafana (grafana.esweiss.com):
+  - Dashboards for cluster, node, and application metrics
+  - Authentik OIDC SSO integration
+  - Loki datasource for log queries
+  - Dashboard sidecar auto-discovers ConfigMaps with `grafana_dashboard` label
 
 **Planned**:
 - Apps: Immich, Nextcloud
@@ -203,6 +211,12 @@ task authentik:status             # Show Authentik status
 task authentik:logs               # View Authentik logs
 task authentik:restart            # Restart Authentik pods
 
+# Observability stack (workload operations only; deployment via Flux)
+task observability:status         # Show observability namespace health (pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors)
+task observability:logs           # View component logs (COMPONENT=prometheus|loki|alloy|grafana|alertmanager)
+task observability:restart        # Restart all observability workloads
+task observability:silence        # Create Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units)
+
 # Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
 task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
 task home-assistant:deploy        # DEPRECATED: aliased to deploy-config (ingress is now Flux)
@@ -228,7 +242,7 @@ task gitlab:logs                  # View GitLab logs
 task gitlab:reconfigure           # Reconfigure GitLab after changes
 
 # Version discovery (automated update checking)
-task maintenance:check-versions        # Check all 27 managed services for available updates
+task maintenance:check-versions        # Check all 40 managed services for available updates
 task maintenance:check-versions-json   # JSON output for scripting
 task maintenance:update-version        # Update single service: SERVICE=gluetun
 task maintenance:update-all-versions   # Update all outdated versions in all.yml
@@ -349,6 +363,11 @@ In vault "Homelab":
 - **Service Account Auth Token weisssrv** - 1Password Service Account token used by the ESO SDK provider (no colon in title — the old name broke `op://` parsing)
 - **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
 - **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
+- **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
+- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General)
+- **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
+- **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
+- **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
 
 ### Using 1Password
 
@@ -485,7 +504,7 @@ See `docs/29-flux-operations.md` for day-2 operations including secret rotation,
 Application versions are centralized in `ansible/inventories/prod/group_vars/all.yml`. See that file for current version pins — they include base infrastructure (k3s, kube-vip, Authentik, Plex, GitLab), Helm charts (MetalLB, Traefik, cert-manager, external-dns), download clients (Gluetun, NZBGet, qBittorrent, Prowlarr, Sonarr, Radarr, Lidarr, Pulsarr), recipe stack (Mealie, Bar Assistant, Salt Rim), and PostgreSQL versions. Home Assistant (HAOS) is updated manually via its UI and is not version-pinned in all.yml.
 
 **Automated version discovery** (`scripts/check-versions.py`):
-- Checks 27 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
+- Checks 40 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
 - Run `task maintenance:check-versions` to see available updates
 - Run `task maintenance:update-version SERVICE=<name>` to update a single version in all.yml
 - Run `task maintenance:update-all-versions` to update all outdated versions
@@ -537,6 +556,8 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 - `ssd/appdata/authentik/postgres` - 10GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdb, mounted at /mnt/postgres-data
 - `ssd/appdata/mealie/postgres` - 32GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdc, mounted at /mnt/mealie-postgres-data
 - `ssd/appdata/gitlab/repos` - 200GB zvol, ext4, attached to gitlab VM as /dev/sdb, mounted at /mnt/gitlab-repos
+- `ssd/appdata/prometheus/data` - 150GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/prometheus-data
+- `ssd/appdata/loki/data` - 75GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/loki-data
 - Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by role
 - Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
 
@@ -600,6 +621,7 @@ See `docs/` for detailed guides:
 - 28-gitlab-migration.md - GitHub to GitLab migration guide
 - 29-flux-operations.md - Flux day-2 operations: reconcile, suspend/resume, secret rotation, webhook
 - 30-multi-repo-onboarding.md - Adding external tenant repos via `kubernetes/clusters/weisssrv/tenants/`
+- 31-observability.md - Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting)
 
 ## Important Context Files
 

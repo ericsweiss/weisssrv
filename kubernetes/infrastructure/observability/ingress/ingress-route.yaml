@@ -1,0 +1,19 @@
+---
+# Internal only: grafana.esweiss.com
+# Grafana handles OIDC authentication natively — no forward-auth middleware needed.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana
+  namespace: observability
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`grafana.esweiss.com`)
+      kind: Rule
+      services:
+        - name: kube-prometheus-stack-grafana
+          port: 80
+  tls:
+    secretName: grafana-esweiss-tls

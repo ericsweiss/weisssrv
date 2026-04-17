@@ -1,0 +1,99 @@
+---
+# Grafana Loki — log aggregation in single-binary (monolithic) mode.
+# Pinned to NAS node for local ZFS zvol storage (WAL + chunks).
+# Retention: 30 days. Ingested by Alloy DaemonSet.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: loki
+  namespace: observability
+spec:
+  interval: 30m
+  releaseName: loki
+  timeout: 10m
+  chart:
+    spec:
+      chart: loki
+      version: "${helm_chart_versions_loki}"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    deploymentMode: SingleBinary
+
+    loki:
+      auth_enabled: false
+      commonConfig:
+        replication_factor: 1
+      schemaConfig:
+        configs:
+          - from: "2024-01-01"
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+      storage:
+        type: filesystem
+        filesystem:
+          chunks_directory: /var/loki/chunks
+          rules_directory: /var/loki/rules
+      limits_config:
+        retention_period: 720h
+        max_query_length: 720h
+      compactor:
+        retention_enabled: true
+
+    singleBinary:
+      replicas: 1
+      persistence:
+        enabled: true
+        size: 75Gi
+        storageClass: ""
+        existingClaim: loki-data
+      nodeSelector:
+        esweiss.com/nas: "true"
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    backend:
+      replicas: 0
+    read:
+      replicas: 0
+    write:
+      replicas: 0
+
+    gateway:
+      enabled: false
+
+    test:
+      enabled: false
+
+    lokiCanary:
+      enabled: false
+
+    chunksCache:
+      enabled: false
+
+    resultsCache:
+      enabled: false

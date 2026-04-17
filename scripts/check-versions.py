@@ -329,6 +329,79 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_chart": "gitlab-agent",
         "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-agent/tags",
     },
+    # --- Observability ---
+    {
+        "name": "kube-prometheus-stack",
+        "var_name": "helm_chart_versions.kube_prometheus_stack",
+        "category": "helm",
+        "helm_repo": "https://prometheus-community.github.io/helm-charts",
+        "helm_chart": "kube-prometheus-stack",
+        "source_url": "https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack",
+    },
+    {
+        "name": "Loki",
+        "var_name": "helm_chart_versions.loki",
+        "category": "helm",
+        "helm_repo": "https://grafana.github.io/helm-charts",
+        "helm_chart": "loki",
+        "source_url": "https://artifacthub.io/packages/helm/grafana/loki",
+    },
+    {
+        "name": "Alloy",
+        "var_name": "helm_chart_versions.alloy",
+        "category": "helm",
+        "helm_repo": "https://grafana.github.io/helm-charts",
+        "helm_chart": "alloy",
+        "source_url": "https://artifacthub.io/packages/helm/grafana/alloy",
+    },
+    {
+        "name": "Blackbox Exporter",
+        "var_name": "helm_chart_versions.prometheus_blackbox_exporter",
+        "category": "helm",
+        "helm_repo": "https://prometheus-community.github.io/helm-charts",
+        "helm_chart": "prometheus-blackbox-exporter",
+        "source_url": "https://artifacthub.io/packages/helm/prometheus-community/prometheus-blackbox-exporter",
+    },
+    {
+        "name": "Exportarr",
+        "var_name": "exportarr_version",
+        "category": "github",
+        "github_repo": "onedr0p/exportarr",
+        "version_prefix": "v",
+        "strip_prefix": False,
+    },
+    {
+        "name": "Proxmox VE Exporter",
+        "var_name": "proxmox_exporter_version",
+        "category": "github",
+        "github_repo": "prometheus-pve/prometheus-pve-exporter",
+        "version_prefix": "v",
+        "strip_prefix": True,
+    },
+    {
+        "name": "ZFS Exporter",
+        "var_name": "zfs_exporter_version",
+        "category": "github",
+        "github_repo": "pdf/zfs_exporter",
+        "version_prefix": "v",
+        "strip_prefix": True,
+    },
+    {
+        "name": "AdGuard Exporter",
+        "var_name": "adguard_exporter_version",
+        "category": "github",
+        "github_repo": "henrywhitaker3/adguard-exporter",
+        "version_prefix": "v",
+        "strip_prefix": False,
+    },
+    {
+        "name": "Unbound Exporter",
+        "var_name": "unbound_exporter_version",
+        "category": "github",
+        "github_repo": "letsencrypt/unbound_exporter",
+        "version_prefix": "v",
+        "strip_prefix": True,
+    },
     # --- APT / Manual ---
     {
         "name": "Plex Media Server",
@@ -1486,6 +1559,10 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "meilisearch_version", "redis_version", "busybox_version",
         "authentik_version", "postgresql_version",
         "gitlab_runner_helm_version", "gitlab_agent_helm_version",
+        # Observability exporter container images
+        "exportarr_version", "proxmox_exporter_version",
+        "zfs_exporter_version", "adguard_exporter_version",
+        "unbound_exporter_version",
     )
     if var_name in flux_managed or var_name.startswith("helm_chart") or category == "helm":
         return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"

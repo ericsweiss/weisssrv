@@ -35,6 +35,7 @@ sasl_passwd.db
 !kubernetes/infrastructure/configs/shared-cloudflare-secrets/**
 !kubernetes/apps/**/externalsecret*.yaml
 !kubernetes/apps/**/externalsecrets.yaml
+!kubernetes/infrastructure/**/externalsecret*.yaml
 !kubernetes/clusters/weisssrv/tenants/**/cluster-secret-store.yaml
 !kubernetes/clusters/weisssrv/tenants/**/secret-store.yaml
 # Jinja2 template with op:// refs, not actual secrets

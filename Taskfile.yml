@@ -415,6 +415,75 @@ tasks:
       - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s
       - kubectl rollout status statefulset/authentik-postgresql -n authentik --timeout=300s
 
+  # ── Observability ────────────────────────────────────────────────────
+  observability:status:
+    desc: Show observability namespace health
+    cmds:
+      - kubectl get pods -n observability -o wide
+      - kubectl get svc -n observability
+      - kubectl get pvc -n observability
+      - kubectl get helmreleases -n observability
+      - kubectl get externalsecrets -n observability
+      - kubectl get servicemonitors -n observability
+
+  observability:logs:
+    desc: View observability component logs
+    vars:
+      COMPONENT: '{{.COMPONENT | default "prometheus"}}'
+    cmds:
+      - kubectl logs -n observability -l app.kubernetes.io/name={{.COMPONENT}} --tail=100 -f {{.CLI_ARGS}}
+
+  observability:restart:
+    desc: Restart observability pods
+    cmds:
+      - kubectl rollout restart deployment -n observability
+      - kubectl rollout restart statefulset -n observability
+      - kubectl rollout restart daemonset -n observability
+
+  observability:silence:
+    desc: "Create an Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units: S/M/H/d)"
+    vars:
+      ALERT: '{{.ALERT | default "Watchdog"}}'
+      DURATION: '{{.DURATION | default "2H"}}'
+    cmds:
+      - |
+        cleanup() { kill $PF_PID 2>/dev/null; }
+        trap cleanup EXIT
+        END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || date -u -d '+{{.DURATION}}' '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
+        if [ -z "$END" ]; then echo "ERROR: Invalid DURATION '{{.DURATION}}' (use BSD date units: S/M/H/d)"; exit 1; fi
+        START=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+        kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093 &
+        PF_PID=$!
+        for _i in 1 2 3 4 5; do
+          if curl -s -o /dev/null http://localhost:9093/ 2>/dev/null; then break; fi
+          if ! kill -0 $PF_PID 2>/dev/null; then
+            echo "ERROR: port-forward process died — is Alertmanager running?"
+            exit 1
+          fi
+          sleep 1
+        done
+        if ! curl -s -o /dev/null http://localhost:9093/ 2>/dev/null; then
+          echo "ERROR: port-forward not ready after 5s — is Alertmanager running?"
+          exit 1
+        fi
+        ALERT_VALUE=$(printf '%s' '{{.ALERT}}' | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1])') || {
+          echo "ERROR: Failed to JSON-encode alert name"; exit 1;
+        }
+        if [ -z "$ALERT_VALUE" ]; then echo "ERROR: Alert name resolved to empty string"; exit 1; fi
+        HTTP_CODE=$(curl -s -o /tmp/am-silence-response.json -w '%{http_code}' -X POST http://localhost:9093/api/v2/silences -H "Content-Type: application/json" -d "{
+          \"matchers\": [{\"name\": \"alertname\", \"value\": \"$ALERT_VALUE\", \"isRegex\": false}],
+          \"startsAt\": \"$START\",
+          \"endsAt\": \"$END\",
+          \"createdBy\": \"task-cli\",
+          \"comment\": \"Silenced via task observability:silence\"
+        }")
+        if [ "$HTTP_CODE" -ne 200 ]; then
+          echo "ERROR: Alertmanager API returned HTTP $HTTP_CODE"
+          cat /tmp/am-silence-response.json 2>/dev/null
+          exit 1
+        fi
+        cat /tmp/am-silence-response.json | python3 -m json.tool
+
   k3s:backup:
     desc: Create etcd snapshot on k3s server
     cmds:

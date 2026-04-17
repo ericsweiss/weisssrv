@@ -41,6 +41,8 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    serviceMonitor:
+      enabled: true
     installCRDs: true
     replicaCount: 2
     nodeSelector:

@@ -1,0 +1,44 @@
+---
+# Scrape Home Assistant Prometheus integration from external HAOS VM
+# Requires the 'prometheus' integration enabled in HA configuration.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-assistant-metrics
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: home-assistant
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 8123
+      targetPort: 8123
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: home-assistant-metrics
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.154
+    ports:
+      - name: metrics
+        port: 8123
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: home-assistant
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  endpoints:
+    - port: metrics
+      interval: 60s
+      path: /api/prometheus

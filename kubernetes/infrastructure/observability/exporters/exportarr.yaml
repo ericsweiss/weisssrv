@@ -1,0 +1,507 @@
+---
+# Exportarr — Prometheus exporters for *arr applications and download clients.
+# Each app gets a Deployment + Service + ServiceMonitor.
+# Sonarr/Radarr/Lidarr/Prowlarr require API keys (from observability-exporter-secrets)
+# for full metrics. Uncomment the API_KEY env blocks after creating the
+# "Download Client API Keys" 1Password item and uncommenting the corresponding
+# entries in externalsecret.yaml.
+# NZBGet and qBittorrent do not require API keys for basic metrics.
+
+# ---------------------------------------------------------------------------
+# Sonarr
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-sonarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-sonarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-sonarr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-sonarr
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["sonarr"]
+          env:
+            - name: PORT
+              value: "9707"
+            - name: URL
+              value: "http://sonarr.downloads.svc.cluster.local:8989"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: sonarr-api-key
+          ports:
+            - name: metrics
+              containerPort: 9707
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-sonarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-sonarr
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-sonarr
+  ports:
+    - name: metrics
+      port: 9707
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-sonarr
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-sonarr
+  endpoints:
+    - port: metrics
+      interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# Radarr
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-radarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-radarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-radarr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-radarr
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["radarr"]
+          env:
+            - name: PORT
+              value: "9708"
+            - name: URL
+              value: "http://radarr.downloads.svc.cluster.local:7878"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: radarr-api-key
+          ports:
+            - name: metrics
+              containerPort: 9708
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-radarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-radarr
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-radarr
+  ports:
+    - name: metrics
+      port: 9708
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-radarr
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-radarr
+  endpoints:
+    - port: metrics
+      interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# Lidarr
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-lidarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-lidarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-lidarr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-lidarr
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["lidarr"]
+          env:
+            - name: PORT
+              value: "9709"
+            - name: URL
+              value: "http://lidarr.downloads.svc.cluster.local:8686"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: lidarr-api-key
+          ports:
+            - name: metrics
+              containerPort: 9709
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-lidarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-lidarr
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-lidarr
+  ports:
+    - name: metrics
+      port: 9709
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-lidarr
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-lidarr
+  endpoints:
+    - port: metrics
+      interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# Prowlarr
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-prowlarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-prowlarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-prowlarr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-prowlarr
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["prowlarr"]
+          env:
+            - name: PORT
+              value: "9710"
+            - name: URL
+              value: "http://prowlarr.downloads.svc.cluster.local:9696"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: prowlarr-api-key
+          ports:
+            - name: metrics
+              containerPort: 9710
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-prowlarr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-prowlarr
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-prowlarr
+  ports:
+    - name: metrics
+      port: 9710
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-prowlarr
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-prowlarr
+  endpoints:
+    - port: metrics
+      interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# NZBGet
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-nzbget
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-nzbget
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-nzbget
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-nzbget
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["nzbget"]
+          env:
+            - name: PORT
+              value: "9711"
+            - name: URL
+              value: "http://nzbget.downloads.svc.cluster.local:6789"
+          ports:
+            - name: metrics
+              containerPort: 9711
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-nzbget
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-nzbget
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-nzbget
+  ports:
+    - name: metrics
+      port: 9711
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-nzbget
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-nzbget
+  endpoints:
+    - port: metrics
+      interval: 60s
+
+---
+# ---------------------------------------------------------------------------
+# qBittorrent
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-qbittorrent
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-qbittorrent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-qbittorrent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-qbittorrent
+    spec:
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          args: ["qbittorrent"]
+          env:
+            - name: PORT
+              value: "9712"
+            - name: URL
+              value: "http://qbittorrent.downloads.svc.cluster.local:8080"
+          ports:
+            - name: metrics
+              containerPort: 9712
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exportarr-qbittorrent
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-qbittorrent
+spec:
+  selector:
+    app.kubernetes.io/name: exportarr-qbittorrent
+  ports:
+    - name: metrics
+      port: 9712
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: exportarr-qbittorrent
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-qbittorrent
+  endpoints:
+    - port: metrics
+      interval: 60s

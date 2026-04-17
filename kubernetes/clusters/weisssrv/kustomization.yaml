@@ -1,10 +1,10 @@
 ---
 # Cluster entrypoint — the flux-system Kustomization (from `flux bootstrap`)
-# reconciles this path. It applies the flux-system controllers plus the three
-# infrastructure Flux Kustomizations (sources → controllers → configs), the
-# apps top-level Kustomization (dependsOn infrastructure-configs), and pulls
-# in the tenants folder (empty at bootstrap; populated as external repos
-# onboard).
+# reconciles this path. It applies the flux-system controllers plus the four
+# infrastructure Flux Kustomizations (sources → controllers → configs →
+# observability), the apps top-level Kustomization (dependsOn
+# infrastructure-observability), and pulls in the tenants folder (empty at
+# bootstrap; populated as external repos onboard).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -12,5 +12,6 @@ resources:
   - infrastructure-sources.yaml
   - infrastructure-controllers.yaml
   - infrastructure-configs.yaml
+  - infrastructure-observability.yaml
   - apps.yaml
   - tenants

@@ -1,0 +1,108 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: blackbox-exporter
+  namespace: observability
+spec:
+  interval: 30m
+  releaseName: blackbox-exporter
+  chart:
+    spec:
+      chart: prometheus-blackbox-exporter
+      version: "${helm_chart_versions_prometheus_blackbox_exporter}"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    config:
+      modules:
+        http_2xx:
+          prober: http
+          timeout: 10s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            follow_redirects: true
+            preferred_ip_protocol: ip4
+            tls_config:
+              insecure_skip_verify: false
+        dns_resolution:
+          prober: dns
+          timeout: 5s
+          dns:
+            query_name: esweiss.com
+            query_type: A
+            valid_rcodes:
+              - NOERROR
+        icmp_ping:
+          prober: icmp
+          timeout: 5s
+    serviceMonitor:
+      enabled: true
+      defaults:
+        interval: 60s
+      targets:
+        - name: grafana
+          url: https://grafana.esweiss.com
+          module: http_2xx
+        - name: authentik
+          url: https://auth.esweiss.com
+          module: http_2xx
+        - name: traefik
+          url: https://traefik.esweiss.com
+          module: http_2xx
+        - name: sonarr
+          url: https://tv.esweiss.com
+          module: http_2xx
+        - name: radarr
+          url: https://movies.esweiss.com
+          module: http_2xx
+        - name: lidarr
+          url: https://music.esweiss.com
+          module: http_2xx
+        - name: prowlarr
+          url: https://prowlarr.esweiss.com
+          module: http_2xx
+        - name: nzbget
+          url: https://nzbget.esweiss.com
+          module: http_2xx
+        - name: qbittorrent
+          url: https://qbittorrent.esweiss.com
+          module: http_2xx
+        - name: mealie
+          url: https://food.esweiss.com
+          module: http_2xx
+        - name: bar-assistant
+          url: https://bar.esweiss.com
+          module: http_2xx
+        - name: plex
+          url: https://plex.esweiss.com
+          module: http_2xx
+        - name: home-assistant
+          url: https://home.esweiss.com
+          module: http_2xx
+        - name: gitlab
+          url: https://git.esweiss.com
+          module: http_2xx
+        - name: dns-01
+          url: 192.168.0.150:53
+          module: dns_resolution
+        - name: dns-02
+          url: 192.168.0.160:53
+          module: dns_resolution
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi

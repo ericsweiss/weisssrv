@@ -414,6 +414,10 @@ class TestGetDeployCommand(unittest.TestCase):
             "meilisearch_version", "redis_version", "busybox_version",
             "authentik_version", "postgresql_version",
             "gitlab_runner_helm_version", "gitlab_agent_helm_version",
+            # Observability exporter container images
+            "exportarr_version", "proxmox_exporter_version",
+            "zfs_exporter_version", "adguard_exporter_version",
+            "unbound_exporter_version",
         ):
             cmd = check_versions.get_deploy_command(self._mk(var))
             self.assertIn(
@@ -435,6 +439,11 @@ class TestGetDeployCommand(unittest.TestCase):
             "helm_chart_versions_cert_manager",
             "helm_chart_versions_external_dns",
             "helm_chart_versions_external_secrets",
+            # Observability Helm charts
+            "helm_chart_versions_kube_prometheus_stack",
+            "helm_chart_versions_loki",
+            "helm_chart_versions_alloy",
+            "helm_chart_versions_prometheus_blackbox_exporter",
         ):
             cmd = check_versions.get_deploy_command(self._mk(var, category="helm"))
             self.assertIn("flux:sync-versions", cmd, f"{var}: {cmd}")
@@ -481,6 +490,49 @@ class TestGetDeployCommand(unittest.TestCase):
             cmd = check_versions.get_deploy_command(result)
             self.assertIn("flux:sync-versions", cmd,
                           f"{var_name} should route to Flux sync")
+
+    def test_every_registry_service_has_specific_deploy_command(self):
+        """Every SERVICE_REGISTRY entry should route to a specific deploy
+        command, not the generic 'deploy:all' fallback."""
+        for svc in check_versions.SERVICE_REGISTRY:
+            result = self._mk(svc["var_name"], category=svc.get("category", ""))
+            cmd = check_versions.get_deploy_command(result)
+            self.assertNotIn(
+                "deploy:all", cmd,
+                f"{svc['name']} ({svc['var_name']}) fell through to deploy:all fallback. "
+                f"Add it to flux_managed tuple or a specific handler in get_deploy_command().",
+            )
+
+    def test_service_registry_no_duplicates(self):
+        """var_name and name must be unique across SERVICE_REGISTRY."""
+        var_names = [s["var_name"] for s in check_versions.SERVICE_REGISTRY]
+        names = [s["name"] for s in check_versions.SERVICE_REGISTRY]
+        self.assertEqual(
+            len(var_names), len(set(var_names)),
+            f"Duplicate var_names: {[v for v in var_names if var_names.count(v) > 1]}",
+        )
+        self.assertEqual(
+            len(names), len(set(names)),
+            f"Duplicate names: {[n for n in names if names.count(n) > 1]}",
+        )
+
+    def test_service_registry_field_completeness(self):
+        """Every SERVICE_REGISTRY entry must have required fields for its category."""
+        required_fields = {
+            "github": ("github_repo", "version_prefix"),
+            "helm": ("helm_repo", "helm_chart"),
+            "dockerhub": ("docker_image",),
+            "lsio": ("docker_image",),
+            "ghcr": ("ghcr_image",),
+        }
+        for svc in check_versions.SERVICE_REGISTRY:
+            cat = svc.get("category", "")
+            if cat in required_fields:
+                for field in required_fields[cat]:
+                    self.assertIn(
+                        field, svc,
+                        f"{svc['name']} ({cat}) is missing required field '{field}'",
+                    )
 
 
 if __name__ == "__main__":
