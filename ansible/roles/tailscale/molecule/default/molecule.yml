@@ -10,7 +10,7 @@ driver:
   name: docker
 platforms:
   - name: tailscale-test
-    image: ghcr.io/hifis-net/debian-systemd:trixie
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
     pre_build_image: true
     privileged: true
     cgroupns_mode: host

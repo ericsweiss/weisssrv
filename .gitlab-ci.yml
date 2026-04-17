@@ -23,6 +23,7 @@
 # - Manual (web): Lint, validate, test, security stages only (deploy/gate/maintenance excluded)
 
 stages:
+  - build
   - lint
   - validate
   - test
@@ -182,6 +183,39 @@ workflow:
         - scripts/**
         - ansible/roles/**/*.sh
     - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# ============================================================================
+# BUILD STAGE - Container images
+# ============================================================================
+
+build-molecule-image:
+  # Builds the pre-baked molecule test image with all apt packages the
+  # roles need, so molecule tests don't spend 3-5 min on apt-get install
+  # per run. Only rebuilds when the Dockerfile changes.
+  stage: build
+  image: docker:24.0
+  services:
+    - docker:24.0-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test:latest"
+  script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker build -t "$IMAGE" docker/molecule-test/
+    - docker push "$IMAGE"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - docker/molecule-test/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - docker/molecule-test/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
 
 # ============================================================================
 # LINT STAGE - Code quality checks
@@ -625,7 +659,10 @@ flux-lint:
 # unavailable in DinD; it's excluded here and tested locally only.
 .molecule-base:
   stage: test
-  needs: []
+  needs:
+    # Wait for image rebuild if Dockerfile changed; otherwise start immediately
+    - job: build-molecule-image
+      optional: true
   image: python:3.11
   services:
     - docker:24.0-dind
@@ -646,7 +683,7 @@ flux-lint:
     when: always
     reports:
       junit: junit/*.xml
-  timeout: 15m
+  timeout: 25m  # k3s, base, nas_storage are package-heavy (apt install in container)
 
 molecule-tests:
   extends: .molecule-base
@@ -1312,7 +1349,10 @@ deploy-verify:
           RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
           if ! echo "$RENDERED" | kubectl apply --dry-run=server -f - > /dev/null 2>&1; then
             echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
-            echo "$RENDERED" | kubectl apply --dry-run=server -f - 2>&1 | head -20
+            # Re-run for diagnostic output; || true prevents set -eo pipefail
+            # from aborting before the remaining checks complete.
+            DRYRUN_ERR="$(echo "$RENDERED" | kubectl apply --dry-run=server -f - 2>&1 || true)"
+            echo "$DRYRUN_ERR" | head -20
             EXIT=1
           fi
         done
