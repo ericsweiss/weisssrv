@@ -27,7 +27,7 @@
     path: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
     state: absent
   when: not (nic_tuning_ip_forward | bool)
-  notify: Reload sysctl ip_forward
+  notify: Disable sysctl ip_forward
 
 - name: Ensure /etc/network/interfaces.d exists
   ansible.builtin.file:

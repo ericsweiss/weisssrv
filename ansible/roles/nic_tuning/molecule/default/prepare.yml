@@ -15,6 +15,14 @@
         state: present
         update_cache: true
 
+    - name: Ensure interfaces.d exists for stale drop-in test
+      ansible.builtin.file:
+        path: /etc/network/interfaces.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Seed stale NIC tuning drop-in for cleanup test
       ansible.builtin.copy:
         dest: /etc/network/interfaces.d/99-nic-stale0-tuning.cfg

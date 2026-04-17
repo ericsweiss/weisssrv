@@ -291,6 +291,11 @@ pr-agent-review:
     # GPT-5.4 is now available but gpt-5.3-codex is optimized specifically for code review
     # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
     CONFIG__MODEL: "gpt-5.3-codex"
+    # Maximize review depth: use full context window and extended effort
+    CONFIG__MAX_MODEL_TOKENS: "128000"
+    PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
+    PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
+    PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl gnupg
     - |

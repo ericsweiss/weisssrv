@@ -249,12 +249,13 @@ task flux:refresh-secret -- <namespace>/<externalsecret-name>
 
 1Password Families plan: **1,000 reads per day, account-wide**.
 
-Current footprint: 10 ExternalSecrets spanning ~23 distinct fields
-(authentik 5, recipes 9, vpn 2, runner tokens 3, cloudflare token 3). The
+Current footprint: ~10 ExternalSecrets spanning ~22 distinct fields
+(authentik 5, recipes 8+1, vpn 2, runner/agent tokens 3, cloudflare 3). The
 1Password SDK provider reads fields on each refresh, not whole items, so the
 per-refresh cost is one read per field, not one read per ExternalSecret.
-On the default `refreshInterval: 24h` that's ~20 reads/day — comfortable
-headroom against the 1,000 limit.
+On the default `refreshInterval: 24h` that's ~22 reads/day — comfortable
+headroom against the 1,000 limit. Run `kubectl get externalsecrets -A` for
+current counts.
 
 Every manual `task flux:refresh-secret` or `task flux:rotate-secret` adds
 fields_in_that_ExternalSecret extra reads. Rotating a single app a few times
