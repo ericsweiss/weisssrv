@@ -1251,6 +1251,9 @@ deploy-verify:
         echo "WARNING: $ES_NOT_READY ExternalSecret(s) not Ready:"
         kubectl get externalsecrets -A -o json | jq -r '.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")) | "  \(.metadata.namespace)/\(.metadata.name)"'
         echo "Non-critical: ExternalSecrets may still be syncing after first reconcile."
+        # TODO: once the cluster is past initial bootstrap and running steady-state,
+        # promote this to EXIT=1. Gate on whether all Kustomizations were already Ready
+        # before the reconcile trigger (i.e., this isn't a fresh bootstrap).
       fi
 
       # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,

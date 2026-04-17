@@ -31,6 +31,24 @@
     mode: "0755"
   when: nic_tuning_overrides | length > 0
 
+- name: Find existing NIC tuning drop-ins
+  ansible.builtin.find:
+    paths: /etc/network/interfaces.d
+    patterns: "99-nic-*-tuning.cfg"
+  register: existing_dropins
+  when: nic_tuning_overrides | length > 0
+
+- name: Remove stale NIC tuning drop-ins
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ existing_dropins.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - nic_tuning_overrides | length > 0
+    - item.path | basename not in (nic_tuning_overrides | map(attribute='interface') | map('regex_replace', '^(.*)$', '99-nic-\\1-tuning.cfg') | list)
+
 - name: Install per-NIC ethtool drop-ins
   ansible.builtin.template:
     src: nic-ethtool.cfg.j2
