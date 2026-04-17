@@ -501,7 +501,7 @@ The infrastructure has three independent update scopes, each with rolling deploy
 | Plex only | `task maintenance:update-plex` |
 | K3s nodes (rolling drain/cordon/upgrade) | `task maintenance:update-k3s-nodes` |
 | K3s Helm charts + workload images | Edit `all.yml` → `task flux:sync-versions` → `git commit` → `git push`. Flux reconciles. |
-| Full cluster update (nodes + complete update) | `task maintenance:update-cluster` (runs k3s node updates; Flux handles the rest via git) |
+| Full cluster update (nodes + versions) | `task maintenance:update-cluster` (4-phase: k3s node upgrades, check-versions, update-all-versions, sync-versions; commit + push to deploy via Flux) |
 
 ### Automated Version Discovery
 
@@ -776,7 +776,7 @@ git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/so
 git commit -m "Sweep cluster versions" && git push
 
 # Upgrade k3s node binary (rolling)
-task maintenance:update-cluster     # runs update-k3s-nodes; Flux handles the rest
+task maintenance:update-cluster     # 4-phase: k3s nodes, check-versions, update all.yml, sync ConfigMap
 ```
 
 ### Maintenance Windows

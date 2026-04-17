@@ -55,7 +55,7 @@ stages:
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
-| `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/sources/versions-configmap.yaml` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
+| `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/sources/versions-configmap.yaml`, `scripts/generate-versions-configmap.py` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
 | `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
@@ -156,7 +156,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 #### Deploy Stage - Verification
 | Job | Triggers | Description | Blocks pipeline? |
 |-----|----------|-------------|------------------|
-| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
+| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/vm-ingress/gitlab*.yaml, kubernetes/apps/vm-ingress/services-gitlab.yaml, kubernetes/apps/gitlab-runner/**, kubernetes/apps/gitlab-runner-privileged/** | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
 | `deploy-verify` | `ansible/**`, `terraform/**`, `kubernetes/**`, `scripts/**` (pushes to main) | Server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
 
 > **Note:** The two jobs have different semantics:
@@ -181,7 +181,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 |---------|------|
 | Merge request | Lint, validate, test, security, AI review stages (no deploy) |
 | Push to main | Full validation + auto-deploy |
-| Scheduled | Version checking only. All other jobs (lint, validate, test, security, ai-review, gate, deploy, maintenance) are explicitly excluded via `when: never` rules. |
+| Scheduled | Version checking and secret detection. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded. |
 | Manual (web) | Lint, validate, test stages only. Security, AI review, deploy, gate, and maintenance jobs are excluded via `when: never` rules. |
 
 ## Deployment Pipeline
@@ -194,7 +194,7 @@ When a merge request is merged to `main`:
 2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked.
 3. **Only changed components deploy** (path-based triggers on Ansible/Terraform jobs)
 4. **Kubernetes workloads reconcile via Flux** — independent of CI. Flux polls git
-   every 1 minute, and the GitLab webhook triggers Flux's `Receiver` for sub-second sync.
+   every 1 minute, and a planned GitLab webhook will trigger Flux's `Receiver` for sub-second sync (see docs/29-flux-operations.md; currently poll-only).
 5. **Machine reboots require manual approval** (maintenance stage)
 
 ### Deployment Categories

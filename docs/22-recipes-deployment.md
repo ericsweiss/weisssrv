@@ -242,7 +242,7 @@ Change the value in 1Password, then either wait 24h or force a refresh:
 
 ```bash
 task flux:rotate-secret -- recipes
-# (forces both ExternalSecrets to refresh and restarts Mealie + Bar Assistant Deployments)
+# (forces both ExternalSecrets to refresh and restarts all Deployments in the recipes namespace)
 ```
 
 To refresh a single ExternalSecret without restarting pods:
