@@ -66,6 +66,10 @@ def flatten(data: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     for k, v in data.items():
         if k.endswith(VERSION_SUFFIX) and not isinstance(v, bool):
+            if not FLUX_VAR_RE.match(k):
+                raise ValueError(
+                    f"top-level key {k!r} is not a valid Flux postBuild variable name"
+                )
             if isinstance(v, (str, int, float)):
                 out[k] = _scalar_str(k, v)
             else:

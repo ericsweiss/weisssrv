@@ -29,13 +29,16 @@ sasl_passwd.db
 !kubernetes/infrastructure/controllers/external-secrets
 !kubernetes/infrastructure/controllers/external-secrets/**
 !kubernetes/infrastructure/configs/cluster-secret-store.yaml
+# Planned: Flux Receiver manifest for webhook-triggered reconciliation
 !kubernetes/infrastructure/configs/flux-webhook-secret.yaml
 !kubernetes/infrastructure/configs/shared-cloudflare-secrets
 !kubernetes/infrastructure/configs/shared-cloudflare-secrets/**
-!kubernetes/apps/**/externalsecret.yaml
+!kubernetes/apps/**/externalsecret*.yaml
 !kubernetes/apps/**/externalsecrets.yaml
 !kubernetes/clusters/weisssrv/tenants/**/cluster-secret-store.yaml
 !kubernetes/clusters/weisssrv/tenants/**/secret-store.yaml
+# Jinja2 template with op:// refs, not actual secrets
+!ansible/roles/home_assistant/templates/secrets.yaml.j2
 
 # Terraform
 **/.terraform/

@@ -9,7 +9,7 @@ ongoing operations — edit YAML, commit, push, Flux reconciles within ~1m.
 ```
 kubernetes/
 ├── clusters/weisssrv/             # Flux entrypoint (written by `flux bootstrap`)
-│   ├── flux-system/               # gotk-components + gotk-sync (DO NOT edit gotk-sync.yaml ref.branch during migration)
+│   ├── flux-system/               # gotk-components.yaml + gotk-sync.yaml are managed by `flux bootstrap` — manual edits risk breaking reconciliation
 │   ├── infrastructure-sources.yaml       # Flux Kustomization → ../../infrastructure/sources (no deps)
 │   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources)
 │   ├── infrastructure-configs.yaml       # Flux Kustomization → ../../infrastructure/configs (dependsOn: controllers)
@@ -41,10 +41,7 @@ kubernetes/
 ## How it reconciles
 
 1. `flux bootstrap` (one-time) installs the Flux controllers and commits
-   `clusters/weisssrv/flux-system/` to the `flux/migration` branch (post-MR:
-   `main`). After the migration MR merges, the branch ref in
-   `gotk-sync.yaml` is switched from `flux/migration` to `main` — see
-   `docs/29-flux-operations.md` § Post-merge branch switch.
+   `clusters/weisssrv/flux-system/` to `main`.
 2. Flux's `source-controller` polls this repo (1m interval).
 3. Flux's `kustomize-controller` reconciles `clusters/weisssrv/` →
    `infrastructure/` → `apps/` in dependency order.

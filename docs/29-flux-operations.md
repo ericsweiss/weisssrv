@@ -249,8 +249,8 @@ task flux:refresh-secret -- <namespace>/<externalsecret-name>
 
 1Password Families plan: **1,000 reads per day, account-wide**.
 
-Current footprint: 9 ExternalSecrets spanning ~20 distinct fields
-(authentik 5, recipes 7, vpn 2, runner tokens 3, cloudflare token 3). The
+Current footprint: 10 ExternalSecrets spanning ~23 distinct fields
+(authentik 5, recipes 9, vpn 2, runner tokens 3, cloudflare token 3). The
 1Password SDK provider reads fields on each refresh, not whole items, so the
 per-refresh cost is one read per field, not one read per ExternalSecret.
 On the default `refreshInterval: 24h` that's ~20 reads/day — comfortable
@@ -526,7 +526,7 @@ The `flux logs` command aggregates controller logs by resource, which is far mor
 
 One-time setup to replace the default 1-minute GitRepository poll with sub-second push-triggered reconciliation.
 
-**Status**: the Flux `Receiver` manifest and the IngressRoute exposing it are planned but not part of this MR. When they land (`kubernetes/infrastructure/configs/flux-receiver.yaml` and `kubernetes/apps/vm-ingress/flux-webhook.yaml`), the sequence is:
+**Status**: the Flux `Receiver` manifest and the IngressRoute exposing it are not yet deployed (planned follow-up). When they land (`kubernetes/infrastructure/configs/flux-receiver.yaml` and `kubernetes/apps/vm-ingress/flux-webhook.yaml`), the sequence is:
 
 1. Apply the Receiver manifest (via Flux, naturally — just push).
 2. The Receiver exposes a token-protected endpoint at `flux-webhook.ericsweiss.com`.

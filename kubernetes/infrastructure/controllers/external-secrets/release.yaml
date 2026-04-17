@@ -6,7 +6,7 @@
 #
 # Scheduling:
 # - nodeSelector esweiss.com/cpu: modern — the Go binary uses CPU extensions
-#   (POPCNT/SSE4.2) not available on the Core 2 Quad opt nodes; it SIGILLs on
+#   (POPCNT/SSE4.2) not available on the Core 2 Quad opt nodes (pve-opt-01, pve-opt-02, pve-opt-03); it SIGILLs on
 #   those hosts (observed 2026-04-16).
 # - tolerations for PreferNoSchedule taints on nas/compute — otherwise all ESO
 #   replicas crowd onto one node; soft taints are fine to ignore.

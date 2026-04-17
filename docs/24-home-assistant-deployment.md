@@ -180,7 +180,7 @@ curl -s http://192.168.0.154:8123 | head -5
 The IngressRoute, ClusterIP Service, and manual EndpointSlice (pointing at
 the HAOS VM's IP) for Home Assistant live in `kubernetes/apps/vm-ingress/`
 (the consolidated "non-k8s services" bundle alongside Plex, AdGuard, GitLab
-VM, router, Traefik dashboard). Resources land in the `default` namespace
+VM, router). Resources land in the `default` namespace
 (services) and `traefik` namespace (middleware); `vm-ingress` is a folder
 name, not a Kubernetes namespace. Flux reconciles them automatically once
 the files are committed.

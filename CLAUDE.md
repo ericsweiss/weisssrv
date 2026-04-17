@@ -206,6 +206,7 @@ task authentik:restart            # Restart Authentik pods
 # Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
 task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
 task home-assistant:deploy        # DEPRECATED: aliased to deploy-config (ingress is now Flux)
+task home-assistant:logs          # View Home Assistant logs
 task home-assistant:restart-after-config # Restart after config deployment
 task home-assistant:status        # Show VM and ingress status
 task home-assistant:vm-start      # Start the Home Assistant VM
@@ -253,10 +254,9 @@ task terraform:apply              # Apply changes
 task terraform:validate           # Validate syntax
 
 # Linting and validation
-task lint                         # Lint everything (Ansible, Terraform, Kubernetes)
-task kubernetes:lint              # Validate K8s manifests with kubeconform
-task kubernetes:validate-helm     # Validate Helm values by templating charts
-# (see also `task flux:lint` under Flux GitOps — kustomize build + kubeconform on every Flux Kustomization)
+task lint                         # Lint everything (Ansible, Terraform, Flux, Python scripts)
+task kubernetes:lint              # Alias for flux:lint (kept for discoverability)
+task kubernetes:validate-helm     # Alias for flux:lint (kept for discoverability)
 
 # State collection
 task collect-state                # Generate cluster snapshot

@@ -153,6 +153,10 @@ spec:
               current_ip = get_public_ip()
               if not current_ip:
                   sys.exit(1)
+              parts = current_ip.split('.')
+              if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                  print(f"ERROR: Invalid IP returned: {current_ip!r}")
+                  sys.exit(1)
               print(f"Current public IP: {current_ip}")
 
               # Get zone ID for ericsweiss.com

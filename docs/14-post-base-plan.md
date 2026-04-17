@@ -189,68 +189,7 @@ Namespace: `esweiss.com/*`
 
 ## GitOps with Flux (COMPLETE - Phase 10)
 
-**Note**: Local GitLab (Phase 9) should be deployed before Flux to enable internal GitOps repository hosting. Personal GitHub continues to be used for public repositories and external CI/CD.
-
-### Current State
-
-Deployments are managed via:
-- `task k3s:deploy-*` commands that run Helm and kubectl
-- Manifests in `kubernetes/apps/` applied via `kubectl apply`
-- 1Password integration for secrets at runtime
-
-### Target State
-
-Full GitOps with Flux:
-- HelmRelease and Kustomization resources in git
-- Automatic reconciliation on git push
-- 1Password secrets continue to be injected at runtime (no secrets in git)
-- Renovate Bot for automated dependency updates (complements existing `check-versions`)
-
-### Repository Structure (Planned)
-
-```
-kubernetes/
-  bootstrap/
-    kustomization.yaml
-    kube-vip/
-    metallb/
-  flux/
-    flux-system/
-    sources/
-    kustomizations/
-  apps/
-    base/
-      traefik/
-      cert-manager/
-      external-dns/
-      authentik/
-      monitoring/
-    production/
-      traefik/
-      cert-manager/
-      ...
-```
-
-### Flux Bootstrap
-
-```bash
-# STALE — see docs/19-k3s-deployment.md Step 7 for the actual command
-flux bootstrap github \
-  --owner=ericsweiss \
-  --repository=weisssrv \
-  --branch=main \
-  --path=kubernetes/flux \
-  --personal
-```
-
-### Renovate Bot Integration
-
-Renovate Bot complements the existing `task maintenance:check-versions` automation:
-
-- **Keep `check-versions`**: For Ansible-managed infrastructure (AdGuard, Tailscale, Plex, k3s) and centralized version visibility
-- **Add Renovate**: For Kubernetes manifests, Helm charts, Terraform providers, and GitHub Actions
-
-See `docs/16-next-steps.md` "Renovate Bot Integration" section for detailed integration strategy.
+Implemented. See [docs/29-flux-operations.md](29-flux-operations.md) for the Flux day-2 operations guide and [docs/30-multi-repo-onboarding.md](30-multi-repo-onboarding.md) for multi-repo tenant onboarding.
 
 ## Storage Model in K3s
 
@@ -355,8 +294,7 @@ Use `nodeSelector` / `nodeAffinity` and `tolerations`:
 
 ### Secrets Management
 
-Current: 1Password with `op run` for runtime injection
-Future: External Secrets Operator with 1Password Connect backend
+Current: External Secrets Operator with 1Password SDK provider (in-cluster); 1Password with `op run` for host-side tooling
 
 ## DNS Strategy
 

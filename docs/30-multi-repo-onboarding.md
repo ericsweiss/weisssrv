@@ -633,6 +633,10 @@ When `example-app` is no longer needed:
 ```bash
 # From weisssrv repo
 git rm kubernetes/clusters/weisssrv/tenants/example-app.yaml
+# Also remove the entry from kustomization.yaml
+vim kubernetes/clusters/weisssrv/tenants/kustomization.yaml
+# Delete the `- example-app.yaml` line from resources:
+git add kubernetes/clusters/weisssrv/tenants/kustomization.yaml
 git commit -m "Remove example-app tenant"
 git push
 

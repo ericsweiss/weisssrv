@@ -191,13 +191,23 @@ spec:
               value: "5432"
             - name: POSTGRES_DB
               value: mealie
-            # SMTP configuration (uses existing relay; no auth required from LAN)
+            # SMTP configuration (SASL-authenticated relay via smtp-relay.esweiss.com)
             - name: SMTP_HOST
               value: smtp-relay.esweiss.com
             - name: SMTP_PORT
               value: "587"
             - name: SMTP_AUTH_STRATEGY
               value: TLS
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: recipes-secrets
+                  key: smtp-username
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: recipes-secrets
+                  key: smtp-password
             - name: SMTP_FROM_EMAIL
               value: mealie@esweiss.com
             - name: SMTP_FROM_NAME
@@ -236,8 +246,9 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: recipes-secrets
-                  key: mealie-openai-api-key
+                  name: recipes-openai
+                  key: api-key
+                  optional: true
             - name: OPENAI_ENABLE_IMAGE_SERVICES
               value: "true"
             - name: OPENAI_SEND_DATABASE_DATA

@@ -2,7 +2,7 @@
 # cert-manager HelmRelease — adopts the existing release `cert-manager` in
 # cert-manager namespace (matching releaseName + targetNamespace). Chart version
 # substituted from cluster-versions ConfigMap. CRDs managed via install/upgrade
-# crds: CreateReplace (replaces the chart's crds.enabled: true values flag).
+# crds: CreateReplace (replaces the chart's installCRDs values flag).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -26,12 +26,10 @@ spec:
       interval: 12h
   install:
     crds: CreateReplace
-    timeout: 10m
     remediation:
       retries: 3
   upgrade:
     crds: CreateReplace
-    timeout: 10m
     remediation:
       retries: 3
       remediateLastFailure: true

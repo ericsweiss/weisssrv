@@ -12,9 +12,9 @@
 #   - Direct internet access
 #
 # Switch modes: edit the nzbget-vpn-config ConfigMap below (vpn_enabled and
-# vpn_provider), commit + push, then `task flux:rotate-secret -- downloads`
-# to roll the pod so Gluetun picks up the new ConfigMap values. See
-# kubernetes/apps/download-clients/README.md § Per-App VPN Control.
+# vpn_provider). To apply: commit + push (Flux reconciles automatically).
+# To force pod restart: kubectl rollout restart deployment/nzbget -n downloads
+# See kubernetes/apps/download-clients/README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -67,10 +67,10 @@ spec:
       # Note: this Deployment's pod template has no auto-restart trigger on
       # ConfigMap changes. Flux reconciles the ConfigMap, but mounted-file
       # ConfigMap changes don't propagate to running pods without a rollout.
-      # Use `task flux:rotate-secret -- downloads` (which runs
-      # `kubectl rollout restart`) after committing ConfigMap edits, or add
-      # stakater/Reloader to the cluster to automate this in the future
-      # (tracked in docs/16-next-steps.md).
+      # To apply: commit + push (Flux reconciles automatically). To force pod
+      # restart: kubectl rollout restart deployment/nzbget -n downloads
+      # Alternatively, add stakater/Reloader to the cluster to automate this
+      # in the future (tracked in docs/16-next-steps.md).
     spec:
       nodeSelector:
         esweiss.com/nas: "true"
@@ -128,7 +128,7 @@ spec:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: gluetun
           image: qmcgaw/gluetun:${gluetun_version}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           command:
             - sh
             - -c

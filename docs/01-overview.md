@@ -157,14 +157,14 @@ The base infrastructure automation is complete and production-ready:
 - Monitoring: SMART disk health monitoring and backup jobs
 
 **Automation**:
-- 20 Ansible roles covering all infrastructure services
+- 21 Ansible roles covering all infrastructure services
 - Terraform for Cloudflare DNS (*.ericsweiss.com)
 - 1Password integration for secrets (no secrets in git)
 - Comprehensive update playbooks with rolling deployments
 - Post-deployment verification checks
 
 **Documentation**:
-- 29 comprehensive documentation files
+- 31 comprehensive documentation files
 - Operational runbooks covering common procedures
 - Disaster recovery procedures
 - Maintenance and update strategies
@@ -182,7 +182,7 @@ The base infrastructure automation is complete and production-ready:
 - [x] Plex Media Server (LXC container with Traefik ingress)
 - [x] GitLab EE with container registry and CI/CD runners
 - [x] Home Assistant with Traefik ingress and SSO
-- [ ] GitOps with Flux (planned)
+- [x] GitOps with Flux (deployed)
 - [ ] Future apps: Immich, Nextcloud
 
 See [16-next-steps.md](16-next-steps.md) for the detailed roadmap.

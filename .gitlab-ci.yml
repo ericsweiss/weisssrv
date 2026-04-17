@@ -116,19 +116,12 @@ workflow:
     - !reference [.install-1password, before_script]
     - apt-get install -y -qq jq
     - |
-      # Install kubectl, helm, yq (pinned checksums for supply-chain integrity).
-      # envsubst / gettext-base were dropped — Flux postBuild substitution
-      # replaces the imperative envsubst pipeline used pre-migration.
-      # jq comes from apt above — used by deploy-verify to parse `flux get all -o json`.
+      # Install kubectl (pinned checksum for supply-chain integrity).
+      # helm and yq removed — Flux manages chart deployments; no CI job needs them
+      # jq comes from apt above — used by deploy-verify to parse kubectl JSON output (Flux CR readiness checks).
       curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
       echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
       install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-      curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz -o /tmp/helm.tar.gz
-      echo "f43e1c3387de24547506ab05d24e5309c0ce0b228c23bd8aa64e9ec4b8206651  /tmp/helm.tar.gz" | sha256sum -c -
-      tar xzf /tmp/helm.tar.gz -C /usr/local/bin --strip-components=1 linux-amd64/helm
-      curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_amd64 -o /tmp/yq
-      echo "6dc2d0cd4e0caca5aeffd0d784a48263591080e4a0895abe69f3a76eb50d1ba3  /tmp/yq" | sha256sum -c -
-      install -m 0755 /tmp/yq /usr/local/bin/yq
     - |
       # Setup kubeconfig from 1Password (stored as base64 to preserve YAML formatting).
       # Only the verify jobs still need this; all workload deploys are Flux-managed.
@@ -486,15 +479,21 @@ flux-lint:
       # can substitute ${var} placeholders in rendered manifests. This mirrors
       # what Flux's kustomize-controller does at reconcile time (postBuild).
       VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-      while IFS=$'\t' read -r k v; do
-        export "$k=$v"
-      done < <(python3 -c "
-      import yaml, sys
+      VARS_OUTPUT=$(python3 -c "
+      import yaml
       with open('$VERSIONS_CONFIGMAP') as f:
           doc = yaml.safe_load(f)
       for k, v in doc.get('data', {}).items():
           print(f'{k}\t{v}')
-      ")
+      ") || { echo "ERROR: Failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
+      if [ -z "$VARS_OUTPUT" ]; then
+        echo "ERROR: No version keys found in $VERSIONS_CONFIGMAP"
+        exit 1
+      fi
+      while IFS=$'\t' read -r k v; do
+        [ -n "$k" ] && export "$k=$v"
+      done <<< "$VARS_OUTPUT"
+      ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
 
       # Iterate every Flux Kustomization under clusters/weisssrv/ and validate
       # the target path it points at. This picks up new top-level Kustomizations
@@ -542,7 +541,7 @@ flux-lint:
           FAILED=1
           continue
         fi
-        RENDERED=$(echo "$RAW" | envsubst)
+        RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
         if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.35.0 \
             -schema-location default \
@@ -1186,7 +1185,7 @@ deploy-verify:
     # below and reports Flux reconciliation state via `flux get all -A`.
   script:
     - |
-      # Install flux CLI alongside the kubectl/helm already provisioned by
+      # Install flux CLI alongside the kubectl already provisioned by
       # .k3s-deploy-base. Flux is the source of truth for k8s workload state,
       # so verification queries Flux CRs rather than individual Deployments.
       FLUX_VERSION="2.8.5"
@@ -1209,6 +1208,15 @@ deploy-verify:
         echo "ERROR: $NOT_READY node(s) not Ready"
         exit 1
       fi
+
+      echo ""
+      echo "=== Triggering Flux reconciliation ==="
+      # Force Flux to reconcile the current commit before checking status.
+      # Without this, we would check stale state from the previous reconcile cycle.
+      flux reconcile source git flux-system --timeout=2m 2>/dev/null || echo "WARNING: source reconcile timed out (may need more time)"
+      flux reconcile kustomization flux-system --timeout=3m --with-source 2>/dev/null || echo "WARNING: kustomization reconcile timed out"
+      # Allow downstream kustomizations time to reconcile after the root
+      sleep 15
 
       echo ""
       echo "Flux controllers:"
@@ -1351,8 +1359,6 @@ maintenance-update-packages:
       when: manual
       allow_failure: true
 
-# Application updates - MANUAL (AdGuard, Tailscale, Plex)
-
 # 2. Application updates - MANUAL (AdGuard, Tailscale, Plex)
 maintenance-update-applications:
   stage: maintenance
@@ -1382,8 +1388,6 @@ maintenance-update-applications:
       when: manual
       allow_failure: true
 
-# Proxmox HA - MANUAL (affects VM placement)
-
 # 3. K3s node updates - MANUAL (drains/cordons nodes)
 maintenance-update-k3s-nodes:
   stage: maintenance
@@ -1407,9 +1411,6 @@ maintenance-update-k3s-nodes:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
-
-# OS package updates - MANUAL (updates all hosts including k3s nodes and app VMs)
-# Note: CI runs with auto_reboot=true (non-interactive). For interactive mode, use: task maintenance:update-packages
 
 # 4. K3s VM provisioning - MANUAL (creates/modifies VMs)
 maintenance-k3s-provision:
@@ -1441,8 +1442,6 @@ maintenance-k3s-provision:
 #   maintenance-update-packages (broader host coverage) + maintenance-update-applications
 # The Taskfile still has task maintenance:update-full for local use.
 
-# K3s node updates - MANUAL (drains/cordons nodes)
-
 # 5. Proxmox HA - MANUAL (affects VM placement)
 maintenance-proxmox-ha:
   stage: maintenance
@@ -1465,8 +1464,6 @@ maintenance-proxmox-ha:
       when: manual
       allow_failure: true
 
-# Home Assistant restart - MANUAL (restarts HA VM)
-
 # 6. Home Assistant restart - MANUAL (restarts HA VM)
 maintenance-home-assistant-restart:
   stage: maintenance
@@ -1476,9 +1473,11 @@ maintenance-home-assistant-restart:
     - cd ansible
     - |
       echo "Restarting Home Assistant VM..."
-      # Restart via ansible ad-hoc command to first Proxmox host
+      # VM 154 is HA-managed and can migrate to any Proxmox node.
+      # ha-manager is cluster-aware — it locates the node hosting the VM
+      # and restarts it there, so targeting any Proxmox node works.
       op run -- ansible proxmox[0] -i inventories/prod -m shell -a \
-        "pvesh create /nodes/\$(hostname -s)/qemu/154/status/reboot"
+        "ha-manager restart vm:154"
       echo "Waiting for Home Assistant to come back online..."
       sleep 30
       echo "Restart complete - check status via GitLab environments or Home Assistant URL"
@@ -1493,10 +1492,6 @@ maintenance-home-assistant-restart:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
-
-# Post-maintenance infrastructure verification - MANUAL
-# Trigger after maintenance jobs complete to validate cluster health.
-# Fails the job if critical checks don't pass (nodes not Ready, pods degraded, GitLab down).
 
 # 7. Post-maintenance verification - MANUAL
 # Trigger after maintenance to validate cluster health. Fails on critical issues.
@@ -1587,8 +1582,6 @@ maintenance-verify:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
-
-
 
 # ============================================================================
 # VERSION CHECK - Runs early, soft-fail on PRs

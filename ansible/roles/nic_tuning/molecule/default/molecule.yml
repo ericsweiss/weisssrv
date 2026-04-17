@@ -6,10 +6,8 @@
 # kernel accepts the commands (they no-op; lo doesn't have these features)
 # and the generated /etc/network/interfaces.d/*.cfg file can be content-checked.
 #
-# `apply_ethtool` is a scenario-level var defaulted to true; the "skip
-# ethtool" branch is exercised by converging with `skip_ethtool_apply: true`
-# in one of the role var combinations if needed (not necessary for the base
-# scenario — the template + sysctl file verification is the hot path).
+# The template + sysctl file verification is the hot path; ethtool itself
+# no-ops on loopback but the generated drop-in content is fully verified.
 dependency:
   name: galaxy
   options:

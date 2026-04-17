@@ -1,6 +1,6 @@
 ---
-# Cluster-wide wildcard Certificates used by IngressRoutes across the
-# `default` namespace (Plex, Home Assistant, AdGuard, router, downloads,
+# Cluster-wide wildcard Certificates used by IngressRoutes in the
+# `default` namespace (Plex, Home Assistant, AdGuard, router, and
 # vm-ingress HA bypass routes). These produce the `ericsweiss-com-tls`
 # and `esweiss-com-tls` Secrets in the `default` namespace.
 #

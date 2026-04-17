@@ -400,7 +400,7 @@ verify the role's drop-ins are still authoritative after reboot.
 - [x] Add fail2ban to Proxmox hosts (deployed)
 - [ ] Network segmentation with VLANs (IoT, guest, management)
 - [ ] Implement Network Policies in k3s (default-deny ingress)
-- [ ] External Secrets Operator with 1Password Connect backend
+- [x] External Secrets Operator with 1Password SDK provider (deployed -- see docs/29-flux-operations.md)
 
 ### Storage Enhancements
 

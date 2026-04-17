@@ -248,7 +248,6 @@ python3 -m molecule destroy   # Cleanup
 | proxmox_ha | Requires Proxmox cluster (ha-manager, replication) |
 | home_assistant | Requires HAOS VM (SSH/SCP based management) |
 | resolv_conf | Shared helper role (exercised transitively by base + adguard_home tests) |
-| nic_tuning-integration | Wiring with `base` playbook is covered by `integration-tests/base-infrastructure` |
 
 ## Idempotency Testing
 

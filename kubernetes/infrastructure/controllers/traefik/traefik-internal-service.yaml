@@ -18,7 +18,7 @@ spec:
   externalTrafficPolicy: Local  # Preserve source IP for IP allowlist middleware
   selector:
     app.kubernetes.io/name: traefik
-    # Helm sets app.kubernetes.io/instance to {release-name}-{chart-name} (traefik-traefik)
+    # Verified: Traefik chart sets instance=traefik-traefik (fullname includes chart name)
     app.kubernetes.io/instance: traefik-traefik
   ports:
     - name: web

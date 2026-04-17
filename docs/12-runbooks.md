@@ -834,7 +834,7 @@ helm history traefik -n traefik
 helm rollback traefik <revision> -n traefik
 
 # After git revert + push, resume
-task flux:resume -- traefik/HelmRelease/traefik
+task flux:resume -- traefik/helmrelease/traefik
 task flux:reconcile
 ```
 
