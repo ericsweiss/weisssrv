@@ -715,9 +715,14 @@ def fetch_dockerhub_version(svc: dict) -> str:
         if match:
             major_version_filter = match.group(1)
 
-    # For postgres, use larger page size to find alpine/trixie tags
+    # For postgres, use larger page size to find alpine/trixie tags.
+    # For version_prefix-pinned services, use Docker Hub's name= filter so
+    # old tags that have scrolled off the first page are still found.
     page_size = 100 if image == "library/postgres" else 50
+    version_prefix = svc.get("version_prefix", "")
     url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={page_size}&ordering=last_updated"
+    if version_prefix:
+        url += f"&name={version_prefix}"
     data = _make_request(url)
 
     best_tag = None
@@ -772,9 +777,14 @@ def fetch_lsio_version(svc: dict) -> str:
     version_regex = svc["lsio_version_regex"]
 
     # Docker Hub API v2 - list tags sorted by most recently updated
-    # For postgres, use larger page size to find alpine/trixie tags
+    # For postgres, use larger page size to find alpine/trixie tags.
+    # For version_prefix-pinned services, use Docker Hub's name= filter so
+    # old tags that have scrolled off the first page are still found.
     page_size = 100 if image == "library/postgres" else 50
+    version_prefix = svc.get("version_prefix", "")
     url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={page_size}&ordering=last_updated"
+    if version_prefix:
+        url += f"&name={version_prefix}"
     data = _make_request(url)
 
     best_version = None
