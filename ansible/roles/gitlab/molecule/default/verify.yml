@@ -233,7 +233,7 @@
         that:
           - gitlab_config is search('worker_processes.*=.*2')
           - gitlab_config is search('concurrency.*=.*10')
-          - gitlab_config is search('prometheus_monitoring.*enable.*=.*false')
+          - gitlab_config is search('prometheus_monitoring.*enable.*=.*true')
         fail_msg: "Performance settings not configured correctly"
         success_msg: "Performance settings configured correctly"
 
