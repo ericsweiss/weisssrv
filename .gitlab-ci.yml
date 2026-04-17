@@ -1212,6 +1212,66 @@ deploy-verify:
       EXIT=0
 
       echo ""
+      echo "=== Server-side dry-run validation ==="
+      # Validate rendered manifests against the cluster API without applying.
+      # Catches CRD field mismatches and API validation issues that kubeconform
+      # (offline schema) cannot detect. Runs before Flux reconcile so issues
+      # are surfaced even if Flux itself would fail to apply them.
+      VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+      if [ -f "$VERSIONS_CONFIGMAP" ]; then
+        VARS_OUTPUT=$(python3 -c "
+        import yaml
+        with open('$VERSIONS_CONFIGMAP') as f:
+            doc = yaml.safe_load(f)
+        for k, v in doc.get('data', {}).items():
+            print(f'{k}\t{v}')
+        ") || { echo "WARNING: failed to extract version keys for dry-run"; VARS_OUTPUT=""; }
+        if [ -n "$VARS_OUTPUT" ]; then
+          while IFS=$'\t' read -r k v; do
+            [ -n "$k" ] && export "$k=$v"
+          done <<< "$VARS_OUTPUT"
+          ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+          for ks in kubernetes/clusters/weisssrv/*.yaml; do
+            NAME=$(basename "$ks" .yaml)
+            [ "$NAME" = "kustomization" ] && continue
+            SRCPATH=$(python3 -c "
+            import yaml
+            with open('$ks') as f:
+                doc = yaml.safe_load(f)
+            print(doc.get('spec',{}).get('path',''))
+            " 2>/dev/null) || continue
+            [ -z "$SRCPATH" ] && continue
+            SRCPATH=${SRCPATH#./}
+            echo "  dry-run: $SRCPATH"
+            RAW=$(kustomize build "$SRCPATH" 2>/dev/null) || { echo "    SKIP: kustomize build failed (caught by flux-lint)"; continue; }
+            RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+            if ! echo "$RENDERED" | kubectl apply --dry-run=server -f - > /dev/null 2>&1; then
+              echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
+              echo "$RENDERED" | kubectl apply --dry-run=server -f - 2>&1 | head -20
+              EXIT=1
+            fi
+          done
+        fi
+      else
+        echo "WARNING: $VERSIONS_CONFIGMAP not found, skipping dry-run"
+      fi
+
+      # Snapshot pre-reconcile state to distinguish steady-state from bootstrap.
+      # If all Kustomizations are already Ready, this is a steady-state push and
+      # non-Ready ExternalSecrets should be treated as failures. During bootstrap
+      # or recovery (some Kustomizations not yet Ready), ESO may still be starting
+      # and ES non-readiness is expected.
+      PRE_KS_NOT_READY=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A -o json 2>/dev/null \
+        | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))] | length' 2>/dev/null || echo "999")
+      STEADY_STATE=false
+      if [ "$PRE_KS_NOT_READY" -eq 0 ]; then
+        STEADY_STATE=true
+        echo "Cluster is steady-state (all Kustomizations were Ready pre-reconcile)"
+      else
+        echo "Cluster is in bootstrap/recovery ($PRE_KS_NOT_READY Kustomization(s) not Ready pre-reconcile)"
+      fi
+
+      echo ""
       echo "=== Triggering Flux reconciliation ==="
       # Force Flux to reconcile the current commit before checking status.
       # Without this, we would check stale state from the previous reconcile cycle.
@@ -1248,12 +1308,13 @@ deploy-verify:
       echo "ExternalSecret readiness:"
       ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))] | length')
       if [ "$ES_NOT_READY" -gt 0 ]; then
-        echo "WARNING: $ES_NOT_READY ExternalSecret(s) not Ready:"
         kubectl get externalsecrets -A -o json | jq -r '.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")) | "  \(.metadata.namespace)/\(.metadata.name)"'
-        echo "Non-critical: ExternalSecrets may still be syncing after first reconcile."
-        # TODO: once the cluster is past initial bootstrap and running steady-state,
-        # promote this to EXIT=1. Gate on whether all Kustomizations were already Ready
-        # before the reconcile trigger (i.e., this isn't a fresh bootstrap).
+        if [ "$STEADY_STATE" = "true" ]; then
+          echo "ERROR: $ES_NOT_READY ExternalSecret(s) not Ready on a steady-state cluster"
+          EXIT=1
+        else
+          echo "WARNING: $ES_NOT_READY ExternalSecret(s) not Ready (bootstrap/recovery — ESO may still be syncing)"
+        fi
       fi
 
       # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
@@ -1340,9 +1401,10 @@ deploy-verify:
         - kubernetes/**
         - scripts/**
   # No allow_failure: the verification explicitly fails if nodes aren't Ready,
-  # Flux reconciliation times out, any Flux resource is not Ready, or GitLab
-  # is unreachable. ExternalSecret readiness is a warning only (may still be
-  # syncing on first reconcile). All other conditions block the pipeline.
+  # Flux reconciliation times out, any Flux resource is not Ready, server-side
+  # dry-run rejects manifests, or GitLab is unreachable. ExternalSecret
+  # readiness is a hard failure on steady-state clusters (all Kustomizations
+  # were Ready pre-reconcile) and a warning during bootstrap/recovery.
 
 # ============================================================================
 # MAINTENANCE STAGE - Manual approval required
