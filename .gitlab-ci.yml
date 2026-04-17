@@ -283,6 +283,23 @@ terraform-fmt:
 # Requires: GitLab API Token and OpenAI API Key in 1Password
 pr-agent-review:
   stage: ai-review
+  needs:
+    # Wait for lint + security only — no need to block on slow test jobs.
+    # AI review benefits from knowing the code is lint-clean and secret-safe
+    # but doesn't depend on molecule/integration test results.
+    - job: shellcheck
+      optional: true
+    - job: yaml-lint
+      optional: true
+    - job: ansible-lint
+      optional: true
+    - job: terraform-fmt
+      optional: true
+    - job: flux-versions-sync
+      optional: true
+    - job: flux-lint
+      optional: true
+    - job: secret_detection
   image: codiumai/pr-agent:latest
   variables:
     CONFIG__GIT_PROVIDER: "gitlab"
@@ -719,6 +736,7 @@ include:
 
 secret_detection:
   stage: security
+  needs: []  # run in parallel with lint/test stages
   variables:
     SECRET_DETECTION_HISTORIC_SCAN: "false"
     SECRET_DETECTION_EXCLUDED_PATHS: "docs/,ansible/roles/*/molecule/"
