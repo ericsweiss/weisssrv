@@ -171,7 +171,7 @@ puma['worker_processes'] = {{ gitlab_puma_workers }}
 sidekiq['concurrency'] = {{ gitlab_sidekiq_concurrency }}
 
 # Reduce memory usage - disable unused services
-prometheus_monitoring['enable'] = false
+prometheus_monitoring['enable'] = true
 # Note: grafana was removed from GitLab omnibus in 16.0+
 
 # =============================================================================
