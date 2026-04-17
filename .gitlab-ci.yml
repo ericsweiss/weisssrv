@@ -1554,6 +1554,11 @@ deploy-verify:
       done
 
       echo ""
+      echo "=== Observability Stack ==="
+      kubectl get pods -n observability --no-headers 2>/dev/null | grep -v Running && echo "WARNING: Not all observability pods are Running" || echo "All observability pods running"
+      kubectl get helmreleases -n observability --no-headers 2>/dev/null | grep -v "True" && echo "WARNING: Not all observability HelmReleases are Ready" || echo "All observability HelmReleases ready"
+
+      echo ""
       echo "LoadBalancer services:"
       kubectl get svc -A | grep LoadBalancer || true
 

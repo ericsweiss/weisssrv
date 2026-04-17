@@ -648,6 +648,13 @@ if systemctl is-active k3s &>/dev/null; then
     echo "--- MetalLB Configuration ---"
     sudo k3s kubectl get ipaddresspool -n metallb-system 2>/dev/null || echo "Cannot get IP pools"
     sudo k3s kubectl get l2advertisement -n metallb-system 2>/dev/null || echo "Cannot get L2 advertisements"
+    echo ""
+    echo "--- Observability Namespace ---"
+    sudo k3s kubectl get pods -n observability -o wide 2>/dev/null || echo "observability namespace not found"
+    sudo k3s kubectl get pvc -n observability 2>/dev/null
+    sudo k3s kubectl get helmreleases -n observability 2>/dev/null
+    sudo k3s kubectl get externalsecrets -n observability 2>/dev/null
+    sudo k3s kubectl get servicemonitors -n observability 2>/dev/null
 else
     echo "(Not a k3s server node, skipping cluster-wide data)"
     exit 2
