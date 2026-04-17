@@ -1,0 +1,11 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - externalsecret.yaml
+  - exportarr.yaml
+  - blackbox-exporter.yaml
+  - proxmox-exporter.yaml
+  - zfs-exporter.yaml
+  - adguard-exporter.yaml
+  - unbound-exporter.yaml

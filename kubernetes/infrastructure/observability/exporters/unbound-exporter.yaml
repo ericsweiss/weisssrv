@@ -1,0 +1,80 @@
+---
+# Unbound Exporter — remote scrape of unbound_exporter running on dns-01 and dns-02.
+# The exporter binaries run on the hosts (not in-cluster).
+
+# ---------------------------------------------------------------------------
+# dns-01 (192.168.0.150)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: unbound-exporter-dns-01
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: unbound-exporter
+    app.kubernetes.io/instance: dns-01
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9167
+      targetPort: 9167
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: unbound-exporter-dns-01
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.150
+    ports:
+      - name: metrics
+        port: 9167
+
+---
+# ---------------------------------------------------------------------------
+# dns-02 (192.168.0.160)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: unbound-exporter-dns-02
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: unbound-exporter
+    app.kubernetes.io/instance: dns-02
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9167
+      targetPort: 9167
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: unbound-exporter-dns-02
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.160
+    ports:
+      - name: metrics
+        port: 9167
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: unbound-exporter
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: unbound-exporter
+  endpoints:
+    - port: metrics
+      interval: 60s

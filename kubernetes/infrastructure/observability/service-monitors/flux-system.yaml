@@ -1,0 +1,18 @@
+---
+# Scrape Flux controller metrics (all 4 controllers expose :8080/metrics)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: flux-system
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - flux-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: flux
+  endpoints:
+    - port: http-prom
+      interval: 30s
+      path: /metrics
