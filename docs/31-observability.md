@@ -53,9 +53,11 @@ infrastructure-observability    <-- this stack
 
 Flux reconciles the observability stack after `infrastructure-configs` is Ready (so the ClusterSecretStore, ClusterIssuer, and MetalLB IP pools exist) but before `apps` (so ServiceMonitor CRDs are available for application namespaces).
 
+**Trade-off:** `apps` depends on `infrastructure-observability`, so a failed observability deploy blocks all application reconciliation. This is intentional for CRD ordering on clean bootstrap, but means observability issues can impact apps. If this becomes problematic, change `apps.yaml` `dependsOn` back to `infrastructure-configs` — ServiceMonitor CRDs persist in Kubernetes even if the observability Kustomization temporarily fails.
+
 ### Namespace
 
-All resources deploy into the `observability` namespace with Pod Security Standards set to `baseline`.
+All resources deploy into the `observability` namespace with Pod Security Standards set to `privileged` (required by node-exporter's hostPID, hostNetwork, and hostPath mounts).
 
 ### Storage
 
