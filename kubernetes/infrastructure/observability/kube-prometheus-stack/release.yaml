@@ -341,6 +341,7 @@ spec:
                   /
                   sum(rate(traefik_service_requests_total[5m]))
                   > 0.05
+                  and sum(rate(traefik_service_requests_total[5m])) > 0
                 for: 5m
                 labels:
                   severity: warning
@@ -353,7 +354,8 @@ spec:
           - name: homelab.backup
             rules:
               - alert: ZFSSnapshotStale
-                expr: time() - zfs_snapshot_creation_timestamp_seconds > 86400
+                # Metric name from pdf/zfs_exporter — verify after deployment
+                expr: time() - max by (dataset) (zfs_dataset_snapshot_creation_seconds) > 86400
                 for: 1h
                 labels:
                   severity: warning
