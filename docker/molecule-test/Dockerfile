@@ -38,7 +38,8 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     sudo \
     pciutils \
     # --- base role (VM packages) ---
-    qemu-guest-agent \
+    # NOTE: qemu-guest-agent intentionally excluded — the base role's
+    # molecule verify asserts it's NOT installed in Docker containers.
     # --- base role (SSH + misc) ---
     openssh-server \
     fail2ban \
@@ -55,9 +56,13 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     # --- smtp_relay / postfix_null_client ---
     postfix \
     libsasl2-modules \
+    sasl2-bin \
     mailutils \
-    # --- adguard_home / unbound ---
+    # --- adguard_home ---
+    python3-passlib \
+    # --- unbound ---
     unbound \
+    dns-root-data \
     # --- qol role ---
     zsh \
     fzf \
@@ -74,8 +79,12 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     procps \
     ethtool \
     python3 \
-    python3-apt \
-    && rm -rf /var/lib/apt/lists/*
+    python3-apt
+    # NOTE: intentionally NOT removing /var/lib/apt/lists/* — keeping the
+    # apt cache warm so roles with `update_cache: true` get a near-instant
+    # cache hit instead of re-downloading all package metadata from the
+    # internet (~2-3 min saved per role). The ~30MB image size increase is
+    # worth it for CI speed.
 
 # Pre-create the ansible tmp directory (avoids "Failed to create
 # temporary directory" errors during molecule prepare)

@@ -199,13 +199,19 @@ build-molecule-image:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
-    IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test:latest"
+    IMAGE_BASE: "${CI_REGISTRY_IMAGE}/molecule-test"
   before_script:
     - apt-get update -qq && apt-get install -y -qq docker.io
   script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker build -t "$IMAGE" docker/molecule-test/
-    - docker push "$IMAGE"
+    - docker build -t "${IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}" -t "${IMAGE_BASE}:latest" docker/molecule-test/
+    # Push both tags: SHA for traceability, latest as the default for
+    # molecule configs + local dev. On main, latest always points at the
+    # most recently merged Dockerfile. On MR branches, the SHA tag is
+    # isolated — molecule tests in the same MR pipeline use it via the
+    # MOLECULE_IMAGE variable set below.
+    - docker push "${IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
+    - docker push "${IMAGE_BASE}:latest"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -683,12 +689,22 @@ flux-lint:
     PY_COLORS: "1"
     ANSIBLE_CALLBACKS_ENABLED: junit
     JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
+    MOLECULE_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test"
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq docker.io
-    # Authenticate DinD to pull the pre-built molecule image from the
-    # private GitLab Container Registry.
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    # If the build job ran in this pipeline (Dockerfile changed), pull the
+    # SHA-tagged image and re-tag as :latest so molecule.yml configs (which
+    # hardcode :latest) use the freshly-built image. Otherwise pull :latest
+    # from the registry (the most recently merged version). This prevents
+    # two concurrent MRs from stomping each other's :latest during CI.
+    - |
+      if docker pull "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" 2>/dev/null; then
+        docker tag "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" "${MOLECULE_IMAGE}:latest"
+      else
+        docker pull "${MOLECULE_IMAGE}:latest"
+      fi
     - pip install --quiet -r requirements.txt
     - ansible-galaxy collection install -r ansible/requirements.yml
     - mkdir -p "$CI_PROJECT_DIR/junit"
@@ -1349,12 +1365,16 @@ deploy-verify:
         for ks in kubernetes/clusters/weisssrv/*.yaml; do
           NAME=$(basename "$ks" .yaml)
           [ "$NAME" = "kustomization" ] && continue
-          SRCPATH=$(python3 -c "
+          if ! SRCPATH=$(python3 -c "
           import yaml
           with open('$ks') as f:
               doc = yaml.safe_load(f)
-          print(doc.get('spec',{}).get('path',''))
-          " 2>/dev/null) || continue
+          print(doc.get('spec',{}).get('path','') or '')
+          "); then
+            echo "    ERROR: failed to parse $ks"
+            EXIT=1
+            continue
+          fi
           [ -z "$SRCPATH" ] && continue
           SRCPATH=${SRCPATH#./}
           echo "  dry-run: $SRCPATH"
