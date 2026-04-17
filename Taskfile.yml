@@ -415,6 +415,31 @@ tasks:
       - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s
       - kubectl rollout status statefulset/authentik-postgresql -n authentik --timeout=300s
 
+  # ── Observability ────────────────────────────────────────────────────
+  observability:status:
+    desc: Show observability namespace health
+    cmds:
+      - kubectl get pods -n observability -o wide
+      - kubectl get svc -n observability
+      - kubectl get pvc -n observability
+      - kubectl get helmreleases -n observability
+      - kubectl get externalsecrets -n observability
+      - kubectl get servicemonitors -n observability
+
+  observability:logs:
+    desc: View observability component logs
+    vars:
+      COMPONENT: '{{.COMPONENT | default "prometheus"}}'
+    cmds:
+      - kubectl logs -n observability -l app.kubernetes.io/name={{.COMPONENT}} --tail=100 -f {{.CLI_ARGS}}
+
+  observability:restart:
+    desc: Restart observability pods
+    cmds:
+      - kubectl rollout restart deployment -n observability
+      - kubectl rollout restart statefulset -n observability
+      - kubectl rollout restart daemonset -n observability
+
   k3s:backup:
     desc: Create etcd snapshot on k3s server
     cmds:
