@@ -23,6 +23,16 @@ spec:
           env:
             - name: ADGUARD_SERVERS
               value: "http://192.168.0.150,http://192.168.0.160"
+            - name: ADGUARD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: adguard-username
+            - name: ADGUARD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: adguard-password
           ports:
             - name: metrics
               containerPort: 9618

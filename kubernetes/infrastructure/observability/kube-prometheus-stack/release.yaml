@@ -101,7 +101,8 @@ spec:
           smtp_smarthost: "smtp-relay.esweiss.com:587"
           smtp_from: "Alertmanager <alertmanager@esweiss.com>"
           smtp_require_tls: true
-          smtp_auth_username_file: /etc/alertmanager/secrets/observability-secrets/smtp-username
+          # smtp_auth_username does not support _file suffix — inline is fine (not sensitive)
+          smtp_auth_username: relayuser
           smtp_auth_password_file: /etc/alertmanager/secrets/observability-secrets/smtp-password
 
         route:
@@ -191,6 +192,9 @@ spec:
           labelValue: "1"
           searchNamespace: ALL
           folderAnnotation: grafana_folder
+        datasources:
+          # Set fixed UID so custom dashboard JSON can reference "prometheus"
+          uid: prometheus
 
       # Additional datasource: Loki for log queries
       additionalDataSources:

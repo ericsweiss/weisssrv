@@ -1,5 +1,7 @@
 ---
-# Scrape GitLab metrics from the external VM
+# Scrape GitLab metrics from the external VM.
+# Requires prometheus_monitoring['enable'] = true in gitlab.rb
+# (currently disabled — enable it before expecting data from this target).
 apiVersion: v1
 kind: Service
 metadata:
