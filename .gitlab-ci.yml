@@ -445,6 +445,7 @@ python-tests:
   # they exercise: test_check_versions.py for the version-update tooling and
   # test_generate_versions_configmap.py for the ConfigMap generator.
   stage: test
+  needs: []  # run in parallel with lint stage
   image: python:3.11-slim
   before_script:
     - pip install --quiet pytest pyyaml
@@ -602,6 +603,7 @@ flux-lint:
 
 molecule-tests:
   stage: test
+  needs: []  # run in parallel with lint stage
   image: python:3.11
   services:
     - docker:24.0-dind
@@ -660,6 +662,7 @@ molecule-tests:
 
 integration-tests:
   stage: test
+  needs: []  # run in parallel with lint stage
   image: python:3.11
   services:
     - docker:24.0-dind
