@@ -16,4 +16,6 @@ resources:
   - external-dns.yaml
   - authentik.yaml
   - gitlab.yaml
+  - prometheus-community.yaml
+  - grafana.yaml
   - versions-configmap.yaml
