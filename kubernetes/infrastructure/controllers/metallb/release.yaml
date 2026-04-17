@@ -30,7 +30,6 @@ spec:
     prometheus:
       serviceMonitor:
         enabled: true
-      serviceAccount: metallb-controller
     speaker:
       # Only run speakers on nodes labeled for ingress traffic.
       nodeSelector:
