@@ -224,6 +224,7 @@ build-molecule-image:
 # ============================================================================
 
 shellcheck:
+  needs: []
   stage: lint
   image: koalaman/shellcheck-alpine:stable
   script:
@@ -240,6 +241,7 @@ shellcheck:
     - !reference [.changes-scripts, rules]
 
 yaml-lint:
+  needs: []
   stage: lint
   before_script:
     - apt-get update -qq
@@ -264,6 +266,7 @@ yaml-lint:
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 ansible-lint:
+  needs: []
   stage: lint
   extends: .ansible-base
   script:
@@ -301,6 +304,7 @@ ansible-lint:
     - !reference [.changes-ansible, rules]
 
 terraform-fmt:
+  needs: []
   stage: lint
   image:
     name: hashicorp/terraform:1.5
@@ -390,6 +394,7 @@ pr-agent-review:
 # ============================================================================
 
 terraform-validate:
+  needs: []
   stage: validate
   image:
     name: hashicorp/terraform:1.5
@@ -402,6 +407,7 @@ terraform-validate:
     - !reference [.changes-terraform, rules]
 
 terraform-plan:
+  needs: []
   stage: validate
   image:
     name: hashicorp/terraform:1.5
@@ -453,6 +459,7 @@ terraform-plan:
         - terraform/**
 
 flux-versions-sync:
+  needs: []
   # Fails if kubernetes/infrastructure/sources/versions-configmap.yaml is out
   # of sync with ansible/inventories/prod/group_vars/all.yml. Run
   # `task flux:sync-versions` locally to regenerate and commit.
@@ -522,6 +529,7 @@ python-tests:
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 flux-lint:
+  needs: []
   # Renders every top-level Flux Kustomization, substitutes postBuild vars
   # from kubernetes/infrastructure/sources/versions-configmap.yaml, verifies
   # zero unsubstituted ${var} placeholders remain, then validates with
@@ -678,6 +686,9 @@ flux-lint:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq docker.io
+    # Authenticate DinD to pull the pre-built molecule image from the
+    # private GitLab Container Registry.
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
     - pip install --quiet -r requirements.txt
     - ansible-galaxy collection install -r ansible/requirements.yml
     - mkdir -p "$CI_PROJECT_DIR/junit"
