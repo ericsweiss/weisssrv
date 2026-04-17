@@ -7,6 +7,9 @@
 # HelmRelease deploys successfully (Ready) before the Secret exists — pods
 # will crashloop briefly until the configs stage creates it. This is expected
 # and self-healing (typically <2 minutes).
+# WARNING: do NOT add spec.install.timeout with --wait semantics to this
+# HelmRelease. That would create a real deadlock (Helm waits for pod health
+# → pod needs Secret → Secret is in configs → configs waits for controllers).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:

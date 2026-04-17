@@ -759,8 +759,8 @@ flux get all -A             # Detailed view
 flux get hr -n traefik      # Watch specific release
 ```
 
-Flux typically reconciles within ~1 minute (GitLab webhook shortens this to
-seconds). Helm charts upgrade in-place; Deployments/StatefulSets roll with
+Flux typically reconciles within ~1 minute (planned GitLab webhook will
+shorten this to seconds -- see docs/29-flux-operations.md). Helm charts upgrade in-place; Deployments/StatefulSets roll with
 the image tag from the substituted `${version}` placeholder. For fast local
 iteration without committing, `task flux:dev-apply -- kubernetes/apps/<app>`
 applies a rendered Kustomization; Flux will revert to the committed state on

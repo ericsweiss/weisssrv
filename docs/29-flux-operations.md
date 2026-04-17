@@ -352,7 +352,7 @@ task flux:suspend -- flux-system/kustomization/apps
 task flux:resume -- authentik/helmrelease/authentik
 ```
 
-The argument is `<namespace>/<kind>/<name>`. Kind is one of `kustomization`, `helmrelease`, `source`, `externalsecret`.
+The argument is `<namespace>/<kind>/<name>`. Kind must be one of `kustomization` or `helmrelease` -- these are the only single-word Flux resource kinds that the task wrapper handles correctly (it splits on `/` and passes the kind to `flux suspend <kind>`). Multi-word kinds like `source git` or `source helm` contain a space that would break the slash-delimited parsing. `externalsecret` is not a Flux resource (it belongs to ESO and cannot be suspended via the `flux` CLI). For other Flux resources, use the `flux` CLI directly (e.g., `flux suspend source git flux-system -n flux-system`).
 
 ### Top-Level Suspend
 

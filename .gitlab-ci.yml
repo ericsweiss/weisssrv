@@ -1195,6 +1195,16 @@ deploy-verify:
       flux --version
     - |
       set -eo pipefail
+
+      # Install tools needed for server-side dry-run validation.
+      # These are already in the flux-lint job's before_script but deploy-verify
+      # extends .k3s-deploy-base (kubectl + jq only), so we install them here.
+      apt-get install -y -qq gettext-base > /dev/null 2>&1
+      pip install --quiet pyyaml
+      curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
+      echo "fa2daf1d96c6cce7a91fb00380044a61f21d15c38fe3cacba7b1966b2466dec9  /tmp/kustomize.tar.gz" | sha256sum -c -
+      tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
+
       echo "=== Post-Deployment Verification ==="
 
       echo "Checking node status..."
@@ -1218,42 +1228,42 @@ deploy-verify:
       # (offline schema) cannot detect. Runs before Flux reconcile so issues
       # are surfaced even if Flux itself would fail to apply them.
       VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-      if [ -f "$VERSIONS_CONFIGMAP" ]; then
-        VARS_OUTPUT=$(python3 -c "
-        import yaml
-        with open('$VERSIONS_CONFIGMAP') as f:
-            doc = yaml.safe_load(f)
-        for k, v in doc.get('data', {}).items():
-            print(f'{k}\t{v}')
-        ") || { echo "WARNING: failed to extract version keys for dry-run"; VARS_OUTPUT=""; }
-        if [ -n "$VARS_OUTPUT" ]; then
-          while IFS=$'\t' read -r k v; do
-            [ -n "$k" ] && export "$k=$v"
-          done <<< "$VARS_OUTPUT"
-          ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
-          for ks in kubernetes/clusters/weisssrv/*.yaml; do
-            NAME=$(basename "$ks" .yaml)
-            [ "$NAME" = "kustomization" ] && continue
-            SRCPATH=$(python3 -c "
-            import yaml
-            with open('$ks') as f:
-                doc = yaml.safe_load(f)
-            print(doc.get('spec',{}).get('path',''))
-            " 2>/dev/null) || continue
-            [ -z "$SRCPATH" ] && continue
-            SRCPATH=${SRCPATH#./}
-            echo "  dry-run: $SRCPATH"
-            RAW=$(kustomize build "$SRCPATH" 2>/dev/null) || { echo "    SKIP: kustomize build failed (caught by flux-lint)"; continue; }
-            RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
-            if ! echo "$RENDERED" | kubectl apply --dry-run=server -f - > /dev/null 2>&1; then
-              echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
-              echo "$RENDERED" | kubectl apply --dry-run=server -f - 2>&1 | head -20
-              EXIT=1
-            fi
-          done
-        fi
-      else
-        echo "WARNING: $VERSIONS_CONFIGMAP not found, skipping dry-run"
+      if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
+        echo "ERROR: $VERSIONS_CONFIGMAP not found"
+        exit 1
+      fi
+      VARS_OUTPUT=$(python3 -c "
+      import yaml
+      with open('$VERSIONS_CONFIGMAP') as f:
+          doc = yaml.safe_load(f)
+      for k, v in doc.get('data', {}).items():
+          print(f'{k}\t{v}')
+      ") || { echo "ERROR: failed to extract version keys for dry-run"; exit 1; }
+      if [ -n "$VARS_OUTPUT" ]; then
+        while IFS=$'\t' read -r k v; do
+          [ -n "$k" ] && export "$k=$v"
+        done <<< "$VARS_OUTPUT"
+        ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+        for ks in kubernetes/clusters/weisssrv/*.yaml; do
+          NAME=$(basename "$ks" .yaml)
+          [ "$NAME" = "kustomization" ] && continue
+          SRCPATH=$(python3 -c "
+          import yaml
+          with open('$ks') as f:
+              doc = yaml.safe_load(f)
+          print(doc.get('spec',{}).get('path',''))
+          " 2>/dev/null) || continue
+          [ -z "$SRCPATH" ] && continue
+          SRCPATH=${SRCPATH#./}
+          echo "  dry-run: $SRCPATH"
+          RAW=$(kustomize build "$SRCPATH" 2>/dev/null) || { echo "    FAIL: kustomize build failed for $SRCPATH"; EXIT=1; continue; }
+          RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+          if ! echo "$RENDERED" | kubectl apply --dry-run=server -f - > /dev/null 2>&1; then
+            echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
+            echo "$RENDERED" | kubectl apply --dry-run=server -f - 2>&1 | head -20
+            EXIT=1
+          fi
+        done
       fi
 
       # Snapshot pre-reconcile state to distinguish steady-state from bootstrap.

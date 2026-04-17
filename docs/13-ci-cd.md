@@ -157,7 +157,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 | Job | Triggers | Description | Blocks pipeline? |
 |-----|----------|-------------|------------------|
 | `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
-| `deploy-verify` | All pushes to main (no path filter) | Server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
+| `deploy-verify` | `ansible/**`, `terraform/**`, `kubernetes/**`, `scripts/**` (pushes to main) | Server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
 
 > **Note:** The two jobs have different semantics:
 > - `deploy-gitlab-verify` is informational (`allow_failure: true`) — pipeline continues on failure.

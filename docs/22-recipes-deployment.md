@@ -94,9 +94,9 @@ ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/bar-assistant"
 
 ### 2. 1Password Secrets (Required)
 
-Create the following items in your **Homelab** vault before deploying. The deployment task reads secrets from 1Password on every run, enabling credential rotation by simply updating 1Password and redeploying.
+Create the following items in your **Homelab** vault before deploying. Secrets are managed by External Secrets Operator (ESO), which syncs credentials from 1Password into Kubernetes Secrets every 24 hours. To rotate credentials, update the value in 1Password and run `task flux:rotate-secret -- recipes` to force an immediate refresh and pod restart.
 
-**IMPORTANT**: All secrets must exist in 1Password before deployment. The task will NOT generate random passwords - it will fail with a clear error if required items are missing. This ensures idempotent deployments (re-running won't break your database with new passwords).
+**IMPORTANT**: All secrets must exist in 1Password before deployment. If a required 1Password item is missing, the ExternalSecret enters a non-Ready state and the consuming pods will fail to start. Optional secrets (like the OpenAI API key) are isolated in a separate ExternalSecret so their absence does not block the required credentials.
 
 **Required Items (deployment fails without these):**
 
