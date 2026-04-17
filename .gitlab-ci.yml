@@ -408,12 +408,15 @@ flux-versions-sync:
   before_script:
     - pip install --quiet pyyaml
   script:
+    # Save the committed version, regenerate, then compare. Uses `diff`
+    # instead of `git diff` because the slim python image has no git.
+    - cp kubernetes/infrastructure/sources/versions-configmap.yaml /tmp/committed.yaml
     - python3 scripts/generate-versions-configmap.py
     - |
-      if ! git diff --exit-code --quiet kubernetes/infrastructure/sources/versions-configmap.yaml; then
+      if ! diff -q /tmp/committed.yaml kubernetes/infrastructure/sources/versions-configmap.yaml >/dev/null 2>&1; then
         echo "ERROR: versions-configmap.yaml is out of sync with all.yml"
         echo "Run: task flux:sync-versions (or python3 scripts/generate-versions-configmap.py) and commit the result."
-        git --no-pager diff kubernetes/infrastructure/sources/versions-configmap.yaml
+        diff -u /tmp/committed.yaml kubernetes/infrastructure/sources/versions-configmap.yaml || true
         exit 1
       fi
       echo "versions-configmap.yaml is in sync with all.yml"
