@@ -4,3 +4,7 @@ kind: Kustomization
 resources:
   - flux.yaml
   - infrastructure.yaml
+  - traefik.yaml
+  - cert-manager.yaml
+  - download-clients.yaml
+  - blackbox.yaml
