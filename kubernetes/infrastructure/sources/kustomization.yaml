@@ -1,4 +1,11 @@
 ---
+# sources/ is the earliest-reconciling layer: HelmRepository sources (where
+# helm-controller pulls charts from) and the cluster-versions ConfigMap
+# (which controllers/ and apps/ read for postBuild substitution).
+#
+# versions-configmap.yaml lives here intentionally — it MUST exist before
+# controllers/ reconciles so that `${helm_chart_versions_*}` placeholders
+# resolve when HelmReleases render.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -9,3 +16,4 @@ resources:
   - external-dns.yaml
   - authentik.yaml
   - gitlab.yaml
+  - versions-configmap.yaml

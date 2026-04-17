@@ -4,8 +4,14 @@
 # download-clients, recipes, gitlab-runner, gitlab-runner-privileged,
 # gitlab-agent, vm-ingress).
 #
-# dependsOn infrastructure: apps will not reconcile until platform (ESO,
-# MetalLB, cert-manager, Traefik, external-dns) is Ready.
+# dependsOn infrastructure-configs: apps will not reconcile until the full
+# infrastructure chain (sources → controllers → configs) is Ready, which
+# transitively waits for all platform controllers and CRDs.
+#
+# optional: false — the cluster-versions ConfigMap is applied by
+# infrastructure-sources, which must be Ready before this Kustomization runs.
+# A missing ConfigMap at this point indicates a real problem and should fail
+# loudly rather than silently render empty chart/image versions.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -16,7 +22,7 @@ spec:
   retryInterval: 1m
   timeout: 15m
   dependsOn:
-    - name: infrastructure
+    - name: infrastructure-configs
   sourceRef:
     kind: GitRepository
     name: flux-system
@@ -27,4 +33,4 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: cluster-versions
-        optional: true
+        optional: false

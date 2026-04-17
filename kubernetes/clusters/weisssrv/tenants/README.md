@@ -20,6 +20,18 @@ See `docs/30-multi-repo-onboarding.md` for the full onboarding procedure.
 
 One file per tenant, named after the tenant repo: `<repo-slug>.yaml`.
 
+Every tenant file requires a matching edit to `kustomization.yaml` in this
+directory so Flux picks it up (Kustomize does not auto-discover files):
+
+```yaml
+# kubernetes/clusters/weisssrv/tenants/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - example-app.yaml        # <-- add this line alongside your new tenant file
+  - friend-project.yaml
+```
+
 ## Example: 1Password-backed tenant
 
 ```yaml
@@ -141,11 +153,13 @@ automatically — tracked in `docs/16-next-steps.md`.
 
 ## Removal
 
-Delete `tenants/<slug>.yaml` and commit. Flux prunes:
-- The tenant's `Kustomization` (which cascades to everything it created)
+Delete `tenants/<slug>.yaml` and the matching line in `kustomization.yaml`,
+then commit. Flux prunes:
+- The tenant's `Kustomization` (which cascades to everything it created,
+  including the tenant's ExternalSecrets — and because those use
+  `creationPolicy: Owner`, their rendered `Secret`s are deleted too)
 - The tenant's `GitRepository` source
-- The tenant's `ClusterSecretStore` (ExternalSecrets in the tenant namespace
-  lose their store; their Secrets are deleted because `creationPolicy: Owner`)
+- The tenant's `ClusterSecretStore` (now has no consumers)
 - The tenant namespace
 
 The `onepassword-sdk-token` bootstrap secret is not Flux-managed; delete

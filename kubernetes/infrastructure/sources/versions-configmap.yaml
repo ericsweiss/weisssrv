@@ -8,6 +8,7 @@ data:
   adguardhome_sync_version: 0.9.0
   authentik_version: 2026.2.2
   bar_assistant_version: 5.13.2
+  busybox_version: '1.37'
   debian_version: '13'
   gitlab_agent_helm_version: 2.26.0
   gitlab_runner_helm_version: 0.87.1
@@ -23,6 +24,7 @@ data:
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.3-alpine
   mealie_version: v3.15.2
+  meilisearch_version: v1.15.2
   nzbget_version: '26.1'
   plex_version: 1.43.1.10611-1e34174b1
   postgresql_version: 18.3-trixie
@@ -30,6 +32,7 @@ data:
   pulsarr_version: 0.15.2
   qbittorrent_version: 5.1.4
   radarr_version: 6.1.1.10360
+  redis_version: 7.4.8-alpine
   salt_rim_version: 4.14.1
   sonarr_version: 4.0.17.2952
   tailscale_version: 1.96.4

@@ -1,0 +1,35 @@
+---
+# Flux Kustomization: platform configs (CRs that depend on the controllers'
+# CRDs being installed). Includes ClusterSecretStore (ESO), ClusterIssuer +
+# wildcard Certificates (cert-manager), IPAddressPool + L2Advertisement
+# (MetalLB), CoreDNS HelmChartConfig (k3s helm-controller), cloudflare-ddns
+# CronJob, and shared-cloudflare-secrets ExternalSecrets.
+#
+# Depends on infrastructure-controllers being Ready so all required CRDs
+# exist and controllers are serving webhooks (cert-manager in particular).
+#
+# optional: false — same rationale as infrastructure-controllers: the
+# ConfigMap is guaranteed to exist at this point (sources → controllers →
+# configs). A missing ConfigMap here means a real bug.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-configs
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  dependsOn:
+    - name: infrastructure-controllers
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./kubernetes/infrastructure/configs
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-versions
+        optional: false

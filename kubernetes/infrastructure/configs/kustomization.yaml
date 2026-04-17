@@ -1,8 +1,14 @@
 ---
+# configs/ reconciles AFTER controllers/ because every resource here is a CR
+# defined by a CRD that controllers/ installs (ClusterSecretStore needs ESO,
+# ClusterIssuer + Certificates need cert-manager, IPAddressPool needs MetalLB,
+# ExternalSecrets need ESO + ClusterSecretStore).
+#
+# The versions-configmap.yaml lives under sources/ (not here) because it must
+# exist before controllers/ renders HelmReleases with ${var} placeholders.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - versions-configmap.yaml
   - cluster-secret-store.yaml
   - cluster-issuer.yaml
   - metallb-ip-pools.yaml
