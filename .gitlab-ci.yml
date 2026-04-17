@@ -449,7 +449,11 @@ python-tests:
   before_script:
     - pip install --quiet pytest pyyaml
   script:
-    - pytest scripts/ -v
+    - pytest scripts/ -v --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -606,11 +610,17 @@ molecule-tests:
     DOCKER_TLS_CERTDIR: ""
     ANSIBLE_FORCE_COLOR: "1"
     PY_COLORS: "1"
+    # Ansible's built-in junit callback writes one XML file per playbook
+    # run into JUNIT_OUTPUT_DIR. Molecule invokes Ansible internally, so
+    # every converge/verify/idempotence step produces JUnit output.
+    ANSIBLE_CALLBACKS_ENABLED: junit
+    JUNIT_OUTPUT_DIR: /tmp/junit
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq docker.io
     - pip install --quiet -r requirements.txt
     - ansible-galaxy collection install -r ansible/requirements.yml
+    - mkdir -p /tmp/junit
   script:
     - cd ansible
     - |
@@ -624,6 +634,10 @@ molecule-tests:
         done
         cd ../..
       done
+  artifacts:
+    when: always
+    reports:
+      junit: /tmp/junit/*.xml
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -654,11 +668,14 @@ integration-tests:
     DOCKER_TLS_CERTDIR: ""
     ANSIBLE_FORCE_COLOR: "1"
     PY_COLORS: "1"
+    ANSIBLE_CALLBACKS_ENABLED: junit
+    JUNIT_OUTPUT_DIR: /tmp/junit
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq docker.io
     - pip install --quiet -r requirements.txt
     - ansible-galaxy collection install -r ansible/requirements.yml
+    - mkdir -p /tmp/junit
   script:
     - |
       for test_dir in ansible/integration-tests/*/; do
@@ -670,6 +687,10 @@ integration-tests:
           cd ../../..
         fi
       done
+  artifacts:
+    when: always
+    reports:
+      junit: /tmp/junit/*.xml
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
