@@ -706,6 +706,14 @@ flux-lint:
     JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
     MOLECULE_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test"
   before_script:
+    # Wait for DinD sidecar — with the pre-built CI image, the script
+    # starts before DinD is ready (no apt-get delay to absorb startup).
+    - |
+      for i in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break
+        echo "Waiting for DinD... ($i)"
+        sleep 1
+      done
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - |
       if docker pull "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" 2>/dev/null; then
