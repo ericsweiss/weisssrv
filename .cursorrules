@@ -1,8 +1,8 @@
 # Cursor Rules for weisssrv Homelab
 
-You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, Kubernetes (k3s), and GitOps principles.
+You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, Kubernetes (k3s), and Flux-based GitOps.
 
-**Tech Stack**: Ansible, Terraform, k3s, ZFS, Proxmox VE, Debian 13 (trixie)
+**Tech Stack**: Ansible, Terraform, k3s, Flux CD, External Secrets Operator (1Password SDK), ZFS, Proxmox VE, Debian 13 (trixie)
 
 See `CLAUDE.md` for the complete project overview, architecture, IP allocation, commands, storage architecture, secrets management, version management, and documentation index.
 
@@ -10,18 +10,25 @@ See `CLAUDE.md` for the complete project overview, architecture, IP allocation, 
 
 ### NEVER
 
-1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field`)
+1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field` for host tooling, or ID-based `ExternalSecret` manifests for in-cluster)
 2. **Automate ZFS pool creation/destruction** - Too critical, manual only
-3. **Skip deployment verification** - Always run `task deploy:verify` after changes
+3. **Skip deployment verification** - Run `task deploy:verify` (base infra) or `task flux:status` / `task flux:verify` (k8s) after changes
 4. **Hardcode credentials** - Use 1Password references exclusively
+5. **Run `kubectl apply -k ...` or `helm upgrade` as an ongoing operation** - Flux owns all Kubernetes state. The only exceptions are:
+   - `task flux:dev-apply -- <path>` for local iteration (Flux will revert on the next reconcile)
+   - The one-time bootstrap secret `onepassword-sdk-token` in `external-secrets` namespace
+   - Ansible-provisioned objects outside of `kubernetes/` (e.g. the k3s node layer itself)
+6. **Reference 1Password items by title in `ExternalSecret` manifests** - The 1Password SDK provider requires the item **ID** (e.g. `qwertyabc123/password`), no `op://` prefix, no `property:` field. Titles with spaces will silently fail.
 
 ### ALWAYS
 
-1. **Test with dry run first** - `task deploy:check` before deploying
+1. **Test with dry run first** - `task deploy:check` (Ansible) and `task flux:lint` (k8s) before shipping
 2. **Use fully qualified collection names** - `ansible.builtin.apt` not `apt`
-3. **Follow existing patterns** - Check similar roles for conventions
-4. **Update documentation** - When changing behavior, update docs/
+3. **Follow existing patterns** - Check similar roles or `kubernetes/apps/<neighbour>` for conventions
+4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes)
 5. **Use snake_case** - For all Ansible variables
+6. **Deploy Kubernetes changes via `git push`** - Flux reconciles within ~1 minute. Use `task flux:reconcile` to force.
+7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise.
 
 ## Code Conventions
 
@@ -66,9 +73,10 @@ See `docs/18-bootstrap-new-systems.md`
 
 ### Update Application Version
 1. `task maintenance:check-versions` - Check for updates
-2. `task maintenance:update-version SERVICE=<name>` - Update version in all.yml
-3. Deploy with appropriate task (see `CLAUDE.md` for full task list)
-4. `task deploy:verify` and/or `task k3s:status`
+2. `task maintenance:update-version SERVICE=<name>` - Update version in `ansible/inventories/prod/group_vars/all.yml`
+3. For Kubernetes workloads: `task flux:sync-versions` then `git commit` + `git push` - Flux rolls the new version out
+4. For base infra: run the appropriate deploy task (see `CLAUDE.md` for full task list)
+5. Verify: `task deploy:verify` (base infra), `task flux:status` (k8s), or `task k3s:status`
 
 ## Ansible Patterns
 
@@ -123,5 +131,9 @@ See `docs/18-bootstrap-new-systems.md`
 - **Inventory**: `ansible/inventories/prod/hosts.yml`
 - **Global vars / versions**: `ansible/inventories/prod/group_vars/all.yml`
 - **Task runner**: `Taskfile.yml` (run `task --list` for all tasks)
-- **K3s manifests**: `kubernetes/apps/` and `kubernetes/bootstrap/`
-- **All docs**: `docs/` (29 files covering hardware through GitLab migration)
+- **Flux entrypoint**: `kubernetes/clusters/weisssrv/` (flux-system, infrastructure-{sources,controllers,configs}.yaml, apps.yaml, tenants/)
+- **Platform sources**: `kubernetes/infrastructure/sources/` (HelmRepository CRs, versions-configmap.yaml)
+- **Platform controllers**: `kubernetes/infrastructure/controllers/` (external-secrets, metallb, cert-manager, traefik, external-dns)
+- **Platform configs**: `kubernetes/infrastructure/configs/` (cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/)
+- **Apps**: `kubernetes/apps/` (authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress)
+- **All docs**: `docs/` (see `CLAUDE.md` Documentation section for the index)

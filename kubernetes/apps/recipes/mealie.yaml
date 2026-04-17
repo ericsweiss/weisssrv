@@ -47,7 +47,7 @@ spec:
       containers:
         - name: postgres
           # Version managed in ansible/inventories/prod/group_vars/all.yml
-          image: postgres:${MEALIE_POSTGRESQL_VERSION}
+          image: postgres:${mealie_postgresql_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER
@@ -55,8 +55,8 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
-                  key: postgres-password
+                  name: recipes-secrets
+                  key: mealie-postgres-password
             - name: POSTGRES_DB
               value: mealie
             - name: PGDATA
@@ -162,7 +162,7 @@ spec:
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: mealie
-          image: ghcr.io/mealie-recipes/mealie:${MEALIE_VERSION}
+          image: ghcr.io/mealie-recipes/mealie:${mealie_version}
           imagePullPolicy: IfNotPresent
           env:
             # General settings
@@ -183,35 +183,35 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
-                  key: postgres-password
+                  name: recipes-secrets
+                  key: mealie-postgres-password
             - name: POSTGRES_SERVER
               value: mealie-postgres.recipes.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
             - name: POSTGRES_DB
               value: mealie
-            # SMTP configuration (uses existing relay)
+            # SMTP configuration (SASL-authenticated relay via smtp-relay.esweiss.com)
             - name: SMTP_HOST
               value: smtp-relay.esweiss.com
             - name: SMTP_PORT
               value: "587"
             - name: SMTP_AUTH_STRATEGY
               value: TLS
-            - name: SMTP_FROM_EMAIL
-              value: mealie@esweiss.com
-            - name: SMTP_FROM_NAME
-              value: Mealie
             - name: SMTP_USER
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
+                  name: recipes-secrets
                   key: smtp-username
             - name: SMTP_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
+                  name: recipes-secrets
                   key: smtp-password
+            - name: SMTP_FROM_EMAIL
+              value: mealie@esweiss.com
+            - name: SMTP_FROM_NAME
+              value: Mealie
             # OIDC/SSO configuration (Authentik)
             - name: OIDC_AUTH_ENABLED
               value: "true"
@@ -222,13 +222,13 @@ spec:
             - name: OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
-                  key: oidc-client-id
+                  name: recipes-secrets
+                  key: mealie-oidc-client-id
             - name: OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
-                  key: oidc-client-secret
+                  name: recipes-secrets
+                  key: mealie-oidc-client-secret
             - name: OIDC_SIGNUP_ENABLED
               value: "true"
             - name: OIDC_USER_GROUP
@@ -246,8 +246,9 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: mealie-secrets
-                  key: openai-api-key
+                  name: recipes-openai
+                  key: api-key
+                  optional: true
             - name: OPENAI_ENABLE_IMAGE_SERVICES
               value: "true"
             - name: OPENAI_SEND_DATABASE_DATA

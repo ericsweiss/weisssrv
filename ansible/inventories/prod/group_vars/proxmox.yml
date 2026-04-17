@@ -25,3 +25,8 @@ ssh_permit_root_login: "prohibit-password"
 # Fail2ban configuration for Proxmox hosts
 # Enable pveproxy jail to protect Proxmox web UI (port 8006) from brute-force attacks
 fail2ban_pveproxy_enabled: true
+
+# ip_forward=1 required for Tailscale subnet routing (advertised above).
+# pve_firewall occasionally resets this; nic_tuning role installs a sysctl.d
+# drop-in that persists across reboots and `sysctl --system` reloads.
+nic_tuning_ip_forward: true

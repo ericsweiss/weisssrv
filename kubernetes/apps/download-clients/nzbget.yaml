@@ -11,7 +11,10 @@
 #   - NZBGet runs without VPN
 #   - Direct internet access
 #
-# Switch modes: task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado
+# Switch modes: edit the nzbget-vpn-config ConfigMap below (vpn_enabled and
+# vpn_provider). To apply: commit + push (Flux reconciles automatically).
+# To force pod restart: kubectl rollout restart deployment/nzbget -n downloads
+# See kubernetes/apps/download-clients/README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -61,9 +64,13 @@ spec:
       labels:
         app.kubernetes.io/name: nzbget
         app.kubernetes.io/component: download-client
-      annotations:
-        # Force pod restart when VPN config changes
-        checksum/vpn-config: "placeholder-updated-by-task"
+      # Note: this Deployment's pod template has no auto-restart trigger on
+      # ConfigMap changes. Flux reconciles the ConfigMap, but mounted-file
+      # ConfigMap changes don't propagate to running pods without a rollout.
+      # To apply: commit + push (Flux reconciles automatically). To force pod
+      # restart: kubectl rollout restart deployment/nzbget -n downloads
+      # Alternatively, add stakater/Reloader to the cluster to automate this
+      # in the future (tracked in docs/16-next-steps.md).
     spec:
       nodeSelector:
         esweiss.com/nas: "true"
@@ -73,7 +80,16 @@ spec:
           value: "true"
           effect: PreferNoSchedule
 
+      # Pod-level DNS fallback: primary + secondary internal resolvers.
+      # VPN sidecar is disabled by default for NZBGet — the pod uses these
+      # nameservers directly. If VPN is enabled for NZBGet, Gluetun's
+      # DNS_ADDRESS (inside the sidecar) overrides inside the tunnel, and
+      # these serve only as fallback when the sidecar is crashed.
+      dnsPolicy: None
       dnsConfig:
+        nameservers:
+          - 192.168.0.150
+          - 192.168.0.160
         options:
           - name: ndots
             value: "1"
@@ -82,7 +98,7 @@ spec:
       # Init container verifies VPN prerequisites when VPN is enabled
       initContainers:
         - name: check-vpn-config
-          image: busybox:1.37
+          image: busybox:${busybox_version}
           command:
             - sh
             - -c
@@ -107,11 +123,12 @@ spec:
 
       containers:
         # Gluetun VPN sidecar - provides VPN tunnel when enabled
-        # When VPN is disabled, this container exits immediately (no resources used)
+        # When VPN is disabled, this container runs `sleep infinity` (minimal
+        # resources — the pod stays healthy; network path bypasses gluetun).
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: gluetun
-          image: qmcgaw/gluetun:${GLUETUN_VERSION}
-          imagePullPolicy: Always
+          image: qmcgaw/gluetun:${gluetun_version}
+          imagePullPolicy: IfNotPresent
           command:
             - sh
             - -c
@@ -134,18 +151,23 @@ spec:
                 configMapKeyRef:
                   name: nzbget-vpn-config
                   key: vpn_provider
+            # VPN credentials: NOT optional. If vpn-credentials is missing or
+            # a field is blank (e.g., ESO lost access to 1Password), we want the
+            # pod to fail to start — that's clearer than Gluetun CrashLoopBackOff
+            # with silent auth failures. Gluetun only reads these when VPN_TYPE
+            # is "openvpn"; the init container no-ops them for "wireguard" or
+            # when vpn_enabled=false (kill switch mode still needs an IP but not
+            # these specific creds).
             - name: OPENVPN_USER
               valueFrom:
                 secretKeyRef:
                   name: vpn-credentials
                   key: openvpn-user
-                  optional: true
             - name: OPENVPN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: vpn-credentials
                   key: openvpn-password
-                  optional: true
             - name: SERVER_COUNTRIES
               valueFrom:
                 configMapKeyRef:
@@ -161,7 +183,13 @@ spec:
             - name: HTTP_CONTROL_SERVER_ADDRESS
               value: ":8001"
             - name: DNS_ADDRESS
-              value: "192.168.0.150,192.168.0.160"
+              # Gluetun v3.41 rejects comma-separated values (only a single
+              # address is accepted). NZBGet's VPN sidecar is disabled by
+              # default, so this value only takes effect if VPN gets enabled
+              # — then it's a single-resolver dependency on dns-01 inside the
+              # tunnel. Pod-level dnsConfig.nameservers above covers dns-02
+              # as a fallback only when Gluetun is disabled or crashed.
+              value: "192.168.0.150"
             - name: TZ
               value: America/Los_Angeles
             - name: LOG_LEVEL
@@ -222,7 +250,7 @@ spec:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         # LinuxServer.io uses version-vX.Y tag format
         - name: nzbget
-          image: lscr.io/linuxserver/nzbget:version-v${NZBGET_VERSION}
+          image: lscr.io/linuxserver/nzbget:version-v${nzbget_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID

@@ -1,0 +1,36 @@
+---
+# Flux Kustomization for application workloads.
+# Reconciles kubernetes/apps/ which contains one folder per app (authentik,
+# download-clients, recipes, gitlab-runner, gitlab-runner-privileged,
+# gitlab-agent, vm-ingress).
+#
+# dependsOn infrastructure-configs: apps will not reconcile until the full
+# infrastructure chain (sources → controllers → configs) is Ready, which
+# transitively waits for all platform controllers and CRDs.
+#
+# optional: false — the cluster-versions ConfigMap is applied by
+# infrastructure-sources, which must be Ready before this Kustomization runs.
+# A missing ConfigMap at this point indicates a real problem and should fail
+# loudly rather than silently render empty chart/image versions.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apps
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 15m
+  dependsOn:
+    - name: infrastructure-configs
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./kubernetes/apps
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-versions
+        optional: false

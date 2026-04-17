@@ -6,6 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: downloads
     app.kubernetes.io/part-of: media-stack
+    app.kubernetes.io/managed-by: flux
     # Pod Security Standards - privileged required for Gluetun VPN sidecar
     # (NET_ADMIN capability + sysctl modifications for VPN tunnel)
     # PSA is namespace-scoped; cannot isolate to VPN pods only.

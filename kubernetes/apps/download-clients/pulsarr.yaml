@@ -46,7 +46,7 @@ spec:
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: pulsarr
-          image: lakker/pulsarr:${PULSARR_VERSION}
+          image: lakker/pulsarr:${pulsarr_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID
@@ -72,7 +72,9 @@ spec:
               memory: 512Mi
           livenessProbe:
             httpGet:
-              path: /
+              # Pulsarr's `/` is a 302 redirect to /login; Fastify's /health
+              # endpoint returns 200 and is the correct probe target.
+              path: /health
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
@@ -80,7 +82,7 @@ spec:
             failureThreshold: 5
           readinessProbe:
             httpGet:
-              path: /
+              path: /health
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10

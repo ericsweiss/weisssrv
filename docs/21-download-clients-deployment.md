@@ -144,42 +144,102 @@ Add DNS rewrites in AdGuard Home for all services pointing to the internal Traef
 
 ## Deployment
 
-### Quick Deploy
+The downloads stack is Flux-managed. All files live under
+`kubernetes/apps/download-clients/` and are reconciled automatically on commit + push.
 
-```bash
-# Deploy the full stack (VPN can be enabled per-app, see VPN Management below)
-task downloads:deploy
+### Layout
+
+```
+kubernetes/apps/download-clients/
+├── namespace.yaml              # downloads namespace (pod-security: privileged for Gluetun CAP_NET_ADMIN)
+├── externalsecret.yaml         # VPN credentials from 1Password (via ESO)
+├── storage.yaml                # PVCs + PVs for appdata and media NFS mounts
+├── certificate.yaml            # Wildcard cert in the downloads namespace
+├── nzbget.yaml                 # Deployment + per-app VPN ConfigMap (nzbget-vpn-config) + Gluetun sidecar inline
+├── qbittorrent.yaml
+├── prowlarr.yaml
+├── sonarr.yaml
+├── radarr.yaml
+├── lidarr.yaml
+├── pulsarr.yaml
+├── ingress-routes.yaml         # Traefik IngressRoutes for all apps
+├── ingress-routes-ha-bypass.yaml  # High-priority routes bypassing SSO for Home Assistant's IP
+└── kustomization.yaml
 ```
 
-### Step-by-Step Deploy
+### Deploying Changes (ongoing work)
+
+1. Edit the appropriate YAML under `kubernetes/apps/download-clients/`.
+2. Commit and push.
+3. Flux polls every ~1 minute (a planned webhook will reduce this to seconds).
 
 ```bash
-# 1. Create namespace and storage
-kubectl apply -f kubernetes/apps/download-clients/namespace.yaml
-kubectl apply -f kubernetes/apps/download-clients/storage.yaml
+# Example: bump Sonarr image tag
+vim ansible/inventories/prod/group_vars/all.yml  # bump sonarr_version
+task flux:sync-versions                            # regenerate versions-configmap
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
+git commit -m "Bump sonarr"
+git push
 
-# 2. Create VPN credentials secret
-kubectl create secret generic vpn-credentials \
-  --namespace=downloads \
-  --from-literal=openvpn-user="$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')" \
-  --from-literal=openvpn-password="$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')"
+# Optional: trigger Flux immediately
+task flux:reconcile
 
-# 3. Deploy download clients (VPN can be enabled per-app via ConfigMap)
-kubectl apply -f kubernetes/apps/download-clients/nzbget.yaml
-kubectl apply -f kubernetes/apps/download-clients/qbittorrent.yaml
+# Watch the rollout
+task downloads:status
+kubectl rollout status deploy/sonarr -n downloads
+```
 
-# 4. (Optional) If VPN is enabled, check Gluetun logs
-# kubectl logs -n downloads -l app.kubernetes.io/name=qbittorrent -c gluetun -f
+For fast local iteration without committing:
 
-# 5. Deploy *arr apps
-kubectl apply -f kubernetes/apps/download-clients/prowlarr.yaml
-kubectl apply -f kubernetes/apps/download-clients/sonarr.yaml
-kubectl apply -f kubernetes/apps/download-clients/radarr.yaml
-kubectl apply -f kubernetes/apps/download-clients/lidarr.yaml
-kubectl apply -f kubernetes/apps/download-clients/pulsarr.yaml
+```bash
+# Renders the Kustomization and applies it (Flux will revert within ~1 min)
+task flux:dev-apply -- kubernetes/apps/download-clients
+```
 
-# 6. Deploy ingress routes
-kubectl apply -f kubernetes/apps/download-clients/ingress-routes.yaml
+### Initial Install
+
+The downloads stack is included in the top-level `apps` Kustomization, so first
+reconcile after `task flux:bootstrap` creates everything. No manual deploy step
+is needed.
+
+### VPN Credentials (ExternalSecret)
+
+VPN credentials are NOT created with `kubectl create secret`. They are managed by
+`kubernetes/apps/download-clients/externalsecret.yaml`:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: vpn-credentials
+  namespace: downloads
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword-homelab       # ClusterSecretStore (1P SDK provider)
+    kind: ClusterSecretStore
+  target:
+    name: vpn-credentials
+    creationPolicy: Owner
+  data:
+    - secretKey: openvpn-user
+      remoteRef:
+        key: <PRIVADOVPN-ITEM-ID>/openvpn-user       # 1P item ID, not title
+    - secretKey: openvpn-password
+      remoteRef:
+        key: <PRIVADOVPN-ITEM-ID>/openvpn-password
+```
+
+The 1P SDK provider uses `<item-id>/<field>` (no `op://` prefix, no `property:` field).
+Use item IDs rather than titles because spaces in titles break the parser. See
+`docs/29-flux-operations.md` for the item-ID convention and how to discover them.
+
+To rotate VPN credentials: update the password in 1Password, then either wait
+24h for the refresh interval or:
+
+```bash
+task flux:rotate-secret -- downloads
+# (triggers ExternalSecret refresh + restarts the Gluetun-bearing pods)
 ```
 
 ### Verify Deployment
@@ -200,21 +260,21 @@ kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https:/
 
 ### Per-App VPN Control
 
-Each download client can be independently configured:
+VPN enablement and provider selection are per-app ConfigMaps inlined in the
+relevant Deployment YAMLs: `nzbget-vpn-config` in `nzbget.yaml` and
+`qbittorrent-vpn-config` in `qbittorrent.yaml`. There is no shared
+`gluetun.yaml` — the sidecar is injected per-Deployment and its config is
+loaded from the matching ConfigMap.
 
-```bash
-# Disable VPN for NZBGet (use direct internet)
-task downloads:vpn APP=nzbget ENABLED=false
+To change a VPN setting:
 
-# Enable VPN for NZBGet with PrivadoVPN
-task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado
-
-# Enable VPN for qBittorrent with VPN Unlimited
-task downloads:vpn APP=qbittorrent ENABLED=true PROVIDER=vpn-unlimited
-
-# Disable VPN for qBittorrent
-task downloads:vpn APP=qbittorrent ENABLED=false
-```
+1. Edit the `<app>-vpn-config` ConfigMap section inside `nzbget.yaml` or
+   `qbittorrent.yaml` (set `vpn_enabled: "true"` / `"false"` and
+   `vpn_provider: "privado"` / `"vpn unlimited"`).
+2. Commit and push.
+3. Flux reconciles; run `task flux:rotate-secret -- downloads` to roll the
+   pod so Gluetun picks up the ConfigMap change (mounted ConfigMaps don't
+   trigger pod restart automatically).
 
 ### Check VPN Status
 
@@ -229,45 +289,15 @@ This shows:
 - Gluetun logs (if VPN enabled)
 - Public IP (to verify VPN is working)
 
-### Update VPN Credentials
+### Rotate VPN Credentials
 
-```bash
-# Update to PrivadoVPN credentials
-task downloads:vpn-credentials PROVIDER=privado
+1. Update the password in 1Password (`PrivadoVPN Credentials/openvpn-password`).
+2. Trigger refresh: `task flux:rotate-secret -- downloads`
 
-# Update to VPN Unlimited credentials
-task downloads:vpn-credentials PROVIDER=vpn-unlimited
-```
-
-### Manual VPN Configuration
-
-Edit the ConfigMap directly:
-
-```bash
-# For NZBGet
-kubectl edit configmap nzbget-vpn-config -n downloads
-
-# For qBittorrent
-kubectl edit configmap qbittorrent-vpn-config -n downloads
-```
-
-Then restart:
-
-```bash
-kubectl rollout restart deployment/nzbget -n downloads
-kubectl rollout restart deployment/qbittorrent -n downloads
-```
-
-### VPN Configuration Options
-
-Each app has its own ConfigMap (`nzbget-vpn-config`, `qbittorrent-vpn-config`):
-
-```yaml
-data:
-  vpn_enabled: "true"           # "true" or "false"
-  vpn_provider: "privado"       # "privado" or "vpn unlimited"
-  server_countries: "Netherlands"  # Optional, provider-dependent
-```
+(Or switch provider: edit the `vpn_provider` key in the per-app
+ConfigMap inside `nzbget.yaml` or `qbittorrent.yaml`, commit, push.
+If switching to VPN Unlimited, also update `externalsecret.yaml` to
+reference the `VPN Unlimited Credentials` 1P item ID.)
 
 ## Storage Layout
 
@@ -527,14 +557,24 @@ kubectl rollout restart deployment/sonarr -n downloads
 
 ### Update Apps
 
-LinuxServer.io images auto-update when pods restart:
+Images are pinned in `ansible/inventories/prod/group_vars/all.yml` and flow through
+the `cluster-versions` ConfigMap. To upgrade:
 
 ```bash
-# Pull latest images and restart
-kubectl rollout restart deployment/nzbget -n downloads
-kubectl rollout restart deployment/qbittorrent -n downloads
-kubectl rollout restart deployment/sonarr -n downloads
-# ... etc
+# Check for new versions
+task maintenance:check-versions
+
+# Bump one (or many) services
+task maintenance:update-version SERVICE=sonarr
+# or: task maintenance:update-all-versions
+
+# Regenerate the ConfigMap and push
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
+git commit -m "Bump sonarr" && git push
+
+# Flux rolls the Deployments within ~1 minute
+task flux:status
 ```
 
 ### Backup
@@ -567,8 +607,10 @@ kubectl logs -n downloads -l app.kubernetes.io/name=qbittorrent -c gluetun
 
 This is the killswitch working correctly. If Gluetun can't establish VPN:
 1. Check VPN provider status
-2. Check credentials
-3. Temporarily disable VPN: `task downloads:vpn APP=nzbget ENABLED=false`
+2. Check credentials in 1Password (rotate if needed, then `task flux:rotate-secret -- downloads`)
+3. Temporarily disable VPN by setting `vpn_enabled: "false"` in the app's
+   per-app ConfigMap (inside `nzbget.yaml` or `qbittorrent.yaml`) and
+   pushing. Then `task flux:rotate-secret -- downloads` to roll the pod.
 
 ### Apps Can't Access Storage
 
@@ -605,7 +647,7 @@ kubectl exec -n downloads deployment/sonarr -- stat -f /media/library/
 ## Related Documentation
 
 - [K3s Deployment Guide](./19-k3s-deployment.md)
+- [Flux Operations](./29-flux-operations.md)
 - [Storage Configuration](./07-fileservices.md)
 - [DNS Configuration](./08-dns.md)
-- [Authentik SSO](../kubernetes/apps/authentik/README.md)
-- [Download Clients README](../kubernetes/apps/download-clients/README.md)
+- Manifests: `kubernetes/apps/download-clients/`

@@ -386,6 +386,103 @@ class TestFetchAptPackages(unittest.TestCase):
             assert call_count[0] == 2  # Verify fallback was triggered
 
 
+class TestGetDeployCommand(unittest.TestCase):
+    """Verify every managed service routes to the right deploy command.
+
+    The Flux migration collapsed a fleet of per-app deploy tasks into
+    `task flux:sync-versions && git push`. A silent regression here
+    (typo in the flux_managed tuple, an unreachable branch, etc.) would
+    recommend `task deploy:all` as a fallback — which does nothing useful
+    for k8s workloads and could mislead operators into treating a bogus
+    message as success.
+    """
+
+    def _mk(self, var_name: str, category: str = ""):
+        """Build a ServiceVersion-shaped object for get_deploy_command()."""
+        result = MagicMock()
+        result.var_name = var_name
+        result.category = category
+        return result
+
+    def test_flux_managed_image_versions_route_to_flux_sync(self):
+        for var in (
+            "gluetun_version", "nzbget_version", "qbittorrent_version",
+            "prowlarr_version", "sonarr_version", "radarr_version",
+            "lidarr_version", "pulsarr_version",
+            "mealie_version", "mealie_postgresql_version",
+            "bar_assistant_version", "salt_rim_version",
+            "meilisearch_version", "redis_version", "busybox_version",
+            "authentik_version", "postgresql_version",
+            "gitlab_runner_helm_version", "gitlab_agent_helm_version",
+        ):
+            cmd = check_versions.get_deploy_command(self._mk(var))
+            self.assertIn(
+                "flux:sync-versions", cmd,
+                f"{var} should route to Flux (got: {cmd})",
+            )
+            self.assertNotIn(
+                "deploy:all", cmd,
+                f"{var} fell through to the deploy:all fallback",
+            )
+
+    def test_helm_chart_prefix_routes_to_flux(self):
+        # Every helm_chart_* variable must route through Flux — the old
+        # maintenance:update-helm-charts task was removed when platform
+        # controllers became Flux HelmReleases.
+        for var in (
+            "helm_chart_versions_metallb",
+            "helm_chart_versions_traefik",
+            "helm_chart_versions_cert_manager",
+            "helm_chart_versions_external_dns",
+            "helm_chart_versions_external_secrets",
+        ):
+            cmd = check_versions.get_deploy_command(self._mk(var, category="helm"))
+            self.assertIn("flux:sync-versions", cmd, f"{var}: {cmd}")
+            self.assertNotIn(
+                "update-helm-charts", cmd,
+                f"{var} still references the removed task",
+            )
+
+    def test_category_helm_also_routes_to_flux(self):
+        # category: "helm" in SERVICES should also route to Flux (belt-and-
+        # suspenders — the prefix check catches most cases, but category
+        # is an independent signal used by some services).
+        cmd = check_versions.get_deploy_command(self._mk("anything", category="helm"))
+        self.assertIn("flux:sync-versions", cmd)
+
+    def test_gitlab_vm_version_stays_ansible(self):
+        # GitLab EE is installed on a VM via Ansible, NOT in k8s. It must
+        # not accidentally route to Flux.
+        cmd = check_versions.get_deploy_command(self._mk("gitlab_version"))
+        self.assertIn("gitlab:deploy", cmd)
+        self.assertNotIn("flux:", cmd)
+
+    def test_k3s_infrastructure_stays_ansible(self):
+        # k3s + kube-vip are Ansible-managed.
+        self.assertIn(
+            "maintenance:update-k3s-nodes",
+            check_versions.get_deploy_command(self._mk("k3s_version")),
+        )
+        self.assertIn(
+            "k3s:deploy",
+            check_versions.get_deploy_command(self._mk("kube_vip_version")),
+        )
+
+    def test_adguard_stays_ansible(self):
+        # AdGuard runs in LXC, Ansible-managed.
+        cmd = check_versions.get_deploy_command(self._mk("adguard_home_version"))
+        self.assertIn("maintenance:update-applications", cmd)
+
+    def test_new_flux_services_route_correctly(self):
+        """Verify busybox, meilisearch, redis, and external-secrets route to Flux."""
+        for var_name in ["busybox_version", "meilisearch_version", "redis_version",
+                         "helm_chart_versions_external_secrets"]:
+            result = self._mk(var_name=var_name, category="dockerhub")
+            cmd = check_versions.get_deploy_command(result)
+            self.assertIn("flux:sync-versions", cmd,
+                          f"{var_name} should route to Flux sync")
+
+
 if __name__ == "__main__":
     if PYTEST_AVAILABLE:
         # Use pytest for better output formatting when available

@@ -1,0 +1,14 @@
+---
+# Tenant wiring: one file per tenant gets listed here. Each tenant file
+# defines its own `ClusterSecretStore` (or namespace-scoped `SecretStore`),
+# `GitRepository`, and top-level `Kustomization`. See README.md in this
+# folder for examples.
+#
+# This is a Kustomize aggregator (apiVersion kustomize.config.k8s.io/v1beta1),
+# not a Flux Kustomization. The parent root cluster Kustomization pulls this
+# tree in via resources: [ tenants ], and Flux reconciles through the result.
+# Empty resources list is intentional during bootstrap (no tenants yet); add
+# tenant filenames here as they onboard.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

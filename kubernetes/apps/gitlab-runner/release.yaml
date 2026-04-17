@@ -1,0 +1,176 @@
+---
+# Shared GitLab Runner HelmRelease — adopts the existing Helm release
+# `gitlab-runner` in the gitlab-runner namespace (matching releaseName +
+# targetNamespace). Chart version substituted from cluster-versions ConfigMap.
+# Runner token sourced via ExternalSecret (externalsecret.yaml); the chart
+# reads it from the Secret named `gitlab-runner-token` via runners.secret.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gitlab-runner
+  namespace: gitlab-runner
+spec:
+  interval: 30m
+  releaseName: gitlab-runner
+  # Runner liveness probe + GitLab connection handshake can take 6-8 minutes
+  # on a cold start; default 5m timeout times out prematurely.
+  timeout: 15m
+  chart:
+    spec:
+      chart: gitlab-runner
+      version: "${gitlab_runner_helm_version}"
+      sourceRef:
+        kind: HelmRepository
+        name: gitlab
+        namespace: flux-system
+      interval: 12h
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
+    gitlabUrl: https://git.ericsweiss.com
+
+    # Concurrent jobs — high enough for parallel:matrix test jobs to run
+    # simultaneously. Each job pod is resource-limited; k8s handles bin-packing.
+    concurrent: 15
+
+    # Check interval (seconds)
+    checkInterval: 30
+
+    # Kubernetes executor configuration
+    runners:
+      # Runner name prefix
+      name: k3s-runner-shared
+
+      # Existing Secret (created by ESO externalsecret.yaml) containing the
+      # runner-token. Replaces the previous imperative --set runnerToken flag.
+      secret: gitlab-runner-token
+
+      # Tags for explicit targeting from other projects
+      tags: "k8s-deploy"
+
+      # Run untagged jobs from any project
+      # This makes it the default runner for projects that don't specify tags.
+      # weisssrv jobs use tags: [infrastructure] and go to the privileged runner instead.
+      runUntagged: true
+
+      # Protected branches only
+      # NOTE: Disabled for homelab convenience - allows running jobs on any branch
+      # In production/team environments, set protected: true to restrict to protected branches
+      protected: false
+
+      # Executor type
+      executor: kubernetes
+
+      # Kubernetes executor config
+      config: |
+        [[runners]]
+          # Environment variables for all job containers
+          # When running as non-root (UID 1000), containers may lack /etc/passwd entry,
+          # causing HOME to be unset. Git then tries to write to //.gitconfig which fails.
+          # Solution: Set HOME to a writable directory and explicitly set GIT_CONFIG paths.
+          # See: https://gitlab.com/gitlab-org/gitlab-runner/-/issues/37408
+          environment = ["HOME=/home/gitlab-runner", "GIT_CONFIG_GLOBAL=/home/gitlab-runner/.gitconfig"]
+
+          [runners.kubernetes]
+            namespace = "gitlab-runner"
+            image = "debian:trixie"
+            privileged = false
+
+            # CPU/Memory limits for job pods
+            cpu_limit = "2"
+            cpu_request = "500m"
+            memory_limit = "4Gi"
+            memory_request = "1Gi"
+
+            # Service account
+            service_account = "gitlab-runner"
+
+            # Pod security context - secure by default (non-root)
+            # Non-root execution is appropriate for this shared runner:
+            #   - kubectl apply, helm upgrade (k8s deployments)
+            #   - Basic linting and validation
+            #
+            # This runner does NOT have:
+            #   - SSH access to infrastructure hosts
+            #   - Docker-in-Docker capability
+            #   - Privileged container execution
+            #
+            # For those capabilities, use the infrastructure runner (tags: infrastructure)
+            [runners.kubernetes.pod_security_context]
+              run_as_non_root = true
+              run_as_user = 1000
+              run_as_group = 1000
+              fs_group = 1000
+
+            # Mount emptyDir volume at HOME to ensure writable directory for git config
+            # This is required for non-root execution since the default HOME (/) is read-only
+            [[runners.kubernetes.volumes.empty_dir]]
+              name = "home"
+              mount_path = "/home/gitlab-runner"
+
+            # Pull policy
+            pull_policy = ["if-not-present"]
+
+            # Allow individual CI jobs to override node selector for CPU-compatibility only.
+            # Restricted to the esweiss.com/cpu label to prevent jobs from targeting arbitrary nodes.
+            node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
+    # RBAC configuration
+    # clusterWideAccess: false restricts the runner to only manage resources in its own namespace.
+    # This is appropriate for the shared runner - job pods are created in the gitlab-runner namespace.
+    # CI jobs that need to deploy to other namespaces should use a kubeconfig with appropriate
+    # permissions (stored as a CI/CD variable or fetched from 1Password).
+    # See: https://docs.gitlab.com/runner/install/kubernetes_helm_chart_configuration/
+    rbac:
+      create: true
+      clusterWideAccess: false
+      rules:
+        - apiGroups: [""]
+          resources: ["pods", "pods/exec", "pods/attach", "pods/log", "secrets", "configmaps"]
+          verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
+        - apiGroups: [""]
+          resources: ["services"]
+          verbs: ["get", "list", "watch"]
+
+    # Service account
+    serviceAccount:
+      create: true
+      name: gitlab-runner
+
+    # Pod resources for the runner manager
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Node affinity - prefer non-NAS nodes for runner pods
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: esweiss.com/nas
+                  operator: DoesNotExist
+
+    # Tolerations for workload nodes
+    tolerations:
+      - key: esweiss.com/ingress
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule
+      - key: esweiss.com/compute
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule

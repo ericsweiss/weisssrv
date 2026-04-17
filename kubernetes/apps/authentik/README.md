@@ -73,55 +73,47 @@ Add DNS rewrite in AdGuard Home:
 
 ## Deployment
 
-### Option A: Using Task (Recommended)
+Authentik is Flux-managed. Everything in this folder is reconciled by the
+top-level `apps` Kustomization on every push.
+
+- **HelmRelease**: `release.yaml` -- chart `goauthentik/authentik`, release name `authentik`, values inlined (including image tags via `${authentik_version}` / `${postgresql_version}` substituted from the `cluster-versions` ConfigMap)
+- **Secret**: `externalsecret.yaml` -- ExternalSecret `authentik-secrets` sourcing `secret-key`, `postgresql-password`, `postgresql-admin-password`, `smtp-username`, `smtp-password` from 1Password via ESO
+- **Storage**: `storage.yaml` -- PV + PVC binding the ZFS zvol `ssd/appdata/authentik/postgres` on k3s-agt-nas-01
+- **Ingress**: `ingress-route.yaml` + `middleware.yaml` + `certificate.yaml`
+
+Deploy workflow:
 
 ```bash
-# Deploy Authentik
-task k3s:deploy-authentik
+# Edit manifests
+vim kubernetes/apps/authentik/release.yaml  # or any other file
 
-# Check status
-kubectl get pods -n authentik
-kubectl get svc -n authentik
+# Commit + push; Flux reconciles within ~1 minute
+git add kubernetes/apps/authentik/
+git commit -m "..."
+git push
+
+# Force reconciliation if you don't want to wait for the poll interval
+task flux:reconcile
 ```
 
-### Option B: Manual Deployment
+For bumping the Authentik or PostgreSQL image version:
 
 ```bash
-# Create namespace
-kubectl apply -f kubernetes/apps/authentik/namespace.yaml
-
-# Apply persistent storage (PV/PVC for PostgreSQL - must exist before Helm install)
-kubectl apply -f kubernetes/apps/authentik/storage.yaml
-
-# Set 1Password environment variables
-export AUTHENTIK_SECRET_KEY=$(op read "op://Homelab/Authentik Secrets/secret-key")
-export AUTHENTIK_POSTGRESQL_PASSWORD=$(op read "op://Homelab/Authentik Secrets/postgresql-password")
-export AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD=$(op read "op://Homelab/Authentik Secrets/postgresql-admin-password")
-export SMTP_RELAY_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
-export SMTP_RELAY_PASSWORD=$(op read "op://Homelab/SMTP Relay Auth/password")
-
-# Create secrets from 1Password
-kubectl create secret generic authentik-secrets \
-  --namespace=authentik \
-  --from-literal=secret-key="$AUTHENTIK_SECRET_KEY" \
-  --from-literal=postgresql-password="$AUTHENTIK_POSTGRESQL_PASSWORD" \
-  --from-literal=postgresql-admin-password="$AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD" \
-  --from-literal=smtp-username="$SMTP_RELAY_USER" \
-  --from-literal=smtp-password="$SMTP_RELAY_PASSWORD" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# Add Helm repo and install
-helm repo add authentik https://charts.goauthentik.io
-helm repo update authentik
-helm upgrade --install authentik authentik/authentik \
-  -n authentik \
-  -f kubernetes/apps/authentik/values.yaml \
-  --set authentik.secret_key="$(op read 'op://Homelab/Authentik Secrets/secret-key')" \
-  --wait
-
-# Apply IngressRoutes and Middleware
-kubectl apply -k kubernetes/apps/authentik/
+# Edit ansible/inventories/prod/group_vars/all.yml (authentik_version / postgresql_version)
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml \
+        kubernetes/infrastructure/sources/versions-configmap.yaml
+git commit -m "Bump Authentik to <version>"
+git push
 ```
+
+Secret rotation (e.g., after changing the secret-key in 1Password):
+
+```bash
+task flux:rotate-secret -- authentik
+```
+
+See `docs/29-flux-operations.md` for the full Flux workflow.
 
 ## Initial Setup
 
@@ -308,12 +300,12 @@ The current deployment balances availability with simplicity:
 |-----------|-----------|-------|
 | Authentik Server | **2 replicas** | Spread across nodes via anti-affinity |
 | Authentik Worker | **1 replica** | Single instance for background tasks |
-| PostgreSQL | **Not HA** | Single instance with local PVC (ReadWriteOnce) |
+| PostgreSQL | **Not HA** | Single instance on hostPath PV backed by ZFS zvol (`ssd/appdata/authentik/postgres`) on k3s-agt-nas-01 |
 
 **Key Limitations**:
-1. **PostgreSQL PVC**: Uses k3s local-path storage (ReadWriteOnce) - bound to a single node
+1. **PostgreSQL PV**: hostPath PV on k3s-agt-nas-01, backed by ZFS zvol `ssd/appdata/authentik/postgres` (10GB, ext4). Data survives pod and VM recreation (zvol persists on the Proxmox host's SSD pool) but is NOT replicated to other nodes.
 2. **No database replication**: Single PostgreSQL instance is a SPOF
-3. **Pod rescheduling risk**: If the PostgreSQL node fails, data is unavailable until node recovers
+3. **Pod rescheduling risk**: If k3s-agt-nas-01 is down, PostgreSQL (and thus all SSO) is unavailable until the node recovers
 
 **Why This Works**:
 - Server/Worker are stateless - all state in PostgreSQL
@@ -325,7 +317,7 @@ The current deployment balances availability with simplicity:
 
 Server and Worker are stateless and support horizontal scaling ([docs](https://docs.goauthentik.io/install-config/high-availability/)). The Helm chart supports HPA.
 
-To scale replicas, update `values.yaml`:
+To scale replicas, edit `release.yaml`:
 ```yaml
 server:
   replicas: 2  # or more
@@ -334,7 +326,13 @@ worker:
   replicas: 2  # or more
 ```
 
-### HA Upgrade Path
+Then commit and push -- Flux reconciles the change.
+
+### Future HA Upgrade Path
+
+The following options are not currently deployed. When implemented, they would
+be Flux-managed (Helm charts or CRDs in `kubernetes/infrastructure/` or
+`kubernetes/apps/`), following the standard version-pinning and deploy workflow.
 
 #### Option 1: CloudNativePG Operator (Recommended)
 
@@ -353,39 +351,12 @@ worker:
 - Requires shared storage or storage replication for true HA
 - More complex initial setup
 
-**Implementation Steps**:
-```bash
-# 1. Install CloudNativePG operator
-kubectl apply -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.22/releases/cnpg-1.22.yaml
-
-# 2. Create HA PostgreSQL cluster
-cat <<EOF | kubectl apply -f -
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: authentik-pg
-  namespace: authentik
-spec:
-  instances: 3
-  primaryUpdateStrategy: unsupervised
-  storage:
-    size: 8Gi
-  postgresql:
-    parameters:
-      shared_buffers: "256MB"
-      max_connections: "100"
-EOF
-
-# 3. Update Authentik values.yaml to use external PostgreSQL
-# postgresql:
-#   enabled: false
-# authentik:
-#   postgresql:
-#     host: authentik-pg-rw.authentik.svc
-#     name: app
-#     user: app
-#     password: ""  # From CNPG secret
-```
+**Implementation approach**: Deploy the CNPG operator as a HelmRelease in
+`kubernetes/infrastructure/controllers/`, pin the version in `all.yml`, and
+create a `Cluster` CR in `kubernetes/apps/authentik/`. Migrate data from the
+existing subchart PostgreSQL, then disable the subchart in `release.yaml`
+(`postgresql.enabled: false`) and point Authentik at the CNPG-managed
+`authentik-pg-rw` service.
 
 #### Option 2: External PostgreSQL (Existing Infrastructure)
 
@@ -402,20 +373,8 @@ Use existing PostgreSQL infrastructure outside Kubernetes:
 - Network latency (minimal for LAN)
 - Separate backup strategy needed
 
-**Implementation**:
-```yaml
-# values.yaml
-postgresql:
-  enabled: false
-
-authentik:
-  postgresql:
-    host: "nas.esweiss.com"  # External PostgreSQL
-    port: 5432
-    name: authentik
-    user: authentik
-    password: ""  # From existingSecret
-```
+**Implementation**: Set `postgresql.enabled: false` in `release.yaml` and
+configure `authentik.postgresql.host` to point at the external instance.
 
 #### Option 3: PostgreSQL on NAS with ZFS (Homelab-Specific)
 
@@ -469,19 +428,29 @@ Deploy PostgreSQL in an LXC container on pve-nas-01 with ZFS storage:
 
 ## Upgrading
 
-```bash
-# Update Helm repo
-helm repo update authentik
-
-# Check available versions
-helm search repo authentik/authentik --versions
-
-# Upgrade (backup database first!)
-helm upgrade authentik authentik/authentik \
-  -n authentik \
-  -f kubernetes/apps/authentik/values.yaml \
-  --set authentik.secret_key="$(op read 'op://Homelab/Authentik Secrets/secret-key')"
-```
+1. Backup the database first (see `task k3s:backup` for cluster etcd; for
+   the Authentik postgres zvol, snapshot the ZFS dataset on pve-nas-01
+   before bumping versions).
+2. Discover the latest version:
+   ```bash
+   task maintenance:check-versions | grep -i authentik
+   ```
+   Or query the chart directly:
+   ```bash
+   helm search repo authentik/authentik --versions | head -5
+   ```
+3. Update `ansible/inventories/prod/group_vars/all.yml`:
+   - `authentik_version` -- this single variable pins **both** the chart version and the server/worker image tags (Authentik chart appVersion matches the image tag by convention)
+4. Regenerate the Flux ConfigMap and commit:
+   ```bash
+   task flux:sync-versions
+   git add ansible/inventories/prod/group_vars/all.yml \
+           kubernetes/infrastructure/sources/versions-configmap.yaml
+   git commit -m "Bump Authentik to <version>"
+   git push
+   ```
+5. Flux reconciles the HelmRelease; watch with `flux get hr authentik -n authentik` and `task authentik:status`.
+6. Rollback (if needed): `git revert <commit>; git push` -- Flux reconciles the reverted manifest. Alternatively `flux suspend hr authentik -n authentik` to freeze the current state while you investigate.
 
 ## References
 

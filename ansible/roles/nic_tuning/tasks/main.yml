@@ -1,0 +1,79 @@
+---
+# nic_tuning: codifies manual fixes that have saved the cluster from outages.
+# Primary case: pve-nas-01 has an Aquantia AQC113 10G NIC whose atlantic driver
+# deadlocks the receive path with GRO enabled on a bridged interface. We
+# disable GRO at interface up-time via an ethtool drop-in.
+#
+# Secondary case: pve_firewall on Proxmox can reset net.ipv4.ip_forward, which
+# breaks Tailscale subnet routing. The sysctl drop-in re-asserts the value.
+
+- name: Install sysctl.d drop-in for ip_forward
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+    content: |
+      # Managed by Ansible nic_tuning role.
+      # Required for Tailscale subnet routing on Proxmox hosts.
+      # pve_firewall can reset this via its own sysctl resets; persisting in
+      # sysctl.d ensures it's re-applied on every boot and by `sysctl --system`.
+      net.ipv4.ip_forward=1
+    owner: root
+    group: root
+    mode: "0644"
+  when: nic_tuning_ip_forward | bool
+  notify: Reload sysctl ip_forward
+
+- name: Remove sysctl.d ip_forward drop-in when disabled
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+    state: absent
+  when: not (nic_tuning_ip_forward | bool)
+  notify: Disable sysctl ip_forward
+
+- name: Ensure /etc/network/interfaces.d exists
+  ansible.builtin.file:
+    path: /etc/network/interfaces.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nic_tuning_overrides | length > 0
+
+- name: Find existing NIC tuning drop-ins
+  ansible.builtin.find:
+    paths: /etc/network/interfaces.d
+    patterns: "99-nic-*-tuning.cfg"
+  register: existing_dropins
+  failed_when: false
+
+- name: Remove stale NIC tuning drop-ins
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ existing_dropins.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    # Only clean up if this host has overrides declared — otherwise we'd
+    # delete drop-ins on hosts that legitimately have no overrides but
+    # had them previously (or had them set by another tool).
+    - nic_tuning_overrides | length > 0
+    - item.path | basename not in (nic_tuning_overrides | map(attribute='interface') | map('regex_replace', '^(.*)$', '99-nic-\\1-tuning.cfg') | list)
+
+- name: Install per-NIC ethtool drop-ins
+  ansible.builtin.template:
+    src: nic-ethtool.cfg.j2
+    dest: "/etc/network/interfaces.d/99-nic-{{ item.interface }}-tuning.cfg"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nic_tuning_overrides }}"
+  loop_control:
+    label: "{{ item.interface }}"
+
+- name: Apply ethtool overrides now (idempotent — kernel accepts no-op)
+  ansible.builtin.command:
+    cmd: "ethtool -K {{ item.0.interface }} {{ item.1.feature }} {{ item.1.value }}"
+  loop: "{{ nic_tuning_overrides | subelements('options', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.interface }} {{ item.1.feature }}={{ item.1.value }}"
+  changed_when: false

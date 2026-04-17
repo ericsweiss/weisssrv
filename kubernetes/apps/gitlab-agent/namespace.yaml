@@ -6,3 +6,4 @@ metadata:
   labels:
     app.kubernetes.io/name: gitlab-agent
     app.kubernetes.io/part-of: gitlab
+    app.kubernetes.io/managed-by: flux

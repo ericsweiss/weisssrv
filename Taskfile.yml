@@ -200,43 +200,21 @@ tasks:
         fi
 
   # === Kubernetes Validation Tasks ===
+  # Both tasks below are aliases for task: flux:lint — which builds each Flux
+  # Kustomization (infrastructure/ and apps/) and runs kubeconform on the
+  # rendered output. That single command replaces the old per-folder find
+  # walk and the per-chart `helm template` validation. HelmReleases are
+  # validated as Flux CRDs by kubeconform (chart templates are rendered
+  # server-side by helm-controller, not during local lint).
   kubernetes:lint:
-    desc: Validate Kubernetes manifests with kubeconform
-    preconditions:
-      - sh: command -v kubeconform
-        msg: "kubeconform not installed. Run: brew install kubeconform (or download from GitHub)"
+    desc: "Validate all Flux-managed Kubernetes manifests (alias for flux:lint)"
     cmds:
-      - |
-        find kubernetes/apps kubernetes/bootstrap -name "*.yaml" \
-          ! -name "values.yaml" \
-          ! -name "kustomization.yaml" \
-          -exec kubeconform -summary -strict \
-            -ignore-missing-schemas \
-            -kubernetes-version 1.35.0 \
-            -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{ "{{.Group}}" }}/{{ "{{.ResourceKind}}" }}_{{ "{{.ResourceAPIVersion}}" }}.json' \
-            {} +
+      - task: flux:lint
 
   kubernetes:validate-helm:
-    desc: Validate Helm values by templating charts
-    preconditions:
-      - sh: command -v helm
-        msg: "helm not installed. Run: brew install helm"
+    desc: "DEPRECATED: HelmReleases are validated by task flux:lint. This alias is kept for discoverability."
     cmds:
-      - helm repo add traefik https://traefik.github.io/charts 2>/dev/null || true
-      - helm repo add metallb https://metallb.github.io/metallb 2>/dev/null || true
-      - helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
-      - helm repo add authentik https://charts.goauthentik.io 2>/dev/null || true
-      - helm repo update
-      - echo "Validating Traefik values..."
-      - helm template traefik traefik/traefik -f kubernetes/apps/traefik/values.yaml --namespace traefik --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
-      - echo "Validating MetalLB values..."
-      - helm template metallb metallb/metallb -f kubernetes/bootstrap/metallb/values.yaml --namespace metallb-system --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
-      - echo "Validating cert-manager values..."
-      - helm template cert-manager jetstack/cert-manager -f kubernetes/apps/cert-manager/values.yaml --namespace cert-manager --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
-      - echo "Validating Authentik values..."
-      - helm template authentik authentik/authentik -f kubernetes/apps/authentik/values.yaml --namespace authentik --set authentik.secret_key=dummy --set authentik.postgresql.password=dummy --api-versions policy/v1/PodDisruptionBudget > /dev/null && echo "  OK"
-      - echo "All Helm values validated successfully"
+      - task: flux:lint
 
   # === Deployment Tasks ===
   deploy:all:
@@ -400,205 +378,7 @@ tasks:
         echo "Kubeconfig saved to ~/.kube/config-k3s (permissions: 600)"
         echo "Run: export KUBECONFIG=~/.kube/config-k3s"
 
-  # === K3s Workload Deployment Tasks ===
-  k3s:deploy-coredns:
-    desc: Apply CoreDNS HelmChartConfig (2 replicas for HA)
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: kubectl cluster-info 2>/dev/null
-        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
-    cmds:
-      - kubectl apply -f kubernetes/apps/coredns/helmchartconfig.yaml
-      - kubectl apply -f kubernetes/apps/coredns/pdb.yaml
-      - |
-        echo "Waiting for CoreDNS to reach 2 ready replicas..."
-        for i in $(seq 1 24); do
-          READY=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-          READY=${READY:-0}
-          if [ "$READY" -ge 2 ]; then
-            echo "CoreDNS has $READY ready replicas"
-            break
-          fi
-          echo "  readyReplicas: $READY/2 (attempt $i)..."
-          sleep 5
-        done
-        FINAL=$(kubectl get deployment/coredns -n kube-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-        FINAL=${FINAL:-0}
-        if [ "$FINAL" -lt 2 ]; then
-          echo "ERROR: CoreDNS only has $FINAL/2 ready replicas after 120s"
-          exit 1
-        fi
-      - echo "CoreDNS HelmChartConfig applied (2 replicas with topology spread)"
-
-  k3s:deploy-metallb:
-    desc: Deploy MetalLB load balancer with IP pools
-    dir: ./kubernetes
-    vars:
-      METALLB_VERSION:
-        sh: grep 'metallb:' ../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: command -v helm
-        msg: "helm is not installed. Install via: https://helm.sh/docs/intro/install/"
-      - sh: kubectl cluster-info 2>/dev/null
-        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
-    cmds:
-      - echo "Deploying MetalLB version {{.METALLB_VERSION}}"
-      - helm repo add metallb https://metallb.github.io/metallb --force-update
-      - helm repo update metallb
-      - helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace -f bootstrap/metallb/values.yaml --version "{{.METALLB_VERSION}}" --wait
-      - |
-        echo "Waiting for MetalLB webhook to be ready..."
-        kubectl wait --namespace metallb-system \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/component=controller \
-          --timeout=120s
-      - kubectl apply -f bootstrap/metallb/ip-pool.yaml
-      - echo "MetalLB deployed successfully"
-
-  k3s:deploy-traefik:
-    desc: Deploy Traefik ingress controller
-    dir: ./kubernetes/apps/traefik
-    vars:
-      TRAEFIK_VERSION:
-        sh: grep 'traefik:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    cmds:
-      - echo "Deploying Traefik chart version {{.TRAEFIK_VERSION}}"
-      - helm repo add traefik https://traefik.github.io/charts --force-update
-      - helm repo update traefik
-      - kubectl apply -f namespace.yaml
-      - helm upgrade --install traefik traefik/traefik -n traefik -f values.yaml --version "{{.TRAEFIK_VERSION}}" --wait
-      - kubectl apply -f traefik-internal-service.yaml
-      - echo "Traefik deployed successfully"
-
-  k3s:deploy-cert-manager:
-    desc: Deploy cert-manager with Let's Encrypt ClusterIssuer
-    dir: ./kubernetes/apps/cert-manager
-    vars:
-      CERT_MANAGER_VERSION:
-        sh: grep 'cert_manager:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    env:
-      CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
-    cmds:
-      - echo "Deploying cert-manager version {{.CERT_MANAGER_VERSION}}"
-      - helm repo add jetstack https://charts.jetstack.io --force-update
-      - helm repo update jetstack
-      - kubectl apply -f namespace.yaml
-      # Download CRDs locally first, then apply with server-side apply to resolve field manager conflicts during upgrades
-      - |
-        CRDS_FILE="$(mktemp)"
-        trap 'rm -f "$CRDS_FILE"' EXIT
-        curl -fsSL -o "$CRDS_FILE" "https://github.com/cert-manager/cert-manager/releases/download/{{.CERT_MANAGER_VERSION}}/cert-manager.crds.yaml"
-        kubectl apply -f "$CRDS_FILE" --server-side --force-conflicts
-      - helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager -f values.yaml --version "{{.CERT_MANAGER_VERSION}}" --wait --skip-crds
-      - |
-        echo "Creating Cloudflare API token secret..."
-        op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
-          --namespace=cert-manager \
-          --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
-          --dry-run=client -o yaml | kubectl apply -f -'
-      - kubectl apply -k .
-      - echo "cert-manager deployed successfully"
-
-  k3s:deploy-external-dns:
-    desc: Deploy external-dns for automatic Cloudflare DNS management
-    dir: ./kubernetes/apps/external-dns
-    vars:
-      EXTERNAL_DNS_VERSION:
-        sh: grep 'external_dns:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    env:
-      CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
-    cmds:
-      - echo "Deploying external-dns chart version {{.EXTERNAL_DNS_VERSION}}"
-      - helm repo add external-dns https://kubernetes-sigs.github.io/external-dns --force-update
-      - helm repo update external-dns
-      - kubectl apply -f namespace.yaml
-      - |
-        echo "Creating Cloudflare API token secret..."
-        op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
-          --namespace=external-dns \
-          --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
-          --dry-run=client -o yaml | kubectl apply -f -'
-      - helm upgrade --install external-dns external-dns/external-dns -n external-dns -f values.yaml --version "{{.EXTERNAL_DNS_VERSION}}" --wait
-      - echo "external-dns deployed successfully"
-
-  k3s:deploy-ddns:
-    desc: Deploy Cloudflare DDNS CronJob for public IP updates
-    dir: ./kubernetes/apps/cloudflare-ddns
-    env:
-      CLOUDFLARE_API_TOKEN: op://Homelab/Cloudflare DNS Token/credential
-    cmds:
-      # One-time cleanup: DDNS was originally in the default namespace.
-      # Remove stale CronJob and secret if they exist from the previous deployment.
-      - kubectl delete cronjob cloudflare-ddns -n default --ignore-not-found
-      - kubectl delete secret cloudflare-api-token -n default --ignore-not-found
-      - kubectl create namespace cloudflare-ddns --dry-run=client -o yaml | kubectl apply -f -
-      - |
-        echo "Creating Cloudflare API token secret..."
-        op run -- sh -c 'kubectl create secret generic cloudflare-api-token \
-          --namespace=cloudflare-ddns \
-          --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
-          --dry-run=client -o yaml | kubectl apply -f -'
-      - kubectl apply -f cronjob.yaml
-      - echo "DDNS CronJob deployed successfully"
-
-  k3s:deploy-ingress-routes:
-    desc: Deploy Traefik IngressRoutes for all services
-    dir: ./kubernetes/apps/ingress-routes
-    cmds:
-      - kubectl apply -k .
-      - echo "IngressRoutes deployed successfully"
-
-  k3s:deploy-authentik:
-    desc: Deploy Authentik SSO identity provider
-    dir: ./kubernetes/apps/authentik
-    vars:
-      AUTHENTIK_VERSION:
-        sh: grep '^authentik_version:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-      POSTGRESQL_VERSION:
-        sh: grep '^postgresql_version:' ../../../ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    env:
-      AUTHENTIK_SECRET_KEY: op://Homelab/Authentik Secrets/secret-key
-      AUTHENTIK_POSTGRESQL_PASSWORD: op://Homelab/Authentik Secrets/postgresql-password
-      AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD: op://Homelab/Authentik Secrets/postgresql-admin-password
-      # SMTP credentials for email notifications (uses same creds as other services)
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-    cmds:
-      - echo "Deploying Authentik version {{.AUTHENTIK_VERSION}}"
-      - helm repo add authentik https://charts.goauthentik.io --force-update
-      - helm repo update authentik
-      - kubectl apply -f namespace.yaml
-      - kubectl apply -f storage.yaml
-      - |
-        echo "Creating Authentik secrets from 1Password..."
-        op run -- sh -c 'kubectl create secret generic authentik-secrets \
-          --namespace=authentik \
-          --from-literal=secret-key="$AUTHENTIK_SECRET_KEY" \
-          --from-literal=postgresql-password="$AUTHENTIK_POSTGRESQL_PASSWORD" \
-          --from-literal=postgresql-admin-password="$AUTHENTIK_POSTGRESQL_ADMIN_PASSWORD" \
-          --from-literal=smtp-username="$SMTP_RELAY_USER" \
-          --from-literal=smtp-password="$SMTP_RELAY_PASSWORD" \
-          --dry-run=client -o yaml | kubectl apply -f -'
-      - |
-        echo "Installing Authentik via Helm..."
-        op run -- sh -c 'helm upgrade --install authentik authentik/authentik \
-          -n authentik \
-          -f values.yaml \
-          --version "{{.AUTHENTIK_VERSION}}" \
-          --set authentik.secret_key="$AUTHENTIK_SECRET_KEY" \
-          --set server.image.tag="{{.AUTHENTIK_VERSION}}" \
-          --set worker.image.tag="{{.AUTHENTIK_VERSION}}" \
-          --set postgresql.image.tag="{{.POSTGRESQL_VERSION}}" \
-          --wait --timeout 10m'
-      - |
-        echo "Waiting for Authentik server to be ready..."
-        kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
-      - kubectl apply -k .
-      - echo "Authentik deployed successfully"
-
+  # === K3s Cluster Operations ===
   authentik:status:
     desc: Show Authentik SSO status
     cmds:
@@ -634,19 +414,6 @@ tasks:
       - kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
       - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s
       - kubectl rollout status statefulset/authentik-postgresql -n authentik --timeout=300s
-
-  k3s:deploy-workloads:
-    desc: Deploy ALL k3s platform workloads in correct order
-    cmds:
-      - task: k3s:deploy-coredns
-      - task: k3s:deploy-metallb
-      - task: k3s:deploy-traefik
-      - task: k3s:deploy-cert-manager
-      - task: k3s:deploy-external-dns
-      - task: k3s:deploy-ddns
-      - task: k3s:deploy-ingress-routes
-      - task: k3s:deploy-authentik
-      - echo "K3s platform workloads deployed successfully"
 
   k3s:backup:
     desc: Create etcd snapshot on k3s server
@@ -698,6 +465,412 @@ tasks:
       - echo ""
       - echo "IngressRoutes -"
       - kubectl get ingressroute -A 2>/dev/null || echo "  None configured"
+
+  # === Flux GitOps ===
+  # All Kubernetes workloads (platform + apps) are reconciled by Flux.
+  # Deployment is `git push` — these tasks are for bootstrap, validation,
+  # and operational control (suspend/resume, force reconcile, secret rotation).
+
+  flux:install-cli:
+    desc: Install flux CLI via brew (macOS)
+    cmds:
+      - |
+        if ! command -v flux &>/dev/null; then
+          brew install fluxcd/tap/flux
+        fi
+        flux --version
+
+  flux:bootstrap:
+    desc: "One-time bootstrap of Flux into the cluster. Accepts BRANCH (default: main) to target a different branch."
+    vars:
+      BRANCH: '{{.BRANCH | default "main"}}'
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot reach cluster. Ensure KUBECONFIG points at the k3s cluster"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not signed in. Run: eval $(op signin)"
+      - sh: kubectl -n external-secrets get secret onepassword-sdk-token 2>/dev/null
+        msg: "Bootstrap Secret 'onepassword-sdk-token' not found in external-secrets namespace. Run `task flux:bootstrap-onepassword` first."
+    cmds:
+      - |
+        set -eo pipefail
+        if [ ! -t 0 ]; then
+          echo "ERROR: flux:bootstrap requires an interactive TTY (prompts for confirmation)."
+          exit 1
+        fi
+        echo "Bootstrapping Flux to git.ericsweiss.com/eric/weisssrv, branch {{.BRANCH}}"
+        echo "This will create a commit on the branch and push it (first push of the branch)."
+        read -r -p "Continue? [y/N] " confirm
+        [ "$confirm" = "y" ] || { echo "Aborted by user"; exit 1; }
+      - |
+        set -eo pipefail
+        # Explicit read + non-empty validation. Otherwise a silent op read
+        # failure would run flux bootstrap with GITLAB_TOKEN="" and fail with
+        # an opaque auth error instead of surfacing the real cause.
+        GITLAB_TOKEN="$(op read 'op://Homelab/Flux GitLab PAT/credential')"
+        if [ -z "$GITLAB_TOKEN" ]; then
+          echo "ERROR: op read returned an empty token for 'Flux GitLab PAT'"
+          exit 1
+        fi
+        export GITLAB_TOKEN
+        flux bootstrap gitlab \
+          --hostname=git.ericsweiss.com \
+          --owner=eric \
+          --repository=weisssrv \
+          --branch={{.BRANCH}} \
+          --path=kubernetes/clusters/weisssrv \
+          --deploy-token-auth \
+          --interval=1m
+
+  flux:bootstrap-onepassword:
+    desc: One-time creation of the 1P SDK token secret in external-secrets namespace
+    preconditions:
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot reach cluster"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not signed in. Run: eval $(op signin)"
+    cmds:
+      - |
+        set -eo pipefail
+        kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        set -euo pipefail
+        TOKEN="$(op read 'op://Homelab/Service Account Auth Token weisssrv/credential')"
+        if [ -z "$TOKEN" ]; then
+          echo "ERROR: op read returned an empty token for 'Service Account Auth Token weisssrv'"
+          exit 1
+        fi
+        kubectl -n external-secrets create secret generic onepassword-sdk-token \
+          --from-literal=token="$TOKEN" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      - echo "1Password SDK bootstrap secret created in external-secrets namespace"
+
+  flux:reconcile:
+    desc: Trigger full reconciliation of Flux-managed resources (source → infra chain → apps)
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+    cmds:
+      - flux reconcile source git flux-system
+      - flux reconcile kustomization infrastructure-sources
+      - flux reconcile kustomization infrastructure-controllers
+      - flux reconcile kustomization infrastructure-configs
+      - flux reconcile kustomization apps
+
+  flux:verify:
+    desc: Run flux check and show status of all managed resources
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+    cmds:
+      - flux check
+      - flux get all -A
+
+  flux:status:
+    desc: Concise health summary
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+    cmds:
+      - flux get kustomizations -A
+      - flux get helmreleases -A
+      - kubectl get externalsecrets -A
+
+  flux:suspend:
+    desc: "Suspend a Flux resource (usage: task flux:suspend -- <ns>/<kind>/<name>)"
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:suspend -- <ns>/<kind>/<name>"
+          echo "Example: task flux:suspend -- authentik/helmrelease/authentik"
+          exit 1
+        fi
+        set -eo pipefail
+        IFS='/' read -r NS KIND NAME <<< "{{.CLI_ARGS}}"
+        flux suspend "$KIND" "$NAME" -n "$NS"
+
+  flux:resume:
+    desc: "Resume a suspended Flux resource (usage: task flux:resume -- <ns>/<kind>/<name>)"
+    preconditions:
+      - sh: command -v flux
+        msg: "flux CLI not installed. Run: task flux:install-cli"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:resume -- <ns>/<kind>/<name>"
+          exit 1
+        fi
+        set -eo pipefail
+        IFS='/' read -r NS KIND NAME <<< "{{.CLI_ARGS}}"
+        flux resume "$KIND" "$NAME" -n "$NS"
+
+  flux:refresh-secret:
+    desc: "Force an ExternalSecret to re-fetch from 1Password (usage: task flux:refresh-secret -- <ns>/<name>)"
+    cmds:
+      - |
+        set -eo pipefail
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:refresh-secret -- <ns>/<name>"
+          exit 1
+        fi
+        if ! [[ "{{.CLI_ARGS}}" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]]; then
+          echo "ERROR: CLI_ARGS must be <namespace>/<name> (lowercase, dashes, digits only)"
+          exit 1
+        fi
+        IFS='/' read -r NS NAME <<< "{{.CLI_ARGS}}"
+        kubectl annotate --overwrite -n "$NS" externalsecret "$NAME" force-sync="$(date +%s)"
+        kubectl wait -n "$NS" externalsecret "$NAME" --for=condition=Ready --timeout=60s
+
+  flux:rotate-secret:
+    desc: "Refresh ExternalSecret + restart consuming pods (usage: task flux:rotate-secret -- <app>)"
+    cmds:
+      - |
+        # `set -e` is critical: without it, a failed flux:refresh-secret would
+        # still proceed to rollout-restart pods that then come back up with
+        # the OLD cached secret, and the operator would think rotation worked.
+        set -eo pipefail
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:rotate-secret -- <app>"
+          echo "Known apps: authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent"
+          exit 1
+        fi
+        APP="{{.CLI_ARGS}}"
+        case "$APP" in
+          authentik)
+            task flux:refresh-secret -- authentik/authentik-secrets
+            # Bitnami postgresql subchart labels its StatefulSet with
+            # app.kubernetes.io/name=postgresql (NOT authentik); match by
+            # instance label instead so we catch both server and postgres.
+            kubectl rollout restart deployment -n authentik -l app.kubernetes.io/instance=authentik
+            kubectl rollout restart statefulset -n authentik -l app.kubernetes.io/instance=authentik
+            ;;
+          downloads|vpn)
+            task flux:refresh-secret -- downloads/vpn-credentials
+            # Only nzbget + qbittorrent consume vpn-credentials (Gluetun sidecars);
+            # the other *arr apps don't need VPN creds and restarting them wastes time.
+            kubectl rollout restart deployment -n downloads -l app.kubernetes.io/name=nzbget
+            kubectl rollout restart deployment -n downloads -l app.kubernetes.io/name=qbittorrent
+            ;;
+          recipes)
+            task flux:refresh-secret -- recipes/recipes-secrets
+            task flux:refresh-secret -- recipes/recipes-openai
+            kubectl rollout restart deployment -n recipes
+            ;;
+          gitlab-runner)
+            task flux:refresh-secret -- gitlab-runner/gitlab-runner-token
+            kubectl rollout restart deployment/gitlab-runner -n gitlab-runner
+            ;;
+          gitlab-runner-privileged)
+            task flux:refresh-secret -- gitlab-runner/gitlab-runner-privileged-token
+            kubectl rollout restart deployment/gitlab-runner-privileged -n gitlab-runner
+            ;;
+          gitlab-agent)
+            task flux:refresh-secret -- gitlab-agent/gitlab-agent-token
+            kubectl rollout restart deployment -n gitlab-agent
+            ;;
+          *)
+            echo "Unknown app: $APP"
+            exit 1
+            ;;
+        esac
+
+  flux:sync-versions:
+    desc: Regenerate kubernetes/infrastructure/sources/versions-configmap.yaml from all.yml
+    preconditions:
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      - python3 scripts/generate-versions-configmap.py
+
+  flux:dev-apply:
+    desc: "Dev helper: kustomize build + envsubst + kubectl apply for a path (Flux will revert if it differs from committed state)"
+    preconditions:
+      - sh: command -v kustomize
+        msg: "kustomize not found"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+      - sh: command -v envsubst
+        msg: "envsubst not found (install gettext)"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      - |
+        set -eo pipefail
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Usage: task flux:dev-apply -- <path-to-kustomization-dir>"
+          exit 1
+        fi
+        # Load versions-configmap into env so ${var} placeholders resolve
+        # the same way Flux's kustomize-controller does at reconcile time.
+        # Without this, `kustomize build` emits literal ${gluetun_version}
+        # etc. and kubectl applies a broken image tag to the cluster.
+        VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+        VARS_OUTPUT=$(python3 -c "
+        import yaml
+        with open('$VERSIONS_CONFIGMAP') as f:
+            doc = yaml.safe_load(f)
+        for k, v in doc.get('data', {}).items():
+            print(f'{k}\t{v}')
+        ") || { echo "ERROR: Failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
+        if [ -z "$VARS_OUTPUT" ]; then
+          echo "ERROR: No version keys found in $VERSIONS_CONFIGMAP"
+          exit 1
+        fi
+        while IFS=$'\t' read -r k v; do
+          [ -n "$k" ] && export "$k=$v"
+        done <<< "$VARS_OUTPUT"
+        ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+        echo "WARNING: Flux will revert this if it differs from committed state."
+        kustomize build "{{.CLI_ARGS}}" | envsubst "$ENVSUBST_VARS" | kubectl apply -f -
+
+  flux:lint:
+    desc: Build every Flux Kustomization + envsubst from versions ConfigMap + kubeconform
+    preconditions:
+      - sh: command -v kustomize
+        msg: "kustomize not installed. brew install kustomize or see https://kubectl.docs.kubernetes.io/installation/kustomize/"
+      - sh: command -v kubeconform
+        msg: "kubeconform not installed. brew install kubeconform or see https://github.com/yannh/kubeconform"
+      - sh: command -v envsubst
+        msg: "envsubst not installed. brew install gettext"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "Python PyYAML not installed. pip install pyyaml"
+    cmds:
+      - |
+        set -eo pipefail
+        FAILED=0
+        # Mirror CI's postBuild substitution: extract cluster-versions keys,
+        # export as env so envsubst resolves ${var} placeholders before
+        # kubeconform runs. Without this, a typo in a placeholder slips past
+        # lint because kubeconform sees the literal string as a valid string.
+        VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+        if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
+          echo "ERROR: $VERSIONS_CONFIGMAP not found"; exit 1
+        fi
+        VARS_OUTPUT=$(python3 -c "
+        import yaml
+        with open('$VERSIONS_CONFIGMAP') as f:
+            doc = yaml.safe_load(f)
+        for k, v in doc.get('data', {}).items():
+            print(f'{k}\t{v}')
+        ") || { echo "ERROR: Failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
+        if [ -z "$VARS_OUTPUT" ]; then
+          echo "ERROR: No version keys found in $VERSIONS_CONFIGMAP"
+          exit 1
+        fi
+        while IFS=$'\t' read -r k v; do
+          [ -n "$k" ] && export "$k=$v"
+        done <<< "$VARS_OUTPUT"
+        ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+
+        for ks in kubernetes/clusters/weisssrv/*.yaml; do
+          [ -f "$ks" ] || continue
+          NAME=$(basename "$ks" .yaml)
+          [ "$NAME" = "kustomization" ] && continue
+          SRCPATH=$(python3 -c "
+        import yaml
+        with open('$ks') as f:
+            doc = yaml.safe_load(f)
+        print(doc.get('spec', {}).get('path', '') or '')
+        ") || { echo "ERROR: failed to parse $ks"; FAILED=1; continue; }
+          if [ -z "$SRCPATH" ]; then continue; fi
+          SRCPATH="${SRCPATH#./}"
+          echo "=== Validating $ks (path $SRCPATH) ==="
+          if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
+            echo "ERROR: kustomize build failed for $SRCPATH:"
+            echo "$RAW"
+            FAILED=1
+            continue
+          fi
+          # Check every ${var} placeholder in the pre-substitution output
+          # against the exported ConfigMap keys. envsubst renders missing vars
+          # as empty string, so we must validate against the RAW input to catch
+          # typos (Flux's kustomize-controller does the same thing silently by
+          # default — our lint is intentionally stricter).
+          MISSING=""
+          for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
+            varname=${ref#\$\{}
+            varname=${varname%\}}
+            if [ -z "${!varname+x}" ]; then
+              MISSING="$MISSING $varname"
+            fi
+          done
+          MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+          if [ -n "$MISSING" ]; then
+            echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
+            echo "$MISSING" | sed 's/^/  - /'
+            FAILED=1
+            continue
+          fi
+          RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+          if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
+              -kubernetes-version 1.35.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{`{{.Group}}`}}/{{`{{.ResourceKind}}`}}_{{`{{.ResourceAPIVersion}}`}}.json' \
+              -summary; then
+            FAILED=1
+          fi
+        done
+
+        echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
+        if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
+          echo "ERROR: cluster root kustomization failed to build"
+          FAILED=1
+        fi
+
+        exit $FAILED
+
+  flux:webhook-register:
+    desc: "One-time: register GitLab push webhook to Flux Receiver (requires Receiver manifest — planned follow-up, see docs/29-flux-operations.md § Webhook Setup)"
+    cmds:
+      - |
+        set -eo pipefail
+        RECEIVER_PATH=$(kubectl -n flux-system get receiver gitlab-push -o jsonpath='{.status.webhookPath}' 2>/dev/null || true)
+        if [ -z "$RECEIVER_PATH" ]; then
+          echo "ERROR: Flux Receiver 'gitlab-push' not found."
+          echo "The Receiver + IngressRoute manifests are a planned follow-up; see"
+          echo "docs/29-flux-operations.md § Webhook Setup for status."
+          exit 1
+        fi
+        FLUX_HOST="https://flux-webhook.ericsweiss.com"
+        HOOK_URL="${FLUX_HOST}${RECEIVER_PATH}"
+        echo "Registering webhook at $HOOK_URL"
+        TOKEN="$(op read 'op://Homelab/Flux GitLab PAT/credential')"
+        [ -n "$TOKEN" ] || { echo "ERROR: op read returned empty Flux GitLab PAT"; exit 1; }
+        WEBHOOK="$(op read 'op://Homelab/Flux Webhook Token/credential')"
+        [ -n "$WEBHOOK" ] || { echo "ERROR: op read returned empty Flux Webhook Token"; exit 1; }
+        TMPFILE=$(mktemp /tmp/flux-webhook-register.XXXXXX.json)
+        trap 'rm -f "$TMPFILE"' EXIT
+        # -w captures the HTTP status code for clear diagnostics instead of
+        # a silent "null null" from jq on empty stdin. We check $HTTP_CODE
+        # explicitly below, so -f is not used (it conflicts with -w by
+        # aborting before the response body is written).
+        HTTP_CODE=$(curl -sSL -X POST "https://git.ericsweiss.com/api/v4/projects/eric%2Fweisssrv/hooks" \
+          -H "PRIVATE-TOKEN: $TOKEN" \
+          -H "Content-Type: application/json" \
+          -w "%{http_code}" \
+          -o "$TMPFILE" \
+          -d "{\"url\":\"$HOOK_URL\",\"push_events\":true,\"token\":\"$WEBHOOK\",\"enable_ssl_verification\":true}")
+        if [ "$HTTP_CODE" != "201" ]; then
+          echo "ERROR: webhook registration failed (HTTP $HTTP_CODE):"
+          cat "$TMPFILE"
+          exit 1
+        fi
+        jq '.id, .url' "$TMPFILE"
 
   # === Maintenance Tasks ===
   # --- Base Infrastructure ---
@@ -767,29 +940,6 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-k3s-nodes.yml {{.CLI_ARGS}}
 
-  maintenance:update-helm-charts:
-    desc: Update platform Helm charts (MetalLB, Traefik, cert-manager, external-dns)
-    dir: "{{.ANSIBLE_DIR}}"
-    cmds:
-      - ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-helm-charts.yml {{.CLI_ARGS}}
-
-  maintenance:update-k3s-workloads:
-    desc: Update k3s workload images (Authentik, downloads, recipes namespaces)
-    cmds:
-      - echo "=== Updating Authentik SSO ==="
-      - echo "Re-deploying Authentik with current version from group_vars/all.yml..."
-      - task: k3s:deploy-authentik
-      - echo ""
-      - echo "=== Updating Downloads namespace workloads ==="
-      - echo "Re-applying manifests with current versions from group_vars/all.yml..."
-      - task: downloads:deploy
-      - echo ""
-      - echo "=== Updating Recipes namespace workloads ==="
-      - echo "Re-applying manifests with current versions from group_vars/all.yml..."
-      - task: recipes:deploy
-      - echo ""
-      - echo "Workload updates complete. Verify with 'task k3s:status'"
-
   # --- Version Discovery Tasks ---
   maintenance:check-versions:
     desc: Check all services for available version updates
@@ -806,7 +956,7 @@ tasks:
       - op run -- python3 ./scripts/check-versions.py --json {{.CLI_ARGS}}; RC=$?; [ $RC -le 1 ] || exit $RC
 
   maintenance:update-version:
-    desc: "Update a single service version in all.yml (task maintenance:update-version SERVICE=gluetun)"
+    desc: "Update a single service version in all.yml + regenerate ConfigMap (task maintenance:update-version SERVICE=gluetun)"
     vars:
       SERVICE: '{{.SERVICE | default ""}}'
     env:
@@ -822,35 +972,45 @@ tasks:
           exit 1
         fi
         op run -- python3 ./scripts/check-versions.py --update "$SERVICE"
+      - task: flux:sync-versions
+      - echo "all.yml + versions-configmap.yaml updated. Commit both and raise MR."
 
   maintenance:update-all-versions:
-    desc: Update all outdated service versions in all.yml (review changes before deploying)
+    desc: Update all outdated service versions in all.yml + regenerate ConfigMap
     env:
       GITHUB_TOKEN: op://Homelab/GitHub Token/credential
     cmds:
       - op run -- python3 ./scripts/check-versions.py --update-all
+      - task: flux:sync-versions
+      - echo "all.yml + versions-configmap.yaml updated. Commit both and raise MR."
 
   maintenance:update-cluster:
-    desc: Complete k3s cluster update (nodes + Helm charts + all workloads)
+    desc: Complete k3s cluster update (nodes + version bump + Flux reconcile)
     cmds:
       - echo "==================================="
       - echo "K3s Cluster Full Update"
       - echo "==================================="
       - echo ""
-      - echo "Phase 1 - Update k3s nodes (rolling)"
+      - echo "Phase 1 - Update k3s binaries on nodes (rolling)"
       - task: maintenance:update-k3s-nodes
       - echo ""
-      - echo "Phase 2 - Update Helm charts"
-      - task: maintenance:update-helm-charts
+      - echo "Phase 2 - Check for new versions across managed services"
+      - task: maintenance:check-versions
       - echo ""
-      - echo "Phase 3 - Update workload images (Authentik, downloads, recipes)"
-      - task: maintenance:update-k3s-workloads
+      - echo "Phase 3 - Bump all outdated versions in all.yml"
+      - task: maintenance:update-all-versions
+      - echo ""
+      - echo "Phase 4 - Regenerate cluster-versions ConfigMap from all.yml"
+      - task: flux:sync-versions
+      - echo ""
+      - 'echo "NOTE - commit + push all.yml and versions-configmap.yaml so Flux"'
+      - echo "reconciles the new versions into the cluster."
       - echo ""
       - echo "==================================="
-      - echo "Cluster update complete!"
+      - echo "Cluster update staging complete."
       - echo "==================================="
       - echo ""
-      - echo "Verify cluster status with 'task k3s:status'"
+      - echo "Verify cluster status with 'task flux:status'"
 
   # === Disaster Recovery Tasks ===
   disaster-recovery:storage-bootstrap:
@@ -1039,13 +1199,21 @@ tasks:
       - ./scripts/collect-state.sh {{.CLI_ARGS}}
 
   lint:
-    desc: Run all linters (no auth required)
+    desc: Run all linters (no auth required) — Ansible, Terraform, Flux, Python scripts
     cmds:
       - task: ansible:lint
       - task: terraform:fmt-check
       - task: terraform:validate-local
-      - task: kubernetes:lint
-      - task: kubernetes:validate-helm
+      - task: flux:lint
+      - task: scripts:test
+
+  scripts:test:
+    desc: Run Python unit tests for scripts/ (pytest)
+    cmds:
+      - python3 -m pytest scripts/ -v
+    preconditions:
+      - sh: python3 -c "import pytest" 2>/dev/null
+        msg: "pytest not installed. pip install pytest"
 
   # === 1Password Integration ===
   op:check:
@@ -1073,135 +1241,8 @@ tasks:
 
   # === Download Clients / Media Stack Tasks ===
   # New architecture: Each download client (nzbget, qbittorrent) runs independently
-  # with its own optional Gluetun VPN sidecar. VPN can be enabled/disabled per-app.
-
-  downloads:deploy:
-    desc: Deploy download clients and media management stack
-    dir: ./kubernetes/apps/download-clients
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: command -v envsubst
-        msg: "envsubst is not installed. Install via: brew install gettext (macOS) or apt install gettext-base (Linux)"
-      - sh: command -v op
-        msg: "1Password CLI is not installed"
-      - sh: kubectl cluster-info 2>/dev/null
-        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
-    cmds:
-      - kubectl apply -f namespace.yaml
-      - |
-        echo "Creating VPN credentials secret (using PrivadoVPN by default)..."
-        # Validate 1Password is signed in and credentials are not empty
-        if ! op whoami &>/dev/null; then
-          echo "ERROR: 1Password CLI not signed in. Run 'eval \$(op signin)' first."
-          exit 1
-        fi
-        VPN_USER=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')
-        VPN_PASS=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')
-        if [ -z "$VPN_USER" ] || [ -z "$VPN_PASS" ]; then
-          echo "ERROR: VPN credentials are empty. Check 1Password item 'PrivadoVPN Credentials'."
-          exit 1
-        fi
-        kubectl create secret generic vpn-credentials \
-          --namespace=downloads \
-          --from-literal=openvpn-user="$VPN_USER" \
-          --from-literal=openvpn-password="$VPN_PASS" \
-          --dry-run=client -o yaml | kubectl apply -f -
-      - |
-        echo "Reading versions from centralized configuration..."
-        # Read versions from ansible/inventories/prod/group_vars/all.yml
-        # Using grep + awk to extract values (no yq dependency required)
-        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-        export GLUETUN_VERSION=$(grep '^gluetun_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export NZBGET_VERSION=$(grep '^nzbget_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export QBITTORRENT_VERSION=$(grep '^qbittorrent_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export PROWLARR_VERSION=$(grep '^prowlarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export SONARR_VERSION=$(grep '^sonarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export RADARR_VERSION=$(grep '^radarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export LIDARR_VERSION=$(grep '^lidarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export PULSARR_VERSION=$(grep '^pulsarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-
-        echo "Versions: Gluetun=$GLUETUN_VERSION, NZBGet=$NZBGET_VERSION, qBittorrent=$QBITTORRENT_VERSION"
-        echo "         Prowlarr=$PROWLARR_VERSION, Sonarr=$SONARR_VERSION, Radarr=$RADARR_VERSION"
-        echo "         Lidarr=$LIDARR_VERSION, Pulsarr=$PULSARR_VERSION"
-
-        # Validate all version variables are non-empty
-        if [ -z "$GLUETUN_VERSION" ] || [ -z "$NZBGET_VERSION" ] || [ -z "$QBITTORRENT_VERSION" ] || \
-           [ -z "$PROWLARR_VERSION" ] || [ -z "$SONARR_VERSION" ] || [ -z "$RADARR_VERSION" ] || \
-           [ -z "$LIDARR_VERSION" ] || [ -z "$PULSARR_VERSION" ]; then
-          echo "ERROR: One or more version variables are empty. Check $VARS_FILE format."
-          exit 1
-        fi
-
-        # Apply manifests with version substitution
-        # Only substitute our specific version variables (prevents envsubst from replacing other $ references)
-        ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
-        for file in nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml; do
-          envsubst "$ENVSUBST_VARS" < "$file" | kubectl apply -f -
-        done
-
-        # Apply remaining resources without substitution
-        kubectl apply -f storage.yaml
-        kubectl apply -f certificate.yaml
-        kubectl apply -f ingress-routes.yaml
-        kubectl apply -f ingress-routes-ha-bypass.yaml
-      - |
-        echo "Waiting for NZBGet to be ready..."
-        kubectl rollout status deployment/nzbget -n downloads --timeout=300s || echo "Warning: NZBGet not ready yet"
-      - |
-        echo "Waiting for qBittorrent to be ready..."
-        kubectl rollout status deployment/qbittorrent -n downloads --timeout=300s || echo "Warning: qBittorrent not ready yet"
-      - echo "Download clients and media stack deployed successfully"
-
-  downloads:check:
-    desc: Show what would change in downloads namespace (dry-run)
-    dir: ./kubernetes/apps/download-clients
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: command -v envsubst
-        msg: "envsubst is not installed"
-      - sh: kubectl cluster-info >/dev/null 2>&1
-        msg: "Cannot connect to Kubernetes cluster. Check kubeconfig and connectivity."
-    cmds:
-      - |
-        echo "Checking downloads namespace for changes..."
-        echo ""
-        # Read versions from centralized configuration
-        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-        export GLUETUN_VERSION=$(grep '^gluetun_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export NZBGET_VERSION=$(grep '^nzbget_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export QBITTORRENT_VERSION=$(grep '^qbittorrent_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export PROWLARR_VERSION=$(grep '^prowlarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export SONARR_VERSION=$(grep '^sonarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export RADARR_VERSION=$(grep '^radarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export LIDARR_VERSION=$(grep '^lidarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export PULSARR_VERSION=$(grep '^pulsarr_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-
-        # Check manifests with version substitution
-        # kubectl diff exit codes: 0=no changes, 1=changes found, >1=error
-        # Errors (exit >1) are non-fatal here since resources may not exist yet,
-        # but we report them clearly. Cluster connectivity is validated by precondition.
-        ENVSUBST_VARS='$GLUETUN_VERSION $NZBGET_VERSION $QBITTORRENT_VERSION $PROWLARR_VERSION $SONARR_VERSION $RADARR_VERSION $LIDARR_VERSION $PULSARR_VERSION'
-        for file in nzbget.yaml qbittorrent.yaml prowlarr.yaml sonarr.yaml radarr.yaml lidarr.yaml pulsarr.yaml; do
-          echo "--- Checking $file ---"
-          set +e
-          diff_output=$(envsubst "$ENVSUBST_VARS" < "$file" | kubectl diff -f - 2>&1)
-          diff_exit=$?
-          set -e
-          if [ $diff_exit -eq 0 ]; then
-            echo "(no changes)"
-          elif [ $diff_exit -eq 1 ]; then
-            echo "$diff_output"
-            echo "(changes detected - deploy to apply)"
-          else
-            echo "WARNING: kubectl diff failed (exit $diff_exit): resource may not exist yet"
-            echo "$diff_output" | head -5
-          fi
-          echo ""
-        done
-
-        echo "Check complete. Use 'task downloads:deploy' to apply changes."
+  # with its own optional Gluetun VPN sidecar. VPN configuration is managed
+  # declaratively in the YAML manifests and deployed via Flux.
 
   downloads:status:
     desc: Show status of download clients and media stack
@@ -1253,103 +1294,6 @@ tasks:
           echo "Public IP:"
           kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https://checkip.amazonaws.com 2>/dev/null || echo "  Cannot reach checkip.amazonaws.com"
         fi
-
-  downloads:vpn:
-    desc: "Enable/disable VPN for an app (task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado)"
-    vars:
-      APP: '{{.APP | default ""}}'
-      ENABLED: '{{.ENABLED | default "true"}}'
-      PROVIDER: '{{.PROVIDER | default "privado"}}'
-    cmds:
-      - |
-        APP="{{.APP}}"
-        ENABLED="{{.ENABLED}}"
-        PROVIDER="{{.PROVIDER}}"
-
-        if [ -z "$APP" ]; then
-          echo "Usage: task downloads:vpn APP=<nzbget|qbittorrent> ENABLED=<true|false> [PROVIDER=<privado|vpn-unlimited>]"
-          echo ""
-          echo "Examples:"
-          echo "  task downloads:vpn APP=nzbget ENABLED=true                    # Enable VPN with current provider"
-          echo "  task downloads:vpn APP=nzbget ENABLED=true PROVIDER=privado   # Enable with PrivadoVPN"
-          echo "  task downloads:vpn APP=nzbget ENABLED=false                   # Disable VPN (direct internet)"
-          echo "  task downloads:vpn APP=qbittorrent ENABLED=true PROVIDER=vpn-unlimited"
-          exit 1
-        fi
-
-        if [ "$APP" != "nzbget" ] && [ "$APP" != "qbittorrent" ]; then
-          echo "ERROR: APP must be 'nzbget' or 'qbittorrent'"
-          exit 1
-        fi
-
-        CONFIGMAP="${APP}-vpn-config"
-
-        # Normalize provider name for Gluetun (expects "vpn unlimited" with space, not "vpn-unlimited")
-        GLUETUN_PROVIDER="$PROVIDER"
-        case "$PROVIDER" in
-          vpn-unlimited|keepsolid)
-            GLUETUN_PROVIDER="vpn unlimited"
-            ;;
-        esac
-
-        # Update credentials if enabling VPN (calls downloads:vpn-credentials)
-        if [ "$ENABLED" = "true" ]; then
-          echo "Updating VPN credentials for provider: $PROVIDER"
-          # Use task to update credentials (avoids code duplication)
-          task downloads:vpn-credentials PROVIDER="$PROVIDER"
-        fi
-
-        # Update the ConfigMap (use normalized provider name for Gluetun)
-        kubectl patch configmap "$CONFIGMAP" -n downloads -p "{\"data\":{\"vpn_enabled\":\"$ENABLED\",\"vpn_provider\":\"$GLUETUN_PROVIDER\"}}"
-
-        # Restart the deployment
-        kubectl rollout restart deployment/"$APP" -n downloads
-        kubectl rollout status deployment/"$APP" -n downloads --timeout=180s
-
-        if [ "$ENABLED" = "true" ]; then
-          echo "$APP VPN enabled ($PROVIDER)"
-        else
-          echo "$APP VPN disabled"
-        fi
-
-  downloads:vpn-credentials:
-    desc: "Update VPN credentials (task downloads:vpn-credentials PROVIDER=privado)"
-    vars:
-      PROVIDER: '{{.PROVIDER | default "privado"}}'
-    cmds:
-      - |
-        PROVIDER="{{.PROVIDER}}"
-        # Validate 1Password is signed in
-        if ! op whoami &>/dev/null; then
-          echo "ERROR: 1Password CLI not signed in. Run 'eval \$(op signin)' first."
-          exit 1
-        fi
-        case "$PROVIDER" in
-          privado)
-            VPN_USER=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-user')
-            VPN_PASS=$(op read 'op://Homelab/PrivadoVPN Credentials/openvpn-password')
-            ;;
-          vpn-unlimited|keepsolid)
-            VPN_USER=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-user')
-            VPN_PASS=$(op read 'op://Homelab/VPN Unlimited Credentials/openvpn-password')
-            ;;
-          *)
-            echo "ERROR: Unknown provider: $PROVIDER"
-            echo "Supported providers: privado, vpn-unlimited"
-            exit 1
-            ;;
-        esac
-        # Validate credentials are not empty
-        if [ -z "$VPN_USER" ] || [ -z "$VPN_PASS" ]; then
-          echo "ERROR: VPN credentials are empty. Check 1Password item."
-          exit 1
-        fi
-        kubectl create secret generic vpn-credentials \
-          --namespace=downloads \
-          --from-literal=openvpn-user="$VPN_USER" \
-          --from-literal=openvpn-password="$VPN_PASS" \
-          --dry-run=client -o yaml | kubectl apply -f -
-        echo "VPN credentials updated for $PROVIDER"
 
   downloads:restart:
     desc: Restart all download clients and media apps
@@ -1429,206 +1373,25 @@ tasks:
     cmds:
       - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
       - |
-        # Delete only workload resources, NOT namespace/storage/secrets
-        # This allows safe redeploy with 'task downloads:deploy'
-        kubectl delete -f nzbget.yaml --ignore-not-found
-        kubectl delete -f qbittorrent.yaml --ignore-not-found
-        kubectl delete -f prowlarr.yaml --ignore-not-found
-        kubectl delete -f sonarr.yaml --ignore-not-found
-        kubectl delete -f radarr.yaml --ignore-not-found
-        kubectl delete -f lidarr.yaml --ignore-not-found
-        kubectl delete -f pulsarr.yaml --ignore-not-found
-        kubectl delete -f ingress-routes.yaml --ignore-not-found
-        kubectl delete -f ingress-routes-ha-bypass.yaml --ignore-not-found
+        # Delete only workload resources, NOT namespace/storage/secrets.
+        # Flux will recreate these within ~1 minute on the next reconcile
+        # unless the apps Kustomization is suspended first (see echo block below).
+        kubectl delete deployment -n downloads -l app.kubernetes.io/part-of=download-clients --ignore-not-found
+        kubectl delete ingressroute -n downloads --all --ignore-not-found
       - |
         echo ""
         echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
-        echo "Re-deploy with: task downloads:deploy"
+        echo "Flux will recreate the workloads on next reconcile (~1 minute)."
+        echo "To keep them deleted, suspend the apps Kustomization first:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
         echo ""
         echo "To fully remove everything:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
         echo "  kubectl delete namespace downloads"
 
   # === Recipe Management Stack Tasks ===
   # Mealie (recipe management) and Bar Assistant (cocktail recipes)
   # Data services pinned to NAS node for NFS locality and backup consistency
-
-  recipes:deploy:
-    desc: Deploy Mealie and Bar Assistant recipe management stack
-    dir: ./kubernetes/apps/recipes
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: command -v envsubst
-        msg: "envsubst is not installed. Install via: brew install gettext (macOS) or apt install gettext-base (Linux)"
-      - sh: command -v op
-        msg: "1Password CLI is not installed"
-      - sh: kubectl cluster-info 2>/dev/null
-        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
-    cmds:
-      - kubectl apply -f namespace.yaml
-      - kubectl apply -f storage.yaml
-      - |
-        # Create secrets from 1Password using op run wrapper
-        # op run handles authentication automatically (prompts if needed)
-        op run -- sh -c '
-          echo "Creating secrets from 1Password..."
-
-          # Read all secrets from 1Password (required secrets - no fallbacks)
-          # This ensures idempotent deployments and supports credential rotation
-          echo "Reading secrets from 1Password..."
-
-          # Required for all deployments
-          SMTP_USER=$(op read "op://Homelab/SMTP Relay Auth/username")
-          SMTP_PASS=$(op read "op://Homelab/SMTP Relay Auth/password")
-          MEALIE_PG_PASS=$(op read "op://Homelab/Mealie Secrets/postgres-password")
-          MEILI_KEY=$(op read "op://Homelab/Bar Assistant Secrets/meilisearch-master-key")
-
-          # SSO secrets (REQUIRED - password login is disabled, SSO is the only way to log in)
-          MEALIE_OIDC_CLIENT_ID=$(op read "op://Homelab/Mealie SSO/oidc-client-id")
-          MEALIE_OIDC_CLIENT_SECRET=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
-          BA_CLIENT_ID=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-id")
-          BA_CLIENT_SECRET=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
-
-          # Optional: OpenAI for recipe parsing (deployment proceeds without this)
-          MEALIE_OPENAI_KEY=$(op read "op://Homelab/OpenAI API Key/api-key" 2>/dev/null || echo "")
-
-          # Validate required secrets are not empty
-          MISSING=""
-          if [ -z "$SMTP_USER" ] || [ -z "$SMTP_PASS" ]; then
-            MISSING="$MISSING\n  - SMTP Relay Auth (username, password)"
-          fi
-          if [ -z "$MEALIE_PG_PASS" ]; then
-            MISSING="$MISSING\n  - Mealie Secrets (postgres-password)"
-          fi
-          if [ -z "$MEILI_KEY" ]; then
-            MISSING="$MISSING\n  - Bar Assistant Secrets (meilisearch-master-key)"
-          fi
-          if [ -z "$MEALIE_OIDC_CLIENT_ID" ] || [ -z "$MEALIE_OIDC_CLIENT_SECRET" ]; then
-            MISSING="$MISSING\n  - Mealie SSO (oidc-client-id, oidc-client-secret)"
-          fi
-          if [ -z "$BA_CLIENT_ID" ] || [ -z "$BA_CLIENT_SECRET" ]; then
-            MISSING="$MISSING\n  - Bar Assistant SSO (authentik-client-id, authentik-client-secret)"
-          fi
-
-          if [ -n "$MISSING" ]; then
-            echo "ERROR: Required 1Password secrets are missing:$MISSING"
-            echo ""
-            echo "Create these items in 1Password vault Homelab before deploying."
-            echo "SSO secrets are REQUIRED - password login is disabled in both apps."
-            echo "See docs/22-recipes-deployment.md and docs/23-recipes-sso-setup.md for setup instructions."
-            exit 1
-          fi
-
-          # Warn about optional secrets
-          if [ -z "$MEALIE_OPENAI_KEY" ]; then
-            echo "NOTE: OpenAI API key not found. Recipe parsing from images will be disabled."
-            echo "      Add API key to OpenAI API Key 1Password item to enable."
-          fi
-
-          # Create Mealie secrets
-          kubectl create secret generic mealie-secrets \
-            --namespace=recipes \
-            --from-literal=postgres-password="$MEALIE_PG_PASS" \
-            --from-literal=smtp-username="$SMTP_USER" \
-            --from-literal=smtp-password="$SMTP_PASS" \
-            --from-literal=oidc-client-id="$MEALIE_OIDC_CLIENT_ID" \
-            --from-literal=oidc-client-secret="$MEALIE_OIDC_CLIENT_SECRET" \
-            --from-literal=openai-api-key="$MEALIE_OPENAI_KEY" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          # Create Bar Assistant secrets
-          kubectl create secret generic bar-assistant-secrets \
-            --namespace=recipes \
-            --from-literal=meilisearch-master-key="$MEILI_KEY" \
-            --from-literal=smtp-username="$SMTP_USER" \
-            --from-literal=smtp-password="$SMTP_PASS" \
-            --from-literal=authentik-client-id="$BA_CLIENT_ID" \
-            --from-literal=authentik-client-secret="$BA_CLIENT_SECRET" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          echo "Secrets created/updated successfully"
-        '
-      - |
-        echo "Reading versions from centralized configuration..."
-        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-        export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-
-        echo "Versions: Mealie=$MEALIE_VERSION (PostgreSQL=$MEALIE_POSTGRESQL_VERSION), Bar Assistant=$BAR_ASSISTANT_VERSION, Salt Rim=$SALT_RIM_VERSION"
-
-        if [ -z "$MEALIE_VERSION" ] || [ -z "$MEALIE_POSTGRESQL_VERSION" ] || [ -z "$BAR_ASSISTANT_VERSION" ] || [ -z "$SALT_RIM_VERSION" ]; then
-          echo "ERROR: One or more version variables are empty. Check $VARS_FILE format."
-          exit 1
-        fi
-
-        # Apply manifests with version substitution
-        ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
-        envsubst "$ENVSUBST_VARS" < mealie.yaml | kubectl apply -f -
-        envsubst "$ENVSUBST_VARS" < bar-assistant.yaml | kubectl apply -f -
-
-        # Apply TLS certificates (required before ingress routes)
-        kubectl apply -f certificate.yaml
-
-        # Apply ingress routes (no substitution needed)
-        kubectl apply -f ingress-routes.yaml
-      - |
-        echo "Waiting for Mealie PostgreSQL to be ready..."
-        kubectl rollout status deployment/mealie-postgres -n recipes --timeout=180s || echo "Warning: Mealie PostgreSQL not ready yet"
-      - |
-        echo "Waiting for Mealie to be ready..."
-        kubectl rollout status deployment/mealie -n recipes --timeout=300s || echo "Warning: Mealie not ready yet"
-      - |
-        echo "Waiting for Bar Assistant to be ready..."
-        kubectl rollout status deployment/bar-assistant -n recipes --timeout=300s || echo "Warning: Bar Assistant not ready yet"
-      - echo "Recipe management stack deployed successfully"
-
-  recipes:check:
-    desc: Show what would change in recipes namespace (dry-run)
-    dir: ./kubernetes/apps/recipes
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: command -v envsubst
-        msg: "envsubst is not installed"
-      - sh: kubectl cluster-info >/dev/null 2>&1
-        msg: "Cannot connect to Kubernetes cluster. Check kubeconfig and connectivity."
-    cmds:
-      - |
-        echo "Checking recipes namespace for changes..."
-        echo ""
-        # Read versions from centralized configuration
-        VARS_FILE="../../../ansible/inventories/prod/group_vars/all.yml"
-        export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-        export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-
-        # Check manifests with version substitution
-        # kubectl diff exit codes: 0=no changes, 1=changes found, >1=error
-        # Errors (exit >1) are non-fatal here since resources may not exist yet,
-        # but we report them clearly. Cluster connectivity is validated by precondition.
-        ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
-        for file in mealie.yaml bar-assistant.yaml; do
-          echo "--- Checking $file ---"
-          set +e
-          diff_output=$(envsubst "$ENVSUBST_VARS" < "$file" | kubectl diff -f - 2>&1)
-          diff_exit=$?
-          set -e
-          if [ $diff_exit -eq 0 ]; then
-            echo "(no changes)"
-          elif [ $diff_exit -eq 1 ]; then
-            echo "$diff_output"
-            echo "(changes detected - deploy to apply)"
-          else
-            echo "WARNING: kubectl diff failed (exit $diff_exit): resource may not exist yet"
-            echo "$diff_output" | head -5
-          fi
-          echo ""
-        done
-
-        echo "Check complete. Use 'task recipes:deploy' to apply changes."
 
   recipes:status:
     desc: Show status of recipe management stack
@@ -1686,13 +1449,15 @@ tasks:
       - echo "Deleting workloads (preserving namespace, storage, and secrets)..."
       - |
         # Delete only workload resources, NOT namespace/storage/secrets
-        kubectl delete -f mealie.yaml --ignore-not-found
-        kubectl delete -f bar-assistant.yaml --ignore-not-found
-        kubectl delete -f ingress-routes.yaml --ignore-not-found
+        kubectl delete deployment -n recipes --all --ignore-not-found
+        kubectl delete statefulset -n recipes --all --ignore-not-found
+        kubectl delete ingressroute -n recipes --all --ignore-not-found
       - |
         echo ""
         echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
-        echo "Re-deploy with: task recipes:deploy"
+        echo "Flux will recreate the workloads on next reconcile (~1 minute)."
+        echo "To keep them deleted, suspend the apps Kustomization first:"
+        echo "  task flux:suspend -- flux-system/kustomization/apps"
         echo ""
         echo "To fully remove everything:"
         echo "  kubectl delete namespace recipes"
@@ -1958,32 +1723,28 @@ tasks:
         echo "To rollback: ssh $CURRENT_NODE \"sudo qm rollback {{.HA_VM_ID}} '${NAME}'\""
 
   home-assistant:deploy:
-    desc: Deploy Home Assistant ingress and configuration
+    desc: "DEPRECATED: aliased to home-assistant:deploy-config. Ingress is Flux-managed."
     cmds:
-      - task: home-assistant:deploy-ingress
-      - task: home-assistant:deploy-config
       - |
-        echo ""
-        echo "============================================"
-        echo "Home Assistant deployment complete!"
-        echo "============================================"
-        echo ""
-        echo "To restart and apply changes:"
-        echo "  task home-assistant:restart-after-config"
-        echo ""
-        echo "To check status:"
-        echo "  task home-assistant:status"
+        cat <<'EOF'
 
-  home-assistant:deploy-ingress:
-    desc: Deploy/update Home Assistant IngressRoute and backend service
-    dir: ./kubernetes/apps/ingress-routes
-    cmds:
-      - kubectl apply -f services.yaml
-      - kubectl apply -f home-assistant.yaml
-      - |
-        echo "Home Assistant ingress deployed"
-        echo ""
-        echo "Verify with: task home-assistant:status"
+        NOTICE: task home-assistant:deploy now only runs deploy-config.
+
+        Previously this task ran:
+          (a) home-assistant:deploy-ingress  -> kubectl apply to apps/ingress-routes
+          (b) home-assistant:deploy-config   -> Ansible templates the HAOS config
+
+        The IngressRoute + backend service are now reconciled by Flux from
+        kubernetes/apps/vm-ingress/{home-assistant.yaml,services-default.yaml}.
+        Edit those files + git push to change ingress (or use flux:dev-apply
+        for local testing).
+
+        This task will keep working but is deprecated. Prefer:
+          task home-assistant:deploy-config
+
+        Proceeding with deploy-config...
+        EOF
+      - task: home-assistant:deploy-config
 
   home-assistant:deploy-config:
     desc: Deploy Home Assistant configuration via Ansible with 1Password secrets
@@ -2059,88 +1820,6 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml --check --diff {{.CLI_ARGS}}
 
-  gitlab:deploy-ingress:
-    desc: Deploy GitLab Traefik IngressRoutes and certificates
-    dir: ./kubernetes/apps/gitlab
-    cmds:
-      - kubectl apply -k .
-      - echo "GitLab IngressRoutes deployed successfully"
-      - echo ""
-      - echo "Verify with 'kubectl get ingressroute -n gitlab'"
-
-  gitlab:deploy-runner:
-    desc: Deploy shared GitLab Runner for multi-project k8s deploys (unprivileged)
-    dir: ./kubernetes/apps/gitlab-runner
-    vars:
-      GITLAB_RUNNER_VERSION:
-        sh: grep '^gitlab_runner_helm_version:' {{.ROOT_DIR}}/ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    env:
-      # GitLab 18+ uses runner authentication tokens (glrt-*) created from
-      # GitLab Admin > CI/CD > Runners > New instance runner
-      # The legacy registration token workflow was removed in GitLab 17.0
-      GITLAB_RUNNER_TOKEN: op://Homelab/GitLab Runner/runner-token
-    preconditions:
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
-    cmds:
-      - echo "Deploying GitLab Runner version {{.GITLAB_RUNNER_VERSION}}"
-      - helm repo add gitlab https://charts.gitlab.io --force-update
-      - helm repo update gitlab
-      - kubectl apply -f namespace.yaml
-      # SECURITY: Write runner token to a temp values file that's consumed by helm -f and
-      # immediately cleaned up via trap. This avoids exposing the token in process arguments.
-      - |
-        echo "Installing GitLab Runner via Helm..."
-        op run -- sh -c '
-          TMPFILE=$(mktemp)
-          trap "rm -f $TMPFILE" EXIT
-          echo "runnerToken: \"$GITLAB_RUNNER_TOKEN\"" > "$TMPFILE"
-          helm upgrade --install gitlab-runner gitlab/gitlab-runner \
-            -n gitlab-runner \
-            -f values.yaml \
-            -f "$TMPFILE" \
-            --version "{{.GITLAB_RUNNER_VERSION}}" \
-            --wait --timeout 5m'
-      - echo "GitLab Runner deployed successfully"
-      - echo ""
-      - 'echo "Verify with: kubectl get pods -n gitlab-runner"'
-
-  gitlab:deploy-runner-privileged:
-    desc: Deploy infrastructure runner for weisssrv (privileged, DinD + SSH + full deploy)
-    dir: ./kubernetes/apps/gitlab-runner-privileged
-    vars:
-      GITLAB_RUNNER_VERSION:
-        sh: grep '^gitlab_runner_helm_version:' {{.ROOT_DIR}}/ansible/inventories/prod/group_vars/all.yml | awk '{print $2}' | tr -d '"'
-    env:
-      # Separate runner token - each runner instance needs its own auth token (GitLab 16+)
-      # Created in GitLab Admin > CI/CD > Runners > New instance runner
-      #   - Tags: infrastructure
-      #   - Run untagged jobs: No
-      GITLAB_RUNNER_PRIVILEGED_TOKEN: op://Homelab/GitLab Runner Privileged/runner-token
-    preconditions:
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
-    cmds:
-      - echo "Deploying privileged GitLab Runner version {{.GITLAB_RUNNER_VERSION}}"
-      - helm repo add gitlab https://charts.gitlab.io --force-update
-      - helm repo update gitlab
-      - kubectl apply -f namespace.yaml
-      - |
-        echo "Installing privileged GitLab Runner via Helm..."
-        op run -- sh -c '
-          TMPFILE=$(mktemp)
-          trap "rm -f $TMPFILE" EXIT
-          echo "runnerToken: \"$GITLAB_RUNNER_PRIVILEGED_TOKEN\"" > "$TMPFILE"
-          helm upgrade --install gitlab-runner-privileged gitlab/gitlab-runner \
-            -n gitlab-runner \
-            -f values.yaml \
-            -f "$TMPFILE" \
-            --version "{{.GITLAB_RUNNER_VERSION}}" \
-            --wait --timeout 5m'
-      - echo "Privileged GitLab Runner deployed successfully"
-      - echo ""
-      - 'echo "Verify with: kubectl get pods -n gitlab-runner"'
-
   gitlab:status:
     desc: Show GitLab status
     cmds:
@@ -2159,55 +1838,6 @@ tasks:
       - echo "=== GitLab Agent ==="
       - kubectl get pods -n gitlab-agent 2>/dev/null || echo "No agent pods found"
       - helm list -n gitlab-agent 2>/dev/null || echo "No agent Helm release found"
-
-  gitlab:deploy-agent:
-    desc: Deploy GitLab Agent for Kubernetes (agentk)
-    dir: ./kubernetes/apps/gitlab-agent
-    vars:
-      VARS_FILE: "../../../ansible/inventories/prod/group_vars/all.yml"
-    preconditions:
-      - sh: command -v kubectl
-        msg: "kubectl is not installed"
-      - sh: command -v helm
-        msg: "helm is not installed"
-      - sh: command -v op
-        msg: "1Password CLI is not installed"
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
-      - sh: kubectl cluster-info 2>/dev/null
-        msg: "Cannot connect to k3s cluster. Run: export KUBECONFIG=~/.kube/config-k3s"
-    cmds:
-      - |
-        set -euo pipefail
-        # Parse chart version with fail-fast if not found
-        CHART_VERSION="$(awk -F': *' '/^gitlab_agent_helm_version:/ {gsub(/"/, "", $2); print $2; exit}' "{{.VARS_FILE}}")"
-        if [ -z "$CHART_VERSION" ]; then
-          echo "ERROR: gitlab_agent_helm_version not found in {{.VARS_FILE}}"
-          exit 1
-        fi
-        echo "Deploying GitLab Agent chart version: $CHART_VERSION"
-        helm repo add gitlab https://charts.gitlab.io --force-update
-        helm repo update gitlab
-        kubectl apply -f namespace.yaml
-        # Write token to temp file (avoid --set which exposes token in process list)
-        # Strip any trailing whitespace/newlines to avoid invalid tokens
-        TEMP_TOKEN="$(mktemp)"
-        trap 'rm -f "$TEMP_TOKEN"' EXIT
-        op read "op://Homelab/GitLab Agent Token/credential" | tr -d '\r\n' > "$TEMP_TOKEN"
-        [ -s "$TEMP_TOKEN" ] || { echo "ERROR: GitLab agent token is empty"; exit 1; }
-        helm upgrade --install weisssrv-k3s gitlab/gitlab-agent \
-          --namespace gitlab-agent \
-          --version "$CHART_VERSION" \
-          --set config.kasAddress="wss://git.ericsweiss.com/-/kubernetes-agent/" \
-          --set-file config.token="$TEMP_TOKEN" \
-          --set resources.requests.cpu=10m \
-          --set resources.requests.memory=64Mi \
-          --set resources.limits.cpu=100m \
-          --set resources.limits.memory=128Mi
-      - |
-        echo "Waiting for agent to be ready..."
-        kubectl rollout status deployment/weisssrv-k3s-gitlab-agent -n gitlab-agent --timeout=60s
-        echo "GitLab Agent deployed successfully"
 
   gitlab:verify:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)

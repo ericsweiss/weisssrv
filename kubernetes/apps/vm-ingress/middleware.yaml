@@ -1,0 +1,52 @@
+---
+# Strip www from ericsweiss.com domains (public only)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-www
+  namespace: traefik
+spec:
+  redirectRegex:
+    regex: "^https?://www\\.(.+)"
+    # $${1} escapes the dollar so Flux postBuild envsubst leaves "${1}" literal
+    # for Traefik's regex backreference. Without the escape, Flux would replace
+    # it with the empty string and every www-redirect would resolve to "https://".
+    replacement: "https://$${1}"
+    permanent: true
+
+---
+# HSTS headers for public services
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: hsts-header
+  namespace: traefik
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+
+---
+# IP allowlist for internal-only services (LAN + Tailscale)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: lan-tailscale-only
+  namespace: traefik
+spec:
+  ipAllowList:
+    sourceRange:
+      - 192.168.0.0/24     # Local LAN
+      - 100.64.0.0/10      # Tailscale CGNAT range
+
+---
+# Home Assistant specific headers for reverse proxy
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: home-assistant-headers
+  namespace: traefik
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"

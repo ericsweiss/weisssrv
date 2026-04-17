@@ -1,0 +1,14 @@
+---
+# Apps top-level Kustomization.
+# Each app lives in its own folder containing its complete set of resources
+# (HelmRelease + ExternalSecret + Namespace + IngressRoutes + PVCs as relevant).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - authentik
+  - download-clients
+  - recipes
+  - gitlab-runner
+  - gitlab-runner-privileged
+  - gitlab-agent
+  - vm-ingress

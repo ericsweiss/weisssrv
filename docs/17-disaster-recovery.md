@@ -1,8 +1,19 @@
-# Disaster Recovery - Storage Bootstrap
+# Disaster Recovery
 
-This document covers disaster recovery scenarios for rebuilding storage infrastructure from scratch.
+This document covers disaster recovery scenarios for rebuilding the homelab
+from backups / git. It is split into three tracks you may need to combine:
 
-## When to Use This
+1. **Storage** — rebuild ZFS pools + datasets on the NAS (this doc's original scope).
+2. **k3s cluster** — bring up the 9-node k3s cluster from Ansible.
+3. **Flux GitOps + secrets encryption** — bootstrap Flux, restore ESO, rotate k3s secrets-encryption keys.
+
+The three tracks correspond to the deployment order in
+`docs/19-k3s-deployment.md` and `docs/29-flux-operations.md`; DR is those
+guides applied to empty hardware.
+
+## Storage Bootstrap
+
+### When to Use This
 
 Use the storage bootstrap playbook for these scenarios:
 
@@ -622,11 +633,100 @@ Use this checklist when performing disaster recovery:
 
 ---
 
+## k3s cluster recovery (after hardware loss)
+
+If the k3s cluster itself is gone (all three server VMs lost, corrupt etcd
+that can't be restored from snapshot, etc.):
+
+```bash
+# 1. Bring up VMs + k3s from Ansible (idempotent; respects existing state).
+task k3s:provision-vms
+task k3s:deploy
+
+# 2. Fetch the fresh kubeconfig.
+task k3s:kubeconfig
+
+# 3. Verify the cluster is Ready.
+task k3s:status
+```
+
+After step 3 you have a bare k3s cluster with kube-vip API VIP ready, but no
+workloads. MetalLB, Traefik, and all other platform components are deployed by
+Flux in the next step.
+
+The previous etcd snapshot (if available) contained a snapshot of every
+Secret value at snapshot time — but restoring from etcd is uncommon in our
+topology. The canonical "restore" path is: reinstall k3s fresh → bootstrap
+Flux → let ESO re-sync every Secret from 1Password. The only state NOT in
+git is the ZFS zvols that back Postgres (Authentik, Mealie) and the GitLab
+repo storage — those are independently backed up via ZFS snapshots /
+replication and must be restored before the consuming workload comes up
+(see `docs/06-zfs.md`).
+
+## Flux + ESO recovery
+
+After the k3s cluster is healthy:
+
+```bash
+# 1. Install flux CLI locally if needed.
+task flux:install-cli
+
+# 2. Create the 1Password SDK bootstrap Secret (the ONE hand-managed Secret).
+task flux:bootstrap-onepassword
+
+# 3. Optionally pre-delete pre-existing Secrets on a partial recovery.
+# If the cluster was rebuilt from scratch (fresh k3s install), nothing
+# to delete — skip this step. If you kept the cluster but are re-pointing
+# Flux at a clean repo, see docs/29-flux-operations.md §
+# "First-time Flux bootstrap: delete pre-existing manually-created Secrets".
+
+# 4. Bootstrap Flux itself. This pushes a commit to the configured branch
+# (default main) with the Flux components manifests. The bootstrap token
+# is read from 1Password item "Flux GitLab PAT".
+task flux:bootstrap
+
+# 5. Watch reconciliation. Expect 5-15 min for first convergence
+# (HelmRepository pulls → controllers install → CRDs registered →
+# configs reconcile → apps reconcile).
+task flux:status
+task flux:verify
+```
+
+## k3s secrets-encryption reencrypt (scheduled follow-up)
+
+The k3s deployment config enables secrets-encryption, but the initial
+re-encryption of on-disk etcd secrets has not yet been performed on the
+live cluster. This is a staggered per-server operation that requires
+server restarts and is appropriately deferred to a maintenance window
+rather than run under DR time pressure.
+
+When ready to perform the reencrypt:
+
+```bash
+# On each k3s server node, one at a time, with monitoring between steps:
+#   k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01
+ssh k3s-srv-nas-01
+
+# Prepare — serializes a new encryption key.
+sudo k3s secrets-encrypt prepare
+
+# Reencrypt etcd contents with the new key. This is the work-doing step.
+sudo k3s secrets-encrypt reencrypt
+
+# Confirm status shows "reencrypt_finished" before moving to the next server.
+sudo k3s secrets-encrypt status
+```
+
+See https://docs.k3s.io/cli/secrets-encrypt for the full procedure. Track
+in `docs/16-next-steps.md`.
+
 ## Related Documentation
 
 - `docs/06-zfs.md` - ZFS administration, pool creation, maintenance
 - `docs/07-fileservices.md` - NFS, Samba, MergerFS detailed configuration
 - `docs/12-runbooks.md` - Operational procedures
+- `docs/19-k3s-deployment.md` - k3s cluster deployment (full workflow)
+- `docs/29-flux-operations.md` - Flux day-2 ops (suspend/resume, rotation, rollback)
 - `ansible/roles/nas_storage/` - Storage role implementation
 
 ---
@@ -642,4 +742,4 @@ If you need help during disaster recovery:
 
 ---
 
-**Last Updated**: 2026-01-02
+**Last Updated**: 2026-04-16

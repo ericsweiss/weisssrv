@@ -41,7 +41,7 @@ spec:
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: prowlarr
-          image: lscr.io/linuxserver/prowlarr:version-${PROWLARR_VERSION}
+          image: lscr.io/linuxserver/prowlarr:version-${prowlarr_version}
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID

@@ -7,6 +7,8 @@
   roles:
     - role: base
       tags: [base]
+    - role: nic_tuning
+      tags: [nic_tuning, network]
 
 - name: Deploy Proxmox host configuration
   hosts: proxmox

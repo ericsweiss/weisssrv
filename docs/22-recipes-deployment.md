@@ -94,22 +94,22 @@ ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/bar-assistant"
 
 ### 2. 1Password Secrets (Required)
 
-Create the following items in your **Homelab** vault before deploying. The deployment task reads secrets from 1Password on every run, enabling credential rotation by simply updating 1Password and redeploying.
+Create the following items in your **Homelab** vault before deploying. Secrets are managed by External Secrets Operator (ESO), which syncs credentials from 1Password into Kubernetes Secrets every 24 hours. To rotate credentials, update the value in 1Password and run `task flux:rotate-secret -- recipes` to force an immediate refresh and pod restart.
 
-**IMPORTANT**: All secrets must exist in 1Password before deployment. The task will NOT generate random passwords - it will fail with a clear error if required items are missing. This ensures idempotent deployments (re-running won't break your database with new passwords).
+**IMPORTANT**: All secrets must exist in 1Password before deployment. If a required 1Password item is missing, the ExternalSecret enters a non-Ready state and the consuming pods will fail to start. Optional secrets (like the OpenAI API key) are isolated in a separate ExternalSecret so their absence does not block the required credentials.
 
 **Required Items (deployment fails without these):**
 
 | 1Password Item | Field | Purpose |
 |----------------|-------|---------|
-| **SMTP Relay Auth** | `username` | SMTP authentication for email notifications |
-| **SMTP Relay Auth** | `password` | SMTP authentication for email notifications |
 | **Mealie Secrets** | `postgres-password` | Mealie PostgreSQL database password |
 | **Bar Assistant Secrets** | `meilisearch-master-key` | Meilisearch search engine API key |
 | **Mealie SSO** | `oidc-client-id` | Authentik OAuth2 client ID for Mealie |
 | **Mealie SSO** | `oidc-client-secret` | Authentik OAuth2 client secret for Mealie |
 | **Bar Assistant SSO** | `authentik-client-id` | Authentik OAuth2 client ID for Bar Assistant |
 | **Bar Assistant SSO** | `authentik-client-secret` | Authentik OAuth2 client secret for Bar Assistant |
+| **SMTP Relay Auth** | `username` | SMTP relay username for outbound email |
+| **SMTP Relay Auth** | `password` | SMTP relay password for outbound email |
 
 > **IMPORTANT**: SSO secrets are REQUIRED, not optional. Password-based login is disabled in both applications - Authentik SSO is the only way to log in. You must configure Authentik providers BEFORE deploying. See [SSO Setup Guide](./23-recipes-sso-setup.md) for complete instructions.
 
@@ -162,65 +162,95 @@ External DNS (ericsweiss.com) is managed automatically by external-dns via Cloud
 
 ## Deployment
 
-### Quick Deploy
+The recipes stack is Flux-managed. All files live under `kubernetes/apps/recipes/` and are reconciled on commit + push. Version placeholders (`${mealie_version}`, `${bar_assistant_version}`, etc.) are substituted by Flux from the `cluster-versions` ConfigMap — no `envsubst` is required.
 
-```bash
-# Deploy the full stack
-task recipes:deploy
+### Layout
+
+```
+kubernetes/apps/recipes/
+├── namespace.yaml
+├── externalsecret.yaml     # Required secrets: DB, SSO, meilisearch, SMTP creds (recipes-secrets)
+├── externalsecret-openai.yaml  # Optional: OpenAI API key (recipes-openai, isolated so failure doesn't block required secrets)
+├── storage.yaml            # PVCs + PVs (NFS for appdata, hostPath PV for Mealie PG zvol)
+├── mealie.yaml             # Deployment + Service (Mealie, Mealie Postgres)
+├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
+├── certificate.yaml        # cert-manager Certificates (recipes-esweiss-tls, recipes-ericsweiss-tls)
+├── ingress-routes.yaml     # Traefik IngressRoutes for food/bar domains
+└── kustomization.yaml
 ```
 
-### Step-by-Step Deploy
+### Deploying Changes
 
-> **WARNING**: The manifest files (`mealie.yaml`, `bar-assistant.yaml`) contain `${VERSION}` placeholders that require `envsubst` processing. Do NOT apply them directly with `kubectl apply -f` - the images will have literal `${...}` in their tags and fail to pull.
+1. Edit the appropriate YAML under `kubernetes/apps/recipes/`.
+2. Commit and push.
+3. Flux reconciles within ~1 minute.
 
-The `task recipes:deploy` command is **strongly recommended** as it handles version substitution, secret management, and 1Password authentication automatically. For manual deployment:
+For image-version bumps:
 
 ```bash
-# 1. Create namespace and storage
-kubectl apply -f kubernetes/apps/recipes/namespace.yaml
-kubectl apply -f kubernetes/apps/recipes/storage.yaml
-
-# 2. Create secrets from 1Password (SSO secrets are REQUIRED - password login is disabled)
-kubectl create secret generic mealie-secrets \
-  --namespace=recipes \
-  --from-literal=postgres-password="$(op read 'op://Homelab/Mealie Secrets/postgres-password')" \
-  --from-literal=smtp-username="$(op read 'op://Homelab/SMTP Relay Auth/username')" \
-  --from-literal=smtp-password="$(op read 'op://Homelab/SMTP Relay Auth/password')" \
-  --from-literal=oidc-client-id="$(op read 'op://Homelab/Mealie SSO/oidc-client-id')" \
-  --from-literal=oidc-client-secret="$(op read 'op://Homelab/Mealie SSO/oidc-client-secret')" \
-  --from-literal=openai-api-key="$(op read 'op://Homelab/OpenAI API Key/api-key' 2>/dev/null || echo '')" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl create secret generic bar-assistant-secrets \
-  --namespace=recipes \
-  --from-literal=meilisearch-master-key="$(op read 'op://Homelab/Bar Assistant Secrets/meilisearch-master-key')" \
-  --from-literal=smtp-username="$(op read 'op://Homelab/SMTP Relay Auth/username')" \
-  --from-literal=smtp-password="$(op read 'op://Homelab/SMTP Relay Auth/password')" \
-  --from-literal=authentik-client-id="$(op read 'op://Homelab/Bar Assistant SSO/authentik-client-id')" \
-  --from-literal=authentik-client-secret="$(op read 'op://Homelab/Bar Assistant SSO/authentik-client-secret')" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Deploy Mealie (with version substitution - manifests contain ${VERSION} placeholders)
-VARS_FILE="ansible/inventories/prod/group_vars/all.yml"
-export MEALIE_VERSION=$(grep '^mealie_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-export MEALIE_POSTGRESQL_VERSION=$(grep '^mealie_postgresql_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-export BAR_ASSISTANT_VERSION=$(grep '^bar_assistant_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-export SALT_RIM_VERSION=$(grep '^salt_rim_version:' "$VARS_FILE" | awk '{print $2}' | tr -d '"')
-
-ENVSUBST_VARS='$MEALIE_VERSION $MEALIE_POSTGRESQL_VERSION $BAR_ASSISTANT_VERSION $SALT_RIM_VERSION'
-envsubst "$ENVSUBST_VARS" < kubernetes/apps/recipes/mealie.yaml | kubectl apply -f -
-
-# 4. Deploy Bar Assistant (with version substitution)
-envsubst "$ENVSUBST_VARS" < kubernetes/apps/recipes/bar-assistant.yaml | kubectl apply -f -
-
-# 5. Create TLS certificates (required before ingress routes)
-kubectl apply -f kubernetes/apps/recipes/certificate.yaml
-
-# 6. Deploy ingress routes (no substitution needed)
-kubectl apply -f kubernetes/apps/recipes/ingress-routes.yaml
+task maintenance:update-version SERVICE=mealie
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
+git commit -m "Bump mealie" && git push
+task flux:reconcile  # optional: skip the 1-min poll
 ```
 
-**Important**: The `mealie.yaml` and `bar-assistant.yaml` files contain `${VERSION}` placeholders that must be substituted using `envsubst`. Applying them directly with `kubectl apply -f` will result in invalid image references.
+### Secrets (ExternalSecrets)
+
+Recipe secrets are split across two ExternalSecrets so that a missing optional
+key (OpenAI) does not block the required credentials (database, SSO, search,
+SMTP). Both reference 1Password item IDs (not titles -- spaces break the SDK
+parser) with the format `<item-id>/<field>`.
+
+#### `recipes-secrets` (required)
+
+Contains every credential the stack needs to start:
+
+| secretKey | 1Password Item | Field |
+|-----------|---------------|-------|
+| `mealie-postgres-password` | Mealie Secrets | `postgres-password` |
+| `mealie-oidc-client-id` | Mealie SSO | `oidc-client-id` |
+| `mealie-oidc-client-secret` | Mealie SSO | `oidc-client-secret` |
+| `bar-assistant-meilisearch-master-key` | Bar Assistant Secrets | `meilisearch-master-key` |
+| `bar-assistant-authentik-client-id` | Bar Assistant SSO | `authentik-client-id` |
+| `bar-assistant-authentik-client-secret` | Bar Assistant SSO | `authentik-client-secret` |
+| `smtp-username` | SMTP Relay Auth | `username` |
+| `smtp-password` | SMTP Relay Auth | `password` |
+
+All 1P items referenced here must exist *before* the ExternalSecret reconciles
+successfully. If any are missing, the corresponding `data` entry fails and the
+Secret will not be created. See `docs/23-recipes-sso-setup.md` for how to create
+the SSO items from Authentik. See `docs/29-flux-operations.md` for how to look up
+item IDs and the `<item-id>/<field>` convention.
+
+#### `recipes-openai` (optional)
+
+Contains the OpenAI API key used by Mealie for recipe parsing from images:
+
+| secretKey | 1Password Item | Field |
+|-----------|---------------|-------|
+| `api-key` | OpenAI API Key | `api-key` |
+
+Because this is a separate ExternalSecret, a missing or invalid OpenAI key
+does not prevent `recipes-secrets` from syncing. Mealie starts without
+OpenAI -- image-based recipe parsing is simply unavailable until the key is
+provided.
+
+#### Rotating secrets
+
+Change the value in 1Password, then either wait 24h or force a refresh:
+
+```bash
+task flux:rotate-secret -- recipes
+# (forces both ExternalSecrets to refresh and restarts all Deployments in the recipes namespace)
+```
+
+To refresh a single ExternalSecret without restarting pods:
+
+```bash
+task flux:refresh-secret -- recipes/recipes-secrets
+task flux:refresh-secret -- recipes/recipes-openai
+```
 
 ### Verify Deployment
 
@@ -327,10 +357,13 @@ salt_rim_version: "4.14.1"
 
 Note: We pin to specific versions (not "latest") for reproducible deployments. Use `task maintenance:check-versions` to discover available updates. The PostgreSQL version should generally stay on stable major versions (17.x, 18.x) unless Mealie requires an upgrade.
 
-Then redeploy:
+Then regenerate the ConfigMap and push — Flux rolls the Deployments:
 
 ```bash
-task recipes:deploy
+task flux:sync-versions
+git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
+git commit -m "Bump mealie and bar-assistant"
+git push
 ```
 
 ### Backup
@@ -422,6 +455,8 @@ For production HA:
 ## Related Documentation
 
 - [K3s Deployment Guide](./19-k3s-deployment.md)
+- [Flux Operations](./29-flux-operations.md)
 - [Storage Configuration](./07-fileservices.md)
 - [DNS Configuration](./08-dns.md)
 - [Recipes SSO Setup](./23-recipes-sso-setup.md)
+- Manifests: `kubernetes/apps/recipes/`

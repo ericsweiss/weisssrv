@@ -1,0 +1,113 @@
+---
+# external-dns HelmRelease — adopts the existing release `external-dns` in
+# external-dns namespace (matching releaseName + targetNamespace). Chart version
+# substituted from cluster-versions ConfigMap. The `cloudflare-api-token` Secret
+# referenced by env.CF_API_TOKEN is managed by an ExternalSecret in
+# infrastructure/configs/shared-cloudflare-secrets/.
+# Bootstrap ordering: the cloudflare-api-token Secret referenced by
+# env.CF_API_TOKEN is created by an ExternalSecret in configs stage (which
+# depends on controllers). install.disableWait prevents a deadlock —
+# without it, Helm --wait blocks on pod readiness, pods need the Secret,
+# Secret needs configs, configs needs controllers Ready. With disableWait
+# the HelmRelease reports Ready immediately after manifest apply; pods
+# crashloop briefly until configs creates the Secret (~2 minutes).
+# Only install needs this; upgrades run in steady-state where the Secret
+# already exists.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-dns
+  namespace: external-dns
+spec:
+  interval: 30m
+  releaseName: external-dns
+  chart:
+    spec:
+      chart: external-dns
+      version: "${helm_chart_versions_external_dns}"
+      sourceRef:
+        kind: HelmRepository
+        name: external-dns
+        namespace: flux-system
+      interval: 12h
+  install:
+    # disableWait prevents bootstrap deadlock: the cloudflare-api-token Secret
+    # is created by configs stage (which depends on controllers). Without this,
+    # Helm --wait blocks on pod readiness → pods need Secret → deadlock.
+    # Only needed for install (fresh bootstrap); upgrades run in steady-state
+    # where the Secret already exists.
+    disableWait: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # Provider configuration
+    provider:
+      name: cloudflare
+
+    # Enable Cloudflare proxy (orange cloud) for DDoS protection and hiding public IP
+    extraArgs:
+      - --cloudflare-proxied
+
+    # Cloudflare API token from secret
+    env:
+      - name: CF_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: cloudflare-api-token
+            key: api-token
+
+    # DNS sources to watch
+    sources:
+      - ingress
+      - service
+      - traefik-proxy  # Watch Traefik IngressRoute CRDs
+
+    # Domain filters
+    domainFilters:
+      - ericsweiss.com  # External domain managed by Cloudflare
+
+    # TXT registry for ownership tracking
+    txtOwnerId: "k3s-external-dns"
+    txtPrefix: "_external-dns."
+
+    # Policy
+    policy: sync  # Sync mode - create and delete records
+
+    # Registry type
+    registry: txt
+
+    # Log level
+    logLevel: info
+    logFormat: json
+
+    # Interval for checking DNS records
+    interval: 5m
+
+    # Trigger loop on Kubernetes events
+    triggerLoopOnEvent: true
+
+    # RBAC permissions for Traefik IngressRoutes
+    rbac:
+      create: true
+      additionalPermissions:
+        - apiGroups:
+            - traefik.io
+          resources:
+            - ingressroutes
+          verbs:
+            - get
+            - list
+            - watch
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi

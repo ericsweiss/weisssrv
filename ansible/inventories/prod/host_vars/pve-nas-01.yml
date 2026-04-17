@@ -236,3 +236,12 @@ smartd_archive_disks:
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
   - /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
+
+# NIC tuning: disable GRO on the Aquantia AQC113 10G NIC (driver deadlocks on a
+# bridged interface with GRO on — caused outages 2026-04-04, 2026-04-07/14).
+# Firmware update 1.5.38 -> 1.5.45 is a separate manual task; see docs/16-next-steps.md.
+nic_tuning_overrides:
+  - interface: nic1
+    options:
+      - feature: gro
+        value: "off"

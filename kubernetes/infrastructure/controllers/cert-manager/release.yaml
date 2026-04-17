@@ -1,0 +1,65 @@
+---
+# cert-manager HelmRelease — adopts the existing release `cert-manager` in
+# cert-manager namespace (matching releaseName + targetNamespace). Chart version
+# substituted from cluster-versions ConfigMap. CRDs managed via install/upgrade
+# crds: CreateReplace (replaces the chart's installCRDs values flag).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 30m
+  releaseName: cert-manager
+  # cert-manager CRD upgrades (CreateReplace mode) can take several minutes
+  # while the controller recreates the CRDs and validates existing resources.
+  # Give a generous timeout so Flux doesn't remediation-uninstall mid-upgrade.
+  timeout: 10m
+  chart:
+    spec:
+      chart: cert-manager
+      version: "${helm_chart_versions_cert_manager}"
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+      interval: 12h
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    replicaCount: 1
+    prometheus:
+      enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    webhook:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+    cainjector:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+    global:
+      leaderElection:
+        namespace: cert-manager

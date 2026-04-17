@@ -20,7 +20,7 @@ driver:
 platforms:
   # NAS Server - runs nas_storage role
   - name: nas-server
-    image: ghcr.io/hifis-net/debian-systemd:trixie
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -43,7 +43,7 @@ platforms:
   # SMB Client - tests Samba connectivity (listing shares)
   # NFS client removed: mounting NFS shares doesn't work in Docker containers
   - name: smb-client-01
-    image: ghcr.io/hifis-net/debian-systemd:trixie
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
     pre_build_image: true
     privileged: true
     cgroupns_mode: host

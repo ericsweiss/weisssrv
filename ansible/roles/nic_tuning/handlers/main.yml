@@ -1,0 +1,23 @@
+---
+# Apply the ip_forward sysctl from the drop-in we just wrote.
+# Using the ansible.posix.sysctl module (instead of shelling to `sysctl --system`)
+# scopes the apply to JUST the ip_forward key — if some unrelated file under
+# /etc/sysctl.d/ has a bad entry, our handler still succeeds and the operator
+# isn't misled into thinking the nic_tuning apply itself failed.
+- name: Reload sysctl ip_forward
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+    reload: true
+
+- name: Disable sysctl ip_forward
+  # Remove this role's drop-in rather than forcing ip_forward=0, which
+  # could break routing for hosts that need forwarding via other roles
+  # (e.g., Tailscale subnet routing if managed independently).
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    state: absent
+    sysctl_file: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
+    reload: true

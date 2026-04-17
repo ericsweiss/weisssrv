@@ -1,0 +1,34 @@
+---
+# Install ethtool + iproute2 in the test container so the role's Apply-ethtool
+# task has a binary to exec. `logger` comes from bsdutils, which is already
+# present on Debian base images (but installed defensively).
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install ethtool, iproute2, and bsdutils (logger)
+      ansible.builtin.apt:
+        name:
+          - ethtool
+          - iproute2
+          - bsdutils
+        state: present
+        update_cache: true
+
+    - name: Ensure interfaces.d exists for stale drop-in test
+      ansible.builtin.file:
+        path: /etc/network/interfaces.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Seed stale NIC tuning drop-in for cleanup test
+      ansible.builtin.copy:
+        dest: /etc/network/interfaces.d/99-nic-stale0-tuning.cfg
+        content: |
+          # Stale drop-in - should be removed by nic_tuning role
+          post-up /sbin/ethtool -K stale0 gro off || true
+        owner: root
+        group: root
+        mode: "0644"

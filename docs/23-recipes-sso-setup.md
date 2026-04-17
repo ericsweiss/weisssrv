@@ -179,29 +179,48 @@ https://bar\.(es|ericsweiss)\.com/oauth/callback$
 
 ---
 
-## Part 7: Deploy Updated Applications
+## Part 7: Trigger ExternalSecret Refresh
 
-Now that all secrets are in 1Password, deploy the updated configurations:
+Recipe secrets are split across two ExternalSecrets in
+`kubernetes/apps/recipes/`:
+
+- **`externalsecret.yaml`** (`recipes-secrets`) -- required credentials: DB
+  password, SSO client IDs/secrets, meilisearch master key, and SMTP relay
+  auth (username + password from the "SMTP Relay Auth" 1Password item).
+- **`externalsecret-openai.yaml`** (`recipes-openai`) -- optional OpenAI API
+  key, isolated so a missing key does not block the required secrets above.
+
+See `docs/22-recipes-deployment.md` for the full field-by-field breakdown.
+
+Once the values above are in 1Password, there's no kubectl or helm step — just
+trigger ESO to pick them up (otherwise it refreshes on its own 24h interval):
 
 ```bash
-# Ensure 1Password is signed in
+# Ensure 1Password is signed in (only if you want to sanity-check locally)
 eval $(op signin)
-
-# Verify all secrets are accessible
 op read 'op://Homelab/Mealie SSO/oidc-client-id'
 op read 'op://Homelab/Mealie SSO/oidc-client-secret'
 op read 'op://Homelab/OpenAI API Key/api-key'
 op read 'op://Homelab/Bar Assistant SSO/authentik-client-id'
 op read 'op://Homelab/Bar Assistant SSO/authentik-client-secret'
 
-# Deploy the recipe stack with updated secrets
-task recipes:deploy
+# Force ExternalSecret refresh + restart Mealie and Bar Assistant
+task flux:rotate-secret -- recipes
 ```
 
-The deployment will:
-1. Create/update Kubernetes secrets with OIDC and OpenAI credentials
-2. Restart Mealie and Bar Assistant with new environment variables
-3. Wait for pods to be ready
+This:
+1. Triggers both `ExternalSecret/recipes-secrets` and `ExternalSecret/recipes-openai` to re-sync from 1Password
+2. Waits for `SecretSynced: True`
+3. Restarts Mealie and Bar Assistant Deployments so they read the new env values
+
+If you're doing first-time setup (app hasn't been deployed yet), just commit the
+ExternalSecret YAML and let Flux create everything:
+
+```bash
+git add kubernetes/apps/recipes/externalsecret.yaml
+git commit -m "Add recipes ExternalSecret" && git push
+task flux:reconcile
+```
 
 ---
 
@@ -387,9 +406,9 @@ If you need to rotate secrets:
    - Update the appropriate secret field
    - Save the item
 
-3. **Redeploy:**
+3. **Refresh ExternalSecret + restart consumers:**
    ```bash
-   task recipes:deploy
+   task flux:rotate-secret -- recipes
    ```
 
 ### Updating OpenAI API Key
@@ -405,9 +424,9 @@ If you need to rotate the OpenAI API key:
    - Update `OpenAI API Key/api-key` field
    - Save the item
 
-3. **Redeploy:**
+3. **Refresh ExternalSecret + restart Mealie:**
    ```bash
-   task recipes:deploy
+   task flux:rotate-secret -- recipes
    ```
 
 ---

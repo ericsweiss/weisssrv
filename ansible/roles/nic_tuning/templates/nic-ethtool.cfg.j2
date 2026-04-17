@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# Interface: {{ item.interface }}
+# nic_tuning role — per-interface ethtool overrides applied at ifup.
+#
+# `logger` writes any ethtool failure to syslog so silent regressions (e.g.,
+# the interface gets renamed from predictable-names, or ethtool is absent)
+# are greppable via `journalctl -t nic-tuning-ifup` or in /var/log/syslog.
+# Without the logger fallback, post-up failures print a warning once at ifup
+# time and the interface comes up WITHOUT the intended feature change —
+# exactly the outage mode this role is trying to prevent.
+{% for opt in item.options %}
+post-up /sbin/ethtool -K {{ item.interface }} {{ opt.feature }} {{ opt.value }} || logger -t nic-tuning-ifup "FAILED ethtool -K {{ item.interface }} {{ opt.feature }}={{ opt.value }}"
+{% endfor %}
