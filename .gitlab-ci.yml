@@ -408,15 +408,20 @@ flux-versions-sync:
   before_script:
     - pip install --quiet pyyaml
   script:
-    # Save the committed version, regenerate, then compare. Uses `diff`
-    # instead of `git diff` because the slim python image has no git.
-    - cp kubernetes/infrastructure/sources/versions-configmap.yaml /tmp/committed.yaml
-    - python3 scripts/generate-versions-configmap.py
+    # Compare committed ConfigMap against a freshly-generated one. The
+    # generator writes in-place, so we save + restore the committed file
+    # to keep the workspace clean for other jobs (e.g., flux-lint).
     - |
-      if ! diff -q /tmp/committed.yaml kubernetes/infrastructure/sources/versions-configmap.yaml >/dev/null 2>&1; then
+      set -eo pipefail
+      TARGET=kubernetes/infrastructure/sources/versions-configmap.yaml
+      cp "$TARGET" /tmp/committed.yaml
+      python3 scripts/generate-versions-configmap.py
+      cp "$TARGET" /tmp/generated.yaml
+      cp /tmp/committed.yaml "$TARGET"   # restore workspace
+      if ! diff -q /tmp/committed.yaml /tmp/generated.yaml >/dev/null 2>&1; then
         echo "ERROR: versions-configmap.yaml is out of sync with all.yml"
-        echo "Run: task flux:sync-versions (or python3 scripts/generate-versions-configmap.py) and commit the result."
-        diff -u /tmp/committed.yaml kubernetes/infrastructure/sources/versions-configmap.yaml || true
+        echo "Run: task flux:sync-versions and commit the result."
+        diff -u /tmp/committed.yaml /tmp/generated.yaml || true
         exit 1
       fi
       echo "versions-configmap.yaml is in sync with all.yml"
@@ -464,7 +469,7 @@ flux-lint:
   # zero unsubstituted ${var} placeholders remain, then validates with
   # kubeconform. Replaces the old per-chart helm template + find-based
   # kubeconform jobs.
-  stage: validate
+  stage: lint
   image: python:3.11-slim
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl gettext-base
@@ -476,7 +481,7 @@ flux-lint:
       echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
       tar xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
       curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
-      echo "fa2daf1d96c6cce7a91fb00380044a61f21d15c38fe3cacba7b1966b2466dec9  /tmp/kustomize.tar.gz" | sha256sum -c -
+      echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  /tmp/kustomize.tar.gz" | sha256sum -c -
       tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
       kubeconform -v && kustomize version && envsubst --version | head -1
   script:
@@ -1214,7 +1219,7 @@ deploy-verify:
       apt-get install -y -qq gettext-base > /dev/null 2>&1
       pip install --quiet pyyaml
       curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
-      echo "fa2daf1d96c6cce7a91fb00380044a61f21d15c38fe3cacba7b1966b2466dec9  /tmp/kustomize.tar.gz" | sha256sum -c -
+      echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  /tmp/kustomize.tar.gz" | sha256sum -c -
       tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
 
       echo "=== Post-Deployment Verification ==="
