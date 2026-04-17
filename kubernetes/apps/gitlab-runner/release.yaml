@@ -39,7 +39,7 @@ spec:
 
     # Concurrent jobs — high enough for parallel:matrix test jobs to run
     # simultaneously. Each job pod is resource-limited; k8s handles bin-packing.
-    concurrent: 10
+    concurrent: 15
 
     # Check interval (seconds)
     checkInterval: 30

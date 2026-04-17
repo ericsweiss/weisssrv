@@ -188,10 +188,11 @@ workflow:
 # BUILD STAGE - Container images
 # ============================================================================
 
-build-molecule-image:
-  # Builds the pre-baked molecule test image with all apt packages the
-  # roles need, so molecule tests don't spend 3-5 min on apt-get install
-  # per run. Only rebuilds when the Dockerfile changes.
+build-molecule-images:
+  # Builds both CI images:
+  # - molecule-test: the container molecule spins up (has all role apt deps)
+  # - molecule-ci: the GitLab CI runner image (has docker-cli + molecule + ansible)
+  # Only rebuilds when Dockerfiles or requirements change.
   stage: build
   image: python:3.11
   services:
@@ -199,28 +200,40 @@ build-molecule-image:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
-    IMAGE_BASE: "${CI_REGISTRY_IMAGE}/molecule-test"
   before_script:
     - apt-get update -qq && apt-get install -y -qq docker.io
   script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker build -t "${IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}" -t "${IMAGE_BASE}:latest" docker/molecule-test/
-    # Push both tags: SHA for traceability, latest as the default for
-    # molecule configs + local dev. On main, latest always points at the
-    # most recently merged Dockerfile. On MR branches, the SHA tag is
-    # isolated — molecule tests in the same MR pipeline use it via the
-    # MOLECULE_IMAGE variable set below.
-    - docker push "${IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
-    - docker push "${IMAGE_BASE}:latest"
+    # molecule-test: the container roles run inside
+    - docker build -t "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}" docker/molecule-test/
+    - docker push "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}"
+    # molecule-ci: the GitLab CI runner image (docker-cli + pip deps + collections)
+    - docker build -t "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" -f docker/molecule-ci/Dockerfile .
+    - docker push "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}"
+    # Only push :latest on main — MR pipelines use SHA tags to avoid
+    # overwriting :latest with unmerged branch images.
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        docker tag "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}" "${CI_REGISTRY_IMAGE}/molecule-test:latest"
+        docker push "${CI_REGISTRY_IMAGE}/molecule-test:latest"
+        docker tag "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
+        docker push "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
+      fi
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - docker/molecule-test/**
+        - docker/molecule-ci/**
+        - requirements.txt
+        - ansible/requirements.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - docker/molecule-test/**
+        - docker/molecule-ci/**
+        - requirements.txt
+        - ansible/requirements.yml
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
@@ -676,10 +689,12 @@ flux-lint:
 .molecule-base:
   stage: test
   needs:
-    # Wait for image rebuild if Dockerfile changed; otherwise start immediately
-    - job: build-molecule-image
+    - job: build-molecule-images
       optional: true
-  image: python:3.11
+  # Pre-built CI runner image: has docker-cli, molecule, ansible, and all
+  # pip deps + ansible collections baked in. Eliminates ~2 min of apt-get +
+  # pip install + galaxy install per job vs the generic python:3.11 image.
+  image: ${CI_REGISTRY_IMAGE}/molecule-ci:latest
   services:
     - docker:24.0-dind
   variables:
@@ -691,63 +706,64 @@ flux-lint:
     JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
     MOLECULE_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test"
   before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq docker.io
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    # If the build job ran in this pipeline (Dockerfile changed), pull the
-    # SHA-tagged image and re-tag as :latest so molecule.yml configs (which
-    # hardcode :latest) use the freshly-built image. Otherwise pull :latest
-    # from the registry (the most recently merged version). This prevents
-    # two concurrent MRs from stomping each other's :latest during CI.
     - |
       if docker pull "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" 2>/dev/null; then
         docker tag "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" "${MOLECULE_IMAGE}:latest"
       else
         docker pull "${MOLECULE_IMAGE}:latest"
       fi
-    - pip install --quiet -r requirements.txt
-    - ansible-galaxy collection install -r ansible/requirements.yml
     - mkdir -p "$CI_PROJECT_DIR/junit"
   artifacts:
     when: always
     reports:
       junit: junit/*.xml
-  timeout: 25m  # k3s, base, nas_storage are package-heavy (apt install in container)
+  timeout: 20m
 
 molecule-tests:
   extends: .molecule-base
-  # Retry once on failure — Docker+systemd containers occasionally fail to
-  # destroy cleanly (SIGKILL not received), causing transient failures that
-  # pass on retry.
   retry:
     max: 1
     when: script_failure
   script:
     - cd "ansible/roles/$ROLE"
-    - |
-      for scenario_dir in molecule/*/; do
-        scenario=$(basename "$scenario_dir")
-        echo "Testing role: $ROLE - scenario: $scenario"
-        molecule test -s "$scenario" || exit 1
-      done
+    - molecule test -s "$SCENARIO" || exit 1
   parallel:
     matrix:
-      - ROLE:
-          - acme_certs
-          - adguard_home
-          - adguard_sync
-          - base
-          - gitlab
-          - k3s
-          - nas_storage
-          - nic_tuning
-          - plex
-          - postfix_null_client
-          - qol
-          - smtp_relay
-          - tailscale
-          - unbound
-          # zvol_mount excluded: needs kernel loopback devices (test locally)
+      # Each role/scenario combo gets its own parallel job. Roles with a
+      # single scenario use "default". k3s has two scenarios (default +
+      # agent) that run as separate jobs to halve wall time.
+      - ROLE: acme_certs
+        SCENARIO: default
+      - ROLE: adguard_home
+        SCENARIO: default
+      - ROLE: adguard_sync
+        SCENARIO: default
+      - ROLE: base
+        SCENARIO: default
+      - ROLE: gitlab
+        SCENARIO: default
+      - ROLE: k3s
+        SCENARIO: default
+      - ROLE: k3s
+        SCENARIO: agent
+      - ROLE: nas_storage
+        SCENARIO: default
+      - ROLE: nic_tuning
+        SCENARIO: default
+      - ROLE: plex
+        SCENARIO: default
+      - ROLE: postfix_null_client
+        SCENARIO: default
+      - ROLE: qol
+        SCENARIO: default
+      - ROLE: smtp_relay
+        SCENARIO: default
+      - ROLE: tailscale
+        SCENARIO: default
+      - ROLE: unbound
+        SCENARIO: default
+      # zvol_mount excluded: needs kernel loopback devices (test locally)
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
