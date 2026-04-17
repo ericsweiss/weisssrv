@@ -37,8 +37,9 @@ spec:
     # GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
     gitlabUrl: https://git.ericsweiss.com
 
-    # Concurrent jobs
-    concurrent: 4
+    # Concurrent jobs — high enough for parallel:matrix test jobs to run
+    # simultaneously. Each job pod is resource-limited; k8s handles bin-packing.
+    concurrent: 10
 
     # Check interval (seconds)
     checkInterval: 30
