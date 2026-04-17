@@ -650,8 +650,9 @@ task k3s:kubeconfig
 task k3s:status
 ```
 
-After step 3 you have a bare k3s cluster with kube-vip + MetalLB pool ready,
-but no Flux, no app workloads. Proceed to the Flux recovery section next.
+After step 3 you have a bare k3s cluster with kube-vip API VIP ready, but no
+workloads. MetalLB, Traefik, and all other platform components are deployed by
+Flux in the next step.
 
 The previous etcd snapshot (if available) contained a snapshot of every
 Secret value at snapshot time — but restoring from etcd is uncommon in our

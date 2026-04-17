@@ -140,6 +140,14 @@ spec:
 # secretStoreRef pointing at gitlab-friend-project.
 ```
 
+## Security considerations
+
+> **Security note**: The `onepassword-homelab` ClusterSecretStore is cluster-wide — any namespace
+> can create ExternalSecrets referencing it. For multi-tenant isolation, tenants should use
+> per-namespace `SecretStore` resources with scoped 1Password service accounts rather than the
+> shared ClusterSecretStore. The current model trusts all cluster workloads (appropriate for a
+> single-operator homelab).
+
 ## Namespace ownership
 
 Each tenant owns one dedicated namespace. Tenants MUST NOT create resources in

@@ -8,7 +8,11 @@ smtp_relay_config:
   myorigin: esweiss.com
   inet_interfaces: all
   inet_protocols: ipv4
-  # Includes k3s pod CIDR (10.42.0.0/16) and service CIDR (10.43.0.0/16) so in-cluster apps can relay without SASL auth
+  # Includes k3s pod CIDR (10.42.0.0/16) and service CIDR (10.43.0.0/16) so
+  # in-cluster apps can relay without SASL auth. This widens the trust boundary
+  # to all cluster workloads — acceptable for a single-operator homelab where
+  # all pods are operator-deployed. Apps that support SASL (Mealie, Bar Assistant,
+  # Authentik) still use authenticated relay for defense in depth.
   mynetworks: "127.0.0.0/8, 192.168.0.0/24, 10.42.0.0/16, 10.43.0.0/16"
   relayhost: "[smtp.gmail.com]:587"
   smtpd_relay_restrictions: "permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"

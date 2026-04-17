@@ -181,11 +181,16 @@ https://bar\.(es|ericsweiss)\.com/oauth/callback$
 
 ## Part 7: Trigger ExternalSecret Refresh
 
-All recipe secrets (Mealie SSO, Bar Assistant SSO, OpenAI, Mealie Postgres,
-meilisearch) are managed by a single ExternalSecret at
-`kubernetes/apps/recipes/externalsecret.yaml` (see docs/22-recipes-deployment.md).
-SMTP credentials are NOT managed here — the LAN relay accepts unauthenticated
-submissions from k3s pod CIDRs via Postfix's `permit_mynetworks`.
+Recipe secrets are split across two ExternalSecrets in
+`kubernetes/apps/recipes/`:
+
+- **`externalsecret.yaml`** (`recipes-secrets`) -- required credentials: DB
+  password, SSO client IDs/secrets, meilisearch master key, and SMTP relay
+  auth (username + password from the "SMTP Relay Auth" 1Password item).
+- **`externalsecret-openai.yaml`** (`recipes-openai`) -- optional OpenAI API
+  key, isolated so a missing key does not block the required secrets above.
+
+See `docs/22-recipes-deployment.md` for the full field-by-field breakdown.
 
 Once the values above are in 1Password, there's no kubectl or helm step — just
 trigger ESO to pick them up (otherwise it refreshes on its own 24h interval):
@@ -204,7 +209,7 @@ task flux:rotate-secret -- recipes
 ```
 
 This:
-1. Triggers `ExternalSecret/recipes-secrets` to re-sync from 1Password
+1. Triggers both `ExternalSecret/recipes-secrets` and `ExternalSecret/recipes-openai` to re-sync from 1Password
 2. Waits for `SecretSynced: True`
 3. Restarts Mealie and Bar Assistant Deployments so they read the new env values
 

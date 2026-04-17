@@ -827,7 +827,7 @@ the prior `${version}`, and helm-controller performs the downgrade.
 
 ```bash
 # Pause a single HelmRelease (stops Flux from "fixing" your manual work)
-task flux:suspend -- traefik/HelmRelease/traefik
+task flux:suspend -- traefik/helmrelease/traefik
 
 # Manually roll back with helm while Flux is paused
 helm history traefik -n traefik
@@ -888,11 +888,11 @@ git revert <commit-sha> && git push
 task flux:reconcile
 
 # Or emergency manual rollback while suspending Flux:
-task flux:suspend -- <namespace>/HelmRelease/<name>
+task flux:suspend -- <namespace>/helmrelease/<name>
 helm history <name> -n <namespace>
 helm rollback <name> <revision> -n <namespace>
 # Then fix root cause in git, push, and:
-task flux:resume -- <namespace>/HelmRelease/<name>
+task flux:resume -- <namespace>/helmrelease/<name>
 ```
 
 (See `docs/29-flux-operations.md` for the full Flux troubleshooting tree.)

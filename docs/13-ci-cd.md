@@ -74,6 +74,11 @@ stages:
 | `flux-lint` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | `kustomize build` + envsubst (from versions ConfigMap) + kubeconform on every Flux Kustomization; also validates cluster root builds |
 | `python-tests` | scripts/** | pytest on check-versions.py and generate-versions-configmap.py |
 
+> **Limitation**: `flux-lint` validates HelmRelease CRD schemas and envsubst placeholders but does
+> not perform server-side Helm template rendering. Chart value compatibility issues (e.g., a renamed
+> values key in a new chart version) are only caught at Flux reconciliation time. For high-risk chart
+> upgrades, use `task flux:dev-apply` to test in-cluster before committing.
+
 #### Test Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
@@ -151,8 +156,8 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 #### Deploy Stage - Verification
 | Job | Triggers | Description | Blocks pipeline? |
 |-----|----------|-------------|------------------|
-| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (HTTP readiness, container registry, GitLab Pages, SSH port 22/2222). | No (`allow_failure: true`) |
-| `deploy-verify` | All pushes to main (no path filter) | Installs `flux` CLI, checks all nodes `Ready`, asserts zero Flux resources are `Ready=false`, verifies cluster DNS, critical deployments, GitLab HTTP. | Yes — fails the pipeline on any issue |
+| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/gitlab*/**, kubernetes/apps/vm-ingress/gitlab.yaml | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
+| `deploy-verify` | All pushes to main (no path filter) | Triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources are `Ready=false`, checks ExternalSecret readiness (warning), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
 
 > **Note:** The two jobs have different semantics:
 > - `deploy-gitlab-verify` is informational (`allow_failure: true`) — pipeline continues on failure.

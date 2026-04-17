@@ -1209,12 +1209,22 @@ deploy-verify:
         exit 1
       fi
 
+      EXIT=0
+
       echo ""
       echo "=== Triggering Flux reconciliation ==="
       # Force Flux to reconcile the current commit before checking status.
       # Without this, we would check stale state from the previous reconcile cycle.
-      flux reconcile source git flux-system --timeout=2m 2>/dev/null || echo "WARNING: source reconcile timed out (may need more time)"
-      flux reconcile kustomization flux-system --timeout=3m --with-source 2>/dev/null || echo "WARNING: kustomization reconcile timed out"
+      echo "Triggering Flux source reconciliation..."
+      if ! flux reconcile source git flux-system --timeout=2m; then
+        echo "ERROR: Flux source reconciliation failed or timed out"
+        EXIT=1
+      fi
+      echo "Triggering root kustomization reconciliation..."
+      if ! flux reconcile kustomization flux-system --timeout=3m --with-source; then
+        echo "ERROR: Flux root kustomization reconciliation failed or timed out"
+        EXIT=1
+      fi
       # Allow downstream kustomizations time to reconcile after the root
       sleep 15
 
@@ -1234,6 +1244,15 @@ deploy-verify:
       echo "ExternalSecrets:"
       kubectl get externalsecrets -A
 
+      echo ""
+      echo "ExternalSecret readiness:"
+      ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))] | length')
+      if [ "$ES_NOT_READY" -gt 0 ]; then
+        echo "WARNING: $ES_NOT_READY ExternalSecret(s) not Ready:"
+        kubectl get externalsecrets -A -o json | jq -r '.items[] | select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")) | "  \(.metadata.namespace)/\(.metadata.name)"'
+        echo "Non-critical: ExternalSecrets may still be syncing after first reconcile."
+      fi
+
       # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
       # HelmRepository, etc.) is not Ready.
       #
@@ -1247,17 +1266,19 @@ deploy-verify:
       FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
       FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json) || {
         echo "ERROR: failed to fetch Flux CRs via kubectl"
-        exit 1
+        EXIT=1
       }
-      NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq '[.items[] | select(
-        (.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")
-      )] | length')
-      if [ "$NOT_READY_COUNT" -gt 0 ]; then
-        echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
-        echo "$FLUX_ALL" | jq -r '.items[] | select(
+      if [ "$EXIT" -eq 0 ]; then
+        NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq '[.items[] | select(
           (.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")
-        ) | "  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == "Ready")) | .[0].message // "no Ready condition")"'
-        exit 1
+        )] | length')
+        if [ "$NOT_READY_COUNT" -gt 0 ]; then
+          echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
+          echo "$FLUX_ALL" | jq -r '.items[] | select(
+            (.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True")
+          ) | "  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == "Ready")) | .[0].message // "no Ready condition")"'
+          EXIT=1
+        fi
       fi
 
       # Gate specifically on the top-level Flux Kustomizations — if any is
@@ -1269,7 +1290,7 @@ deploy-verify:
           -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
         if [ "$KS_READY" != "True" ]; then
           echo "ERROR: flux-system/$ks_name Kustomization not Ready (status=$KS_READY)"
-          exit 1
+          EXIT=1
         fi
       done
 
@@ -1298,11 +1319,12 @@ deploy-verify:
       else
         echo "ERROR: GitLab health check failed after 60s of retries"
         echo "Last curl error: ${last_err:-<empty>}"
-        exit 1
+        EXIT=1
       fi
 
       echo ""
-      echo "=== Verification Complete ==="
+      echo "=== Verification Complete (exit=$EXIT) ==="
+      exit $EXIT
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -1315,8 +1337,9 @@ deploy-verify:
         - kubernetes/**
         - scripts/**
   # No allow_failure: the verification explicitly fails if nodes aren't Ready,
-  # any Flux resource is not Ready, or GitLab is unreachable. These are
-  # conditions we want to block the pipeline on.
+  # Flux reconciliation times out, any Flux resource is not Ready, or GitLab
+  # is unreachable. ExternalSecret readiness is a warning only (may still be
+  # syncing on first reconcile). All other conditions block the pipeline.
 
 # ============================================================================
 # MAINTENANCE STAGE - Manual approval required

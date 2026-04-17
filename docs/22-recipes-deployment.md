@@ -108,6 +108,8 @@ Create the following items in your **Homelab** vault before deploying. The deplo
 | **Mealie SSO** | `oidc-client-secret` | Authentik OAuth2 client secret for Mealie |
 | **Bar Assistant SSO** | `authentik-client-id` | Authentik OAuth2 client ID for Bar Assistant |
 | **Bar Assistant SSO** | `authentik-client-secret` | Authentik OAuth2 client secret for Bar Assistant |
+| **SMTP Relay Auth** | `username` | SMTP relay username for outbound email |
+| **SMTP Relay Auth** | `password` | SMTP relay password for outbound email |
 
 > **IMPORTANT**: SSO secrets are REQUIRED, not optional. Password-based login is disabled in both applications - Authentik SSO is the only way to log in. You must configure Authentik providers BEFORE deploying. See [SSO Setup Guide](./23-recipes-sso-setup.md) for complete instructions.
 
@@ -167,7 +169,8 @@ The recipes stack is Flux-managed. All files live under `kubernetes/apps/recipes
 ```
 kubernetes/apps/recipes/
 ├── namespace.yaml
-├── externalsecret.yaml     # Single ExternalSecret consolidating all recipe keys (Mealie PG, SSO, OpenAI, Bar Assistant meilisearch + SSO). SMTP creds not included — LAN relay accepts unauthenticated submissions from pod CIDRs.
+├── externalsecret.yaml     # Required secrets: DB, SSO, meilisearch, SMTP creds (recipes-secrets)
+├── externalsecret-openai.yaml  # Optional: OpenAI API key (recipes-openai, isolated so failure doesn't block required secrets)
 ├── storage.yaml            # PVCs + PVs (NFS for appdata, hostPath PV for Mealie PG zvol)
 ├── mealie.yaml             # Deployment + Service (Mealie, Mealie Postgres)
 ├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
@@ -192,48 +195,27 @@ git commit -m "Bump mealie" && git push
 task flux:reconcile  # optional: skip the 1-min poll
 ```
 
-### Secrets (ExternalSecret)
+### Secrets (ExternalSecrets)
 
-All recipe secrets are provided by one consolidated ExternalSecret. It references
-1Password item IDs (not titles — spaces break the SDK parser) with the format
-`<item-id>/<field>`:
+Recipe secrets are split across two ExternalSecrets so that a missing optional
+key (OpenAI) does not block the required credentials (database, SSO, search,
+SMTP). Both reference 1Password item IDs (not titles -- spaces break the SDK
+parser) with the format `<item-id>/<field>`.
 
-```yaml
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: recipes-secrets
-  namespace: recipes
-spec:
-  refreshInterval: 24h
-  secretStoreRef:
-    name: onepassword-homelab
-    kind: ClusterSecretStore
-  target:
-    name: recipes-secrets
-    creationPolicy: Owner
-  data:
-    - secretKey: mealie-postgres-password
-      remoteRef: { key: <MEALIE-SECRETS-ITEM-ID>/postgres-password }
-    - secretKey: mealie-oidc-client-id
-      remoteRef: { key: <MEALIE-SSO-ITEM-ID>/oidc-client-id }
-    - secretKey: mealie-oidc-client-secret
-      remoteRef: { key: <MEALIE-SSO-ITEM-ID>/oidc-client-secret }
-    - secretKey: mealie-openai-api-key
-      remoteRef: { key: <OPENAI-ITEM-ID>/api-key }
-    - secretKey: bar-assistant-meilisearch-master-key
-      remoteRef: { key: <BAR-ASSISTANT-SECRETS-ITEM-ID>/meilisearch-master-key }
-    - secretKey: bar-assistant-authentik-client-id
-      remoteRef: { key: <BAR-ASSISTANT-SSO-ITEM-ID>/authentik-client-id }
-    - secretKey: bar-assistant-authentik-client-secret
-      remoteRef: { key: <BAR-ASSISTANT-SSO-ITEM-ID>/authentik-client-secret }
-```
+#### `recipes-secrets` (required)
 
-(SMTP credentials are NOT in this ExternalSecret — the LAN SMTP relay
-accepts unauthenticated submissions from k3s pod CIDRs via Postfix's
-`permit_mynetworks`, so Mealie and Bar Assistant don't need SMTP creds.
-See `kubernetes/apps/recipes/{mealie,bar-assistant}.yaml` for the
-relevant env vars.)
+Contains every credential the stack needs to start:
+
+| secretKey | 1Password Item | Field |
+|-----------|---------------|-------|
+| `mealie-postgres-password` | Mealie Secrets | `postgres-password` |
+| `mealie-oidc-client-id` | Mealie SSO | `oidc-client-id` |
+| `mealie-oidc-client-secret` | Mealie SSO | `oidc-client-secret` |
+| `bar-assistant-meilisearch-master-key` | Bar Assistant Secrets | `meilisearch-master-key` |
+| `bar-assistant-authentik-client-id` | Bar Assistant SSO | `authentik-client-id` |
+| `bar-assistant-authentik-client-secret` | Bar Assistant SSO | `authentik-client-secret` |
+| `smtp-username` | SMTP Relay Auth | `username` |
+| `smtp-password` | SMTP Relay Auth | `password` |
 
 All 1P items referenced here must exist *before* the ExternalSecret reconciles
 successfully. If any are missing, the corresponding `data` entry fails and the
@@ -241,11 +223,33 @@ Secret will not be created. See `docs/23-recipes-sso-setup.md` for how to create
 the SSO items from Authentik. See `docs/29-flux-operations.md` for how to look up
 item IDs and the `<item-id>/<field>` convention.
 
-To rotate any secret: change the value in 1Password, then either wait 24h or:
+#### `recipes-openai` (optional)
+
+Contains the OpenAI API key used by Mealie for recipe parsing from images:
+
+| secretKey | 1Password Item | Field |
+|-----------|---------------|-------|
+| `api-key` | OpenAI API Key | `api-key` |
+
+Because this is a separate ExternalSecret, a missing or invalid OpenAI key
+does not prevent `recipes-secrets` from syncing. Mealie starts without
+OpenAI -- image-based recipe parsing is simply unavailable until the key is
+provided.
+
+#### Rotating secrets
+
+Change the value in 1Password, then either wait 24h or force a refresh:
 
 ```bash
 task flux:rotate-secret -- recipes
-# (forces ExternalSecret refresh and restarts Mealie + Bar Assistant Deployments)
+# (forces both ExternalSecrets to refresh and restarts Mealie + Bar Assistant Deployments)
+```
+
+To refresh a single ExternalSecret without restarting pods:
+
+```bash
+task flux:refresh-secret -- recipes/recipes-secrets
+task flux:refresh-secret -- recipes/recipes-openai
 ```
 
 ### Verify Deployment

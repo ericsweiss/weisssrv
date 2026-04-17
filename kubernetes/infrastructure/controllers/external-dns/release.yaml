@@ -3,7 +3,10 @@
 # external-dns namespace (matching releaseName + targetNamespace). Chart version
 # substituted from cluster-versions ConfigMap. The `cloudflare-api-token` Secret
 # referenced by env.CF_API_TOKEN is managed by an ExternalSecret in
-# infrastructure/configs/shared-cloudflare-secrets/.
+# infrastructure/configs/shared-cloudflare-secrets/. On fresh bootstrap the
+# HelmRelease deploys successfully (Ready) before the Secret exists — pods
+# will crashloop briefly until the configs stage creates it. This is expected
+# and self-healing (typically <2 minutes).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:

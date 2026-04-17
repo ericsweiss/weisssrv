@@ -324,7 +324,7 @@ deploying to this cluster fork/copy. Pre-wired with:
 - `.cursorrules`, `CLAUDE.md`, `AGENTS.md` templates
 - `CODEOWNERS`, issue/MR templates, LICENSE, README scaffold
 
-Tracked in memory: project_weisssrv_template_repo.md.
+Tracked as a future separate project (see docs/30-multi-repo-onboarding.md for the tenant onboarding pattern it would use).
 
 Onboarding flow: fork template → add CI vars → add wiring YAML under
 `kubernetes/clusters/weisssrv/tenants/` in this repo.
