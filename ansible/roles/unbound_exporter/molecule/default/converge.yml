@@ -26,8 +26,9 @@
         mode: "0755"
         content: |
           #!/bin/bash
-          # Mock unbound_exporter for molecule testing
-          echo "unbound_exporter mock listening"
+          case "$1" in
+            --version) echo "unbound_exporter, version {{ unbound_exporter_version }}"; exit 0 ;;
+          esac
           while true; do sleep 3600; done
       when: ansible_os_family == "Debian"
 

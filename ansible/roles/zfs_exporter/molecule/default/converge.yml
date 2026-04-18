@@ -26,8 +26,9 @@
         mode: "0755"
         content: |
           #!/bin/bash
-          # Mock zfs_exporter for molecule testing
-          echo "zfs_exporter mock listening on $2"
+          case "$1" in
+            --version) echo "zfs_exporter, version {{ zfs_exporter_version }}"; exit 0 ;;
+          esac
           while true; do sleep 3600; done
       when: ansible_os_family == "Debian"
 
