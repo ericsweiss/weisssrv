@@ -232,7 +232,9 @@
         success_msg: "SSH service is running"
 
     - name: Check authorized_keys for cert distribution key
-      ansible.builtin.shell: grep -c "test@molecule.dev\|dns-01" /home/{{ admin_username }}/.ssh/authorized_keys || echo "0"
+      ansible.builtin.shell: set -o pipefail && grep -c "test@molecule.dev\|dns-01" /home/{{ admin_username }}/.ssh/authorized_keys || echo "0"
+      args:
+        executable: /bin/bash
       register: authorized_key_check
       changed_when: false
 

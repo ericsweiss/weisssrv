@@ -152,7 +152,10 @@
     # The SASL password files and Postfix configuration ARE validated above.
     - name: Test SMTP connectivity from client to relay
       ansible.builtin.shell: |
+        set -o pipefail
         (sleep 0.5; echo "QUIT") | nc smtp-relay 25 2>&1 | head -1
+      args:
+        executable: /bin/bash
       register: smtp_test
       changed_when: false
       when: "'mail_clients' in group_names"
