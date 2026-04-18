@@ -1,0 +1,35 @@
+---
+# Converge playbook for unbound_exporter role testing
+# Mocks the unbound_exporter binary since there is no real Unbound in Docker.
+# The role's download/install tasks are skipped via the stat check idempotency guard.
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
+    - name: Wait for apt locks to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    # Mock the unbound_exporter binary — real binary needs Unbound control socket
+    - name: Create mock unbound_exporter binary
+      ansible.builtin.copy:
+        dest: /usr/bin/unbound_exporter
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Mock unbound_exporter for molecule testing
+          echo "unbound_exporter mock listening"
+          while true; do sleep 3600; done
+      when: ansible_os_family == "Debian"
+
+  roles:
+    - role: unbound_exporter

@@ -17,6 +17,7 @@
     - base
     - postfix_null_client
     - unbound
+    - unbound_exporter
     - adguard_home
 
 - name: Deploy certificate and sync management
