@@ -1,0 +1,56 @@
+---
+# Global AlertmanagerConfig CR — replaces the default inline config.
+# Referenced by alertmanagerConfiguration.name in the Alertmanager spec.
+# Uses secretKeyRef for Discord webhook URL and SMTP password to avoid
+# plain-text secrets in git and work around the Operator's config parser
+# not supporting webhook_url_file.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: alertmanager-config
+  namespace: observability
+spec:
+  route:
+    receiver: discord-default
+    groupBy:
+      - alertname
+      - namespace
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    routes:
+      - receiver: email-and-discord
+        matchers:
+          - name: severity
+            value: critical
+            matchType: "="
+      - receiver: discord-default
+        matchers:
+          - name: severity
+            value: warning
+            matchType: "="
+
+  receivers:
+    - name: discord-default
+      discordConfigs:
+        - apiURL:
+            name: observability-secrets
+            key: discord-webhook-url
+          sendResolved: true
+
+    - name: email-and-discord
+      emailConfigs:
+        - to: "ericsweiss1@gmail.com"
+          sendResolved: true
+          smarthost: "smtp-relay.esweiss.com:587"
+          from: "Alertmanager <alertmanager@esweiss.com>"
+          requireTLS: true
+          authUsername: "relayuser"
+          authPassword:
+            name: observability-secrets
+            key: smtp-password
+      discordConfigs:
+        - apiURL:
+            name: observability-secrets
+            key: discord-webhook-url
+          sendResolved: true
