@@ -22,8 +22,10 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **ZFS Exporter** | `zfs_exporter` (on pve-nas-01) | ZFS pool and dataset metrics |
 | **AdGuard Exporter** | `adguard-exporter` | DNS query and filter metrics (dns-01 + dns-02) |
 | **Unbound Exporter** | `unbound_exporter` (on dns-01 + dns-02) | Recursive resolver metrics |
-| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (NZBGet, qBittorrent active; Sonarr, Radarr, Lidarr, Prowlarr disabled until API keys configured) |
+| **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
 | **Plex Exporter** | `jsclayton/prometheus-plex-exporter` | Plex Media Server metrics |
+| **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
+| **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on 11 non-k8s hosts → Loki via NodePort |
 
 ### Service Monitors
 
@@ -37,15 +39,19 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Unbound exporter (dns-01 + dns-02) | observability | `/metrics` | 60s |
 | AdGuard exporter | observability | `/metrics` | 60s |
 | Plex exporter | observability | `/metrics` | 60s |
-| Exportarr (Sonarr, Radarr, Lidarr, Prowlarr, NZBGet, qBittorrent) | observability | `/metrics` | 60s |
-| Blackbox exporter (HTTP/DNS probes) | observability | `/probe` | 60s |
+| Exportarr (Sonarr, Radarr, Lidarr, Prowlarr) | observability | `/metrics` | 60s |
+| Redis exporter (Bar Assistant cache) | observability | `/metrics` | 60s |
+| Meilisearch (Bar Assistant search) | recipes | `/metrics` | 60s |
+| GitLab (VM) | observability (external endpoint) | `/-/metrics` | 60s |
+| Home Assistant (VM) | observability (external endpoint) | `/api/prometheus` | 60s |
+| Blackbox exporter (16 HTTP + 2 DNS probes) | observability | `/probe` | 60s |
 | cert-manager | cert-manager | `/metrics` | (chart default) |
 | Traefik | traefik | `/metrics` | (chart default) |
 | MetalLB | metallb-system | `/metrics` | (chart default) |
 | external-dns | external-dns | `/metrics` | (chart default) |
 | external-secrets | external-secrets | `/metrics` | (chart default) |
 
-Manifests for GitLab and Home Assistant ServiceMonitors exist on disk but are not active until their prerequisites are met (see [Pre-deployment Steps](#pre-deployment-steps)). Controller ServiceMonitors (cert-manager, Traefik, MetalLB, external-dns, external-secrets) are created by their respective Helm charts when `serviceMonitor.enabled: true`; the CRD is provisioned by kube-prometheus-stack and Helm charts gracefully skip the resource if the CRD is absent during initial bootstrap.
+Controller ServiceMonitors (cert-manager, Traefik, MetalLB, external-dns, external-secrets) are created by their respective Helm charts when `serviceMonitor.enabled: true`.
 
 ## Architecture
 
@@ -82,12 +88,20 @@ Both Prometheus and Loki use persistent ZFS zvols on pve-nas-01, attached to k3s
 
 Both Prometheus and Loki pods are pinned to the NAS node via `nodeSelector: esweiss.com/nas: "true"` for local disk performance.
 
+### Log Collection
+
+**In-cluster:** Alloy runs as a DaemonSet on all 9 k8s nodes (tolerates all taints). It tails pod logs from `/var/log/pods` and ships them to Loki's ClusterIP service.
+
+**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT repository on 11 non-k8s hosts (6 Proxmox hosts, 2 DNS containers, smtp-relay, GitLab VM, Plex LXC). It reads from systemd journald and ships to Loki via a NodePort service (port 31100) through the kube-vip VIP (192.168.0.161) for failover across the 3 k3s server nodes.
+
+Home Assistant (HAOS) does not support Alloy installation — it is a managed appliance OS without package management.
+
 ### Secrets
 
 Two ExternalSecrets pull credentials from 1Password:
 
 1. **observability-secrets** -- Alertmanager SMTP password, Discord webhook URL, and Grafana OIDC client ID/secret.
-2. **observability-exporter-secrets** -- Proxmox API token (user + token-name + token-secret), Plex token, and AdGuard Home credentials. *arr application API key entries are commented out pending creation of the "Download Client API Keys" 1Password item (see [Pre-deployment Steps](#pre-deployment-steps)).
+2. **observability-exporter-secrets** -- Proxmox API token, Plex token, AdGuard Home credentials, Home Assistant API token, Meilisearch master key, and *arr API keys (Sonarr, Radarr, Lidarr, Prowlarr).
 
 ### Ingress
 
@@ -395,7 +409,7 @@ Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m g
 
 ### Built-in Alerts
 
-The kube-prometheus-stack chart also ships a comprehensive set of built-in alerts for Kubernetes components (kubelet, apiserver, etcd, scheduler, CoreDNS), node health, and Prometheus self-monitoring. These are enabled by default.
+The kube-prometheus-stack chart ships built-in alerts for Kubernetes components (kubelet, apiserver, etcd, scheduler, CoreDNS), node health, and Prometheus self-monitoring. These are enabled by default.
 
 ## Troubleshooting
 

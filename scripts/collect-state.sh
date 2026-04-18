@@ -654,7 +654,14 @@ if systemctl is-active k3s &>/dev/null; then
     sudo k3s kubectl get pvc -n observability 2>/dev/null || echo "Cannot get observability PVCs"
     sudo k3s kubectl get helmreleases -n observability 2>/dev/null || echo "Cannot get observability HelmReleases"
     sudo k3s kubectl get externalsecrets -n observability 2>/dev/null || echo "Cannot get observability ExternalSecrets"
-    sudo k3s kubectl get servicemonitors -n observability 2>/dev/null || echo "Cannot get observability ServiceMonitors"
+    sudo k3s kubectl get servicemonitors -A 2>/dev/null || echo "Cannot get ServiceMonitors"
+    sudo k3s kubectl get prometheusrules -n observability 2>/dev/null || echo "Cannot get PrometheusRules"
+    echo ""
+    echo "--- Alloy Host Log Collection ---"
+    for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01 dns-01 dns-02 smtp-relay gitlab plex; do
+        status=$(ssh -o ConnectTimeout=3 "$host" "systemctl is-active alloy" 2>/dev/null || echo "unreachable")
+        echo "  $host: $status"
+    done
 else
     echo "(Not a k3s server node, skipping cluster-wide data)"
     exit 2
