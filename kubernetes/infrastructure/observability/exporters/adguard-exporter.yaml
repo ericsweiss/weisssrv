@@ -20,22 +20,16 @@ spec:
       containers:
         - name: adguard-exporter
           image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
-          # Both AdGuard instances share the same credentials.
-          # ADGUARD_USERNAMES/PASSWORDS must be comma-separated, one per server.
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              export ADGUARD_SERVERS="http://192.168.0.150:3000,http://192.168.0.160:3000"
-              export ADGUARD_USERNAMES="$ADGUARD_USER,$ADGUARD_USER"
-              export ADGUARD_PASSWORDS="$ADGUARD_PASS,$ADGUARD_PASS"
-              exec /adguard-exporter
+          # Scraping dns-01 only — dns-02 syncs from dns-01 so metrics are identical.
           env:
-            - name: ADGUARD_USER
+            - name: ADGUARD_SERVERS
+              value: "http://192.168.0.150:3000"
+            - name: ADGUARD_USERNAMES
               valueFrom:
                 secretKeyRef:
                   name: observability-exporter-secrets
                   key: adguard-username
-            - name: ADGUARD_PASS
+            - name: ADGUARD_PASSWORDS
               valueFrom:
                 secretKeyRef:
                   name: observability-exporter-secrets
