@@ -163,7 +163,7 @@ pulsarr_version: "0.15.3"
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
-mealie_version: "v3.15.2"
+mealie_version: "v3.16.0"
 bar_assistant_version: "5.13.2"
 salt_rim_version: "4.14.1"
 meilisearch_version: "v1.15.2"
