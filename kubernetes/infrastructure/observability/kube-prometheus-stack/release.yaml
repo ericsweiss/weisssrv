@@ -39,6 +39,13 @@ spec:
     # -------------------------------------------------------------------------
     prometheus:
       prometheusSpec:
+        # Prometheus runs as nobody (65534); fsGroup ensures the PVC is writable
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+
         # Pin to NAS node for local ZFS zvol storage
         nodeSelector:
           esweiss.com/nas: "true"
