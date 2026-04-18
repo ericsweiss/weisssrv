@@ -118,6 +118,8 @@ spec:
           root_url: https://grafana.esweiss.com
 
       # Static OIDC configuration (Authentik)
+      # Access: users in grafana-users group can log in, grafana-admins get Admin role.
+      # Create both groups in Authentik and assign users accordingly.
       env:
         GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
         GF_AUTH_GENERIC_OAUTH_NAME: "Authentik"
@@ -126,6 +128,8 @@ spec:
         GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.esweiss.com/application/o/authorize/"
         GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.esweiss.com/application/o/token/"
         GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.esweiss.com/application/o/userinfo/"
+        GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'grafana-admins') && 'Admin' || contains(groups, 'grafana-users') && 'Viewer' || ''"
+        GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
 
       # Secret OIDC credentials from observability-secrets
       envValueFrom:
