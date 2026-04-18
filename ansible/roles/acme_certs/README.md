@@ -56,7 +56,7 @@ secrets:
 
 ```bash
 # Deploy DNS stack (includes cert management)
-task deploy:dns
+task dns:deploy
 
 # Deploy to dns-01 only
 ansible-playbook ansible/playbooks/dns.yml --limit dns-01
@@ -95,7 +95,7 @@ export CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
   -d "*.esweiss.com"
 
 # 3. Re-run Ansible to install and distribute
-task deploy:dns
+task dns:deploy
 ```
 
 ## Task Flow
@@ -232,4 +232,4 @@ cert_distribution_targets:
 
 Then:
 1. Deploy dns-01 public key to new host's authorized_keys
-2. Run deployment: `task deploy:dns`
+2. Run deployment: `task dns:deploy`

@@ -450,7 +450,7 @@ codex-review:
 | MR comments | Yes | Yes | Custom implementation |
 | Multi-line suggestions | Yes | Yes | Limited |
 
-**Recommendation**: Start with **PR-Agent** as it's open-source, supports self-hosted GitLab on any tier, and provides comprehensive review capabilities.
+**Recommendation**: Start with **PR-Agent** as it's open-source, supports self-hosted GitLab on any tier, and covers all standard review features.
 
 ## Part 7: Verification Checklist
 

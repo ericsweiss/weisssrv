@@ -370,9 +370,9 @@ verify the role's drop-ins are still authoritative after reboot.
 
 ```bash
 # Base infrastructure (Ansible)
-task deploy:all           # Deploy base infrastructure
-task deploy:check         # Dry-run
-task deploy:verify        # Post-deployment verification
+task infra:deploy         # Deploy base infrastructure
+task infra:check          # Dry-run
+task infra:verify         # Post-deployment verification
 
 # K3s cluster (Ansible — cluster infrastructure only)
 task k3s:provision-vms    # Provision k3s VMs on Proxmox
@@ -415,7 +415,7 @@ task home-assistant:status         # Show VM status
 task home-assistant:snapshot       # Create Proxmox snapshot
 
 # Plex (LXC on NAS, managed by Ansible)
-task deploy:plex          # Deploy Plex LXC
+task plex:deploy          # Deploy Plex LXC
 
 # GitLab (VM on NAS, managed by Ansible; runners + agent managed by Flux)
 task gitlab:deploy          # Deploy GitLab (VM + application)

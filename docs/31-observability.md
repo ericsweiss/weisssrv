@@ -202,7 +202,7 @@ adguard_rewrites:
     answer: "192.168.0.101"
 ```
 
-Then deploy: `task deploy:dns`
+Then deploy: `task dns:deploy`
 
 Or add the rewrite manually via the AdGuard Home UI at `https://192.168.0.150:3000` (Filters > DNS rewrites). It will sync to dns-02 automatically.
 

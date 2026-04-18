@@ -203,7 +203,7 @@ op read "op://Homelab/AdGuard Home/password"
 op read "op://Homelab/AdGuard Home/password_hash"
 
 # 6. Deploy AdGuard configuration
-task deploy:dns
+task dns:deploy
 
 # 7. Verify deployment
 ansible-playbook ansible/playbooks/postflight.yml --limit dns-01,dns-02
@@ -248,7 +248,7 @@ python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(
 op read "op://Homelab/Samba NAS User/password"
 
 # 3. Deploy storage configuration
-task deploy:storage
+task storage:deploy
 
 # 4. Test Samba access
 smbclient //192.168.0.102/share -U nas

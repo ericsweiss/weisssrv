@@ -10,7 +10,7 @@
     fail_msg: >-
       SMTP Gmail credentials are not set. Ensure SMTP_GMAIL_USER and
       SMTP_GMAIL_PASSWORD environment variables are provided via 'op run'.
-      Run deployment with: task deploy:all (which injects 1Password secrets)
+      Run deployment with: task infra:deploy (which injects 1Password secrets)
     success_msg: "SMTP Gmail credentials are present"
   no_log: true
 
@@ -23,7 +23,7 @@
       SMTP relay auth credentials are not set. Ensure SMTP_RELAY_USER and
       SMTP_RELAY_PASSWORD environment variables are provided via 'op run'.
       These are used for SASL authentication by null clients connecting to this relay.
-      Run deployment with: task deploy:all (which injects 1Password secrets)
+      Run deployment with: task infra:deploy (which injects 1Password secrets)
     success_msg: "SMTP relay auth credentials are present"
   no_log: true
 

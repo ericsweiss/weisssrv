@@ -100,13 +100,13 @@ secrets:
 
 ```bash
 # Deploy to all managed hosts
-task deploy:base
+task infra:base
 
 # Deploy to specific host
 ansible-playbook ansible/playbooks/base.yml --limit pve-nas-01
 
 # Dry-run to see changes
-task deploy:check
+task infra:check
 ```
 
 ## Architecture

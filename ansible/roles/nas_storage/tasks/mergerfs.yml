@@ -231,7 +231,7 @@
 
       To apply correct options:
       1. Stop all NFS clients and services using the mount
-      2. Re-run: task deploy:storage
+      2. Re-run: task storage:deploy
       -- OR --
       Reboot the system (fstab has correct options, will apply on boot)
       -- OR --

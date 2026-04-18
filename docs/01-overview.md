@@ -160,11 +160,11 @@ The base infrastructure automation is complete and production-ready:
 - 21 Ansible roles covering all infrastructure services
 - Terraform for Cloudflare DNS (*.ericsweiss.com)
 - 1Password integration for secrets (no secrets in git)
-- Comprehensive update playbooks with rolling deployments
+- Update playbooks with rolling deployments
 - Post-deployment verification checks
 
 **Documentation**:
-- 31 comprehensive documentation files
+- 31 documentation files
 - Operational runbooks covering common procedures
 - Disaster recovery procedures
 - Maintenance and update strategies

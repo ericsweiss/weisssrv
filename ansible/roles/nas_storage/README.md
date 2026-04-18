@@ -65,7 +65,7 @@ samba_shares:
 
 ```bash
 # Deploy NAS configuration
-task deploy:storage
+task storage:deploy
 
 # Deploy to pve-nas-01
 ansible-playbook ansible/playbooks/storage.yml

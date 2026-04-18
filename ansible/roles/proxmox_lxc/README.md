@@ -55,7 +55,7 @@ plex:
 ansible-playbook ansible/playbooks/plex.yml --tags provision
 
 # Provision DNS LXCs
-task deploy:dns --tags provision
+task dns:deploy --tags provision
 ```
 
 ## Files

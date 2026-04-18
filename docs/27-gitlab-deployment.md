@@ -178,7 +178,7 @@ curl -sf --max-time 10 "https://git.ericsweiss.com/-/health"
 ### Step 3: Deploy AdGuard DNS Rewrites
 
 ```bash
-task deploy:dns
+task dns:deploy
 ```
 
 This adds internal DNS rewrites for `git.esweiss.com`, `registry.git.esweiss.com`, etc.
@@ -452,7 +452,7 @@ From the LAN, you can SSH directly to the GitLab VM using the internal domain:
 git clone git@git.esweiss.com:username/repo.git
 ```
 
-Add to `~/.ssh/config` for seamless internal access:
+Add to `~/.ssh/config` for easy internal access:
 ```
 Host git.esweiss.com
     Port 22
@@ -474,7 +474,7 @@ HTTPS and SSH traffic. GitLab displays this unified URL in clone URLs.
 git clone ssh://git@git.ericsweiss.com:2222/username/repo.git
 ```
 
-Add to `~/.ssh/config` for seamless external SSH access:
+Add to `~/.ssh/config` for easy external SSH access:
 ```
 Host git.ericsweiss.com
     Port 2222

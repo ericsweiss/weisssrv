@@ -80,4 +80,4 @@
           - "- Plex Media Server updated"
           - "- Ansible collections updated"
           - ""
-          - "Verify deployment with: task deploy:verify"
+          - "Verify deployment with: task infra:verify"

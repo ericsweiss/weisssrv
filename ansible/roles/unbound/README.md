@@ -54,7 +54,7 @@ unbound_key_cache_size: "50m"     # DNSSEC key cache
 
 ```bash
 # Deploy DNS stack (includes Unbound)
-task deploy:dns
+task dns:deploy
 
 # Deploy to specific DNS server
 ansible-playbook ansible/playbooks/dns.yml --limit dns-01

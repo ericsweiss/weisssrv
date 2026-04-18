@@ -161,7 +161,7 @@
       - adguard_admin_password | length > 0
     fail_msg: >-
       AdGuard admin password not set. Ensure ADGUARD_ADMIN_PASSWORD is set
-      in 1Password and provided via 'op run'. Run: task deploy:dns
+      in 1Password and provided via 'op run'. Run: task dns:deploy
     success_msg: "AdGuard admin password is set"
   when: not adguard_initial_config.stat.exists
   no_log: true

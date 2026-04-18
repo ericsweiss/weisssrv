@@ -205,7 +205,7 @@ smb://192.168.0.102/share
 Deploy file services with:
 
 ```bash
-task deploy:storage
+task storage:deploy
 # Or directly:
 ansible-playbook -i inventories/prod playbooks/storage.yml
 ```

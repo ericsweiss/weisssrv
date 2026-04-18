@@ -32,7 +32,7 @@ dns-01 (Primary)
 The `acme_certs` Ansible role sets up the certificate infrastructure:
 
 ```bash
-task deploy:dns
+task dns:deploy
 # Or directly:
 ansible-playbook ansible/playbooks/dns.yml
 ```
@@ -68,7 +68,7 @@ export CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
 After certificates are issued, run Ansible to automatically install and distribute them:
 
 ```bash
-task deploy:dns
+task dns:deploy
 ```
 
 This will:

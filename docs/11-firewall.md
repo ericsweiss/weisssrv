@@ -357,7 +357,7 @@ Guest firewall configs are stored in `/etc/pve/firewall/` which is **cluster-sha
 - Firewall rules are accessible from ANY Proxmox node in the cluster
 - Ansible delegates firewall deployment to `groups['proxmox'][0]` (first Proxmox host)
 - No need to track which host is running each container
-- Works seamlessly with Proxmox HA and live migration
+- Works with Proxmox HA and live migration
 
 You can override the deployment target with:
 ```yaml
@@ -368,7 +368,7 @@ firewall_deploy_host: pve-nas-01  # Optional: specific host for firewall deploym
 To update guest firewall rules, modify `guest_security_groups` in inventory and re-run:
 ```bash
 # Update all firewalls
-task deploy:all
+task infra:deploy
 
 # Update specific host
 ansible-playbook ansible/playbooks/site.yml --limit dns-01

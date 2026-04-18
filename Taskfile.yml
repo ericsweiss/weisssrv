@@ -216,8 +216,8 @@ tasks:
     cmds:
       - task: flux:lint
 
-  # === Deployment Tasks ===
-  deploy:all:
+  # === Infrastructure Deployment Tasks ===
+  infra:deploy:
     desc: Deploy base infrastructure (Proxmox, DNS, NAS, mail - excludes k3s)
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -243,7 +243,7 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml {{.CLI_ARGS}}
 
-  deploy:base:
+  infra:base:
     desc: Deploy base configuration only
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -252,7 +252,7 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/base.yml {{.CLI_ARGS}}
 
-  deploy:base-first-run:
+  infra:base-first-run:
     desc: First-time base deployment (prompts for sudo password)
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -261,7 +261,7 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/base.yml -K {{.CLI_ARGS}}
 
-  deploy:dns:
+  dns:deploy:
     desc: Deploy DNS stack (Unbound + AdGuard Home)
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -275,7 +275,7 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/dns.yml {{.CLI_ARGS}}
 
-  deploy:storage:
+  storage:deploy:
     desc: Deploy NAS storage configuration
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -284,7 +284,7 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/storage.yml {{.CLI_ARGS}}
 
-  deploy:check:
+  infra:check:
     desc: Check mode - show what would change
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -303,14 +303,14 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml --check --diff {{.CLI_ARGS}}
 
-  deploy:verify:
+  infra:verify:
     desc: Run post-deployment verification
     dir: "{{.ANSIBLE_DIR}}"
     cmds:
       - ansible-playbook -i {{.INVENTORY}} playbooks/postflight.yml {{.CLI_ARGS}}
 
   # === Plex Deployment Tasks ===
-  deploy:plex:
+  plex:deploy:
     desc: Deploy Plex Media Server (provisions LXC container and installs Plex)
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -321,7 +321,7 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml {{.CLI_ARGS}}
 
-  deploy:plex-check:
+  plex:check:
     desc: Check mode - show what Plex deployment would change
     dir: "{{.ANSIBLE_DIR}}"
     env:
@@ -1790,30 +1790,6 @@ tasks:
         echo ""
         echo "To list snapshots: ssh $CURRENT_NODE 'sudo qm listsnapshot {{.HA_VM_ID}}'"
         echo "To rollback: ssh $CURRENT_NODE \"sudo qm rollback {{.HA_VM_ID}} '${NAME}'\""
-
-  home-assistant:deploy:
-    desc: "DEPRECATED: aliased to home-assistant:deploy-config. Ingress is Flux-managed."
-    cmds:
-      - |
-        cat <<'EOF'
-
-        NOTICE: task home-assistant:deploy now only runs deploy-config.
-
-        Previously this task ran:
-          (a) home-assistant:deploy-ingress  -> kubectl apply to apps/ingress-routes
-          (b) home-assistant:deploy-config   -> Ansible templates the HAOS config
-
-        The IngressRoute + backend service are now reconciled by Flux from
-        kubernetes/apps/vm-ingress/{home-assistant.yaml,services-default.yaml}.
-        Edit those files + git push to change ingress (or use flux:dev-apply
-        for local testing).
-
-        This task will keep working but is deprecated. Prefer:
-          task home-assistant:deploy-config
-
-        Proceeding with deploy-config...
-        EOF
-      - task: home-assistant:deploy-config
 
   home-assistant:deploy-config:
     desc: Deploy Home Assistant configuration via Ansible with 1Password secrets

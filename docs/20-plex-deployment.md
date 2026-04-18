@@ -143,7 +143,7 @@ ls -la /mnt/media
 
 **If mergerfs mount is missing**, ensure the NAS storage role has been deployed:
 ```bash
-task deploy:storage
+task storage:deploy
 ```
 
 ### 3. AdGuard DNS Records
@@ -191,17 +191,17 @@ getent group video render
 
 ```bash
 # Deploy Plex (provisions container + installs Plex)
-task deploy:plex
+task plex:deploy
 
 # Or with verbose output
-task deploy:plex -- -v
+task plex:deploy -- -v
 ```
 
 ### Check Mode (Dry Run)
 
 ```bash
 # See what would change without making changes
-task deploy:plex-check
+task plex:check
 ```
 
 ### Manual Steps (if needed)
@@ -418,7 +418,7 @@ Plex updates are managed via the official APT repository:
 ssh eric@192.168.0.152 "sudo apt update && sudo apt upgrade plexmediaserver -y"
 
 # Or via Ansible
-task deploy:plex
+task plex:deploy
 ```
 
 ### Cleanup Transcoding Cache

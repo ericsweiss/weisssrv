@@ -63,7 +63,7 @@ secrets:
 
 ```bash
 # Deploy DNS stack (includes sync configuration)
-task deploy:dns
+task dns:deploy
 
 # Deploy to dns-01 only
 ansible-playbook ansible/playbooks/dns.yml --limit dns-01

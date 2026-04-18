@@ -215,7 +215,7 @@
 # NOTE: We only check top-level directory ownership because:
 # 1. Subdirectory drift (where children have wrong ownership but parent is correct)
 #    is extremely rare - it would require manual intervention or a bug in GitLab
-# 2. Checking a child path would add complexity and still not be comprehensive
+# 2. Checking a child path would add complexity and still not cover all cases
 # 3. If subdirectory ownership drift occurs, gitlab-rake gitlab:check will report
 #    it, and manual 'chown -R git:git /mnt/gitlab-repos/git-data' can fix it
 - name: Check git-data directory ownership

@@ -154,14 +154,14 @@ task ansible:test-integration-storage # Storage stack (nas_storage + Samba clien
 task ansible:test-integration-certs # Certificate distribution (acme_certs multi-host)
 
 # Deployments (base infrastructure)
-task deploy:check                 # Dry-run (--check mode)
-task deploy:all                   # Full base infrastructure deployment (excludes k3s)
-task deploy:verify                # Post-deployment verification
-task deploy:base                  # Base packages + SSH only
-task deploy:dns                   # DNS stack
-task deploy:storage               # NAS services
-task deploy:plex                  # Plex Media Server (LXC + Plex install)
-task deploy:plex-check            # Plex dry-run
+task infra:check                  # Dry-run (--check mode)
+task infra:deploy                 # Full base infrastructure deployment (excludes k3s)
+task infra:verify                 # Post-deployment verification
+task infra:base                   # Base packages + SSH only
+task dns:deploy                   # DNS stack
+task storage:deploy               # NAS services
+task plex:deploy                  # Plex Media Server (LXC + Plex install)
+task plex:check                   # Plex dry-run
 
 # Proxmox HA (multi-node high availability)
 task proxmox:ha                   # Configure HA rules, resources, and replication
@@ -219,7 +219,6 @@ task observability:silence        # Create Alertmanager silence (ALERT=alertname
 
 # Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
 task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
-task home-assistant:deploy        # DEPRECATED: aliased to deploy-config (ingress is now Flux)
 task home-assistant:logs          # View Home Assistant logs
 task home-assistant:restart-after-config # Restart after config deployment
 task home-assistant:status        # Show VM and ingress status
@@ -460,19 +459,19 @@ All hosts use `eric` for SSH access with passwordless sudo. LXC containers are u
    ```bash
    task ansible:ping          # Verify connectivity
    task lint                  # Ansible + Terraform + flux:lint + scripts:test (all in one)
-   task deploy:check          # Dry-run
+   task infra:check           # Dry-run
    ```
 
 2. **Deploy**:
    ```bash
-   task deploy:all            # Full stack
+   task infra:deploy          # Full stack
    # Or target specific hosts/roles
    ansible-playbook ansible/playbooks/base.yml --limit pve-nas-01
    ```
 
 3. **Post-deployment**:
    ```bash
-   task deploy:verify         # Comprehensive verification
+   task infra:verify          # Post-deployment verification
    task collect-state         # Snapshot current state
    ```
 

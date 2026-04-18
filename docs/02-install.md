@@ -1,6 +1,6 @@
 # Installation Guide
 
-This comprehensive guide covers setting up your development environment and deploying the homelab infrastructure from a fresh clone to production.
+This guide covers setting up your development environment and deploying the homelab infrastructure from a fresh clone to production.
 
 ## Table of Contents
 
@@ -382,7 +382,7 @@ This verifies Ansible can execute commands on all hosts.
 
 ```bash
 # Full dry-run (no changes)
-task deploy:check
+task infra:check
 
 # OR manually:
 ansible-playbook ansible/playbooks/site.yml --check
@@ -402,7 +402,7 @@ Start with the least risky deployment:
 
 ```bash
 # Deploy base role only (packages, SSH config)
-task deploy:base
+task infra:base
 
 # OR manually:
 ansible-playbook ansible/playbooks/base.yml
@@ -423,7 +423,7 @@ ansible all -m shell -a "which nvim htop"
 
 ```bash
 # Deploy NFS, Samba, ZFS services
-task deploy:storage
+task storage:deploy
 
 # Verify NFS exports
 showmount -e 192.168.0.102
@@ -450,7 +450,7 @@ kdig @192.168.0.150 -p 853 +tls esweiss.com
 
 ```bash
 # Full stack deployment
-task deploy:all
+task infra:deploy
 
 # Monitor for errors
 # This runs all playbooks against all hosts
@@ -697,14 +697,14 @@ ssh eric@192.168.0.102 "sudo pve-firewall start"
 ```bash
 # Daily operations
 task ansible:ping          # Check connectivity
-task deploy:check          # Dry-run to detect drift
+task infra:check           # Dry-run to detect drift
 task collect-state         # Generate state snapshot
 
 # Deployments
-task deploy:all            # Full deployment
-task deploy:base           # Base config only
-task deploy:dns            # DNS stack only
-task deploy:storage        # NAS services only
+task infra:deploy          # Full deployment
+task infra:base            # Base config only
+task dns:deploy            # DNS stack only
+task storage:deploy        # NAS services only
 
 # Terraform
 task terraform:plan        # Show changes
