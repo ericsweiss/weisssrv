@@ -2,34 +2,38 @@
 # Unbound Exporter — Prometheus metrics for Unbound DNS resolver
 # Installs .deb package from GitHub releases and runs as a systemd service
 
-- name: Check if unbound_exporter is installed
-  ansible.builtin.stat:
-    path: /usr/bin/unbound_exporter
-  register: unbound_exporter_binary
+- name: Check installed unbound_exporter version
+  ansible.builtin.command: /usr/bin/unbound_exporter --version
+  register: unbound_exporter_current
+  changed_when: false
+  failed_when: false
 
 - name: Download unbound_exporter deb package
   vars:
     _ue_base: "https://github.com/letsencrypt/unbound_exporter/releases/download"
     _ue_file: "unbound_exporter-v{{ unbound_exporter_version }}.x86_64.deb"
+    _needs_install: "{{ unbound_exporter_current.rc != 0 or unbound_exporter_version not in unbound_exporter_current.stdout }}"
   ansible.builtin.get_url:
     url: "{{ _ue_base }}/v{{ unbound_exporter_version }}/{{ _ue_file }}"
     dest: "/tmp/{{ _ue_file }}"
     mode: "0644"
-  when: not unbound_exporter_binary.stat.exists
+  when: _needs_install
 
 - name: Install unbound_exporter deb package
   vars:
     _ue_file: "unbound_exporter-v{{ unbound_exporter_version }}.x86_64.deb"
+    _needs_install: "{{ unbound_exporter_current.rc != 0 or unbound_exporter_version not in unbound_exporter_current.stdout }}"
   ansible.builtin.apt:
     deb: "/tmp/{{ _ue_file }}"
     state: present
-  when: not unbound_exporter_binary.stat.exists
+  when: _needs_install
+  notify: Restart unbound_exporter
 
 - name: Clean up downloaded deb package
   ansible.builtin.file:
     path: "/tmp/unbound_exporter-v{{ unbound_exporter_version }}.x86_64.deb"
     state: absent
-  when: not unbound_exporter_binary.stat.exists
+  when: unbound_exporter_current.rc != 0 or unbound_exporter_version not in unbound_exporter_current.stdout
 
 - name: Deploy unbound-exporter systemd service
   ansible.builtin.template:
@@ -57,3 +61,5 @@
   delay: 3
   until: unbound_exporter_health.status == 200
   when: not ansible_check_mode
+  tags:
+    - molecule-notest

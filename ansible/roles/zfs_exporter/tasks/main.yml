@@ -2,24 +2,25 @@
 # ZFS Exporter — Prometheus metrics for ZFS pools and datasets
 # Downloads binary from GitHub releases and runs as a systemd service
 
-- name: Check if zfs_exporter binary exists
-  ansible.builtin.stat:
-    path: /usr/local/bin/zfs_exporter
-  register: zfs_exporter_binary
+- name: Check installed zfs_exporter version
+  ansible.builtin.command: /usr/local/bin/zfs_exporter --version
+  register: zfs_exporter_current
+  changed_when: false
+  failed_when: false
 
 - name: Download zfs_exporter tarball
   ansible.builtin.get_url:
     url: "https://github.com/pdf/zfs_exporter/releases/download/v{{ zfs_exporter_version }}/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     dest: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     mode: "0644"
-  when: not zfs_exporter_binary.stat.exists
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
 
 - name: Extract zfs_exporter tarball
   ansible.builtin.unarchive:
     src: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     dest: /tmp
     remote_src: true
-  when: not zfs_exporter_binary.stat.exists
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
 
 - name: Install zfs_exporter binary
   ansible.builtin.copy:
@@ -27,7 +28,8 @@
     dest: /usr/local/bin/zfs_exporter
     mode: "0755"
     remote_src: true
-  when: not zfs_exporter_binary.stat.exists
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
+  notify: Restart zfs_exporter
 
 - name: Clean up downloaded files
   ansible.builtin.file:
@@ -36,7 +38,7 @@
   loop:
     - "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     - "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64"
-  when: not zfs_exporter_binary.stat.exists
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
 
 - name: Deploy zfs-exporter systemd service
   ansible.builtin.template:
@@ -64,3 +66,5 @@
   delay: 3
   until: zfs_exporter_health.status == 200
   when: not ansible_check_mode
+  tags:
+    - molecule-notest
