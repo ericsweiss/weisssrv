@@ -17,7 +17,7 @@
     fail_msg: >-
       Required acme.sh variables are not set. Ensure DNS01_SSH_PRIVATE_KEY,
       DNS01_SSH_PUBLIC_KEY environment variables are provided via 'op run'.
-      Run deployment with: task deploy:dns (which injects 1Password secrets)
+      Run deployment with: task dns:deploy (which injects 1Password secrets)
     success_msg: "Required acme.sh variables are present"
   when: inventory_hostname == 'dns-01'
   tags: [validation, always]
@@ -188,7 +188,7 @@
            -d "*.{{ internal_domain }}"
 
       After issuing, re-run Ansible to automatically install and distribute the certs:
-         task deploy:dns
+         task dns:deploy
   when:
     - inventory_hostname == 'dns-01'
     - not (acme_cert_exists.stat.exists | default(false))

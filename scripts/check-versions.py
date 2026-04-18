@@ -1598,7 +1598,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
     if var_name == "gitlab_version":
         return "task gitlab:deploy"
 
-    return "task deploy:all  # Or the appropriate deployment task"
+    # Fallback when no specific deploy task mapping exists
+    return "task infra:deploy"
 
 
 def print_usage():
@@ -1754,7 +1755,7 @@ def main():
 
                 print("\n  3. Verify deployments:")
                 print("     task k3s:status")
-                print("     task deploy:verify")
+                print("     task infra:verify")
 
                 print("\n  4. Commit changes:")
                 print("     git add -A && git commit -m 'Update service versions'")

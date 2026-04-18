@@ -41,13 +41,13 @@ plex:
 
 ```bash
 # Full Plex deployment (LXC + Plex + ingress)
-task deploy:plex
+task plex:deploy
 
 # Plex installation only (assumes LXC exists)
 ansible-playbook ansible/playbooks/plex.yml
 
 # Dry-run
-task deploy:plex-check
+task plex:check
 ```
 
 ## Architecture

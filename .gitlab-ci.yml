@@ -397,7 +397,7 @@ pr-agent-review:
       echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
       echo "Model: gpt-5.3-codex"
 
-      # Run comprehensive review
+      # Run full review
       python -m pr_agent.cli \
         --pr_url="https://git.ericsweiss.com/eric/weisssrv/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
         review

@@ -41,7 +41,7 @@ task home-assistant:deploy
 task home-assistant:deploy-config
 
 # Deploy and restart in one step
-task home-assistant:deploy && task home-assistant:restart-after-config
+task home-assistant:deploy-config && task home-assistant:restart-after-config
 ```
 
 ## Required 1Password Items

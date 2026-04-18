@@ -12,7 +12,7 @@ See `CLAUDE.md` for the complete project overview, architecture, IP allocation, 
 
 1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field` for host tooling, or ID-based `ExternalSecret` manifests for in-cluster)
 2. **Automate ZFS pool creation/destruction** - Too critical, manual only
-3. **Skip deployment verification** - Run `task deploy:verify` (base infra) or `task flux:status` / `task flux:verify` (k8s) after changes
+3. **Skip deployment verification** - Run `task infra:verify` (base infra) or `task flux:status` / `task flux:verify` (k8s) after changes
 4. **Hardcode credentials** - Use 1Password references exclusively
 5. **Run `kubectl apply -k ...` or `helm upgrade` as an ongoing operation** - Flux owns all Kubernetes state. The only exceptions are:
    - `task flux:dev-apply -- <path>` for local iteration (Flux will revert on the next reconcile)
@@ -22,7 +22,7 @@ See `CLAUDE.md` for the complete project overview, architecture, IP allocation, 
 
 ### ALWAYS
 
-1. **Test with dry run first** - `task deploy:check` (Ansible) and `task flux:lint` (k8s) before shipping
+1. **Test with dry run first** - `task infra:check` (Ansible) and `task flux:lint` (k8s) before shipping
 2. **Use fully qualified collection names** - `ansible.builtin.apt` not `apt`
 3. **Follow existing patterns** - Check similar roles or `kubernetes/apps/<neighbour>` for conventions
 4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes)
@@ -76,7 +76,7 @@ See `docs/18-bootstrap-new-systems.md`
 2. `task maintenance:update-version SERVICE=<name>` - Update version in `ansible/inventories/prod/group_vars/all.yml`
 3. For Kubernetes workloads: `task flux:sync-versions` then `git commit` + `git push` - Flux rolls the new version out
 4. For base infra: run the appropriate deploy task (see `CLAUDE.md` for full task list)
-5. Verify: `task deploy:verify` (base infra), `task flux:status` (k8s), or `task k3s:status`
+5. Verify: `task infra:verify` (base infra), `task flux:status` (k8s), or `task k3s:status`
 
 ## Ansible Patterns
 

@@ -180,7 +180,7 @@ DNS records are codified in `ansible/inventories/prod/group_vars/dns.yml` and de
 
 ```bash
 # Deploy DNS configuration (dns-02 syncs automatically)
-task deploy:dns -- --limit dns-01
+task dns:deploy -- --limit dns-01
 ```
 
 This configures:

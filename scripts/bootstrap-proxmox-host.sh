@@ -256,7 +256,7 @@ if ssh -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "echo 'SSH access
     echo "Next steps:"
     echo "  1. Create local-ssd ZFS pool (see docs/26-multi-node-implementation.md)"
     echo "  2. Update ansible/inventories/prod/hosts.yml"
-    echo "  3. Run: task deploy:base -- --limit <hostname>"
+    echo "  3. Run: task infra:base -- --limit <hostname>"
     echo ""
 else
     echo ""

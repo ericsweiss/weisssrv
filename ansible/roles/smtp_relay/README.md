@@ -69,7 +69,7 @@ secrets:
 ansible-playbook ansible/playbooks/site.yml --limit mail
 
 # Full stack deployment
-task deploy:all
+task infra:deploy
 ```
 
 ## Architecture
@@ -295,9 +295,9 @@ To rotate credentials:
 1. **Gmail password:**
    - Generate new app password
    - Update 1Password
-   - Run `task deploy:all`
+   - Run `task infra:deploy`
 
 2. **Relay auth password:**
    - Update 1Password
-   - Run `task deploy:all` (updates relay and all null clients)
+   - Run `task infra:deploy` (updates relay and all null clients)
 

@@ -214,7 +214,7 @@ task ansible:ping
 
 ```bash
 # Deploy base configuration to all new hosts
-task deploy:all -- --limit pve-laptop-01,pve-opt-01,pve-opt-02,pve-prec-01
+task infra:deploy -- --limit pve-laptop-01,pve-opt-01,pve-opt-02,pve-prec-01
 
 # This deploys:
 # - base role (packages, SSH hardening, users, timezone)
@@ -632,7 +632,7 @@ Verify DNS records exist for new k3s nodes in `ansible/inventories/prod/group_va
 Deploy DNS configuration:
 
 ```bash
-task deploy:dns -- --limit dns-01
+task dns:deploy -- --limit dns-01
 # dns-02 syncs automatically via adguardhome-sync
 ```
 

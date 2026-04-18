@@ -93,17 +93,17 @@ task --list                    # List all available tasks
 
 # Validation and linting
 task lint                      # Lint everything (Ansible, Terraform, Kubernetes)
-task deploy:check              # Dry-run base infrastructure deployment
+task infra:check               # Dry-run base infrastructure deployment
 task ansible:test              # Run Molecule unit tests
 
 # Base infrastructure deployment
-task deploy:all                # Deploy all base infrastructure
-task deploy:verify             # Verify deployment status
-task deploy:dns                # Deploy DNS stack
-task deploy:storage            # Deploy storage services
+task infra:deploy              # Deploy all base infrastructure
+task infra:verify              # Verify deployment status
+task dns:deploy                # Deploy DNS stack
+task storage:deploy            # Deploy storage services
 
 # Application deployments
-task deploy:plex               # Deploy Plex Media Server (LXC)
+task plex:deploy               # Deploy Plex Media Server (LXC)
 task gitlab:deploy             # Deploy GitLab (VM + application)
 task home-assistant:deploy-config # Deploy Home Assistant config (ingress is Flux-managed)
 

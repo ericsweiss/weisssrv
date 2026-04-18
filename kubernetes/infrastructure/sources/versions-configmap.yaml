@@ -8,7 +8,7 @@ data:
   adguard_home_version: 0.107.74
   adguardhome_sync_version: 0.9.0
   authentik_version: 2026.2.2
-  bar_assistant_version: 5.13.2
+  bar_assistant_version: 5.14.0
   busybox_version: '1.37'
   debian_version: '13'
   exportarr_version: v2.3.0

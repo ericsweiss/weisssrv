@@ -422,13 +422,13 @@ molecule test
 ### Pre-Deployment
 
 - Run `task ansible:lint` (ansible-lint + yamllint)
-- Run `task deploy:check` (dry-run mode)
+- Run `task infra:check` (dry-run mode)
 - Verify 1Password secrets are available: `op whoami`
 - Review changes in git diff
 
 ### Post-Deployment
 
-- Run `task deploy:verify` (verification playbook)
+- Run `task infra:verify` (verification playbook)
 - Check service status: `systemctl status <service>`
 - Verify logs: `journalctl -u <service> -n 50`
 - Test functionality (curl, dig, ping, etc.)
@@ -571,11 +571,11 @@ additionally verifies that `cluster-versions` ConfigMap is in sync with
 
 ### Postflight Playbook
 
-The `postflight.yml` playbook provides comprehensive production health checks:
+The `postflight.yml` playbook runs production health checks:
 
 ```bash
 # Run after any deployment
-task deploy:verify
+task infra:verify
 ```
 
 Verifies:

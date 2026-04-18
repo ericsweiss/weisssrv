@@ -11,8 +11,8 @@
 #   - Directories must exist with correct permissions (eric:media, 1000:2000)
 #
 # Usage:
-#   task deploy:plex              # Full deployment
-#   task deploy:plex-check        # Dry-run
+#   task plex:deploy              # Full deployment
+#   task plex:check               # Dry-run
 
 - name: Provision Plex LXC container
   hosts: plex

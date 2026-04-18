@@ -407,10 +407,10 @@ The new node should appear in the Proxmox web UI under **Datacenter > Cluster**.
 # Edit ansible/inventories/prod/hosts.yml
 
 # 2. Deploy base configuration
-task deploy:base -- --limit pve-laptop-01
+task infra:base -- --limit pve-laptop-01
 
 # 3. Deploy full stack (firewall, tailscale, etc.)
-task deploy:all -- --limit pve-laptop-01
+task infra:deploy -- --limit pve-laptop-01
 
 # 4. Verify
 task ansible:ping

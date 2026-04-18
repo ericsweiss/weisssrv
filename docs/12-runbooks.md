@@ -593,7 +593,7 @@ task maintenance:check-versions -- --clear-cache
 4. **Verify everything works**:
    ```bash
    task flux:status         # all HelmReleases + Kustomizations Ready
-   task deploy:verify       # base infrastructure health
+   task infra:verify       # base infrastructure health
    task k3s:status          # cluster health
    ```
 
@@ -648,7 +648,7 @@ To upgrade an application:
 task maintenance:update-full-auto
 
 # After update: Always verify
-task deploy:verify
+task infra:verify
 ```
 
 **Security Updates**:
@@ -657,7 +657,7 @@ task deploy:verify
 task maintenance:update-packages
 # Add -e auto_reboot=true for auto-reboot:
 task maintenance:update-packages -- -e auto_reboot=true
-task deploy:verify
+task infra:verify
 
 # After k3s node updates, verify cluster health
 task k3s:status
@@ -967,8 +967,8 @@ Some tasks skip in check mode but run in actual deployment:
 After deployment, verify expected state rather than focusing on skip counts:
 
 ```bash
-# Run comprehensive verification
-task deploy:verify
+# Run verification
+task infra:verify
 ```
 
 This checks:

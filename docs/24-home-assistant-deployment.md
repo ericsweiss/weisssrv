@@ -384,7 +384,7 @@ Templates are version-controlled in the Ansible role:
 1. Edit templates in `ansible/roles/home_assistant/templates/`
 2. Update variables in `defaults/main.yml` if needed
 3. Commit to Git
-4. Deploy configuration: `task home-assistant:deploy-config` (or `task home-assistant:deploy` — that task now only runs deploy-config). Ingress lives in Flux; edit `kubernetes/apps/vm-ingress/home-assistant.yaml` + `services-default.yaml`, commit, push.
+4. Deploy configuration: `task home-assistant:deploy-config`. Ingress lives in Flux; edit `kubernetes/apps/vm-ingress/home-assistant.yaml` + `services-default.yaml`, commit, push.
 5. Restart: `task home-assistant:restart-after-config`
 
 **Direct Playbook Execution:**

@@ -392,7 +392,7 @@ class TestGetDeployCommand(unittest.TestCase):
     The Flux migration collapsed a fleet of per-app deploy tasks into
     `task flux:sync-versions && git push`. A silent regression here
     (typo in the flux_managed tuple, an unreachable branch, etc.) would
-    recommend `task deploy:all` as a fallback — which does nothing useful
+    recommend `task infra:deploy` as a fallback — which does nothing useful
     for k8s workloads and could mislead operators into treating a bogus
     message as success.
     """
@@ -425,8 +425,8 @@ class TestGetDeployCommand(unittest.TestCase):
                 f"{var} should route to Flux (got: {cmd})",
             )
             self.assertNotIn(
-                "deploy:all", cmd,
-                f"{var} fell through to the deploy:all fallback",
+                "infra:deploy", cmd,
+                f"{var} fell through to the infra:deploy fallback",
             )
 
     def test_helm_chart_prefix_routes_to_flux(self):
@@ -493,13 +493,13 @@ class TestGetDeployCommand(unittest.TestCase):
 
     def test_every_registry_service_has_specific_deploy_command(self):
         """Every SERVICE_REGISTRY entry should route to a specific deploy
-        command, not the generic 'deploy:all' fallback."""
+        command, not the generic 'infra:deploy' fallback."""
         for svc in check_versions.SERVICE_REGISTRY:
             result = self._mk(svc["var_name"], category=svc.get("category", ""))
             cmd = check_versions.get_deploy_command(result)
             self.assertNotIn(
-                "deploy:all", cmd,
-                f"{svc['name']} ({svc['var_name']}) fell through to deploy:all fallback. "
+                "infra:deploy", cmd,
+                f"{svc['name']} ({svc['var_name']}) fell through to infra:deploy fallback. "
                 f"Add it to flux_managed tuple or a specific handler in get_deploy_command().",
             )
 

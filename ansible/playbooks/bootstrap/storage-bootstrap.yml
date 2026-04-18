@@ -431,7 +431,7 @@
           - ""
           - "Next steps:"
           - "  1. Run postflight verification:"
-          - "     task deploy:verify"
+          - "     task infra:verify"
           - "  2. Review ZFS pool health:"
           - "     zpool status"
           - "  3. Check SMART disk health:"

@@ -23,9 +23,9 @@ Use the storage bootstrap playbook for these scenarios:
 4. **Adding New Storage Pools** - Expanding storage with new ZFS pools
 
 **DO NOT use this for:**
-- Normal deployments (use `task deploy:all` instead)
+- Normal deployments (use `task infra:deploy` instead)
 - Adding new datasets to existing pools (use ZFS commands directly)
-- Configuration changes only (use `task deploy:storage`)
+- Configuration changes only (use `task storage:deploy`)
 
 ## Storage Safety Guarantees
 
@@ -327,7 +327,7 @@ MergerFS Mounts:
   /mnt/media  /mnt/nvme/media:/mnt/tank/media
 
 Next steps:
-  1. Run postflight verification: task deploy:verify
+  1. Run postflight verification: task infra:verify
   2. Review ZFS pool health: zpool status
   3. Check SMART disk health: smartctl -H /dev/disk/by-id/...
 ```
@@ -336,10 +336,10 @@ Next steps:
 
 ## Post-Bootstrap Verification
 
-### 1. Run Comprehensive Verification
+### 1. Run Verification
 
 ```bash
-task deploy:verify
+task infra:verify
 ```
 
 This will check:
@@ -423,7 +423,7 @@ smbclient //pve-nas-01/share -U nas
 1. Create ZFS pools manually (see above)
 2. Run storage bootstrap playbook
 3. Confirm dataset creation
-4. Verify with `task deploy:verify`
+4. Verify with `task infra:verify`
 
 ### Scenario 2: Disaster Recovery (Pool Intact, Datasets Lost)
 
@@ -433,7 +433,7 @@ smbclient //pve-nas-01/share -U nas
 1. Run storage bootstrap playbook (will detect existing pool)
 2. Confirm creation of missing datasets
 3. Restore data from backups (if needed)
-4. Verify with `task deploy:verify`
+4. Verify with `task infra:verify`
 
 ### Scenario 3: Hardware Replacement (Complete Rebuild)
 
@@ -450,7 +450,7 @@ smbclient //pve-nas-01/share -U nas
    zfs receive tank/media < /path/to/backup/tank-media-snapshot.zfs
    ```
 6. Run storage bootstrap to configure services
-7. Verify with `task deploy:verify`
+7. Verify with `task infra:verify`
 
 ### Scenario 4: Adding New Storage Pool
 
@@ -461,7 +461,7 @@ smbclient //pve-nas-01/share -U nas
 2. Create new ZFS pool manually
 3. Add pool configuration to `host_vars/pve-nas-01.yml`
 4. Run storage bootstrap playbook (will only create new datasets)
-5. Verify with `task deploy:verify`
+5. Verify with `task infra:verify`
 
 ---
 
@@ -621,7 +621,7 @@ Use this checklist when performing disaster recovery:
 - [ ] Checked for errors in playbook output
 
 ### Post-Bootstrap
-- [ ] Ran `task deploy:verify` successfully
+- [ ] Ran `task infra:verify` successfully
 - [ ] Verified ZFS pool health (`zpool status`)
 - [ ] Checked dataset properties (`zfs get all`)
 - [ ] Tested NFS exports (`showmount -e`)

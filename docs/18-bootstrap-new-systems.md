@@ -312,7 +312,7 @@ Run Ansible to configure the system:
 
 ```bash
 # Check what would change (dry run)
-task deploy:check -- --limit k3s-master-01
+task infra:check -- --limit k3s-master-01
 
 # Deploy base configuration
 ansible-playbook ansible/playbooks/base.yml --limit k3s-master-01
@@ -753,7 +753,7 @@ After successfully bootstrapping and deploying base configuration:
    - Configure service settings
 
 3. **Verify Everything Works**:
-   - Run `task deploy:verify`
+   - Run `task infra:verify`
    - Test service-specific functionality
 
 4. **Document in Cluster Status**:

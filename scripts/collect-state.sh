@@ -886,7 +886,7 @@ else
 fi
 
 # Cleanup old state files (keep last 5)
-# Use find for robust handling under set -euo pipefail, safe for filenames
+# Use find for safe handling under set -euo pipefail, safe for filenames
 # with special characters, and no-match safe. Scoped to output directory
 # (not CWD) to prevent accidental deletion of unrelated files.
 # Portable across macOS (bash 3.2) and Linux (bash 4+).

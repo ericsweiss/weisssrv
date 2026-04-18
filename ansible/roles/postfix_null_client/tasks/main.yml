@@ -14,7 +14,7 @@
     fail_msg: >-
       SMTP relay credentials not set.
       Ensure SMTP_RELAY_USER and SMTP_RELAY_PASSWORD are provided via 'op run --'.
-      Use the appropriate task command (e.g., 'task deploy:dns' or 'task gitlab:deploy')
+      Use the appropriate task command (e.g., 'task dns:deploy' or 'task gitlab:deploy')
       which automatically injects secrets from 1Password.
     success_msg: "SMTP relay credentials validated"
   no_log: true

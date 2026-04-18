@@ -97,10 +97,10 @@ adguard_user_rules:
 
 ```bash
 # Deploy to dns-01 only (dns-02 syncs automatically)
-task deploy:dns -- --limit dns-01
+task dns:deploy -- --limit dns-01
 
 # Full DNS stack deployment
-task deploy:dns
+task dns:deploy
 ```
 
 ## Architecture
