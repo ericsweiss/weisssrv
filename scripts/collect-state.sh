@@ -659,7 +659,8 @@ if systemctl is-active k3s &>/dev/null; then
     echo ""
     echo "--- Alloy Host Log Collection ---"
     for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01 dns-01 dns-02 smtp-relay gitlab plex; do
-        status=$(ssh -o ConnectTimeout=3 "$host" "systemctl is-active alloy" 2>/dev/null || echo "unreachable")
+        status=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=3 "$host" "systemctl is-active alloy || true" 2>/dev/null)
+        [ -z "$status" ] && status="unreachable"
         echo "  $host: $status"
     done
 else
