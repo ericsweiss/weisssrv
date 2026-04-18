@@ -1,56 +1,48 @@
 ---
-# Global AlertmanagerConfig CR — replaces the default inline config.
-# Referenced by alertmanagerConfiguration.name in the Alertmanager spec.
-# Uses secretKeyRef for Discord webhook URL and SMTP password to avoid
-# plain-text secrets in git and work around the Operator's config parser
-# not supporting webhook_url_file.
-apiVersion: monitoring.coreos.com/v1alpha1
-kind: AlertmanagerConfig
+# Raw Alertmanager configuration as a Secret.
+# Referenced by alertmanagerSpec.configSecret in the HelmRelease values.
+# This bypasses both the Prometheus Operator's config schema validation
+# and the AlertmanagerConfig CRD (which lacks a status subresource and
+# blocks Flux health checks).
+apiVersion: v1
+kind: Secret
 metadata:
   name: alertmanager-config
   namespace: observability
-spec:
-  route:
-    receiver: discord-default
-    groupBy:
-      - alertname
-      - namespace
-    groupWait: 30s
-    groupInterval: 5m
-    repeatInterval: 4h
-    routes:
-      - receiver: email-and-discord
-        matchers:
-          - name: severity
-            value: critical
-            matchType: "="
-      - receiver: discord-default
-        matchers:
-          - name: severity
-            value: warning
-            matchType: "="
+stringData:
+  alertmanager.yaml: |
+    global:
+      smtp_smarthost: "smtp-relay.esweiss.com:587"
+      smtp_from: "Alertmanager <alertmanager@esweiss.com>"
+      smtp_require_tls: true
+      smtp_auth_username: relayuser
+      smtp_auth_password_file: /etc/alertmanager/secrets/observability-secrets/smtp-password
 
-  receivers:
-    - name: discord-default
-      discordConfigs:
-        - apiURL:
-            name: observability-secrets
-            key: discord-webhook-url
-          sendResolved: true
+    route:
+      receiver: discord-default
+      group_by:
+        - alertname
+        - namespace
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - receiver: email-and-discord
+          matchers:
+            - severity="critical"
+        - receiver: discord-default
+          matchers:
+            - severity="warning"
 
-    - name: email-and-discord
-      emailConfigs:
-        - to: "ericsweiss1@gmail.com"
-          sendResolved: true
-          smarthost: "smtp-relay.esweiss.com:587"
-          from: "Alertmanager <alertmanager@esweiss.com>"
-          requireTLS: true
-          authUsername: "relayuser"
-          authPassword:
-            name: observability-secrets
-            key: smtp-password
-      discordConfigs:
-        - apiURL:
-            name: observability-secrets
-            key: discord-webhook-url
-          sendResolved: true
+    receivers:
+      - name: discord-default
+        discord_configs:
+          - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
+            send_resolved: true
+      - name: email-and-discord
+        email_configs:
+          - to: "ericsweiss1@gmail.com"
+            send_resolved: true
+        discord_configs:
+          - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
+            send_resolved: true

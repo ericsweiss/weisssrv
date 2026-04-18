@@ -92,11 +92,9 @@ spec:
     # -------------------------------------------------------------------------
     alertmanager:
       alertmanagerSpec:
-        # Full Alertmanager config provided via a raw Secret to bypass
-        # the Operator's config parser, which doesn't support
-        # webhook_url_file for discord_configs.
-        alertmanagerConfiguration:
-          name: alertmanager-config
+        # Raw config via Secret — bypasses the Operator's config parser
+        # which doesn't support webhook_url_file for discord_configs.
+        configSecret: alertmanager-config
         secrets:
           - observability-secrets
         resources:
