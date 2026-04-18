@@ -60,16 +60,18 @@
     - vmid is defined
     - guest_security_groups is defined
 
-# Proxmox monitoring user and API token for Prometheus exporters
-# PVE user management is cluster-wide — only run once on a single node.
+# Proxmox monitoring user and API token for Prometheus exporters.
+# PVE user management is cluster-wide — run_once + delegate_to ensures
+# these tasks execute exactly once on a single Proxmox node regardless
+# of which play or host group invokes this role.
 - name: Check if monitoring@pve user exists
   ansible.builtin.command: pveum user list --output-format json
   register: pve_users
   changed_when: false
+  check_mode: false
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
-  when:
-    - inventory_hostname in groups['proxmox'] | default([])
+  when: groups.get('proxmox', []) | length > 0
 
 - name: Create monitoring@pve user
   ansible.builtin.command: >
@@ -79,18 +81,21 @@
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
-    - inventory_hostname in groups['proxmox'] | default([])
+    - groups.get('proxmox', []) | length > 0
     - pve_users.stdout is defined
-    - "'monitoring@pve' not in pve_users.stdout"
+    - >-
+      pve_users.stdout | from_json | default([]) |
+      selectattr('userid', 'equalto', 'monitoring@pve') |
+      list | length == 0
 
 - name: Check PVEAuditor ACL for monitoring@pve
   ansible.builtin.command: pveum acl list --output-format json
   register: pve_acls
   changed_when: false
+  check_mode: false
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
-  when:
-    - inventory_hostname in groups['proxmox'] | default([])
+  when: groups.get('proxmox', []) | length > 0
 
 - name: Assign PVEAuditor role to monitoring@pve
   ansible.builtin.command: >
@@ -99,11 +104,12 @@
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
-    - inventory_hostname in groups['proxmox'] | default([])
+    - groups.get('proxmox', []) | length > 0
     - pve_acls.stdout is defined
     - >-
-      pve_acls.stdout | from_json |
+      pve_acls.stdout | from_json | default([]) |
       selectattr('ugid', 'equalto', 'monitoring@pve') |
+      selectattr('path', 'equalto', '/') |
       selectattr('roleid', 'equalto', 'PVEAuditor') |
       list | length == 0
 
@@ -111,29 +117,33 @@
   ansible.builtin.command: pveum user token list monitoring@pve --output-format json
   register: pve_tokens
   changed_when: false
-  failed_when: false
+  check_mode: false
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
-  when:
-    - inventory_hostname in groups['proxmox'] | default([])
+  when: groups.get('proxmox', []) | length > 0
 
 - name: Create exporter API token for monitoring@pve
   ansible.builtin.command: >
     pveum user token add monitoring@pve exporter --privsep 0
   changed_when: true
+  no_log: true
   register: pve_token_created
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
-    - inventory_hostname in groups['proxmox'] | default([])
+    - groups.get('proxmox', []) | length > 0
     - pve_tokens.stdout is defined
-    - "'exporter' not in pve_tokens.stdout"
+    - >-
+      (pve_tokens.stdout | from_json | default([]) |
+      map(attribute='tokenid') | list) |
+      intersect(['exporter', 'monitoring@pve!exporter']) | length == 0
 
-- name: Display API token secret (store in 1Password — only shown once)
+- name: Notify if new API token was created
   ansible.builtin.debug:
     msg: >
-      API token created. Save this secret in 1Password immediately —
-      it cannot be retrieved again: {{ pve_token_created.stdout }}
+      API token monitoring@pve!exporter created. Retrieve the secret
+      from the Proxmox UI and store it in the "Proxmox API Token"
+      1Password item.
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
