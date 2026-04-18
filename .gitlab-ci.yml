@@ -1168,6 +1168,8 @@ deploy-plex:
       optional: true
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/plex.yml

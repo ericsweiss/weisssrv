@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """CI wrapper for check-versions.py — runs version check, posts MR comment if updates available."""
-
 import json
 import os
 import subprocess
 import sys
-import urllib.request
+from urllib.request import Request, urlopen
 
 
-def post_mr_comment(body):
-    """Post a comment on the current merge request via GitLab API."""
+def post_mr_comment(body: str) -> None:
+    """Post a comment to the current MR via GitLab API."""
     api_url = os.environ.get("CI_API_V4_URL", "")
     project_id = os.environ.get("CI_PROJECT_ID", "")
     mr_iid = os.environ.get("CI_MERGE_REQUEST_IID", "")
@@ -20,13 +19,12 @@ def post_mr_comment(body):
 
     url = f"{api_url}/projects/{project_id}/merge_requests/{mr_iid}/notes"
     data = json.dumps({"body": body}).encode()
-    headers = {
+    req = Request(url, data=data, headers={
         "PRIVATE-TOKEN": token,
         "Content-Type": "application/json",
-    }
-    req = urllib.request.Request(url, data=data, headers=headers)
+    })
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urlopen(req, timeout=30) as resp:
             resp.read()
         print("MR comment posted")
     except Exception as e:
@@ -34,68 +32,87 @@ def post_mr_comment(body):
 
 
 def main():
-    # Generate JSON report (for artifacts)
+    # Run version check once with --json
     try:
-        r1 = subprocess.run(
+        result = subprocess.run(
             ["./scripts/check-versions.py", "--json"],
             capture_output=True,
             text=True,
             timeout=300,
         )
     except subprocess.TimeoutExpired:
-        print("Error: version check (JSON) timed out")
+        print("Error: version check timed out")
         sys.exit(2)
     except OSError as e:
         print(f"Error: failed to execute version check: {e}")
         sys.exit(2)
+
+    # Save JSON artifact
     with open("version-report.json", "w") as f:
-        f.write(r1.stdout)
+        f.write(result.stdout)
 
-    # Generate human-readable report
+    rc = result.returncode
+
+    # Parse JSON for human-readable output
+    updates = 0
+    errors = 0
+    data = {}
     try:
-        r2 = subprocess.run(
-            ["./scripts/check-versions.py"],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired:
-        print("Error: version check (text) timed out")
-        sys.exit(2)
-    except OSError as e:
-        print(f"Error: failed to execute version check: {e}")
-        sys.exit(2)
-    with open("version-report.txt", "w") as f:
-        f.write(r2.stdout)
+        data = json.loads(result.stdout)
+        summary = data.get("summary", {})
+        total = summary.get("total_services", 0)
+        up_to_date = summary.get("up_to_date", 0)
+        updates = summary.get("updates_available", 0)
+        errors = summary.get("errors", 0)
 
-    # Print human-readable output to job log
-    print(r2.stdout)
+        print(f"Version check: {total} services, {up_to_date} up to date, {updates} updates, {errors} errors")
 
-    # Exit codes: 0 = all up to date, 1 = updates available, 2 = errors
-    # Use the worst exit code from both runs
-    if 2 in (r1.returncode, r2.returncode):
+        if updates > 0:
+            print("\nUpdates available:")
+            for svc in data.get("services", []):
+                if svc.get("update_available"):
+                    print(f"  {svc['name']}: {svc['current_version']} -> {svc['latest_version']}")
+
+        if errors > 0:
+            print("\nErrors:")
+            for svc in data.get("services", []):
+                if svc.get("error"):
+                    print(f"  {svc['name']}: {svc['error']}")
+
+        # Reconcile rc with parsed summary in case they diverge
+        if errors > 0:
+            rc = 2
+        elif updates > 0:
+            rc = 1
+        else:
+            rc = 0
+    except (json.JSONDecodeError, KeyError):
+        print("Warning: could not parse version check output")
+        print(result.stdout)
         rc = 2
-    elif 1 in (r1.returncode, r2.returncode):
-        rc = 1
-    else:
-        rc = 0
 
+    # Post MR comment only when there are actionable updates or errors
     if os.environ.get("CI_MERGE_REQUEST_IID"):
-        if rc == 1:
+        if rc == 1 and updates > 0:
+            update_lines = []
+            for svc in data.get("services", []):
+                if svc.get("update_available"):
+                    update_lines.append(
+                        f"| {svc['name']} | {svc['current_version']} | {svc['latest_version']} |"
+                    )
             body = (
                 "## Version Check\n\n"
-                "The following updates are available:\n\n"
-                f"```\n{r2.stdout}\n```\n\n"
-                "Run `task maintenance:check-versions` locally for details."
+                "| Service | Current | Latest |\n"
+                "|---------|---------|--------|\n"
+                + "\n".join(update_lines)
+                + "\n\nRun `task maintenance:check-versions` locally for details."
             )
             post_mr_comment(body)
         elif rc == 2:
-            error_output = (r1.stderr or r2.stderr or "No error output").strip()
+            error_output = (result.stderr or result.stdout or "No error output").strip()
             body = (
                 "## Version Check Failed\n\n"
-                "The version check encountered errors:\n\n"
-                f"```\n{r2.stdout}\n```\n\n"
-                f"Stderr:\n```\n{error_output}\n```"
+                f"```\n{error_output}\n```"
             )
             post_mr_comment(body)
 

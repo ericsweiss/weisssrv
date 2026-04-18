@@ -116,6 +116,8 @@ spec:
       grafana.ini:
         server:
           root_url: https://grafana.esweiss.com
+        auth:
+          disable_login_form: true
 
       # Static OIDC configuration (Authentik)
       # Access: users in grafana-users group can log in, grafana-admins get Admin role.
