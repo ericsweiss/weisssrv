@@ -193,11 +193,13 @@ gitlab_agent_helm_version: "2.26.0"
 # ZFS Exporter: https://github.com/pdf/zfs_exporter/releases
 # AdGuard Exporter: https://github.com/henrywhitaker3/adguard-exporter/releases
 # Unbound Exporter: https://github.com/letsencrypt/unbound_exporter/releases
+# Redis Exporter: https://hub.docker.com/r/oliver006/redis_exporter/tags
 exportarr_version: "v2.3.0"
 proxmox_exporter_version: "3.8.2"
 zfs_exporter_version: "2.3.12"
 adguard_exporter_version: "v1.2.1"
 unbound_exporter_version: "0.5.0"
+redis_exporter_version: "v1.82.0"
 
 # Helm chart versions for k3s platform workloads
 # These flow into kubernetes/infrastructure/sources/versions-configmap.yaml

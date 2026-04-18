@@ -43,7 +43,9 @@
 - name: Generate unbound-control TLS certificates
   ansible.builtin.command:
     cmd: unbound-control-setup
+    creates: /etc/unbound/unbound_server.pem
   when: not unbound_server_cert.stat.exists
+  changed_when: true
   notify: Restart unbound
 
 - name: Ensure Unbound is enabled and running

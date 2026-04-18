@@ -1,0 +1,24 @@
+---
+# Scrape Meilisearch Prometheus metrics from the Bar Assistant search engine.
+# Requires MEILI_EXPERIMENTAL_ENABLE_METRICS=true on the Meilisearch container.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: meilisearch
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - recipes
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant-meilisearch
+  endpoints:
+    - port: http
+      interval: 60s
+      path: /metrics
+      authorization:
+        type: Bearer
+        credentials:
+          name: observability-exporter-secrets
+          key: meilisearch-master-key

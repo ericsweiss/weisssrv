@@ -48,4 +48,4 @@
         - storage-stack-net
       loop_control:
         label: "{{ item }}"
-      ignore_errors: true  # Network may be in use by other containers
+      failed_when: false  # Network may be in use by other containers

@@ -1,0 +1,75 @@
+---
+# Redis Exporter — scrapes Bar Assistant Redis for Prometheus metrics.
+# Redis does not expose native /metrics, so we use oliver006/redis_exporter.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-exporter
+    spec:
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:${redis_exporter_version}
+          env:
+            - name: REDIS_ADDR
+              value: "redis://bar-assistant-redis.recipes.svc.cluster.local:6379"
+          ports:
+            - name: metrics
+              containerPort: 9121
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: redis-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: redis-exporter
+  ports:
+    - name: metrics
+      port: 9121
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-exporter
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-exporter
+  endpoints:
+    - port: metrics
+      interval: 60s
