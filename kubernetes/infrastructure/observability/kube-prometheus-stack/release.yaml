@@ -317,7 +317,10 @@ spec:
                   severity: warning
                 annotations:
                   summary: 'Flux reconciliation failing for {{ "{{" }} $labels.kind {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}'
-                  description: '{{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} has been failing for 15 minutes.'
+                  description: >-
+                    {{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }}
+                    in {{ "{{" }} $labels.namespace {{ "}}" }}
+                    has been failing for 15 minutes.
 
               - alert: ExternalSecretSyncFailure
                 expr: externalsecret_status_condition{condition="Ready", status="False"} == 1
@@ -335,7 +338,10 @@ spec:
                   severity: warning
                 annotations:
                   summary: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} expiring in less than 14 days'
-                  description: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.'
+                  description: >-
+                    Certificate {{ "{{" }} $labels.name {{ "}}" }}
+                    in {{ "{{" }} $labels.namespace {{ "}}" }}
+                    expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.
 
               - alert: CertExpiringCritical
                 expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 3
@@ -344,7 +350,10 @@ spec:
                   severity: critical
                 annotations:
                   summary: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} expiring in less than 3 days'
-                  description: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.'
+                  description: >-
+                    Certificate {{ "{{" }} $labels.name {{ "}}" }}
+                    in {{ "{{" }} $labels.namespace {{ "}}" }}
+                    expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.
 
               - alert: TraefikHighErrorRate
                 expr: >-
@@ -371,4 +380,7 @@ spec:
                   severity: warning
                 annotations:
                   summary: 'ZFS snapshot older than 24 hours on {{ "{{" }} $labels.instance {{ "}}" }}'
-                  description: 'Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }} dataset {{ "{{" }} $labels.dataset {{ "}}" }} is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.'
+                  description: >-
+                    Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }}
+                    dataset {{ "{{" }} $labels.dataset {{ "}}" }}
+                    is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.
