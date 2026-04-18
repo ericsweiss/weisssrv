@@ -69,6 +69,13 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
+- name: Deploy host-side log collection (Alloy → Loki)
+  hosts: base_managed
+  become: true
+  roles:
+    - role: alloy_host
+      tags: [alloy_host]
+
 # Deploy guest firewall rules for unmanaged VMs (Home Assistant, etc.)
 # These VMs can't run Ansible directly; firewall rules are deployed via
 # delegation to a Proxmox host (the /etc/pve/ filesystem is clustered)

@@ -1,0 +1,84 @@
+---
+# Grafana Alloy — journald log collection agent
+# Installs Alloy from the Grafana APT repository and ships journald logs to Loki
+
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Check if Grafana GPG key exists
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/grafana.gpg
+  register: alloy_host_gpg_key
+
+- name: Download Grafana GPG key
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg.key
+    dest: /tmp/grafana.gpg.key
+    mode: "0644"
+  when: not alloy_host_gpg_key.stat.exists
+
+- name: Verify Grafana GPG key fingerprint (primary key must match exactly)
+  ansible.builtin.shell: |
+    set -o pipefail
+    primary_fpr=$(gpg --show-keys --with-colons /tmp/grafana.gpg.key 2>/dev/null \
+        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
+    [ "$primary_fpr" = "B53AE77BADB630A683046005963FA27710458545" ]
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: not alloy_host_gpg_key.stat.exists
+
+- name: Add Grafana GPG key to keyring
+  ansible.builtin.shell: |
+    gpg --yes --dearmor -o /etc/apt/keyrings/grafana.gpg < /tmp/grafana.gpg.key
+  args:
+    creates: /etc/apt/keyrings/grafana.gpg
+  when: not alloy_host_gpg_key.stat.exists
+
+- name: Clean up downloaded GPG key
+  ansible.builtin.file:
+    path: /tmp/grafana.gpg.key
+    state: absent
+  when: not alloy_host_gpg_key.stat.exists
+
+- name: Add Grafana APT repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main"
+    filename: grafana
+    state: present
+    update_cache: true
+
+- name: Install Alloy
+  ansible.builtin.apt:
+    name: alloy
+    state: present
+
+- name: Deploy Alloy configuration
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: /etc/alloy/config.alloy
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart alloy
+
+- name: Enable and start Alloy service
+  ansible.builtin.systemd:
+    name: alloy
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify Alloy is listening on port 12345
+  ansible.builtin.uri:
+    url: "http://localhost:12345/-/ready"
+    return_content: false
+    status_code: 200
+  register: alloy_host_health
+  retries: 5
+  delay: 3
+  until: alloy_host_health.status == 200
+  when: not ansible_check_mode

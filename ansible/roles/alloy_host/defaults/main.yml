@@ -1,0 +1,3 @@
+---
+# Loki push endpoint — any k3s node IP works via NodePort
+alloy_host_loki_url: "http://192.168.0.222:31100/loki/api/v1/push"

@@ -26,6 +26,11 @@ policy_out: ACCEPT
 
 {% include 'ipsets.j2' %}
 
+[IPSET k3s_pods]
+
+# k3s pod CIDR — traffic originates from pods (Prometheus scraping exporters)
+10.42.0.0/16
+
 [IPSET smb_clients]
 
 # Hosts allowed SMB access (entire LAN)
@@ -125,6 +130,21 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 32469 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 32410:32414 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog
 IN ACCEPT -p tcp -dport 32400 -log nolog
+
+[group sg-metrics]
+
+# Prometheus scraping from k3s cluster (k3s SNATs pod traffic to node IPs)
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog  # node-exporter
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9134 -log nolog  # zfs-exporter
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9167 -log nolog  # unbound-exporter
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9221 -log nolog  # proxmox-exporter API
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8123 -log nolog  # home-assistant
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 80 -log nolog    # gitlab metrics
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 32400 -log nolog # plex
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog  # adguard API
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7472 -log nolog  # metallb speaker
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7473 -log nolog  # metallb controller
+IN ACCEPT -source +dc/core-cluster -p tcp -dport 31100 -log nolog  # loki push (NodePort, host→k8s)
 
 [group sg-pve-cluster]
 

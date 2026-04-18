@@ -1,0 +1,17 @@
+---
+# Expose Loki push API to non-k8s hosts via NodePort.
+# Hosts run Alloy and ship journald logs to http://<any-k3s-node>:31100.
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-external
+  namespace: observability
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+      nodePort: 31100

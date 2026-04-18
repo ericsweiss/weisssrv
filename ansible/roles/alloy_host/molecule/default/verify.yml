@@ -1,0 +1,96 @@
+---
+# Verify playbook for alloy_host role testing
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    # Verify binary is installed
+    - name: Check if alloy binary exists
+      ansible.builtin.stat:
+        path: /usr/bin/alloy
+      register: alloy_binary
+      failed_when: not alloy_binary.stat.exists
+
+    - name: Verify binary is executable
+      ansible.builtin.assert:
+        that:
+          - alloy_binary.stat.executable
+        fail_msg: "alloy binary is not executable"
+        success_msg: "alloy binary is executable"
+
+    # Verify GPG keyring exists
+    - name: Check if Grafana GPG keyring exists
+      ansible.builtin.stat:
+        path: /etc/apt/keyrings/grafana.gpg
+      register: gpg_keyring
+      failed_when: not gpg_keyring.stat.exists
+
+    # Verify APT source is configured
+    - name: Check if Grafana APT source exists
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/grafana.list
+      register: apt_source
+      failed_when: not apt_source.stat.exists
+
+    - name: Read APT source content
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/grafana.list
+      register: apt_source_content
+
+    - name: Verify APT source content
+      ansible.builtin.assert:
+        that:
+          - "'signed-by=/etc/apt/keyrings/grafana.gpg' in (apt_source_content.content | b64decode)"
+          - "'https://apt.grafana.com' in (apt_source_content.content | b64decode)"
+        fail_msg: "APT source missing expected configuration"
+        success_msg: "APT source has correct configuration"
+
+    # Verify config file exists and has expected content
+    - name: Check if config file exists
+      ansible.builtin.stat:
+        path: /etc/alloy/config.alloy
+      register: config_file
+      failed_when: not config_file.stat.exists
+
+    - name: Read config file content
+      ansible.builtin.slurp:
+        src: /etc/alloy/config.alloy
+      register: config_content
+
+    - name: Verify config file content
+      ansible.builtin.assert:
+        that:
+          - "'loki.source.journal' in (config_content.content | b64decode)"
+          - "'loki.relabel' in (config_content.content | b64decode)"
+          - "'loki.write' in (config_content.content | b64decode)"
+          - "'job' in (config_content.content | b64decode)"
+          - "'__journal__systemd_unit' in (config_content.content | b64decode)"
+          - "'__journal_priority_keyword' in (config_content.content | b64decode)"
+          - "'http://127.0.0.1:31100/loki/api/v1/push' in (config_content.content | b64decode)"
+        fail_msg: "Config file missing expected configuration"
+        success_msg: "Config file has correct configuration"
+
+    # Verify service is enabled (may not be actively running in Docker)
+    - name: Check service status
+      ansible.builtin.systemd:
+        name: alloy
+      register: service_status
+
+    - name: Verify service is enabled
+      ansible.builtin.assert:
+        that:
+          - service_status.status.UnitFileState == 'enabled'
+        fail_msg: "alloy service is not enabled"
+        success_msg: "alloy service is enabled"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "alloy_host installed and configured:"
+          - "  - Binary: /usr/bin/alloy (executable)"
+          - "  - Config: /etc/alloy/config.alloy"
+          - "  - Service: alloy.service (enabled)"
+          - "  - GPG key: /etc/apt/keyrings/grafana.gpg"
+          - "  - APT source: /etc/apt/sources.list.d/grafana.list"
+          - "(Actual journald shipping requires systemd journal + Loki endpoint)"
