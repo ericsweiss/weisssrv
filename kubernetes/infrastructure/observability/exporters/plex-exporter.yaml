@@ -34,7 +34,7 @@ spec:
                   key: plex-token
           ports:
             - name: metrics
-              containerPort: 9594
+              containerPort: 9000
           livenessProbe:
             httpGet:
               path: /metrics
@@ -67,7 +67,7 @@ spec:
     app.kubernetes.io/name: plex-exporter
   ports:
     - name: metrics
-      port: 9594
+      port: 9000
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
