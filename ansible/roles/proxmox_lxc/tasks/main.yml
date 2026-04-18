@@ -34,10 +34,15 @@
 - name: Check if container already exists
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    pct status {{ container_id }} 2>/dev/null
+    set -o errexit -o nounset -o pipefail
+    # Check cluster-wide — containers may be HA-migrated to a different node.
+    resources_json="$(pvesh get /cluster/resources --type vm --output-format json)"
+    python3 -c "import sys,json; vmids=[r['vmid'] for r in json.loads(sys.argv[1])]; sys.exit(0 if {{ container_id | int }} in vmids else 1)" "$resources_json"
+  args:
+    executable: /bin/bash
   register: container_exists
   changed_when: false
-  failed_when: false
+  failed_when: container_exists.rc not in [0, 1]
   check_mode: false
 
 # Verify storage pool exists on target host before proceeding
