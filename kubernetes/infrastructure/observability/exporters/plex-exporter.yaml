@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: plex-exporter
-          image: docker.io/jsclayton/prometheus-plex-exporter:latest
+          image: ghcr.io/jsclayton/prometheus-plex-exporter:latest
           imagePullPolicy: Always
           env:
             - name: PLEX_SERVER
