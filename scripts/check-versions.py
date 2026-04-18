@@ -401,6 +401,8 @@ SERVICE_REGISTRY: list[dict] = [
         "github_repo": "letsencrypt/unbound_exporter",
         "version_prefix": "v",
         "strip_prefix": True,
+        "pin_version": True,
+        "notes": "Pinned to v0.4.6 — v0.5.0 has no binary releases (.deb only for v0.4.6).",
     },
     {
         "name": "Redis Exporter",
@@ -1307,6 +1309,7 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
             result.latest_version = cached
             result.update_available = (
                 current != "latest"
+                and not svc_def.get("pin_version")
                 and cached != current
                 and version_greater(cached, current)
             )
@@ -1342,6 +1345,9 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
         # Determine if update is available
         if current == "latest":
             result.notes = (result.notes + " " if result.notes else "") + f"'latest' resolves to {latest}"
+            result.update_available = False
+        elif svc_def.get("pin_version"):
+            # Version is intentionally pinned (e.g., newer releases lack binary assets)
             result.update_available = False
         elif latest != current:
             result.update_available = version_greater(latest, current)

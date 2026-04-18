@@ -120,6 +120,11 @@ adguard_rewrites:
     answer: "192.168.0.101"
   - domain: "vip-public.{{ external_domain }}"
     answer: "192.168.0.100"
+  # Traefik dashboard and observability
+  - domain: "traefik.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "grafana.{{ internal_domain }}"
+    answer: "192.168.0.101"
   # Traefik ingress routes (internal services via traefik-internal on .101)
   - domain: "bar.{{ internal_domain }}"
     answer: "192.168.0.101"
@@ -190,7 +195,7 @@ adguard_user_rules:
   - '||205.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-02.{{ internal_domain }}.'
   - '||206.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-opt-03.{{ internal_domain }}.'
   - '||207.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;k3s-agt-prec-01.{{ internal_domain }}.'
-  - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ external_domain }}.'
+  - '||100.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-public.{{ internal_domain }}.'
   - '||101.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;vip-internal.{{ internal_domain }}.'
 
 # DHCP configuration
