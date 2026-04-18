@@ -23,12 +23,12 @@ spec:
           env:
             - name: ADGUARD_SERVERS
               value: "http://192.168.0.150:3000,http://192.168.0.160:3000"
-            - name: ADGUARD_USERNAME
+            - name: ADGUARD_USERNAMES
               valueFrom:
                 secretKeyRef:
                   name: observability-exporter-secrets
                   key: adguard-username
-            - name: ADGUARD_PASSWORD
+            - name: ADGUARD_PASSWORDS
               valueFrom:
                 secretKeyRef:
                   name: observability-exporter-secrets
