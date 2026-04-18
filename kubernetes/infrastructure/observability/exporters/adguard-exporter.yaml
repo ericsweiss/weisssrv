@@ -1,26 +1,31 @@
 ---
-# AdGuard Home Exporter — scrapes both AdGuard instances (dns-01 + dns-02).
+# AdGuard Home Exporters — one per DNS instance (distroless image, no shell).
+# dns-01 and dns-02 have independent metrics even though config syncs via adguard_sync.
+
+# ── dns-01 ──────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: adguard-exporter
+  name: adguard-exporter-dns01
   namespace: observability
   labels:
     app.kubernetes.io/name: adguard-exporter
+    app.kubernetes.io/instance: dns-01
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: adguard-exporter
+      app.kubernetes.io/instance: dns-01
   template:
     metadata:
       labels:
         app.kubernetes.io/name: adguard-exporter
+        app.kubernetes.io/instance: dns-01
     spec:
       containers:
         - name: adguard-exporter
           image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
-          # Scraping dns-01 only — dns-02 syncs from dns-01 so metrics are identical.
           env:
             - name: ADGUARD_SERVERS
               value: "http://192.168.0.150:3000"
@@ -56,21 +61,104 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: adguard-exporter
+  name: adguard-exporter-dns01
   namespace: observability
   labels:
     app.kubernetes.io/name: adguard-exporter
+    app.kubernetes.io/instance: dns-01
 spec:
   selector:
     app.kubernetes.io/name: adguard-exporter
+    app.kubernetes.io/instance: dns-01
   ports:
     - name: metrics
       port: 9618
+
 ---
+# ── dns-02 ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adguard-exporter-dns02
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: adguard-exporter
+    app.kubernetes.io/instance: dns-02
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: adguard-exporter
+      app.kubernetes.io/instance: dns-02
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: adguard-exporter
+        app.kubernetes.io/instance: dns-02
+    spec:
+      containers:
+        - name: adguard-exporter
+          image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
+          env:
+            - name: ADGUARD_SERVERS
+              value: "http://192.168.0.160:3000"
+            - name: ADGUARD_USERNAMES
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: adguard-username
+            - name: ADGUARD_PASSWORDS
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: adguard-password
+          ports:
+            - name: metrics
+              containerPort: 9618
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adguard-exporter-dns02
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: adguard-exporter
+    app.kubernetes.io/instance: dns-02
+spec:
+  selector:
+    app.kubernetes.io/name: adguard-exporter
+    app.kubernetes.io/instance: dns-02
+  ports:
+    - name: metrics
+      port: 9618
+
+---
+# Single ServiceMonitor selects both instances via the shared app label
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
