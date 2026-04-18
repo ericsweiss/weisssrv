@@ -26,11 +26,6 @@ policy_out: ACCEPT
 
 {% include 'ipsets.j2' %}
 
-[IPSET k3s_pods]
-
-# k3s pod CIDR — traffic originates from pods (Prometheus scraping exporters)
-10.42.0.0/16
-
 [IPSET smb_clients]
 
 # Hosts allowed SMB access (entire LAN)

@@ -17,8 +17,6 @@ spec:
     - port: http
       interval: 60s
       path: /metrics
-      authorization:
-        type: Bearer
-        credentials:
-          name: observability-exporter-secrets
-          key: meilisearch-master-key
+      bearerTokenSecret:
+        name: observability-exporter-secrets
+        key: meilisearch-master-key
