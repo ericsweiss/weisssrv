@@ -693,6 +693,7 @@ flux-lint:
 # roles test simultaneously instead of sequentially (~3-5 min each vs
 # ~45 min total serial). The zvol_mount role needs kernel loopback devices
 # unavailable in DinD; it's excluded here and tested locally only.
+# 18 roles total (15 original + zfs_exporter + unbound_exporter + alloy_host).
 .molecule-base:
   stage: test
   needs:
@@ -750,6 +751,8 @@ molecule-tests:
       # agent) that run as separate jobs to halve wall time.
       - ROLE: acme_certs
         SCENARIO: default
+      - ROLE: alloy_host
+        SCENARIO: default
       - ROLE: adguard_home
         SCENARIO: default
       - ROLE: adguard_sync
@@ -777,6 +780,10 @@ molecule-tests:
       - ROLE: tailscale
         SCENARIO: default
       - ROLE: unbound
+        SCENARIO: default
+      - ROLE: zfs_exporter
+        SCENARIO: default
+      - ROLE: unbound_exporter
         SCENARIO: default
       # zvol_mount excluded: needs kernel loopback devices (test locally)
   rules:

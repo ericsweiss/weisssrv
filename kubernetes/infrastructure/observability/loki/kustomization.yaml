@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - storage.yaml
   - release.yaml
+  - nodeport.yaml

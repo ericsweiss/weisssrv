@@ -16,6 +16,7 @@ log_level_out: nolog
 # All Proxmox hosts need cluster communication and admin access
 GROUP sg-pve-cluster
 GROUP sg-host-admin
+GROUP sg-metrics
 
 {% if 'nas' in proxmox_role | default('') %}
 # NAS-specific rules

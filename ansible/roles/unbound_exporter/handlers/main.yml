@@ -1,0 +1,8 @@
+---
+# Handlers for unbound_exporter role
+
+- name: Restart unbound_exporter
+  ansible.builtin.systemd:
+    name: unbound-exporter
+    state: restarted
+    daemon_reload: true

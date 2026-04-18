@@ -156,6 +156,8 @@ spec:
           env:
             - name: MEILI_ENV
               value: production
+            - name: MEILI_EXPERIMENTAL_ENABLE_METRICS
+              value: "true"
             - name: MEILI_MASTER_KEY
               valueFrom:
                 secretKeyRef:

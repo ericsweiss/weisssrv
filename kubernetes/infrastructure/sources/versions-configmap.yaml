@@ -29,7 +29,7 @@ data:
   kube_vip_version: v1.1.2
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.3-alpine
-  mealie_version: v3.15.2
+  mealie_version: v3.16.0
   meilisearch_version: v1.15.2
   nzbget_version: '26.1'
   plex_version: 1.43.1.10611-1e34174b1
@@ -39,6 +39,7 @@ data:
   pulsarr_version: 0.15.3
   qbittorrent_version: 5.1.4
   radarr_version: 6.1.1.10360
+  redis_exporter_version: v1.82.0
   redis_version: 8.6.2-alpine
   salt_rim_version: 4.14.1
   sonarr_version: 4.0.17.2952

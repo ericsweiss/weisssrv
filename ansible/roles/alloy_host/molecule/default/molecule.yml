@@ -1,0 +1,62 @@
+---
+# Molecule configuration for alloy_host role testing
+# Tests: APT repo setup, package install (mocked), config deployment, systemd service
+# Partial testing: Grafana APT repo not available in Docker (alloy binary is mocked)
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: alloy-host-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        alloy_host_loki_url: "http://127.0.0.1:31100/loki/api/v1/push"
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

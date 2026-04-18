@@ -92,7 +92,11 @@ spec:
     # -------------------------------------------------------------------------
     alertmanager:
       alertmanagerSpec:
-        # Mount observability-secrets for file-based secret references
+        # Full Alertmanager config provided via a raw Secret to bypass
+        # the Operator's config parser, which doesn't support
+        # webhook_url_file for discord_configs.
+        alertmanagerConfiguration:
+          name: alertmanager-config
         secrets:
           - observability-secrets
         resources:
@@ -102,62 +106,6 @@ spec:
           limits:
             cpu: 200m
             memory: 128Mi
-
-      config:
-        global:
-          smtp_smarthost: "smtp-relay.esweiss.com:587"
-          smtp_from: "Alertmanager <alertmanager@esweiss.com>"
-          smtp_require_tls: true
-          # smtp_auth_username does not support _file suffix — inline is fine (not sensitive).
-          # Must match the 'username' field in 1Password item "SMTP Relay Auth".
-          smtp_auth_username: relayuser
-          smtp_auth_password_file: /etc/alertmanager/secrets/observability-secrets/smtp-password
-
-        route:
-          receiver: discord-default
-          group_by:
-            - alertname
-            - namespace
-          group_wait: 30s
-          group_interval: 5m
-          repeat_interval: 4h
-          routes:
-            - receiver: email-and-discord
-              matchers:
-                - severity="critical"
-              continue: false
-            - receiver: discord-default
-              matchers:
-                - severity="warning"
-              continue: false
-
-        receivers:
-          - name: discord-default
-            discord_configs:
-              - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
-                send_resolved: true
-                title: '{{ "{{" }} .Status | toUpper {{ "}}" }}: {{ "{{" }} .CommonLabels.alertname {{ "}}" }}'
-                message: >-
-                  {{ "{{" }} range .Alerts {{ "}}" }}
-                  **{{ "{{" }} .Labels.alertname {{ "}}" }}** ({{ "{{" }} .Labels.severity {{ "}}" }})
-                  {{ "{{" }} if .Annotations.summary {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }}{{ "{{" }} end {{ "}}" }}
-                  {{ "{{" }} if .Annotations.description {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} end {{ "}}" }}
-                  {{ "{{" }} end {{ "}}" }}
-
-          - name: email-and-discord
-            email_configs:
-              - to: "ericsweiss1@gmail.com"
-                send_resolved: true
-            discord_configs:
-              - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
-                send_resolved: true
-                title: '{{ "{{" }} .Status | toUpper {{ "}}" }}: {{ "{{" }} .CommonLabels.alertname {{ "}}" }}'
-                message: >-
-                  {{ "{{" }} range .Alerts {{ "}}" }}
-                  **{{ "{{" }} .Labels.alertname {{ "}}" }}** ({{ "{{" }} .Labels.severity {{ "}}" }})
-                  {{ "{{" }} if .Annotations.summary {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }}{{ "{{" }} end {{ "}}" }}
-                  {{ "{{" }} if .Annotations.description {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} end {{ "}}" }}
-                  {{ "{{" }} end {{ "}}" }}
 
     # -------------------------------------------------------------------------
     # Grafana
@@ -317,7 +265,10 @@ spec:
                   severity: warning
                 annotations:
                   summary: 'Flux reconciliation failing for {{ "{{" }} $labels.kind {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}'
-                  description: '{{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} has been failing for 15 minutes.'
+                  description: >-
+                    {{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }}
+                    in {{ "{{" }} $labels.namespace {{ "}}" }}
+                    has been failing for 15 minutes.
 
               - alert: ExternalSecretSyncFailure
                 expr: externalsecret_status_condition{condition="Ready", status="False"} == 1
@@ -335,7 +286,10 @@ spec:
                   severity: warning
                 annotations:
                   summary: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} expiring in less than 14 days'
-                  description: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.'
+                  description: >-
+                    Certificate {{ "{{" }} $labels.name {{ "}}" }}
+                    in {{ "{{" }} $labels.namespace {{ "}}" }}
+                    expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.
 
               - alert: CertExpiringCritical
                 expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 3
@@ -344,7 +298,10 @@ spec:
                   severity: critical
                 annotations:
                   summary: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} expiring in less than 3 days'
-                  description: 'Certificate {{ "{{" }} $labels.name {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }} expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.'
+                  description: >-
+                    Certificate {{ "{{" }} $labels.name {{ "}}" }}
+                    in {{ "{{" }} $labels.namespace {{ "}}" }}
+                    expires in {{ "{{" }} $value | humanizeDuration {{ "}}" }}.
 
               - alert: TraefikHighErrorRate
                 expr: >-
@@ -371,4 +328,7 @@ spec:
                   severity: warning
                 annotations:
                   summary: 'ZFS snapshot older than 24 hours on {{ "{{" }} $labels.instance {{ "}}" }}'
-                  description: 'Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }} dataset {{ "{{" }} $labels.dataset {{ "}}" }} is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.'
+                  description: >-
+                    Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }}
+                    dataset {{ "{{" }} $labels.dataset {{ "}}" }}
+                    is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.

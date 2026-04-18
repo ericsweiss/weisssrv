@@ -6,3 +6,4 @@
   become: true
   roles:
     - nas_storage
+    - zfs_exporter

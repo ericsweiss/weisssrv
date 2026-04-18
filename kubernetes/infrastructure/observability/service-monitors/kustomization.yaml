@@ -5,3 +5,4 @@ resources:
   - flux-system.yaml
   - gitlab.yaml
   - home-assistant.yaml
+  - meilisearch.yaml

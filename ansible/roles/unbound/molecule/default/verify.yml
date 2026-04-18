@@ -51,6 +51,22 @@
       register: remote_control_config
       failed_when: not remote_control_config.stat.exists
 
+    - name: Check if unbound-control TLS certificate files exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: unbound_cert_files
+      loop:
+        - /etc/unbound/unbound_server.pem
+        - /etc/unbound/unbound_server.key
+        - /etc/unbound/unbound_control.pem
+        - /etc/unbound/unbound_control.key
+
+    - name: Assert all TLS certificate files exist
+      ansible.builtin.assert:
+        that:
+          - unbound_cert_files.results | map(attribute='stat.exists') | list | min
+        fail_msg: "One or more unbound-control TLS certificate files are missing"
+
     - name: Test DNS resolution via Unbound
       ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short
       register: dns_test
@@ -66,4 +82,5 @@
           - "Listening on 127.0.0.1:5335"
           - "Configuration deployed with DoT forwarders"
           - "Remote-control configuration deployed"
+          - "unbound-control TLS certificates present"
           - "DNS resolution: {{ 'working' if dns_test.rc == 0 else 'skipped (no network in container)' }}"

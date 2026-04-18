@@ -115,7 +115,7 @@
         success_msg: ".zshrc configured"
 
     - name: Check zsh plugins in .zshrc
-      ansible.builtin.shell: sed -n '/^plugins=(/,/^)/p' /home/eric/.zshrc
+      ansible.builtin.command: sed -n '/^plugins=(/,/^)/p' /home/eric/.zshrc  # noqa: command-instead-of-module
       register: zsh_plugins_check
       changed_when: false
       failed_when: false
@@ -226,6 +226,7 @@
     # Integration Verification
     # ============================================
     - name: Test zsh is functional
+      become: true
       become_user: eric
       ansible.builtin.shell: zsh -c 'echo $SHELL'
       register: zsh_test
@@ -239,6 +240,7 @@
         success_msg: "Zsh functional"
 
     - name: Test Oh My Zsh theme loaded
+      become: true
       become_user: eric
       ansible.builtin.shell: zsh -c 'echo $ZSH_THEME'
       register: theme_test

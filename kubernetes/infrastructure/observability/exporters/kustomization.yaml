@@ -10,3 +10,4 @@ resources:
   - adguard-exporter.yaml
   - unbound-exporter.yaml
   - plex-exporter.yaml
+  - redis-exporter.yaml

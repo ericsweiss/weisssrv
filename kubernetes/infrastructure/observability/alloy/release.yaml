@@ -37,7 +37,7 @@ spec:
             role = "pod"
             selectors {
               role = "pod"
-              field = "spec.nodeName=" + sys.env("NODE_NAME")
+              field = "spec.nodeName=" + sys.env("HOSTNAME")
             }
           }
 
@@ -84,13 +84,8 @@ spec:
     controller:
       type: daemonset
 
-    # Inject node name for node-scoped pod discovery
-    # (HOSTNAME in a pod is the pod name, not the node name)
-    extraEnv:
-      - name: NODE_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: spec.nodeName
+    # The chart sets HOSTNAME from spec.nodeName via downward API by default.
+    # sys.env("HOSTNAME") in the River config resolves to the node name.
 
     tolerations:
       - operator: Exists

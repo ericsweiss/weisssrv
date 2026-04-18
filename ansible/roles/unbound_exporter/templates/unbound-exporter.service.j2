@@ -1,0 +1,12 @@
+[Unit]
+Description=Unbound Exporter for Prometheus
+After=network.target unbound.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/unbound_exporter --unbound.host unix:///run/unbound.ctl --unbound.ca "" --unbound.cert "" --unbound.key "" --web.listen-address=:{{ unbound_exporter_port }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

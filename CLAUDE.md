@@ -17,7 +17,7 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                    # Configuration management
 │   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # 21 roles for all services
+│   ├── roles/                  # 24 roles for all services
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
@@ -439,6 +439,9 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 19. **resolv_conf** - Shared /etc/resolv.conf management (used by base, adguard_home)
 20. **zvol_mount** - Shared ZFS zvol mounting with UUID-based fstab (used by k3s, gitlab)
 21. **nic_tuning** - NIC/kernel tuning on Proxmox hosts (codifies AQC113 GRO disable + `net.ipv4.ip_forward` sysctl)
+22. **zfs_exporter** - Prometheus ZFS exporter on pve-nas-01 (pool health, dataset usage, scrub status)
+23. **unbound_exporter** - Prometheus Unbound exporter on DNS hosts (cache hit rate, query counts)
+24. **alloy_host** - Grafana Alloy on non-k8s hosts for shipping journald logs to Loki via NodePort
 
 ## User Management
 

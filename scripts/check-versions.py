@@ -402,6 +402,13 @@ SERVICE_REGISTRY: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": True,
     },
+    {
+        "name": "Redis Exporter",
+        "var_name": "redis_exporter_version",
+        "category": "dockerhub",
+        "docker_image": "oliver006/redis_exporter",
+        "tag_regex": r"^(v\d+\.\d+\.\d+)$",
+    },
     # --- APT / Manual ---
     {
         "name": "Plex Media Server",
@@ -1562,7 +1569,7 @@ def get_deploy_command(result: ServiceVersion) -> str:
         # Observability exporter container images
         "exportarr_version", "proxmox_exporter_version",
         "zfs_exporter_version", "adguard_exporter_version",
-        "unbound_exporter_version",
+        "unbound_exporter_version", "redis_exporter_version",
     )
     if var_name in flux_managed or var_name.startswith("helm_chart") or category == "helm":
         return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"

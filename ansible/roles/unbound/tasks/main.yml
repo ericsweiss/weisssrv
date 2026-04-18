@@ -35,6 +35,12 @@
     mode: "0644"
   notify: Restart unbound
 
+- name: Generate unbound-control TLS certificates
+  ansible.builtin.command:
+    cmd: unbound-control-setup
+    creates: /etc/unbound/unbound_server.pem
+  notify: Restart unbound
+
 - name: Ensure Unbound is enabled and running
   ansible.builtin.service:
     name: unbound
