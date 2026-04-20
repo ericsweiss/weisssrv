@@ -154,6 +154,7 @@ spec:
                     operator: DoesNotExist
       nodeSelector:
         esweiss.com/general: "true"
+        esweiss.com/cpu: "modern"
       dnsConfig:
         options:
           - name: ndots
