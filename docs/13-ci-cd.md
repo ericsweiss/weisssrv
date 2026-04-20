@@ -230,8 +230,8 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
   `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `apps`
 - `helm-controller` upgrades HelmReleases; `kustomize-controller` applies Kustomizations
 - **All Secrets** are created by `external-secrets`' `ExternalSecret` CRs that
-  reference 1Password item IDs via the ClusterSecretStore `onepassword-homelab`
-  (SDK provider). CI does not inject any secrets into k8s.
+  reference 1Password item titles via the ClusterSecretStore `onepassword-homelab`
+  (Connect provider). CI does not inject any secrets into k8s.
 - Version substitutions flow from the `cluster-versions` ConfigMap
   (`kubernetes/infrastructure/sources/versions-configmap.yaml`, generated from
   `all.yml`). The `flux-versions-sync` lint job fails the pipeline if the
@@ -310,9 +310,10 @@ op run -- ansible-playbook -i inventories/prod playbooks/site.yml
 
 Kubernetes Secrets are not created by CI. External Secrets Operator watches
 `ExternalSecret` CRs in the cluster and syncs their values from 1Password (via
-the `onepassword-homelab` ClusterSecretStore, SDK provider). The only bootstrap
-secret in the cluster is `external-secrets/onepassword-sdk-token`, created once
-by `task flux:bootstrap-onepassword`. See `docs/29-flux-operations.md`.
+the `onepassword-homelab` ClusterSecretStore, Connect provider). The only bootstrap
+secrets in the cluster are `external-secrets/op-credentials` and
+`external-secrets/onepassword-connect-token`, created once during initial setup.
+See `task flux:bootstrap-onepassword` for instructions and `docs/29-flux-operations.md`.
 
 ### Required 1Password Items
 

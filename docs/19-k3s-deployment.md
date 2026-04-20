@@ -22,7 +22,7 @@ K3s deployment is a three-phase approach:
 |------|-----------|-----------|
 | `task k3s:provision-vms` | Debian VMs | Ansible + Proxmox API |
 | `task k3s:deploy` | K3s + kube-vip | Ansible (server, agents, node labels/taints) |
-| `task flux:bootstrap-onepassword` | `onepassword-sdk-token` Secret (bootstrap only) | `op read | kubectl create secret` |
+| `task flux:bootstrap-onepassword` | `op-credentials` + `onepassword-connect-token` Secrets (bootstrap only) | Manual — see task output for instructions |
 | `task flux:bootstrap` | Flux controllers committed to `kubernetes/clusters/weisssrv/flux-system/` | `flux bootstrap gitlab` |
 | (none — automatic) | All platform + apps reconcile from `kubernetes/infrastructure/` and `kubernetes/apps/` | Flux |
 
@@ -43,7 +43,8 @@ export KUBECONFIG=~/.kube/config-k3s
 kubectl get nodes  # Verify cluster
 
 # === PHASE 3: Flux bootstrap ===
-# 3a. Create the single bootstrap secret (1P SDK token for ESO)
+# 3a. Create the bootstrap secrets (1P Connect credentials for ESO)
+# Run `task flux:bootstrap-onepassword` for instructions, then create manually.
 task flux:bootstrap-onepassword
 
 # 3b. Bootstrap Flux (reads Flux GitLab PAT from 1P, commits flux-system/ to this repo)
@@ -291,18 +292,21 @@ Once the k3s cluster is up and `kubectl get nodes` shows all 9 nodes Ready, boot
 Flux. Flux then reconciles every platform component and every application from this repo
 — there are no per-component deploy tasks.
 
-### Step 6: Create the Bootstrap Secret (One Time)
+### Step 6: Create the Bootstrap Secrets (One Time)
 
-Flux's ExternalSecret ClusterSecretStore uses the 1Password SDK provider, which needs a
-single bootstrap Secret containing the service account token. This is the *only* Secret
+Flux's ExternalSecret ClusterSecretStore uses the 1Password Connect provider, which needs
+two bootstrap Secrets: `op-credentials` (the Connect server's credentials file) and
+`onepassword-connect-token` (the Connect access token). These are the *only* Secrets
 ever created by `kubectl create secret`.
 
 ```bash
+# Print instructions for creating the bootstrap secrets
 task flux:bootstrap-onepassword
-```
 
-This reads `op://Homelab/Service Account Auth Token weisssrv/credential` and creates
-`Secret/onepassword-sdk-token` in the `external-secrets` namespace.
+# Then follow the printed instructions to create:
+#   op-credentials            — from 1password-credentials.json
+#   onepassword-connect-token — from Connect access token
+```
 
 ### Step 7: Bootstrap Flux
 

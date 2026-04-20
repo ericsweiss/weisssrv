@@ -199,8 +199,8 @@ task flux:reconcile  # optional: skip the 1-min poll
 
 Recipe secrets are split across two ExternalSecrets so that a missing optional
 key (OpenAI) does not block the required credentials (database, SSO, search,
-SMTP). Both reference 1Password item IDs (not titles -- spaces break the SDK
-parser) with the format `<item-id>/<field>`.
+SMTP). Both reference 1Password items by title (`key`) and field name
+(`property`) via the Connect provider.
 
 #### `recipes-secrets` (required)
 
@@ -220,8 +220,8 @@ Contains every credential the stack needs to start:
 All 1P items referenced here must exist *before* the ExternalSecret reconciles
 successfully. If any are missing, the corresponding `data` entry fails and the
 Secret will not be created. See `docs/23-recipes-sso-setup.md` for how to create
-the SSO items from Authentik. See `docs/29-flux-operations.md` for how to look up
-item IDs and the `<item-id>/<field>` convention.
+the SSO items from Authentik. See `docs/29-flux-operations.md` for the
+`key: <item-title>` / `property: <field-name>` format.
 
 #### `recipes-openai` (optional)
 

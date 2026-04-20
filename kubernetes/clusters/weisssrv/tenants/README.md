@@ -32,7 +32,15 @@ resources:
   - friend-project.yaml
 ```
 
-## Example: 1Password-backed tenant
+## Example: 1Password-backed tenant (Option C — shared Connect, shared vault)
+
+This template uses the recommended Option C approach: tenant secrets live in the
+shared `Homelab` vault with a naming convention prefix, and the tenant's
+`ClusterSecretStore` points at the existing shared Connect server. No Connect
+re-bootstrapping or extra pods required.
+
+For alternative isolation models (per-tenant vaults or per-tenant Connect
+servers), see `docs/30-multi-repo-onboarding.md` — Options A and B.
 
 ```yaml
 # kubernetes/clusters/weisssrv/tenants/example-app.yaml
@@ -46,26 +54,32 @@ metadata:
     fluxcd.io/tenant: example-app
 ---
 # One-time bootstrap (NOT managed by Flux):
-#   TOKEN="$(op read 'op://Homelab-Example/SA-token/credential')"
-#   kubectl -n example-app create secret generic onepassword-sdk-token \
-#     --from-literal=token="$TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n example-app create secret generic onepassword-connect-token \
+#     --from-literal=token=<CONNECT_TOKEN>
 #
-# The 1P service account must be scoped to a dedicated vault for this tenant
-# (e.g. Homelab-Example) so ExternalSecrets cannot reach the main Homelab
-# vault's contents.
+# The token should be scoped to the Homelab vault. Create one per tenant
+# so revoking access is independent:
+#   op connect token create weisssrv-example-app-eso \
+#     --server <EXISTING_SERVER_ID> --vaults Homelab
+#
+# Tenant 1P items use a naming convention: prefix with "<repo-slug>: "
+# e.g. "example-app: App Secrets" with fields "api-key", "db-password".
 apiVersion: external-secrets.io/v1
 kind: ClusterSecretStore
 metadata:
   name: onepassword-example-app
 spec:
   provider:
-    onepasswordSDK:
-      vault: Homelab-Example
+    onepassword:
+      connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
+      vaults:
+        Homelab: 1
       auth:
-        serviceAccountSecretRef:
-          name: onepassword-sdk-token
-          namespace: example-app
-          key: token
+        secretRef:
+          connectTokenSecretRef:
+            name: onepassword-connect-token
+            namespace: example-app
+            key: token
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
@@ -142,18 +156,25 @@ spec:
 
 ## Security considerations
 
-> **Security note**: The `onepassword-homelab` ClusterSecretStore is cluster-wide — any namespace
-> can create ExternalSecrets referencing it. For multi-tenant isolation, tenants should use
-> per-namespace `SecretStore` resources with scoped 1Password service accounts rather than the
-> shared ClusterSecretStore. The current model trusts all cluster workloads (appropriate for a
-> single-operator homelab).
+> **Security note**: The default tenant model (Option C) uses the shared `Homelab`
+> vault — tenant ExternalSecrets could theoretically read any item in that vault, not
+> just their prefixed items. This is acceptable for this homelab's trust model
+> (single-operator, invited friends only). For stronger isolation, see Options A
+> (multi-vault shared Connect) and B (per-tenant Connect server) in
+> `docs/30-multi-repo-onboarding.md`.
+>
+> The `onepassword-homelab` ClusterSecretStore used by the main repo's workloads is
+> separate from per-tenant `ClusterSecretStore` resources, but both point at the same
+> Connect server and vault. Namespace-level enforcement is cooperative today — a
+> future admission controller (Kyverno/OPA) could restrict which stores a namespace
+> may reference.
 
 ## Namespace ownership
 
 Each tenant owns one dedicated namespace. Tenants MUST NOT create resources in
 other tenants' namespaces or platform namespaces (`flux-system`,
 `external-secrets`, `metallb-system`, `cert-manager`, `traefik`,
-`external-dns`, `authentik`). Flux pruning would fight them.
+`external-dns`, `authentik`, `observability`). Flux pruning would fight them.
 
 Enforcement is cooperative today (small group of trusted tenants). A future
 admission controller (Kyverno/OPA) could block cross-namespace writes
@@ -170,5 +191,6 @@ then commit. Flux prunes:
 - The tenant's `ClusterSecretStore` (now has no consumers)
 - The tenant namespace
 
-The `onepassword-sdk-token` bootstrap secret is not Flux-managed; delete
-separately: `kubectl delete secret onepassword-sdk-token -n <ns>`.
+The `onepassword-connect-token` bootstrap secret is not Flux-managed; it is
+deleted when the namespace is pruned. Revoke the Connect token in 1Password
+and delete/archive the tenant's prefixed items in the `Homelab` vault.

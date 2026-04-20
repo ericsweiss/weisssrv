@@ -56,6 +56,23 @@
     name: alloy
     state: present
 
+- name: Create systemd override directory for Alloy
+  ansible.builtin.file:
+    path: /etc/systemd/system/alloy.service.d
+    state: directory
+    mode: "0755"
+
+- name: Disable Alloy usage reporting
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/alloy.service.d/disable-reporting.conf
+    content: |
+      [Service]
+      Environment="CUSTOM_ARGS=--disable-reporting"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart alloy
+
 - name: Deploy Alloy configuration
   ansible.builtin.template:
     src: config.alloy.j2

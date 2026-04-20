@@ -218,11 +218,12 @@ helm_chart_versions:
   traefik: "40.0.0-ea.3"  # App version v3.6.7
   cert_manager: "v1.20.2"
   external_dns: "1.20.0"  # App version 0.20.0
-  external_secrets: "2.3.0"  # App version v2.3.0 (ESO; 1Password SDK provider)
+  external_secrets: "2.3.0"  # App version v2.3.0 (ESO; 1Password Connect provider)
   kube_prometheus_stack: "83.6.0"
   loki: "6.55.0"
   alloy: "1.7.0"
   prometheus_blackbox_exporter: "11.9.1"
+  onepassword_connect: "2.4.1"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

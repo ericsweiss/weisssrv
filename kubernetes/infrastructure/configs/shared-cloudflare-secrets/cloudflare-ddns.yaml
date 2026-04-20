@@ -1,6 +1,6 @@
 ---
 # Cloudflare API token for the DDNS CronJob.
-# Sourced from 1Password item "Cloudflare DNS Token" (id 6lbrnhcoip3woze3icy4hy65yq).
+# Sourced from 1Password item "Cloudflare DNS Token".
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -17,4 +17,5 @@ spec:
   data:
     - secretKey: api-token
       remoteRef:
-        key: 6lbrnhcoip3woze3icy4hy65yq/credential
+        key: Cloudflare DNS Token
+        property: credential

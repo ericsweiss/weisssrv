@@ -294,7 +294,7 @@ Use `nodeSelector` / `nodeAffinity` and `tolerations`:
 
 ### Secrets Management
 
-Current: External Secrets Operator with 1Password SDK provider (in-cluster); 1Password with `op run` for host-side tooling
+Current: External Secrets Operator with 1Password Connect provider (in-cluster); 1Password with `op run` for host-side tooling
 
 ## DNS Strategy
 

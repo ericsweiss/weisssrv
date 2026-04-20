@@ -1,6 +1,6 @@
 ---
-# Flux Kustomization: platform controllers (HelmReleases for ESO, MetalLB,
-# cert-manager, Traefik, external-dns).
+# Flux Kustomization: platform controllers (HelmReleases for ESO, 1Password
+# Connect, MetalLB, cert-manager, Traefik, external-dns).
 #
 # Depends on infrastructure-sources being Ready so HelmRepositories exist
 # (charts are pullable) and cluster-versions ConfigMap exists (postBuild

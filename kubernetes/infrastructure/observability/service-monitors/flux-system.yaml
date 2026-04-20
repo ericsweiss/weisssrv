@@ -1,7 +1,11 @@
 ---
-# Scrape Flux controller metrics (controllers expose :8080/metrics)
+# Scrape Flux controller metrics via PodMonitor.
+# Flux controllers expose :8080/metrics but only source-controller and
+# notification-controller have Services, and those Services don't expose
+# the metrics port. All 4 controller pods have the http-prom port and
+# the app.kubernetes.io/part-of=flux label.
 apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+kind: PodMonitor
 metadata:
   name: flux-system
   namespace: observability
@@ -12,7 +16,7 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/part-of: flux
-  endpoints:
+  podMetricsEndpoints:
     - port: http-prom
       interval: 30s
       path: /metrics

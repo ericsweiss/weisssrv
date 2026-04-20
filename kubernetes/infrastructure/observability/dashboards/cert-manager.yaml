@@ -55,7 +55,7 @@ data:
           "type": "stat",
           "targets": [
             {
-              "expr": "count(certmanager_certificate_ready_status{condition=\"True\"}) OR vector(0)",
+              "expr": "count(certmanager_certificate_ready_status{condition=\"True\"} == 1) OR vector(0)",
               "legendFormat": "Ready",
               "refId": "A"
             }
@@ -97,7 +97,7 @@ data:
           "type": "stat",
           "targets": [
             {
-              "expr": "count(certmanager_certificate_ready_status{condition=\"False\"}) OR vector(0)",
+              "expr": "count(certmanager_certificate_ready_status{condition=\"False\"} == 1) OR vector(0)",
               "legendFormat": "Not Ready",
               "refId": "A"
             }

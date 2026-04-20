@@ -2,9 +2,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - flux.yaml
-  - infrastructure.yaml
-  - traefik.yaml
-  - cert-manager.yaml
-  - download-clients.yaml
+  - adguard.yaml
+  - alertmanager-self.yaml
   - blackbox.yaml
+  - cert-manager.yaml
+  - cluster-overview.yaml
+  - dns-combined.yaml
+  - flux.yaml
+  - gitlab.yaml
+  - home-assistant.yaml
+  - infrastructure.yaml
+  - mail.yaml
+  - media-stack.yaml
+  - node-exporter-full.yaml
+  - prometheus-self.yaml
+  - recipes.yaml
+  - redis.yaml
+  - traefik-official.yaml
+  - unbound.yaml

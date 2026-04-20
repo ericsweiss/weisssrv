@@ -131,10 +131,9 @@ ExternalSecret. To switch providers (PrivadoVPN vs VPN Unlimited), edit the
 ExternalSecret to point at the other 1Password item:
 
 ```bash
-# Edit externalsecret.yaml to reference the desired provider's 1P item ID
+# Edit externalsecret.yaml to reference the desired provider's 1P item title
 vim kubernetes/apps/download-clients/externalsecret.yaml
-# PrivadoVPN item ID:    5mctg3wrmykxmnjfis6f5l4ntu
-# VPN Unlimited item ID: bhy2hmrr5gz23a3ypeksjmwvju
+# Change remoteRef.key to "PrivadoVPN Credentials" or "VPN Unlimited Credentials"
 git commit -am "Switch downloads VPN to <provider>"
 git push
 task flux:rotate-secret -- downloads

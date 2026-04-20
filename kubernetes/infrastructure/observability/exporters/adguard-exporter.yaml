@@ -59,7 +59,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
+              cpu: 150m
               memory: 64Mi
 
 ---
@@ -137,7 +137,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
+              cpu: 150m
               memory: 64Mi
 
 ---

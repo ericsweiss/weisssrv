@@ -216,7 +216,7 @@ metadata:
 spec:
   refreshInterval: 24h
   secretStoreRef:
-    name: onepassword-homelab       # ClusterSecretStore (1P SDK provider)
+    name: onepassword-homelab       # ClusterSecretStore (1P Connect provider)
     kind: ClusterSecretStore
   target:
     name: vpn-credentials
@@ -224,15 +224,16 @@ spec:
   data:
     - secretKey: openvpn-user
       remoteRef:
-        key: <PRIVADOVPN-ITEM-ID>/openvpn-user       # 1P item ID, not title
+        key: PrivadoVPN Credentials
+        property: openvpn-user
     - secretKey: openvpn-password
       remoteRef:
-        key: <PRIVADOVPN-ITEM-ID>/openvpn-password
+        key: PrivadoVPN Credentials
+        property: openvpn-password
 ```
 
-The 1P SDK provider uses `<item-id>/<field>` (no `op://` prefix, no `property:` field).
-Use item IDs rather than titles because spaces in titles break the parser. See
-`docs/29-flux-operations.md` for the item-ID convention and how to discover them.
+The 1P Connect provider uses `key: <item-title>` and `property: <field-name>`.
+See `docs/29-flux-operations.md` for the format rules.
 
 To rotate VPN credentials: update the password in 1Password, then either wait
 24h for the refresh interval or:
@@ -297,7 +298,7 @@ This shows:
 (Or switch provider: edit the `vpn_provider` key in the per-app
 ConfigMap inside `nzbget.yaml` or `qbittorrent.yaml`, commit, push.
 If switching to VPN Unlimited, also update `externalsecret.yaml` to
-reference the `VPN Unlimited Credentials` 1P item ID.)
+reference the `VPN Unlimited Credentials` 1P item title.)
 
 ## Storage Layout
 

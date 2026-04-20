@@ -1,48 +1,85 @@
 ---
-# Raw Alertmanager configuration as a Secret.
-# Referenced by alertmanagerSpec.configSecret in the HelmRelease values.
-# This bypasses both the Prometheus Operator's config schema validation
-# and the AlertmanagerConfig CRD (which lacks a status subresource and
-# blocks Flux health checks).
-apiVersion: v1
-kind: Secret
+# Alertmanager configuration via ExternalSecret template.
+# Pulls Discord webhook URL and SMTP password from 1Password and renders
+# them into alertmanager.yaml. Uses webhook_url (not webhook_url_file)
+# because the Prometheus Operator's config parser does not support the
+# _file suffix for discord_configs.
+#
+# Constraint: secrets injected via template must not contain characters
+# that break YAML double-quoted scalars (" or \). The Discord webhook URL
+# is a plain HTTPS URL (safe). The SMTP password is operator-controlled —
+# avoid " and \ when setting it in 1Password.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
 metadata:
   name: alertmanager-config
   namespace: observability
-stringData:
-  alertmanager.yaml: |
-    global:
-      smtp_smarthost: "smtp-relay.esweiss.com:587"
-      smtp_from: "Alertmanager <alertmanager@esweiss.com>"
-      smtp_require_tls: true
-      smtp_auth_username: relayuser
-      smtp_auth_password_file: /etc/alertmanager/secrets/observability-secrets/smtp-password
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-homelab
+  target:
+    name: alertmanager-config
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        alertmanager.yaml: |
+          global:
+            smtp_smarthost: "smtp-relay.esweiss.com:587"
+            smtp_from: "Alertmanager <alertmanager@esweiss.com>"
+            smtp_require_tls: true
+            smtp_auth_username: relayuser
+            smtp_auth_password: "{{ .smtpPassword }}"
 
-    route:
-      receiver: discord-default
-      group_by:
-        - alertname
-        - namespace
-      group_wait: 30s
-      group_interval: 5m
-      repeat_interval: 4h
-      routes:
-        - receiver: email-and-discord
-          matchers:
-            - severity="critical"
-        - receiver: discord-default
-          matchers:
-            - severity="warning"
+          inhibit_rules:
+            - source_matchers:
+                - severity="critical"
+              target_matchers:
+                - severity="warning"
+              equal:
+                - alertname
+                - namespace
+            - source_matchers:
+                - alertname="InfoInhibitor"
+              target_matchers:
+                - severity="info"
 
-    receivers:
-      - name: discord-default
-        discord_configs:
-          - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
-            send_resolved: true
-      - name: email-and-discord
-        email_configs:
-          - to: "ericsweiss1@gmail.com"
-            send_resolved: true
-        discord_configs:
-          - webhook_url_file: /etc/alertmanager/secrets/observability-secrets/discord-webhook-url
-            send_resolved: true
+          route:
+            receiver: discord-default
+            group_by:
+              - alertname
+              - namespace
+            group_wait: 30s
+            group_interval: 5m
+            repeat_interval: 4h
+            routes:
+              - receiver: email-and-discord
+                matchers:
+                  - severity="critical"
+              - receiver: discord-default
+                matchers:
+                  - severity="warning"
+
+          receivers:
+            - name: discord-default
+              discord_configs:
+                - webhook_url: "{{ .discordWebhookUrl }}"
+                  send_resolved: true
+            - name: email-and-discord
+              email_configs:
+                - to: "ericsweiss1@gmail.com"
+                  send_resolved: true
+              discord_configs:
+                - webhook_url: "{{ .discordWebhookUrl }}"
+                  send_resolved: true
+  data:
+    - secretKey: discordWebhookUrl
+      remoteRef:
+        key: Discord Alert Webhook
+        property: url
+    - secretKey: smtpPassword
+      remoteRef:
+        key: SMTP Relay Auth
+        property: password

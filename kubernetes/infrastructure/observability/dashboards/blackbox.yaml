@@ -14,7 +14,7 @@ data:
       "annotations": {
         "list": []
       },
-      "description": "Blackbox exporter endpoint probes and TLS status",
+      "description": "Blackbox exporter endpoint probes and TLS status. Note: SSO-protected services (sonarr, radarr, lidarr, prowlarr, nzbget, qbittorrent, plex) show DOWN because unauthenticated probes are redirected to Authentik.",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -65,7 +65,7 @@ data:
           "type": "table",
           "targets": [
             {
-              "expr": "probe_success",
+              "expr": "max by (instance) (probe_success)",
               "format": "table",
               "instant": true,
               "legendFormat": "",
@@ -131,7 +131,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "probe_duration_seconds",
+              "expr": "max by (instance) (probe_duration_seconds)",
               "legendFormat": "{{ instance }}",
               "refId": "A"
             }
@@ -182,7 +182,7 @@ data:
           "type": "bargauge",
           "targets": [
             {
-              "expr": "probe_ssl_earliest_cert_expiry - time()",
+              "expr": "max by (instance) (probe_ssl_earliest_cert_expiry) - time()",
               "legendFormat": "{{ instance }}",
               "refId": "A"
             }
@@ -226,7 +226,7 @@ data:
           "type": "stat",
           "targets": [
             {
-              "expr": "probe_dns_lookup_time_seconds",
+              "expr": "max by (instance) (probe_dns_lookup_time_seconds)",
               "legendFormat": "{{ instance }}",
               "refId": "A"
             }

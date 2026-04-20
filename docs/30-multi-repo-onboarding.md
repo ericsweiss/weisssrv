@@ -31,7 +31,7 @@ See `kubernetes/clusters/weisssrv/tenants/README.md` for the canonical templates
 
 | Backend | Use when | Tradeoffs |
 |---|---|---|
-| 1Password | You have a 1P Families account and can scope a service account to a tenant vault | Costs 1P read budget; strong isolation via per-tenant vaults |
+| 1Password | You have a 1P Families account and want secrets in 1Password | Costs 1P read budget; multiple isolation options (see Path A) |
 | GitLab variables | Friend without 1P; tenant already has a GitLab project | Secrets are visible to anyone with project Maintainer access; no 1P budget impact |
 
 Prefer GitLab variables for friends — see [Rate Limits](#rate-limits-1password-families-plan).
@@ -40,41 +40,127 @@ Prefer GitLab variables for friends — see [Rate Limits](#rate-limits-1password
 
 ## Path A — 1Password Backend
 
-For repos where secrets live in a dedicated 1Password vault and ESO reads them via the 1Password SDK provider.
+For repos where secrets live in 1Password and ESO reads them via the 1Password Connect provider.
 
-### 1. Create the Tenant Vault in 1Password
+**Important architectural context**: The shared Connect server deployed in `external-secrets` namespace was bootstrapped with access to the `Homelab` vault only. A Connect server can only access vaults it was granted at creation time. This means tenant `ClusterSecretStore` resources that point at the shared `connectHost` can only read from vaults the shared server has access to. This constrains the available isolation models — see below.
 
-In the 1Password web UI or CLI, create a new vault named after the tenant — convention: `Homelab-<repo-slug>`, e.g. `Homelab-Example`. This vault will hold every secret the tenant workloads need.
+### Isolation Options
 
-Move or create the tenant's secrets inside this vault. Do not share items with the main `Homelab` vault — the per-tenant vault is the isolation boundary.
+Three approaches exist for tenant secrets with 1Password Connect. Each trades off isolation against operational complexity.
 
-### 2. Create a Scoped Service Account
+#### Option A — Recreate Shared Connect with Multi-Vault Access
 
-In 1Password → Integrations → Service Accounts → New Service Account:
+Recreate the shared Connect server with access to all needed vaults (the main `Homelab` vault plus each tenant's dedicated vault). Tenant `ClusterSecretStore` resources point at the same shared `connectHost` but are scoped to their own vault.
 
-- Name: `weisssrv-<repo-slug>`.
-- Vault access: **only** the tenant vault (`Homelab-<repo-slug>`), read-only.
-- Save the token to the main `Homelab` 1P vault as an item titled e.g. `Service Account Auth Token weisssrv <repo-slug>` with field `credential`.
+**Setup**: Each time a new tenant is added, recreate the Connect server credentials with the expanded vault list, then replace the `op-credentials` bootstrap secret in the `external-secrets` namespace and restart the Connect pods.
+
+```bash
+# Recreate with expanded vault list
+op connect server create weisssrv-connect --vaults Homelab,Homelab-TenantA,Homelab-TenantB
+
+# Replace bootstrap secret
+kubectl -n external-secrets delete secret op-credentials
+kubectl -n external-secrets create secret generic op-credentials \
+  --from-file=1password-credentials.json=./1password-credentials.json
+
+# Restart Connect
+kubectl -n external-secrets rollout restart deployment onepassword-connect
+```
+
+Per-tenant tokens are still scoped to a single vault, so tenant ExternalSecrets cannot read from other vaults.
+
+| Pros | Cons |
+|---|---|
+| Strong vault-level isolation | Adding a tenant requires re-bootstrapping Connect (restart, brief downtime) |
+| Tenants cannot read each other's secrets | Must coordinate Connect credential rotation across all tenants |
+| Single Connect deployment (low resource cost) | Vault list in credentials grows with each tenant |
+
+#### Option B — Separate Connect Server Per Tenant
+
+Deploy a dedicated Connect server in each tenant's namespace. Each server has its own `op-credentials` and token, scoped to a single tenant vault. The tenant's `SecretStore` (namespace-scoped, not cluster-scoped) points at its own Connect instance.
+
+**Setup**: Create a Connect server per tenant, deploy it as a separate pod in the tenant namespace, and create a namespace-scoped `SecretStore`.
+
+```bash
+# Create tenant-specific Connect server
+op connect server create weisssrv-<repo-slug> --vaults Homelab-<repo-slug>
+op connect token create weisssrv-<repo-slug>-eso --server <SERVER_ID> --vaults Homelab-<repo-slug>
+
+# Bootstrap in tenant namespace
+kubectl create namespace <repo-slug>
+kubectl -n <repo-slug> create secret generic op-credentials \
+  --from-file=1password-credentials.json=./1password-credentials.json
+kubectl -n <repo-slug> create secret generic onepassword-connect-token \
+  --from-literal=token=<CONNECT_TOKEN>
+
+# Deploy Connect server in tenant namespace (separate Helm release or Deployment)
+# Then create a SecretStore (not ClusterSecretStore) pointing at the local Connect
+```
+
+| Pros | Cons |
+|---|---|
+| Strongest isolation (dedicated server per tenant) | More pods (Connect API + Sync per tenant) |
+| Adding/removing tenants is fully independent | Higher memory and CPU overhead |
+| No shared infrastructure to coordinate | More bootstrap secrets to manage |
+
+#### Option C — Shared Connect, Shared Vault (Recommended)
+
+Use the existing shared Connect server and the existing `Homelab` vault for tenant secrets. Tenant items are stored in the same vault using a naming convention: prefix item titles with the tenant name (e.g. `example-app: API Secrets`, `example-app: Database`). The tenant's `ClusterSecretStore` points at the shared Connect and the shared vault. No vault isolation between tenants.
+
+This is the **recommended default** for this homelab. The trust model is single-operator with invited friends — every tenant is either you or someone you trust. The operational simplicity outweighs the lack of vault isolation. No Connect re-bootstrapping, no extra pods, no per-tenant credential management.
+
+**Setup**: Add items to the existing `Homelab` vault with a tenant prefix. Create a Connect token scoped to the `Homelab` vault for the tenant (or reuse the existing token). The tenant's `ClusterSecretStore` points at the shared Connect server.
+
+```bash
+# Create a scoped Connect token for the tenant (optional — can reuse existing token)
+op connect token create weisssrv-<repo-slug>-eso --server <EXISTING_SERVER_ID> --vaults Homelab
+
+# Bootstrap in tenant namespace (token only — no op-credentials needed,
+# Connect server already runs in external-secrets namespace)
+kubectl create namespace <repo-slug>
+kubectl -n <repo-slug> create secret generic onepassword-connect-token \
+  --from-literal=token=<CONNECT_TOKEN>
+```
+
+| Pros | Cons |
+|---|---|
+| Zero operational overhead — no Connect changes when adding tenants | No vault isolation (all tenants share `Homelab` vault) |
+| No extra pods, no re-bootstrapping | Tenant ExternalSecrets could theoretically read any item in the vault |
+| Works with existing Connect deployment as-is | Requires naming discipline to avoid item collisions |
+| Simplest to set up and maintain | Not suitable if tenants are untrusted |
+
+**Item naming convention**: Prefix all tenant items with `<repo-slug>:` to avoid collisions with existing items. Examples:
+- `example-app: API Secrets` (fields: `api-key`, `db-password`)
+- `example-app: Database` (fields: `host`, `port`, `password`)
+
+### Steps (Option C — Shared Connect, Shared Vault)
+
+The steps below use Option C. For Options A or B, substitute the vault/Connect setup from the relevant option above and adjust the `ClusterSecretStore` accordingly.
+
+### 1. Add Tenant Secrets to the Homelab Vault
+
+In 1Password, create items in the `Homelab` vault using the naming convention `<repo-slug>: <Item Name>`. Example: `example-app: API Secrets` with fields `api-key` and `db-password`.
+
+### 2. Create a Connect Token (Optional)
+
+You can reuse the existing Connect token or create a new one scoped to the `Homelab` vault:
+
+```bash
+op connect token create weisssrv-<repo-slug>-eso --server <EXISTING_SERVER_ID> --vaults Homelab
+```
+
+Creating per-tenant tokens is recommended so revoking one tenant's access doesn't affect others.
 
 ### 3. Seed the Bootstrap Secret in the Tenant Namespace
 
-The ESO ClusterSecretStore references a k8s Secret containing the SDK token. That Secret is manually created, one time, because ESO can't fetch its own auth token with itself.
-
 ```bash
-# Replace <repo-slug> with the tenant's slug and <sa-item> with the 1P item name
 kubectl create namespace <repo-slug>
 
-# NOTE: `--from-literal=token=-` sets the secret's token to the literal
-# string "-" (NOT stdin). Read into a variable first, then interpolate.
-TOKEN="$(op read "op://Homelab/Service Account Auth Token weisssrv <repo-slug>/credential")"
-kubectl -n <repo-slug> create secret generic onepassword-sdk-token \
-  --from-literal=token="$TOKEN" \
-  --dry-run=client -o yaml \
-  | kubectl apply -f -
-unset TOKEN
+kubectl -n <repo-slug> create secret generic onepassword-connect-token \
+  --from-literal=token=<CONNECT_TOKEN>
 ```
 
-The secret lives in the tenant namespace (not `external-secrets`) so a `ClusterSecretStore` scoped to this tenant can reference it without reaching into a shared namespace.
+Only the token is needed. The Connect server already runs in `external-secrets` and has the `op-credentials` secret.
 
 ### 4. Add the Wiring File
 
@@ -96,13 +182,16 @@ metadata:
   name: onepassword-<repo-slug>
 spec:
   provider:
-    onepasswordSDK:
-      vault: Homelab-<repo-slug>
+    onepassword:
+      connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
+      vaults:
+        Homelab: 1
       auth:
-        serviceAccountSecretRef:
-          name: onepassword-sdk-token
-          namespace: <repo-slug>
-          key: token
+        secretRef:
+          connectTokenSecretRef:
+            name: onepassword-connect-token
+            namespace: <repo-slug>
+            key: token
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
@@ -157,7 +246,7 @@ In the tenant's own repo, create `kubernetes/flux/` with:
 - `ExternalSecret` CRs that reference `ClusterSecretStore/onepassword-<repo-slug>`.
 - A top-level `kustomization.yaml` aggregating everything under `kubernetes/flux/`.
 
-ExternalSecret example for a tenant workload:
+ExternalSecret example for a tenant workload (note the prefixed item title):
 
 ```yaml
 apiVersion: external-secrets.io/v1
@@ -176,10 +265,11 @@ spec:
   data:
     - secretKey: api-key
       remoteRef:
-        key: <1P-ITEM-ID>/credential
+        key: "<repo-slug>: App Secrets"
+        property: api-key
 ```
 
-Use 1Password item IDs (not titles) in `remoteRef.key` — same format as this repo's ExternalSecrets. See `docs/29-flux-operations.md` for the format rules.
+Use the full prefixed item title in `remoteRef.key` and field names in `remoteRef.property` — same format as this repo's ExternalSecrets. See `docs/29-flux-operations.md` for the format rules.
 
 ### 6. Verify
 
@@ -319,7 +409,7 @@ Every tenant owns **exactly one namespace**. Non-negotiable.
 
 Tenants **must not** create or modify resources in:
 
-- Platform namespaces: `flux-system`, `external-secrets`, `metallb-system`, `cert-manager`, `traefik`, `external-dns`, `authentik`.
+- Platform namespaces: `flux-system`, `external-secrets`, `metallb-system`, `cert-manager`, `traefik`, `external-dns`, `authentik`, `observability`.
 - Other tenants' namespaces.
 
 Why: Flux's server-side apply with `prune: true` will fight any resources that appear in a namespace that isn't part of the tenant's Kustomization. The result is reconcile loops and random deletions.
@@ -336,8 +426,7 @@ The 1Password Families plan shares **1,000 reads per day across the entire accou
 
 ### Current Budget
 
-- This repo's ExternalSecrets: ~10 across all namespaces (~22 distinct fields), 24h refreshInterval = ~22 reads/day. Run `kubectl get externalsecrets -A` for current counts.
-- Headroom: ~978 reads/day.
+- This repo's ExternalSecrets: ~13 across all namespaces (~38 distinct fields). The Connect provider syncs the vault to a local cache — per-field reads hit the cache, not the cloud API, so the effective rate-limit cost is low. Run `kubectl get externalsecrets -A` for current counts.
 
 ### Adding a Tenant on 1Password
 
@@ -383,8 +472,8 @@ Flux prunes, in order:
 
 Two things Flux doesn't clean up (by design, because it never owned them):
 
-- The `onepassword-sdk-token` or `gitlab-api-token` bootstrap secret in the tenant namespace. But — the namespace is gone anyway, so these are gone with it.
-- The 1Password service account (Path A) or GitLab project access token (Path B). These need manual revocation in 1P or GitLab. Do it immediately — no reason to leave a dangling credential.
+- The `onepassword-connect-token` or `gitlab-api-token` bootstrap secrets in the tenant namespace. But the namespace is gone anyway, so these are gone with it.
+- The 1Password Connect token (Path A) or GitLab project access token (Path B). Revoke these in 1P or GitLab immediately — no reason to leave a dangling credential. For Path A Option C, also delete/archive the tenant's prefixed items in the `Homelab` vault if they are no longer needed.
 
 ```bash
 # If the namespace somehow survived (shouldn't):
@@ -425,31 +514,26 @@ End-to-end walkthrough using concrete values. Replace `example-app` with your re
 
 - Repo: `https://git.ericsweiss.com/eric/example-app`
 - Namespace: `example-app`
-- Backend: 1Password, dedicated vault `Homelab-Example`
+- Backend: 1Password (Option C — shared Connect, shared `Homelab` vault)
 - Two secrets needed: an API key and a database password.
 
 ### Step 1 — 1Password Setup
 
-In 1P:
+In 1P, add items to the existing `Homelab` vault using the tenant prefix:
 
-1. Create vault `Homelab-Example`.
-2. Add item `Example App Secrets` with fields `api-key` and `db-password`. Record the item ID (`op item get "Example App Secrets" --vault Homelab-Example --format json | jq -r '.id'`). Call it `abc123defghijklmnopqrstuv` for this example.
-3. Create service account `weisssrv-example-app`, grant read access to `Homelab-Example` only. Save the token to the main `Homelab` vault as `Service Account Auth Token weisssrv example-app` / `credential`.
+1. Create item `example-app: App Secrets` with fields `api-key` and `db-password`.
+2. Create a Connect token: `op connect token create weisssrv-example-app-eso --server <EXISTING_SERVER_ID> --vaults Homelab`
 
 ### Step 2 — Bootstrap Secret
 
 ```bash
 kubectl create namespace example-app
 
-TOKEN="$(op read 'op://Homelab/Service Account Auth Token weisssrv example-app/credential')"
-kubectl -n example-app create secret generic onepassword-sdk-token \
-  --from-literal=token="$TOKEN" \
-  --dry-run=client -o yaml \
-  | kubectl apply -f -
-unset TOKEN
+kubectl -n example-app create secret generic onepassword-connect-token \
+  --from-literal=token=<CONNECT_TOKEN>
 
 # Verify
-kubectl get secret onepassword-sdk-token -n example-app
+kubectl get secret onepassword-connect-token -n example-app
 ```
 
 ### Step 3 — Wiring File
@@ -472,13 +556,16 @@ metadata:
   name: onepassword-example-app
 spec:
   provider:
-    onepasswordSDK:
-      vault: Homelab-Example
+    onepassword:
+      connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
+      vaults:
+        Homelab: 1
       auth:
-        serviceAccountSecretRef:
-          name: onepassword-sdk-token
-          namespace: example-app
-          key: token
+        secretRef:
+          connectTokenSecretRef:
+            name: onepassword-connect-token
+            namespace: example-app
+            key: token
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
@@ -553,10 +640,12 @@ spec:
   data:
     - secretKey: api-key
       remoteRef:
-        key: abc123defghijklmnopqrstuv/api-key  # Example App Secrets
+        key: "example-app: App Secrets"
+        property: api-key
     - secretKey: db-password
       remoteRef:
-        key: abc123defghijklmnopqrstuv/db-password  # Example App Secrets
+        key: "example-app: App Secrets"
+        property: db-password
 ```
 
 ```yaml
@@ -646,8 +735,7 @@ kubectl get ns example-app  # eventually NotFound
 
 Then in 1Password:
 
-- Revoke the `weisssrv-example-app` service account.
-- Delete or archive the `Homelab-Example` vault.
-- Delete the `Service Account Auth Token weisssrv example-app` item from `Homelab`.
+- Revoke the Connect token for `weisssrv-example-app-eso`.
+- Delete or archive the `example-app: *` prefixed items in the `Homelab` vault.
 
 The tenant is fully gone.

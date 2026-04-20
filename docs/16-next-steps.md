@@ -156,7 +156,7 @@ See `docs/27-gitlab-deployment.md` for complete deployment documentation.
 ## Priority 3: GitOps with Flux (COMPLETE)
 
 **Status**: Fully migrated. Flux reconciles every Kubernetes workload from this repo;
-External Secrets Operator (1Password SDK provider) supplies all k8s Secrets.
+External Secrets Operator (1Password Connect provider) supplies all k8s Secrets.
 
 ### Architecture
 
@@ -172,9 +172,9 @@ External Secrets Operator (1Password SDK provider) supplies all k8s Secrets.
   router, Traefik dashboard).
 - **Version flow**: `all.yml` → `task flux:sync-versions` → `cluster-versions`
   ConfigMap → Flux `postBuild.substituteFrom` substitutes `${...}` placeholders.
-- **Secrets**: one bootstrap `onepassword-sdk-token` Secret in `external-secrets`
-  namespace; all other Secrets created by ExternalSecrets referencing 1Password
-  item IDs in the `Homelab` vault.
+- **Secrets**: two bootstrap Secrets (`op-credentials` and `onepassword-connect-token`)
+  in `external-secrets` namespace; all other Secrets created by ExternalSecrets
+  referencing 1Password item titles in the `Homelab` vault via the Connect provider.
 
 ### Deploy workflow
 
@@ -349,7 +349,7 @@ verify the role's drop-ins are still authoritative after reboot.
 - [x] Add fail2ban to Proxmox hosts (deployed)
 - [ ] Network segmentation with VLANs (IoT, guest, management)
 - [ ] Implement Network Policies in k3s (default-deny ingress)
-- [x] External Secrets Operator with 1Password SDK provider (deployed -- see docs/29-flux-operations.md)
+- [x] External Secrets Operator with 1Password Connect provider (deployed -- see docs/29-flux-operations.md)
 
 ### Storage Enhancements
 

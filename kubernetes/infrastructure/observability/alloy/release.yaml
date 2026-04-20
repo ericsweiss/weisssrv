@@ -30,6 +30,7 @@ spec:
       remediateLastFailure: true
   values:
     alloy:
+      enableReporting: false
       configMap:
         content: |
           // Discover all pods on this node

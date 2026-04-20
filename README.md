@@ -18,7 +18,7 @@ Multi-node Proxmox homelab with:
 - **VPN**: Tailscale for secure remote access
 - **Firewall**: Proxmox firewall with IPSets and security groups
 - **K3s Cluster**: 9-node cluster (3 servers + 6 agents) with etcd HA
-- **GitOps**: Flux reconciles all Kubernetes workloads from this repo; External Secrets Operator syncs all k8s Secrets from 1Password (SDK provider)
+- **GitOps**: Flux reconciles all Kubernetes workloads from this repo; External Secrets Operator syncs all k8s Secrets from 1Password (Connect provider)
 
 ## Architecture
 
@@ -224,7 +224,7 @@ Split-horizon DNS:
 - **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
 - **Flux**: Reconciles all Kubernetes manifests from this repo
-- **External Secrets Operator**: Syncs k8s Secrets from 1Password (SDK provider, vault `Homelab`)
+- **External Secrets Operator**: Syncs k8s Secrets from 1Password (Connect provider, vault `Homelab`)
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 See also [docs/29-flux-operations.md](docs/29-flux-operations.md) (operator guide)

@@ -2,7 +2,7 @@
 
 You are working in the weisssrv homelab infrastructure repository. This repository manages a production Proxmox-based homelab using Ansible, Terraform, Kubernetes (k3s), and Flux-based GitOps.
 
-**Tech Stack**: Ansible, Terraform, k3s, Flux CD, External Secrets Operator (1Password SDK), ZFS, Proxmox VE, Debian 13 (trixie)
+**Tech Stack**: Ansible, Terraform, k3s, Flux CD, External Secrets Operator (1Password Connect), ZFS, Proxmox VE, Debian 13 (trixie)
 
 See `CLAUDE.md` for the complete project overview, architecture, IP allocation, commands, storage architecture, secrets management, version management, and documentation index.
 
@@ -10,15 +10,15 @@ See `CLAUDE.md` for the complete project overview, architecture, IP allocation, 
 
 ### NEVER
 
-1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field` for host tooling, or ID-based `ExternalSecret` manifests for in-cluster)
+1. **Commit secrets** - All secrets use 1Password references (`op://Homelab/Item/field` for host tooling, or title-based `ExternalSecret` manifests for in-cluster)
 2. **Automate ZFS pool creation/destruction** - Too critical, manual only
 3. **Skip deployment verification** - Run `task infra:verify` (base infra) or `task flux:status` / `task flux:verify` (k8s) after changes
 4. **Hardcode credentials** - Use 1Password references exclusively
 5. **Run `kubectl apply -k ...` or `helm upgrade` as an ongoing operation** - Flux owns all Kubernetes state. The only exceptions are:
    - `task flux:dev-apply -- <path>` for local iteration (Flux will revert on the next reconcile)
-   - The one-time bootstrap secret `onepassword-sdk-token` in `external-secrets` namespace
+   - The one-time bootstrap secrets `op-credentials` and `onepassword-connect-token` in `external-secrets` namespace
    - Ansible-provisioned objects outside of `kubernetes/` (e.g. the k3s node layer itself)
-6. **Reference 1Password items by title in `ExternalSecret` manifests** - The 1Password SDK provider requires the item **ID** (e.g. `qwertyabc123/password`), no `op://` prefix, no `property:` field. Titles with spaces will silently fail.
+6. **Use the wrong `remoteRef` format in `ExternalSecret` manifests** - The 1Password Connect provider uses `remoteRef.key` for the item **title** and `remoteRef.property` for the **field name**. No `op://` prefix, no item IDs.
 
 ### ALWAYS
 
@@ -131,9 +131,9 @@ See `docs/18-bootstrap-new-systems.md`
 - **Inventory**: `ansible/inventories/prod/hosts.yml`
 - **Global vars / versions**: `ansible/inventories/prod/group_vars/all.yml`
 - **Task runner**: `Taskfile.yml` (run `task --list` for all tasks)
-- **Flux entrypoint**: `kubernetes/clusters/weisssrv/` (flux-system, infrastructure-{sources,controllers,configs}.yaml, apps.yaml, tenants/)
+- **Flux entrypoint**: `kubernetes/clusters/weisssrv/` (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 - **Platform sources**: `kubernetes/infrastructure/sources/` (HelmRepository CRs, versions-configmap.yaml)
-- **Platform controllers**: `kubernetes/infrastructure/controllers/` (external-secrets, metallb, cert-manager, traefik, external-dns)
+- **Platform controllers**: `kubernetes/infrastructure/controllers/` (external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns)
 - **Platform configs**: `kubernetes/infrastructure/configs/` (cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/)
 - **Apps**: `kubernetes/apps/` (authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress)
 - **All docs**: `docs/` (see `CLAUDE.md` Documentation section for the index)

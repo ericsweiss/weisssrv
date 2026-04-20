@@ -18,4 +18,5 @@ resources:
   - gitlab.yaml
   - prometheus-community.yaml
   - grafana.yaml
+  - onepassword-connect.yaml
   - versions-configmap.yaml

@@ -40,11 +40,12 @@ Flux runs in the `flux-system` namespace. Four controllers:
 Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order:
 
 1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + `cluster-versions` ConfigMap). No dependencies. No postBuild substitution (no placeholders).
-2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, MetalLB, cert-manager, Traefik, external-dns). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
+2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
 3. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
-4. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress). `dependsOn: infrastructure-configs`. Substitutes image/chart versions from `cluster-versions`.
+4. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions`.
+5. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress). `dependsOn: infrastructure-observability`. Substitutes image/chart versions from `cluster-versions`.
 
-The three-way infrastructure split ensures CRDs are installed before CRD-dependent configs are applied — first bootstrap converges cleanly without "no matches for kind" transient errors.
+The four-way infrastructure split ensures CRDs are installed before CRD-dependent configs, and the observability stack is healthy before apps are reconciled — first bootstrap converges cleanly without "no matches for kind" transient errors.
 
 Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml` and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
 
@@ -156,43 +157,42 @@ Any change made via `dev-apply` that isn't committed is lost at the next reconci
 
 ### Secret Model
 
-- **One manually-created bootstrap secret**: `onepassword-sdk-token` in the `external-secrets` namespace. Created once by `task flux:bootstrap-onepassword`. Contains the `weisssrv` 1Password service account token.
-- **Everything else**: `ExternalSecret` CR → ESO reads from 1Password → writes a `Secret` into the app namespace → app consumes it normally.
+- **Two manually-created bootstrap secrets**: `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace. Created once during initial setup (see `task flux:bootstrap-onepassword` for instructions). These authenticate the 1Password Connect server.
+- **Everything else**: `ExternalSecret` CR → ESO reads from 1Password via Connect → writes a `Secret` into the app namespace → app consumes it normally.
 
 There are no other manually-created Secrets in the cluster. `op run -- kubectl create secret` is no longer part of the workflow.
 
-### 1Password SDK Provider Reference Format
+### 1Password Connect Provider Reference Format
 
-The ESO 1Password SDK provider uses a specific format for `remoteRef.key`:
+The ESO 1Password Connect provider uses `remoteRef.key` for the item title and `remoteRef.property` for the field name:
 
 ```yaml
 remoteRef:
-  key: <1P-item-id>/<field-name>
+  key: <1P-item-title>
+  property: <field-name>
 ```
 
-- `<1P-item-id>` is the 26-character ID of the 1Password item, not its title. You can find it in the 1Password URL when viewing an item, or via `op item get "<title>" --format json | jq -r '.id'`.
+- `<1P-item-title>` is the human-readable title of the 1Password item (e.g. `Authentik Secrets`).
 - `<field-name>` is the field label (`password`, `credential`, `username`, custom field names, etc.).
 
 **Common mistakes that break parsing**:
 
-- Using `op://Homelab/...` style prefix — wrong. The SDK provider uses its own format.
-- Using a `property:` field alongside `key:` — the 1Password provider doesn't use it.
-- Spaces in an item title and referencing by title — spaces break the parser. Always use the item ID.
+- Using `op://Homelab/...` style prefix — wrong. The Connect provider uses its own format.
+- Putting the field name after a slash in `key:` — wrong. Use `property:` for the field name.
 
 Example from `kubernetes/apps/authentik/externalsecret.yaml`:
 
 ```yaml
 - secretKey: secret-key
   remoteRef:
-    key: yssxkcr2ggovqbh2j5m3p3ji2i/secret-key  # Authentik Secrets
+    key: Authentik Secrets
+    property: secret-key
 ```
-
-The trailing comment records the human-readable 1P title — keep it. It's the only way to grep for "where does the Authentik secret key come from" without logging into 1Password.
 
 ### Adding a Secret to an App
 
 1. Create or extend an `ExternalSecret` YAML in the app folder.
-2. Reference the 1P item by ID.
+2. Reference the 1P item by title (`key`) and field name (`property`).
 3. Wire the consuming Deployment/HelmRelease to the resulting Secret via `valueFrom.secretKeyRef` or the chart's `existingSecret` field.
 4. Commit + push.
 
@@ -216,10 +216,12 @@ spec:
   data:
     - secretKey: api-key
       remoteRef:
-        key: <1P-ITEM-ID>/api-key  # MyApp Secrets
+        key: MyApp Secrets
+        property: api-key
     - secretKey: db-password
       remoteRef:
-        key: <1P-ITEM-ID>/password  # MyApp DB
+        key: MyApp DB
+        property: password
 ```
 
 After pushing, verify:
@@ -249,13 +251,15 @@ task flux:refresh-secret -- <namespace>/<externalsecret-name>
 
 1Password Families plan: **1,000 reads per day, account-wide**.
 
-Current footprint: ~10 ExternalSecrets spanning ~22 distinct fields
-(authentik 5, recipes 8+1, vpn 2, runner/agent tokens 3, cloudflare 3). The
-1Password SDK provider reads fields on each refresh, not whole items, so the
-per-refresh cost is one read per field, not one read per ExternalSecret.
-On the default `refreshInterval: 24h` that's ~22 reads/day — comfortable
-headroom against the 1,000 limit. Run `kubectl get externalsecrets -A` for
-current counts.
+Current footprint: ~13 ExternalSecrets spanning ~38 distinct fields
+(authentik 5, recipes 8+1, vpn 2, runner/agent tokens 3, cloudflare 3,
+observability-secrets 2, observability-exporter-secrets 12, alertmanager-config 2).
+The 1Password Connect provider syncs the entire vault into a local encrypted
+cache periodically — individual field reads from ExternalSecrets hit this cache,
+not the 1Password cloud API. Rate limits apply to the vault-sync operations, not
+per-field reads, so the headroom is generous. The `alertmanager-config`
+ExternalSecret uses `refreshInterval: 1h`; all others use `24h`. Run
+`kubectl get externalsecrets -A` for current counts.
 
 Every manual `task flux:refresh-secret` or `task flux:rotate-secret` adds
 fields_in_that_ExternalSecret extra reads. Rotating a single app a few times
@@ -367,6 +371,7 @@ task flux:suspend -- flux-system/kustomization/apps
 # Suspend from leaf to root so no Kustomization reconciles into an
 # inconsistent half-suspended state.
 task flux:suspend -- flux-system/kustomization/apps
+task flux:suspend -- flux-system/kustomization/infrastructure-observability
 task flux:suspend -- flux-system/kustomization/infrastructure-configs
 task flux:suspend -- flux-system/kustomization/infrastructure-controllers
 task flux:suspend -- flux-system/kustomization/infrastructure-sources
@@ -444,9 +449,9 @@ kubectl describe externalsecret <name> -n <ns>
 
 Common causes:
 
-- **Bad 1P reference format**: the `remoteRef.key` has `op://` prefix, a space, or a `property:` field. Fix: use `<item-id>/<field>` only.
+- **Bad 1P reference format**: the `remoteRef.key` has `op://` prefix or uses the old `<item-id>/<field>` format. Fix: use `key: <item-title>` with `property: <field-name>`.
 - **Item moved vaults**: ESO's ClusterSecretStore is scoped to `Homelab`. If someone moved an item to a different vault, ESO can't see it.
-- **Bootstrap token missing/wrong**: check `kubectl get secret onepassword-sdk-token -n external-secrets`. If absent or stale, re-run `task flux:bootstrap-onepassword`.
+- **Bootstrap secrets missing/wrong**: check `kubectl get secret op-credentials onepassword-connect-token -n external-secrets`. If absent or stale, see `task flux:bootstrap-onepassword` for instructions.
 - **Rate limit hit**: rare. Error message mentions 429. Raise refreshIntervals or pare back manual refreshes.
 
 Force a retry after fixing:
@@ -479,7 +484,7 @@ flux reconcile helmrelease <name> -n <ns> --with-source
 
 ### Kustomization stuck `Reconciling`
 
-A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-controllers`, or `infrastructure-configs`) is in progress but never reaches Ready.
+A Kustomization (`apps`, `infrastructure-sources`, `infrastructure-controllers`, `infrastructure-configs`, or `infrastructure-observability`) is in progress but never reaches Ready.
 
 ```bash
 kubectl describe kustomization <name> -n flux-system
@@ -545,136 +550,11 @@ Until webhook is live, the 1-minute poll is the latency floor. That's fine for d
 
 ---
 
-## First-time Flux bootstrap: delete pre-existing manually-created Secrets
-
-Before running `task flux:bootstrap` for the first time, delete any Secrets
-that were previously created imperatively (e.g., via `op run -- kubectl create
-secret ...`). ESO's `ExternalSecret` resources in this repo use `creationPolicy:
-Owner`, which means ESO refuses to take over Secrets it didn't create. If the
-pre-existing Secrets are left in place, every `ExternalSecret` goes `NotReady`
-with `SecretAlreadyExists`/`NotManaged`, and consumer workloads keep using the
-stale (or re-rolled-at-cluster-time-unknown) values.
-
-This applies only to the initial migration from the imperative world. On a
-green-field cluster (fresh `task k3s:deploy`), this section is a no-op.
-
-Run these BEFORE `task flux:bootstrap`:
-
-```bash
-# ESO / 1Password bootstrap token is the only hand-managed Secret in the
-# post-Flux model — do NOT delete it.
-# Everything else below is safe to delete; Flux will recreate via ESO from
-# 1Password on the first reconcile.
-
-kubectl delete secret authentik-secrets -n authentik --ignore-not-found
-kubectl delete secret vpn-credentials -n downloads --ignore-not-found
-kubectl delete secret recipes-secrets -n recipes --ignore-not-found
-kubectl delete secret mealie-secrets -n recipes --ignore-not-found  # legacy name if present
-kubectl delete secret bar-assistant-secrets -n recipes --ignore-not-found  # legacy
-kubectl delete secret gitlab-runner-token -n gitlab-runner --ignore-not-found
-kubectl delete secret gitlab-runner-privileged-token -n gitlab-runner --ignore-not-found
-kubectl delete secret gitlab-agent-token -n gitlab-agent --ignore-not-found
-
-# The cloudflare-api-token Secret is replicated by ESO into three namespaces.
-# Delete from all three so ESO can re-create owned copies from 1Password.
-kubectl delete secret cloudflare-api-token -n cert-manager --ignore-not-found
-kubectl delete secret cloudflare-api-token -n external-dns --ignore-not-found
-kubectl delete secret cloudflare-api-token -n cloudflare-ddns --ignore-not-found
-```
-
-Pods using the deleted Secrets will not actually restart until next rollout
-— Kubernetes only re-reads Secrets on pod restart, not on Secret update.
-You can leave them running on the old (cached) values while ESO re-populates;
-then `task flux:rotate-secret -- <app>` (or a pod rollout) picks up the
-ESO-managed replacement.
-
-If you suspect any are missing from this list, a quick inventory:
-```bash
-# Anything not owned by an ExternalSecret (no ESO managed-by labels)
-# in an app namespace likely needs the same treatment.
-kubectl get secret -A -o json \
-  | jq -r '.items[] | select(.metadata.labels["reconcile.external-secrets.io/created-by"]==null)
-    | "\(.metadata.namespace)/\(.metadata.name)  \(.type)"'
-```
-
----
-
-## Post-merge branch switch (ONE-TIME, DO THIS AFTER THE MIGRATION MR MERGES)
-
-The initial Flux bootstrap pointed the `flux-system` `GitRepository` at the
-`flux/migration` branch (the branch the migration happened on). After the
-migration MR merges to `main`, Flux must be repointed at `main` — otherwise
-it keeps reconciling the pre-merge branch (or fails outright if that branch
-is deleted).
-
-**Do NOT** change `kubernetes/clusters/weisssrv/flux-system/gotk-sync.yaml` to
-`branch: main` *before* the MR merges — Flux would immediately reconcile
-`main`, which at that point still contains the pre-migration state, and
-revert the cluster.
-
-**Correct sequence after MR merge**:
-
-Important context: at merge time, the cluster's `flux-system` GitRepository
-is still tracking `flux/migration`. If you push the `branch: main` change
-directly to `main`, Flux never sees it because it's not watching `main` yet.
-If you then delete `flux/migration`, Flux starts failing with "couldn't find
-remote ref refs/heads/flux/migration". The only safe way is to push the
-branch-ref change to `flux/migration` FIRST (the branch Flux is currently
-watching) so Flux self-migrates, then delete `flux/migration`.
-
-1. Merge the migration MR to `main` via the GitLab UI (ff or squash merge).
-2. Locally, push the branch-ref switch commit to `flux/migration` (Flux picks it up):
-   ```bash
-   git checkout flux/migration
-   git merge main --ff-only          # bring flux/migration to the merged state
-   $EDITOR kubernetes/clusters/weisssrv/flux-system/gotk-sync.yaml
-   # change spec.ref.branch: flux/migration → main
-   git commit -am "Flux: switch GitRepository ref from flux/migration to main"
-   git push origin flux/migration
-   ```
-3. Force reconcile so Flux picks up the ref change while still watching `flux/migration`:
-   ```bash
-   task flux:reconcile
-   ```
-4. Verify the GitRepository now tracks main:
-   ```bash
-   kubectl -n flux-system get gitrepository flux-system -o jsonpath='{.spec.ref.branch}'
-   # expected: main
-   ```
-5. Now push the SAME commit to `main` so the branches agree and post-merge
-   git history shows the switch:
-   ```bash
-   git checkout main
-   git merge flux/migration --ff-only
-   git push origin main
-   ```
-6. Delete the migration branch on GitLab (Flux no longer tracks it):
-   ```bash
-   git push origin --delete flux/migration
-   ```
-7. Tidy the local branch:
-   ```bash
-   git branch -D flux/migration
-   ```
-
-**Alternative**: if step 2 is awkward (e.g., the branch was already deleted),
-you can patch the GitRepository directly in-cluster and then commit the
-matching change to `main`:
-```bash
-kubectl patch -n flux-system gitrepository flux-system --type=merge \
-  -p '{"spec":{"ref":{"branch":"main"}}}'
-# Then edit gotk-sync.yaml on main to match, commit, push.
-```
-
-Post-switch, all further GitOps work targets `main` as usual.
-
----
-
 ## References
 
 - Flux documentation: https://fluxcd.io/flux/
 - External Secrets Operator: https://external-secrets.io/latest/
-- 1Password SDK provider: https://external-secrets.io/latest/provider/1password-sdk/
+- 1Password Connect provider: https://external-secrets.io/latest/provider/1password-automation/
 - Flux bootstrap (GitLab): https://fluxcd.io/flux/installation/bootstrap/gitlab/
 - Multi-repo onboarding: `docs/30-multi-repo-onboarding.md`
 - K3s deployment workflow: `docs/19-k3s-deployment.md`

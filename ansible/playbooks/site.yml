@@ -70,7 +70,7 @@
       tags: [proxmox_firewall]
 
 - name: Deploy host-side log collection (Alloy → Loki)
-  hosts: base_managed:plex_servers:gitlab_servers
+  hosts: base_managed:plex_servers:gitlab_servers:k3s_servers:k3s_agents
   become: true
   roles:
     - role: alloy_host

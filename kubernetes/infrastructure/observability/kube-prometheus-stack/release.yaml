@@ -92,11 +92,7 @@ spec:
     # -------------------------------------------------------------------------
     alertmanager:
       alertmanagerSpec:
-        # Raw config via Secret — bypasses the Operator's config parser
-        # which doesn't support webhook_url_file for discord_configs.
         configSecret: alertmanager-config
-        secrets:
-          - observability-secrets
         resources:
           requests:
             cpu: 50m
@@ -165,6 +161,12 @@ spec:
           access: proxy
           isDefault: false
 
+      # Persistent storage for Grafana's SQLite DB (service accounts, prefs)
+      persistence:
+        enabled: true
+        type: pvc
+        existingClaim: grafana-data
+
       resources:
         requests:
           cpu: 100m
@@ -188,7 +190,7 @@ spec:
           cpu: 50m
           memory: 32Mi
         limits:
-          cpu: 200m
+          cpu: 300m
           memory: 64Mi
 
     # -------------------------------------------------------------------------
@@ -202,6 +204,24 @@ spec:
         limits:
           cpu: 200m
           memory: 128Mi
+
+    # -------------------------------------------------------------------------
+    # Disable components not present in k3s
+    # -------------------------------------------------------------------------
+    # k3s bundles kube-scheduler and kube-controller-manager into the server
+    # process without separate metrics endpoints. kube-proxy is embedded in
+    # the k3s binary without a standalone metrics endpoint. Disabling prevents
+    # false-positive *Down critical alerts and removes dashboards that always
+    # show "No data".
+    kubeProxy:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeControllerManager:
+      enabled: false
+    # k3s embeds etcd without exposing standard metrics endpoints
+    kubeEtcd:
+      enabled: false
 
     # -------------------------------------------------------------------------
     # Custom alert rules
@@ -263,16 +283,32 @@ spec:
               #     description: 'Gluetun VPN status has been 0 (disconnected) for more than 5 minutes.'
 
               - alert: FluxReconciliationFailure
-                expr: gotk_reconcile_condition{type="Ready", status="False"} == 1
+                expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{job="observability/flux-system"}[5m])) > 0
                 for: 15m
                 labels:
                   severity: warning
                 annotations:
-                  summary: 'Flux reconciliation failing for {{ "{{" }} $labels.kind {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}'
+                  summary: 'Flux controller {{ "{{" }} $labels.controller {{ "}}" }} has reconciliation errors'
                   description: >-
-                    {{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }}
-                    in {{ "{{" }} $labels.namespace {{ "}}" }}
-                    has been failing for 15 minutes.
+                    Flux controller {{ "{{" }} $labels.controller {{ "}}" }}
+                    has been producing reconciliation errors
+                    at {{ "{{" }} $value | printf "%.2f" {{ "}}" }} errors/s for 15 minutes.
+
+              - alert: OnePasswordConnectDown
+                expr: >-
+                  kube_deployment_status_replicas_available{namespace="external-secrets", deployment="onepassword-connect"} == 0
+                  or absent(kube_deployment_status_replicas_available{namespace="external-secrets", deployment="onepassword-connect"})
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: '1Password Connect has no available replicas'
+                  description: >-
+                    1Password Connect deployment in external-secrets namespace
+                    has had 0 available replicas for 5 minutes (or the metric
+                    is absent, indicating kube-state-metrics is also down).
+                    Connect is the secrets backend for all ExternalSecrets in the cluster —
+                    no new secrets can be created or rotated until it recovers.
 
               - alert: ExternalSecretSyncFailure
                 expr: externalsecret_status_condition{condition="Ready", status="False"} == 1
@@ -325,14 +361,29 @@ spec:
         groups:
           - name: homelab.backup
             rules:
-              - alert: ZFSSnapshotStale
-                expr: time() - max by (dataset) (zfs_dataset_snapshot_creation_seconds) > 86400
-                for: 1h
+              # ZFSSnapshotStale alert disabled — the zfs_exporter does not
+              # expose zfs_dataset_snapshot_creation_seconds.  Re-enable if a
+              # future exporter version adds snapshot-level timestamp metrics.
+              # - alert: ZFSSnapshotStale
+              #   expr: time() - max by (dataset) (zfs_dataset_snapshot_creation_seconds) > 86400
+              #   for: 1h
+              #   labels:
+              #     severity: warning
+              #   annotations:
+              #     summary: 'ZFS snapshot older than 24 hours on {{ "{{" }} $labels.instance {{ "}}" }}'
+              #     description: >-
+              #       Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }}
+              #       dataset {{ "{{" }} $labels.dataset {{ "}}" }}
+              #       is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.
+
+              - alert: ZFSPoolDegraded
+                expr: zfs_pool_health > 0
+                for: 5m
                 labels:
-                  severity: warning
+                  severity: critical
                 annotations:
-                  summary: 'ZFS snapshot older than 24 hours on {{ "{{" }} $labels.instance {{ "}}" }}'
+                  summary: 'ZFS pool {{ "{{" }} $labels.pool {{ "}}" }} is degraded'
                   description: >-
-                    Latest ZFS snapshot on {{ "{{" }} $labels.instance {{ "}}" }}
-                    dataset {{ "{{" }} $labels.dataset {{ "}}" }}
-                    is {{ "{{" }} $value | humanizeDuration {{ "}}" }} old.
+                    ZFS pool {{ "{{" }} $labels.pool {{ "}}" }}
+                    on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has health status {{ "{{" }} $value {{ "}}" }} (0=ONLINE, non-zero=degraded/faulted).

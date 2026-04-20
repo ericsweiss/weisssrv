@@ -38,6 +38,9 @@ sasl_passwd.db
 !kubernetes/infrastructure/**/externalsecret*.yaml
 !kubernetes/clusters/weisssrv/tenants/**/cluster-secret-store.yaml
 !kubernetes/clusters/weisssrv/tenants/**/secret-store.yaml
+!kubernetes/infrastructure/controllers/onepassword-connect
+!kubernetes/infrastructure/controllers/onepassword-connect/**
+!kubernetes/infrastructure/sources/onepassword-connect.yaml
 # Jinja2 template with op:// refs, not actual secrets
 !ansible/roles/home_assistant/templates/secrets.yaml.j2
 

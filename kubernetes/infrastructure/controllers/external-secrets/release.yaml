@@ -1,7 +1,7 @@
 ---
 # External Secrets Operator.
 # Chart version substituted from cluster-versions ConfigMap (from all.yml).
-# The onepasswordSDK provider (used by our ClusterSecretStore) is part of the
+# The onepassword (Connect) provider (used by our ClusterSecretStore) is part of the
 # core ESO image in 2.x; no extra feature flag needed.
 #
 # Scheduling:

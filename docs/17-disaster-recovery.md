@@ -671,7 +671,8 @@ After the k3s cluster is healthy:
 # 1. Install flux CLI locally if needed.
 task flux:install-cli
 
-# 2. Create the 1Password SDK bootstrap Secret (the ONE hand-managed Secret).
+# 2. Create the 1Password Connect bootstrap secrets (two hand-managed Secrets).
+#    See CLAUDE.md "Secrets Management" for the full bootstrap procedure.
 task flux:bootstrap-onepassword
 
 # 3. Optionally pre-delete pre-existing Secrets on a partial recovery.

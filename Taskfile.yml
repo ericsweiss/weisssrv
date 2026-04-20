@@ -560,8 +560,10 @@ tasks:
         msg: "Cannot reach cluster. Ensure KUBECONFIG points at the k3s cluster"
       - sh: op whoami 2>/dev/null
         msg: "1Password CLI not signed in. Run: eval $(op signin)"
-      - sh: kubectl -n external-secrets get secret onepassword-sdk-token 2>/dev/null
-        msg: "Bootstrap Secret 'onepassword-sdk-token' not found in external-secrets namespace. Run `task flux:bootstrap-onepassword` first."
+      - sh: kubectl -n external-secrets get secret op-credentials 2>/dev/null
+        msg: "Bootstrap Secret 'op-credentials' not found in external-secrets namespace. Run `task flux:bootstrap-onepassword` for instructions."
+      - sh: kubectl -n external-secrets get secret onepassword-connect-token 2>/dev/null
+        msg: "Bootstrap Secret 'onepassword-connect-token' not found in external-secrets namespace. Run `task flux:bootstrap-onepassword` for instructions."
     cmds:
       - |
         set -eo pipefail
@@ -594,27 +596,19 @@ tasks:
           --interval=1m
 
   flux:bootstrap-onepassword:
-    desc: One-time creation of the 1P SDK token secret in external-secrets namespace
-    preconditions:
-      - sh: kubectl cluster-info 2>/dev/null
-        msg: "Cannot reach cluster"
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not signed in. Run: eval $(op signin)"
+    desc: Print instructions for creating the 1Password Connect bootstrap secrets (one-time manual setup)
     cmds:
       - |
-        set -eo pipefail
-        kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
-      - |
-        set -euo pipefail
-        TOKEN="$(op read 'op://Homelab/Service Account Auth Token weisssrv/credential')"
-        if [ -z "$TOKEN" ]; then
-          echo "ERROR: op read returned an empty token for 'Service Account Auth Token weisssrv'"
-          exit 1
-        fi
-        kubectl -n external-secrets create secret generic onepassword-sdk-token \
-          --from-literal=token="$TOKEN" \
-          --dry-run=client -o yaml | kubectl apply -f -
-      - echo "1Password SDK bootstrap secret created in external-secrets namespace"
+        echo "1Password Connect bootstrap (one-time manual setup):"
+        echo ""
+        echo "1. Create Connect server: op connect server create weisssrv-connect --vaults Homelab"
+        echo "2. Create access token:   op connect token create weisssrv-eso --server <ID> --vaults Homelab"
+        echo "3. Create k8s secrets:"
+        echo "   kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -"
+        echo "   kubectl -n external-secrets create secret generic op-credentials \\"
+        echo "     --from-file=1password-credentials.json=./1password-credentials.json"
+        echo "   kubectl -n external-secrets create secret generic onepassword-connect-token \\"
+        echo "     --from-literal=token=<TOKEN>"
 
   flux:reconcile:
     desc: Trigger full reconciliation of Flux-managed resources (source → infra chain → apps)

@@ -1,0 +1,65 @@
+---
+# 1Password Connect Server — self-hosted secret cache for ESO.
+# connect-sync pulls vault data from 1Password cloud into an encrypted
+# local cache. connect-api serves reads from cache on port 8080.
+# Eliminates cloud API rate limiting for ExternalSecrets.
+#
+# Bootstrap secrets (one-time, manually created in external-secrets ns):
+#   op-credentials            — 1password-credentials.json from `op connect server create`
+#   onepassword-connect-token — access token from `op connect token create`
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: onepassword-connect
+  namespace: external-secrets
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: connect
+      version: "${helm_chart_versions_onepassword_connect}"
+      sourceRef:
+        kind: HelmRepository
+        name: onepassword-connect
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    connect:
+      # credentials_base64 intentionally empty — chart falls back to mounting
+      # from the pre-existing op-credentials Secret (default credentialsName).
+      credentials_base64: ""
+      serviceType: ClusterIP
+      nodeSelector:
+        esweiss.com/cpu: "modern"
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: esweiss.com/compute
+          operator: Exists
+          effect: PreferNoSchedule
+      api:
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      sync:
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+    operator:
+      create: false

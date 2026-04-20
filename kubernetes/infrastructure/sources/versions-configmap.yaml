@@ -23,6 +23,7 @@ data:
   helm_chart_versions_kube_prometheus_stack: 83.6.0
   helm_chart_versions_loki: 6.55.0
   helm_chart_versions_metallb: 0.15.3
+  helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.9.1
   helm_chart_versions_traefik: 40.0.0-ea.3
   k3s_version: v1.35.3+k3s1

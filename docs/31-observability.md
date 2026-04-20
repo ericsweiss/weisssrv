@@ -25,7 +25,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
 | **Plex Exporter** | `jsclayton/prometheus-plex-exporter` | Plex Media Server metrics |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
-| **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on 11 non-k8s hosts → Loki via NodePort |
+| **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on non-k8s hosts + 9 k3s VMs → Loki via NodePort |
 
 ### Service Monitors
 
@@ -33,7 +33,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 
 | Target | Namespace | Scrape Path | Interval |
 |--------|-----------|-------------|----------|
-| Flux controllers | flux-system | `/metrics` | 30s |
+| Flux controllers (PodMonitor) | flux-system | `/metrics` | 30s |
 | Proxmox hosts (x6) | observability | `/pve` | 60s |
 | ZFS exporter (pve-nas-01) | observability | `/metrics` | 60s |
 | Unbound exporter (dns-01 + dns-02) | observability | `/metrics` | 60s |
@@ -44,7 +44,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Meilisearch (Bar Assistant search) | recipes | `/metrics` | 60s |
 | GitLab (VM) | observability (external endpoint) | `/-/metrics` | 60s |
 | Home Assistant (VM) | observability (external endpoint) | `/api/prometheus` | 60s |
-| Blackbox exporter (16 HTTP + 2 DNS probes) | observability | `/probe` | 60s |
+| Blackbox exporter (14 HTTP + 2 DNS probes) | observability | `/probe` | 60s |
 | cert-manager | cert-manager | `/metrics` | (chart default) |
 | Traefik | traefik | `/metrics` | (chart default) |
 | MetalLB | metallb-system | `/metrics` | (chart default) |
@@ -88,20 +88,29 @@ Both Prometheus and Loki use persistent ZFS zvols on pve-nas-01, attached to k3s
 
 Both Prometheus and Loki pods are pinned to the NAS node via `nodeSelector: esweiss.com/nas: "true"` for local disk performance.
 
+Grafana uses an NFS-backed PV for its SQLite database (user preferences, service accounts, saved views):
+
+| Component | NFS Path | Size | Server |
+|-----------|----------|------|--------|
+| Grafana SQLite DB | `/export/appdata/grafana` | 1Gi | pve-nas-01 (192.168.0.102) |
+
 ### Log Collection
 
 **In-cluster:** Alloy runs as a DaemonSet on all 9 k8s nodes (tolerates all taints). It tails pod logs from `/var/log/pods` and ships them to Loki's ClusterIP service.
 
-**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT repository on 11 non-k8s hosts (6 Proxmox hosts, 2 DNS containers, smtp-relay, GitLab VM, Plex LXC). It reads from systemd journald and ships to Loki via a NodePort service (port 31100) through the kube-vip VIP (192.168.0.161) for failover across the 3 k3s server nodes.
+**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT repository on all non-k8s hosts and k3s VMs. This includes 6 Proxmox hosts, 2 DNS containers, smtp-relay, GitLab VM, Plex LXC, and all 9 k3s VMs (3 servers + 6 agents). It reads from systemd journald and ships to Loki via a NodePort service (port 31100) through the kube-vip VIP (192.168.0.161) for failover across the 3 k3s server nodes.
+
+On k3s VMs, alloy_host collects kubelet, containerd, etcd, and other systemd journal entries. This complements (not duplicates) the in-cluster DaemonSet, which only collects container logs from `/var/log/pods`. The two collectors cover different log sources with no overlap.
 
 Home Assistant (HAOS) does not support Alloy installation — it is a managed appliance OS without package management.
 
 ### Secrets
 
-Two ExternalSecrets pull credentials from 1Password:
+Two ExternalSecrets and one templated ExternalSecret pull credentials from 1Password:
 
-1. **observability-secrets** -- Alertmanager SMTP password, Discord webhook URL, and Grafana OIDC client ID/secret.
-2. **observability-exporter-secrets** -- Proxmox API token, Plex token, AdGuard Home credentials, Home Assistant API token, Meilisearch master key, and *arr API keys (Sonarr, Radarr, Lidarr, Prowlarr).
+1. **observability-secrets** -- Grafana OIDC client ID/secret.
+2. **alertmanager-config** -- Alertmanager SMTP password and Discord webhook URL (rendered into alertmanager.yaml via ESO template, because Prometheus Operator does not support `webhook_url_file` for Discord configs).
+3. **observability-exporter-secrets** -- Proxmox API token, Plex token, AdGuard Home credentials, Home Assistant API token, Meilisearch master key, and *arr API keys (Sonarr, Radarr, Lidarr, Prowlarr).
 
 ### Ingress
 
@@ -138,7 +147,7 @@ Create the following items in the "Homelab" vault (if they do not already exist)
 
 All *arr API keys are configured and their exportarr Deployments are active (replicas: 1). If you need to rotate API keys, update the values in the "Download Client API Keys" 1Password item and run `task flux:rotate-secret -- observability/observability-exporter-secrets`.
 
-All ExternalSecret manifests contain real 1Password item IDs. If you recreate items, update the IDs in:
+All ExternalSecret manifests reference 1Password items by title. If you rename items, update the titles in:
 - `kubernetes/infrastructure/observability/kube-prometheus-stack/externalsecret.yaml`
 - `kubernetes/infrastructure/observability/exporters/externalsecret.yaml`
 
@@ -258,6 +267,36 @@ data:
 
 Add the ConfigMap to `kubernetes/infrastructure/observability/dashboards/` and reference it in the dashboards kustomization.yaml. Export dashboards from Grafana UI (Share > Export > Save to file) and paste the JSON into the ConfigMap.
 
+### Dashboard Inventory
+
+**Community dashboards** (imported from Grafana.com by ID):
+
+| Dashboard | Grafana ID | Category |
+|-----------|------------|----------|
+| Node Exporter Full | 1860 | Infrastructure |
+| Traefik Official Kubernetes | 17347 | Networking |
+| AdGuard Home | 20799 | Networking |
+| Redis | 763 | Applications |
+| Prometheus Self-Monitoring | 3662 | Infrastructure |
+| Alertmanager | 9578 | Infrastructure |
+
+**Custom dashboards** (maintained in `kubernetes/infrastructure/observability/dashboards/`):
+
+| Dashboard | Purpose |
+|-----------|---------|
+| Cluster Overview | Every host, VM, LXC, workload with CPU/memory/disk/network |
+| Home Assistant | Service health and availability |
+| Media Stack | Sonarr/Radarr/Lidarr/Prowlarr library and health |
+| Recipes | Mealie, Bar Assistant, Redis health |
+| DNS Combined | AdGuard + Unbound for both DNS servers |
+| Mail | SMTP relay status and logs |
+| Infrastructure | Proxmox, ZFS, DNS overview |
+| Blackbox Exporter | Endpoint monitoring |
+| cert-manager | Certificate health |
+| Flux Cluster | Reconciliation status |
+| Unbound | Recursive resolver cache and query stats |
+| GitLab | GitLab server health and performance |
+
 ### Silencing Alerts
 
 To temporarily silence an alert:
@@ -289,8 +328,8 @@ Common queries for this cluster:
 # Pod restart count (last hour)
 increase(kube_pod_container_status_restarts_total[1h]) > 0
 
-# Flux reconciliation failures
-gotk_reconcile_condition{type="Ready", status="False"} == 1
+# Flux reconciliation errors (matches FluxReconciliationFailure alert)
+sum by (controller) (rate(controller_runtime_reconcile_errors_total{job="observability/flux-system"}[5m])) > 0
 
 # Traefik request rate (by service)
 sum by(service) (rate(traefik_service_requests_total[5m]))
@@ -395,7 +434,8 @@ Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m g
 | Alert | Condition | Severity | For |
 |-------|-----------|----------|-----|
 | ~~VPNDown~~ | ~~Gluetun VPN status == 0~~ | ~~warning~~ | ~~5m~~ (disabled -- requires Gluetun exporter) |
-| FluxReconciliationFailure | Flux resource Ready=False | warning | 15m |
+| FluxReconciliationFailure | Flux controller reconcile error rate > 0 | warning | 15m |
+| OnePasswordConnectDown | Connect deployment has 0 available replicas | warning | 5m |
 | ExternalSecretSyncFailure | ExternalSecret Ready=False | warning | 15m |
 | CertExpiringWarning | Certificate expires in < 14 days | warning | 1h |
 | CertExpiringCritical | Certificate expires in < 3 days | critical | 1h |
@@ -405,11 +445,26 @@ Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m g
 
 | Alert | Condition | Severity | For |
 |-------|-----------|----------|-----|
-| ZFSSnapshotStale | Latest snapshot > 24 hours old | warning | 1h |
+| ZFSPoolDegraded | ZFS pool health > 0 (degraded/faulted) | critical | 5m |
+| ~~ZFSSnapshotStale~~ | ~~Latest snapshot > 24 hours old~~ | ~~warning~~ | ~~1h~~ (disabled -- zfs_exporter lacks snapshot metrics) |
 
 ### Built-in Alerts
 
-The kube-prometheus-stack chart ships built-in alerts for Kubernetes components (kubelet, apiserver, etcd, scheduler, CoreDNS), node health, and Prometheus self-monitoring. These are enabled by default.
+The kube-prometheus-stack chart ships built-in alerts for Kubernetes components (kubelet, apiserver, etcd, CoreDNS), node health, and Prometheus self-monitoring. These are enabled by default.
+
+**Disabled k3s-irrelevant alerts:** KubeProxyDown, KubeSchedulerDown, KubeControllerManagerDown, and KubeEtcdDown are disabled because k3s embeds these components into the main process and does not expose separate metrics endpoints. Leaving them enabled causes persistent false-positive alerts.
+
+**Inhibition rules:**
+- Critical alerts suppress warnings with the same `alertname` and `namespace` (avoids duplicate noise when a warning escalates to critical)
+- InfoInhibitor alerts suppress info-level alerts (allows dashboards to generate info alerts without flooding receivers)
+
+**Resolved issues:**
+- **PrometheusOperatorSyncFailed** -- resolved by converting the alertmanager-config Secret to an ExternalSecret template that injects `webhook_url` directly instead of using `webhook_url_file` (the Alertmanager pod could not read files from the mounted Secret)
+- **CPUThrottlingHigh** -- resolved by raising CPU limits on throttled exporters: node-exporter (300m), proxmox-exporter (200m), adguard-exporter (150m), redis-exporter (100m), blackbox-exporter (150m)
+
+### Flux Metrics
+
+Flux controller metrics (source-controller, kustomize-controller, helm-controller, notification-controller) are scraped via PodMonitor instead of ServiceMonitor. The controllers expose their metrics port (`http-prom:8080`) on pods, but the corresponding Services do not expose that port, so PodMonitor is required.
 
 ## Troubleshooting
 

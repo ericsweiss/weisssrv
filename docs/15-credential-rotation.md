@@ -43,11 +43,13 @@ restarts the Deployments/StatefulSets that consume the produced Secret. See
 `docs/29-flux-operations.md` § Secret Operations for the full dispatch table
 and rate-limit considerations.
 
-The single exception is `external-secrets/onepassword-sdk-token` — that's
-the bootstrap token ESO uses to talk to 1Password itself. Rotate by
-updating the 1P service-account token, then `task flux:bootstrap-onepassword`
-to write the new value into the cluster (the old ExternalSecret machinery
-can't self-rotate its own auth source).
+The single exception is the Connect bootstrap secrets
+(`external-secrets/op-credentials` and `external-secrets/onepassword-connect-token`)
+— these are what ESO and 1Password Connect use to talk to 1Password itself.
+Rotate by regenerating the Connect server credentials and token, then
+recreating the k8s secrets manually (see `task flux:bootstrap-onepassword`
+for instructions). The old ExternalSecret machinery can't self-rotate its
+own auth source.
 
 ## Host-side / Ansible-managed credentials
 

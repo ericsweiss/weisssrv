@@ -24,7 +24,7 @@ weisssrv/
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — reconciled in four stages via dependsOn ordering
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
-│   │   ├── controllers/        # external-secrets, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
+│   │   ├── controllers/        # external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
 │   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, service-monitors, dashboards, ingress (dependsOn configs)
 │   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability)
@@ -53,7 +53,7 @@ weisssrv/
 - **Firewall**: Proxmox firewall with IP Sets + Security Groups
 - **HA**: Proxmox HA for infrastructure services (DNS, SMTP, Home Assistant)
 - **GitOps**: Flux CD reconciles all Kubernetes state from `kubernetes/` on every push
-- **Secrets to k8s**: External Secrets Operator (ESO) with 1Password SDK provider (`ClusterSecretStore` `onepassword-homelab`)
+- **Secrets to k8s**: External Secrets Operator (ESO) with 1Password Connect provider (`ClusterSecretStore` `onepassword-homelab`)
 
 ### K3s Platform
 
@@ -82,8 +82,8 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 - kube-vip (API VIP .161), MetalLB (VIPs .100/.101)
 - Traefik ingress, external-dns (Cloudflare)
 - 3-node etcd quorum (tolerates 1 server failure)
-- Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password SDK backend
-- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting)
+- Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password Connect backend
+- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting); k3s-irrelevant components disabled (kubeProxy, kubeScheduler, kubeControllerManager, kubeEtcd); alertmanager config uses ExternalSecret template for webhook injection
 
 **Applications**:
 - Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
@@ -122,7 +122,8 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
   - Git SSH on port 22 (internal), port 2222 (external)
 
 - Grafana (grafana.esweiss.com):
-  - Dashboards for cluster, node, and application metrics
+  - Community dashboards imported for Node Exporter, Traefik, AdGuard, Redis, Prometheus, Alertmanager
+  - Custom dashboards for Cluster Overview, Home Assistant, Media Stack, Recipes, DNS Combined, Mail, Infrastructure, Blackbox Exporter, cert-manager, Flux Cluster, Unbound, GitLab
   - Authentik OIDC SSO integration
   - Loki datasource for log queries
   - Dashboard sidecar auto-discovers ConfigMaps with `grafana_dashboard` label
@@ -178,7 +179,7 @@ task k3s:status                   # Show cluster and workload status
 # Flux GitOps (all Kubernetes workloads - edit YAML in kubernetes/ + git push)
 task flux:install-cli             # Install flux CLI (brew, macOS)
 task flux:bootstrap               # One-time: bootstrap Flux into the cluster
-task flux:bootstrap-onepassword   # One-time: create 1P SDK token secret in external-secrets ns
+task flux:bootstrap-onepassword   # One-time: create 1P Connect bootstrap secrets in external-secrets ns
 task flux:reconcile               # Force immediate reconciliation of all Flux-managed resources
 task flux:verify                  # Run `flux check` + show status of all managed resources
 task flux:status                  # Concise health summary
@@ -317,16 +318,32 @@ Two consumers pull from the same 1Password "Homelab" vault:
      # Item names with spaces are fine here — `op run` parses the full path.
    ```
 
-2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password SDK provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. `ExternalSecret.spec.data[].remoteRef.key` uses the **1Password item ID** (not title, not `op://`-prefixed), and `remoteRef.property` is NOT used — the field name goes after the slash:
+2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password Connect provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect runs in-cluster (no calls to 1Password cloud). `ExternalSecret.spec.data[].remoteRef.key` is the **1Password item title**, and `remoteRef.property` is the **field name**:
    ```yaml
    remoteRef:
-     key: <1Password item ID>/<field name>   # e.g. qwertyabc123/password
+     key: <1Password item title>
+     property: <field name>
    ```
-   Spaces in item titles break SDK parsing, so always reference by ID in `ExternalSecret` manifests.
 
-The bootstrap Secret `onepassword-sdk-token` in the `external-secrets` namespace is the **only manually created** Kubernetes Secret. Every other in-cluster Secret is produced by ESO from `ExternalSecret` manifests reconciled by Flux.
+3. **CI pipelines** — `.gitlab-ci.yml` uses `op run` / `op read` with `OP_SERVICE_ACCOUNT_TOKEN` to inject secrets at runtime. This is separate from Connect and unchanged by the migration.
 
-**NEVER commit secrets to git**. All sensitive values use 1Password references (either `op://` for host-side tooling or ID-based ExternalSecrets for in-cluster).
+The bootstrap Secrets `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace are the **only manually created** Kubernetes Secrets. Every other in-cluster Secret is produced by ESO from `ExternalSecret` manifests reconciled by Flux.
+
+```bash
+# Create Connect server (generates 1password-credentials.json in current dir)
+op connect server create weisssrv-connect --vaults Homelab
+
+# Create access token
+op connect token create weisssrv-eso --server <server-id> --vaults Homelab
+
+# Create bootstrap secrets in cluster
+kubectl -n external-secrets create secret generic op-credentials \
+  --from-file=1password-credentials.json=./1password-credentials.json
+kubectl -n external-secrets create secret generic onepassword-connect-token \
+  --from-literal=token=<TOKEN>
+```
+
+**NEVER commit secrets to git**. All sensitive values use 1Password references (`op://` for host-side tooling, item titles in ExternalSecrets for in-cluster).
 
 ### Required 1Password Items
 
@@ -335,7 +352,7 @@ In vault "Homelab":
 - **SMTP Relay Gmail** - username + app password
 - **SMTP Relay Auth** - username + password (for null client auth to smtp-relay)
 - **Email Config** - root_alias (ericsweiss1@gmail.com)
-- **AdGuard Home** - admin password
+- **AdGuard Home** - admin username + password
 - **Tailscale Auth Key** - auth key
 - **SSH Key** - public + private key
 - **Samba NAS User** - nas user password
@@ -350,6 +367,7 @@ In vault "Homelab":
 - **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
 - **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
+- **Home Assistant API Token** - token (long-lived access token for Prometheus /api/prometheus endpoint)
 - **GitLab** - root-password (initial GitLab root user password)
 - **GitLab API Token** - credential (personal access token for PR-Agent AI code review)
 - **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
@@ -359,7 +377,7 @@ In vault "Homelab":
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
 - **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
-- **Service Account Auth Token weisssrv** - 1Password Service Account token used by the ESO SDK provider (no colon in title — the old name broke `op://` parsing)
+- **Service Account Auth Token weisssrv** - 1Password Service Account token used by CI (`OP_SERVICE_ACCOUNT_TOKEN` in `.gitlab-ci.yml`)
 - **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
 - **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
 - **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
@@ -440,7 +458,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 21. **nic_tuning** - NIC/kernel tuning on Proxmox hosts (codifies AQC113 GRO disable + `net.ipv4.ip_forward` sysctl)
 22. **zfs_exporter** - Prometheus ZFS exporter on pve-nas-01 (pool health, dataset usage, scrub status)
 23. **unbound_exporter** - Prometheus Unbound exporter on DNS hosts (cache hit rate, query counts)
-24. **alloy_host** - Grafana Alloy on non-k8s hosts for shipping journald logs to Loki via NodePort
+24. **alloy_host** - Grafana Alloy on non-k8s hosts and k3s VMs for shipping journald logs to Loki via NodePort (on k3s VMs, collects kubelet/containerd/etcd/systemd journals; no duplication with in-cluster DaemonSet which covers container logs only)
 
 ## User Management
 
@@ -560,6 +578,7 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 - `ssd/appdata/gitlab/repos` - 200GB zvol, ext4, attached to gitlab VM as /dev/sdb, mounted at /mnt/gitlab-repos
 - `ssd/appdata/prometheus/data` - 150GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/prometheus-data
 - `ssd/appdata/loki/data` - 75GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/loki-data
+- Grafana SQLite DB uses NFS-backed PV at `/export/appdata/grafana` (1Gi) on pve-nas-01 — persists user preferences and service accounts
 - Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by role
 - Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
 

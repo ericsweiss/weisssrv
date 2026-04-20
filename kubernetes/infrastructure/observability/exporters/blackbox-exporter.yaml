@@ -35,6 +35,16 @@ spec:
             preferred_ip_protocol: ip4
             tls_config:
               insecure_skip_verify: false
+        http_sso:
+          prober: http
+          timeout: 10s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            valid_status_codes: [200, 301, 302, 401, 403]
+            follow_redirects: false
+            preferred_ip_protocol: ip4
+            tls_config:
+              insecure_skip_verify: false
         dns_resolution:
           prober: dns
           timeout: 5s
@@ -62,34 +72,34 @@ spec:
           module: http_2xx
         - name: sonarr
           url: https://tv.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: radarr
           url: https://movies.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: lidarr
           url: https://music.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: prowlarr
           url: https://prowlarr.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: nzbget
           url: https://nzbget.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: qbittorrent
           url: https://qbittorrent.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: mealie
           url: https://food.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: bar-assistant
           url: https://bar.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: plex
           url: https://plex.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: home-assistant
           url: https://home.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: gitlab
           url: https://git.esweiss.com
           module: http_2xx
@@ -104,5 +114,5 @@ spec:
         cpu: 25m
         memory: 32Mi
       limits:
-        cpu: 100m
+        cpu: 150m
         memory: 64Mi
