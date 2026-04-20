@@ -151,56 +151,6 @@ workflow:
     # target narrower scopes and use the K3s Kubeconfig credentials.
     - kubectl version --output=yaml --request-timeout=5s
 
-.changes-ansible:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/**
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/**
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-.changes-terraform:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - terraform/**
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - terraform/**
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-.changes-kubernetes:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - kubernetes/**
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - kubernetes/**
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-.changes-scripts:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - scripts/**
-        - ansible/roles/**/*.sh
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - scripts/**
-        - ansible/roles/**/*.sh
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
 # ============================================================================
 # BUILD STAGE - Container images
 # ============================================================================
@@ -274,7 +224,17 @@ shellcheck:
       done
     - echo "ShellCheck passed"
   rules:
-    - !reference [.changes-scripts, rules]
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - scripts/**
+        - ansible/roles/**/*.sh
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - scripts/**
+        - ansible/roles/**/*.sh
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 yaml-lint:
   needs: []
@@ -337,7 +297,15 @@ ansible-lint:
         echo "  Found: $f"
       done
   rules:
-    - !reference [.changes-ansible, rules]
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-fmt:
   needs: []
@@ -349,7 +317,15 @@ terraform-fmt:
     - cd terraform/cloudflare
     - terraform fmt -check -recursive
   rules:
-    - !reference [.changes-terraform, rules]
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - terraform/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - terraform/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
 # AI-REVIEW STAGE - AI-powered code review on MRs
@@ -384,8 +360,9 @@ pr-agent-review:
     # GPT-5.4 is now available but gpt-5.3-codex is optimized specifically for code review
     # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
     CONFIG__MODEL: "gpt-5.3-codex"
-    # Maximize review depth: use full context window and extended effort
+    # Maximize review depth: use full context window and maximum effort
     CONFIG__MAX_MODEL_TOKENS: "128000"
+    CONFIG__REASONING_EFFORT: "high"
     PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
     PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
     PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
@@ -433,7 +410,15 @@ terraform-validate:
     - terraform init -backend=false
     - terraform validate
   rules:
-    - !reference [.changes-terraform, rules]
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - terraform/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - terraform/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-plan:
   needs: []
