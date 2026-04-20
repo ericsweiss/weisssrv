@@ -167,6 +167,12 @@ spec:
         type: pvc
         existingClaim: grafana-data
 
+      # Disable init-chown-data — NFS with all_squash maps all operations to
+      # 1000:2000 and does not permit chown. Grafana writes succeed because
+      # the NFS squash UID matches the directory owner.
+      initChownData:
+        enabled: false
+
       resources:
         requests:
           cpu: 100m

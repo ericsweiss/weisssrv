@@ -28,11 +28,12 @@ spec:
     name: grafana-data
   nfs:
     server: 192.168.0.102
-    path: /export/appdata/grafana
+    path: /appdata/grafana
   mountOptions:
     - nfsvers=4.2
     - hard
     - intr
+    - noatime
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
