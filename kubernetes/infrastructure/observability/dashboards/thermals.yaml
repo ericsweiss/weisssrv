@@ -1,0 +1,354 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-thermals
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  thermals.json: |
+    {
+      "annotations": { "list": [] },
+      "description": "Hardware thermal monitoring for bare-metal Proxmox hosts. Requires host-level node_exporter (port 9101) with hwmon and thermal_zone collectors enabled.",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "id": 100,
+          "panels": [],
+          "title": "CPU Temperatures",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "CPU package/core temperatures from coretemp hwmon driver across all Proxmox hosts.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisLabel": "",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineInterpolation": "smooth",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "area" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 70 },
+                  { "color": "red", "value": 85 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
+          "id": 1,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "CPU Temperature (all hosts)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\", chip=~\".*coretemp.*\"}",
+              "legendFormat": "{{ instance }} {{ chip }} {{ sensor }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "Current CPU temperature gauges per host. Shows the maximum sensor reading per instance.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "unit": "celsius",
+              "min": 0,
+              "max": 105,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 60 },
+                  { "color": "orange", "value": 75 },
+                  { "color": "red", "value": 90 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
+          "id": 2,
+          "options": {
+            "minVizHeight": 75,
+            "minVizWidth": 75,
+            "orientation": "horizontal",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true,
+            "sizing": "auto"
+          },
+          "title": "CPU Temperature (current)",
+          "type": "gauge",
+          "targets": [
+            {
+              "expr": "max by (instance) (node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\", chip=~\".*coretemp.*\"})",
+              "legendFormat": "{{ instance }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+          "id": 101,
+          "panels": [],
+          "title": "Thermal Zones",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "Kernel thermal zone temperatures. Covers CPU, PCH, and other on-board sensors reported via ACPI.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisLabel": "",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineInterpolation": "smooth",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "area" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 70 },
+                  { "color": "red", "value": 85 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+          "id": 3,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "Thermal Zones (all hosts)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_thermal_zone_temp{job=\"node-exporter-host\", instance=~\"$host\"}",
+              "legendFormat": "{{ instance }} zone{{ zone }} ({{ type }})",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+          "id": 102,
+          "panels": [],
+          "title": "Other Hardware Sensors",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "All hwmon temperature sensors excluding coretemp (CPU). Includes storage, NIC, PCH, and other on-board sensors.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisLabel": "",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineInterpolation": "smooth",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+          "id": 4,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "Non-CPU hwmon Temperatures (storage, NIC, PCH)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\", chip!~\".*coretemp.*\"}",
+              "legendFormat": "{{ instance }} {{ chip }} {{ sensor }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+          "id": 103,
+          "panels": [],
+          "title": "Per-Host Detail",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "All temperature sensors for the selected host. Use the host dropdown at the top to filter.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 55 },
+                  { "color": "orange", "value": 70 },
+                  { "color": "red", "value": 85 }
+                ]
+              },
+              "unit": "celsius",
+              "custom": {
+                "align": "auto",
+                "cellOptions": { "type": "auto" },
+                "inspect": false
+              }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Temperature" },
+                "properties": [
+                  { "id": "custom.cellOptions", "value": { "mode": "basic", "type": "color-background" } },
+                  { "id": "custom.width", "value": 120 }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Host" },
+                "properties": [
+                  { "id": "custom.width", "value": 200 }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+          "id": 5,
+          "options": {
+            "cellHeight": "sm",
+            "footer": { "countRows": false, "enablePagination": false, "reducer": ["sum"], "show": false },
+            "showHeader": true,
+            "sortBy": [{ "desc": true, "displayName": "Temperature" }]
+          },
+          "title": "All Sensors (selected host)",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\"}",
+              "format": "table",
+              "instant": true,
+              "refId": "hwmon"
+            },
+            {
+              "expr": "node_thermal_zone_temp{job=\"node-exporter-host\", instance=~\"$host\"}",
+              "format": "table",
+              "instant": true,
+              "refId": "thermal"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true
+                },
+                "renameByName": {
+                  "instance": "Host",
+                  "chip": "Chip",
+                  "sensor": "Sensor",
+                  "type": "Zone Type",
+                  "zone": "Zone",
+                  "Value": "Temperature"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["infrastructure", "thermals", "hardware"],
+      "templating": {
+        "list": [
+          {
+            "current": { "selected": false, "text": "All", "value": "$__all" },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "definition": "label_values(node_hwmon_temp_celsius{job=\"node-exporter-host\"}, instance)",
+            "includeAll": true,
+            "multi": false,
+            "name": "host",
+            "query": { "qryType": 1, "query": "label_values(node_hwmon_temp_celsius{job=\"node-exporter-host\"}, instance)" },
+            "refresh": 2,
+            "regex": "",
+            "type": "query"
+          }
+        ]
+      },
+      "time": { "from": "now-6h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Thermals",
+      "uid": "thermals-weisssrv",
+      "version": 1
+    }

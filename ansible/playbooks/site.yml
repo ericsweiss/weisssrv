@@ -69,6 +69,13 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
+- name: Deploy host-level metrics (node_exporter on bare metal and DNS hosts)
+  hosts: proxmox:dns
+  become: true
+  roles:
+    - role: node_exporter_host
+      tags: [node_exporter_host]
+
 - name: Deploy host-side log collection (Alloy → Loki)
   hosts: base_managed:plex_servers:gitlab_servers:k3s_servers:k3s_agents
   become: true

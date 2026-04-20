@@ -1,0 +1,274 @@
+---
+# Node Exporter (host-level) — remote scrape of prometheus-node-exporter running
+# directly on bare-metal Proxmox hosts.  Provides hardware metrics (hwmon thermals,
+# SMART, NIC details, disk I/O) that VMs cannot see.
+# Runs on port 9101 to avoid conflicting with the k3s DaemonSet on 9100.
+
+# ---------------------------------------------------------------------------
+# pve-nas-01 (192.168.0.102)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-pve-nas-01
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: pve-nas-01
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-pve-nas-01
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.102
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# pve-laptop-01 (192.168.0.103)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-pve-laptop-01
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: pve-laptop-01
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-pve-laptop-01
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.103
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# pve-opt-01 (192.168.0.104)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-pve-opt-01
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: pve-opt-01
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-pve-opt-01
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.104
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# pve-opt-02 (192.168.0.105)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-pve-opt-02
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: pve-opt-02
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-pve-opt-02
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.105
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# pve-opt-03 (192.168.0.106)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-pve-opt-03
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: pve-opt-03
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-pve-opt-03
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.106
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# pve-prec-01 (192.168.0.107)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-pve-prec-01
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: pve-prec-01
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-pve-prec-01
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.107
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# dns-01 (192.168.0.150)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-dns-01
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: dns-01
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-dns-01
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.150
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# dns-02 (192.168.0.160)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-dns-02
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: dns-02
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-dns-02
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.160
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: node-exporter-host
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-exporter-host
+  endpoints:
+    - port: metrics
+      interval: 60s

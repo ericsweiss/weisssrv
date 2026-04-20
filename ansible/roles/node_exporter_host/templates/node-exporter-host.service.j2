@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Override the Debian-packaged prometheus-node-exporter service to:
+# - Listen on port {{ node_exporter_host_port }} (avoids k3s DaemonSet on 9100)
+# - Enable hwmon, thermal_zone, and textfile collectors
+
+[Service]
+ExecStart=
+ExecStart=/usr/bin/prometheus-node-exporter \
+  --web.listen-address=:{{ node_exporter_host_port }} \
+  --collector.hwmon \
+  --collector.thermal_zone \
+  --collector.diskstats \
+  --collector.filesystem \
+  --collector.netdev \
+  --collector.cpu \
+  --collector.meminfo \
+  --collector.loadavg \
+  --collector.textfile \
+  --collector.textfile.directory={{ node_exporter_host_textfile_dir }}

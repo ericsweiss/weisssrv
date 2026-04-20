@@ -17,7 +17,7 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                    # Configuration management
 │   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # 24 roles for all services
+│   ├── roles/                  # 25 roles for all services
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
@@ -123,7 +123,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 
 - Grafana (grafana.esweiss.com):
   - Community dashboards imported for Node Exporter, Traefik, AdGuard, Redis, Prometheus, Alertmanager
-  - Custom dashboards for Cluster Overview, Home Assistant, Media Stack, Recipes, DNS Combined, Mail, Infrastructure, Blackbox Exporter, cert-manager, Flux Cluster, Unbound, GitLab
+  - Custom dashboards for Cluster Overview, Home Assistant, Media Stack, Recipes, DNS Combined, Mail, Infrastructure, Thermals, Blackbox Exporter, cert-manager, Flux Cluster, Unbound, GitLab
   - Authentik OIDC SSO integration
   - Loki datasource for log queries
   - Dashboard sidecar auto-discovers ConfigMaps with `grafana_dashboard` label
@@ -442,7 +442,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 5. **proxmox_firewall** - IPSets, security groups, cluster.fw
 6. **proxmox_vm** - VM provisioning with cloud-init and autostart configuration
 7. **proxmox_lxc** - LXC container provisioning with autostart configuration
-8. **nas_storage** - ZFS properties, NFS exports, Samba, mergerfs, media-mover, SMART
+8. **nas_storage** - ZFS properties, NFS exports, Samba, mergerfs, media-mover, archive-backupctl, SMART
 9. **unbound** - DoT recursive resolver (port 5335)
 10. **adguard_home** - DNS filtering + DoT (port 53), running as non-root
 11. **acme_certs** - Let's Encrypt via DNS-01, cert distribution via SSH
@@ -459,6 +459,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 22. **zfs_exporter** - Prometheus ZFS exporter on pve-nas-01 (pool health, dataset usage, scrub status)
 23. **unbound_exporter** - Prometheus Unbound exporter on DNS hosts (cache hit rate, query counts)
 24. **alloy_host** - Grafana Alloy on non-k8s hosts and k3s VMs for shipping journald logs to Loki via NodePort (on k3s VMs, collects kubelet/containerd/etcd/systemd journals; no duplication with in-cluster DaemonSet which covers container logs only)
+25. **node_exporter_host** - Prometheus node_exporter on bare-metal Proxmox hosts for hardware metrics (thermals, SMART, disk I/O). Port 9101 to avoid conflict with k3s DaemonSet on 9100
 
 ## User Management
 
@@ -578,7 +579,7 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 - `ssd/appdata/gitlab/repos` - 200GB zvol, ext4, attached to gitlab VM as /dev/sdb, mounted at /mnt/gitlab-repos
 - `ssd/appdata/prometheus/data` - 150GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/prometheus-data
 - `ssd/appdata/loki/data` - 75GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/loki-data
-- Grafana SQLite DB uses NFS-backed PV at `/export/appdata/grafana` (1Gi) on pve-nas-01 — persists user preferences and service accounts
+- Grafana SQLite DB uses NFS-backed PV at `/appdata/grafana` (1Gi, NFS from pve-nas-01) — persists user preferences and service accounts
 - Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by role
 - Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
 

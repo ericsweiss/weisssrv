@@ -130,6 +130,7 @@ IN ACCEPT -p tcp -dport 32400 -log nolog
 
 # Prometheus scraping from k3s cluster (k3s SNATs pod traffic to node IPs)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog  # node-exporter
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9101 -log nolog  # node-exporter-host (bare metal)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9134 -log nolog  # zfs-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9167 -log nolog  # unbound-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9221 -log nolog  # proxmox-exporter API

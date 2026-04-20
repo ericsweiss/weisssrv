@@ -24,3 +24,7 @@
 - name: Include SMART monitoring tasks
   ansible.builtin.include_tasks: smartd.yml
   when: smartd_enabled | default(true)
+
+- name: Include archive backup tasks
+  ansible.builtin.include_tasks: archive_backup.yml
+  when: archive_backup_enabled | default(true)

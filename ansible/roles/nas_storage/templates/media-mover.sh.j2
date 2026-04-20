@@ -12,6 +12,39 @@ LOCK="/run/media-mover.lock"
 MIN_AGE="${MIN_AGE:-{{ media_mover_min_age | default('12h') }}}"
 DRY_RUN="${DRY_RUN:-0}"
 
+PROM_DIR="/var/lib/node_exporter"
+PROM_FILE="${PROM_DIR}/media_mover.prom"
+_MM_START_TS="$(date +%s)"
+
+write_prom_metrics() {
+  local success="$1" duration="$2"
+  local ts
+  ts="$(date +%s)"
+  local tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP media_mover_last_run_duration_seconds Duration of last run"
+    echo "# TYPE media_mover_last_run_duration_seconds gauge"
+    echo "media_mover_last_run_duration_seconds ${duration}"
+    echo "# HELP media_mover_last_run_success Whether the last run succeeded (1=success, 0=failure)"
+    echo "# TYPE media_mover_last_run_success gauge"
+    echo "media_mover_last_run_success ${success}"
+    if [ "$success" -eq 1 ]; then
+      echo "# HELP media_mover_last_success_timestamp_seconds Unix timestamp of last successful run"
+      echo "# TYPE media_mover_last_success_timestamp_seconds gauge"
+      echo "media_mover_last_success_timestamp_seconds ${ts}"
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+trap_write_failure_metrics() {
+  local end_ts
+  end_ts="$(date +%s)"
+  local duration=$(( end_ts - _MM_START_TS ))
+  write_prom_metrics 0 "$duration"
+}
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics; fi' EXIT
+
 parse_age_to_minutes() {
   local s="$1"
   if [[ "$s" =~ ^([0-9]+)([smhd])$ ]]; then
@@ -53,3 +86,8 @@ fi
 
 # Clean up empty directories left behind (keep SRC root)
 find "$SRC" -mindepth 1 -type d -empty -print -delete
+
+# Write Prometheus textfile metrics on success
+_MM_END_TS="$(date +%s)"
+_MM_DURATION=$(( _MM_END_TS - _MM_START_TS ))
+write_prom_metrics 1 "$_MM_DURATION"

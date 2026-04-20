@@ -368,6 +368,118 @@ spec:
                   summary: 'Traefik 5xx error rate above 5%'
                   description: 'Traefik is returning 5xx errors at {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% over the last 5 minutes.'
 
+      homelab-monitoring:
+        groups:
+          - name: homelab.monitoring
+            rules:
+              - alert: ProxmoxHostDown
+                expr: >-
+                  min by (id) (max_over_time(pve_up{id=~"node/.*"}[5m])) == 0
+                  or absent(pve_up{id=~"node/.*"})
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'Proxmox host {{ "{{" }} $labels.id {{ "}}" }} is down'
+                  description: 'Proxmox host {{ "{{" }} $labels.id {{ "}}" }} has been unreachable for 5 minutes. If id is empty, the Proxmox exporter itself may be down.'
+
+              # ZFS pool capacity — currently only covers NAS node pools
+              # (single zfs_exporter on pve-nas-01). Compute node local-ssd
+              # pools are not monitored until zfs_exporter is deployed there.
+              - alert: ZFSPoolSpaceWarning
+                expr: (max by (pool) (zfs_pool_allocated_bytes) / max by (pool) (zfs_pool_size_bytes)) * 100 > 80
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'ZFS pool {{ "{{" }} $labels.pool {{ "}}" }} above 80% capacity'
+                  description: 'ZFS pool {{ "{{" }} $labels.pool {{ "}}" }} is at {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% capacity.'
+
+              - alert: ZFSPoolSpaceCritical
+                expr: (max by (pool) (zfs_pool_allocated_bytes) / max by (pool) (zfs_pool_size_bytes)) * 100 > 90
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'ZFS pool {{ "{{" }} $labels.pool {{ "}}" }} above 90% capacity'
+                  description: 'ZFS pool {{ "{{" }} $labels.pool {{ "}}" }} is at {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% capacity.'
+
+              - alert: EndpointDown
+                expr: max by (instance) (probe_success) == 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Endpoint {{ "{{" }} $labels.instance {{ "}}" }} is down'
+                  description: 'Blackbox probe for {{ "{{" }} $labels.instance {{ "}}" }} has failed for 5 minutes.'
+
+              - alert: BlackboxExporterDown
+                expr: absent(up{job=~".*blackbox.*"} == 1)
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'Blackbox exporter is down'
+                  description: 'All endpoint monitoring is blind — blackbox exporter has been down for 5 minutes.'
+
+              - alert: NodeMemoryPressure
+                expr: kube_node_status_condition{condition="MemoryPressure", status="true"} == 1
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Node {{ "{{" }} $labels.node {{ "}}" }} is under memory pressure'
+                  description: 'Kubelet on {{ "{{" }} $labels.node {{ "}}" }} has been reporting memory pressure for 5 minutes. Pods may be evicted.'
+
+      homelab-scripts:
+        groups:
+          - name: homelab.scripts
+            rules:
+              - alert: ArchiveBackupFailed
+                expr: archive_backup_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Archive backup failed'
+                  description: 'The nightly archive backup has not completed successfully.'
+
+              - alert: ArchiveBackupStale
+                expr: (time() - archive_backup_last_success_timestamp_seconds > 86400 * 2) or absent(archive_backup_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Archive backup has not run in over 2 days'
+                  description: 'No successful archive backup has been recorded for more than 48 hours, or the metric is missing.'
+
+              - alert: MediaMoverFailed
+                expr: media_mover_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Media mover failed'
+                  description: 'The media mover script has not completed successfully.'
+
+              - alert: MediaMoverStale
+                expr: (time() - media_mover_last_success_timestamp_seconds > 86400 * 2) or absent(media_mover_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Media mover has not run in over 2 days'
+                  description: 'No successful media mover run has been recorded for more than 48 hours, or the metric is missing.'
+
+              - alert: CertRenewalFailed
+                expr: cert_renewal_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Certificate renewal failed'
+                  description: 'The certificate renewal and distribution script has not completed successfully.'
+
       homelab-backup:
         groups:
           - name: homelab.backup

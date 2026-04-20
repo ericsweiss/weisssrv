@@ -1,0 +1,6 @@
+---
+node_exporter_host_port: 9101
+# Use 9101 to avoid conflicting with the k3s DaemonSet node-exporter on 9100
+
+# Textfile collector directory for custom script metrics
+node_exporter_host_textfile_dir: /var/lib/node_exporter

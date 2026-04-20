@@ -18,5 +18,6 @@ resources:
   - prometheus-self.yaml
   - recipes.yaml
   - redis.yaml
+  - thermals.yaml
   - traefik-official.yaml
   - unbound.yaml

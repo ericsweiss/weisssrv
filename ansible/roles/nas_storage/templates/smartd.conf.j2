@@ -1,8 +1,9 @@
 # {{ ansible_managed }}
 # SMART monitoring configuration for {{ ansible_facts['hostname'] }}
 
-# Default scan with standby mode handling
-DEVICESCAN -d removable -n standby -m root -M exec /usr/share/smartmontools/smartd-runner
+# All drives explicitly listed below — no DEVICESCAN.
+# DEVICESCAN with -n standby was interfering with long self-tests
+# (extended tests aborted at 90% when drives entered standby).
 
 # Tank pool (raidz2 - 6x 22TB enterprise drives)
 {% for disk in smartd_tank_disks | default([]) %}

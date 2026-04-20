@@ -1,0 +1,60 @@
+---
+# Node Exporter (host-level) -- hardware metrics from bare-metal Proxmox hosts
+# Installs from Debian packages and runs on port 9101 to avoid conflicting
+# with the k3s DaemonSet node-exporter on port 9100.
+
+- name: Install prometheus-node-exporter and smartmontools
+  ansible.builtin.apt:
+    name:
+      - prometheus-node-exporter
+      - smartmontools
+    state: present
+    update_cache: true
+
+- name: Create textfile collector directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_host_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure systemd override directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/prometheus-node-exporter.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy node-exporter-host systemd override
+  ansible.builtin.template:
+    src: node-exporter-host.service.j2
+    dest: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter_host
+
+- name: Enable and start prometheus-node-exporter service
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending restarts before health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify node_exporter is listening on port {{ node_exporter_host_port }}
+  ansible.builtin.uri:
+    url: "http://localhost:{{ node_exporter_host_port }}/metrics"
+    return_content: false
+    status_code: 200
+  register: node_exporter_host_health
+  retries: 5
+  delay: 3
+  until: node_exporter_host_health.status == 200
+  when: not ansible_check_mode
+  tags:
+    - molecule-notest

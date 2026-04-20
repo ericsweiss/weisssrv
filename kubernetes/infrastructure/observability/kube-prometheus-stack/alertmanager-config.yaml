@@ -55,6 +55,9 @@ spec:
             group_interval: 5m
             repeat_interval: 4h
             routes:
+              - receiver: "null"
+                matchers:
+                  - severity="none"
               - receiver: email-and-discord
                 matchers:
                   - severity="critical"
@@ -63,6 +66,7 @@ spec:
                   - severity="warning"
 
           receivers:
+            - name: "null"
             - name: discord-default
               discord_configs:
                 - webhook_url: "{{ .discordWebhookUrl }}"

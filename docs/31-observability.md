@@ -25,6 +25,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
 | **Plex Exporter** | `jsclayton/prometheus-plex-exporter` | Plex Media Server metrics |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
+| **Node Exporter (host)** | `prometheus-node-exporter` (on Proxmox hosts) | Bare-metal hardware metrics (thermals, SMART, disk I/O) on port 9101 |
 | **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on non-k8s hosts + 9 k3s VMs → Loki via NodePort |
 
 ### Service Monitors
@@ -36,6 +37,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Flux controllers (PodMonitor) | flux-system | `/metrics` | 30s |
 | Proxmox hosts (x6) | observability | `/pve` | 60s |
 | ZFS exporter (pve-nas-01) | observability | `/metrics` | 60s |
+| Node exporter (Proxmox hosts x6 + DNS hosts x2, port 9101) | observability | `/metrics` | 60s |
 | Unbound exporter (dns-01 + dns-02) | observability | `/metrics` | 60s |
 | AdGuard exporter | observability | `/metrics` | 60s |
 | Plex exporter | observability | `/metrics` | 60s |
@@ -92,7 +94,7 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 
 | Component | NFS Path | Size | Server |
 |-----------|----------|------|--------|
-| Grafana SQLite DB | `/export/appdata/grafana` | 1Gi | pve-nas-01 (192.168.0.102) |
+| Grafana SQLite DB | `/appdata/grafana` (NFS) | 1Gi | pve-nas-01 (192.168.0.102) |
 
 ### Log Collection
 
@@ -103,6 +105,12 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 On k3s VMs, alloy_host collects kubelet, containerd, etcd, and other systemd journal entries. This complements (not duplicates) the in-cluster DaemonSet, which only collects container logs from `/var/log/pods`. The two collectors cover different log sources with no overlap.
 
 Home Assistant (HAOS) does not support Alloy installation — it is a managed appliance OS without package management.
+
+### Host-Level Metrics
+
+The `node_exporter_host` Ansible role installs Prometheus node_exporter on all 6 bare-metal Proxmox hosts and both DNS LXC containers (dns-01, dns-02), listening on port 9101 (port 9100 is reserved for the kube-prometheus-stack DaemonSet on k3s nodes). On Proxmox hosts this provides hardware-level metrics not available from inside VMs: CPU and board thermals, SMART disk health, physical disk I/O, and fan speeds. On DNS containers it provides container-level CPU/memory/disk metrics and enables the textfile collector for cert renewal metrics.
+
+The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed) when scripts fail or become stale.
 
 ### Secrets
 
@@ -294,6 +302,7 @@ Add the ConfigMap to `kubernetes/infrastructure/observability/dashboards/` and r
 | Blackbox Exporter | Endpoint monitoring |
 | cert-manager | Certificate health |
 | Flux Cluster | Reconciliation status |
+| Thermals | CPU/board temperatures and fan speeds across Proxmox hosts |
 | Unbound | Recursive resolver cache and query stats |
 | GitLab | GitLab server health and performance |
 
@@ -447,6 +456,18 @@ Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m g
 |-------|-----------|----------|-----|
 | ZFSPoolDegraded | ZFS pool health > 0 (degraded/faulted) | critical | 5m |
 | ~~ZFSSnapshotStale~~ | ~~Latest snapshot > 24 hours old~~ | ~~warning~~ | ~~1h~~ (disabled -- zfs_exporter lacks snapshot metrics) |
+
+#### Custom Script Alerts (`homelab.scripts`)
+
+These alerts use metrics exposed via the node_exporter textfile collector on Proxmox hosts. Custom scripts (archive-backupctl, media-mover, acme.sh) write `.prom` files to the textfile collector directory, which node_exporter serves alongside hardware metrics.
+
+| Alert | Condition | Severity | For |
+|-------|-----------|----------|-----|
+| ArchiveBackupFailed | archive-backupctl last run exit code != 0 | warning | 1h |
+| ArchiveBackupStale | archive-backupctl last success > 2 days ago | warning | 1h |
+| MediaMoverFailed | media-mover last run exit code != 0 | warning | 1h |
+| MediaMoverStale | media-mover last success > 2 days ago | warning | 1h |
+| CertRenewalFailed | acme.sh cert renewal exit code != 0 | warning | 1h |
 
 ### Built-in Alerts
 

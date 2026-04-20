@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Replicate ZFS datasets to archive pool
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/archive-backupctl run

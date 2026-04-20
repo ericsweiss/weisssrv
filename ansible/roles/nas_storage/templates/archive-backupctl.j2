@@ -1,0 +1,543 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+{% raw %}
+set -Eeuo pipefail
+
+POOL_DST="archive"
+RESTORE_BASE="/mnt/restore"
+SNAP_PREFIX="archsync"
+
+# Retention:
+# - Keep the newest N snapshots always
+# - Plus keep the newest snapshot from the last M months (grandfather)
+KEEP_RECENT=3
+KEEP_MONTHLY=6
+
+# Datasets to replicate (recursive: includes children)
+SRC_LIST=(
+  "tank/share"
+  "tank/backups"
+  "tank/nextcloud-data"
+  "tank/proxmox"
+  "ssd/appdata"
+  "ssd/databases"
+)
+
+declare -A MAP=(
+  ["tank/share"]="${POOL_DST}/share"
+  ["tank/backups"]="${POOL_DST}/backups"
+  ["tank/nextcloud-data"]="${POOL_DST}/nextcloud-data"
+  ["tank/proxmox"]="${POOL_DST}/proxmox"
+  ["ssd/appdata"]="${POOL_DST}/appdata"
+  ["ssd/databases"]="${POOL_DST}/databases"
+)
+
+declare -A RMAP=(
+  ["${POOL_DST}/share"]="tank/share"
+  ["${POOL_DST}/backups"]="tank/backups"
+  ["${POOL_DST}/nextcloud-data"]="tank/nextcloud-data"
+  ["${POOL_DST}/proxmox"]="tank/proxmox"
+  ["${POOL_DST}/appdata"]="ssd/appdata"
+  ["${POOL_DST}/databases"]="ssd/databases"
+)
+
+PROM_DIR="/var/lib/node_exporter"
+PROM_FILE="${PROM_DIR}/archive_backup.prom"
+
+log() { echo "[$(date -Is)] $*"; }
+
+# Write Prometheus textfile metrics for node_exporter scraping
+write_prom_metrics() {
+  local success="$1" duration="$2"
+  local ts
+  ts="$(date +%s)"
+  local tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP archive_backup_last_run_duration_seconds Duration of last backup run"
+    echo "# TYPE archive_backup_last_run_duration_seconds gauge"
+    echo "archive_backup_last_run_duration_seconds ${duration}"
+    echo "# HELP archive_backup_last_run_success Whether the last run succeeded (1=success, 0=failure)"
+    echo "# TYPE archive_backup_last_run_success gauge"
+    echo "archive_backup_last_run_success ${success}"
+    if [ "$success" -eq 1 ]; then
+      echo "# HELP archive_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+      echo "# TYPE archive_backup_last_success_timestamp_seconds gauge"
+      echo "archive_backup_last_success_timestamp_seconds ${ts}"
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+# On failure, write metrics with success=0 (preserve last-known timestamp)
+trap_write_failure_metrics() {
+  [[ "${_BACKUP_METRICS_ACTIVE:-0}" -eq 1 ]] || return 0
+  local end_ts
+  end_ts="$(date +%s)"
+  local duration=$(( end_ts - _BACKUP_START_TS ))
+  write_prom_metrics 0 "$duration"
+}
+_BACKUP_START_TS="$(date +%s)"
+_BACKUP_METRICS_ACTIVE=0
+trap trap_write_failure_metrics ERR
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run as root (e.g. sudo -i then archive-backupctl ...)" >&2
+    exit 1
+  fi
+}
+
+pool_present() { zpool list -H -o name "${POOL_DST}" >/dev/null 2>&1; }
+dataset_present() { zfs list -H -o name "$1" >/dev/null 2>&1; }
+
+# --- LOCKDOWN / SAFETY -------------------------------------------------------
+
+# Force backup tree into a safe, non-mountable, read-only state.
+lock_backup_tree() {
+  local root="$1"
+  dataset_present "$root" || return 0
+
+  zfs set mountpoint=none "$root" >/dev/null 2>&1 || true
+  zfs set canmount=off "$root"   >/dev/null 2>&1 || true
+  zfs set readonly=on "$root"    >/dev/null 2>&1 || true
+
+  while IFS= read -r child; do
+    zfs set mountpoint=inherit "$child" >/dev/null 2>&1 || true
+    zfs set canmount=off "$child"       >/dev/null 2>&1 || true
+    zfs set readonly=on "$child"        >/dev/null 2>&1 || true
+  done < <(zfs list -H -o name -r "$root" | tail -n +2)
+
+  zfs unmount -r "$root" >/dev/null 2>&1 || true
+}
+
+# Allow receives to write (still never mount anywhere).
+unlock_for_receive() {
+  local root="$1"
+  dataset_present "$root" || return 0
+
+  zfs set mountpoint=none "$root" >/dev/null 2>&1 || true
+  zfs set canmount=off "$root"    >/dev/null 2>&1 || true
+  zfs set readonly=off "$root"    >/dev/null 2>&1 || true
+
+  while IFS= read -r child; do
+    zfs set mountpoint=inherit "$child" >/dev/null 2>&1 || true
+    zfs set canmount=off "$child"       >/dev/null 2>&1 || true
+    zfs set readonly=off "$child"       >/dev/null 2>&1 || true
+  done < <(zfs list -H -o name -r "$root" | tail -n +2)
+
+  zfs unmount -r "$root" >/dev/null 2>&1 || true
+}
+
+# --- ATOMIC RECEIVE SAFETY ---------------------------------------------------
+# This is the ONLY change we're making vs the last "pruning+lockdown" script.
+# It prevents a received dataset from ever temporarily inheriting a dangerous mountpoint.
+RECV_SAFE_OPTS=( -o mountpoint=none -o canmount=off -o readonly=on )
+
+maybe_resume_receive() {
+  local dst="$1"
+  dataset_present "$dst" || return 0
+
+  local tok
+  tok="$(zfs get -H -o value receive_resume_token "$dst" 2>/dev/null || true)"
+  if [[ -n "$tok" && "$tok" != "-" ]]; then
+    log "Resuming interrupted receive into ${dst}"
+    unlock_for_receive "$dst"
+    zfs send -t "$tok" | zfs receive -u "${RECV_SAFE_OPTS[@]}" "$dst"
+    lock_backup_tree "$dst"
+  fi
+}
+
+# --- SNAPSHOT / COMMON BASELINE ---------------------------------------------
+
+latest_common_snapshot() {
+  local src="$1" dst="$2"
+
+  local src_snaps dst_snaps common
+  src_snaps="$(zfs list -H -t snapshot -o name -s creation -r "$src" \
+    | sed -n "s|^${src}@||p" \
+    | grep -E "^${SNAP_PREFIX}-" || true)"
+
+  dst_snaps="$(zfs list -H -t snapshot -o name -s creation -r "$dst" 2>/dev/null \
+    | sed -n "s|^${dst}@||p" \
+    | grep -E "^${SNAP_PREFIX}-" || true)"
+
+  common="$(comm -12 <(printf "%s\n" "$src_snaps" | sort) <(printf "%s\n" "$dst_snaps" | sort) | tail -n 1 || true)"
+  printf "%s" "$common"
+}
+
+latest_backup_snapshot_fullname() {
+  local bdst="$1"
+  zfs list -H -t snapshot -o name -s creation -r "$bdst" 2>/dev/null \
+    | grep -E "^${bdst}@${SNAP_PREFIX}-" \
+    | tail -n 1 || true
+}
+
+# --- RETENTION / PRUNING -----------------------------------------------------
+
+# Prune snapshots for ONE dataset (non-recursive); keeps:
+# - newest KEEP_RECENT snapshots
+# - plus newest snapshot per month for up to KEEP_MONTHLY months (excluding the newest KEEP_RECENT which are already kept)
+prune_snaps_dataset() {
+  local ds="$1"
+
+  # List snapshots newest -> oldest (note -S)
+  mapfile -t snaps < <(
+    zfs list -H -t snapshot -o name -S creation -r "$ds" 2>/dev/null \
+      | grep -E "^${ds}@${SNAP_PREFIX}-" || true
+  )
+  ((${#snaps[@]} == 0)) && return 0
+
+  declare -A keep=()
+  local i=0
+
+  # Keep newest KEEP_RECENT
+  for s in "${snaps[@]}"; do
+    if (( i < KEEP_RECENT )); then
+      keep["$s"]=1
+    fi
+    ((i++))
+  done
+
+  # Keep monthly (last snapshot per month), scanning newest -> oldest
+  declare -A kept_month=()
+  local kept_m=0
+
+  for s in "${snaps[@]}"; do
+    [[ -n "${keep[$s]:-}" ]] && continue
+
+    # Snapshot name includes a timestamp like archsync-YYYYMMDD-HHMMSS
+    # Extract YYYYMM from it.
+    local snap_name="${s#${ds}@}"
+    local yyyymm
+    yyyymm="$(echo "$snap_name" | sed -n 's/^'"${SNAP_PREFIX}"'-\([0-9]\{6\}\)[0-9]\{2\}-[0-9]\{6\}$/\1/p')"
+
+    # If format ever differs, skip monthly logic for that snapshot.
+    [[ -z "$yyyymm" ]] && continue
+
+    if [[ -z "${kept_month[$yyyymm]:-}" ]]; then
+      keep["$s"]=1
+      kept_month["$yyyymm"]=1
+      ((kept_m++))
+      ((kept_m >= KEEP_MONTHLY)) && break
+    fi
+  done
+
+  # Destroy anything not kept (oldest first is slightly safer to read logs; but we're iterating newest->oldest here)
+  for s in "${snaps[@]}"; do
+    if [[ -z "${keep[$s]:-}" ]]; then
+      log "Prune: destroying snapshot $s"
+      zfs destroy "$s"
+    fi
+  done
+}
+
+# Prune for dataset tree (root + children datasets)
+prune_snaps_tree() {
+  local root="$1"
+  dataset_present "$root" || return 0
+
+  while IFS= read -r ds; do
+    prune_snaps_dataset "$ds"
+  done < <(zfs list -H -o name -r "$root")
+}
+
+# --- POOL DEFAULTS -----------------------------------------------------------
+
+set_pool_root_props() {
+  zfs set mountpoint=none "${POOL_DST}" >/dev/null 2>&1 || true
+  zfs set compression=zstd "${POOL_DST}" >/dev/null 2>&1 || true
+  zfs set atime=off "${POOL_DST}" >/dev/null 2>&1 || true
+  zfs set xattr=sa "${POOL_DST}" >/dev/null 2>&1 || true
+  zfs set acltype=posixacl "${POOL_DST}" >/dev/null 2>&1 || true
+}
+
+# --- REPLICATION -------------------------------------------------------------
+
+replicate_one() {
+  local src="$1" dst="$2"
+  local snap_now="${SNAP_PREFIX}-$(date +%Y%m%d-%H%M%S)"
+
+  dataset_present "$src" || { log "SKIP: missing source $src"; return 0; }
+
+  # Resume partial receives first (if any)
+  if dataset_present "$dst"; then
+    maybe_resume_receive "$dst"
+  fi
+
+  log "Snapshot: ${src}@${snap_now}"
+  zfs snapshot -r "${src}@${snap_now}"
+
+  if ! dataset_present "$dst"; then
+    log "Initial replicate -> ${dst}"
+    zfs send -R "${src}@${snap_now}" \
+      | zfs receive -u "${RECV_SAFE_OPTS[@]}" "${dst}"
+    lock_backup_tree "$dst"
+  else
+    unlock_for_receive "$dst"
+
+    local prev
+    prev="$(latest_common_snapshot "$src" "$dst")"
+
+    if [[ -z "$prev" ]]; then
+      log "No common ${SNAP_PREFIX}-* snapshots; full replicate to ${dst} (receive -F)"
+      zfs send -R "${src}@${snap_now}" \
+        | zfs receive -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
+    else
+      log "Incremental: ${src}@${prev} -> ${src}@${snap_now} into ${dst} (receive -F)"
+      zfs send -R -i "${src}@${prev}" "${src}@${snap_now}" \
+        | zfs receive -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
+    fi
+
+    lock_backup_tree "$dst"
+  fi
+
+  # Prune both sides (keeps common set small and the comm faster)
+  prune_snaps_tree "$src" || true
+  prune_snaps_tree "$dst" || true
+}
+
+# --- COMMANDS ----------------------------------------------------------------
+
+cmd_run() {
+  _BACKUP_METRICS_ACTIVE=1
+  if ! pool_present; then
+    log "Pool '${POOL_DST}' not present (exported/unplugged). Nothing to do."
+    exit 0
+  fi
+
+  set_pool_root_props
+
+  log "Starting replication to '${POOL_DST}'"
+  for src in "${SRC_LIST[@]}"; do
+    replicate_one "$src" "${MAP[$src]}"
+  done
+
+  log "Replication complete."
+  zfs list -o name,used,avail,refer,mountpoint -r "${POOL_DST}" | sed 's/^/  /'
+
+  # Write Prometheus textfile metrics on success
+  local end_ts
+  end_ts="$(date +%s)"
+  local duration=$(( end_ts - _BACKUP_START_TS ))
+  write_prom_metrics 1 "$duration"
+}
+
+cmd_enable() {
+  systemctl enable --now archive-backup.timer
+  log "Enabled+started archive-backup.timer"
+}
+
+cmd_disable() {
+  systemctl disable --now archive-backup.timer >/dev/null 2>&1 || true
+  log "Disabled+stopped archive-backup.timer"
+}
+
+cmd_status() {
+  systemctl status archive-backup.timer --no-pager || true
+  systemctl status archive-backup.service --no-pager || true
+  zpool list "${POOL_DST}" 2>/dev/null || true
+  zfs list -r "${POOL_DST}" 2>/dev/null || true
+}
+
+cmd_unplug() {
+  cmd_disable
+  if ! pool_present; then
+    log "Pool '${POOL_DST}' already not present."
+    exit 0
+  fi
+  log "Unmounting datasets under '${POOL_DST}'"
+  zfs unmount -r "${POOL_DST}" 2>/dev/null || true
+  log "Exporting pool '${POOL_DST}' (safe to unplug after this)"
+  zpool export "${POOL_DST}"
+  log "Done."
+}
+
+_lock_existing_backup_datasets() {
+  set_pool_root_props
+  for dst in \
+    "${POOL_DST}/share" \
+    "${POOL_DST}/backups" \
+    "${POOL_DST}/nextcloud-data" \
+    "${POOL_DST}/proxmox" \
+    "${POOL_DST}/appdata" \
+    "${POOL_DST}/databases"
+  do
+    dataset_present "$dst" && lock_backup_tree "$dst"
+  done
+}
+
+cmd_plug() {
+  if pool_present; then
+    log "Pool '${POOL_DST}' already imported."
+  else
+    log "Importing pool '${POOL_DST}'"
+    zpool import -f "${POOL_DST}"
+  fi
+  _lock_existing_backup_datasets
+  cmd_enable
+  cmd_run
+}
+
+cmd_plug_arm() {
+  if pool_present; then
+    log "Pool '${POOL_DST}' already imported."
+  else
+    log "Importing pool '${POOL_DST}'"
+    zpool import -f "${POOL_DST}"
+  fi
+  _lock_existing_backup_datasets
+  cmd_enable
+  log "Plug-arm complete (timer enabled; no immediate replication run)."
+}
+
+# --- RESTORE -----------------------------------------------------------------
+
+_restore_mount_tree() {
+  local restore_root="$1" label="$2" ts="$3"
+  local mp="${RESTORE_BASE}/${label}/${ts}"
+
+  mkdir -p "$mp"
+
+  zfs set canmount=on "$restore_root"
+  zfs set mountpoint="$mp" "$restore_root"
+
+  while IFS= read -r child; do
+    zfs set canmount=on "$child" >/dev/null 2>&1 || true
+    zfs set mountpoint=inherit "$child" >/dev/null 2>&1 || true
+  done < <(zfs list -H -o name -r "$restore_root" | tail -n +2)
+
+  zfs mount -r "$restore_root" >/dev/null 2>&1 || true
+  log "Mounted restore tree at: $mp"
+}
+
+_restore_one() {
+  local bdst="$1" mode="$2"   # safe|force
+  local dst="${RMAP[$bdst]}"
+  local label
+  label="$(basename "$bdst")"
+
+  dataset_present "$bdst" || { log "SKIP restore: missing backup dataset $bdst"; return 0; }
+
+  local snap_full
+  snap_full="$(latest_backup_snapshot_fullname "$bdst")"
+  [[ -n "$snap_full" ]] || { log "SKIP restore: no ${SNAP_PREFIX}- snapshots on $bdst"; return 0; }
+
+  local ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+
+  if [[ "$mode" == "safe" ]]; then
+    local restore_dst="${dst}-restore-${ts}"
+    log "SAFE restore: ${snap_full} -> ${restore_dst} (non-destructive)"
+    zfs send -R "${snap_full}" | zfs receive -u "${restore_dst}"
+    mkdir -p "${RESTORE_BASE}"
+    _restore_mount_tree "${restore_dst}" "${label}" "${ts}"
+    return 0
+  fi
+
+  if ! dataset_present "$dst"; then
+    log "FORCE restore target missing; creating: ${snap_full} -> ${dst}"
+    zfs send -R "${snap_full}" | zfs receive -u "${dst}"
+    zfs mount -a 2>/dev/null || true
+    return 0
+  fi
+
+  log "FORCE restore (destructive): ${snap_full} -> ${dst} (receive -F)"
+  zfs send -R "${snap_full}" | zfs receive -u -F "${dst}"
+  zfs mount -a 2>/dev/null || true
+}
+
+cmd_restore() {
+  pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
+
+  local what="${1:-}"
+  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore <share|backups|nextcloud-data|proxmox|appdata|databases|all>" >&2; exit 2; }
+
+  case "$what" in
+    all)
+      _restore_one "${POOL_DST}/share" safe
+      _restore_one "${POOL_DST}/backups" safe
+      _restore_one "${POOL_DST}/nextcloud-data" safe
+      _restore_one "${POOL_DST}/proxmox" safe
+      _restore_one "${POOL_DST}/appdata" safe
+      _restore_one "${POOL_DST}/databases" safe
+      ;;
+    share) _restore_one "${POOL_DST}/share" safe ;;
+    backups) _restore_one "${POOL_DST}/backups" safe ;;
+    nextcloud-data) _restore_one "${POOL_DST}/nextcloud-data" safe ;;
+    proxmox) _restore_one "${POOL_DST}/proxmox" safe ;;
+    appdata) _restore_one "${POOL_DST}/appdata" safe ;;
+    databases) _restore_one "${POOL_DST}/databases" safe ;;
+    *) echo "Unknown restore target: $what" >&2; exit 2 ;;
+  esac
+
+  log "Restore (safe) complete. Restores are under: ${RESTORE_BASE}/<target>/<timestamp>/"
+}
+
+cmd_restore_force() {
+  pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
+
+  local what="${1:-}"
+  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore-force <share|backups|nextcloud-data|proxmox|appdata|databases|all>" >&2; exit 2; }
+
+  case "$what" in
+    all)
+      _restore_one "${POOL_DST}/share" force
+      _restore_one "${POOL_DST}/backups" force
+      _restore_one "${POOL_DST}/nextcloud-data" force
+      _restore_one "${POOL_DST}/proxmox" force
+      _restore_one "${POOL_DST}/appdata" force
+      _restore_one "${POOL_DST}/databases" force
+      ;;
+    share) _restore_one "${POOL_DST}/share" force ;;
+    backups) _restore_one "${POOL_DST}/backups" force ;;
+    nextcloud-data) _restore_one "${POOL_DST}/nextcloud-data" force ;;
+    proxmox) _restore_one "${POOL_DST}/proxmox" force ;;
+    appdata) _restore_one "${POOL_DST}/appdata" force ;;
+    databases) _restore_one "${POOL_DST}/databases" force ;;
+    *) echo "Unknown restore target: $what" >&2; exit 2 ;;
+  esac
+
+  log "Restore (FORCE) complete."
+}
+
+usage() {
+  cat <<USAGE
+Usage: archive-backupctl <command> [args]   (run as root)
+
+Commands:
+  run                 Run replication now (safe if archive is exported/unplugged; exits 0)
+  enable              Enable + start the systemd timer
+  disable             Disable + stop the systemd timer
+  status              Show timer/service/pool status
+  unplug              Disable timer, unmount archive datasets, export pool (safe to unplug)
+  plug                Import pool, enable timer, and run replication now
+  plug-arm            Import pool, lock/unmountable, enable timer (NO immediate run)
+
+  restore <target>        SAFE restore into new *-restore-YYYYMMDD-HHMMSS datasets,
+                          mounted under /mnt/restore/<target>/<timestamp>/
+  restore-force <target>  DESTRUCTIVE restore in place (zfs receive -F)
+                          targets: share|backups|nextcloud-data|proxmox|appdata|databases|all
+USAGE
+}
+
+main() {
+  need_root
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    run) cmd_run ;;
+    enable) cmd_enable ;;
+    disable) cmd_disable ;;
+    status) cmd_status ;;
+    unplug) cmd_unplug ;;
+    plug) cmd_plug ;;
+    plug-arm) cmd_plug_arm ;;
+    restore) cmd_restore "${1:-}" ;;
+    restore-force) cmd_restore_force "${1:-}" ;;
+    ""|help|-h|--help) usage ;;
+    *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
+  esac
+}
+
+main "$@"
+{% endraw %}

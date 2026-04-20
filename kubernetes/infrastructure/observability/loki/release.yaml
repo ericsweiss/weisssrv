@@ -62,7 +62,6 @@ spec:
         enabled: true
         size: 75Gi
         storageClass: ""
-        existingClaim: loki-data
       nodeSelector:
         esweiss.com/nas: "true"
       tolerations:

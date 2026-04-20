@@ -35,6 +35,40 @@ zfs_pools:
           compression: zstd
           com.sun:auto-snapshot: "false"
 
+  - name: ssd
+    datasets:
+      - name: ssd/appdata
+        properties:
+          mountpoint: /mnt/ssd/appdata
+          atime: "off"
+          compression: lz4
+          com.sun:auto-snapshot: "true"
+
+  - name: nvme
+    datasets:
+      - name: nvme/media
+        properties:
+          mountpoint: /mnt/nvme/media
+          atime: "off"
+          compression: zstd
+          recordsize: 1M
+          com.sun:auto-snapshot: "true"
+
+  - name: archive
+    datasets:
+      - name: archive/proxmox
+        properties:
+          mountpoint: /mnt/archive/proxmox
+          atime: "off"
+          compression: zstd
+          com.sun:auto-snapshot: "false"
+      - name: archive/backups
+        properties:
+          mountpoint: /mnt/archive/backups
+          atime: "off"
+          compression: zstd
+          com.sun:auto-snapshot: "false"
+
 # ZFS scrub timer
 zfs_scrub_enabled: true
 zfs_scrub_schedule: "monthly"

@@ -9,6 +9,39 @@ FULLCHAIN_SRC="{{ local_cert_dir }}/fullchain.pem"
 PRIVKEY_SRC="{{ local_cert_dir }}/privkey.pem"
 IDENTITY_FILE="/home/eric/.ssh/id_ed25519_certs"
 
+PROM_DIR="/var/lib/node_exporter"
+PROM_FILE="${PROM_DIR}/cert_renewal.prom"
+_CERT_START_TS="$(date +%s)"
+
+write_prom_metrics() {
+  local success="$1" duration="$2"
+  local ts
+  ts="$(date +%s)"
+  local tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP cert_renewal_last_run_duration_seconds Duration of last cert renewal run"
+    echo "# TYPE cert_renewal_last_run_duration_seconds gauge"
+    echo "cert_renewal_last_run_duration_seconds ${duration}"
+    echo "# HELP cert_renewal_last_run_success Whether the last cert renewal succeeded (1=success, 0=failure)"
+    echo "# TYPE cert_renewal_last_run_success gauge"
+    echo "cert_renewal_last_run_success ${success}"
+    if [ "$success" -eq 1 ]; then
+      echo "# HELP cert_renewal_last_success_timestamp_seconds Unix timestamp of last successful cert renewal"
+      echo "# TYPE cert_renewal_last_success_timestamp_seconds gauge"
+      echo "cert_renewal_last_success_timestamp_seconds ${ts}"
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+trap_write_failure_metrics() {
+  local end_ts
+  end_ts="$(date +%s)"
+  local duration=$(( end_ts - _CERT_START_TS ))
+  write_prom_metrics 0 "$duration"
+}
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics; fi' EXIT
+
 {% for target in cert_distribution_targets %}
 {{ target.host | upper | replace('-', '_') }}_IP="{{ target.ip }}"
 {{ target.host | upper | replace('-', '_') }}_CERT_DIR="{{ target.cert_dir }}"
@@ -33,3 +66,8 @@ ssh "${SSH_OPTS[@]}" "eric@${{"{"}}{{ target.host | upper | replace('-', '_') }}
 
 {% endfor %}
 echo "Certificate distribution complete."
+
+# Write Prometheus textfile metrics on success
+_CERT_END_TS="$(date +%s)"
+_CERT_DURATION=$(( _CERT_END_TS - _CERT_START_TS ))
+write_prom_metrics 1 "$_CERT_DURATION"

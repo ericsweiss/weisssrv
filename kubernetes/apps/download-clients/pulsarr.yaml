@@ -66,10 +66,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 384Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 768Mi
           livenessProbe:
             httpGet:
               # Pulsarr's `/` is a 302 redirect to /login; Fastify's /health

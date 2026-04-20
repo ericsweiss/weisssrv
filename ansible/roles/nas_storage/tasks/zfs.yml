@@ -20,14 +20,14 @@
 
 - name: Enable ZFS scrub timer
   ansible.builtin.systemd:
-    name: "zfs-scrub@{{ item.name }}.timer"
+    name: "zfs-scrub-{{ zfs_scrub_schedule | default('monthly') }}@{{ item.name }}.timer"
     enabled: true
     state: started
   loop: "{{ zfs_pools }}"
   loop_control:
     label: "{{ item.name }}"
   when: zfs_scrub_enabled | default(true)
-  failed_when: false  # Timer may not exist on all systems
+  failed_when: false
 
 - name: Ensure zfs-auto-snapshot is installed
   ansible.builtin.apt:

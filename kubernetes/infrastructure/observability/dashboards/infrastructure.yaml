@@ -420,8 +420,128 @@ data:
           ]
         },
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "unit": "decbytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+          "id": 16,
+          "options": {
+            "displayMode": "gradient",
+            "maxVizHeight": 300,
+            "minVizHeight": 16,
+            "minVizWidth": 8,
+            "namePlacement": "auto",
+            "orientation": "horizontal",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "showUnfilled": true,
+            "sizing": "auto",
+            "valueMode": "color"
+          },
+          "description": "ZFS zvol (type=volume) disk usage. Includes database zvols (Prometheus, Loki, Authentik PG, Mealie PG, GitLab repos) and VM disks. Filtered to ssd/ pool datasets only.",
+          "title": "ZFS Zvol/Dataset Usage",
+          "type": "bargauge",
+          "targets": [
+            {
+              "expr": "max by (name) (zfs_dataset_used_bytes{type=\"volume\", name=~\"ssd/appdata/.*\"})",
+              "legendFormat": "{{ name }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              },
+              "unit": "decbytes",
+              "custom": {
+                "align": "auto",
+                "cellOptions": { "type": "auto" },
+                "inspect": false
+              }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Pool Used" },
+                "properties": [
+                  { "id": "unit", "value": "decbytes" },
+                  { "id": "custom.width", "value": 120 }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Volsize" },
+                "properties": [
+                  { "id": "unit", "value": "decbytes" },
+                  { "id": "custom.width", "value": 120 }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+          "id": 17,
+          "options": {
+            "cellHeight": "sm",
+            "footer": { "countRows": false, "enablePagination": false, "reducer": ["sum"], "show": false },
+            "showHeader": true,
+            "sortBy": [{ "desc": true, "displayName": "Pool Used" }]
+          },
+          "description": "ZFS zvol details. Pool Used = total pool consumption including snapshots and metadata (can exceed volsize). Volsize = provisioned zvol size.",
+          "title": "ZFS Zvol Details",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "max by (name) (zfs_dataset_used_bytes{type=\"volume\", name=~\"ssd/appdata/.*\"})",
+              "format": "table",
+              "instant": true,
+              "refId": "used"
+            },
+            {
+              "expr": "max by (name) (zfs_dataset_volume_size_bytes{type=\"volume\", name=~\"ssd/appdata/.*\"})",
+              "format": "table",
+              "instant": true,
+              "refId": "volsize"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": { "byField": "name", "mode": "outer" }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time 1": true, "Time 2": true
+                },
+                "renameByName": {
+                  "name": "Zvol",
+                  "Value #used": "Pool Used",
+                  "Value #volsize": "Volsize"
+                }
+              }
+            }
+          ]
+        },
+        {
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
           "id": 102,
           "panels": [],
           "title": "DNS",
@@ -444,7 +564,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 23 },
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 31 },
           "id": 9,
           "options": {
             "colorMode": "background",
@@ -481,7 +601,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 23 },
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 31 },
           "id": 10,
           "options": {
             "colorMode": "background",
@@ -524,7 +644,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 23 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 31 },
           "id": 11,
           "options": {
             "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
@@ -568,7 +688,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 23 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 31 },
           "id": 12,
           "options": {
             "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
@@ -591,7 +711,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
           "id": 103,
           "panels": [],
           "title": "Certificates",
@@ -610,7 +730,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 32 },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 40 },
           "id": 13,
           "options": {
             "colorMode": "background",
@@ -662,7 +782,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 18, "x": 6, "y": 32 },
+          "gridPos": { "h": 8, "w": 18, "x": 6, "y": 40 },
           "id": 14,
           "options": {
             "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "right" },
@@ -680,7 +800,179 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 48 },
+          "id": 105,
+          "panels": [],
+          "title": "Script Health",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "Status of the nightly archive backup script. Requires host-level node_exporter textfile collector on pve-nas-01.",
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "options": { "0": { "color": "red", "text": "FAIL" }, "1": { "color": "green", "text": "OK" } }, "type": "value" }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 49 },
+          "id": 18,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "auto"
+          },
+          "title": "Archive Backup",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "archive_backup_last_run_success",
+              "legendFormat": "backup",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "Status of the media mover script (NVMe to HDD tier). Requires host-level node_exporter textfile collector on pve-nas-01.",
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "options": { "0": { "color": "red", "text": "FAIL" }, "1": { "color": "green", "text": "OK" } }, "type": "value" }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 49 },
+          "id": 19,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "auto"
+          },
+          "title": "Media Mover",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "media_mover_last_run_success",
+              "legendFormat": "mover",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "Status of the certificate renewal and distribution script. Requires host-level node_exporter textfile collector on dns-01.",
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "options": { "0": { "color": "red", "text": "FAIL" }, "1": { "color": "green", "text": "OK" } }, "type": "value" }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 49 },
+          "id": 20,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "auto"
+          },
+          "title": "Cert Renewal",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "cert_renewal_last_run_success",
+              "legendFormat": "certs",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "Duration of archive backup and media mover runs over time.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisLabel": "",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineInterpolation": "smooth",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" }
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 49 },
+          "id": 21,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "Script Run Duration",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "archive_backup_last_run_duration_seconds",
+              "legendFormat": "archive backup",
+              "refId": "A"
+            },
+            {
+              "expr": "media_mover_last_run_duration_seconds",
+              "legendFormat": "media mover",
+              "refId": "B"
+            },
+            {
+              "expr": "cert_renewal_last_run_duration_seconds",
+              "legendFormat": "cert renewal",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 57 },
           "id": 104,
           "panels": [],
           "title": "Logs",
@@ -688,7 +980,7 @@ data:
         },
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 41 },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 58 },
           "id": 15,
           "options": {
             "dedupStrategy": "none",
