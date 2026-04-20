@@ -60,7 +60,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
+              cpu: 250m
               memory: 64Mi
 ---
 apiVersion: v1
@@ -145,7 +145,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
+              cpu: 250m
               memory: 64Mi
 ---
 apiVersion: v1
@@ -230,7 +230,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
+              cpu: 250m
               memory: 64Mi
 ---
 apiVersion: v1
@@ -315,7 +315,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
+              cpu: 250m
               memory: 64Mi
 ---
 apiVersion: v1
