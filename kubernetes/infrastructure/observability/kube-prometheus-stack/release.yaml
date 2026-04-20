@@ -114,6 +114,11 @@ spec:
           root_url: https://grafana.esweiss.com
         auth:
           disable_login_form: true
+        analytics:
+          check_for_updates: false
+          check_for_plugin_updates: false
+          reporting_enabled: false
+          feedback_links_enabled: false
 
       # Static OIDC configuration (Authentik)
       # Access: users in grafana-users group can log in, grafana-admins get Admin role.
