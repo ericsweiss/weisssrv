@@ -1302,13 +1302,11 @@ deploy-gitlab-verify:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: never
+    # Run on every push to main, no `changes:` filter. Same reasoning as
+    # deploy-verify — GitLab availability can be affected indirectly by
+    # config changes elsewhere, and verifying it on every push is cheap
+    # (~1 min) and high-signal.
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - ansible/roles/gitlab/**
-        - kubernetes/apps/vm-ingress/gitlab*.yaml
-        - kubernetes/apps/vm-ingress/services-gitlab.yaml
-        - kubernetes/apps/gitlab-runner/**
-        - kubernetes/apps/gitlab-runner-privileged/**
   allow_failure: true
 
 # ------------------------------------------------------------------------------
@@ -1688,12 +1686,11 @@ deploy-verify:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: never
+    # Run on every push to main, no `changes:` filter. Verification answers
+    # "did the cluster come back healthy after this push?" — that question
+    # matters for every push, not just ones touching specific paths. The
+    # earlier path-gated form silently skipped on most main pushes.
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - ansible/**
-        - terraform/**
-        - kubernetes/**
-        - scripts/**
   # No allow_failure: the verification explicitly fails if nodes aren't Ready,
   # Flux reconciliation times out, any Flux resource is not Ready, server-side
   # dry-run rejects manifests, or GitLab is unreachable. ExternalSecret
