@@ -19,14 +19,14 @@ data:
   helm_chart_versions_alloy: 1.8.0
   helm_chart_versions_cert_manager: v1.20.2
   helm_chart_versions_external_dns: 1.20.0
-  helm_chart_versions_external_secrets: 2.4.0
+  helm_chart_versions_external_secrets: 2.4.1
   helm_chart_versions_kube_prometheus_stack: 84.3.0
-  helm_chart_versions_loki: 13.3.2
+  helm_chart_versions_loki: 13.3.3
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.9.1
   helm_chart_versions_traefik: 40.0.0-ea.3
-  k3s_version: v1.35.3+k3s1
+  k3s_version: v1.35.4+k3s1
   kube_vip_version: v1.1.2
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.3-alpine

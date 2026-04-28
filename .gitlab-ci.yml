@@ -1439,12 +1439,17 @@ deploy-verify:
         for ks in kubernetes/clusters/weisssrv/*.yaml; do
           NAME=$(basename "$ks" .yaml)
           [ "$NAME" = "kustomization" ] && continue
+          # Python source must reach python3 -c with NO leading whitespace, or
+          # it raises IndentationError at module level. The YAML `- |` literal
+          # block strips a 6-space indent from each line, so the Python lines
+          # below MUST be at exactly 6 spaces (matching the script block's
+          # content indent), not aligned with the surrounding bash if-block.
           if ! SRCPATH=$(python3 -c "
-          import yaml
-          with open('$ks') as f:
-              doc = yaml.safe_load(f)
-          print(doc.get('spec',{}).get('path','') or '')
-          "); then
+      import yaml
+      with open('$ks') as f:
+          doc = yaml.safe_load(f)
+      print(doc.get('spec',{}).get('path','') or '')
+      "); then
             echo "    ERROR: failed to parse $ks"
             EXIT=1
             continue

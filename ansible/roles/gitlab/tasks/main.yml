@@ -467,6 +467,13 @@
         success_msg: "GitLab API token present"
       no_log: true
 
+    # All API tasks below run on the controller via delegate_to: localhost.
+    # The `vars:` block on each task forces local connection and disables
+    # become — needed because inventory-level `ansible_become: true` is a
+    # connection var that propagates through delegate_to and isn't overridden
+    # by task-level `become: false`. Without this we'd try `sudo` on the
+    # operator's workstation, which prompts for a password and stalls.
+
     # Retries cover the case where this task runs while GitLab is
     # reconfiguring after a version bump (handlers flush at end of play; this
     # task is in the middle, so the install/upgrade may have just restarted
@@ -481,6 +488,9 @@
         status_code: 200
       register: gitlab_app_settings
       delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
       no_log: true
       retries: 20
       delay: 15
@@ -497,6 +507,9 @@
           vscode_extension_marketplace_extension_host_domain: "{{ gitlab_web_ide_extension_host_domain }}"
         status_code: 200
       delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
       no_log: true
       when: >-
         gitlab_app_settings.json.vscode_extension_marketplace_extension_host_domain | default(none)
@@ -517,6 +530,9 @@
       register: gitlab_marketplace_result
       failed_when: false
       delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
       no_log: true
       when: >-
         gitlab_app_settings.json.vscode_extension_marketplace_enabled | default(none)
@@ -546,9 +562,9 @@
           Investigate (token scope, GitLab version field rename, network path) before re-running.
       when:
         - gitlab_marketplace_result is defined
+        - not (gitlab_marketplace_result.skipped | default(false))
         - (gitlab_marketplace_result.failed | default(false))
-          or (gitlab_marketplace_result.status is not defined)
-          or (gitlab_marketplace_result.status not in [200, 400, 403])
+          or (gitlab_marketplace_result.status | default(200) not in [200, 400, 403])
 
     # Pre-flight only when we're DISABLING fallback (the dangerous direction).
     # Re-enabling fallback (rollback) doesn't need the host to be reachable.
@@ -561,6 +577,9 @@
         status_code: 200
       register: gitlab_web_ide_probe
       delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
       retries: 10
       delay: 15
       until: gitlab_web_ide_probe.status == 200
@@ -581,6 +600,9 @@
           vscode_extension_marketplace_single_origin_fallback_enabled: "{{ gitlab_web_ide_single_origin_fallback | string | lower }}"
         status_code: 200
       delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
       no_log: true
       when: >-
         gitlab_app_settings.json.vscode_extension_marketplace_single_origin_fallback_enabled | default(none)
