@@ -117,6 +117,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
   - Repository data on separate ZFS zvol (ssd/appdata/gitlab/repos, 200GB)
   - Container Registry (registry.git.ericsweiss.com)
   - GitLab Pages (*.pages.git.ericsweiss.com)
+  - Web IDE extension host (*.ide.git.ericsweiss.com) — per-extension SOP isolation, CVE-2026-5816 mitigation
   - CI/CD Runners on k3s cluster (infrastructure runner for weisssrv, shared runner for other projects)
   - Authentik SSO integration
   - Git SSH on port 22 (internal), port 2222 (external)

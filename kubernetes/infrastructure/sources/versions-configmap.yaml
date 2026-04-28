@@ -8,20 +8,20 @@ data:
   adguard_home_version: 0.107.74
   adguardhome_sync_version: 0.9.0
   authentik_version: 2026.2.2
-  bar_assistant_version: 5.14.0
+  bar_assistant_version: 5.15.0
   busybox_version: '1.37'
   debian_version: '13'
   exportarr_version: v2.3.0
   gitlab_agent_helm_version: 2.26.0
-  gitlab_runner_helm_version: 0.88.0
-  gitlab_version: 18.11.0-ee.0
+  gitlab_runner_helm_version: 0.88.1
+  gitlab_version: 18.11.1-ee.0
   gluetun_version: v3.41.1
-  helm_chart_versions_alloy: 1.7.0
+  helm_chart_versions_alloy: 1.8.0
   helm_chart_versions_cert_manager: v1.20.2
   helm_chart_versions_external_dns: 1.20.0
-  helm_chart_versions_external_secrets: 2.3.0
-  helm_chart_versions_kube_prometheus_stack: 83.6.0
-  helm_chart_versions_loki: 6.55.0
+  helm_chart_versions_external_secrets: 2.4.0
+  helm_chart_versions_kube_prometheus_stack: 84.3.0
+  helm_chart_versions_loki: 13.3.2
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.9.1
@@ -36,13 +36,13 @@ data:
   plex_version: 1.43.1.10611-1e34174b1
   postgresql_version: 18.3-trixie
   prowlarr_version: 2.3.5.5327
-  proxmox_exporter_version: 3.8.2
+  proxmox_exporter_version: 3.8.3
   pulsarr_version: 0.15.3
   qbittorrent_version: 5.1.4
   radarr_version: 6.1.1.10360
   redis_exporter_version: v1.82.0
   redis_version: 8.6.2-alpine
-  salt_rim_version: 4.14.1
+  salt_rim_version: 4.15.0
   sonarr_version: 4.0.17.2952
   tailscale_version: 1.96.4
   unbound_exporter_version: 0.4.6

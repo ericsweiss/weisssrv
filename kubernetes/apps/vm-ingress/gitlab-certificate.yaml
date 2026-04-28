@@ -103,3 +103,37 @@ spec:
     - "*.pages.git.esweiss.com"
     - "pages.git.esweiss.com"
   renewBefore: 720h
+
+---
+# =============================================================================
+# GitLab Web IDE - *.ide.git.ericsweiss.com (extension host)
+# =============================================================================
+#
+# Per-extension SOP isolation: each VS Code extension iframe is loaded from
+# <ext-id>.ide.git.ericsweiss.com so the browser SOP keeps extension JS away
+# from the GitLab session cookie. CVE-2026-5816 mitigation; see
+# docs/27-gitlab-deployment.md.
+#
+# LIMITATION: Wildcard certs only cover single-label subdomains (same constraint
+# as gitlab-pages-wildcard above). Extension IDs that contain dots (e.g.
+# publisher.name) are sanitized to single-label form by GitLab before being
+# used as a Host header.
+#
+# No internal *.ide.git.esweiss.com mirror because Web IDE is loaded as an
+# iframe from git.ericsweiss.com (canonical external host), so there's no
+# LAN-only entry point that would benefit from a split-horizon mirror.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-web-ide-wildcard
+  namespace: gitlab
+spec:
+  secretName: gitlab-web-ide-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "*.ide.git.ericsweiss.com"
+  dnsNames:
+    - "*.ide.git.ericsweiss.com"
+    - "ide.git.ericsweiss.com"
+  renewBefore: 720h

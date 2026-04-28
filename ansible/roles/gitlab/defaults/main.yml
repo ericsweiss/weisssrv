@@ -35,6 +35,26 @@ gitlab_registry_external_url: "https://registry.git.ericsweiss.com"
 gitlab_pages_enabled: true
 gitlab_pages_external_url: "https://pages.git.ericsweiss.com"
 
+# Web IDE extension host (CVE-2026-5816 / single-origin fallback fix)
+# The extension host serves VS Code static assets and per-extension iframes.
+# It MUST be a different origin from gitlab_external_url so the browser SOP
+# isolates extension code from the GitLab session cookie.
+# DNS + cert + IngressRoute are managed by Terraform/Flux; see:
+#   - terraform/cloudflare/dns.tf (cloudflare_record.ide_git*)
+#   - kubernetes/apps/vm-ingress/gitlab-certificate.yaml (gitlab-web-ide-wildcard)
+#   - kubernetes/apps/vm-ingress/gitlab.yaml (gitlab-web-ide)
+# Bare hostname (no wildcard prefix). GitLab generates per-extension subdomains
+# <ext-id>.ide.git.ericsweiss.com from this parent. The wildcard cert + IngressRoute
+# cover those generated hostnames. The Application Settings API rejects the wildcard
+# form with HTTP 400 (regex pattern: ^(?=.{1,253}$)(?!-)(?:[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,63}...$).
+gitlab_web_ide_extension_host_domain: "ide.git.ericsweiss.com"
+gitlab_web_ide_marketplace_enabled: true
+gitlab_web_ide_single_origin_fallback: false  # Disabled on purpose - SOP breach mitigation
+
+# GitLab Application Settings API token (PAT with api scope)
+# Used to drive Web IDE settings that have no Omnibus gitlab.rb key on 18.11.
+gitlab_api_token: "{{ lookup('ansible.builtin.env', 'GITLAB_API_TOKEN') }}"
+
 # SMTP configuration (via smtp-relay.esweiss.com)
 gitlab_smtp_enabled: true
 gitlab_smtp_address: "smtp-relay.esweiss.com"

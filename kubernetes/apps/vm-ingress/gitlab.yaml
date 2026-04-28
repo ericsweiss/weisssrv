@@ -182,3 +182,52 @@ spec:
           port: 8090
   tls:
     secretName: gitlab-pages-esweiss-tls
+
+---
+# =============================================================================
+# GitLab Web IDE Extension Host
+# Uses HostRegexp for wildcard matching, mirrors gitlab-pages pattern
+# =============================================================================
+#
+# LIMITATION: This route only matches single-label subdomains (e.g.,
+# foo.ide.git.ericsweiss.com). Nested subdomains will NOT match and will NOT
+# have TLS (the wildcard cert doesn't cover them either). See gitlab-pages
+# above for the same constraint.
+#
+# Backend: same gitlab-web Service that fronts git.ericsweiss.com. GitLab
+# nginx is a catch-all server_name; Workhorse serves the Web IDE static
+# assets on whatever Host header arrives. The Rails app gates content on
+# the configured extension_host_domain Application Setting.
+
+# External - *.ide.git.ericsweiss.com and ide.git.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-web-ide
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # Wildcard subdomain (foo.ide.git.ericsweiss.com)
+    # Use [^.]+ to match single-label subdomains only (matches wildcard cert *.ide.git.ericsweiss.com)
+    # Traefik v3 syntax: HostRegexp uses Go regex directly without capture groups
+    - match: HostRegexp(`^[^.]+\.ide\.git\.ericsweiss\.com$`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-web
+          port: 80
+    # Apex ide.git.ericsweiss.com
+    - match: Host(`ide.git.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-web
+          port: 80
+  tls:
+    secretName: gitlab-web-ide-ericsweiss-tls

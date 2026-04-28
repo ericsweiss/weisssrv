@@ -436,3 +436,152 @@
   when:
     - gitlab_fail2ban_enabled | default(true)
     - gitlab_fail2ban_installed.rc | default(1) == 0
+
+# =============================================================================
+# Web IDE extension host configuration (API-driven; no Omnibus key on 18.11)
+# =============================================================================
+# CVE-2026-5816 mitigation: disable single-origin fallback once the
+# self-hosted ide.git.ericsweiss.com extension host is reachable.
+# Settings are sequenced so the host domain is configured BEFORE the fallback
+# is removed. The marketplace toggle is best-effort: 400/403 are accepted
+# (Free-tier rejection) by the explicit fail-task gate below; any other
+# non-2xx (or connection error) aborts the play with a diagnostic body.
+#
+# Runs from the Ansible controller (delegate_to: localhost) so the API call
+# uses the same network path as the operator's browser, not the VM's
+# outbound connectivity.
+
+- name: Web IDE | Apply Application Settings
+  when: not (skip_gitlab_install | default(false))
+  block:
+    - name: Web IDE | Assert GitLab API token is present
+      ansible.builtin.assert:
+        that:
+          - gitlab_api_token | default('') | length > 0
+          - not (gitlab_api_token | default('') | string).startswith('op://')
+        fail_msg: >-
+          GITLAB_API_TOKEN env var is empty or unresolved (still op:// reference).
+          Web IDE security settings (CVE-2026-5816 mitigation) cannot be applied via API.
+          Ensure 'op run' resolves op://Homelab/GitLab API Token/credential.
+          Run: task gitlab:deploy
+        success_msg: "GitLab API token present"
+      no_log: true
+
+    # Retries cover the case where this task runs while GitLab is
+    # reconfiguring after a version bump (handlers flush at end of play; this
+    # task is in the middle, so the install/upgrade may have just restarted
+    # the service). 20 * 15s = 5 min ceiling.
+    - name: Web IDE | Read current GitLab application settings
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: GET
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        return_content: true
+        status_code: 200
+      register: gitlab_app_settings
+      delegate_to: localhost
+      no_log: true
+      retries: 20
+      delay: 15
+      until: gitlab_app_settings.status == 200
+
+    - name: Web IDE | Set extension host domain
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: PUT
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        body_format: form-urlencoded
+        body:
+          vscode_extension_marketplace_extension_host_domain: "{{ gitlab_web_ide_extension_host_domain }}"
+        status_code: 200
+      delegate_to: localhost
+      no_log: true
+      when: >-
+        gitlab_app_settings.json.vscode_extension_marketplace_extension_host_domain | default(none)
+        != gitlab_web_ide_extension_host_domain
+
+    - name: Web IDE | Enable VS Code extension marketplace (best-effort on Free)
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: PUT
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        body_format: form-urlencoded
+        body:
+          vscode_extension_marketplace_enabled: "{{ gitlab_web_ide_marketplace_enabled | string | lower }}"
+        # failed_when:false + the next two tasks (debug + fail) surface 400/403
+        # (Free-tier rejection - acceptable), 401/5xx (real errors), and
+        # connection errors (uri sets `failed: true` with no `status` field).
+      register: gitlab_marketplace_result
+      failed_when: false
+      delegate_to: localhost
+      no_log: true
+      when: >-
+        gitlab_app_settings.json.vscode_extension_marketplace_enabled | default(none)
+        != gitlab_web_ide_marketplace_enabled
+
+    - name: Web IDE | Surface marketplace enable result on failure or non-200
+      ansible.builtin.debug:
+        msg: >-
+          Marketplace enable
+          HTTP {{ gitlab_marketplace_result.status | default('connection error') }}
+          ({{ gitlab_marketplace_result.msg | default('no msg') }}).
+          Body: {{ gitlab_marketplace_result.json
+                  | default(gitlab_marketplace_result.content | default('-')) }}
+      when:
+        - gitlab_marketplace_result is defined
+        - (gitlab_marketplace_result.failed | default(false))
+          or (gitlab_marketplace_result.status | default(200) != 200)
+      changed_when: false
+
+    - name: Web IDE | Fail loudly on unexpected marketplace API status
+      ansible.builtin.fail:
+        msg: >-
+          Marketplace enable failed:
+          HTTP {{ gitlab_marketplace_result.status | default('connection error') }}.
+          Expected 200 (success) or 400/403 (Free-tier rejection).
+          See debug output above for body / error message.
+          Investigate (token scope, GitLab version field rename, network path) before re-running.
+      when:
+        - gitlab_marketplace_result is defined
+        - (gitlab_marketplace_result.failed | default(false))
+          or (gitlab_marketplace_result.status is not defined)
+          or (gitlab_marketplace_result.status not in [200, 400, 403])
+
+    # Pre-flight only when we're DISABLING fallback (the dangerous direction).
+    # Re-enabling fallback (rollback) doesn't need the host to be reachable.
+    # Probe matches Test 8 in `task gitlab:verify`; 10 * 15s = 2.5 min ceiling
+    # is enough for a fresh DNS-01 cert issuance.
+    - name: Web IDE | Verify extension host route is reachable before disabling fallback
+      ansible.builtin.uri:
+        url: "https://probe.{{ gitlab_web_ide_extension_host_domain }}/-/health"
+        method: GET
+        status_code: 200
+      register: gitlab_web_ide_probe
+      delegate_to: localhost
+      retries: 10
+      delay: 15
+      until: gitlab_web_ide_probe.status == 200
+      changed_when: false
+      when:
+        - not gitlab_web_ide_single_origin_fallback
+        - gitlab_app_settings.json.vscode_extension_marketplace_single_origin_fallback_enabled | default(none)
+          != gitlab_web_ide_single_origin_fallback
+
+    - name: Web IDE | Disable single-origin fallback (CVE-2026-5816)
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: PUT
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        body_format: form-urlencoded
+        body:
+          vscode_extension_marketplace_single_origin_fallback_enabled: "{{ gitlab_web_ide_single_origin_fallback | string | lower }}"
+        status_code: 200
+      delegate_to: localhost
+      no_log: true
+      when: >-
+        gitlab_app_settings.json.vscode_extension_marketplace_single_origin_fallback_enabled | default(none)
+        != gitlab_web_ide_single_origin_fallback

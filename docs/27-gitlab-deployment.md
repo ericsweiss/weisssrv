@@ -604,3 +604,79 @@ Pages are available at:
 - [Authentik SSO Setup](23-recipes-sso-setup.md) - Similar SSO configuration pattern
 - [K3s Deployment](19-k3s-deployment.md) - Cluster where runners are deployed
 - [Firewall Configuration](11-firewall.md) - Security group details
+
+## Web IDE Extension Host
+
+GitLab's Web IDE serves the VS Code editor and per-extension iframes from a separate "extension host" subdomain so the browser's same-origin policy isolates extension JavaScript from the GitLab session cookie. CVE-2026-5816 (CVSS 8.0, fixed in 18.11.1) showed that when the configured extension host is unreachable, GitLab falls back to serving those assets from the GitLab origin itself — at which point a malicious extension can hit `/api/v4/...` with the user's session cookie.
+
+### Architecture
+
+| Component | Value |
+|---|---|
+| Extension host | `*.ide.git.ericsweiss.com` (DNS-only via Cloudflare → MetalLB public VIP) |
+| Apex | `ide.git.ericsweiss.com` (same target) |
+| Cert | cert-manager `gitlab-web-ide-wildcard` → secret `gitlab-web-ide-ericsweiss-tls`, DNS-01 via Cloudflare |
+| Route | Traefik `IngressRoute gitlab-web-ide` (HostRegexp single-label wildcard + apex Host) → `gitlab-web` Service:80 |
+| Backend | Same GitLab nginx + Workhorse that fronts `git.ericsweiss.com` (catch-all server_name) |
+
+### GitLab settings (Application Settings API)
+
+Set by the `Web IDE | …` block in `ansible/roles/gitlab/tasks/main.yml`. These have no Omnibus `gitlab.rb` key on 18.11; they live only in the `application_settings` table.
+
+| Field | Value |
+|---|---|
+| `vscode_extension_marketplace_enabled` | `true` (best-effort on Free; tier rejection is acceptable) |
+| `vscode_extension_marketplace_extension_host_domain` | `ide.git.ericsweiss.com` (bare hostname; GitLab generates per-extension subdomains from this parent) |
+| `vscode_extension_marketplace_single_origin_fallback_enabled` | `false` |
+
+### Initial deployment
+
+The first deploy must order infrastructure → settings so Web IDE doesn't break in the gap between disabling the fallback and the new extension host being reachable. Run from the repo root:
+
+1. **DNS first** — creates the Cloudflare records before cert-manager polls:
+   ```bash
+   task terraform:apply
+   ```
+2. **Wait for cert** — Flux + cert-manager DNS-01 typically takes 60-120s:
+   ```bash
+   kubectl -n gitlab wait certificate gitlab-web-ide-wildcard --for=condition=Ready --timeout=5m
+   ```
+3. **Smoke gate (manual, MUST pass before step 4)** — confirms DNS + TLS + IngressRoute are live:
+   ```bash
+   curl -sI https://probe.ide.git.ericsweiss.com/-/readiness | head -1
+   # Expected: HTTP/2 200
+   ```
+4. **Apply settings + version bump**:
+   ```bash
+   task gitlab:deploy
+   ```
+5. **Verify** — Test 8 covers the new host; manual editor check confirms the iframe origin:
+   ```bash
+   task gitlab:verify
+   # Then visit https://git.ericsweiss.com/<group>/<project>/-/ide/
+   ```
+
+If step 3 fails, do **not** run step 4 — the security flip would break Web IDE entirely until the asset host is reachable. Diagnose with `kubectl -n gitlab describe certificate gitlab-web-ide-wildcard` and `kubectl -n gitlab logs deploy/traefik -n traefik | grep ide.git`.
+
+### Verification
+
+```bash
+task gitlab:verify   # Test 8 probes https://probe.ide.git.ericsweiss.com/-/readiness
+ssh gitlab "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
+# expected: false
+```
+
+In the browser: open `https://git.ericsweiss.com/<group>/<project>/-/ide/`, edit a file, confirm the editor iframe `src=` points at `*.ide.git.ericsweiss.com` and DevTools shows no SOP violations.
+
+### Rollback
+
+If Web IDE breaks after the flip, restore the (insecure but functional) fallback behavior:
+
+```bash
+TOKEN=$(op read "op://Homelab/GitLab API Token/credential")
+curl -X PUT "https://git.ericsweiss.com/api/v4/application/settings" \
+  -H "PRIVATE-TOKEN: $TOKEN" \
+  -d "vscode_extension_marketplace_single_origin_fallback_enabled=true"
+```
+
+For a persisted rollback, flip `gitlab_web_ide_single_origin_fallback` to `true` in `ansible/inventories/prod/group_vars/all.yml` (or set it as an override) and re-run `task gitlab:deploy`. The DNS records and cert are inert without the route and safe to leave in place.

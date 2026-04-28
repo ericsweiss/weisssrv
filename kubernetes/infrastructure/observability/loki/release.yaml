@@ -17,7 +17,7 @@ spec:
       version: "${helm_chart_versions_loki}"
       sourceRef:
         kind: HelmRepository
-        name: grafana
+        name: grafana-community
         namespace: flux-system
       interval: 12h
   install:
@@ -28,7 +28,7 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    deploymentMode: SingleBinary
+    deploymentMode: Monolithic  # Renamed from SingleBinary in chart 12.0.0; singleBinary: values block name unchanged
 
     loki:
       auth_enabled: false

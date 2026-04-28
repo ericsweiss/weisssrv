@@ -342,9 +342,9 @@ SERVICE_REGISTRY: list[dict] = [
         "name": "Loki",
         "var_name": "helm_chart_versions.loki",
         "category": "helm",
-        "helm_repo": "https://grafana.github.io/helm-charts",
+        "helm_repo": "https://grafana-community.github.io/helm-charts",
         "helm_chart": "loki",
-        "source_url": "https://artifacthub.io/packages/helm/grafana/loki",
+        "source_url": "https://artifacthub.io/packages/helm/grafana-community/loki",
     },
     {
         "name": "Alloy",

@@ -1833,6 +1833,7 @@ tasks:
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
       GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
+      GITLAB_API_TOKEN: op://Homelab/GitLab API Token/credential
     preconditions:
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
@@ -1851,6 +1852,7 @@ tasks:
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
       GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
+      GITLAB_API_TOKEN: op://Homelab/GitLab API Token/credential
     preconditions:
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
@@ -1968,6 +1970,25 @@ tasks:
         # Test 7: GitLab health check (internal API)
         echo -n "GitLab health check (readiness)... "
         if curl -s --max-time 10 "https://git.esweiss.com/-/readiness" 2>/dev/null | grep -q '"status":"ok"'; then
+          echo "PASS"
+          PASS=$((PASS + 1))
+        else
+          echo "FAIL"
+          FAIL=$((FAIL + 1))
+        fi
+
+        # Test 8: Web IDE extension host route reachable.
+        # Uses /-/health (nginx-served, no IP allowlist) instead of /-/readiness because
+        # readiness is gated by gitlab_rails['monitoring_whitelist'] = LAN-only, and
+        # *.ide.git.ericsweiss.com resolves through Cloudflare → WAN → hairpin NAT, so
+        # GitLab may see the public IP and 404 the readiness probe.
+        # A green Test 8 proves DNS+Cloudflare+Traefik+IngressRoute+nginx are wired for
+        # the new wildcard host. It does NOT validate the application_settings flip.
+        # To confirm the CVE-2026-5816 mitigation:
+        #   ssh gitlab "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
+        # Expected: false
+        echo -n "Web IDE extension host route (probe.ide.git.ericsweiss.com)... "
+        if check_http_ok "https://probe.ide.git.ericsweiss.com/-/health"; then
           echo "PASS"
           PASS=$((PASS + 1))
         else

@@ -107,3 +107,35 @@ resource "cloudflare_record" "pages_git_wildcard" {
   proxied = false
   comment = "GitLab Pages wildcard - DNS only, TLS via Traefik"
 }
+
+# =============================================================================
+# GitLab Web IDE Extension Host
+# =============================================================================
+# Per-extension SOP isolation: each VS Code extension iframe is loaded from
+# <ext-id>.ide.git.ericsweiss.com so the browser SOP keeps extension JS away
+# from the GitLab session cookie. CVE-2026-5816 mitigation; see
+# docs/27-gitlab-deployment.md "Web IDE extension host" section.
+
+# GitLab Web IDE - ide.git.ericsweiss.com (apex)
+# Nested subdomain - not covered by Universal SSL, use direct access
+resource "cloudflare_record" "ide_git" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "ide.git"
+  type    = "CNAME"
+  content = "direct.${var.external_domain}"
+  proxied = false
+  comment = "GitLab Web IDE extension host apex - DNS only, TLS via Traefik"
+}
+
+# GitLab Web IDE wildcard - *.ide.git.ericsweiss.com
+# Note: Cloudflare Universal SSL only covers first-level wildcards (*.ericsweiss.com).
+# Nested wildcards like *.ide.git require Advanced Certificate Manager ($10/mo).
+# Using DNS-only mode via direct.ericsweiss.com so Traefik handles TLS with Let's Encrypt cert.
+resource "cloudflare_record" "ide_git_wildcard" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "*.ide.git"
+  type    = "CNAME"
+  content = "direct.${var.external_domain}"
+  proxied = false
+  comment = "GitLab Web IDE wildcard - DNS only, TLS via Traefik"
+}
