@@ -31,7 +31,13 @@ stages:
   - ai-review
   - gate
   - deploy
+  # Two maintenance stages: the actual ops, then the verify pass.
+  # `maintenance` jobs share a resource_group so they serialize within
+  # a pipeline (one at a time). Putting verify in its own later stage
+  # guarantees it runs LAST — fixes the prior bug where triggering
+  # all maintenance jobs let GitLab pick verify first by chance.
   - maintenance
+  - maintenance-verify
 
 # ============================================================================
 # Default settings
@@ -1927,7 +1933,7 @@ maintenance-home-assistant-restart:
 # 7. Post-maintenance verification - MANUAL
 # Trigger after maintenance to validate cluster health. Fails on critical issues.
 maintenance-verify:
-  stage: maintenance
+  stage: maintenance-verify
   extends: .k3s-deploy-base
   resource_group: infrastructure-maintenance
   script:
