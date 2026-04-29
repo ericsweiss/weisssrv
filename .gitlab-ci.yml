@@ -1298,15 +1298,10 @@ deploy-gitlab-verify:
   environment:
     name: production/gitlab-verify
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    # Run on every push to main, no `changes:` filter. Same reasoning as
-    # deploy-verify — GitLab availability can be affected indirectly by
-    # config changes elsewhere, and verifying it on every push is cheap
-    # (~1 min) and high-signal.
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+    # Inherit deploy-gitlab's rules verbatim so this verify job appears in
+    # the pipeline if and only if deploy-gitlab does. Avoids drift between
+    # deploy and verify trigger paths.
+    - !reference [deploy-gitlab, rules]
   allow_failure: true
 
 # ------------------------------------------------------------------------------
@@ -1455,14 +1450,62 @@ deploy-verify:
           [ -z "$SRCPATH" ] && continue
           SRCPATH=${SRCPATH#./}
           echo "  dry-run: $SRCPATH"
-          RAW=$(kustomize build "$SRCPATH" 2>&1) || { echo "    FAIL: kustomize build failed for $SRCPATH"; echo "$RAW"; EXIT=1; continue; }
-          RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
-          if ! echo "$RENDERED" | kubectl apply --dry-run=server -f - > /dev/null 2>&1; then
+          # IMPORTANT: use `printf '%s\n'` (NOT `echo`) when piping captured
+          # YAML through commands. `echo` interprets backslash escapes by
+          # default in bash; the rendered manifests contain Grafana dashboard
+          # JSON with thousands of `\n` literals inside `|` block scalars,
+          # and echo turns those into actual newlines — corrupting line
+          # numbering and breaking the YAML parser ("did not find expected
+          # comment or line break" mid-stream). printf '%s' preserves bytes.
+          # Split kustomize stderr into a tmpfile so warnings/deprecation
+          # notices on stderr don't contaminate the YAML stream that goes
+          # to envsubst/kubectl. (`2>&1` would mix them in and create
+          # spurious YAML parse errors downstream.)
+          KS_ERR=$(mktemp)
+          if ! RAW=$(kustomize build "$SRCPATH" 2>"$KS_ERR"); then
+            echo "    FAIL: kustomize build failed for $SRCPATH"
+            head -120 <"$KS_ERR"
+            rm -f "$KS_ERR"
+            EXIT=1
+            continue
+          fi
+          rm -f "$KS_ERR"
+          RENDERED=$(printf '%s\n' "$RAW" | envsubst "$ENVSUBST_VARS")
+          # Use server-side apply (SSA) for dry-run validation. Plain
+          # `apply --dry-run=server` requires the legacy
+          # `kubectl.kubernetes.io/last-applied-configuration` annotation
+          # (resources Flux owns don't have it) and computes a strategic
+          # merge patch in the kubectl client. SSA sends the manifest to
+          # the API server which computes the diff itself, no client-side
+          # patch construction. --force-conflicts makes the dry-run win
+          # field-ownership disputes with kustomize-controller; nothing is
+          # persisted (it's still --dry-run=server).
+          # Wrap the assignment in `if` so a non-zero kubectl exit doesn't
+          # abort the script via `set -e` before we check DRYRUN_RC.
+          if DRYRUN_ERR=$(printf '%s\n' "$RENDERED" | kubectl apply \
+            --server-side --dry-run=server --force-conflicts \
+            --field-manager=ci-deploy-verify -f - 2>&1); then
+            DRYRUN_RC=0
+          else
+            DRYRUN_RC=$?
+          fi
+          if [ "$DRYRUN_RC" -ne 0 ]; then
             echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
-            # Re-run for diagnostic output; || true prevents set -eo pipefail
-            # from aborting before the remaining checks complete.
-            DRYRUN_ERR="$(echo "$RENDERED" | kubectl apply --dry-run=server -f - 2>&1 || true)"
-            echo "$DRYRUN_ERR" | head -20
+            # Filter for actual error lines; fall back to raw output if no
+            # match. `|| true` keeps grep's no-match exit (1) from aborting
+            # the script under `set -o pipefail`. Also catches kubectl
+            # error patterns we didn't enumerate (e.g. "forbidden",
+            # "timeout") via the fallback path.
+            FILTERED_ERR=$(grep -iE "error|invalid|did not find|cannot|forbidden|timeout" \
+              <<<"$DRYRUN_ERR" || true)
+            # Use here-string (<<<) instead of `printf | head` so head's
+            # early stdin close doesn't SIGPIPE the writer and trip
+            # `set -o pipefail`.
+            if [ -n "$FILTERED_ERR" ]; then
+              head -30 <<<"$FILTERED_ERR"
+            else
+              head -30 <<<"$DRYRUN_ERR"
+            fi
             EXIT=1
           fi
         done
@@ -1682,15 +1725,24 @@ deploy-verify:
       echo "=== Verification Complete (exit=$EXIT) ==="
       exit $EXIT
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
-    # Run on every push to main, no `changes:` filter. Verification answers
-    # "did the cluster come back healthy after this push?" — that question
-    # matters for every push, not just ones touching specific paths. The
-    # earlier path-gated form silently skipped on most main pushes.
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+    # Inherit each deploy-* job's rules verbatim so this verify job appears
+    # in the pipeline if and only if at least one deploy-* job does.
+    # GitLab evaluates rules in order, first match wins; each !reference
+    # expansion contributes that job's `if:`+`changes:` triplet, and the
+    # `if: schedule|web when: never` rules at the top of each block apply
+    # equally to verify (we don't want verify on schedules/web pipelines
+    # any more than the deploys themselves).
+    - !reference [deploy-terraform, rules]
+    - !reference [deploy-ansible-base, rules]
+    - !reference [deploy-ansible-proxmox, rules]
+    - !reference [deploy-ansible-firewall, rules]
+    - !reference [deploy-ansible-dns, rules]
+    - !reference [deploy-ansible-storage, rules]
+    - !reference [deploy-ansible-mail, rules]
+    - !reference [deploy-ansible-certs, rules]
+    - !reference [deploy-plex, rules]
+    - !reference [deploy-gitlab, rules]
+    - !reference [deploy-home-assistant-config, rules]
   # No allow_failure: the verification explicitly fails if nodes aren't Ready,
   # Flux reconciliation times out, any Flux resource is not Ready, server-side
   # dry-run rejects manifests, or GitLab is unreachable. ExternalSecret
