@@ -31,13 +31,13 @@ stages:
   - ai-review
   - gate
   - deploy
-  # Two maintenance stages: the actual ops, then the verify pass.
-  # `maintenance` jobs share a resource_group so they serialize within
-  # a pipeline (one at a time). Putting verify in its own later stage
-  # guarantees it runs LAST — fixes the prior bug where triggering
-  # all maintenance jobs let GitLab pick verify first by chance.
+  # All maintenance jobs (6 ops, maintenance-run-all wrapper, and the
+  # ad-hoc maintenance-verify cluster-health button) are in this single
+  # stage. Each maintenance op embeds the verify script as its final
+  # step (see scripts/post-maintenance-verify.sh) so verify always runs
+  # right after the op in the same CI job — no cross-job needs/stage
+  # gymnastics, and no GitLab manual-job semantic quirks to navigate.
   - maintenance
-  - maintenance-verify
 
 # ============================================================================
 # Default settings
@@ -123,6 +123,33 @@ workflow:
       ssh-keyscan -H 192.168.0.202 192.168.0.203 192.168.0.204 192.168.0.205 192.168.0.206 192.168.0.207 >> ~/.ssh/known_hosts 2>/dev/null || true
       ssh-keyscan -H 192.168.0.222 192.168.0.223 192.168.0.227 >> ~/.ssh/known_hosts 2>/dev/null || true
     - ansible-galaxy collection install -r ansible/requirements.yml
+
+# Maintenance jobs need both ansible (from .deploy-base) and kubectl
+# (so each job can call scripts/post-maintenance-verify.sh after its
+# playbook). Extends .deploy-base, then layers in the kubectl install
+# + kubeconfig setup that .k3s-deploy-base does.
+.maintenance-base:
+  extends: .deploy-base
+  before_script:
+    - !reference [.deploy-base, before_script]
+    - apt-get install -y -qq jq
+    - |
+      # kubectl install (matches .k3s-deploy-base, same pinned checksum)
+      curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
+      echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
+      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+    - |
+      # Kubeconfig from 1Password (base64-encoded; matches .k3s-deploy-base)
+      set -eo pipefail
+      mkdir -p ~/.kube
+      KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
+      if [ -z "$KUBECONFIG_B64" ]; then
+        echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
+        exit 1
+      fi
+      echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
+      chmod 600 ~/.kube/config
+      export KUBECONFIG="$HOME/.kube/config"
 
 .k3s-deploy-base:
   extends: .install-1password
@@ -1777,13 +1804,12 @@ deploy-verify:
 # For interactive mode, use: task maintenance:update-packages
 maintenance-update-packages:
   stage: maintenance
-  extends: .deploy-base
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   script:
     - cd ansible
-    - |
-      echo "Running OS package updates on all hosts (rolling)..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
+    - bash ../scripts/maintenance-run-with-verify.sh
+        op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
   environment:
     name: production/maintenance-packages
     action: prepare
@@ -1799,7 +1825,7 @@ maintenance-update-packages:
 # 2. Application updates - MANUAL (AdGuard, Tailscale, Plex)
 maintenance-update-applications:
   stage: maintenance
-  extends: .deploy-base
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
@@ -1810,9 +1836,8 @@ maintenance-update-applications:
     TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
   script:
     - cd ansible
-    - |
-      echo "Running application updates (AdGuard, Tailscale, Plex)..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-applications.yml
+    - bash ../scripts/maintenance-run-with-verify.sh
+        op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-applications.yml
   environment:
     name: production/maintenance-applications
     action: prepare
@@ -1828,15 +1853,14 @@ maintenance-update-applications:
 # 3. K3s node updates - MANUAL (drains/cordons nodes)
 maintenance-update-k3s-nodes:
   stage: maintenance
-  extends: .deploy-base
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   variables:
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
   script:
     - cd ansible
-    - |
-      echo "Running K3s node rolling update..."
-      op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-k3s-nodes.yml
+    - bash ../scripts/maintenance-run-with-verify.sh
+        op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-k3s-nodes.yml
   environment:
     name: production/k3s-nodes
     action: prepare
@@ -1852,17 +1876,20 @@ maintenance-update-k3s-nodes:
 # 4. K3s VM provisioning - MANUAL (creates/modifies VMs)
 maintenance-k3s-provision:
   stage: maintenance
-  extends: .deploy-base
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
   script:
     - cd ansible
-    - |
-      echo "Provisioning K3s VMs and deploying k3s cluster..."
-      op run -- ansible-playbook -i inventories/prod playbooks/k3s-provision-vms.yml
-      op run -- ansible-playbook -i inventories/prod playbooks/k3s.yml
+    # k3s-provision is two playbooks; chain them inside `bash -c` so the
+    # wrapper sees a single command unit. set -e inside the inline script
+    # ensures the second playbook is skipped if the first fails.
+    - bash ../scripts/maintenance-run-with-verify.sh bash -c
+        'set -e;
+         op run -- ansible-playbook -i inventories/prod playbooks/k3s-provision-vms.yml;
+         op run -- ansible-playbook -i inventories/prod playbooks/k3s.yml'
   environment:
     name: production/k3s-provision
     action: prepare
@@ -1882,13 +1909,12 @@ maintenance-k3s-provision:
 # 5. Proxmox HA - MANUAL (affects VM placement)
 maintenance-proxmox-ha:
   stage: maintenance
-  extends: .deploy-base
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   script:
     - cd ansible
-    - |
-      echo "Configuring Proxmox HA rules and resources..."
-      op run -- ansible-playbook -i inventories/prod playbooks/proxmox-ha.yml
+    - bash ../scripts/maintenance-run-with-verify.sh
+        op run -- ansible-playbook -i inventories/prod playbooks/proxmox-ha.yml
   environment:
     name: production/proxmox-ha
     action: prepare
@@ -1904,20 +1930,18 @@ maintenance-proxmox-ha:
 # 6. Home Assistant restart - MANUAL (restarts HA VM)
 maintenance-home-assistant-restart:
   stage: maintenance
-  extends: .deploy-base
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   script:
     - cd ansible
-    - |
-      echo "Restarting Home Assistant VM..."
-      # VM 154 is HA-managed and can migrate to any Proxmox node.
-      # ha-manager is cluster-aware — it locates the node hosting the VM
-      # and restarts it there, so targeting any Proxmox node works.
-      op run -- ansible proxmox[0] -i inventories/prod -m shell -a \
-        "ha-manager restart vm:154"
-      echo "Waiting for Home Assistant to come back online..."
-      sleep 30
-      echo "Restart complete - check status via GitLab environments or Home Assistant URL"
+    # VM 154 is HA-managed; ha-manager finds the right node automatically.
+    # `'proxmox[0]'` quoted so the bash globbing here doesn't expand it
+    # before ansible sees the host pattern.
+    - bash ../scripts/maintenance-run-with-verify.sh bash -c
+        'set -e;
+         op run -- ansible "proxmox[0]" -i inventories/prod -m shell -a "ha-manager restart vm:154";
+         echo "Waiting 30s for Home Assistant to come back online...";
+         sleep 30'
   environment:
     name: production/home-assistant-restart
     action: prepare
@@ -1930,87 +1954,58 @@ maintenance-home-assistant-restart:
       when: manual
       allow_failure: true
 
-# 7. Post-maintenance verification - MANUAL
-# Trigger after maintenance to validate cluster health. Fails on critical issues.
+# Optional: single-button "run all 6 ops in sequence". Delegates the
+# 6-op sequence to scripts/maintenance-all-ops.sh and wraps it in
+# maintenance-run-with-verify.sh so the post-maintenance verify
+# always runs at the end (even if a sub-op failed).
+maintenance-run-all:
+  stage: maintenance
+  extends: .maintenance-base
+  resource_group: infrastructure-maintenance
+  variables:
+    # Union of secrets needed by the six ops invoked below.
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
+    TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
+    K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
+  script:
+    # The all-ops sub-script handles the 6 ops; the wrapper guarantees
+    # verify runs after, even if any op failed.
+    - bash scripts/maintenance-run-with-verify.sh bash scripts/maintenance-all-ops.sh
+  environment:
+    name: production/maintenance-run-all
+    action: prepare
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      # GitLab quirk: rules-based `when: manual` defaults to
+      # `allow_failure: false` (top-level `when: manual` defaults to
+      # true). Without this explicit `allow_failure: true`, every main
+      # pipeline would PAUSE waiting for someone to play this manual
+      # job — blocking unrelated CI flow. Failures are still surfaced
+      # in the GitLab UI when the job is actually played.
+      allow_failure: true
+
+# 7. Post-maintenance verification - MANUAL ad-hoc cluster health check
+# The maintenance ops + maintenance-run-all already invoke
+# scripts/post-maintenance-verify.sh as the last step of their own job,
+# so verify runs strictly after each op without any cross-job needs/stage
+# coordination. This standalone job is just an ad-hoc "check cluster
+# health right now" button; click it any time to re-run the same script
+# without triggering an actual maintenance op.
 maintenance-verify:
-  stage: maintenance-verify
-  extends: .k3s-deploy-base
+  stage: maintenance
+  extends: .maintenance-base
   resource_group: infrastructure-maintenance
   script:
-    - |
-      echo "=== Post-Maintenance Verification ==="
-      ERRORS=0
-
-      echo "Checking k3s node status..."
-      NODE_OUTPUT=$(kubectl get nodes --no-headers)
-      echo "$NODE_OUTPUT"
-      NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 != "Ready" {count++} END {print count+0}')
-      if [ "$NOT_READY" -gt 0 ]; then
-        echo "ERROR: $NOT_READY node(s) not Ready"
-        ERRORS=$((ERRORS + 1))
-      else
-        echo "All nodes Ready"
-      fi
-
-      echo ""
-      echo "Checking for unhealthy pods..."
-      # Check non-Running/non-Succeeded pods
-      UNHEALTHY=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null | wc -l)
-      # Check for Running pods with non-ready containers (CrashLoopBackOff, etc.)
-      # $3 is READY column (e.g. "1/1"), split on "/" and compare numerator vs denominator
-      DEGRADED=$(kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Completed" && $4 != "Succeeded" {split($3, a, "/"); if (a[1] != a[2]) print}' | wc -l)
-      if [ "$UNHEALTHY" -gt 0 ] || [ "$DEGRADED" -gt 0 ]; then
-        echo "ERROR: $UNHEALTHY non-running + $DEGRADED degraded pod(s):"
-        kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null || true
-        kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Completed" && $4 != "Succeeded" {split($3, a, "/"); if (a[1] != a[2]) print}' || true
-        ERRORS=$((ERRORS + 1))
-      else
-        echo "All pods healthy"
-      fi
-
-      echo ""
-      echo "Checking critical deployments..."
-      for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb-controller:metallb-system authentik-server:authentik; do
-        name="${dep%%:*}"
-        ns="${dep##*:}"
-        AVAIL=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
-        DESIRED=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null)
-        if [ -n "$AVAIL" ] && [ "$AVAIL" -ge "${DESIRED:-1}" ] 2>/dev/null; then
-          echo "  $name ($ns): $AVAIL/$DESIRED available"
-        else
-          echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"
-          ERRORS=$((ERRORS + 1))
-        fi
-      done
-
-      echo ""
-      echo "Checking GitLab health..."
-      if curl -sf --max-time 10 https://git.ericsweiss.com/-/readiness > /dev/null 2>&1; then
-        echo "GitLab: OK"
-      else
-        echo "ERROR: GitLab health check failed"
-        ERRORS=$((ERRORS + 1))
-      fi
-
-      echo ""
-      echo "Checking cluster DNS (internal service resolution)..."
-      # Verify CoreDNS can resolve internal k8s services — uses nslookup exit code via marker
-      DNS_OUTPUT=$(kubectl run dns-verify-$CI_JOB_ID --attach --rm --restart=Never --timeout=30s \
-          --image=busybox:1.37 --command -- sh -c \
-          "nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" 2>&1 || true)
-      if echo "$DNS_OUTPUT" | grep -q "DNS_PASS"; then
-        echo "Cluster DNS: OK (kubernetes.default.svc.cluster.local resolves)"
-      else
-        echo "ERROR: Cluster DNS cannot resolve kubernetes.default.svc.cluster.local"
-        ERRORS=$((ERRORS + 1))
-      fi
-
-      echo ""
-      if [ "$ERRORS" -gt 0 ]; then
-        echo "=== VERIFICATION FAILED: $ERRORS critical issue(s) ==="
-        exit 1
-      fi
-      echo "=== Post-Maintenance Verification Passed ==="
+    - bash scripts/post-maintenance-verify.sh
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
