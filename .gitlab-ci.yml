@@ -1933,15 +1933,9 @@ maintenance-home-assistant-restart:
   extends: .maintenance-base
   resource_group: infrastructure-maintenance
   script:
-    - cd ansible
-    # VM 154 is HA-managed; ha-manager finds the right node automatically.
-    # `'proxmox[0]'` quoted so the bash globbing here doesn't expand it
-    # before ansible sees the host pattern.
-    - bash ../scripts/maintenance-run-with-verify.sh bash -c
-        'set -e;
-         op run -- ansible "proxmox[0]" -i inventories/prod -m shell -a "ha-manager restart vm:154";
-         echo "Waiting 30s for Home Assistant to come back online...";
-         sleep 30'
+    # The HA restart sub-script handles ha-manager + readiness loop;
+    # the wrapper guarantees verify runs after.
+    - bash scripts/maintenance-run-with-verify.sh bash scripts/maintenance-ha-restart.sh
   environment:
     name: production/home-assistant-restart
     action: prepare

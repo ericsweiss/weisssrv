@@ -155,7 +155,7 @@ prowlarr_version: "2.3.5.5327"
 sonarr_version: "4.0.17.2952"
 radarr_version: "6.1.1.10360"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.15.3"
+pulsarr_version: "0.15.4"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
@@ -174,7 +174,7 @@ plex_version: "1.43.1.10611-1e34174b1"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "18.11.1-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
+gitlab_version: "18.11.2-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
@@ -200,7 +200,7 @@ zfs_exporter_version: "2.3.12"
 adguard_exporter_version: "v1.2.1"
 # v0.4.6 is the latest version with binary releases (v0.5.0 is source-only)
 unbound_exporter_version: "0.4.6"
-redis_exporter_version: "v1.82.0"
+redis_exporter_version: "v1.83.0"
 
 # Helm chart versions for k3s platform workloads
 # These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
@@ -217,10 +217,10 @@ helm_chart_versions:
   metallb: "0.15.3"
   traefik: "40.0.0-ea.3"  # App version v3.6.7
   cert_manager: "v1.20.2"
-  external_dns: "1.20.0"  # App version 0.20.0
+  external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.4.1"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "84.3.0"
-  loki: "13.3.3"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  kube_prometheus_stack: "84.5.0"
+  loki: "13.5.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.8.0"
   prometheus_blackbox_exporter: "11.9.1"
   onepassword_connect: "2.4.1"

@@ -14,9 +14,14 @@ echo "=== Post-Maintenance Verification ==="
 ERRORS=0
 
 echo "Checking k3s node status..."
-NODE_OUTPUT=$(kubectl get nodes --no-headers)
+# Capture failure as a verify error rather than aborting under set -e.
+node_query_failed=false
+NODE_OUTPUT=$(kubectl get nodes --no-headers 2>/dev/null) || node_query_failed=true
 echo "$NODE_OUTPUT"
-if [ -z "$NODE_OUTPUT" ]; then
+if [ "$node_query_failed" = true ]; then
+  echo "ERROR: kubectl get nodes failed"
+  ERRORS=$((ERRORS + 1))
+elif [ -z "$NODE_OUTPUT" ]; then
   echo "ERROR: kubectl returned no nodes"
   ERRORS=$((ERRORS + 1))
 else
@@ -60,12 +65,19 @@ echo "Checking critical deployments..."
 for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb-controller:metallb-system authentik-server:authentik; do
   name="${dep%%:*}"
   ns="${dep##*:}"
-  AVAIL=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
-  DESIRED=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null)
-  if [ -n "$AVAIL" ] && [ "$AVAIL" -ge "${DESIRED:-1}" ] 2>/dev/null; then
-    echo "  $name ($ns): $AVAIL/$DESIRED available"
+  # Wrap kubectl in `if` so a single deployment lookup failure (RBAC, API
+  # blip, missing namespace) doesn't abort the loop under set -e.
+  if DEP_REPLICAS=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.status.availableReplicas} {.spec.replicas}' 2>/dev/null); then
+    AVAIL="${DEP_REPLICAS%% *}"
+    DESIRED="${DEP_REPLICAS##* }"
+    if [ "${AVAIL:-0}" -ge "${DESIRED:-1}" ] 2>/dev/null; then
+      echo "  $name ($ns): ${AVAIL:-0}/${DESIRED:-1} available"
+    else
+      echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"
+      ERRORS=$((ERRORS + 1))
+    fi
   else
-    echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"
+    echo "  ERROR: $name ($ns): deployment lookup failed"
     ERRORS=$((ERRORS + 1))
   fi
 done

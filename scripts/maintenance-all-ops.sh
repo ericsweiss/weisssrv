@@ -33,15 +33,29 @@ echo "=== 6/6 Home Assistant restart ==="
 op run -- ansible "proxmox[0]" -i inventories/prod -m shell -a "ha-manager restart vm:154"
 
 # Readiness loop instead of a fixed sleep — VM startup time varies (cold
-# reboot vs warm restart) and a hard 30s often isn't enough.
+# reboot vs warm restart) and a hard 30s often isn't enough. Require an
+# observed down-then-up transition so we don't mark success on the first
+# curl before the restart has actually taken effect. Debounce the down
+# detection with a 2-failure streak so one transient curl error doesn't
+# count as "went down" on its own.
 echo "Waiting for Home Assistant to come back online (up to 5 min)..."
 ha_healthy=false
+ha_went_down=false
+ha_down_streak=0
 ha_start=$(date +%s)
 while true; do
   if curl -sf --max-time 5 -o /dev/null https://home.esweiss.com 2>/dev/null; then
-    echo "  Home Assistant healthy after $(( $(date +%s) - ha_start ))s"
-    ha_healthy=true
-    break
+    ha_down_streak=0
+    if [ "$ha_went_down" = true ]; then
+      echo "  Home Assistant healthy after $(( $(date +%s) - ha_start ))s"
+      ha_healthy=true
+      break
+    fi
+  else
+    ha_down_streak=$((ha_down_streak + 1))
+    if [ "$ha_down_streak" -ge 2 ]; then
+      ha_went_down=true
+    fi
   fi
   elapsed=$(( $(date +%s) - ha_start ))
   if [ "$elapsed" -ge 300 ]; then break; fi
