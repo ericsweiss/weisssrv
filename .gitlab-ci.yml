@@ -1630,7 +1630,10 @@ deploy-verify:
         NOT_READY=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
         [ "$NOT_READY" -eq 0 ]
       }
-      if ! wait_for "Flux resources ready" 90 10 check_flux_resources_ready; then
+      # 5 min headroom — major chart bumps (kube-prometheus-stack, Loki) can
+      # take 2-4 min to reconcile through HelmRelease + child CRD updates +
+      # rollout, and verify runs immediately after `git push` of those bumps.
+      if ! wait_for "Flux resources ready" 300 10 check_flux_resources_ready; then
         FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null || echo '{"items":[]}')
         NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
         echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
@@ -1651,7 +1654,7 @@ deploy-verify:
           if [ "$KS_READY" != "True" ]; then return 1; fi
         done
       }
-      if ! wait_for "top-level Kustomizations ready" 60 5 check_top_kustomizations_ready; then
+      if ! wait_for "top-level Kustomizations ready" 180 5 check_top_kustomizations_ready; then
         for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
           KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
             -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
@@ -1672,7 +1675,13 @@ deploy-verify:
         echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/ {exit 1}' || return 1
         echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) exit 1}' || return 1
       }
-      if ! wait_for "observability pods healthy" 120 10 check_obs_pods_healthy; then
+      # Long timeout in steady state covers chart-upgrade rollouts; short
+      # timeout in bootstrap/recovery so we drop into the WARNING branch
+      # below quickly instead of burning the full budget when the namespace
+      # is legitimately empty.
+      OBS_PODS_WAIT=240
+      [ "$STEADY_STATE" != "true" ] && OBS_PODS_WAIT=30
+      if ! wait_for "observability pods healthy" "$OBS_PODS_WAIT" 10 check_obs_pods_healthy; then
         OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
         if [ -z "$OBS_PODS" ]; then
           if [ "$STEADY_STATE" = "true" ]; then
@@ -1684,9 +1693,21 @@ deploy-verify:
         else
           OBS_BAD=$(echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/')
           if [ -n "$OBS_BAD" ]; then
-            echo "ERROR: Not all observability pods are Running/Completed:"
-            echo "$OBS_BAD"
-            EXIT=1
+            # In bootstrap/recovery, pods may legitimately be Pending,
+            # ContainerCreating, or initializing mid-rollout — warn for
+            # those. Anything not on the transient-state allowlist (any
+            # form of CrashLoopBackOff, ImagePullBackOff, InvalidImageName,
+            # OOMKilled, etc.) is a real bug even during bootstrap.
+            # Steady-state always fails on any non-Running pod.
+            OBS_NON_TRANSIENT=$(echo "$OBS_BAD" | awk '$3 !~ /^(Pending|ContainerCreating|PodInitializing|Terminating|Init:[0-9]+\/[0-9]+)$/')
+            if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_NON_TRANSIENT" ]; then
+              echo "ERROR: Observability pods in failing state:"
+              echo "$OBS_BAD"
+              EXIT=1
+            else
+              echo "WARNING: Some observability pods not yet Running (bootstrap/recovery):"
+              echo "$OBS_BAD"
+            fi
           else
             OBS_UNREADY=$(echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) print}')
             if [ -n "$OBS_UNREADY" ]; then
@@ -1706,7 +1727,12 @@ deploy-verify:
         OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
         [ -z "$OBS_HR_BAD" ]
       }
-      if ! wait_for "observability HelmReleases ready" 90 10 check_obs_helmreleases_ready; then
+      # Same pattern as the pods wait above: long budget in steady state for
+      # chart-upgrade reconciliation, short budget in bootstrap/recovery so
+      # the WARNING branch handles the legitimately-empty case without delay.
+      OBS_HR_WAIT=300
+      [ "$STEADY_STATE" != "true" ] && OBS_HR_WAIT=30
+      if ! wait_for "observability HelmReleases ready" "$OBS_HR_WAIT" 10 check_obs_helmreleases_ready; then
         OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
         OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
         if [ "${OBS_HR_COUNT:-0}" -eq 0 ]; then
@@ -1718,9 +1744,32 @@ deploy-verify:
           fi
         else
           OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
-          echo "ERROR: Not all observability HelmReleases are Ready:"
-          echo "$OBS_HR_BAD"
-          EXIT=1
+          # In bootstrap/recovery, HelmReleases may still be reconciling on
+          # first install — warn instead of failing hard. But hard-failure
+          # reasons (InstallFailed/UpgradeFailed/etc.) AND any HR with a
+          # non-zero .status.failures (controller has retried at least once)
+          # are real bugs even during bootstrap, so always fail on those.
+          # The .status.failures check catches degraded HRs whose Ready
+          # condition reason doesn't match the explicit allowlist.
+          OBS_HR_FAILED=$(echo "$OBS_HR_JSON" | jq -r '
+            .items[]
+            | (.status.conditions // [] | map(select(.type=="Ready")) | .[0]) as $ready
+            | select(
+                $ready.status != "True"
+                and (
+                  (($ready.reason // "") | test("InstallFailed|UpgradeFailed|TestFailed|RollbackFailed"))
+                  or ((.status.failures // 0) > 0)
+                )
+              )
+            | .metadata.name' 2>/dev/null || true)
+          if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_HR_FAILED" ]; then
+            echo "ERROR: Not all observability HelmReleases are Ready:"
+            echo "$OBS_HR_BAD"
+            EXIT=1
+          else
+            echo "WARNING: Some observability HelmReleases still reconciling (bootstrap/recovery):"
+            echo "$OBS_HR_BAD"
+          fi
         fi
       else
         echo "All observability HelmReleases ready"
