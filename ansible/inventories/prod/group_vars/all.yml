@@ -222,7 +222,7 @@ helm_chart_versions:
   kube_prometheus_stack: "84.5.0"
   loki: "13.5.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.8.0"
-  prometheus_blackbox_exporter: "11.9.1"
+  prometheus_blackbox_exporter: "11.9.2"
   onepassword_connect: "2.4.1"
 
 # Proxmox resource pools
