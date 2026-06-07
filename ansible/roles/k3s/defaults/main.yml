@@ -25,6 +25,11 @@ k3s_disable:
   - servicelb
   - traefik
 
+# Flannel CNI backend; group_vars/k3s.yml pins it to wireguard-native.
+# The default here keeps vanilla k3s behavior for any consumer that
+# imports this role without that override.
+k3s_flannel_backend: "vxlan"
+
 # Node configuration
 k3s_labels: {}
 k3s_taints: []

@@ -1,0 +1,31 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  # See proxmox_vm/molecule/default/converge.yml for the rationale on
+  # deferring gather_facts behind a raw mkdir.
+  gather_facts: false
+  pre_tasks:
+    - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
+      ansible.builtin.raw: |
+        set -e
+        mkdir -p /tmp/ansible-tmp
+        chmod 1777 /tmp/ansible-tmp
+      changed_when: false
+
+    - name: Gather facts now that remote_tmp exists
+      ansible.builtin.setup:
+
+    - name: Wait for apt locks to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: ansible_os_family == "Debian"
+  roles:
+    - role: proxmox_ha

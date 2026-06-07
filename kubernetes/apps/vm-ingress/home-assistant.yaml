@@ -23,6 +23,8 @@ spec:
       services:
         - name: home-assistant-backend
           port: 8123
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: ericsweiss-com-tls
 ---
@@ -39,6 +41,8 @@ spec:
     - match: Host(`home.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: home-assistant-headers
@@ -48,5 +52,7 @@ spec:
       services:
         - name: home-assistant-backend
           port: 8123
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: esweiss-com-tls

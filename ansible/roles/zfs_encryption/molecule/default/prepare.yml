@@ -1,0 +1,48 @@
+---
+# Prepare the test container so the role's apt step can succeed and
+# systemd-related tasks have a working d-bus/systemd environment.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to be ready
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        systemctl stop unattended-upgrades.service 2>/dev/null || true
+        systemctl disable apt-daily.timer 2>/dev/null || true
+        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp
+        chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    # The role installs zfsutils-linux + curl + jq via apt. Pre-update
+    # the cache so the first run isn't slow.
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0

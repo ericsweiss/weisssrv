@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: zfs_encryption
+  description: >-
+    Boot-time unlock of ZFS-native encrypted pools by fetching their
+    passphrase from 1Password Connect (host-side counterpart to the
+    in-cluster Connect deployment).
+  author: weisssrv
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+
+dependencies: []

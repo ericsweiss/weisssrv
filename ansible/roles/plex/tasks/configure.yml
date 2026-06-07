@@ -38,6 +38,52 @@
 # Changing ownership from inside the container would rewrite host ownership
 # to high-mapped UIDs (e.g., 100997), breaking access for other processes.
 #
+
+# =============================================================================
+# Plex custom-certificate hook
+# =============================================================================
+# acme_certs distributes the wildcard cert to /etc/ssl/plex (cert_dir
+# in host_vars/dns-01.yml's cert_distribution_targets entry for
+# host=plex). plex-cert-reload.sh converts the PEM pair into a PKCS#12
+# bundle (Plex's "Custom certificate location" requires .pfx) and
+# restarts the daemon so Plex re-reads it. The PFX passphrase comes
+# from a 1Password item; operator configures the matching value once
+# under Plex Settings -> Network -> Custom certificate encryption key.
+
+- name: Ensure /etc/ssl/plex directory exists
+  ansible.builtin.file:
+    path: /etc/ssl/plex
+    state: directory
+    owner: "{{ plex_user }}"
+    group: "{{ plex_user }}"
+    mode: "0750"
+
+# Fail loudly if the env var wasn't injected. The reload script (next
+# task) refuses to run without /etc/ssl/plex/pfx-passphrase, so a missing
+# passphrase silently breaks every subsequent cert renewal.
+- name: Validate that the PFX passphrase env var was injected
+  ansible.builtin.assert:
+    that: plex_pfx_passphrase | length > 0
+    fail_msg: >-
+      plex_pfx_passphrase is empty. Run `task plex:deploy` (which injects
+      PLEX_PFX_PASSPHRASE from 1Password). 1P item: "Plex Custom Certificate".
+
+- name: Deploy PFX passphrase from 1Password
+  ansible.builtin.copy:
+    dest: /etc/ssl/plex/pfx-passphrase
+    content: "{{ plex_pfx_passphrase }}\n"
+    owner: root
+    group: "{{ plex_user }}"
+    mode: "0640"
+  no_log: true
+
+- name: Deploy plex-cert-reload.sh
+  ansible.builtin.template:
+    src: plex-cert-reload.sh.j2
+    dest: /usr/local/sbin/plex-cert-reload.sh
+    owner: root
+    group: root
+    mode: "0750"
 # The host directories should be pre-created with:
 #   sudo chown -R 1000:2000 /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode
 #   sudo chmod 2775 /mnt/ssd/appdata/plex /mnt/nvme/fast/plex-transcode

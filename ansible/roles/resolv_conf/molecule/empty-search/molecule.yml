@@ -1,0 +1,74 @@
+---
+# Molecule scenario for the empty-search-list branch of resolv_conf.
+# Setting `resolv_conf_search_domains: []` is the supported way to opt
+# out of the search line (used by k3s VMs to keep kubelet from
+# propagating the host's search domains into every pod, which amplifies
+# cluster-internal lookups against AdGuard with the default ndots:5).
+# Default scenario covers the populated-list path; this one covers the
+# empty path so a regression that quietly emits `search ` or `domain `
+# trips CI instead of slipping into prod.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: resolv-conf-empty-search-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        host_dns_servers:
+          - 192.168.0.150
+          - 192.168.0.160
+        internal_domain: esweiss.com
+        # The actual feature under test.
+        resolv_conf_search_domains: []
+        # /etc/resolv.conf is bind-mounted in Docker containers; atomic
+        # rename returns EBUSY. Force a direct write for tests only.
+        resolv_conf_unsafe_writes: true
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

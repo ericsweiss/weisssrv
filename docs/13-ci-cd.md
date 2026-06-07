@@ -94,7 +94,7 @@ stages:
 #### Security Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `secret_detection` | All MRs/pushes | Scan for leaked secrets |
+| `secret_detection` | All MRs/pushes, schedule | Scan for leaked secrets |
 
 #### Gate Stage
 | Job | Triggers | Description |
@@ -227,7 +227,7 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
 - Flux's 1-minute poll catches the new commit (a planned GitLab webhook to Flux's `Receiver` will reduce this to seconds)
 - `flux-system` `GitRepository` syncs the new revision
 - Top-level `Kustomization`s reconcile in dependency order:
-  `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `apps`
+  `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `infrastructure-observability` → `apps`
 - `helm-controller` upgrades HelmReleases; `kustomize-controller` applies Kustomizations
 - **All Secrets** are created by `external-secrets`' `ExternalSecret` CRs that
   reference 1Password item titles via the ClusterSecretStore `onepassword-homelab`

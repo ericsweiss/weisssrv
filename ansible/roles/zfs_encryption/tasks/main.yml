@@ -1,0 +1,285 @@
+---
+# Deploys the boot-time ZFS key-fetch mechanism. Idempotent; safe to
+# re-run. Behaves as a no-op for hosts without zfs_encryption_pools set
+# (bootstrap-only).
+
+# Splits the package install into two tasks so the molecule test image
+# (which doesn't carry the contrib repo where zfsutils-linux lives) can
+# skip the zfs-specific package while still exercising the curl/jq path.
+# On real Proxmox hosts both run; the role's later `zfs get` calls would
+# fail if zfsutils-linux were truly missing, so this only relaxes the
+# CI-side install — not the operational contract.
+- name: Ensure base script dependencies are present
+  ansible.builtin.apt:
+    name:
+      - curl
+      - jq
+    state: present
+    update_cache: true
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Ensure zfsutils-linux is present
+  ansible.builtin.apt:
+    name: zfsutils-linux
+    state: present
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - zfs_encryption_install_zfsutils | default(true)
+
+# Fail loudly when the operator forgets `op run --` on the active
+# (non-bootstrap) deploy. Without the token the per-pool services
+# silently exit 1 at boot with a misleading "missing token file"; this
+# assert short-circuits with a clear pointer.
+- name: Validate Connect token is present (active mode)
+  ansible.builtin.assert:
+    that: zfs_encryption_connect_token | length > 0
+    fail_msg: >-
+      zfs_encryption_connect_token is empty. Run with `op run -- env
+      ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read 'op://Homelab/ZFS Encryption Connect Token/credential')"
+      ansible-playbook ...` (see docs/32-zfs-encryption.md).
+  when:
+    - not (zfs_encryption_bootstrap_only | default(false))
+    - zfs_encryption_pools | default([]) | length > 0
+
+# Connect token deploy is gated on zfs_encryption_pools — there's no point
+# placing a Connect token on a host that's never going to load a key
+# (compute hosts in our cluster: local-ssd is intentionally unencrypted),
+# and gating reduces blast radius if a compute host is ever compromised.
+- name: Ensure /etc/onepassword-connect directory exists
+  ansible.builtin.file:
+    path: /etc/onepassword-connect
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: zfs_encryption_pools | default([]) | length > 0
+
+- name: Deploy 1Password Connect access token
+  ansible.builtin.copy:
+    dest: /etc/onepassword-connect/token
+    content: "{{ zfs_encryption_connect_token }}\n"
+    owner: root
+    group: root
+    mode: "0400"
+  when:
+    - zfs_encryption_connect_token | length > 0
+    - zfs_encryption_pools | default([]) | length > 0
+  no_log: true
+
+# Cleanup on hosts that previously had the token deployed but no longer
+# should (e.g. host removed from zfs_encryption_pools). Fail-closed:
+# absent on hosts with empty pool lists.
+#
+# The Connect token is SHARED with luks_archive (single file at
+# /etc/onepassword-connect/token, deployed by whichever of the two roles
+# runs first; see luks_archive/tasks/main.yml). The cleanup must check
+# BOTH lists are empty — otherwise on a host with zfs_encryption_pools=[]
+# and luks_archive_devices=[<entries>], this task would delete the token
+# luks_archive needs at next boot. luks_archive's analogous cleanup
+# already gates on both lists; this gate makes it symmetric.
+- name: Remove stale Connect token on non-encryption hosts
+  ansible.builtin.file:
+    path: /etc/onepassword-connect/token
+    state: absent
+  when:
+    - zfs_encryption_pools | default([]) | length == 0
+    - luks_archive_devices | default([]) | length == 0
+
+- name: Ensure /etc/zfs/encryption/pools directory exists
+  ansible.builtin.file:
+    path: /etc/zfs/encryption/pools
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Deploy per-pool environment files
+  ansible.builtin.copy:
+    dest: "/etc/zfs/encryption/pools/{{ item.name }}.conf"
+    # systemd EnvironmentFile format: KEY=VALUE per line. Values with
+    # spaces work as long as they aren't shell-quoted (systemd parses
+    # the line, doesn't run a shell on it).
+    content: |
+      ZFS_ENCRYPTION_ITEM={{ item.item }}
+      ZFS_ENCRYPTION_FIELD={{ item.field | default('passphrase') }}
+    owner: root
+    group: root
+    mode: "0400"
+  loop: "{{ zfs_encryption_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Deploy zfs-load-key script
+  ansible.builtin.template:
+    src: zfs-load-key.sh.j2
+    dest: /usr/local/sbin/zfs-load-key.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy zfs-load-key@.service systemd template
+  ansible.builtin.template:
+    src: zfs-load-key@.service.j2
+    dest: /etc/systemd/system/zfs-load-key@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Apply pending systemd reloads
+  ansible.builtin.meta: flush_handlers
+
+# In bootstrap_only mode we leave the per-pool services disabled. The
+# operator enables them after encrypting each pool by re-running the
+# role with bootstrap_only: false (or directly: systemctl enable
+# zfs-load-key@<pool>.service).
+#
+# Footgun guard: if an operator runs the activation path (bootstrap_only:
+# false) before actually encrypting one of the listed pools, the
+# zfs-load-key@<pool>.service would fail at next boot trying to load a
+# key on a plaintext pool, and RequiredBy=zfs-mount.service would drag
+# zfs-mount down with it. Check each pool's encryption property up front
+# and fail the play loudly with a pointer to the per-pool encryption
+# procedure in docs/32.
+# Recursive check (-r) so this works for both encryption models docs/32
+# documents:
+#   1. Pool-level: $POOL itself is an encryption root (returns its algo)
+#   2. Dataset-level: $POOL is plaintext but a child dataset is the
+#      encryption root (returns 'off' for $POOL but a real algo for the
+#      child). The earlier non-recursive check only validated model 1
+#      and would fail the play under model 2 — which is the model the
+#      docs actually describe.
+# A pool is acceptable iff at least one dataset under it has
+# encryption != 'off' (and != '-' which appears for snapshots).
+- name: Discover any encrypted dataset under each listed pool
+  # awk reads ALL stdin (no `exit` early) and prints the first non-off /
+  # non-"-" match it sees. This is deliberate under `set -o pipefail`:
+  # the prior `grep -v | head -n1` and any `awk ... exit` variant race
+  # SIGPIPE — the consumer closes its stdin after one line, the producer's
+  # next write trips EPIPE, the pipeline returns 141, and the subsequent
+  # `failed_when: false` + `item.rc == 0` assert misfires the "pool has no
+  # encrypted datasets" failure on a pool that actually does.
+  #
+  # Cost: awk processes every dataset name instead of stopping early.
+  # For any realistic pool (~tens to hundreds of datasets) this is
+  # microseconds — well worth the SIGPIPE-immunity.
+  #
+  # (This pattern only matters under `set -o pipefail` — without
+  # pipefail, the producer's EPIPE is just ignored and rc reflects only
+  # the last stage. We keep pipefail because the rest of the role's
+  # shell tasks expect it.)
+  ansible.builtin.shell: |
+    set -o pipefail
+    zfs get -r -H -o value encryption {{ item.name }} \
+      | awk '$0 != "off" && $0 != "-" && !found { found = 1; print }'
+  args:
+    executable: /bin/bash
+  register: zfs_encryption_pool_states
+  changed_when: false
+  failed_when: false
+  loop: "{{ zfs_encryption_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - not zfs_encryption_bootstrap_only
+    - zfs_encryption_pools | length > 0
+    # Skip when ZFS isn't installed (molecule test image runs without
+    # contrib repo / zfsutils-linux). The role's `zfs get` command would
+    # fail and the assert would fire on a host that has no business
+    # validating ZFS state in the first place.
+    - zfs_encryption_install_zfsutils | default(true)
+
+- name: Assert each listed pool has at least one encrypted dataset
+  ansible.builtin.assert:
+    that:
+      # rc == 0 (pool exists) AND stdout is non-empty (some descendant
+      # encryption root was found). rc != 0 means `zfs get` itself
+      # failed — usually a non-existent pool name in inventory.
+      - item.rc == 0
+      - item.stdout | length > 0
+    fail_msg: >-
+      Pool '{{ item.item.name }}' has no encrypted datasets
+      (recursive `zfs get encryption` returns only 'off' / '-';
+      zfs get rc={{ item.rc | default('unknown') }}). Activating
+      zfs-load-key@{{ item.item.name }}.service on a fully plaintext
+      pool would fail at next boot ('Key must be loaded') and drag
+      zfs-mount.service down with it. Encrypt at least one dataset
+      per docs/32-zfs-encryption.md §2a first, OR re-run with
+      `task zfs:encrypt-bootstrap` (bootstrap_only=true) which leaves
+      services disabled, OR remove {{ item.item.name }} from
+      zfs_encryption_pools in host_vars/{{ inventory_hostname }}.yml.
+  loop: "{{ zfs_encryption_pool_states.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when:
+    - not zfs_encryption_bootstrap_only
+    - zfs_encryption_pools | length > 0
+    - zfs_encryption_install_zfsutils | default(true)
+
+- name: Enable per-pool zfs-load-key services
+  ansible.builtin.systemd:
+    name: "zfs-load-key@{{ item.name }}.service"
+    enabled: true
+    daemon_reload: true
+  loop: "{{ zfs_encryption_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - not zfs_encryption_bootstrap_only
+    - zfs_encryption_pools | length > 0
+
+# Reconcile stale unit instances + env files. If the operator removes a
+# pool from zfs_encryption_pools (or renames it), the previously-deployed
+# /etc/zfs/encryption/pools/<old>.conf and the
+# /etc/systemd/system/zfs-mount.service.requires/zfs-load-key@<old>.service
+# symlink would otherwise linger — at next boot the orphan unit would try
+# to fetch a passphrase for a pool no longer in the inventory, fail, and
+# drag zfs-mount.service down with it.
+#
+# We list both directories and remove anything not in the desired set.
+# Idempotent: when the desired set matches what's on disk this is a no-op.
+
+- name: Enumerate deployed pool env files
+  ansible.builtin.find:
+    paths: /etc/zfs/encryption/pools
+    patterns: "*.conf"
+    file_type: file
+  register: zfs_encryption_pool_files_present
+  changed_when: false
+
+- name: Remove stale pool env files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ zfs_encryption_pool_files_present.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename | regex_replace('\\.conf$', '')) not in (zfs_encryption_pools | map(attribute='name') | list)
+
+- name: Enumerate enabled per-pool unit symlinks
+  ansible.builtin.find:
+    paths: /etc/systemd/system/zfs-mount.service.requires
+    patterns: "zfs-load-key@*.service"
+    file_type: link
+  register: zfs_encryption_unit_links_present
+  changed_when: false
+  failed_when: false   # directory may not exist if no pool was ever enabled
+
+- name: Disable stale per-pool zfs-load-key services
+  ansible.builtin.systemd:
+    name: "{{ item.path | basename }}"
+    enabled: false
+  loop: "{{ zfs_encryption_unit_links_present.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  vars:
+    # Extract `<pool>` from `zfs-load-key@<pool>.service` so we can test
+    # membership against the desired set without overflowing the line-
+    # length limit in the `when:` expression itself.
+    _pool_name: >-
+      {{ item.path | basename
+         | regex_replace('^zfs-load-key@', '')
+         | regex_replace('\.service$', '') }}
+    _desired_pools: "{{ zfs_encryption_pools | map(attribute='name') | list }}"
+  when:
+    - _pool_name not in _desired_pools

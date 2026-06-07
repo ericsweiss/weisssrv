@@ -1,0 +1,104 @@
+---
+# Molecule scenario for home_assistant role (contract test).
+#
+# The home_assistant role is unusual: it manages a Home Assistant OS
+# (HAOS) appliance, which is an Alpine-based image with its own /etc
+# layout, the `ha` CLI, and SSH on port 22222. HAOS is NOT a Linux
+# distribution that can run in a Docker container, so the role's
+# scp/ssh path against the live HAOS cannot be exercised here.
+#
+# What the role's `ssh`/`scp` tasks do *is* a thin wrapper around two
+# Jinja2 templates (configuration.yaml.j2, secrets.yaml.j2) that carry
+# real security-relevant config: OIDC client refs, SMTP credentials,
+# trusted-proxy CIDRs, and the SSL block toggled by
+# home_assistant_ssl_enabled. Those templates are what we test here.
+#
+# The role exposes `home_assistant_render_only: true` to opt into
+# render-without-deploy: it skips the host-key pin assert, the SSH
+# cert pre-flight, the scp/install/`ha core check` chain, and the
+# /tmp cleanup. The verify play then slurps /tmp/ha-configuration.yaml
+# + /tmp/ha-secrets.yaml and asserts each template produced the
+# expected structural markers. Production deploys leave the flag false
+# (default in defaults/main.yml) so behavior on real HAOS is unchanged.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: home-assistant-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    # Templates pull these via lookup('ansible.builtin.env', ...) in
+    # defaults/main.yml. Provide synthetic values so the render
+    # produces non-empty secret fields.
+    SMTP_RELAY_USER: testsmtp@example.com
+    SMTP_RELAY_PASSWORD: testsmtppassword
+    ADMIN_EMAIL: admin@example.com
+    HA_OIDC_CLIENT_ID: test-oidc-client-id
+    HA_OIDC_CLIENT_SECRET: test-oidc-client-secret
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Render-only mode: skip every task that would otherwise touch
+        # the live HAOS over SSH. See the role README + tasks/main.yml.
+        home_assistant_render_only: true
+        # Exercise the ssl_enabled branch so configuration.yaml.j2's
+        # ssl_certificate / ssl_key block is rendered and verified.
+        home_assistant_ssl_enabled: true
+        # Override the SMTP defaults to predictable values so verify
+        # can match exact strings instead of regex-around-defaults.
+        home_assistant_smtp_host: "smtp-relay.test.local"
+        home_assistant_smtp_port: 587
+        home_assistant_smtp_encryption: "starttls"
+        home_assistant_smtp_sender: "home-assistant@test.local"
+        home_assistant_smtp_sender_name: "Home Assistant Test"
+        home_assistant_trusted_proxies:
+          - "192.168.0.0/24"
+          - "10.42.0.0/16"
+          - "10.43.0.0/16"
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

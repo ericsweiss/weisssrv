@@ -345,17 +345,14 @@ kubectl rollout restart deployment/bar-assistant -n recipes
 
 ### Update Apps
 
-Update versions in `ansible/inventories/prod/group_vars/all.yml`:
+Update versions in `ansible/inventories/prod/group_vars/all.yml` — search for
+`mealie_version`, `mealie_postgresql_version`, `bar_assistant_version`, and
+`salt_rim_version` (the canonical pinned values live there).
 
-```yaml
-# Current pinned versions (check for latest at maintenance:check-versions)
-mealie_version: "v3.12.0"
-mealie_postgresql_version: "18.3-alpine"  # PostgreSQL for Mealie database
-bar_assistant_version: "5.13.2"
-salt_rim_version: "4.14.1"
-```
-
-Note: We pin to specific versions (not "latest") for reproducible deployments. Use `task maintenance:check-versions` to discover available updates. The PostgreSQL version should generally stay on stable major versions (17.x, 18.x) unless Mealie requires an upgrade.
+Versions pin to specific tags (not `latest`) for reproducible deployments. Use
+`task maintenance:check-versions` to discover available updates. The
+PostgreSQL major version should generally stay stable unless Mealie requires
+an upgrade.
 
 Then regenerate the ConfigMap and push — Flux rolls the Deployments:
 

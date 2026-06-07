@@ -1,0 +1,132 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check prometheus-node-exporter package is installed
+      ansible.builtin.command: dpkg-query -W -f='${Status}' prometheus-node-exporter
+      register: ne_pkg
+      changed_when: false
+      failed_when: "'install ok installed' not in ne_pkg.stdout"
+
+    - name: Verify textfile collector directory exists
+      ansible.builtin.stat:
+        path: /var/lib/node_exporter
+      register: textfile_dir
+      failed_when: not textfile_dir.stat.exists or not textfile_dir.stat.isdir
+
+    - name: Verify systemd override is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+      register: override_file
+      failed_when: not override_file.stat.exists
+
+    - name: Read systemd override content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+      register: override_content
+
+    - name: Verify override pins port 9101 and textfile collector
+      ansible.builtin.assert:
+        that:
+          - "':9101' in (override_content.content | b64decode)"
+          - "'--collector.textfile' in (override_content.content | b64decode)"
+          - "'--collector.textfile.directory=/var/lib/node_exporter' in (override_content.content | b64decode)"
+        fail_msg: "systemd override is missing required listen-address or textfile flags"
+        success_msg: "systemd override pins port 9101 and textfile collector"
+
+    - name: Verify service is enabled
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: ne_status
+
+    - name: Assert service is enabled
+      ansible.builtin.assert:
+        that:
+          - ne_status.status.UnitFileState == 'enabled'
+        fail_msg: "prometheus-node-exporter is not enabled"
+        success_msg: "prometheus-node-exporter is enabled"
+
+    # ── Corosync health collector (proxmox-group-only) ────────────────────
+    # The test host is placed in the `proxmox` group (see molecule.yml) so
+    # the collector tasks run; without this verification any drift in the
+    # script / service / timer would slip through.
+
+    - name: Verify corosync health collector script is present and executable
+      ansible.builtin.stat:
+        path: /usr/local/sbin/corosync-health-collector.sh
+      register: corosync_script
+
+    - name: Assert corosync collector script is mode 0755 root:root
+      ansible.builtin.assert:
+        that:
+          - corosync_script.stat.exists
+          - corosync_script.stat.mode == "0755"
+          - corosync_script.stat.pw_name == "root"
+          - corosync_script.stat.gr_name == "root"
+        fail_msg: "corosync-health-collector.sh missing or has wrong perms"
+
+    - name: Verify corosync collector service unit is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/corosync-health-collector.service
+      register: corosync_svc
+
+    - name: Assert corosync collector service unit is mode 0644 root:root
+      ansible.builtin.assert:
+        that:
+          - corosync_svc.stat.exists
+          - corosync_svc.stat.mode == "0644"
+        fail_msg: "corosync-health-collector.service missing or has wrong perms"
+
+    - name: Verify corosync collector timer unit is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/corosync-health-collector.timer
+      register: corosync_timer
+
+    - name: Assert corosync collector timer unit is mode 0644 root:root
+      ansible.builtin.assert:
+        that:
+          - corosync_timer.stat.exists
+          - corosync_timer.stat.mode == "0644"
+        fail_msg: "corosync-health-collector.timer missing or has wrong perms"
+
+    # The role's enable+start task is `molecule-notest`-tagged because
+    # `systemctl start` is unreliable in privileged-container systemd, so we
+    # don't assert UnitFileState here — the file's existence + perms +
+    # contents prove the role's deploy contract. The end-to-end script
+    # invocation below exercises the actual textfile-collector path which is
+    # the operationally-important guarantee.
+
+    # End-to-end smoke: run the script directly (timer's enable+start task is
+    # gated `molecule-notest`, so we invoke it once here). corosync is absent
+    # in CI, but the script's `set +e` guard handles that and still emits a
+    # well-formed .prom file with cpu=0 + last_success sentinel.
+    - name: Invoke corosync collector once to produce textfile metric
+      ansible.builtin.command: /usr/local/sbin/corosync-health-collector.sh
+      changed_when: false
+
+    - name: Verify .prom file was written
+      ansible.builtin.stat:
+        path: /var/lib/node_exporter/corosync_health.prom
+      register: corosync_prom
+
+    - name: Assert .prom file exists and has content
+      ansible.builtin.assert:
+        that:
+          - corosync_prom.stat.exists
+          - corosync_prom.stat.size > 0
+        fail_msg: "corosync_health.prom missing or empty"
+
+    - name: Read .prom file
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/corosync_health.prom
+      register: corosync_prom_content
+
+    - name: Assert .prom file contains all three expected metrics
+      ansible.builtin.assert:
+        that:
+          - "'proxmox_corosync_cpu_percent ' in (corosync_prom_content.content | b64decode)"
+          - "'proxmox_pmxcfs_manager_status_mtime_seconds ' in (corosync_prom_content.content | b64decode)"
+          - "'proxmox_corosync_health_collector_last_success_seconds ' in (corosync_prom_content.content | b64decode)"
+        fail_msg: "corosync_health.prom missing one or more metrics"

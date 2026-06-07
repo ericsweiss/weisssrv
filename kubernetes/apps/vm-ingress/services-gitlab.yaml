@@ -3,8 +3,12 @@
 # GitLab runs outside the cluster; Traefik routes to it via these services
 
 # =============================================================================
-# GitLab Web UI (port 80)
+# GitLab Web UI (HTTPS on 443)
 # =============================================================================
+# GitLab Omnibus nginx now listens on 443 with the cert distributed by
+# acme_certs (see host_vars/dns-01.yml). Traefik connects with
+# scheme: https + the vm-tls-wildcard ServersTransport so the
+# Traefik->GitLab hop is encrypted. Plain port 80 listener is disabled.
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,8 +17,8 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 443
+      targetPort: 443
       protocol: TCP
 ---
 apiVersion: discovery.k8s.io/v1
@@ -27,7 +31,7 @@ metadata:
     endpointslice.kubernetes.io/managed-by: manual
 addressType: IPv4
 ports:
-  - port: 80
+  - port: 443
     protocol: TCP
 endpoints:
   - addresses:

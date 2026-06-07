@@ -1,0 +1,99 @@
+# {{ ansible_managed }}
+#
+# Loads the ZFS pool encryption key for a single pool from 1Password
+# Connect at boot. Instance name is the pool name; the corresponding
+# 1Password item title is looked up from
+# /etc/zfs/encryption/pools/<pool>.conf.
+#
+# Ordering:
+#   After=zfs-import.target  : pool must be imported first
+#   Before=zfs-mount.service : encrypted datasets need a key before mount
+#   Wants=network-online.target : Connect lives in k8s; needs DNS + LAN
+#   RequiredBy=zfs-mount.service : if key load fails, mount fails too
+#                                  (otherwise services start against an
+#                                  empty mountpoint, which is worse)
+#
+# Restart policy: the script itself loops internally for fetch_timeout
+# (default 120s) per Connect call with jitter — and with the C1 vault
+# UUID resolution it now does TWO sequential lookups (vault + item),
+# so worst-case per-ExecStart wall time is ~240s + RestartSec 30s =
+# ~270s. That means within the 3600s StartLimitIntervalSec window we
+# only fit ~13 attempts, well below StartLimitBurst=60: in practice
+# the unit retries forever rather than transitioning to a permanent
+# failed state.
+#
+# That's fine for our actual recovery path: when an operator manually
+# unlocks via `sudo zfs load-key <pool>` the script's keystatus
+# short-circuit makes the next ExecStart exit 0, and the unit
+# transitions to active. The StartLimit* values are kept conservative
+# so a misconfiguration (e.g. broken token) doesn't sit retrying for
+# weeks — it'll eventually trip the limit and surface as failed.
+
+[Unit]
+Description=Load ZFS encryption key for %i from 1Password Connect
+After=zfs-import.target network-online.target nss-lookup.target
+Before=zfs-mount.service zfs-share.service zfs.target
+Wants=network-online.target nss-lookup.target
+ConditionPathExists=/etc/zfs/encryption/pools/%i.conf
+# StartLimit* belong in [Unit] (not [Service]) since systemd 230 — placing
+# them in [Service] silently drops them. With the values below the unit
+# does NOT trip the burst limit on a normal cold-cluster boot (see the
+# header comment above for the math); see also the README "Cold-cluster
+# boot" section which describes the retry-forever-until-success
+# behavior these settings produce.
+StartLimitIntervalSec=3600s
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/zfs/encryption/pools/%i.conf
+ExecStart=/usr/local/sbin/zfs-load-key.sh %i
+Restart=on-failure
+RestartSec=30s
+# Operator-config errors that won't fix by retrying:
+#   1 — config/arg/token error
+#   3 — vault/item/field not found
+#   4 — `zfs load-key` failed (wrong passphrase, kernel rejected key) —
+#       rotated 1P passphrase that no longer matches the on-pool wrapping
+#       key falls here; retrying 60×/hour scrolls journald without ever
+#       surfacing the real problem.
+#   7 — Connect rejected token (401/403)
+# rc=2 (Connect unreachable beyond fetch_timeout) is intentionally absent
+# from this list — that's the cold-cluster boot case where Connect just
+# isn't up yet, and we DO want the unit to keep retrying.
+# rc=5 (pool not imported) is also intentionally absent — pool import
+# may genuinely arrive later in the boot sequence.
+RestartPreventExitStatus=1 3 4 7
+
+# Hardening
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run /var/log
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+# AF_NETLINK is needed by glibc's getaddrinfo() for AI_ADDRCONFIG (it
+# opens a NETLINK_ROUTE socket to inspect routable address families).
+# Restricting it on some glibc versions causes curl's DNS resolution of
+# connect.esweiss.com to fail at cold boot.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+# RequiredBy: zfs-mount.service treats this unit's failure as fatal
+# (versus WantedBy where mount continues even if key load fails and
+# encrypted datasets silently miss their mountpoints — leading to
+# downstream services writing to root-fs paths that look empty).
+#
+# `systemctl enable` on this unit creates a symlink at
+# /etc/systemd/system/zfs-mount.service.requires/<unit>.service. That
+# directory is operator-managed (under /etc, not /lib), so a
+# zfsutils-linux package upgrade leaves it intact. A drop-in
+# /etc/systemd/system/zfs-mount.service.d/<pool>.conf with
+# `Requires=` would be functionally equivalent but would require the
+# zfs_encryption role to template per-host pool lists; the
+# RequiredBy= form keeps the unit self-contained.
+RequiredBy=zfs-mount.service

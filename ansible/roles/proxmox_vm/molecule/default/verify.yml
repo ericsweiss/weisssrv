@@ -1,0 +1,52 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Load converge artifacts
+      ansible.builtin.slurp:
+        src: "/tmp/molecule-results/{{ item }}"
+      loop:
+        - 01-nas-default.json
+        - 02-override.json
+        - 03-pool-validation.json
+        - 04-pool-list.json
+        - 05-existence-guard.json
+      register: artifacts
+
+    - name: Decode artifacts
+      ansible.builtin.set_fact:
+        nas_default: "{{ artifacts.results[0].content | b64decode | from_json }}"
+        override: "{{ artifacts.results[1].content | b64decode | from_json }}"
+        pool_val: "{{ artifacts.results[2].content | b64decode | from_json }}"
+        pool_list: "{{ artifacts.results[3].content | b64decode | from_json }}"
+        existence: "{{ artifacts.results[4].content | b64decode | from_json }}"
+
+    - name: NAS host defaults to ssd
+      ansible.builtin.assert:
+        that:
+          - nas_default.host_role == 'nas'
+          - nas_default.effective_storage == 'ssd'
+
+    - name: Proxmox_storage override beats default
+      ansible.builtin.assert:
+        that:
+          - override.effective_storage == 'local-ssd'
+
+    - name: Missing storage pool fails the role
+      ansible.builtin.assert:
+        that:
+          - pool_val.failed
+          - "'nonexistent-pool' in pool_val.msg"
+
+    - name: Non-standard resource_pool is rejected
+      ansible.builtin.assert:
+        that:
+          - pool_list.failed
+          - "'not-a-real-pool' in pool_list.msg"
+
+    - name: Existence guard prevents qm calls when VM already exists
+      ansible.builtin.assert:
+        that:
+          - existence.qm_calls == 0

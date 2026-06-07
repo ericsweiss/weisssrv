@@ -1,0 +1,29 @@
+---
+# Smoke verify: the role completed without errors against happy-path stubs.
+# (Drift-detection branches need real Proxmox state to assert end-to-end.)
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Pvecm stub was called (proves the role queried cluster status)
+      ansible.builtin.command: pvecm status
+      register: pvecm_check
+      changed_when: false
+
+    - name: Pvecm reports quorate
+      ansible.builtin.assert:
+        that:
+          - "'Quorate:          Yes' in pvecm_check.stdout"
+
+    - name: Ha-manager stub is in PATH
+      ansible.builtin.command: which ha-manager
+      register: ha_check
+      changed_when: false
+      failed_when: ha_check.rc != 0
+
+    - name: Pvesr stub is in PATH
+      ansible.builtin.command: which pvesr
+      register: pvesr_check
+      changed_when: false
+      failed_when: pvesr_check.rc != 0

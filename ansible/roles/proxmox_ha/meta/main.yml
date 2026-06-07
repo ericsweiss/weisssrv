@@ -1,0 +1,16 @@
+---
+# Role metadata
+
+galaxy_info:
+  role_name: proxmox_ha
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Proxmox HA rules, resources, and ZFS replication management
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

@@ -1,0 +1,64 @@
+---
+# Molecule scenario for node_exporter_host.
+# Apt-installs prometheus-node-exporter (real binary), drops a systemd
+# override pinning port 9101 + textfile collector, and verifies the metrics
+# endpoint serves HTTP 200.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: node-exporter-host-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+    # Place the test host in the `proxmox` group so the corosync-health
+    # collector tasks (gated on `inventory_hostname in groups['proxmox']`)
+    # actually run and can be verified. Without this they all SKIP, so
+    # any drift in the script/unit/timer slips past CI.
+    groups:
+      - proxmox
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

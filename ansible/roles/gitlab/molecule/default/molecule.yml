@@ -110,6 +110,11 @@ provisioner:
         skip_ssh_config: true
         skip_dns_config: true
 
+        # Skip kernel tuning (sysctl drop-in + THP unit) in CI — those tasks
+        # are NOT gated by skip_gitlab_install and would mutate the runner's
+        # /etc/sysctl.d + systemd state. On a real GitLab host this stays true.
+        gitlab_kernel_tuning_enabled: false
+
         # Note: We don't need skip_gitlab_install because prepare.yml creates
         # a mock /opt/gitlab/bin/gitlab-ctl, so the role detects GitLab as
         # "already installed" and skips the apt installation automatically.

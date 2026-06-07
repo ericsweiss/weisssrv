@@ -4,7 +4,7 @@
 - name: Deploy guest firewall configuration
   ansible.builtin.template:
     src: guest.fw.j2
-    dest: "/etc/pve/firewall/{{ vmid }}.fw"
+    dest: "{{ pve_firewall_config_dir }}/{{ vmid }}.fw"
     owner: root
     group: www-data
     mode: "0640"

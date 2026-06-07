@@ -20,10 +20,52 @@ acme_domains:
   - "*.{{ internal_domain }}"
   - "{{ internal_domain }}"
 
-# Certificate distribution targets
+# Certificate distribution targets.
+#
+# After every acme.sh renewal, /usr/local/sbin/homelab-cert-reload.sh
+# pushes fullchain.pem + privkey.pem to each target via SSH (using
+# /home/eric/.ssh/id_ed25519_certs), chowns/chmods, and runs the
+# reload command. Adding a target here is enough for the cert to
+# auto-rotate on every renewal.
+#
+# Per-target keys:
+#   host             — inventory hostname (used for the IP env var name)
+#   ip               — IP or hostname the SSH connection targets
+#   host_key         — REQUIRED. Pinned SSH host key, format
+#                      `<keytype> <base64>` (no leading IP). Captured
+#                      once via `task certs:show-host-keys` and pasted
+#                      here. Used by the role to deploy a strict
+#                      known_hosts entry on dns-01; the cert-reload
+#                      script then runs with StrictHostKeyChecking=yes
+#                      so a fingerprint mismatch (host rebuild without
+#                      inventory update, or MITM) fails the cert push
+#                      loudly. Rotate by re-running the capture task
+#                      after the rebuild + pasting the new value.
+#   cert_dir         — directory on the target where fullchain.pem +
+#                      privkey.pem are placed
+#   owner / group    — ownership applied after the move
+#   cert_mode        — chmod for fullchain.pem
+#   key_mode         — chmod for privkey.pem
+#   restart_service  — basic case: expanded to `[sudo] systemctl restart <svc>`
+#                      (sudo prefix omitted automatically when
+#                      ssh_no_sudo: true)
+#   restart_command  — overrides restart_service when the backend
+#                      needs something other than `systemctl restart`
+#                      (e.g. gitlab-ctl hup, plex PFX regen, a
+#                      multi-command conditional, etc.). MUST include
+#                      its own `sudo` for any subcommand that needs
+#                      root — the cert-reload script does NOT prepend
+#                      sudo to restart_command, because compound shell
+#                      constructs (`if … then … fi`) reject `sudo if`.
+#   ssh_port         — defaults to 22 (HAOS uses 22222)
+#   ssh_user         — defaults to eric (HAOS SSH add-on logs in as root)
+#   ssh_no_sudo      — true on hosts that don't have sudo available
+#                      (HAOS root-as-default; doesn't matter on
+#                      sudo-bearing systems)
 cert_distribution_targets:
   - host: dns-02
     ip: 192.168.0.160
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWbN0fb8eOTlPeHMQ/sZ+vkEgtSPAnZ7OiZjYsAcAyu"
     cert_dir: /opt/AdGuardHome/certs
     owner: root
     group: adguard
@@ -32,12 +74,86 @@ cert_distribution_targets:
     restart_service: AdGuardHome
   - host: smtp-relay
     ip: 192.168.0.151
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7o0NXu/ZssOvC0quOLUWBVm9q4l15hiHJ4LoVfHG98"
     cert_dir: /etc/postfix/tls
     owner: root
     group: root
     cert_mode: "0644"
     key_mode: "0600"
     restart_service: postfix
+  # GitLab: cert lives in /etc/gitlab/ssl, referenced by gitlab.rb.
+  # `gitlab-ctl hup nginx` reloads nginx without a full reconfigure.
+  - host: gitlab
+    ip: 192.168.0.153
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEVffoT/Az9ZPPECl054HTf4HxzlKL6sTcs6OVe3bQTi"
+    cert_dir: /etc/gitlab/ssl
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "sudo gitlab-ctl hup nginx"
+  # NFS+TLS endpoints: both NFS server (pve-nas-01) and the only
+  # current NFS client that mounts pve-nas-01 directly through tlshd
+  # (k3s-agt-nas-01 — others mount via Proxmox-managed pve_storage).
+  #
+  # restart_command is shared via a YAML anchor: `systemctl restart
+  # tlshd` only fires when the unit exists and is enabled; before
+  # nfs_tls is rolled out the unit is absent and the conditional skips
+  # it cleanly with a stderr log line so an operator scanning journald
+  # sees the skip. Once tlshd IS enabled, a real restart failure
+  # surfaces (no blanket `|| true`).
+  - host: pve-nas-01
+    ip: 192.168.0.102
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxyeQZee3W3aQ0EpeY5sLONaZB1Zy4eKoMAeSLnbRCr"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: &tlshd_reload_if_enabled >-
+      if sudo systemctl list-unit-files tlshd.service >/dev/null 2>&1
+      && sudo systemctl is-enabled --quiet tlshd.service; then
+      sudo systemctl restart tlshd;
+      else
+      echo 'tlshd not yet enabled; skipping reload' >&2;
+      fi
+  - host: k3s-agt-nas-01
+    ip: 192.168.0.202
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj+KnY1GNhTydCQiX0jb7rONeK1IoWG9aKtkuPb2HFB"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: *tlshd_reload_if_enabled
+  # Plex: the plex role's cert-reload hook builds a PKCS#12 bundle from
+  # the renewed PEM pair, atomically swaps it into place, and restarts
+  # plexmediaserver. See ansible/roles/plex/templates/plex-cert-reload.sh.j2.
+  - host: plex
+    ip: 192.168.0.152
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO41P4DvFdeHkZW7Np3w71NH7WV2gGr2BQISIyjyeozB"
+    cert_dir: /etc/ssl/plex
+    owner: plex
+    group: plex
+    cert_mode: "0644"
+    key_mode: "0640"
+    restart_command: "sudo /usr/local/sbin/plex-cert-reload.sh"
+  # HAOS: SSH add-on listens on port 22222 as root; no sudo. The
+  # /ssl/ directory is the convention HAOS expects, referenced by
+  # configuration.yaml's http: ssl_certificate / ssl_key. `ha core
+  # restart` re-reads config and the new cert on the next bind.
+  - host: home
+    ip: 192.168.0.154
+    ssh_port: 22222
+    ssh_user: root
+    ssh_no_sudo: true
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"
+    cert_dir: /ssl
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "ha core restart"
 
 # Certificate source paths on dns-01
 acme_cert_dir: "/root/.acme.sh/{{ internal_domain }}_ecc"

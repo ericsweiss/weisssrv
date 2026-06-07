@@ -3,7 +3,8 @@
 
 - name: Set container ID from IP last octet
   ansible.builtin.set_fact:
-    container_id: "{{ ansible_host.split('.')[-1] }}"
+    container_id: "{{ proxmox_lxc_target_ip.split('.')[-1] }}"
+  when: container_id is not defined
 
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
@@ -128,6 +129,7 @@
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
   failed_when: false
   changed_when: false
 
@@ -223,7 +225,7 @@
       --memory {{ lxc_memory }} \
       --swap {{ lxc_swap }} \
       --rootfs {{ _effective_lxc_storage }}:{{ lxc_disk_size | regex_replace('G$', '') }} \
-      --net0 name=eth0,bridge={{ lxc_bridge }},ip={{ ansible_host }}/24,gw={{ lxc_gateway }} \
+      --net0 name=eth0,bridge={{ lxc_bridge }},ip={{ proxmox_lxc_target_ip }}/24,gw={{ lxc_gateway }} \
       --nameserver "{{ lxc_nameserver }}" \
       --searchdomain "{{ lxc_searchdomain }}" \
       --unprivileged {{ lxc_unprivileged | ternary(1, 0) }} \
@@ -512,13 +514,14 @@
 
 - name: Wait for container to be reachable via SSH
   ansible.builtin.wait_for:
-    host: "{{ ansible_host }}"
+    host: "{{ proxmox_lxc_target_ip }}"
     port: 22
     delay: 5
     timeout: 120
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
 
 - name: Display container creation status
   vars:

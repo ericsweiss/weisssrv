@@ -26,9 +26,8 @@ Installs and configures Kubernetes k3s cluster with embedded etcd, kube-vip VIP,
 ## Configuration
 
 ```yaml
-# Version (from group_vars/all.yml)
-k3s_version: "v1.35.0+k3s1"
-kube_vip_version: "v1.0.4"
+# Versions are pinned in group_vars/all.yml (k3s_version, kube_vip_version)
+# Use `task maintenance:check-versions` to see available updates.
 
 # Cluster configuration
 k3s_api_vip: "192.168.0.161"
@@ -176,10 +175,7 @@ Add more nodes by:
 ### Version Updates
 
 ```bash
-# Update version in group_vars/all.yml
-k3s_version: "v1.36.0+k3s1"
-
-# Rolling update
+# Bump k3s_version in ansible/inventories/prod/group_vars/all.yml, then run:
 task maintenance:update-k3s-nodes
 ```
 

@@ -47,6 +47,9 @@ default:
   # All weisssrv jobs run on the privileged infrastructure runner.
   # The shared non-privileged runner (k8s-deploy) is for other GitLab projects.
   tags: [infrastructure]
+  # Cancel jobs when the same branch gets a newer pipeline. Deploy/maintenance
+  # jobs override this to false to ensure they always complete.
+  interruptible: true
 
 # ============================================================================
 # Workflow rules - when to run the pipeline
@@ -101,6 +104,9 @@ workflow:
 
 .deploy-base:
   extends: .install-1password
+  # Deploys touch shared infrastructure; never cancel a running deploy when a new
+  # pipeline starts — wait for it to complete instead.
+  interruptible: false
   variables:
     ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
   before_script:
@@ -117,6 +123,33 @@ workflow:
       chmod 700 ~/.ssh
       op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
       chmod 600 ~/.ssh/id_ed25519
+      # ----------------------------------------------------------------
+      # ssh-keyscan to populate known_hosts: this is TOFU (trust on
+      # first use) — the runner blindly accepts whatever fingerprint
+      # the host serves at the moment of the keyscan. Each CI runner
+      # is ephemeral, so there's no persistent known_hosts to inherit
+      # from a prior trusted handshake; fetching fresh per-job is the
+      # only way to drive Ansible without baking host keys into the
+      # runner image (which has its own staleness/rotation problems).
+      #
+      # Threat model: an attacker would need to MITM both the runner's
+      # network path AND the target host's network path simultaneously
+      # for the same job window. On a single-LAN single-operator
+      # homelab this is a high bar, and the blast radius is bounded
+      # to the tasks the deploy pipeline already runs as root via the
+      # SSH key fetched from 1Password. We accept this trade-off in
+      # exchange for not having to maintain a host_key store in CI.
+      #
+      # Strict pinning IS enforced on the operator path:
+      #   - ansible/ansible.cfg uses StrictHostKeyChecking=accept-new
+      #     + UserKnownHostsFile=~/.ssh/known_hosts (TOFU on first
+      #     contact, then strict on every subsequent connection from
+      #     that workstation).
+      #   - Cert distribution (acme_certs role) is fully pinned via
+      #     ansible/inventories/prod/host_vars/dns-01.yml host_key
+      #     fields — populated via `task certs:show-host-keys`.
+      # See those locations for the strict-pinning surface area.
+      # ----------------------------------------------------------------
       # Add known hosts for all infrastructure (Proxmox hosts, services, k3s VMs)
       ssh-keyscan -H 192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107 >> ~/.ssh/known_hosts 2>/dev/null || true
       ssh-keyscan -H 192.168.0.150 192.168.0.151 192.168.0.152 192.168.0.153 192.168.0.154 192.168.0.160 >> ~/.ssh/known_hosts 2>/dev/null || true
@@ -155,6 +188,8 @@ workflow:
   extends: .install-1password
   # Use Debian-based image (Alpine musl resolver has issues with k8s ndots:5)
   image: python:3.11-slim
+  # k3s deploys/verifies touch the cluster; never interrupt mid-run.
+  interruptible: false
   before_script:
     - !reference [.install-1password, before_script]
     - apt-get install -y -qq jq
@@ -189,6 +224,8 @@ workflow:
 # ============================================================================
 
 build-molecule-images:
+  # Pushes images consumed by later jobs in this pipeline; do not interrupt.
+  interruptible: false
   # Builds both CI images:
   # - molecule-test: the container molecule spins up (has all role apt deps)
   # - molecule-ci: the GitLab CI runner image (has docker-cli + molecule + ansible)
@@ -210,8 +247,21 @@ build-molecule-images:
     # molecule-ci: the GitLab CI runner image (docker-cli + pip deps + collections)
     - docker build -t "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" -f docker/molecule-ci/Dockerfile .
     - docker push "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}"
+    # Capture the immutable digest for both images and emit them as
+    # dotenv variables. Downstream jobs that `needs:` this build use
+    # the digest reference (`<image>@sha256:...`) instead of `:latest`,
+    # so a same-pipeline rebuild can't be raced by anyone retagging
+    # `:latest` mid-flight.
+    - MOLECULE_TEST_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}")
+    - MOLECULE_CI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}")
+    - echo "MOLECULE_TEST_IMAGE=${MOLECULE_TEST_DIGEST}" > molecule-images.env
+    - echo "MOLECULE_CI_IMAGE=${MOLECULE_CI_DIGEST}" >> molecule-images.env
+    - cat molecule-images.env
     # Only push :latest on main — MR pipelines use SHA tags to avoid
-    # overwriting :latest with unmerged branch images.
+    # overwriting :latest with unmerged branch images. The digest pin
+    # above is the load-bearing reference; :latest is only used as a
+    # fallback for pipelines where build doesn't run (Dockerfile/reqs
+    # unchanged), and even then it's the previous main's image.
     - |
       if [ "$CI_COMMIT_BRANCH" = "main" ]; then
         docker tag "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}" "${CI_REGISTRY_IMAGE}/molecule-test:latest"
@@ -219,6 +269,10 @@ build-molecule-images:
         docker tag "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
         docker push "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
       fi
+  artifacts:
+    reports:
+      dotenv: molecule-images.env
+    expire_in: 7 days
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -268,6 +322,55 @@ shellcheck:
         - scripts/**
         - ansible/roles/**/*.sh
     - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Catches role changes that aren't mapped to any deploy-* job. Fails
+# loudly with a list of unmapped roles + the two ways to resolve. See
+# scripts/check-deploy-coverage.sh for the gate logic and the
+# INTENTIONALLY_UNMAPPED_ROLES list.
+deploy-coverage-check:
+  needs: []
+  stage: lint
+  # Switched from `alpine:3.19` to `python:3.11-slim` because the runner
+  # pod's `apk add ... dl-cdn.alpinelinux.org` started returning DNS lookup
+  # errors mid-pipeline. python:3.11-slim is Debian-based, ships bash +
+  # coreutils + python3, and we only need to apt-get git + PyYAML (one
+  # round-trip vs apk's six-package install). Same effective dependency
+  # set, no Alpine CDN dependency.
+  image: python:3.11-slim
+  variables:
+    # The script `git merge-base --is-ancestor BASE_REF HEAD` guard
+    # rejects unrelated histories — which a default depth-20 GitLab
+    # CI clone surfaces as a false positive whenever the MR base is
+    # >20 commits behind HEAD. GIT_DEPTH: 0 forces a full clone so
+    # the merge-base is always reachable.
+    GIT_DEPTH: 0
+  before_script:
+    # python3 + PyYAML: scripts/check-deploy-coverage.sh parses
+    # .gitlab-ci.yml as YAML to extract deploy-job rules (scoped to
+    # name=deploy-* AND stage=deploy). Plain `grep -oE` would match
+    # paths inside lint/test job rules and report false coverage.
+    - apt-get update -qq && apt-get install -y --no-install-recommends git
+    - pip install --no-cache-dir --quiet PyYAML
+  script:
+    - bash scripts/check-deploy-coverage.sh
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/roles/**
+        - ansible/playbooks/**
+        # Covers group_vars/, host_vars/, hosts.yml, and any other
+        # top-level inventory file under ansible/inventories/prod/.
+        - ansible/inventories/prod/**
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/roles/**
+        - ansible/playbooks/**
+        - ansible/inventories/prod/**
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
 
 yaml-lint:
   needs: []
@@ -385,7 +488,9 @@ pr-agent-review:
     - job: flux-lint
       optional: true
     - job: secret_detection
-  image: codiumai/pr-agent:latest
+  # Pinned by digest to prevent supply-chain surprises on a job that handles
+  # both a GitLab PAT and an OpenAI key. Bump alongside upstream releases.
+  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
   variables:
     CONFIG__GIT_PROVIDER: "gitlab"
     GITLAB__URL: "https://git.ericsweiss.com"
@@ -704,21 +809,37 @@ flux-lint:
 # The runner is Flux-managed: edit kubernetes/apps/gitlab-runner-privileged/release.yaml
 # and push; Flux reconciles within ~1 min (or run `task flux:reconcile` to force).
 
-# Molecule unit tests — one parallel job per role. Each role that has a
-# molecule/ directory gets its own CI job via parallel:matrix, so all 15
-# roles test simultaneously instead of sequentially (~3-5 min each vs
-# ~45 min total serial). The zvol_mount role needs kernel loopback devices
-# unavailable in DinD; it's excluded here and tested locally only.
-# 18 roles total (15 original + zfs_exporter + unbound_exporter + alloy_host).
+# Molecule unit tests — one parallel job per role/scenario. Each role with a
+# molecule/ directory gets its own CI job via parallel:matrix.
 .molecule-base:
   stage: test
   needs:
     - job: build-molecule-images
       optional: true
+      # When build-molecule-images runs (Dockerfile/requirements changes
+      # in this pipeline), it emits a dotenv setting MOLECULE_CI_IMAGE
+      # to the pinned digest (e.g.
+      # `<registry>/molecule-ci@sha256:abc...`). The `image:` reference
+      # below picks that up so this same-pipeline run is digest-pinned
+      # and immune to anyone retagging :latest mid-flight. When build
+      # doesn't run (most pipelines, Dockerfile unchanged), the dotenv
+      # is absent and the image falls back to the :latest tag from the
+      # previous main build — same behavior as before, but only on the
+      # cold path. The MOLECULE_IMAGE (test target) is independently
+      # pinned to ${CI_COMMIT_SHORT_SHA} below.
+      artifacts: true
   # Pre-built CI runner image: has docker-cli, molecule, ansible, and all
   # pip deps + ansible collections baked in. Eliminates ~2 min of apt-get +
   # pip install + galaxy install per job vs the generic python:3.11 image.
-  image: ${CI_REGISTRY_IMAGE}/molecule-ci:latest
+  #
+  # `image:` only supports single-variable expansion ($VAR), not bash
+  # default-value syntax. The fallback to :latest happens in two layers:
+  # (a) MOLECULE_CI_IMAGE is set to the :latest tag in the `variables:`
+  # block below (cold path — no Docker rebuild this pipeline); (b) when
+  # build-molecule-images runs in the same pipeline its dotenv artifact
+  # overrides this with the SHA-digest-pinned reference (hot path —
+  # protects against retagging races).
+  image: $MOLECULE_CI_IMAGE
   services:
     - docker:24.0-dind
   variables:
@@ -729,6 +850,9 @@ flux-lint:
     ANSIBLE_CALLBACKS_ENABLED: junit
     JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
     MOLECULE_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test"
+    # Fallback when build-molecule-images is skipped this pipeline; its
+    # dotenv artifact (when present) overrides this with the digest pin.
+    MOLECULE_CI_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
   before_script:
     # Wait for DinD sidecar — with the pre-built CI image, the script
     # starts before DinD is ready (no apt-get delay to absorb startup).
@@ -777,11 +901,21 @@ molecule-tests:
         SCENARIO: default
       - ROLE: gitlab
         SCENARIO: default
+      # home_assistant: contract test for the two Jinja2 templates
+      # (configuration.yaml.j2, secrets.yaml.j2). The role's scp/ssh
+      # path against the live HAOS appliance can't be exercised in a
+      # container — HAOS isn't a Linux distro you can run in Docker —
+      # so the scenario flips home_assistant_render_only=true to skip
+      # the deploy half and asserts on the rendered output.
+      - ROLE: home_assistant
+        SCENARIO: default
       - ROLE: k3s
         SCENARIO: default
       - ROLE: k3s
         SCENARIO: agent
       - ROLE: nas_storage
+        SCENARIO: default
+      - ROLE: nfs_tls
         SCENARIO: default
       - ROLE: nic_tuning
         SCENARIO: default
@@ -801,7 +935,38 @@ molecule-tests:
         SCENARIO: default
       - ROLE: unbound_exporter
         SCENARIO: default
-      # zvol_mount excluded: needs kernel loopback devices (test locally)
+      # zvol_mount uses loop devices in prepare; works under privileged DinD.
+      - ROLE: node_exporter_host
+        SCENARIO: default
+      - ROLE: resolv_conf
+        SCENARIO: default
+      - ROLE: resolv_conf
+        SCENARIO: empty-search
+      - ROLE: zvol_mount
+        SCENARIO: default
+      - ROLE: proxmox_firewall
+        SCENARIO: default
+      - ROLE: proxmox_vm
+        SCENARIO: default
+      - ROLE: proxmox_lxc
+        SCENARIO: default
+      - ROLE: proxmox_ha
+        SCENARIO: default
+      # zfs_encryption: validates template rendering, file modes, systemd
+      # ordering hooks, and per-pool service enable. Cannot exercise
+      # `zfs load-key` (no kernel module in container) or live Connect
+      # calls (no fixture endpoint), but covers the deploy contract end
+      # to end with mocked inputs.
+      - ROLE: zfs_encryption
+        SCENARIO: default
+      # luks_archive: sibling to zfs_encryption — same deploy-contract
+      # coverage (token file, per-device env files, unlock script, systemd
+      # template + per-device enable). Skips the cryptsetup install + the
+      # `cryptsetup isLuks` pre-enable probe via luks_archive_install_cryptsetup=false
+      # since the molecule image doesn't carry cryptsetup and there's no
+      # real LUKS-formatted device to probe.
+      - ROLE: luks_archive
+        SCENARIO: default
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -861,12 +1026,24 @@ secret_detection:
   needs: []  # run in parallel with lint/test stages
   variables:
     SECRET_DETECTION_HISTORIC_SCAN: "false"
-    SECRET_DETECTION_EXCLUDED_PATHS: "docs/,ansible/roles/*/molecule/"
+    # Custom gitleaks config is loaded via `.gitlab/secret-detection-ruleset.toml`
+    # which `[[secrets.passthrough]]`s `.gitleaks.toml`. The previously-used
+    # `SECRET_DETECTION_RULESET_PATH` variable is not a documented GitLab
+    # variable and was silently ignored. `.gitleaks.toml` carries both
+    # content-allowlist regexes (`op://`, `[your-...]`, anchored test/fake
+    # fixture tokens) AND a path-allowlist that exempts `docs/*.md` +
+    # `ansible/roles/*/molecule/*` wholesale — those trees are noisy with
+    # placeholder-shaped strings. Trade-off (a real secret committed under
+    # those paths won't be caught here) is documented in `.gitleaks.toml`
+    # header.
     # Require modern CPU (gitleaks binary uses POPCNT/SSE4.2 - OptiPlex Core 2 Quads crash with SIGILL)
     KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+    # Run on schedules so anything that snuck in via tags/branch merges that
+    # didn't trigger a normal pipeline still gets scanned (security best practice).
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
 # ============================================================================
 # GATE STAGE - Validation gate for deploy jobs
@@ -911,6 +1088,8 @@ validation-gate:
       optional: true
     - job: integration-tests
       optional: true
+    - job: deploy-coverage-check
+      optional: true
     # -- Always-run jobs (no path filter, always present on main pushes) --
     - job: secret_detection
   script:
@@ -932,6 +1111,7 @@ validation-gate:
 
 deploy-terraform:
   stage: deploy
+  interruptible: false
   image:
     name: hashicorp/terraform:1.5
     entrypoint: [""]
@@ -983,6 +1163,11 @@ deploy-ansible-base:
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/base.yml
+    # base.yml doesn't include node_exporter_host or alloy_host (those live
+    # in site.yml); when changes touch them we follow up with a tag-scoped
+    # site.yml run so the rules block below stays honest. Idempotent if
+    # neither role changed; the tag filter skips everything else in site.yml.
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --tags node_exporter_host,alloy_host
   environment:
     name: production/ansible-base
   rules:
@@ -994,7 +1179,17 @@ deploy-ansible-base:
       changes:
         - ansible/roles/base/**
         - ansible/roles/nic_tuning/**
+        # Transitive: resolv_conf is invoked by base when skip_dns_config=false.
+        - ansible/roles/resolv_conf/**
+        # node_exporter_host + alloy_host live in site.yml and run on the
+        # same host set base does. The script above runs site.yml with
+        # --tags node_exporter_host,alloy_host as a second step so these
+        # changes actually deploy when this rule fires (previously the
+        # rule advertised coverage that base.yml alone did not provide).
+        - ansible/roles/node_exporter_host/**
+        - ansible/roles/alloy_host/**
         - ansible/playbooks/base.yml
+        - ansible/playbooks/site.yml
         - ansible/inventories/prod/group_vars/proxmox.yml
         - ansible/inventories/prod/host_vars/pve-nas-01.yml
 
@@ -1082,7 +1277,16 @@ deploy-ansible-dns:
         - ansible/roles/adguard_home/**
         - ansible/roles/adguard_sync/**
         - ansible/roles/postfix_null_client/**
+        # Transitive: resolv_conf used by adguard_home; unbound_exporter
+        # invoked from dns.yml.
+        - ansible/roles/resolv_conf/**
+        - ansible/roles/unbound_exporter/**
         - ansible/playbooks/dns.yml
+        # DNS group/host vars: lxc settings, ssh policy, cert distribution
+        # targets — all consumed by the dns playbook, so a vars-only change
+        # must trigger a redeploy.
+        - ansible/inventories/prod/group_vars/dns.yml
+        - ansible/inventories/prod/host_vars/dns-01.yml
 
 deploy-ansible-storage:
   stage: deploy
@@ -1107,6 +1311,11 @@ deploy-ansible-storage:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/nas_storage/**
+        # zfs_exporter is invoked from storage.yml; nfs_tls is the
+        # opt-in NFSv4-over-TLS daemon that runs on the same NAS host
+        # plus the k3s NFS clients (cert paths shared with acme_certs).
+        - ansible/roles/zfs_exporter/**
+        - ansible/roles/nfs_tls/**
         - ansible/playbooks/storage.yml
 
 deploy-ansible-mail:
@@ -1165,6 +1374,10 @@ deploy-ansible-certs:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/acme_certs/**
+        # host_vars/dns-01.yml carries the pinned host_key entries that
+        # acme_certs uses for cert distribution; a change to those
+        # fingerprints needs a redeploy.
+        - ansible/inventories/prod/host_vars/dns-01.yml
 
 # ------------------------------------------------------------------------------
 # Ansible Applications (VMs/LXC)
@@ -1181,6 +1394,10 @@ deploy-plex:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
     SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    # Plex custom-certificate PFX passphrase (matches the value configured
+    # in Plex Settings -> Network -> "Custom certificate encryption key").
+    # The plex role asserts this is non-empty before re-keying.
+    PLEX_PFX_PASSPHRASE: "op://Homelab/Plex Custom Certificate/password"
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/plex.yml
@@ -1213,6 +1430,11 @@ deploy-gitlab:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     GITLAB_ROOT_PASSWORD: "op://Homelab/GitLab/root-password"
     GITLAB_SAML_CERT_FINGERPRINT: "op://Homelab/GitLab SSO/saml-cert-fingerprint"
+    # Personal Access Token used by the role's Web IDE Application Settings
+    # API calls (vscode_extension_marketplace_*). The gitlab role asserts
+    # this is set and resolved (not still an op:// reference) before the
+    # API block runs.
+    GITLAB_API_TOKEN: "op://Homelab/GitLab API Token/credential"
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/gitlab.yml
@@ -1247,6 +1469,9 @@ deploy-gitlab:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/gitlab/**
+        # zvol_mount is invoked by the gitlab role for the
+        # /mnt/gitlab-repos persistent volume.
+        - ansible/roles/zvol_mount/**
         - ansible/playbooks/gitlab.yml
         # all.yml triggers deploy for gitlab_version changes; may also trigger
         # on unrelated version bumps but the playbook is idempotent and safe to re-run
@@ -1280,6 +1505,7 @@ deploy-home-assistant-config:
       changes:
         - ansible/roles/home_assistant/**
         - ansible/playbooks/home-assistant.yml
+        - ansible/inventories/prod/host_vars/home.yml
 
 deploy-gitlab-verify:
   stage: deploy

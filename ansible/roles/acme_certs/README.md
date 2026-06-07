@@ -62,6 +62,43 @@ task dns:deploy
 ansible-playbook ansible/playbooks/dns.yml --limit dns-01
 ```
 
+## SSH host-key pinning
+
+Cert distribution pushes wildcard private-key material from dns-01 to
+each target over SSH, so the cert-reload script runs with
+`StrictHostKeyChecking=yes` against `/root/.ssh/known_hosts` populated
+by this role from inventory. Each entry in
+`host_vars/dns-01.yml` `cert_distribution_targets` MUST set a
+`host_key` field — the role asserts it's non-empty before deploying
+the script. A fingerprint mismatch (host rebuild without inventory
+update, or MITM) fails the cert push loudly.
+
+Capture / rotate keys with the helper task:
+
+```bash
+# Run from the repo root
+task certs:show-host-keys
+```
+
+It runs `ssh-keyscan -t ed25519` against every target IP from dns-01
+and prints a paste-ready block of `host_key:` values. The playbook
+honors a per-target `ssh_port` field (default 22) so non-standard SSH
+ports work — Home Assistant OS runs SSH on port 22222 and is captured
+via the existing `ssh_port: 22222` entry in `host_vars/dns-01.yml`.
+Copy each value into the matching `cert_distribution_targets` entry,
+then re-run `task dns:deploy`.
+
+To capture a single HAOS host key manually outside the playbook:
+
+```bash
+ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+```
+
+When a target is rebuilt and its host key changes, the next cert
+push will fail with a clear `ssh: REMOTE HOST IDENTIFICATION HAS
+CHANGED` error. Re-run the capture task, paste the new value over
+the stale one, and re-run `task dns:deploy`.
+
 ## Architecture
 
 ```
@@ -89,8 +126,13 @@ If certificates don't exist yet, the role will display instructions:
 export CF_Token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
 export CF_Account_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
 
-# 2. Issue wildcard certificate
-/root/.acme.sh/acme.sh --issue --dns dns_cf \
+# 2. Issue wildcard certificate. The role pins Let's Encrypt as the
+#    default CA at install time (acme.sh 3.x defaults to ZeroSSL, but
+#    our Cloudflare CAA only authorises letsencrypt.org). Pass
+#    --server letsencrypt explicitly here so this command also works
+#    against any pre-existing acme.sh install that wasn't installed
+#    via this role.
+/root/.acme.sh/acme.sh --issue --dns dns_cf --server letsencrypt \
   -d "esweiss.com" \
   -d "*.esweiss.com"
 

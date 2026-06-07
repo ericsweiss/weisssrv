@@ -285,146 +285,23 @@ kubectl exec -i -n authentik authentik-postgresql-0 -- \
 
 ## Security Notes
 
-- Store admin password in 1Password
-- Never expose secret key; rotate if compromised
-- Enable MFA for admin accounts
-- Consider NetworkPolicies for production
+- Admin password is stored in 1Password (`Authentik Secrets`); never log or echo `secret_key`.
+- MFA is enforced on admin flows in the Authentik UI (Stages → MFA validation).
+- NetworkPolicies in `networkpolicy.yaml` default-deny ingress + scope egress to required destinations.
 
-## High Availability
+## Topology
 
-### Current Deployment
+| Component | Replicas | Storage |
+|---|---|---|
+| Authentik server | 2 (anti-affinity) | stateless |
+| Authentik worker | 1 | stateless |
+| Bundled PostgreSQL | 1 | hostPath PV on `k3s-agt-nas-01` → ZFS zvol `ssd/appdata/authentik/postgres` (10 GB, ext4) |
 
-The current deployment balances availability with simplicity:
-
-| Component | HA Status | Notes |
-|-----------|-----------|-------|
-| Authentik Server | **2 replicas** | Spread across nodes via anti-affinity |
-| Authentik Worker | **1 replica** | Single instance for background tasks |
-| PostgreSQL | **Not HA** | Single instance on hostPath PV backed by ZFS zvol (`ssd/appdata/authentik/postgres`) on k3s-agt-nas-01 |
-
-**Key Limitations**:
-1. **PostgreSQL PV**: hostPath PV on k3s-agt-nas-01, backed by ZFS zvol `ssd/appdata/authentik/postgres` (10GB, ext4). Data survives pod and VM recreation (zvol persists on the Proxmox host's SSD pool) but is NOT replicated to other nodes.
-2. **No database replication**: Single PostgreSQL instance is a SPOF
-3. **Pod rescheduling risk**: If k3s-agt-nas-01 is down, PostgreSQL (and thus all SSO) is unavailable until the node recovers
-
-**Why This Works**:
-- Server/Worker are stateless - all state in PostgreSQL
-- Pod anti-affinity spreads replicas across nodes
-- Data survives pod restarts (not node failures)
-- Can migrate to HA PostgreSQL later
-
-### Scaling
-
-Server and Worker are stateless and support horizontal scaling ([docs](https://docs.goauthentik.io/install-config/high-availability/)). The Helm chart supports HPA.
-
-To scale replicas, edit `release.yaml`:
-```yaml
-server:
-  replicas: 2  # or more
-
-worker:
-  replicas: 2  # or more
-```
-
-Then commit and push -- Flux reconciles the change.
-
-### Future HA Upgrade Path
-
-The following options are not currently deployed. When implemented, they would
-be Flux-managed (Helm charts or CRDs in `kubernetes/infrastructure/` or
-`kubernetes/apps/`), following the standard version-pinning and deploy workflow.
-
-#### Option 1: CloudNativePG Operator (Recommended)
-
-[CloudNativePG](https://cloudnative-pg.io/) provides production-grade PostgreSQL on Kubernetes:
-
-**Pros**:
-- Native Kubernetes operator with CRDs
-- Automated failover with primary/replica topology
-- Continuous backup to S3/object storage
-- Point-in-time recovery (PITR)
-- Rolling updates without downtime
-- Built-in connection pooling (PgBouncer)
-
-**Cons**:
-- Additional operator to manage
-- Requires shared storage or storage replication for true HA
-- More complex initial setup
-
-**Implementation approach**: Deploy the CNPG operator as a HelmRelease in
-`kubernetes/infrastructure/controllers/`, pin the version in `all.yml`, and
-create a `Cluster` CR in `kubernetes/apps/authentik/`. Migrate data from the
-existing subchart PostgreSQL, then disable the subchart in `release.yaml`
-(`postgresql.enabled: false`) and point Authentik at the CNPG-managed
-`authentik-pg-rw` service.
-
-#### Option 2: External PostgreSQL (Existing Infrastructure)
-
-Use existing PostgreSQL infrastructure outside Kubernetes:
-
-**Pros**:
-- Leverages existing database expertise
-- Can use managed services (e.g., on NAS with ZFS)
-- Simpler Kubernetes deployment
-- Database backups handled separately
-
-**Cons**:
-- External dependency
-- Network latency (minimal for LAN)
-- Separate backup strategy needed
-
-**Implementation**: Set `postgresql.enabled: false` in `release.yaml` and
-configure `authentik.postgresql.host` to point at the external instance.
-
-#### Option 3: PostgreSQL on NAS with ZFS (Homelab-Specific)
-
-Deploy PostgreSQL in an LXC container on pve-nas-01 with ZFS storage:
-
-**Pros**:
-- Leverages existing ZFS infrastructure (ssd pool)
-- Automatic snapshots and replication possible
-- Data lives on reliable storage system
-- Single database instance for all homelab apps
-
-**Cons**:
-- Not Kubernetes-native
-- Manual failover
-- Additional LXC container to manage
-
-**This option is particularly attractive for this homelab** because:
-- `ssd` pool already exists for database workloads
-- ZFS provides data integrity and snapshots
-- Centralizes database management
-- Reduces Kubernetes complexity
-
-### Storage Considerations
-
-**Current (local-path)**:
-- PVCs are bound to a single node
-- If node fails, PVC is inaccessible
-- Works well for single-replica workloads
-
-**For True HA**:
-- Need ReadWriteMany storage (NFS, Longhorn, Rook-Ceph)
-- Or use external database (CloudNativePG, external PostgreSQL)
-- Consider Longhorn for distributed block storage in K3s
-
-**Recommendation**: For this homelab, external PostgreSQL on NAS is the most practical HA solution, leveraging existing ZFS infrastructure.
-
-### Scaling Recommendations by Cluster Size
-
-| Cluster Size | Server Replicas | Worker Replicas | PostgreSQL Strategy |
-|-------------|-----------------|-----------------|---------------------|
-| 3 nodes (current) | 2 | 1 | Bundled (acceptable) |
-| 5 nodes (planned HA) | 2-3 | 1-2 | External or CloudNativePG |
-| Production | 3+ with HPA | 2+ with HPA | CloudNativePG 3-node |
-
-### Future Work
-
-- [ ] Migrate PostgreSQL to NAS (ZFS-backed)
-- [ ] Add PodDisruptionBudget
-- [ ] Evaluate CloudNativePG for 5-node cluster
-- [ ] Automate database backups to NAS
+Server + worker survive pod restarts and node failures (rescheduled by k8s).
+PostgreSQL is the single point of failure: if `k3s-agt-nas-01` is unreachable,
+all SSO is offline until the node recovers. Acceptable for a homelab; HA
+upgrade options (CloudNativePG, external Postgres on NAS LXC) are tracked
+in `docs/16-next-steps.md`.
 
 ## Upgrading
 

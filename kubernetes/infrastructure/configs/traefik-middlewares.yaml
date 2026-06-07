@@ -1,0 +1,68 @@
+---
+# Platform-level Traefik middlewares used cross-stage.
+#
+# These live in infrastructure/configs/ (not apps/vm-ingress/) because
+# they are referenced from IngressRoutes outside the apps stage:
+#   - infrastructure/configs/onepassword-connect-ingress.yaml
+#     uses lan-tailscale-only + hsts-header (configs stage, same as here).
+#   - infrastructure/observability/ingress/ingress-route.yaml
+#     uses lan-tailscale-only on Loki (observability stage, runs after
+#     configs — middlewares already exist by then).
+#   - infrastructure/controllers/traefik/release.yaml dashboard
+#     ingressRoute uses lan-tailscale-only (controllers stage; on cold
+#     boot Traefik registers the dashboard route briefly without IP
+#     filtering, retries on the next watch cycle once configs runs.
+#     Acceptable: the dashboard is internal-only by hostname anyway).
+#
+# Putting them in apps stage previously created a reconcile-order gap:
+# those IngressRoutes were registered before the middlewares existed,
+# so Traefik logged "middleware not found" and served the routes
+# unfiltered until apps reconciled (next ~minute). Moving the two
+# platform middlewares here closes that window for everything in
+# configs/ and observability stages.
+#
+# strip-www and home-assistant-headers stay in apps/vm-ingress/middleware.yaml
+# because all of their consumers are in the apps stage.
+
+# IP allowlist for internal-only services (LAN + Tailscale + in-cluster pods).
+#
+# Why include the cluster pod CIDR (10.42.0.0/16): the traefik-internal
+# Service runs with externalTrafficPolicy: Local to preserve source IP for
+# this allowlist to work for LAN/Tailscale clients. The side effect is that
+# in-cluster pod consumers (e.g. blackbox-exporter probing
+# https://git.esweiss.com, future internal API clients) reach Traefik with
+# their pod-CIDR source IP — which without this allowance would 403 every
+# such request. The KAS path in vm-ingress/gitlab.yaml already worked around
+# this by being a dedicated route without lan-tailscale-only; allowing
+# 10.42.0.0/16 here is the more general fix.
+#
+# Threat-model note: external attackers cannot spoof a source IP from
+# 10.42.0.0/16 — the pod CIDR is routable only inside the cluster's CNI
+# overlay. Any traffic seen with that source IP has already passed through
+# a kube-proxy / CNI path that originated inside the cluster. So this
+# allowance widens "who can reach internal routes" to include cluster pods
+# (which already have many other intra-cluster paths to the same backends)
+# without exposing them to the public internet.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: lan-tailscale-only
+  namespace: traefik
+spec:
+  ipAllowList:
+    sourceRange:
+      - 192.168.0.0/24     # Local LAN
+      - 100.64.0.0/10      # Tailscale CGNAT range
+      - 10.42.0.0/16       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
+
+---
+# HSTS headers for public services
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: hsts-header
+  namespace: traefik
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true

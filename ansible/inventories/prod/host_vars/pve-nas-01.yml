@@ -2,6 +2,59 @@
 # pve-nas-01 specific configuration
 # Primary NAS/storage server running Proxmox VE
 
+# ZFS native encryption — boot-time passphrase fetch from 1Password Connect.
+# tank/ssd/nvme are encrypted; archive is LUKS (separate effort tied to the
+# failing-drive replacement, tracked in docs/06-zfs.md). local-ssd on the
+# compute hosts is intentionally NOT encrypted — see docs/32 "What is
+# encrypted, what isn't" for the chicken-and-egg rationale (k3s VMs live on
+# local-ssd; Connect runs in k3s; encrypting it deadlocks cold boot). The
+# control there is the drive-wipe SOP in docs/15-credential-rotation.md.
+#
+# The list below records the END-STATE intent. Per-pool activation requires
+# the pool to actually be encrypted first (docs/32 §2a) — otherwise the
+# zfs-load-key@<pool>.service would fail at boot and drag zfs-mount.service
+# down with it. Operator workflow:
+#   1. Run `task zfs:encrypt-bootstrap` (forces bootstrap_only=true → mechanism
+#      deployed, no services activated). Safe to re-run anytime.
+#   2. Encrypt pools one at a time per docs/32 §2a.
+#   3. After ALL three are encrypted, run `task zfs:encrypt -- --limit pve-nas-01`
+#      (drops the bootstrap_only override → activates the three services).
+zfs_encryption_pools:
+  - name: tank
+    item: "ZFS Pool tank Passphrase"
+    field: passphrase
+  - name: ssd
+    item: "ZFS Pool ssd Passphrase"
+    field: passphrase
+  - name: nvme
+    item: "ZFS Pool nvme Passphrase"
+    field: passphrase
+
+# LUKS containers backing the archive ZFS pool. Same END-STATE-intent
+# convention as zfs_encryption_pools above: list reflects the post-rolling-
+# conversion target — the actual on-disk state moves toward this target
+# one drive at a time. Until each underlying device is luksFormat'd,
+# keep luks_archive_bootstrap_only: true below so the unit-enable step
+# is skipped — enabling a unit against a plaintext device would fail at
+# next boot and block archive import via RequiredBy=zfs-import-cache.service.
+#
+# Drive-mapping history (which physical drive maps to archive-N) lives
+# in docs/06-zfs.md so this inventory doesn't drift each time a drive
+# is replaced. The conversion order in docs/32 §LUKS converts
+# archive-{2,3,4} first (one drive at a time, ~6h resilver each) and
+# finishes with archive-1 — that order avoids a second resilver cycle
+# on whichever drive most recently came in.
+luks_archive_bootstrap_only: true
+luks_archive_devices:
+  - name: archive-1
+    device: /dev/disk/by-id/ata-SEAGATE_ST6000NM0024_Z4D2BDD2
+  - name: archive-2
+    device: /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
+  - name: archive-3
+    device: /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
+  - name: archive-4
+    device: /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
+
 # ZFS pool configuration
 zfs_pools:
   - name: tank
@@ -43,6 +96,18 @@ zfs_pools:
           atime: "off"
           compression: lz4
           com.sun:auto-snapshot: "true"
+      # Prometheus's TSDB has its own retention (365d / 140 GiB max); the
+      # zfs-auto-snapshot frequent/hourly/daily/weekly/monthly cadence held
+      # ~77 GiB of stale chunks on top of 53 GiB of live data with no
+      # operational benefit. Disable on this dataset (zvol child inherits).
+      - name: ssd/appdata/prometheus
+        properties:
+          com.sun:auto-snapshot: "false"
+      # Loki has its own retention (loki.compactor.retention_enabled);
+      # zfs-auto-snapshot adds no value and grows the zvol footprint.
+      - name: ssd/appdata/loki
+        properties:
+          com.sun:auto-snapshot: "false"
 
   - name: nvme
     datasets:

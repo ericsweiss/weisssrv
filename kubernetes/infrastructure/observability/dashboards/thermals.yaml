@@ -325,6 +325,203 @@ data:
               }
             }
           ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+          "id": 104,
+          "panels": [],
+          "title": "Storage Drive Temperatures",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "SATA drive temperatures via the drivetemp kernel module. Threshold reflects archive-pool ST6000NM0024 spec ceiling (55C). Requires drivetemp module (loaded by node_exporter_host role).",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "area" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 50 },
+                  { "color": "red", "value": 55 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 45 },
+          "id": 6,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "SATA drive temperatures (drivetemp)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"drivetemp.*\"}",
+              "legendFormat": "{{ instance }} {{ chip }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "NVMe drive temperatures via the in-tree nvme hwmon driver. Sensor 1 is the controller; higher-numbered sensors are NAND temps which run hotter.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "area" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 65 },
+                  { "color": "red", "value": 75 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 45 },
+          "id": 7,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "NVMe drive temperatures",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=\"nvme\"}",
+              "legendFormat": "{{ instance }} {{ chip }} {{ sensor }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
+          "id": 105,
+          "panels": [],
+          "title": "GPU & NIC Temperatures",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "GPU temperatures: Intel Arc xe (Plex transcoding on pve-nas-01), nouveau (legacy NVIDIA), amdgpu/radeon if added.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "area" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 75 },
+                  { "color": "orange", "value": 85 },
+                  { "color": "red", "value": 95 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+          "id": 8,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "GPU temperatures",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"xe|nouveau|nvidia|amdgpu|radeon\"}",
+              "legendFormat": "{{ instance }} {{ chip_name }} {{ sensor }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "description": "NIC temperature where the driver exposes it. Currently only pve-nas-01 (AQC113) reports a nic chip.",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "area" }
+              },
+              "unit": "celsius",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 80 },
+                  { "color": "red", "value": 90 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+          "id": 9,
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "title": "NIC temperatures",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"nic.*\"}",
+              "legendFormat": "{{ instance }} {{ chip_name }} {{ sensor }}",
+              "refId": "A"
+            }
+          ]
         }
       ],
       "schemaVersion": 39,

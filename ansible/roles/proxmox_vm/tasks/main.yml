@@ -3,7 +3,7 @@
 
 - name: Set VM ID
   ansible.builtin.set_fact:
-    vm_id: "{{ vmid | default(ansible_host.split('.')[-1]) }}"
+    vm_id: "{{ vmid | default(proxmox_vm_target_ip.split('.')[-1]) }}"
 
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
@@ -116,6 +116,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not (proxmox_vm_skip_create | default(false))
 
 - name: Create VM
   delegate_to: "{{ proxmox_host }}"
@@ -200,11 +201,16 @@
     qm set {{ vm_id }} \
       --ciuser {{ cloudinit_user }} \
       --sshkeys /tmp/ssh_key_{{ vm_id }}.pub \
-      --ipconfig0 ip={{ ansible_host }}/24,gw={{ cloudinit_gateway }} \
+      --ipconfig0 ip={{ proxmox_vm_target_ip }}/24,gw={{ cloudinit_gateway }} \
       --nameserver "{{ cloudinit_dns | join(' ') }}"
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    # Honor skip_create alongside the other create-path tasks so molecule
+    # scenarios with stub `qm` aren't asked to set cloud-init IP on a VM
+    # that was never created. Matches the gate pattern used by `Create
+    # VM`, `Import cloud image disk`, etc.
+    - not (proxmox_vm_skip_create | default(false))
   changed_when: true
 
 - name: Configure VM for QEMU agent
@@ -312,13 +318,14 @@
 - name: Wait for VM to be reachable via SSH
   delegate_to: localhost
   ansible.builtin.wait_for:
-    host: "{{ ansible_host }}"
+    host: "{{ proxmox_vm_target_ip }}"
     port: 22
     delay: 30
     timeout: 300
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not (proxmox_vm_skip_create | default(false))
 
 - name: Display VM creation status
   vars:

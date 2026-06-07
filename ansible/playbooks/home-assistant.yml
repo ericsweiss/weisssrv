@@ -9,11 +9,27 @@
 #   task home-assistant:deploy-config
 
 - name: Deploy Home Assistant Configuration
+  # localhost is where the Ansible controller runs `op` and holds the
+  # operator's SSH key. The role uses delegate_to=localhost for the
+  # known_hosts pin and shells out to SCP/SSH (port 22222) to push
+  # config to the HAOS VM. We do NOT `hosts: home` because HAOS isn't
+  # a real Ansible target (port 22222, root with no sudo, no
+  # guaranteed Python interpreter for module execution).
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
   vars_files:
     - ../inventories/prod/group_vars/all.yml
+    # host_vars/home.yml carries `home_assistant_host_key` (the pinned
+    # HAOS SSH host key — populated by operator via
+    # `ssh-keyscan -t ed25519 -p 22222 192.168.0.154`) and the
+    # HAOS-specific ip/port overrides. Because this play targets
+    # localhost, Ansible's normal `host_vars/<host>.yml` autoloading
+    # for the inventory host doesn't apply — we have to vars_files it
+    # in explicitly, otherwise the role's `home_assistant_host_key`
+    # assertion fails immediately even when the operator has populated
+    # the inventory entry correctly.
+    - ../inventories/prod/host_vars/home.yml
   roles:
     - home_assistant

@@ -1,5 +1,11 @@
 ---
-# Prepare playbook: Initialize container for reliable testing
+# Prepare playbook: Initialize container for reliable testing.
+#
+# Note: SSH keypair generation + cert_distribution_targets host_key
+# population happens in converge.yml (not here) because molecule runs
+# prepare and converge as separate ansible-playbook invocations — facts
+# / add_host vars from prepare don't survive into converge.
+
 - name: Prepare
   hosts: all
   gather_facts: false

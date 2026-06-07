@@ -79,3 +79,24 @@ haos_type: "qcow2"    # Image format
 # Standard hostnames with high-priority IngressRoutes matching HA's IP (192.168.0.154)
 # See: kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml
 # See: docs/24-home-assistant-deployment.md Phase 4
+
+# TLS on HAOS backend (Traefik -> HAOS hop encrypted).
+# Override the role default (false) once acme_certs has pushed
+# /ssl/fullchain.pem + /ssl/privkey.pem at least once. The HAOS Files
+# add-on must be configured to allow port-22222 SSH with the cert
+# distribution pubkey in /root/.ssh/authorized_keys.
+home_assistant_ssl_enabled: true
+
+# HAOS host-key pin for SSH/SCP from the home_assistant role.
+# HAOS runs SSH on a non-standard port (22222) as root with no sudo,
+# so the role can't go through the standard ansible.cfg trust path —
+# we pin the key explicitly here and the role asserts it on every run.
+#
+# To capture (or rotate after a HAOS rebuild):
+#   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+# Paste the value WITHOUT the leading "[host]:port" — just the
+# algorithm + base64 key, e.g.:
+#   "ssh-ed25519 AAAAC3Nza...example..."
+# The role prepends "[192.168.0.154]:22222 " before writing into
+# the operator's known_hosts.
+home_assistant_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"

@@ -79,9 +79,11 @@ tasks:
       - task: ansible:test-integration-storage
       - task: ansible:test-integration-certs
 
-  ansible:test-integration-dns:
-    desc: Run DNS stack integration test (unbound + adguard_home + adguard_sync)
-    dir: "{{.ANSIBLE_DIR}}/integration-tests/dns-stack"
+  # Internal helper: runs `molecule test` from {{.MOLECULE_DIR}}.
+  # Resolves molecule via PATH, then python3 -m molecule, then pyenv.
+  _molecule-run:
+    internal: true
+    dir: "{{.MOLECULE_DIR}}"
     preconditions:
       - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
         msg: "molecule not installed"
@@ -102,102 +104,36 @@ tasks:
             exit 1
           fi
         fi
+
+  ansible:test-integration-dns:
+    desc: Run DNS stack integration test (unbound + adguard_home + adguard_sync)
+    cmds:
+      - task: _molecule-run
+        vars: {MOLECULE_DIR: "{{.ANSIBLE_DIR}}/integration-tests/dns-stack"}
 
   ansible:test-integration-mail:
     desc: Run mail stack integration test (smtp_relay + postfix_null_client)
-    dir: "{{.ANSIBLE_DIR}}/integration-tests/mail-stack"
-    preconditions:
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
-        msg: "molecule not installed"
-      - sh: docker info 2>/dev/null
-        msg: "Docker is not running"
     cmds:
-      - |
-        if command -v molecule >/dev/null 2>&1; then
-          molecule test
-        elif python3 -m molecule --version >/dev/null 2>&1; then
-          python3 -m molecule test
-        else
-          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
-          if [ -n "$PYENV_MOL" ]; then
-            "$PYENV_MOL" test
-          else
-            echo "ERROR: molecule not found"
-            exit 1
-          fi
-        fi
+      - task: _molecule-run
+        vars: {MOLECULE_DIR: "{{.ANSIBLE_DIR}}/integration-tests/mail-stack"}
 
   ansible:test-integration-base:
     desc: Run base infrastructure integration test (base + qol + tailscale)
-    dir: "{{.ANSIBLE_DIR}}/integration-tests/base-infrastructure"
-    preconditions:
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
-        msg: "molecule not installed"
-      - sh: docker info 2>/dev/null
-        msg: "Docker is not running"
     cmds:
-      - |
-        if command -v molecule >/dev/null 2>&1; then
-          molecule test
-        elif python3 -m molecule --version >/dev/null 2>&1; then
-          python3 -m molecule test
-        else
-          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
-          if [ -n "$PYENV_MOL" ]; then
-            "$PYENV_MOL" test
-          else
-            echo "ERROR: molecule not found"
-            exit 1
-          fi
-        fi
+      - task: _molecule-run
+        vars: {MOLECULE_DIR: "{{.ANSIBLE_DIR}}/integration-tests/base-infrastructure"}
 
   ansible:test-integration-storage:
     desc: Run storage stack integration test (nas_storage + Samba client, NFS server-side only)
-    dir: "{{.ANSIBLE_DIR}}/integration-tests/storage-stack"
-    preconditions:
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
-        msg: "molecule not installed"
-      - sh: docker info 2>/dev/null
-        msg: "Docker is not running"
     cmds:
-      - |
-        if command -v molecule >/dev/null 2>&1; then
-          molecule test
-        elif python3 -m molecule --version >/dev/null 2>&1; then
-          python3 -m molecule test
-        else
-          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
-          if [ -n "$PYENV_MOL" ]; then
-            "$PYENV_MOL" test
-          else
-            echo "ERROR: molecule not found"
-            exit 1
-          fi
-        fi
+      - task: _molecule-run
+        vars: {MOLECULE_DIR: "{{.ANSIBLE_DIR}}/integration-tests/storage-stack"}
 
   ansible:test-integration-certs:
     desc: Run certificate distribution integration test (acme_certs multi-host)
-    dir: "{{.ANSIBLE_DIR}}/integration-tests/cert-distribution"
-    preconditions:
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
-        msg: "molecule not installed"
-      - sh: docker info 2>/dev/null
-        msg: "Docker is not running"
     cmds:
-      - |
-        if command -v molecule >/dev/null 2>&1; then
-          molecule test
-        elif python3 -m molecule --version >/dev/null 2>&1; then
-          python3 -m molecule test
-        else
-          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
-          if [ -n "$PYENV_MOL" ]; then
-            "$PYENV_MOL" test
-          else
-            echo "ERROR: molecule not found"
-            exit 1
-          fi
-        fi
+      - task: _molecule-run
+        vars: {MOLECULE_DIR: "{{.ANSIBLE_DIR}}/integration-tests/cert-distribution"}
 
   # === Kubernetes Validation Tasks ===
   # Both tasks below are aliases for task: flux:lint — which builds each Flux
@@ -318,6 +254,7 @@ tasks:
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml {{.CLI_ARGS}}
 
@@ -329,8 +266,53 @@ tasks:
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml --check --diff {{.CLI_ARGS}}
+
+  # === Certificate distribution tasks ===
+  certs:show-host-keys:
+    desc: Capture SSH host keys for cert_distribution_targets (paste into host_vars/dns-01.yml)
+    dir: "{{.ANSIBLE_DIR}}"
+    cmds:
+      - ansible-playbook -i {{.INVENTORY}} playbooks/show-cert-host-keys.yml {{.CLI_ARGS}}
+
+  # === ZFS Encryption Tasks ===
+  zfs:encrypt-bootstrap:
+    desc: Bootstrap ZFS-encryption host-side mechanism (no-op until pools exist)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/zfs-encryption.yml -e zfs_encryption_bootstrap_only=true {{.CLI_ARGS}}
+
+  zfs:encrypt:
+    desc: Activate ZFS-encryption boot units (after pools are encrypted; set zfs_encryption_pools per host_vars)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/zfs-encryption.yml {{.CLI_ARGS}}
+
+  luks-archive:bootstrap:
+    desc: Bootstrap LUKS-archive host-side mechanism (no-op until devices are LUKS-formatted)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/luks-archive.yml -e luks_archive_bootstrap_only=true {{.CLI_ARGS}}
+
+  luks-archive:apply:
+    desc: Activate LUKS-archive boot units (after rolling conversion; probes cryptsetup isLuks on each device)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/luks-archive.yml {{.CLI_ARGS}}
 
   # === K3s Deployment Tasks ===
   k3s:provision-vms:
@@ -449,8 +431,11 @@ tasks:
       - |
         cleanup() { kill $PF_PID 2>/dev/null; }
         trap cleanup EXIT
-        END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || date -u -d '+{{.DURATION}}' '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
-        if [ -z "$END" ]; then echo "ERROR: Invalid DURATION '{{.DURATION}}' (use BSD date units: S/M/H/d)"; exit 1; fi
+        # BSD date only — macOS local dev workflow. The previous fallback to
+        # `date -d '+2H'` was dead code: GNU coreutils accepts `+2 hours`,
+        # not `+2H`, so the alternate branch could never produce a value.
+        END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
+        if [ -z "$END" ]; then echo "ERROR: Invalid DURATION '{{.DURATION}}' (use BSD date units: S/M/H/d — this task expects macOS BSD date)"; exit 1; fi
         START=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
         kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093 &
         PF_PID=$!
@@ -622,6 +607,7 @@ tasks:
       - flux reconcile kustomization infrastructure-sources
       - flux reconcile kustomization infrastructure-controllers
       - flux reconcile kustomization infrastructure-configs
+      - flux reconcile kustomization infrastructure-observability
       - flux reconcile kustomization apps
 
   flux:verify:
@@ -1590,35 +1576,7 @@ tasks:
     desc: Start the Home Assistant VM
     cmds:
       - |
-        # Find first reachable Proxmox host (HA-resilient)
-        REACHABLE_HOST=""
-        for host in {{.PVE_HOSTS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
-            REACHABLE_HOST="$host"
-            break
-          fi
-        done
-        if [ -z "$REACHABLE_HOST" ]; then
-          echo "ERROR: Cannot reach any Proxmox host"
-          exit 1
-        fi
-        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
-        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
-        if [ -z "$CURRENT_NODE" ]; then
-          # HA not configured or VM not in HA - fall back to checking each node directly
-          echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
-          for host in {{.PVE_HOSTS}}; do
-            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
-              CURRENT_NODE="$host"
-              break
-            fi
-          done
-        fi
-        if [ -z "$CURRENT_NODE" ]; then
-          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
-          exit 1
-        fi
-        echo "Connected to cluster via $REACHABLE_HOST"
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
         echo "Starting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
         ssh "$CURRENT_NODE" "sudo qm start {{.HA_VM_ID}}"
       - echo "Waiting for Home Assistant to be reachable..."
@@ -1637,35 +1595,7 @@ tasks:
     desc: Stop the Home Assistant VM gracefully
     cmds:
       - |
-        # Find first reachable Proxmox host (HA-resilient)
-        REACHABLE_HOST=""
-        for host in {{.PVE_HOSTS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
-            REACHABLE_HOST="$host"
-            break
-          fi
-        done
-        if [ -z "$REACHABLE_HOST" ]; then
-          echo "ERROR: Cannot reach any Proxmox host"
-          exit 1
-        fi
-        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
-        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
-        if [ -z "$CURRENT_NODE" ]; then
-          # HA not configured or VM not in HA - fall back to checking each node directly
-          echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
-          for host in {{.PVE_HOSTS}}; do
-            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
-              CURRENT_NODE="$host"
-              break
-            fi
-          done
-        fi
-        if [ -z "$CURRENT_NODE" ]; then
-          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
-          exit 1
-        fi
-        echo "Connected to cluster via $REACHABLE_HOST"
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
         echo "Stopping VM {{.HA_VM_ID}} on $CURRENT_NODE..."
         ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}}"
         echo "Sent shutdown signal to Home Assistant VM"
@@ -1674,38 +1604,9 @@ tasks:
     desc: Restart the Home Assistant VM
     cmds:
       - |
-        # Find first reachable Proxmox host (HA-resilient)
-        REACHABLE_HOST=""
-        for host in {{.PVE_HOSTS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
-            REACHABLE_HOST="$host"
-            break
-          fi
-        done
-        if [ -z "$REACHABLE_HOST" ]; then
-          echo "ERROR: Cannot reach any Proxmox host"
-          exit 1
-        fi
-        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
-        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
-        if [ -z "$CURRENT_NODE" ]; then
-          # HA not configured or VM not in HA - fall back to checking each node directly
-          echo "HA not configured for VM {{.HA_VM_ID}}, searching nodes..."
-          for host in {{.PVE_HOSTS}}; do
-            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null | grep -q "status:"; then
-              CURRENT_NODE="$host"
-              break
-            fi
-          done
-        fi
-        if [ -z "$CURRENT_NODE" ]; then
-          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
-          exit 1
-        fi
-        echo "Connected to cluster via $REACHABLE_HOST"
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
         echo "Restarting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
-        # Use reset instead of reboot to avoid QEMU Guest Agent timeout
-        # Home Assistant OS may not have guest agent properly configured
+        # qm reset avoids QEMU Guest Agent timeout when HAOS lacks proper agent config.
         if ssh "$CURRENT_NODE" "sudo qm reset {{.HA_VM_ID}}"; then
           echo "Sent reset signal to Home Assistant VM"
         else
@@ -1749,35 +1650,7 @@ tasks:
       - |
         NAME="{{.NAME}}"
         DESC="{{.DESC}}"
-        # Find first reachable Proxmox host (HA-resilient)
-        REACHABLE_HOST=""
-        for host in {{.PVE_HOSTS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
-            REACHABLE_HOST="$host"
-            break
-          fi
-        done
-        if [ -z "$REACHABLE_HOST" ]; then
-          echo "ERROR: Cannot reach any Proxmox host"
-          exit 1
-        fi
-        # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
-        CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
-        if [ -z "$CURRENT_NODE" ]; then
-          # HA not configured or VM not in HA - query cluster resources for authoritative node
-          echo "HA not configured for VM {{.HA_VM_ID}}, querying cluster resources..."
-          CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null | \
-            python3 -c "import sys,json; data=json.load(sys.stdin); vms=[v for v in data if v.get('vmid')=={{.HA_VM_ID}}]; print(vms[0]['node'] if vms else '')" 2>/dev/null)
-          # Convert node name to hostname (e.g., pve-nas-01 format)
-          if [ -n "$CURRENT_NODE" ]; then
-            CURRENT_NODE="pve-${CURRENT_NODE#pve-}"  # Ensure pve- prefix
-          fi
-        fi
-        if [ -z "$CURRENT_NODE" ]; then
-          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any node"
-          exit 1
-        fi
-        echo "Connected to cluster via $REACHABLE_HOST"
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
         echo "Creating snapshot '$NAME' of Home Assistant VM on $CURRENT_NODE..."
         ssh "$CURRENT_NODE" "sudo qm snapshot {{.HA_VM_ID}} '${NAME}' --description '${DESC}'"
         echo "Snapshot created successfully"

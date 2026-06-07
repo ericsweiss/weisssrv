@@ -1,0 +1,66 @@
+---
+# luks_archive role defaults.
+#
+# Deploys the boot-time mechanism for opening LUKS containers backing the
+# archive ZFS pool on pve-nas-01. Sibling to zfs_encryption: same Connect
+# plumbing, same token, same vault — different unlock primitive
+# (cryptsetup vs. zfs load-key) and different ordering (must complete
+# BEFORE zfs-import-cache.service rather than between import and mount).
+#
+# Cold-cluster boot fallback: same recovery path as zfs_encryption — if
+# Connect is unreachable, the per-device units fail fast and log to
+# journald. Operator unlocks manually:
+#     ssh pve-nas-01
+#     sudo cryptsetup open /dev/disk/by-id/<by-id> archive-N  # paste passphrase
+#     sudo zpool import archive
+#     sudo zfs mount -a
+# See docs/32-zfs-encryption.md §LUKS for the full procedure.
+
+# Connect endpoint, vault, and token: identical semantics to zfs_encryption.
+# A single Connect token file at /etc/onepassword-connect/token is shared
+# between both roles — whichever role runs first deploys it; the other
+# verifies presence and leaves it alone.
+luks_archive_connect_url: "https://connect.{{ internal_domain }}"
+luks_archive_connect_vault: "Homelab"
+luks_archive_connect_token: ""
+
+# Per-host list of LUKS containers. Format:
+#   - name: archive-1                                   # /dev/mapper/<name>
+#     device: /dev/disk/by-id/ata-<MODEL>_<SERIAL>      # underlying block dev
+# All entries share luks_archive_passphrase_item below — one passphrase
+# protects the whole archive pool because the threat model is "drives
+# stolen as a group" (same NAS, same chassis), and per-device passphrases
+# don't materially raise the bar but do multiply the operational risk of
+# losing one.
+luks_archive_devices: []
+
+# 1Password item title + field for the shared passphrase.
+luks_archive_passphrase_item: "LUKS Archive Passphrase"
+luks_archive_passphrase_field: "passphrase"
+
+# When true, install script + unit template + env files but DON'T enable
+# any archive-luks-open@<name>.service instances. Use during the rolling
+# conversion phase before each device is actually LUKS-formatted: enabling
+# a unit against a plaintext device would cryptsetup-open something that's
+# not a LUKS volume, fail at boot, and drag zfs-import-cache.service down
+# with it via RequiredBy=.
+luks_archive_bootstrap_only: false
+
+# Same retry/timeout values as zfs_encryption — keep parity so an operator
+# doesn't have to memorize two different fetch budgets.
+luks_archive_fetch_timeout_seconds: 120
+luks_archive_fetch_retry_seconds: 5
+
+# Test-rig escape hatch: skip the apt install of cryptsetup so the molecule
+# image (no contrib repo) can exercise the role without needing the real
+# package. Identical pattern to zfs_encryption_install_zfsutils.
+luks_archive_install_cryptsetup: true
+
+# Skip the `cryptsetup isLuks` pre-enable probe + assert. This is the
+# probe-gating flag — separated from luks_archive_install_cryptsetup
+# so a test that wants to skip the apt install (because the image
+# doesn't ship cryptsetup) doesn't silently also disable the safety
+# probe on a prod host that happens to be missing cryptsetup for some
+# other reason. Default false: the probe runs on every prod converge.
+# Molecule sets true.
+luks_archive_skip_isluks_probe: false

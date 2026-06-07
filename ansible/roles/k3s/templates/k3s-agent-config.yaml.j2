@@ -16,3 +16,10 @@ node-taint:
   - "{{ taint.key }}={{ taint.value }}:{{ taint.effect }}"
 {% endfor %}
 {% endif %}
+
+{% if k3s_kubelet_args | default([]) | length > 0 %}
+kubelet-arg:
+{% for arg in k3s_kubelet_args %}
+  - "{{ arg }}"
+{% endfor %}
+{% endif %}

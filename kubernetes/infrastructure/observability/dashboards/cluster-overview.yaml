@@ -972,13 +972,13 @@ data:
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "expr": "max by (id) (pve_network_receive_bytes{id=~\"qemu/.*\"}) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"qemu\"})",
+              "expr": "max by (id) (irate(pve_network_receive_bytes{id=~\"qemu/.*\"}[$__rate_interval])) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"qemu\"})",
               "legendFormat": "{{ name }} rx",
               "refId": "A"
             },
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "expr": "-max by (id) (pve_network_transmit_bytes{id=~\"qemu/.*\"}) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"qemu\"})",
+              "expr": "-max by (id) (irate(pve_network_transmit_bytes{id=~\"qemu/.*\"}[$__rate_interval])) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"qemu\"})",
               "legendFormat": "{{ name }} tx",
               "refId": "B"
             }
@@ -1287,13 +1287,13 @@ data:
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "expr": "max by (id) (pve_network_receive_bytes{id=~\"lxc/.*\"}) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"lxc\"})",
+              "expr": "max by (id) (irate(pve_network_receive_bytes{id=~\"lxc/.*\"}[$__rate_interval])) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"lxc\"})",
               "legendFormat": "{{ name }} rx",
               "refId": "A"
             },
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "expr": "-max by (id) (pve_network_transmit_bytes{id=~\"lxc/.*\"}) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"lxc\"})",
+              "expr": "-max by (id) (irate(pve_network_transmit_bytes{id=~\"lxc/.*\"}[$__rate_interval])) * on(id) group_left(name) max by (id, name) (pve_guest_info{type=\"lxc\"})",
               "legendFormat": "{{ name }} tx",
               "refId": "B"
             }

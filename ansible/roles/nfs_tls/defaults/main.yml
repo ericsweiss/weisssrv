@@ -1,0 +1,32 @@
+---
+# nfs_tls role defaults.
+#
+# Deploys the kernel-TLS handshake daemon (tlshd from ktls-utils) on
+# NFS server and client hosts. NFSv4 with `xprtsec=tls` (or `mtls`)
+# routes its RPC stream through TLS, encrypting data and metadata on
+# the wire. Requires kernel 6.5+ and nfs-utils 2.6.3+ (Proxmox is on
+# 6.17 / 2.8.3).
+#
+# This role is OPT-IN — set nfs_tls_enabled: true on hosts that should
+# install/start tlshd. Servers and clients both need it.
+#
+# After deploying tlshd everywhere, the server admin adds `xprtsec=tls`
+# (or `mtls`) to relevant entries in /etc/exports and clients add
+# `xprtsec=tls` to their mount options. Both can be done via existing
+# nas_storage / mount-handling roles by setting nfs_export_xprtsec or
+# the per-client equivalent (see role README for details).
+
+nfs_tls_enabled: false
+
+# Cert + key paths. Defaults match the filenames that acme_certs's
+# homelab-cert-reload.sh distributes (fullchain.pem + privkey.pem),
+# placed in /etc/ssl/private/ by the cert_distribution_targets entries
+# for pve-nas-01 and k3s-agt-nas-01 in host_vars/dns-01.yml. Override
+# only if a host uses a different cert delivery path.
+nfs_tls_cert_path: /etc/ssl/private/fullchain.pem
+nfs_tls_key_path: /etc/ssl/private/privkey.pem
+
+# tlshd's listen + truststore settings. The truststore points at the
+# system CA bundle so Let's Encrypt-issued certs validate. Override
+# only if using an internal CA.
+nfs_tls_truststore: /etc/ssl/certs/ca-certificates.crt

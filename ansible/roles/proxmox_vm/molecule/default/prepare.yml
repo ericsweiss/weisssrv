@@ -1,0 +1,94 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    - name: Stub state directory
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Default stubs to "VM does not exist"
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_exists_state
+        content: "missing\n"
+        mode: "0644"
+      become: true
+
+    - name: Install pvesh stub (cluster resources + pool create/get)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pvesh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [[ "$1 $2" == "get /cluster/resources" ]]; then
+            if grep -q "^exists$" /tmp/molecule-stub-state/vm_exists_state 2>/dev/null; then
+              echo '[{"vmid": 999, "type": "qemu"}]'
+            else
+              echo '[]'
+            fi
+            exit 0
+          fi
+          if [[ "$1" == "get" && "$2" == /pools/* ]]; then exit 1; fi
+          exit 0
+      become: true
+
+    - name: Install pvesm stub (advertises ssd + local-ssd)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pvesm
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          echo "Name             Type     Status           Total            Used       Available        %"
+          echo "ssd              zfspool  active      4000000000       100000000      3900000000    2.50%"
+          echo "local-ssd        zfspool  active      1000000000       100000000       900000000   10.00%"
+      become: true
+
+    - name: Install qm stub (records calls)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/qm
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          echo "qm $*" >> /tmp/molecule-stub-state/qm.log
+          exit 0
+      become: true
+
+    - name: Install zfs stub (no-op; not exercised in this scenario)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/zfs
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          exit 0
+      become: true

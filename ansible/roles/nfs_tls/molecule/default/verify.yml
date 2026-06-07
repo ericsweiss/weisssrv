@@ -1,0 +1,101 @@
+---
+# Verify playbook for nfs_tls role testing.
+#
+# Container-bound checks: package is installed, tlshd.conf rendered with
+# our cert paths, and systemd recognizes tlshd.service. We do NOT verify
+# tlshd is *running* against real NFS traffic — that requires a kernel
+# with AF_TLSH netlink and an actual NFSv4 client/server pair.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    # ========================================================================
+    # 1. ktls-utils package installed
+    # ========================================================================
+    - name: Check ktls-utils is installed
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Assert ktls-utils package present
+      ansible.builtin.assert:
+        that:
+          - "'ktls-utils' in ansible_facts.packages"
+        fail_msg: "ktls-utils package not installed — role's apt step did not run"
+        success_msg: "ktls-utils installed (provides tlshd binary)"
+
+    # ========================================================================
+    # 2. /etc/tlshd.conf rendered with role-supplied cert + key paths
+    # ========================================================================
+    - name: Stat /etc/tlshd.conf
+      ansible.builtin.stat:
+        path: /etc/tlshd.conf
+      register: tlshd_conf
+
+    - name: Assert tlshd.conf exists with correct mode/owner
+      ansible.builtin.assert:
+        that:
+          - tlshd_conf.stat.exists
+          - tlshd_conf.stat.pw_name == 'root'
+          - tlshd_conf.stat.gr_name == 'root'
+          - tlshd_conf.stat.mode == '0644'
+        fail_msg: >-
+          /etc/tlshd.conf missing or has wrong perms (exists={{ tlshd_conf.stat.exists }},
+          mode={{ tlshd_conf.stat.mode | default('?') }})
+        success_msg: "/etc/tlshd.conf exists, owned by root:root, mode 0644"
+
+    - name: Read /etc/tlshd.conf
+      ansible.builtin.slurp:
+        src: /etc/tlshd.conf
+      register: tlshd_conf_body
+
+    - name: Verify tlshd.conf references our cert + key paths
+      ansible.builtin.assert:
+        that:
+          - "'/etc/ssl/private/fullchain.pem' in (tlshd_conf_body.content | b64decode)"
+          - "'/etc/ssl/private/privkey.pem' in (tlshd_conf_body.content | b64decode)"
+          - "'[authenticate.server]' in (tlshd_conf_body.content | b64decode)"
+          - "'[authenticate.client]' in (tlshd_conf_body.content | b64decode)"
+          - "'/etc/ssl/certs/ca-certificates.crt' in (tlshd_conf_body.content | b64decode)"
+        fail_msg: "tlshd.conf does not reference the expected cert/key/truststore paths"
+        success_msg: "tlshd.conf renders cert + key + truststore for both server and client roles"
+
+    # ========================================================================
+    # 3. tlshd.service unit recognized by systemd
+    # ========================================================================
+    # `systemctl cat` is intentional here (not systemd_service module): we
+    # want a read-only check that the unit file is on disk and parseable
+    # by systemd, with an actionable error message if it isn't. The unit
+    # ships with the ktls-utils package; if it's missing, the role's
+    # `state: started` step would have failed earlier — this is a final
+    # belt-and-braces check.
+    - name: Verify systemd recognizes tlshd.service  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl cat tlshd.service
+      register: tlshd_unit_cat
+      changed_when: false
+      failed_when: tlshd_unit_cat.rc != 0
+
+    - name: Check tlshd.service enabled state  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-enabled tlshd.service
+      register: tlshd_enabled
+      changed_when: false
+      failed_when: tlshd_enabled.rc != 0
+
+    - name: Assert tlshd.service is enabled
+      ansible.builtin.assert:
+        that:
+          - tlshd_enabled.stdout | trim == 'enabled'
+        fail_msg: "Expected tlshd.service to be 'enabled', got '{{ tlshd_enabled.stdout | trim }}'"
+        success_msg: "tlshd.service is enabled (will start at boot on real hosts)"
+
+    # ========================================================================
+    # Summary
+    # ========================================================================
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "ktls-utils package installed"
+          - "/etc/tlshd.conf rendered with cert + key + truststore"
+          - "tlshd.service unit recognized by systemd and enabled"
+          - "All nfs_tls role verifications passed"

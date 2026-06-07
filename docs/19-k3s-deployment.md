@@ -325,12 +325,13 @@ This:
    `kustomization.yaml` to the current branch.
 5. Creates the `GitRepository` and top-level `Kustomization` CRs that watch this repo.
 
-After bootstrap, Flux reconciles four Kustomizations in `dependsOn` order:
+After bootstrap, Flux reconciles five Kustomizations in `dependsOn` order:
 
 1. `infrastructure-sources` — HelmRepository CRs + `cluster-versions` ConfigMap (no deps).
-2. `infrastructure-controllers` — HelmReleases for ESO, MetalLB, cert-manager, Traefik, external-dns (dependsOn sources; CRDs installed here).
+2. `infrastructure-controllers` — HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns (dependsOn sources; CRDs installed here).
 3. `infrastructure-configs` — ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS HelmChartConfig, DDNS CronJob, shared-cloudflare-secrets (dependsOn controllers; uses CRDs installed above).
-4. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (dependsOn infrastructure-configs).
+4. `infrastructure-observability` — kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress (dependsOn configs).
+5. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (dependsOn infrastructure-observability).
 
 ### Step 8: Register the GitLab Webhook (Optional, Recommended)
 
@@ -353,13 +354,14 @@ task flux:status
 flux get all -A
 ```
 
-Expected state:
+Expected state (Flux Kustomization stages reconcile in dependsOn order):
 
 - `flux-system` `GitRepository` — Ready
 - `infrastructure-sources` `Kustomization` — Ready
 - `infrastructure-controllers` `Kustomization` — Ready (after sources)
 - `infrastructure-configs` `Kustomization` — Ready (after controllers)
-- `apps` `Kustomization` — Ready (after infrastructure-configs)
+- `infrastructure-observability` `Kustomization` — Ready (after configs)
+- `apps` `Kustomization` — Ready (after infrastructure-observability)
 - Every `HelmRelease` — Ready
 - Every `ExternalSecret` — `SecretSynced: True`
 - Every `IngressRoute` resolved and responding
@@ -460,6 +462,73 @@ ssh eric@192.168.0.206 "sudo tailscale up --accept-routes --accept-dns=false"
 task collect-state
 ```
 
+## Switching flannel backend (vxlan → wireguard-native)
+
+`group_vars/k3s.yml` sets `k3s_flannel_backend: wireguard-native`,
+which the server config template renders as `flannel-backend:` in
+`/etc/rancher/k3s/config.yaml`. K3s reads that on every server
+restart, so pod-to-pod packets across nodes are WireGuard-encrypted.
+Switching between backends after the cluster is up is **disruptive**
+— pods on each node briefly lose connectivity while flanneld
+reconfigures.
+
+### Prerequisites
+
+- `wireguard` kernel module available (modern Debian / Proxmox kernels:
+  yes; `lsmod | grep wireguard` after first run will confirm
+  flanneld loaded it).
+- Firewall rule for `UDP/51820` between `k3s_nodes` (already in
+  `proxmox_firewall` `sg-k3s-core`).
+- Cluster healthy (`task k3s:status`, `task flux:status`) before
+  starting.
+
+### Rollout procedure (one server node at a time)
+
+```bash
+# Sanity check
+task k3s:status
+
+# Rolling restart with the new flag — apply to one server first to
+# verify, then the others. The server needs systemctl restart so the
+# new k3s config is read.
+task k3s:deploy -- --limit k3s-srv-nas-01
+
+# Wait for that server to come back, observe flannel logs:
+ssh k3s-srv-nas-01 'sudo journalctl -u k3s -n 200 -f'
+# Look for "Using backend type: wireguard" + a "flannel-wg" interface up.
+
+# Verify the WireGuard interface and peers are present:
+ssh k3s-srv-nas-01 'ip -br link show flannel-wg && sudo wg show'
+
+# Now do the other servers + agents (k3s.yml has no tag declarations, so
+# scope by `--limit` only; `task k3s:deploy` forwards extra args to ansible):
+task k3s:deploy -- --limit k3s-srv-laptop-01,k3s-srv-prec-01
+task k3s:deploy -- --limit k3s_agents
+```
+
+### Verification
+
+```bash
+# All nodes should show a flannel-wg interface and peers:
+for n in k3s-srv-nas-01 k3s-srv-laptop-01 k3s-srv-prec-01 \
+         k3s-agt-nas-01 k3s-agt-laptop-01 k3s-agt-opt-01 \
+         k3s-agt-opt-02 k3s-agt-opt-03 k3s-agt-prec-01; do
+  echo "=== $n ==="
+  ssh "$n" 'sudo wg show interfaces && sudo wg show'
+done
+
+# Pod-to-pod across nodes should still resolve and connect:
+kubectl run -it --rm --image=alpine net-test -- sh -c \
+  'apk add --no-cache curl && curl -sS http://kube-prometheus-stack-grafana.observability:80/api/health'
+```
+
+### Rollback
+
+If something is wrong, set `k3s_flannel_backend: vxlan` in
+`group_vars/k3s.yml` and re-run the same `ansible-playbook` calls.
+The vxlan firewall rule (UDP/8472) is intentionally still open for
+this reason.
+
 ## Troubleshooting
 
 ### VMs Failed to Provision
@@ -548,8 +617,8 @@ The cluster uses a split IP scheme: servers in the .22X range, agents in the .20
 | k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | HA server #2 |
 | k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | HA server #3 |
 | k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general agent |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General agent |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General agent |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | Ingress + general agent |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | Ingress + general agent |
 | k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | General + compute agent |
 
 ### Step 1: Add New Server Nodes to Inventory
@@ -590,16 +659,15 @@ kubectl get pods -n kube-system | grep etcd
 
 ## Next Steps
 
-1. **Deploy additional workloads** - Immich, Nextcloud, observability stack (all via Flux)
+1. **Deploy additional workloads** - Immich, Nextcloud (all via Flux)
 2. **Configure backups** - Velero for cluster backups
-3. **Set up monitoring** - Prometheus + Grafana stack (future work)
-4. **Complete secrets-encryption** - see `docs/16-next-steps.md` Outstanding Follow-Ups
 
 ## Related Documentation
 
 - `docs/14-post-base-plan.md` - k3s platform roadmap (historical)
 - `docs/29-flux-operations.md` - Flux operator guide: bootstrap, adopt, rotate secrets, add an app, suspend, rollback
 - `docs/30-multi-repo-onboarding.md` - Adding external repos that deploy into this cluster
+- `docs/31-observability.md` - Observability stack (Prometheus, Grafana, Loki, Alloy)
 - `kubernetes/README.md` - Top-level k8s layout guide (Flux-aware)
-- `kubernetes/infrastructure/` - Platform components (sources, controllers, configs)
+- `kubernetes/infrastructure/` - Platform components (sources, controllers, configs, observability)
 - `kubernetes/apps/` - Applications (authentik, download-clients, recipes, gitlab-*, vm-ingress)

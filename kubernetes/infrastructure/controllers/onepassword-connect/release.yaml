@@ -36,6 +36,11 @@ spec:
       # from the pre-existing op-credentials Secret (default credentialsName).
       credentials_base64: ""
       serviceType: ClusterIP
+      # HA: 2 replicas spread across hosts so a single node drain (or upcoming
+      # ZFS-encryption boot dependency on Connect) never takes the secret
+      # backend offline. Companion PodDisruptionBudget (pdb.yaml, minAvailable:1)
+      # protects against simultaneous voluntary disruption.
+      replicas: 2
       nodeSelector:
         esweiss.com/cpu: "modern"
       tolerations:
@@ -45,6 +50,13 @@ spec:
         - key: esweiss.com/compute
           operator: Exists
           effect: PreferNoSchedule
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: onepassword-connect
+              topologyKey: kubernetes.io/hostname
       api:
         resources:
           requests:

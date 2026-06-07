@@ -4,17 +4,39 @@
 
 - name: Ensure Proxmox firewall directory exists
   ansible.builtin.file:
-    path: /etc/pve/firewall
+    path: "{{ pve_firewall_config_dir }}"
     state: directory
     owner: root
     group: www-data
     mode: "0755"
   when: inventory_hostname in groups['proxmox'] | default([])
 
+# Proxmox auto-creates /etc/pve/nodes/<hostname> on cluster join (it's
+# pmxcfs-managed with root:www-data 0755), but ensuring it exists here
+# makes the role robust against fresh-node edge cases and lets the
+# molecule scenario render host.fw without each per-host dir being set
+# up in prepare.yml.
+#
+# unsafe_writes is required for any task that mutates /etc/pve — pmxcfs
+# is a FUSE filesystem and Ansible's default "write to .tmp + atomic
+# rename" path fails because pmxcfs doesn't support cross-directory
+# rename(2). This task is normally a no-op on production hosts where
+# the directory already exists with the expected owner/mode; the
+# unsafe_writes flag only matters on the create / repair path.
+- name: Ensure per-node firewall directory exists
+  ansible.builtin.file:
+    path: "{{ pve_firewall_node_dir }}/{{ inventory_hostname }}"
+    state: directory
+    owner: root
+    group: www-data
+    mode: "0755"
+    unsafe_writes: true
+  when: inventory_hostname in groups['proxmox'] | default([])
+
 - name: Deploy cluster firewall configuration
   ansible.builtin.template:
     src: cluster.fw.j2
-    dest: /etc/pve/firewall/cluster.fw
+    dest: "{{ pve_firewall_config_dir }}/cluster.fw"
     owner: root
     group: www-data
     mode: "0640"
@@ -31,7 +53,7 @@
 - name: Deploy node-specific host.fw configuration
   ansible.builtin.template:
     src: host.fw.j2
-    dest: "/etc/pve/nodes/{{ inventory_hostname }}/host.fw"
+    dest: "{{ pve_firewall_node_dir }}/{{ inventory_hostname }}/host.fw"
     owner: root
     group: www-data
     mode: "0640"
@@ -52,6 +74,7 @@
   when:
     - pve_firewall_enabled | default(true)
     - inventory_hostname in groups['proxmox'] | default([])
+    - not (pve_firewall_skip_pveum | default(false))
 
 # Deploy per-guest firewall rules
 - name: Include guest firewall tasks
@@ -71,7 +94,9 @@
   check_mode: false
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
-  when: groups.get('proxmox', []) | length > 0
+  when:
+    - groups.get('proxmox', []) | length > 0
+    - not (pve_firewall_skip_pveum | default(false))
 
 - name: Create monitoring@pve user
   ansible.builtin.command: >
@@ -82,6 +107,10 @@
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
     - groups.get('proxmox', []) | length > 0
+    # Explicit gate on skip_pveum so a future refactor that pre-seeds
+    # pve_users.stdout from cache (making `.stdout is defined` true) can't
+    # accidentally fire pveum against a container without the binary.
+    - not (pve_firewall_skip_pveum | default(false))
     - pve_users.stdout is defined
     - >-
       pve_users.stdout | from_json | default([]) |
@@ -95,7 +124,9 @@
   check_mode: false
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
-  when: groups.get('proxmox', []) | length > 0
+  when:
+    - groups.get('proxmox', []) | length > 0
+    - not (pve_firewall_skip_pveum | default(false))
 
 - name: Assign PVEAuditor role to monitoring@pve
   ansible.builtin.command: >
@@ -105,6 +136,7 @@
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
     - groups.get('proxmox', []) | length > 0
+    - not (pve_firewall_skip_pveum | default(false))
     - pve_acls.stdout is defined
     - >-
       pve_acls.stdout | from_json | default([]) |
@@ -120,7 +152,9 @@
   check_mode: false
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
-  when: groups.get('proxmox', []) | length > 0
+  when:
+    - groups.get('proxmox', []) | length > 0
+    - not (pve_firewall_skip_pveum | default(false))
 
 - name: Create exporter API token for monitoring@pve
   ansible.builtin.command: >
@@ -132,6 +166,7 @@
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:
     - groups.get('proxmox', []) | length > 0
+    - not (pve_firewall_skip_pveum | default(false))
     - pve_tokens.stdout is defined
     - >-
       (pve_tokens.stdout | from_json | default([]) |

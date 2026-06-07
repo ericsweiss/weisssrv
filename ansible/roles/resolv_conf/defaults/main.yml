@@ -1,0 +1,12 @@
+---
+# Default search domains. Empty list = no `search` line is written.
+#
+# Default keeps current behaviour for Proxmox hosts and admin shells
+# (typing `pve-nas-01` resolves via search-suffix). K3s VMs override
+# to [] in group_vars/k3s.yml because kubelet propagates the host's
+# search domains into every pod's /etc/resolv.conf, which interacts
+# badly with the default ndots:5 to amplify cluster-internal lookups
+# (each one is suffixed and probed against AdGuard before the literal
+# is tried).
+resolv_conf_search_domains:
+  - "{{ internal_domain }}"

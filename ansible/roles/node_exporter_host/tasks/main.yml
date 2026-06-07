@@ -11,6 +11,28 @@
     state: present
     update_cache: true
 
+# drivetemp only makes sense on bare-metal Proxmox hosts — it's a kernel
+# module that exposes SATA drive temperatures via hwmon. DNS LXCs (which
+# also receive this role for node_exporter) are unprivileged containers
+# that can't load kernel modules, and they have no local disks anyway.
+# Without this gate the modprobe task fails on dns-01/dns-02.
+- name: Persist drivetemp kernel module load across reboots
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/drivetemp.conf
+    content: "drivetemp\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+
+- name: Load drivetemp kernel module now (exposes SATA disk temps via hwmon)
+  community.general.modprobe:
+    name: drivetemp
+    state: present
+  when: inventory_hostname in groups['proxmox'] | default([])
+  tags:
+    - molecule-notest
+
 - name: Create textfile collector directory
   ansible.builtin.file:
     path: "{{ node_exporter_host_textfile_dir }}"
@@ -58,3 +80,63 @@
   when: not ansible_check_mode
   tags:
     - molecule-notest
+
+# ---------------------------------------------------------------------------
+# Corosync + pmxcfs health collector (Proxmox cluster nodes only)
+# ---------------------------------------------------------------------------
+# Detects the failure class that took out pve-nas-01's pmxcfs around
+# 2026-05-09: corosync alive (so ProxmoxHostDown stayed green) but stuck at
+# 99% CPU, /etc/pve/ha/manager_status frozen for weeks. The collector writes
+# three metrics to the textfile dir so PrometheusRules in
+# kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
+# (homelab.monitoring group) can fire on either condition + on collector
+# meta-failure.
+- name: Install corosync health collector script (proxmox hosts only)
+  ansible.builtin.copy:
+    src: corosync-health-collector.sh
+    dest: /usr/local/sbin/corosync-health-collector.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['proxmox'] | default([])
+
+- name: Install corosync health collector service unit
+  ansible.builtin.template:
+    src: corosync-health-collector.service.j2
+    dest: /etc/systemd/system/corosync-health-collector.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+  notify: Reload systemd for corosync health collector
+
+- name: Install corosync health collector timer unit
+  ansible.builtin.copy:
+    src: corosync-health-collector.timer
+    dest: /etc/systemd/system/corosync-health-collector.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+  notify: Reload systemd for corosync health collector
+
+- name: Enable + start corosync health collector timer
+  ansible.builtin.systemd:
+    name: corosync-health-collector.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - inventory_hostname in groups['proxmox'] | default([])
+    - not ansible_check_mode
+  tags:
+    - molecule-notest
+
+# Note: we deliberately do NOT auto-clean the collector on hosts dropped
+# from the proxmox group. The natural conditional
+# `inventory_hostname not in groups['proxmox'] | default([])` fails OPEN
+# (an undefined group → empty list → membership-not-test is True
+# everywhere), and a wrong-cleanup risk on actual Proxmox hosts is worse
+# than stale files on a host that was demoted. Operator removes manually
+# in that rare case (`rm /usr/local/sbin/corosync-health-collector.sh
+# /etc/systemd/system/corosync-health-collector.*`).

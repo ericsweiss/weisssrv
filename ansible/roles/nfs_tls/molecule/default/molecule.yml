@@ -1,0 +1,74 @@
+---
+# Molecule scenario for nfs_tls role.
+#
+# Validates the role's deploy contract — ktls-utils package install, cert
+# preflight assertion, /etc/tlshd.conf template render, and tlshd.service
+# enable — without exercising actual TLS handshakes (no kernel TLS netlink
+# in the test container, no real NFS server/client over xprtsec=tls).
+#
+# A drop-in override (`prepare.yml`) replaces tlshd's ExecStart with
+# /bin/true so the role's `state: started` step succeeds in a container
+# that lacks the AF_TLSH netlink subsystem; verify.yml therefore checks
+# unit recognition (`systemctl cat`) and config + package state, not a
+# live tlshd handshake.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: nfs-tls-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Force the role's internal `nfs_tls_enabled | default(false)` guards
+        # to fire — without this, every task is a no-op and we'd be testing
+        # nothing.
+        nfs_tls_enabled: true
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

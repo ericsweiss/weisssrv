@@ -8,12 +8,59 @@ resource "cloudflare_record" "root" {
   type    = "A"
   content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
   proxied = true            # Cloudflare proxy (orange cloud) enabled
+  ttl     = 1               # 1 = "Auto" (Cloudflare-managed); required for proxied
   comment = "Managed by Terraform - IP updated by cloudflare-ddns CronJob in k3s"
 
   lifecycle {
     # Allow DDNS to update the IP without Terraform reverting it
     ignore_changes = [content]
   }
+}
+
+# CAA records - restrict TLS cert issuance to Let's Encrypt only.
+# Both `letsencrypt.org` (cert-manager via Cloudflare DNS-01 in cluster)
+# and the same authority used by acme.sh on dns-01 cover everything we issue.
+resource "cloudflare_record" "caa_issue" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "issue"
+    value = "letsencrypt.org"
+  }
+  comment = "Restrict cert issuance to Let's Encrypt"
+}
+
+resource "cloudflare_record" "caa_issuewild" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "issuewild"
+    value = "letsencrypt.org"
+  }
+  comment = "Restrict wildcard cert issuance to Let's Encrypt"
+}
+
+resource "cloudflare_record" "caa_iodef" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "iodef"
+    # Intentional: this address is published in the public DNS CAA record
+    # so CAs can report issuance-policy violations. PII exposure is by
+    # design — RFC 8659 §4.1.3 requires an operator-reachable channel,
+    # and no role-specific inbox (security@, certmaster@) currently exists.
+    value = "mailto:ericsweiss1@gmail.com"
+  }
+  comment = "CAA violation reports go here"
 }
 
 # =============================================================================
@@ -37,6 +84,7 @@ resource "cloudflare_record" "git" {
   type    = "A"
   content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
   proxied = false           # DNS-only to allow SSH traffic
+  ttl     = 60              # short TTL since DDNS updates this record
   comment = "GitLab Web + SSH - DNS only, TLS via Traefik, IP updated by DDNS"
 
   lifecycle {
@@ -53,6 +101,7 @@ resource "cloudflare_record" "registry_git" {
   type    = "CNAME"
   content = "direct.${var.external_domain}"
   proxied = false
+  ttl     = 1
   comment = "GitLab Container Registry - DNS only, TLS via Traefik"
 }
 
@@ -64,6 +113,7 @@ resource "cloudflare_record" "pages_git" {
   type    = "CNAME"
   content = "direct.${var.external_domain}"
   proxied = false
+  ttl     = 1
   comment = "GitLab Pages apex - DNS only, TLS via Traefik"
 }
 
@@ -87,6 +137,7 @@ resource "cloudflare_record" "direct" {
   type    = "A"
   content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
   proxied = false           # DNS-only mode (grey cloud) - intentionally exposes origin IP
+  ttl     = 60              # short TTL since DDNS updates this record
   comment = "Direct access (no proxy) - IP updated by DDNS"
 
   lifecycle {
@@ -105,6 +156,7 @@ resource "cloudflare_record" "pages_git_wildcard" {
   type    = "CNAME"
   content = "direct.${var.external_domain}"
   proxied = false
+  ttl     = 1
   comment = "GitLab Pages wildcard - DNS only, TLS via Traefik"
 }
 
@@ -124,6 +176,7 @@ resource "cloudflare_record" "ide_git" {
   type    = "CNAME"
   content = "direct.${var.external_domain}"
   proxied = false
+  ttl     = 1
   comment = "GitLab Web IDE extension host apex - DNS only, TLS via Traefik"
 }
 
@@ -137,5 +190,6 @@ resource "cloudflare_record" "ide_git_wildcard" {
   type    = "CNAME"
   content = "direct.${var.external_domain}"
   proxied = false
+  ttl     = 1
   comment = "GitLab Web IDE wildcard - DNS only, TLS via Traefik"
 }

@@ -1,0 +1,61 @@
+---
+# Default-deny ingress (no caller talks to the CronJob; it makes outbound calls only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: cloudflare-ddns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Egress allowlist: kube-dns + external HTTPS only.
+# The CronJob calls api.ipify.org and api.cloudflare.com (both proxied to
+# Cloudflare edge over TCP/443). No private-LAN egress is needed; deny it
+# explicitly via `except` blocks on RFC1918 ranges.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-https-and-dns
+  namespace: cloudflare-ddns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # kube-dns
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # External HTTPS (api.cloudflare.com, api.ipify.org)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              # Link-local (RFC 3927 + IPv4 unspecified-network) — never
+              # a legitimate destination for outbound HTTPS.
+              - 169.254.0.0/16
+              # Tailscale CGNAT (RFC 6598 100.64.0.0/10) — the comment on
+              # this policy says "external HTTPS only / no private-LAN
+              # egress", but the lan-trust threat model in docs/06 lumps
+              # Tailscale into the same trust boundary. Excluding it
+              # matches the documented intent (the DDNS pod has no
+              # business dialing Tailscale peers).
+              - 100.64.0.0/10
+      ports:
+        - protocol: TCP
+          port: 443

@@ -911,6 +911,31 @@ kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data --force --g
 kubectl uncordon <node-name>
 ```
 
+#### Pruning unused container images
+
+Kubelet's image GC kicks in at the configured threshold (`70/50` cluster-wide
+via `k3s_kubelet_args`); it does not run on demand. To free space without
+waiting for the threshold (e.g. after a large image churn), use crictl
+directly on the affected node:
+
+```bash
+ssh <k3s-vm>
+# List images and how much space each layer holds
+sudo k3s crictl images --quiet | wc -l
+sudo du -sh /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs
+
+# Prune images not referenced by a running container
+sudo k3s crictl rmi --prune
+
+# Re-check
+sudo du -sh /var/lib/rancher/k3s/agent/containerd/
+```
+
+Safe to run during normal operation — only unused images are removed; pods
+re-pull on next deploy if needed. Most useful on the agent that hosts a
+lot of churn (Connect, runners, build-agent workloads — currently
+`k3s-agt-prec-01`).
+
 ---
 
 ## Understanding Skipped Tasks
@@ -1181,6 +1206,52 @@ sudo zfs destroy local-ssd/data/images/<vmid>  # ON TARGET NODE ONLY
    sudo resize2fs /dev/sdX   # device for prometheus zvol
    ```
    Then update sizes in two places: PV capacity in `.../kube-prometheus-stack/storage.yaml` and VolumeClaimTemplate request in `.../kube-prometheus-stack/release.yaml` (under `prometheusSpec.storageSpec`).
+
+### Recovering Space on the Prometheus / Loki zvols
+
+The TSDB / Loki chunk stores have their own retention; ext4 frees blocks
+inside the zvol but doesn't issue DISCARD by default, so the parent ZFS
+dataset never reclaims them. Combined with `zfs-auto-snapshot`, a
+148 GiB ext4 with 15 GiB live data can show 280+ GiB allocated on the
+host pool. Auto-snapshots are now disabled at the dataset level (see
+`host_vars/pve-nas-01.yml`); to reclaim what's already accumulated:
+
+1. **Inside the VM, trim ext4:**
+   ```bash
+   ssh k3s-agt-nas-01
+   sudo fstrim -v /mnt/prometheus-data
+   sudo fstrim -v /mnt/loki-data
+   ```
+
+2. **On the NAS, drop the existing auto-snapshots if they're still
+   present** (after Ansible has applied `auto-snapshot=false`, new
+   snapshots stop being created but old ones persist):
+   ```bash
+   ssh pve-nas-01
+   # Inspect what's there
+   sudo zfs list -t snapshot -o name,used -s creation \
+     | grep -E 'prometheus|loki'
+
+   # ALWAYS dry-run the @% range first — `@%` matches every snapshot on
+   # the dataset, so a typo (e.g. wrong dataset name) can wipe far more
+   # than intended. `-n` plus `-v` prints what would be destroyed without
+   # destroying anything.
+   sudo zfs destroy -n -v ssd/appdata/prometheus@%
+   sudo zfs destroy -n -v ssd/appdata/loki@%
+
+   # If the dry-run output matches what you intended, re-run without -n.
+   # Prefer narrowing to a specific snapshot range (e.g.
+   # `ssd/appdata/prometheus@auto-2026-01-01_00.00%auto-2026-04-30_23.59`)
+   # over the bare `@%` whenever feasible.
+   sudo zfs destroy -v ssd/appdata/prometheus@%
+   sudo zfs destroy -v ssd/appdata/loki@%
+   ```
+
+3. **Verify space reclaimed:**
+   ```bash
+   sudo zfs list -o name,used,referenced,usedbysnapshots \
+     ssd/appdata/prometheus ssd/appdata/loki
+   ```
 
 ### Loki WAL Issues
 

@@ -2,7 +2,7 @@
 # configs/ reconciles AFTER controllers/ because every resource here is a CR
 # defined by a CRD that controllers/ installs (ClusterSecretStore needs ESO,
 # ClusterIssuer + Certificates need cert-manager, IPAddressPool needs MetalLB,
-# ExternalSecrets need ESO + ClusterSecretStore).
+# ExternalSecrets need ESO + ClusterSecretStore, Middlewares need Traefik).
 #
 # The versions-configmap.yaml lives under sources/ (not here) because it must
 # exist before controllers/ renders HelmReleases with ${var} placeholders.
@@ -12,7 +12,11 @@ resources:
   - cluster-secret-store.yaml
   - cluster-issuer.yaml
   - metallb-ip-pools.yaml
+  - traefik-tls-options.yaml
+  - traefik-middlewares.yaml
   - wildcard-certificates.yaml
+  - onepassword-connect-certificate.yaml
+  - onepassword-connect-ingress.yaml
   - coredns
   - cloudflare-ddns
   - shared-cloudflare-secrets

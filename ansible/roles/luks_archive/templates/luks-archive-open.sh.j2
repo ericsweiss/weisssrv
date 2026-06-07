@@ -1,0 +1,233 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# luks-archive-open.sh <mapper-name>
+#
+# Fetches the shared archive LUKS passphrase from 1Password Connect and
+# unlocks the underlying block device, exposing it at /dev/mapper/<name>.
+# Invoked by archive-luks-open@<name>.service before zfs-import-cache.service
+# so the archive pool's vdevs exist before ZFS tries to import.
+#
+# Cold-cluster recovery: if Connect is unreachable, the script exits
+# non-zero and the systemd unit fails. Operator path:
+#     sudo cryptsetup open /dev/disk/by-id/<by-id> archive-N   # paste passphrase
+#     sudo zpool import archive
+#     sudo zfs mount -a
+#
+# Authorization: same bearer token at /etc/onepassword-connect/token that
+# zfs_encryption uses — single token shared across both roles. Passed to
+# curl on stdin (-H @-), never on argv.
+#
+# Exit codes (mirror zfs_encryption for muscle memory):
+#   0 — mapper opened (or already open)
+#   1 — config / arg / token error
+#   2 — Connect unreachable beyond fetch_timeout
+#   3 — vault/item/field not found
+#   4 — `cryptsetup open` failed (wrong passphrase, no LUKS header, etc.)
+#   5 — underlying device not present (e.g. drive pulled)
+#   7 — Connect returned 401/403 (auth failure; no point retrying)
+
+set -euo pipefail
+
+MAPPER="${1:?mapper name required}"
+DEVICE="${LUKS_ARCHIVE_DEVICE:-}"
+# No bash-default fallback for ITEM_TITLE/FIELD: the env file at
+# /etc/luks/archive/${MAPPER}.conf always sets both, and a Jinja-rendered
+# default with embedded spaces (e.g. "LUKS Archive Passphrase") would
+# word-split inside the parameter-expansion default unless carefully
+# quoted. Fail loud if the env file is malformed rather than silently
+# substituting a Jinja-time literal.
+ITEM_TITLE="${LUKS_ARCHIVE_ITEM:-}"
+FIELD="${LUKS_ARCHIVE_FIELD:-}"
+
+[[ -n "$DEVICE" ]] || { echo "LUKS_ARCHIVE_DEVICE unset; check /etc/luks/archive/${MAPPER}.conf" >&2; exit 1; }
+[[ -n "$ITEM_TITLE" ]] || { echo "LUKS_ARCHIVE_ITEM unset; check /etc/luks/archive/${MAPPER}.conf" >&2; exit 1; }
+[[ -n "$FIELD" ]] || { echo "LUKS_ARCHIVE_FIELD unset; check /etc/luks/archive/${MAPPER}.conf" >&2; exit 1; }
+
+CONNECT_URL="{{ luks_archive_connect_url }}"
+VAULT_REF="{{ luks_archive_connect_vault }}"
+TOKEN_FILE="/etc/onepassword-connect/token"
+FETCH_TIMEOUT="{{ luks_archive_fetch_timeout_seconds }}"
+RETRY_SLEEP="{{ luks_archive_fetch_retry_seconds }}"
+
+log() { logger -t "luks-archive-open[${MAPPER}]" -s -- "$*"; }
+
+[[ -r "$TOKEN_FILE" ]] || { log "missing $TOKEN_FILE"; exit 1; }
+TOKEN=$(< "$TOKEN_FILE")
+AUTH_HEADER="Authorization: Bearer $TOKEN"
+
+connect_get() {
+    local path="$1" out="$2"
+    printf '%s\n' "$AUTH_HEADER" \
+        | curl -sS \
+            --max-time 10 \
+            -H @- \
+            -o "$out" \
+            -w '%{http_code}' \
+            "${CONNECT_URL}${path}" \
+        || echo 000
+}
+
+# Underlying device must exist before we can open it. Distinguish "drive
+# missing" from "no LUKS header" so an operator who's pulled the wrong
+# drive gets a clear error.
+if [[ ! -b "$DEVICE" ]]; then
+    log "underlying device $DEVICE not present"
+    exit 5
+fi
+
+# Already open? Skip silently — makes the unit safe to re-run.
+if [[ -b "/dev/mapper/$MAPPER" ]]; then
+    log "mapper /dev/mapper/$MAPPER already exists; nothing to do"
+    exit 0
+fi
+
+# Resolve VAULT_REF to UUID (Connect REST requires UUID in path).
+if [[ "$VAULT_REF" =~ ^[a-z0-9]{26}$ ]]; then
+    VAULT="$VAULT_REF"
+else
+    encoded_vault=$(jq -rn --arg v "$VAULT_REF" '$v | @uri')
+    VAULT_PATH="/v1/vaults?filter=name%20eq%20%22${encoded_vault}%22"
+
+    deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
+    VAULT=""
+    while [[ -z "$VAULT" ]]; do
+        if [[ $(date +%s) -ge $deadline ]]; then
+            log "timed out resolving vault UUID for '$VAULT_REF' against $CONNECT_URL"
+            exit 2
+        fi
+
+        tmp=$(mktemp)
+        http=$(connect_get "$VAULT_PATH" "$tmp")
+        body=$(cat "$tmp")
+        rm -f "$tmp"
+
+        case "$http" in
+            200)
+                VAULT=$(printf '%s' "$body" | jq -r '.[0].id // empty')
+                if [[ -z "$VAULT" ]]; then
+                    log "Connect returned 200 but no vault named '$VAULT_REF' visible to this token"
+                    exit 3
+                fi
+                ;;
+            401|403)
+                log "Connect rejected token resolving vault (HTTP $http); refusing to retry"
+                exit 7
+                ;;
+            *)
+                log "Connect HTTP $http resolving vault; will retry"
+                ;;
+        esac
+
+        if [[ -z "$VAULT" ]]; then
+            sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
+            jitter=$(( RANDOM % sleep_base ))
+            sleep "$(( sleep_base + jitter ))"
+        fi
+    done
+    unset body
+fi
+
+# Resolve 1P item ID from title.
+encoded=$(jq -rn --arg t "$ITEM_TITLE" '$t | @uri')
+LIST_PATH="/v1/vaults/${VAULT}/items?filter=title%20eq%20%22${encoded}%22"
+
+deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
+ITEM_ID=""
+while [[ -z "$ITEM_ID" ]]; do
+    if [[ $(date +%s) -ge $deadline ]]; then
+        log "timed out resolving item id for '$ITEM_TITLE' against $CONNECT_URL"
+        exit 2
+    fi
+
+    tmp=$(mktemp)
+    http=$(connect_get "$LIST_PATH" "$tmp")
+    body=$(cat "$tmp")
+    rm -f "$tmp"
+
+    case "$http" in
+        200)
+            ITEM_ID=$(printf '%s' "$body" | jq -r '.[0].id // empty')
+            if [[ -z "$ITEM_ID" ]]; then
+                log "Connect returned 200 but no item titled '$ITEM_TITLE' in vault '$VAULT_REF'"
+                exit 3
+            fi
+            ;;
+        401|403)
+            log "Connect rejected token (HTTP $http); refusing to retry"
+            exit 7
+            ;;
+        *)
+            log "Connect HTTP $http resolving item; will retry"
+            ;;
+    esac
+
+    if [[ -z "$ITEM_ID" ]]; then
+        sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
+        jitter=$(( RANDOM % sleep_base ))
+        sleep "$(( sleep_base + jitter ))"
+    fi
+done
+
+# Fetch the passphrase field.
+tmp=$(mktemp)
+http=$(connect_get "/v1/vaults/$VAULT/items/$ITEM_ID" "$tmp")
+body=$(cat "$tmp")
+rm -f "$tmp"
+
+case "$http" in
+    200) ;;
+    401|403)
+        log "Connect rejected token fetching item $ITEM_ID (HTTP $http)"
+        exit 7
+        ;;
+    *)
+        log "Connect HTTP $http fetching item $ITEM_ID"
+        exit 2
+        ;;
+esac
+
+PASSPHRASE=$(printf '%s' "$body" | jq -r \
+    --arg f "$FIELD" \
+    'first(.fields[]? | select((.id == $f) or (.label == $f)) | select(.value != null and .value != "") | .value) // empty')
+unset body
+
+if [[ -z "$PASSPHRASE" ]]; then
+    log "field '$FIELD' (matching id or label) is missing or empty on item '$ITEM_TITLE'"
+    exit 3
+fi
+
+# Defensive: strip a trailing newline if one snuck into the 1P value
+# (operator-edited fields sometimes paste with a trailing newline).
+# `cryptsetup open --key-file -` reads one line and stops at the first
+# newline, so an embedded trailing newline would silently truncate the
+# key to its visible prefix and produce a "No key available" failure
+# whose cause is invisible from the script's logs.
+PASSPHRASE="${PASSPHRASE%$'\n'}"
+
+# Open the LUKS container. Passphrase on stdin so it never appears in
+# /proc/<pid>/cmdline. NOTE: `--key-file -` reads ONE line and stops at
+# the first newline; if a 1Password passphrase is ever pasted with a
+# trailing newline the truncated form is what gets used. Printf with %s
+# (not %s\n) guarantees no newline is appended on our side; an operator
+# editing the 1P item still needs to ensure the value field has no
+# trailing whitespace.
+#
+# Capture cryptsetup's stderr so the log line names the real reason
+# (e.g. "No key available", "Device archive-N already exists",
+# "Requested header backup file already exists") instead of just
+# "cryptsetup open failed".
+local_cs_rc=0
+cs_err=$(printf '%s' "$PASSPHRASE" \
+    | cryptsetup open --key-file - "$DEVICE" "$MAPPER" 2>&1 >/dev/null) \
+    || local_cs_rc=$?
+unset PASSPHRASE
+if [[ "$local_cs_rc" -ne 0 ]]; then
+    # cs_err may be empty if cryptsetup died before draining stdin and
+    # the printf SIGPIPE'd before stderr made it into the capture. Fall
+    # back to pointing at journald so the operator has somewhere to look.
+    log "cryptsetup open failed for $DEVICE -> $MAPPER (rc=${local_cs_rc}): ${cs_err:-<no stderr captured; check journalctl -u archive-luks-open@${MAPPER}.service>}"
+    exit 4
+fi
+
+log "opened $DEVICE -> /dev/mapper/$MAPPER"

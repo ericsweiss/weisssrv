@@ -1,0 +1,47 @@
+---
+# Capture current SSH host keys for cert_distribution_targets and
+# print them in a paste-ready format for host_vars/dns-01.yml.
+#
+# Usage:
+#   task certs:show-host-keys
+#
+# After capturing, paste each host_key value into the matching entry in
+# ansible/inventories/prod/host_vars/dns-01.yml under
+# cert_distribution_targets, then re-run `task dns:deploy` (or any play
+# that runs the acme_certs role). Subsequent SSH from dns-01 to those
+# hosts is strict (StrictHostKeyChecking=yes), so a host rebuild that
+# changes the fingerprint will fail the cert push loudly until you
+# capture again and update.
+
+- name: Show SSH host keys for cert distribution targets
+  hosts: dns-01
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Capture each target's ed25519 host key via ssh-keyscan
+      ansible.builtin.command:
+        cmd: "ssh-keyscan -t ed25519 -T 5 -p {{ item.ssh_port | default(22) }} {{ item.ip }}"
+      loop: "{{ cert_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }} ({{ item.ip }}:{{ item.ssh_port | default(22) }})"
+      register: ssh_keyscans
+      changed_when: false
+      # Don't abort on a single unreachable target; render NOT_AVAILABLE
+      # for it so the operator sees which one didn't respond.
+      failed_when: false
+
+    - name: Render paste-ready host_key values
+      ansible.builtin.debug:
+        msg: |
+          Paste each host_key into the matching cert_distribution_targets
+          entry in host_vars/dns-01.yml, replacing the empty placeholder.
+          Lines starting with NOT_AVAILABLE indicate the target did not
+          respond to ssh-keyscan within 5s; check the target is up and
+          re-run.
+
+          {% for r in ssh_keyscans.results %}
+          {% set key_line = (r.stdout_lines | default([])) | reject('match', '^#') | first | default('') %}
+          {% set key_value = key_line.split(' ', 1)[1] | default('NOT_AVAILABLE') if key_line else 'NOT_AVAILABLE' %}
+          - host: {{ r.item.host }}
+            host_key: "{{ key_value }}"
+          {% endfor %}

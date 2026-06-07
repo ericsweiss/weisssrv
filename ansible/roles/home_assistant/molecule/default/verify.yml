@@ -1,0 +1,172 @@
+---
+# Verify playbook for the home_assistant role contract test.
+#
+# After converge with home_assistant_render_only=true, two files have
+# been rendered into /tmp on the container:
+#   - /tmp/ha-configuration.yaml  (from configuration.yaml.j2)
+#   - /tmp/ha-secrets.yaml         (from secrets.yaml.j2)
+#
+# We slurp each one and assert on structural markers + injected values.
+# This catches Jinja errors, accidental removal of trusted-proxy
+# entries, broken !secret refs, regressions in the SSL block, OIDC
+# configure_url drift, and SMTP-block changes — all of which are the
+# real failure modes for a config push to HAOS.
+#
+# YAML quoting note: every `that:` list entry is wrapped in YAML
+# double-quotes because the assertion expressions contain unquoted
+# colons (e.g. "username_field:") that the YAML parser would otherwise
+# misread as flow-mapping separators inside a plain-scalar list item.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # ========================================================================
+    # 1. Both rendered files exist on the test container
+    # ========================================================================
+    - name: Stat /tmp/ha-configuration.yaml
+      ansible.builtin.stat:
+        path: /tmp/ha-configuration.yaml
+      register: cfg_stat
+
+    - name: Stat /tmp/ha-secrets.yaml
+      ansible.builtin.stat:
+        path: /tmp/ha-secrets.yaml
+      register: secrets_stat
+
+    - name: Assert both rendered files exist with expected modes
+      ansible.builtin.assert:
+        that:
+          - "cfg_stat.stat.exists"
+          - "cfg_stat.stat.mode == '0644'"
+          - "secrets_stat.stat.exists"
+          - "secrets_stat.stat.mode == '0600'"
+        fail_msg: >-
+          Expected /tmp/ha-configuration.yaml (0644) and
+          /tmp/ha-secrets.yaml (0600) to exist after the role's
+          render-only converge.
+
+    # ========================================================================
+    # 2. configuration.yaml.j2 — slurp + structural assertions
+    # ========================================================================
+    - name: Slurp rendered configuration.yaml
+      ansible.builtin.slurp:
+        src: /tmp/ha-configuration.yaml
+      register: cfg_content
+
+    - name: Decode configuration.yaml content
+      ansible.builtin.set_fact:
+        cfg_text: "{{ cfg_content.content | b64decode }}"
+
+    - name: Assert http block has X-Forwarded-For + trusted_proxies entries
+      ansible.builtin.assert:
+        that:
+          - "cfg_text is search('use_x_forwarded_for: true')"
+          - "cfg_text is search('trusted_proxies:')"
+          - "cfg_text is search('- 192\\.168\\.0\\.0/24')"
+          - "cfg_text is search('- 10\\.42\\.0\\.0/16')"
+          - "cfg_text is search('- 10\\.43\\.0\\.0/16')"
+        fail_msg: >-
+          Expected http block with use_x_forwarded_for and the three
+          trusted-proxy CIDRs (192.168.0.0/24, 10.42.0.0/16, 10.43.0.0/16).
+
+    - name: Assert SSL block is rendered when ssl_enabled
+      # The molecule scenario sets home_assistant_ssl_enabled=true so
+      # we explicitly verify the conditional ssl_certificate / ssl_key
+      # lines are present and point at /ssl/{fullchain,privkey}.pem.
+      ansible.builtin.assert:
+        that:
+          - "cfg_text is search('ssl_certificate: /ssl/fullchain\\.pem')"
+          - "cfg_text is search('ssl_key: /ssl/privkey\\.pem')"
+        fail_msg: >-
+          ssl_enabled=true but the ssl_certificate / ssl_key lines were
+          not rendered. The home_assistant_ssl_enabled branch in
+          configuration.yaml.j2 is broken or got removed.
+
+    - name: Assert OpenID Connect block references Authentik discovery URL
+      ansible.builtin.assert:
+        that:
+          - "cfg_text is search('openid:')"
+          - "cfg_text is search('client_id: !secret oidc_client_id')"
+          - "cfg_text is search('client_secret: !secret oidc_client_secret')"
+          - "cfg_text is search('configure_url:.*auth\\.ericsweiss\\.com/application/o/home/\\.well-known/openid-configuration')"
+          - "cfg_text is search('username_field: \"preferred_username\"')"
+          - "cfg_text is search('block_login: true')"
+        fail_msg: >-
+          OIDC block missing required pieces. Expected !secret refs for
+          client_id/client_secret, the Authentik discovery URL, and
+          block_login true (so password login stays disabled).
+
+    - name: Assert SMTP notify block uses !secret refs and configured host
+      ansible.builtin.assert:
+        that:
+          - "cfg_text is search('notify:')"
+          - "cfg_text is search('platform: smtp')"
+          - "cfg_text is search('server: \"smtp-relay\\.test\\.local\"')"
+          - "cfg_text is search('port: 587')"
+          - "cfg_text is search('encryption: \"starttls\"')"
+          - "cfg_text is search('username: !secret smtp_username')"
+          - "cfg_text is search('password: !secret smtp_password')"
+          - "cfg_text is search('sender: \"home-assistant@test\\.local\"')"
+          - "cfg_text is search('sender_name: \"Home Assistant Test\"')"
+          - "cfg_text is search('- !secret admin_email')"
+        fail_msg: >-
+          notify SMTP block is missing one of platform, server, port,
+          encryption, !secret username/password, sender, sender_name,
+          or the admin_email recipient.
+
+    - name: Assert prometheus + default_config + tts blocks present
+      ansible.builtin.assert:
+        that:
+          - "cfg_text is search('^prometheus:', multiline=True)"
+          - "cfg_text is search('^default_config:', multiline=True)"
+          - "cfg_text is search('platform: google_translate')"
+          - "cfg_text is search('automation: !include automations\\.yaml')"
+          - "cfg_text is search('script: !include scripts\\.yaml')"
+          - "cfg_text is search('scene: !include scenes\\.yaml')"
+        fail_msg: >-
+          Expected prometheus, default_config, tts (google_translate),
+          and the !include lines for automations / scripts / scenes.
+
+    # ========================================================================
+    # 3. secrets.yaml.j2 — slurp + injected-value assertions
+    # ========================================================================
+    - name: Slurp rendered secrets.yaml
+      ansible.builtin.slurp:
+        src: /tmp/ha-secrets.yaml
+      register: secrets_content
+      no_log: true
+
+    - name: Decode secrets.yaml content
+      ansible.builtin.set_fact:
+        secrets_text: "{{ secrets_content.content | b64decode }}"
+      no_log: true
+
+    - name: Assert secrets.yaml has all five !secret keys with injected values
+      # The molecule.yml provisioner.env block injects synthetic values;
+      # the role's defaults look them up via env(). With | to_json each
+      # value is wrapped in double quotes — we match on the quoted form
+      # so a regression to unquoted output (which breaks YAML when a
+      # value happens to contain ":", "[", or whitespace) shows up here.
+      ansible.builtin.assert:
+        that:
+          - "secrets_text is search('smtp_username: \"testsmtp@example\\.com\"')"
+          - "secrets_text is search('smtp_password: \"testsmtppassword\"')"
+          - "secrets_text is search('admin_email: \"admin@example\\.com\"')"
+          - "secrets_text is search('oidc_client_id: \"test-oidc-client-id\"')"
+          - "secrets_text is search('oidc_client_secret: \"test-oidc-client-secret\"')"
+        fail_msg: >-
+          secrets.yaml is missing one of the five expected !secret keys
+          (smtp_username, smtp_password, admin_email, oidc_client_id,
+          oidc_client_secret) or a value isn't double-quoted via to_json.
+      no_log: true
+
+    # ========================================================================
+    # Summary
+    # ========================================================================
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "configuration.yaml rendered with http/trusted_proxies, ssl block, OIDC, SMTP, prometheus, default_config"
+          - "secrets.yaml rendered with all five !secret keys, double-quoted via to_json"
+          - "All home_assistant role render-only contract assertions passed"

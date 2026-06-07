@@ -59,8 +59,8 @@ The k3s platform is deployed on Proxmox-hosted VMs with a layered architecture: 
 | k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | Server (etcd) | ACTIVE |
 | k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | ACTIVE |
 | k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | ACTIVE |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General | ACTIVE |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General | ACTIVE |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | Ingress + general | ACTIVE |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | Ingress + general | ACTIVE |
 | k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | ACTIVE |
 | k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | ACTIVE |
 
@@ -103,8 +103,8 @@ See `docs/25-multi-node-expansion.md` for the expansion plan including IP/VMID a
 |------|-----|------|--------------|------|--------|
 | k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | ACTIVE |
 | k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | ACTIVE |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | General | ACTIVE |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | General | ACTIVE |
+| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | Ingress + general | ACTIVE |
+| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | Ingress + general | ACTIVE |
 | k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | ACTIVE |
 | k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | ACTIVE |
 

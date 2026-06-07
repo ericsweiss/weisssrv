@@ -1,3 +1,12 @@
 ---
-# Loki push endpoint via kube-vip VIP (single active, failover between 3 server nodes)
-alloy_host_loki_url: "http://192.168.0.161:31100/loki/api/v1/push"
+# Loki push endpoint via the internal Traefik IngressRoute. Encrypts
+# the host->Loki hop with the wildcard cert; the IngressRoute is gated
+# by lan-tailscale-only so the API is unreachable from outside the LAN.
+# AdGuard rewrite (loki.esweiss.com -> 192.168.0.101) routes the
+# request to Traefik on the internal MetalLB VIP.
+#
+# Fallback: the NodePort at http://192.168.0.161:31100 is kept in
+# kubernetes/infrastructure/observability/loki/nodeport.yaml for
+# emergencies (e.g. Traefik down). Override on a host that needs the
+# fallback by setting alloy_host_loki_url in host_vars.
+alloy_host_loki_url: "https://loki.esweiss.com/loki/api/v1/push"

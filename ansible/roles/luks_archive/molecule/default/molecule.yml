@@ -1,0 +1,77 @@
+---
+# Molecule scenario for luks_archive role.
+#
+# Mirrors the zfs_encryption scenario: validates the deploy contract
+# (token file, per-device env files, unlock script render, systemd
+# template unit, per-device service enable) without exercising real
+# cryptsetup ops (no LUKS headers on test "devices") or live Connect
+# calls (no real 1Password Connect endpoint).
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: luks-archive-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        internal_domain: "test.local"
+        luks_archive_connect_token: "fake-test-token-must-be-non-empty"
+        luks_archive_devices:
+          - name: archive-1
+            device: /dev/null   # placeholder — never opened in this test
+        # Molecule image doesn't carry cryptsetup → skip the apt install.
+        luks_archive_install_cryptsetup: false
+        # /dev/null isn't a LUKS device → skip the cryptsetup isLuks
+        # pre-enable probe. Separating this from install_cryptsetup
+        # means a prod converge that happens to skip the install still
+        # runs the probe (and fails loudly if cryptsetup is missing,
+        # via rc=127 in the isLuks output).
+        luks_archive_skip_isluks_probe: true
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

@@ -11,6 +11,30 @@
   ansible.builtin.command: netfilter-persistent save
   changed_when: true
 
+# Apply the vm.overcommit_memory drop-in immediately so a freshly-deployed VM
+# doesn't have to wait for a reboot for the kernel knob to take effect.
+#
+# ansible.posix.sysctl with sysctl_file is idempotent against the file that
+# the preceding `copy:` task already wrote (same key, same value) — same
+# pattern as nic_tuning. It additionally runs `sysctl -p` (reload: true) to
+# apply at runtime.
+- name: Reload sysctl gitlab-redis
+  ansible.posix.sysctl:
+    name: vm.overcommit_memory
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-gitlab-redis.conf
+    reload: true
+
+# Picks up unit-file changes for the THP unit. `state: restarted` (not started)
+# is required because RemainAfterExit makes `started` a no-op for an already-
+# active oneshot — the new ExecStart wouldn't run until next boot otherwise.
+- name: Reload systemd for THP unit
+  ansible.builtin.systemd:
+    name: disable-transparent-hugepages.service
+    daemon_reload: true
+    state: restarted
+
 # Restart fail2ban if installed - check existence first since base role may have it disabled
 - name: Check if fail2ban service exists
   ansible.builtin.stat:

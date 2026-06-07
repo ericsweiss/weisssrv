@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+# Oneshot that samples corosync CPU% and pmxcfs mtime once. Invoked every
+# minute by corosync-health-collector.timer.
+[Unit]
+Description=Sample corosync + pmxcfs health to node_exporter textfile collector
+# After=corosync gives us boot-time ordering so pidof has something to find.
+# We deliberately do NOT use PartOf=corosync.service: corosync restart should
+# not abort an in-flight sample, and corosync being stopped does not invalidate
+# the rest of the metrics (we want to keep recording mtime even then). The
+# script's pidof handling already covers the corosync-missing case correctly.
+After=corosync.service
+
+[Service]
+Type=oneshot
+# Passes the textfile dir so the role variable (node_exporter_host_textfile_dir)
+# is honored both here and inside the script. Without this, an inventory
+# override would silently desync the script's write path from the path
+# node_exporter scrapes.
+ExecStart=/usr/local/sbin/corosync-health-collector.sh {{ node_exporter_host_textfile_dir }}
+# Ensure stat() on the 0640-group-www-data pmxcfs file works.
+User=root
+# Sampling top for 1s; bound the unit so a wedged top doesn't grow.
+TimeoutStartSec=15s
+Nice=10

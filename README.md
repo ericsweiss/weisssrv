@@ -86,6 +86,69 @@ eval $(op signin)
 task ansible:ping
 ```
 
+### One-time pre-deploy: pin SSH host keys
+
+Both cert distribution (via dns-01) and Home Assistant config deploys
+use `StrictHostKeyChecking=yes` against pinned host keys in inventory.
+The entries are committed empty; each role fails loudly with a
+remediation message until populated. The two workflows are independent
+and have separate capture + validate commands.
+
+#### Cert distribution host-key bootstrap
+
+Targets: dns-02, smtp-relay, gitlab, pve-nas-01, k3s-agt-nas-01, plex,
+home. (`task certs:show-host-keys` enumerates from
+`cert_distribution_targets` in `host_vars/dns-01.yml`, so its output
+is the authoritative list — keep this paragraph aligned with the
+inventory if you add or remove targets.) Note that the `home` target
+uses SSH port 22222; the helper handles the per-target `ssh_port` field
+automatically.
+
+1. Capture host keys via the helper task:
+
+   ```bash
+   task certs:show-host-keys
+   ```
+
+2. Paste each algorithm-and-key value (without the leading hostname/IP)
+   into the matching entry under `cert_distribution_targets[*].host_key`
+   in `host_vars/dns-01.yml`. Commit.
+
+3. Validate the inventory parses + the role sees the new keys with a
+   dry-run:
+
+   ```bash
+   task dns:deploy -- --check
+   ```
+
+4. Then run `task dns:deploy` for real.
+
+Same workflow rotates a key after a target rebuild.
+
+#### Home Assistant host-key bootstrap
+
+HAOS runs sshd on port 22222 (SSH add-on), not the standard 22.
+
+1. Capture the HAOS ed25519 host key:
+
+   ```bash
+   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+   ```
+
+2. Paste the value (without the leading hostname/IP) into
+   `home_assistant_host_key` in `host_vars/home.yml`. Commit.
+
+3. Validate with a dry-run of the Home Assistant config deploy
+   (`task home-assistant:deploy-config` doesn't forward extra flags
+   to ansible-playbook, so dry-run via ansible-playbook directly):
+
+   ```bash
+   cd ansible && op run -- ansible-playbook -i inventories/prod \
+     -e ansible_become=false playbooks/home-assistant.yml --check
+   ```
+
+4. Then run `task home-assistant:deploy-config` for real.
+
 ### Common Operations
 
 ```bash
@@ -161,10 +224,15 @@ weisssrv/
 ├── terraform/cloudflare/     # Cloudflare DNS management
 ├── kubernetes/               # Flux-managed cluster state
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
-│   ├── infrastructure/       # Platform (sources, controllers, configs, versions-configmap)
-│   └── apps/                 # Applications (authentik, download-clients, recipes,
-│                             #   gitlab-runner, gitlab-runner-privileged, gitlab-agent,
-│                             #   vm-ingress)
+│   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
+│   │                         #   that form the first four stages of the five-stage Flux Kustomization chain:
+│   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap)
+│   │                         #     infrastructure-controllers   (HelmReleases for ESO, Connect, MetalLB, cert-manager, Traefik, external-dns)
+│   │                         #     infrastructure-configs       (ClusterSecretStore, ClusterIssuer, Traefik middlewares, wildcard certs, CoreDNS, DDNS, Connect IngressRoute)
+│   │                         #     infrastructure-observability (kube-prometheus-stack, Loki, Alloy, exporters, dashboards)
+│   └── apps/                 # Sibling top-level Kustomization (fifth stage; dependsOn infrastructure-observability):
+│                             #   authentik, download-clients, recipes, gitlab-runner,
+│                             #   gitlab-runner-privileged, gitlab-agent, vm-ingress
 ├── scripts/                  # Utility scripts (version checker, versions-configmap generator, etc.)
 ├── docs/                     # Documentation
 └── Taskfile.yml              # Task runner commands (including flux:*)
@@ -195,6 +263,12 @@ weisssrv/
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
 | nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in) |
+| zfs_exporter | Prometheus ZFS exporter (pool health, scrub status) on the NAS |
+| unbound_exporter | Prometheus Unbound exporter on DNS hosts |
+| node_exporter_host | Prometheus node_exporter on bare-metal Proxmox hosts (port 9101) |
+| alloy_host | Grafana Alloy on non-k8s hosts and k3s VMs for journald → Loki |
+| zfs_encryption | Boot-time ZFS pool key fetch from 1Password Connect |
+| nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |
 
 ## Secrets Management
 
@@ -301,7 +375,7 @@ Self-hosted Git repository and CI/CD platform:
 
 - **URLs**: git.esweiss.com (internal), git.ericsweiss.com (external)
 - **Features**:
-  - GitLab EE 18.10.3 (CE features) on dedicated VM
+  - GitLab EE (CE features) on dedicated VM (version pinned in `ansible/inventories/prod/group_vars/all.yml`)
   - Container Registry (registry.git.ericsweiss.com)
   - GitLab Pages (*.pages.git.ericsweiss.com)
   - CI/CD Runners on k3s cluster (infrastructure + shared multi-project)
@@ -356,6 +430,8 @@ Self-hosted Git repository and CI/CD platform:
 | [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
 | [29-flux-operations](docs/29-flux-operations.md) | Flux operator guide (bootstrap, adopt, rotate, add app, troubleshoot) |
 | [30-multi-repo-onboarding](docs/30-multi-repo-onboarding.md) | Adding external repos that deploy into this cluster via Flux |
+| [31-observability](docs/31-observability.md) | Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting) |
+| [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
 
 ## User Management
 

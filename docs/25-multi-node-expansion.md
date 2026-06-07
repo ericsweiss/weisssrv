@@ -180,7 +180,7 @@ General workloads without the toleration will still schedule on prec-01 because 
 
 ## Section 1: Adding local-ssd ZFS Pool (Reference)
 
-**Status**: ✅ **Complete** - All compute nodes now have local-ssd configured.
+**Status**: **Complete** - All compute nodes now have local-ssd configured.
 
 This section documents the setup of a 1TB SSD with a `local-ssd` ZFS pool, which provides snapshots, compression, and enables Proxmox HA replication. Use this as a reference when adding new compute nodes.
 
@@ -505,7 +505,7 @@ The cluster was expanded in the following order (all complete):
 
 ## Section 3: Proxmox HA Configuration (Reference)
 
-**Status**: ✅ **Complete** - HA is fully configured and active on the 6-node cluster.
+**Status**: **Complete** - HA is fully configured and active on the 6-node cluster.
 
 Proxmox HA (High Availability) automatically restarts VMs/CTs on surviving nodes when a host fails. This section documents the HA architecture and procedures for reference.
 

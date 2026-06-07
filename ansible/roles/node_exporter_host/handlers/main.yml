@@ -6,3 +6,13 @@
     name: prometheus-node-exporter
     state: restarted
     daemon_reload: true
+
+# Picks up unit file changes for the corosync-health-collector timer/service.
+# `state: restarted` (not started) is required because `started` is a no-op
+# against an already-active timer — a change to OnUnitInactiveSec or any
+# other timer field would otherwise not take effect until reboot.
+- name: Reload systemd for corosync health collector
+  ansible.builtin.systemd:
+    name: corosync-health-collector.timer
+    daemon_reload: true
+    state: restarted

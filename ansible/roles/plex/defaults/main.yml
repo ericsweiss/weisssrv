@@ -18,6 +18,14 @@ plex_version: latest
 # Set via environment variable: PLEX_CLAIM
 plex_claim: "{{ lookup('ansible.builtin.env', 'PLEX_CLAIM', default='') }}"
 
+# Plex Custom Certificate PFX passphrase. Read from env var injected by
+# `task plex:deploy` via `op run --`. Used by /usr/local/sbin/plex-cert-reload.sh
+# (deployed by this role) when converting the renewed PEM cert into the
+# PKCS#12 form Plex requires. The matching value MUST be configured in
+# Plex Settings -> Network -> "Custom certificate encryption key" by the
+# operator on first deploy. 1Password item: "Plex Custom Certificate".
+plex_pfx_passphrase: "{{ lookup('ansible.builtin.env', 'PLEX_PFX_PASSPHRASE', default='') }}"
+
 # Plex directories (inside container)
 plex_config_dir: /config
 plex_transcode_dir: /transcode

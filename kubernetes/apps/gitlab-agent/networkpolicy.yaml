@@ -1,0 +1,62 @@
+---
+# Default-deny ingress (the agent only initiates outbound long-poll wss to GitLab).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: gitlab-agent
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Egress allowlist: kube-dns + kube-apiserver (in-cluster operations) +
+# the Traefik VIP (192.168.0.101) for the in-cluster kas long-poll path.
+#
+# The gitlab-agent dials wss://git.esweiss.com/-/kubernetes-agent/
+# (release.yaml: kasAddress). git.esweiss.com is rewritten by AdGuard to
+# the Traefik internal VIP 192.168.0.101, which the gitlab IngressRoute
+# proxies to the GitLab VM on 192.168.0.153:443. Keeping the entry point
+# at the VIP means the egress list stays a single /32 (no Cloudflare
+# IP-block enumeration, no router-hairpin assumption).
+#
+# 192.168.0.153 is intentionally NOT in this list: nothing in the agent's
+# normal flow should bypass Traefik to talk to the VM directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-gitlab-and-kube
+  namespace: gitlab-agent
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # kube-dns
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # kube-apiserver (k3s service-network default 10.43.0.1)
+    - to:
+        - ipBlock:
+            cidr: 10.43.0.1/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # Traefik internal VIP (kas long-poll on 443 via the gitlab IngressRoute).
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.101/32
+      ports:
+        - protocol: TCP
+          port: 443

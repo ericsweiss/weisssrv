@@ -27,7 +27,14 @@ spec:
     image:
       tag: ""  # Use chart appVersion default
     config:
-      kasAddress: wss://git.ericsweiss.com/-/kubernetes-agent/
+      # Internal hostname (git.esweiss.com → Traefik VIP 192.168.0.101) so the
+      # agent's KAS long-poll stays inside the LAN: no WAN roundtrip, no
+      # router-hairpin dependency, and the egress allowlist is a single /32.
+      # Previously `git.ericsweiss.com` which goes through Cloudflare's proxy
+      # (104.x); the orange-cloud IPs aren't in the NetworkPolicy allowlist,
+      # so once the policy hits the cluster the agent would silently fail to
+      # connect.
+      kasAddress: wss://git.esweiss.com/-/kubernetes-agent/
       # Chart reads key "token" from the referenced Secret (non-configurable
       # in chart; tokenKey is set explicitly for clarity and forward
       # compatibility). The sibling ExternalSecret (externalsecret.yaml)

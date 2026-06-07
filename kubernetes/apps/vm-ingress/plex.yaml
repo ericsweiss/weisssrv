@@ -21,6 +21,8 @@ spec:
       services:
         - name: plex-backend
           port: 32400
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: ericsweiss-com-tls
 ---
@@ -37,6 +39,8 @@ spec:
     - match: Host(`plex.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
@@ -44,5 +48,7 @@ spec:
       services:
         - name: plex-backend
           port: 32400
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: esweiss-com-tls

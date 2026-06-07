@@ -26,12 +26,45 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-web
-          port: 80
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-services-ericsweiss-tls
 
 ---
 # Internal - git.esweiss.com
+# Two routes on the same host. The KAS path explicitly DOES NOT carry
+# lan-tailscale-only, because gitlab-agent pods source-IP as the cluster
+# CIDR (10.42.0.0/16) when dialing the traefik-internal VIP under
+# externalTrafficPolicy: Local — which is outside the LAN/Tailscale
+# allowlist and would 403 every KAS long-poll. Authentication on this
+# path is per-agent bearer tokens (gitlab-agent-token ExternalSecret),
+# not IP filtering. Traefik picks the more specific Host+PathPrefix
+# rule first by priority.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-web-internal-kas
+  namespace: gitlab
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`git.esweiss.com`) && PathPrefix(`/-/kubernetes-agent/`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: gitlab-web
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    secretName: gitlab-services-esweiss-tls
+
+---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -44,13 +77,17 @@ spec:
     - match: Host(`git.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
         - name: gitlab-web
-          port: 80
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-services-esweiss-tls
 
@@ -94,6 +131,8 @@ spec:
     - match: Host(`registry.git.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -166,6 +205,8 @@ spec:
     - match: HostRegexp(`^[^.]+\.pages\.git\.esweiss\.com$`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -175,6 +216,8 @@ spec:
     - match: Host(`pages.git.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -219,7 +262,9 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-web
-          port: 80
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
     # Apex ide.git.ericsweiss.com
     - match: Host(`ide.git.ericsweiss.com`)
       kind: Rule
@@ -228,6 +273,8 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-web
-          port: 80
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-web-ide-ericsweiss-tls

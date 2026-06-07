@@ -7,3 +7,6 @@ metadata:
     app.kubernetes.io/name: authentik
     app.kubernetes.io/component: identity-provider
     app.kubernetes.io/managed-by: flux
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

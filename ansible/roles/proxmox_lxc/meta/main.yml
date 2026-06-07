@@ -2,6 +2,8 @@
 # Role metadata
 
 galaxy_info:
+  role_name: proxmox_lxc
+  namespace: weisssrv
   author: Eric Weiss
   description: Proxmox LXC provisioning with bind mounts, GPU passthrough, and UID mapping
   license: MIT

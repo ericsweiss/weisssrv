@@ -1,0 +1,46 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read /etc/resolv.conf
+      ansible.builtin.slurp:
+        src: /etc/resolv.conf
+      register: resolv_conf_content
+
+    - name: Decode resolv.conf
+      ansible.builtin.set_fact:
+        resolv_text: "{{ resolv_conf_content.content | b64decode }}"
+
+    - name: Verify nameservers are present
+      ansible.builtin.assert:
+        that:
+          - "'nameserver 192.168.0.150' in resolv_text"
+          - "'nameserver 192.168.0.160' in resolv_text"
+        fail_msg: "resolv.conf is missing expected nameservers"
+
+    # The actual contract under test: an empty resolv_conf_search_domains
+    # MUST leave both `search` and `domain` lines out entirely. A grep on the
+    # rendered file is the only safe check — any rendering bug (e.g. emitting
+    # `search ` with no values) would still be visible to the resolver and
+    # silently rejected, which is exactly what we want to catch.
+    - name: Verify no `search` line is present
+      ansible.builtin.assert:
+        that:
+          - "'search ' not in resolv_text"
+          - "not (resolv_text | regex_search('^search', multiline=True))"
+        fail_msg: "resolv.conf contains a `search` line; expected none for empty domain list"
+
+    - name: Verify no `domain` line is present
+      ansible.builtin.assert:
+        that:
+          - "'domain ' not in resolv_text"
+          - "not (resolv_text | regex_search('^domain', multiline=True))"
+        fail_msg: "resolv.conf contains a `domain` line; expected none for empty domain list"
+
+    - name: Check file mode
+      ansible.builtin.stat:
+        path: /etc/resolv.conf
+      register: resolv_conf_stat
+      failed_when: resolv_conf_stat.stat.mode != "0644"

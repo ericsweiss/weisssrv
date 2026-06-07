@@ -30,6 +30,53 @@
   when: gitlab_git_data_dir != '/var/opt/gitlab/git-data'
   notify: Reconfigure gitlab
 
+# /etc/gitlab/ssl is the canonical Omnibus location for TLS material.
+# acme_certs (running on dns-01) drops fullchain.pem + privkey.pem into
+# this directory after every Let's Encrypt renewal; nginx is reloaded
+# via `gitlab-ctl hup nginx`. Create the directory ahead of the first
+# distribution.
+#
+# Mode 0750 (not 0755): Omnibus's own /etc/gitlab/ssl is 0700 by
+# default; this is the next-tighter mode that still lets the gitlab
+# user (running nginx as gitlab-www) traverse to read the certs via
+# group permissions when needed.
+- name: Ensure /etc/gitlab/ssl exists with secure mode
+  ansible.builtin.file:
+    path: /etc/gitlab/ssl
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# Fresh-deploy guard: before `gitlab-ctl reconfigure` runs (notified by
+# the gitlab.rb template task below), assert that the cert + key files
+# exist when listen_https is true. Otherwise the omnibus chef recipe
+# crashes at the nginx::ssl recipe with a confusing error. acme_certs
+# distribution is event-driven from dns-01; on a brand-new GitLab VM
+# it hasn't fired yet, so either flip gitlab_nginx_listen_https to
+# false for the initial deploy OR deploy the cert manually first.
+- name: Verify SSL cert exists when nginx HTTPS is enabled
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ gitlab_nginx_ssl_certificate }}"
+    - "{{ gitlab_nginx_ssl_certificate_key }}"
+  register: gitlab_ssl_files
+  when: gitlab_nginx_listen_https | default(false)
+
+- name: Assert SSL cert files are present
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      {{ item.item }} missing — either run cert distribution from
+      dns-01 first (`task dns:deploy`), or set
+      gitlab_nginx_listen_https: false for the initial deploy and
+      flip back to true after the first cert push.
+  loop: "{{ gitlab_ssl_files.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: gitlab_nginx_listen_https | default(false)
+
 # Ownership is set after GitLab install (git user doesn't exist yet)
 # See task below: "Set ownership on git-data directory"
 
@@ -85,6 +132,107 @@
     state: present
     update_cache: true
   when: not (skip_gitlab_install | default(false))
+
+# =============================================================================
+# Kernel tuning required by GitLab Omnibus Redis
+# =============================================================================
+# Two settings the upstream Redis docs require, applied here because Omnibus
+# does not manage them itself:
+#
+#   1. vm.overcommit_memory=1 — RDB BGSAVE forks the Redis process. Under the
+#      kernel default (0, heuristic) the forked child's COW reservation
+#      accounting can be refused by the heuristic, killing the child even
+#      though almost none of the COW pages were written. The child dying
+#      trips Redis' `stop-writes-on-bgsave-error`, which turns every GitLab
+#      write into a 500 (gitlab-shell reports "Internal API unreachable").
+#
+#   2. transparent_hugepage=never — under THP=always, COW page faults in the
+#      forked child can promote to 2MB hugepages and segfault inside libc on
+#      memcpy/memcmp. Same outcome: BGSAVE child dies, writes blocked. THP has
+#      no sysctl knob, so a systemd oneshot writes the sysfs file at boot.
+#
+# We observed both symptoms on this VM 2026-06-02 (every push failing); applying
+# both fixes resolved it. Refs:
+#   https://redis.io/docs/latest/operate/oss_and_stack/management/admin/
+#   https://docs.gitlab.com/omnibus/settings/redis.html
+#
+# These three tasks are intentionally NOT gated by skip_gitlab_install: kernel
+# tuning is required for Redis safety on any host that already runs the
+# Omnibus stack, and the operator who passes skip_gitlab_install=true does so
+# to avoid touching the apt package — they still expect the host config to
+# converge.
+
+- name: Install sysctl drop-in for Redis memory overcommit
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-gitlab-redis.conf
+    content: |
+      # Managed by Ansible gitlab role.
+      # Redis RDB BGSAVE forks the server; the COW child's allocation
+      # accounting is refused by the default heuristic (0) under common
+      # conditions, killing the child and tripping stop-writes-on-bgsave-error.
+      vm.overcommit_memory=1
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload sysctl gitlab-redis
+  when: gitlab_kernel_tuning_enabled | default(true)
+
+- name: Install systemd unit to disable Transparent Huge Pages
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/disable-transparent-hugepages.service
+    content: |
+      # Managed by Ansible gitlab role.
+      # THP=always causes Redis BGSAVE child to segfault inside libc when COW
+      # faults promote to 2MB hugepages. Redis docs explicitly recommend
+      # disabling THP. No sysctl knob — write the sysfs file at boot.
+      #
+      # Operator note: to reapply at runtime after a manual override, use
+      # `systemctl restart disable-transparent-hugepages.service`. `start` is
+      # a no-op while RemainAfterExit holds the "active" state.
+      [Unit]
+      Description=Disable Transparent Huge Pages (Redis recommendation)
+      DefaultDependencies=no
+      After=sysinit.target local-fs.target
+      Before=basic.target
+
+      [Service]
+      Type=oneshot
+      # Attempt both writes independently, but track each rc so a silent
+      # kernel rename (one of the sysfs paths missing) fails the unit.
+      # `sh -c "a ; b"` would have returned only b's rc, silently masking
+      # a failure on the first write — the exact future-proofing we want.
+      # Each continuation is joined by systemd at parse time.
+      #
+      # `$$` escapes a literal `$` past systemd's own variable expansion —
+      # see systemd.service(5): unset `$VAR`/`${VAR}` references in ExecStart
+      # expand to empty BEFORE the command runs under sh, so a bare `$?` /
+      # `$rc` would be silently stripped and `exit` would run with no arg.
+      ExecStart=/bin/sh -c 'rc=0; \
+          echo never > /sys/kernel/mm/transparent_hugepage/enabled || rc=$$?; \
+          echo never > /sys/kernel/mm/transparent_hugepage/defrag || rc=$$?; \
+          exit $$rc'
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=basic.target
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for THP unit
+  when: gitlab_kernel_tuning_enabled | default(true)
+
+# This task keeps the unit enabled + active at all times (idempotent on a
+# stable host) — it intentionally duplicates the handler's enable/start. The
+# handler additionally does `state: restarted` when the unit *file* changes,
+# which is required to re-run the new ExecStart since RemainAfterExit makes
+# `state: started` a no-op for an already-active oneshot.
+- name: Enable + start THP-disable service (also applies at runtime)
+  ansible.builtin.systemd:
+    name: disable-transparent-hugepages.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: gitlab_kernel_tuning_enabled | default(true)
 
 - name: Check if GitLab is installed
   ansible.builtin.stat:

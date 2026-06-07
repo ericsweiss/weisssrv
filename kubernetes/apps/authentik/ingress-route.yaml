@@ -38,6 +38,8 @@ spec:
     - match: Host(`auth.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
@@ -80,6 +82,9 @@ spec:
   routes:
     - match: Host(`auth.esweiss.com`) && PathPrefix(`/outpost.goauthentik.io/`)
       kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
       services:
         - name: authentik-server
           port: 80

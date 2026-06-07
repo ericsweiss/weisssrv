@@ -1,0 +1,63 @@
+---
+# Installs and configures tlshd (kernel TLS handshake daemon) for use
+# by NFSv4's xprtsec=tls/mtls. Idempotent; safe to re-run.
+- name: Install ktls-utils (provides tlshd)
+  ansible.builtin.apt:
+    name: ktls-utils
+    state: present
+    update_cache: true
+  when:
+    - nfs_tls_enabled | default(false)
+    - ansible_facts['os_family'] == "Debian"
+
+# Refuse to start tlshd if the cert files aren't there yet. Without
+# this guard, a misordered rollout (enable the role before acme_certs
+# has distributed the cert) silently brings up tlshd that can't open
+# its cert file and either crash-loops or returns the wrong handshake
+# at the next NFS mount attempt — both modes are hard to debug.
+- name: Verify cert + key + truststore are present before starting tlshd
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ nfs_tls_cert_path }}"
+    - "{{ nfs_tls_key_path }}"
+    # Truststore defaults to /etc/ssl/certs/ca-certificates.crt
+    # (provided by the ca-certificates package, present on every Debian
+    # base install). Operators overriding nfs_tls_truststore to a
+    # private CA bundle path will silently break tlshd startup if the
+    # path doesn't exist — stat upfront and fail loud instead.
+    - "{{ nfs_tls_truststore }}"
+  register: nfs_tls_files
+  when: nfs_tls_enabled | default(false)
+
+- name: Assert cert + key + truststore exist
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      {{ item.item }} missing — for the cert/key pair, run acme_certs
+      distribution first (`task dns:deploy`) so the wildcard cert reaches
+      this host. For the truststore, verify nfs_tls_truststore points at
+      a real CA bundle (default /etc/ssl/certs/ca-certificates.crt is
+      provided by the `ca-certificates` package).
+  loop: "{{ nfs_tls_files.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: nfs_tls_enabled | default(false)
+
+- name: Ensure /etc/tlshd.conf exists with our config
+  ansible.builtin.template:
+    src: tlshd.conf.j2
+    dest: /etc/tlshd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: nfs_tls_enabled | default(false)
+  notify: Restart tlshd
+
+- name: Enable and start tlshd
+  ansible.builtin.systemd:
+    name: tlshd.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: nfs_tls_enabled | default(false)

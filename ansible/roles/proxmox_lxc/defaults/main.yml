@@ -1,6 +1,26 @@
 ---
 # Default LXC container configuration
 
+# When true, skip two specific real-Proxmox-only tasks: the `pveam download`
+# template fetch, and the final `wait_for` SSH connectivity probe. Lets the
+# role drive its storage-selection and pool-validation logic against stub
+# `pct`/`pvesh` shims under molecule without trying to pull a template image
+# or block on TCP/22 against a container that was never started.
+#
+# NOTE: this flag does NOT bypass the `pct create` / `pct exec` bootstrap,
+# idmap edits, or /etc/pve/lxc/<id>.conf writes — those tasks already gate
+# themselves on `container_exists.rc != 0`, so stubbing `pvesh` to report
+# the container already exists is the supported way to keep them no-ops in
+# a test rig.
+proxmox_lxc_skip_create: false
+
+# IP address handed to the role's pct-create + SSH-wait logic. Defaults to
+# ansible_host because production inventory routes traffic to each container
+# via that field. Molecule scenarios override this so they can keep
+# ansible_host pointing at the docker container (= connection target) while
+# still feeding a realistic per-container IP into the pct create --net0 line.
+proxmox_lxc_target_ip: "{{ ansible_host }}"
+
 # Container resource defaults
 lxc_cores: 2
 lxc_memory: 2048

@@ -1,0 +1,34 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to be ready
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: resolv_conf_systemd_ready
+      until: resolv_conf_systemd_ready.rc == 0
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp
+        chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    # Defensive: clear any lingering immutable bit on /etc/resolv.conf that
+    # an upstream image build or sibling test left behind. The resolv_conf
+    # role itself doesn't set chattr +i, but this keeps the converge
+    # deterministic across base-image refreshes.
+    - name: Strip immutable attr off /etc/resolv.conf if present
+      ansible.builtin.raw: chattr -i /etc/resolv.conf 2>/dev/null || true
+      changed_when: false

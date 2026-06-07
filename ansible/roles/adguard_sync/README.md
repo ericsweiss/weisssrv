@@ -31,16 +31,12 @@ Configures one-way sync of AdGuard Home settings from dns-01 (primary) to dns-02
 # Version (from group_vars/all.yml)
 adguardhome_sync_version: "0.8.2"
 
-# AdGuard Home instances
-adguard_sync_origin:
-  url: "http://localhost:3000"
-  username: "admin"
-  password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD') }}"
-
-adguard_sync_replica:
-  url: "http://dns-02.{{ internal_domain }}:3000"
-  username: "admin"
-  password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD') }}"
+# AdGuard Home instances. The URLs target the Traefik-fronted
+# `dns-{01,02}.esweiss.com` hostnames (TLS-terminated by Traefik,
+# wildcard cert) rather than the LXCs' :3000 ports directly. The
+# admin credential is the same on both instances.
+adguardhome_sync_origin: "https://dns-01.{{ internal_domain }}"
+adguardhome_sync_replica: "https://dns-02.{{ internal_domain }}"
 
 # Sync settings
 adguard_sync_features:
@@ -73,13 +69,33 @@ ansible-playbook ansible/playbooks/dns.yml --limit dns-01
 
 ```
 dns-01 (primary)
-  ├─ AdGuard Home (http://localhost:3000)
+  ├─ AdGuard Home (https://dns-01.esweiss.com  via Traefik)
   ├─ adguardhome-sync service
   └─ Timer runs every 5 minutes
        │
        └─> Syncs to → dns-02 (replica)
-                      └─ AdGuard Home (http://dns-02.esweiss.com:3000)
+                      └─ AdGuard Home (https://dns-02.esweiss.com via Traefik)
 ```
+
+### Dependency on the k3s cluster
+
+Both URLs go through Traefik on the internal MetalLB VIP
+(`192.168.0.101`), so the sync timer has a runtime dependency on the
+k3s cluster being up — even though both AdGuard instances themselves
+are healthy LXCs that don't depend on k3s. Practical impact during a
+sustained k3s outage:
+
+- DNS resolution itself stays up (both LXCs serve port 53 directly).
+- Configuration drift stops being corrected. Bounded by how long the
+  outage lasts: at the 5-minute timer interval it's typically minutes
+  of drift, not hours, but the timer can sit idle for the duration of
+  the outage if Traefik doesn't recover.
+- Once k3s is healthy again, the next timer tick picks up where it
+  left off — no manual intervention needed.
+
+If you anticipate a long k3s outage during a config-heavy maintenance
+window, mirror the change on dns-02 by hand (paste the same DNS
+rewrite / blocklist edit on both UIs) so drift never opens up.
 
 **Sync Direction**: Always dns-01 → dns-02 (one-way)
 
@@ -194,8 +210,8 @@ systemctl enable --now adguardhome-sync.timer
 # View error logs
 journalctl -u adguardhome-sync.service | grep -i error
 
-# Test connectivity to replica
-curl -I http://dns-02.esweiss.com:3000
+# Test connectivity to replica (Traefik-fronted)
+curl -I https://dns-02.esweiss.com
 
 # Verify credentials
 # (Check 1Password for correct admin password)
@@ -203,12 +219,17 @@ curl -I http://dns-02.esweiss.com:3000
 
 **Configuration drift:**
 ```bash
-# Compare configurations
+# Compare configurations via the Traefik-fronted endpoints (HTTPS, wildcard cert).
 # On dns-01:
-curl -u admin:password http://localhost:3000/control/dns_info
+curl -u admin:password https://dns-01.esweiss.com/control/dns_info
 
 # On dns-02:
-curl -u admin:password http://dns-02.esweiss.com:3000/control/dns_info
+curl -u admin:password https://dns-02.esweiss.com/control/dns_info
+
+# Backend diagnostic only — bypasses Traefik and talks to the AdGuard
+# Home HTTP listener directly on the LXC (handy when Traefik itself is suspect):
+#   curl -u admin:password http://192.168.0.150:3000/control/dns_info
+#   curl -u admin:password http://192.168.0.160:3000/control/dns_info
 ```
 
 **Reset sync:**

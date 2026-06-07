@@ -60,7 +60,10 @@ def main():
     try:
         data = json.loads(result.stdout)
         summary = data.get("summary", {})
-        total = summary.get("total_services", 0)
+        # Fall back to "total_services" for older check-versions.py
+        # payloads still in any cache the CI job consumes. The key was
+        # renamed in a prior refactor; both shapes may appear in flight.
+        total = summary.get("total", summary.get("total_services", 0))
         up_to_date = summary.get("up_to_date", 0)
         updates = summary.get("updates_available", 0)
         errors = summary.get("errors", 0)

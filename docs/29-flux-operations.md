@@ -473,6 +473,13 @@ Patterns:
 
 - **Values rendering failure**: substitution variable missing. `kubectl describe kustomization apps -n flux-system` shows substitution errors. Check `versions-configmap.yaml` has the key.
 - **Chart pull failure**: source HelmRepository is broken. `flux get source helm -A` — check Ready.
+- **`InvalidChartReference` for a version that exists upstream**: source-controller's cached chart index is stale. HelmRepository `interval` is the bound on how long this can last (1h cluster-wide). Force-refresh:
+
+  ```bash
+  flux reconcile source helm <repo> -n flux-system
+  flux reconcile helmrelease <name> -n <ns>
+  ```
+
 - **Install/upgrade failure**: the chart itself is rejecting values. `helm status` shows the error. Fix values in `release.yaml`, commit, push.
 - **Timeout**: workload didn't become Ready in time. Usually a pod-level issue — `kubectl get pods -n <ns>` and `kubectl describe pod <pod> -n <ns>`.
 

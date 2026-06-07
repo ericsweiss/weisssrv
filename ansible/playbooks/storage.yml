@@ -7,3 +7,7 @@
   roles:
     - nas_storage
     - zfs_exporter
+    # Opt-in NFSv4-over-TLS daemon. The role's tasks are individually
+    # guarded by `nfs_tls_enabled | default(false)`, so this is a no-op
+    # unless that var is set true in host_vars/pve-nas-01 (or group_vars).
+    - nfs_tls

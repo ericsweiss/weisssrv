@@ -456,6 +456,96 @@ task terraform:plan
 
 ---
 
+## Drive Decommission / RMA
+
+When a drive leaves the building (RMA to vendor, sold, donated, or
+disposed), the data on it is the credential that has to be rotated.
+ZFS-native encryption (`docs/32-zfs-encryption.md`) plus this procedure
+turn a worst-case "stolen disk" exposure into a zero-data-loss event.
+
+### Decision tree
+
+| Situation | Procedure |
+|---|---|
+| Drive was a member of an **encrypted** ZFS pool, and the pool's passphrase has not been rotated since | (a) Rotate the pool passphrase first, then (b) follow either Quick or Full procedure below |
+| Drive was a member of an **unencrypted** pool (e.g. `tank/media`, `archive` pre-LUKS) | Full procedure required — data is plaintext on the drive |
+| Drive holds no live data (cold spare, never had data) | None — verify with `zdb -l <device>` and SMART; ship as is |
+
+### Quick procedure (encrypted pool, working drive)
+
+Used when the drive still responds to commands and the pool was
+encrypted at the time the drive held data.
+
+```bash
+# 1. Confirm pool encryption was active for this drive's lifetime
+sudo zfs get encryption,creation <pool>
+# encryption should be aes-256-gcm; creation should pre-date drive insertion
+
+# 2. Rotate the passphrase BEFORE the drive leaves
+sudo zfs change-key -o keylocation=prompt <pool>   # paste new passphrase
+op item edit "ZFS Pool <pool> Passphrase" 'passphrase=<new value>'
+
+# 3. Issue ATA Secure Erase (SATA SSD/HDD) or NVMe sanitize
+#    Pick the right command for the device class:
+
+# SATA SSD - ATA Secure Erase (instant on most modern SSDs):
+sudo hdparm --user-master u --security-set-pass weisssrv /dev/sdX
+sudo hdparm --user-master u --security-erase weisssrv /dev/sdX
+
+# SATA HDD - blkdiscard if device supports trim, else dd:
+sudo blkdiscard -v /dev/sdX  # falls back gracefully if not supported
+
+# NVMe - sanitize (fastest, hardware-level):
+sudo nvme sanitize /dev/nvmeX --sanact=2  # 2 = block erase
+sudo nvme sanitize-log /dev/nvmeX  # poll until SSTAT bit 0 = 0 (idle)
+```
+
+### Full procedure (unencrypted data ever lived on this drive)
+
+Used when the drive ever held plaintext (any pre-Phase-3 drive on
+`tank/media`, `archive`, etc.):
+
+```bash
+# 1. Detach from the pool if still attached
+sudo zpool offline <pool> /dev/disk/by-id/<id>
+sudo zpool detach <pool> /dev/disk/by-id/<id>      # mirrors only
+sudo zpool replace <pool> <old-id> <new-id>        # raidz: requires resilver to a new drive
+
+# 2. Wait for resilver (raidz) - hours to days for tank-class drives
+sudo zpool status <pool>
+
+# 3. Wipe in this order (each one is best-effort; combine for paranoia):
+#    a. ATA Secure Erase / NVMe sanitize as above (fastest if supported)
+#    b. Single-pass urandom overwrite (covers blocks the FW reallocated)
+sudo dd if=/dev/urandom of=/dev/sdX bs=1M status=progress
+#    For 22 TB drives this takes ~24 hours at 250 MB/s. Plan accordingly.
+
+# 4. Verify wipe
+sudo dd if=/dev/sdX of=- bs=1M count=1024 status=progress | \
+    hexdump -C | head -200
+# Expect entirely zeros (after secure erase) or garbage (after urandom);
+# any recognizable filesystem signature means the wipe failed.
+```
+
+### After wipe, before shipping
+
+- Photograph the SMART attributes (`smartctl -A /dev/sdX > smart-<serial>.txt`)
+  so you have a record if the RMA dispute requires it.
+- Update the inventory in `host_vars/<host>.yml` (smartd_*_disks
+  lists, `vm_additional_disks` if applicable).
+- Note the disposal date + serial in the related 1Password item or
+  Linear/issue tracker.
+
+### Drives that won't wipe (controller fault, dead heads)
+
+If `hdparm`, `dd`, and `nvme sanitize` all fail:
+
+1. **If encrypted**: the drive is already opaque. Confirm by attempting
+   to import in a separate test pool with no key — should fail. Ship.
+2. **If unencrypted**: physical destruction is the only safe path.
+   Drill at least four holes through the platter stack for HDDs,
+   physically destroy NAND chips for SSDs/NVMe. Don't ship.
+
 ## Best Practices
 
 1. **Test before revoking**: Always verify new credential works before revoking old one

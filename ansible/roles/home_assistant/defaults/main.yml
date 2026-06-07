@@ -6,6 +6,13 @@ home_assistant_host: "192.168.0.154"
 home_assistant_ssh_port: 22222
 home_assistant_config_path: "/config"
 
+# HAOS SSH host key (pin for StrictHostKeyChecking=yes).
+# Empty default forces the pre-flight assert in tasks/main.yml to fail
+# with a clear remediation message rather than tripping an
+# undefined-variable error. Override in host_vars/home.yml — see the
+# role README "Host-key pinning" section for the capture command.
+home_assistant_host_key: ""
+
 # SMTP configuration (from 1Password via environment variables)
 home_assistant_smtp_host: "smtp-relay.esweiss.com"
 home_assistant_smtp_port: 587
@@ -31,3 +38,24 @@ home_assistant_trusted_proxies:
 # SSO/OIDC configuration (from 1Password via environment variables)
 home_assistant_oidc_client_id: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CLIENT_ID') }}"
 home_assistant_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CLIENT_SECRET') }}"
+
+# TLS on the HA backend itself. When true, configuration.yaml's `http:`
+# block adds ssl_certificate / ssl_key pointing at /ssl/{fullchain,privkey}.pem.
+# acme_certs distributes the wildcard cert to /ssl/ on every renewal
+# (cert_distribution_targets entry: host=home, ssh_port=22222, ssh_no_sudo=true).
+#
+# Defaults to false so a fresh HAOS deploy doesn't crash bind-time when
+# the cert files haven't been distributed yet. host_vars/home.yml flips
+# it true on the production HAOS once acme_certs has pushed the cert.
+home_assistant_ssl_enabled: false
+
+# Render-only mode. When true, the role renders configuration.yaml +
+# secrets.yaml from templates to /tmp on the controller and stops there
+# — it does NOT touch the live HAOS (no ssh, no scp, no `ha core check`,
+# no /ssl pre-flight). Used by the molecule contract test (the scp/ssh
+# path can't be exercised against HAOS in a Docker container, but the
+# templates are pure Jinja2 and easy to verify in isolation).
+# Production deploys leave this false; the molecule converge flips it
+# true so it can assert on rendered output. See
+# ansible/roles/home_assistant/molecule/default/ for the scenario.
+home_assistant_render_only: false

@@ -49,10 +49,17 @@ IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
 
 [group sg-gitlab]
 
-# GitLab HTTP (Traefik terminates TLS, routes to HTTP backend)
+# GitLab Web — Traefik now connects to nginx on 443 with the
+# distributed wildcard cert (gitlab role: gitlab_nginx_listen_https=true).
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
+# Port 80 — Omnibus nginx still listens on it for HTTP->HTTPS redirect
+# of clients that arrive on the plain port. Allow only from admin
+# sources (LAN/Tailscale); k3s_nodes no longer uses port 80 since
+# Traefik connects directly to 443.
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 80 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 80 -log nolog
 # GitLab Container Registry (port 5050, routed via Traefik)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 5050 -log nolog
 # GitLab Pages (port 8090, routed via Traefik)
@@ -95,7 +102,12 @@ IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
 
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog
+# Flannel VXLAN backend (default 8472) — kept open for backwards
+# compatibility / rollback. Active backend is wireguard-native on 51820;
+# remove the vxlan rule after the rollout settles and `wg show` confirms
+# every node speaks WireGuard.
 IN ACCEPT -source +dc/k3s_nodes -p udp -dport 8472 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 6443 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 6443 -log nolog

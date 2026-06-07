@@ -1,9 +1,15 @@
 # {{ ansible_managed }}
 # NFS exports configuration - see exports(5)
+#
+# Per-export `xprtsec` (added 2026-05-04): opt-in transport-layer
+# encryption via NFSv4 + tlshd. Setting xprtsec=tls (or =mtls) in
+# nfs_exports[*] adds the option to every client line for that export.
+# Requires the nfs_tls role to be active on the server AND every
+# client; partial rollouts will fail mounts with EACCES.
 
 {% for export in nfs_exports %}
-# {{ export.path }}
-{{ export.path }} {% for client in export.clients %}{{ client.spec }}({{ client.options }}) {% if not loop.last %}\
+# {{ export.path }}{% if export.xprtsec is defined and export.xprtsec %} (xprtsec={{ export.xprtsec }}){% endif %}
+{{ export.path }} {% for client in export.clients %}{{ client.spec }}({{ client.options }}{% if export.xprtsec is defined and export.xprtsec %},xprtsec={{ export.xprtsec }}{% endif %}) {% if not loop.last %}\
         {% endif %}{% endfor %}
 
 {% endfor %}

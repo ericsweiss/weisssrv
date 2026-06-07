@@ -118,6 +118,13 @@ adguard_rewrites:
     answer: "192.168.0.207"
   - domain: "vip-internal.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # 1Password Connect API exposed via internal Traefik so bare-metal
+  # Proxmox hosts can fetch ZFS-encryption passphrases at boot.
+  - domain: "connect.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  # Loki push API for host-side Alloy (replaces the plaintext NodePort).
+  - domain: "loki.{{ internal_domain }}"
+    answer: "192.168.0.101"
   - domain: "vip-public.{{ external_domain }}"
     answer: "192.168.0.100"
   # Traefik dashboard and observability
@@ -221,10 +228,15 @@ postfix_config:
 dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY', default='') }}"
 dns01_ssh_public_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') }}"
 
-# AdGuard Home Sync configuration (dns-01 -> dns-02)
+# AdGuard Home Sync configuration (dns-01 -> dns-02).
+# URLs hit Traefik (192.168.0.101) which fronts each AdGuard instance
+# at dns-{01,02}.esweiss.com. TLS terminated by Traefik with the shared
+# wildcard cert, so the dns-01 -> dns-02 sync hop is now end-to-end
+# encrypted on the wire. The lan-tailscale-only middleware on the
+# IngressRoute ensures only LAN/Tailscale sources reach the API.
 adguardhome_sync_enabled: true
-adguardhome_sync_origin: "http://192.168.0.150:3000"
-adguardhome_sync_replica: "http://192.168.0.160:3000"
+adguardhome_sync_origin: "https://dns-01.{{ internal_domain }}"
+adguardhome_sync_replica: "https://dns-02.{{ internal_domain }}"
 adguardhome_sync_features:
   dns:
     accessLists: true

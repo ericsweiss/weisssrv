@@ -58,6 +58,13 @@ provisioner:
         plex_hardware_transcoding: false
         # Skip GPU driver installation in containers
         skip_gpu_drivers: true
+        # PFX passphrase mock — `task plex:deploy` injects this from 1Password
+        # via `op run`; molecule doesn't run under op, so the role's
+        # "validate the PFX passphrase env var was injected" assert would
+        # otherwise fire and fail the test before any meaningful task runs.
+        # The value is fake; the role only feeds it to openssl pkcs12 inside
+        # the cert-reload flow, which the molecule scenario doesn't exercise.
+        plex_pfx_passphrase: "molecule-mock-pfx-passphrase"
         # Skip Plex service startup (no valid config)
         skip_plex_service: true
         skip_ssh_config: true

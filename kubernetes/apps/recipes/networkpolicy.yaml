@@ -1,0 +1,299 @@
+---
+# Default-deny ingress for the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: recipes
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Default-deny egress; explicit allows below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: recipes
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Mealie: ingress from Traefik (HTTP UI) and observability (no /metrics today,
+# but exportarr-style scrape may show up later — start with Traefik only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mealie-ingress
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mealie
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 9000
+
+---
+# Bar Assistant API: ingress from Traefik.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-bar-assistant-ingress
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Salt Rim (frontend): ingress from Traefik.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-salt-rim-ingress
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: salt-rim
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Meilisearch: ingress from Traefik (frontend search via /search PathPrefix)
+# and observability (existing ServiceMonitor scrape with bearer token).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-meilisearch-ingress
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant-meilisearch
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bar-assistant
+      ports:
+        - protocol: TCP
+          port: 7700
+
+---
+# Mealie Postgres: only mealie pod can connect on 5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mealie-postgres
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mealie-postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mealie
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# Bar Assistant Redis: only bar-assistant pod can connect on 6379.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-bar-assistant-redis
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bar-assistant-redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bar-assistant
+      ports:
+        - protocol: TCP
+          port: 6379
+
+---
+# Egress for mealie + bar-assistant (backend apps that talk to data plane,
+# SMTP, OIDC, and the public internet). salt-rim is a static frontend served
+# to the browser — OIDC/Authentik/API calls happen client-side from the user's
+# browser, NOT from the salt-rim pod — so it does not belong in this selector
+# and gets its own DNS-only egress rule below.
+# - kube-dns
+# - intra-ns Postgres / Redis / Meilisearch
+# - smtp-relay (192.168.0.151:587) for password reset / notification emails
+# - Public HTTPS for OpenAI API (mealie), OIDC discovery (Authentik base URL),
+#   Authentik resolves to MetalLB internal VIP 192.168.0.101.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-recipes-apps
+  namespace: recipes
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [mealie, bar-assistant]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [mealie-postgres, bar-assistant-redis, bar-assistant-meilisearch]
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 7700
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.151/32
+      ports:
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 25
+    - to:
+        - ipBlock:
+            # MetalLB internal VIP — Authentik OIDC discovery resolves here
+            # via Cloudflare DNS-only path that points at internal IPs.
+            cidr: 192.168.0.101/32
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Egress for the data-plane pods (Postgres, Redis, Meilisearch): kube-dns only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-recipes-data-plane
+  namespace: recipes
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [mealie-postgres, bar-assistant-redis, bar-assistant-meilisearch]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Egress for salt-rim (static frontend): kube-dns only. Salt-rim serves
+# JS/CSS/HTML to the browser; all API/OIDC traffic originates from the
+# user's browser (handled by allow-salt-rim-ingress from Traefik). The pod
+# itself never needs to reach Postgres/Redis/Meili/SMTP/Authentik.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-salt-rim
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: salt-rim
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

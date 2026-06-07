@@ -1,0 +1,19 @@
+# Managed by Ansible node_exporter_host role.
+# Fires the health-collector every minute. Minute granularity is enough for
+# the alert windows in release.yaml (10m avg_over_time for CorosyncWedged,
+# 10m staleness threshold for PmxcfsStale); shorter would just add load.
+[Unit]
+Description=Periodically sample corosync + pmxcfs health
+
+[Timer]
+OnBootSec=1min
+# OnUnitInactiveSec (not OnUnitActiveSec) is the standard pairing for
+# Type=oneshot services: it measures "1 minute after the previous run
+# finished", so the cadence survives a service failure (failed → inactive
+# transition still arms the timer).
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=corosync-health-collector.service
+
+[Install]
+WantedBy=timers.target

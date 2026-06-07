@@ -5,7 +5,7 @@ from backups / git. It is split into three tracks you may need to combine:
 
 1. **Storage** — rebuild ZFS pools + datasets on the NAS (this doc's original scope).
 2. **k3s cluster** — bring up the 9-node k3s cluster from Ansible.
-3. **Flux GitOps + secrets encryption** — bootstrap Flux, restore ESO, rotate k3s secrets-encryption keys.
+3. **Flux GitOps + secrets encryption** — bootstrap Flux, restore ESO, optionally rotate k3s secrets-encryption keys.
 
 The three tracks correspond to the deployment order in
 `docs/19-k3s-deployment.md` and `docs/29-flux-operations.md`; DR is those
@@ -693,33 +693,23 @@ task flux:status
 task flux:verify
 ```
 
-## k3s secrets-encryption reencrypt (scheduled follow-up)
+## k3s secrets-encryption status
 
-The k3s deployment config enables secrets-encryption, but the initial
-re-encryption of on-disk etcd secrets has not yet been performed on the
-live cluster. This is a staggered per-server operation that requires
-server restarts and is appropriately deferred to a maintenance window
-rather than run under DR time pressure.
-
-When ready to perform the reencrypt:
+Encryption is enabled cluster-wide and the initial re-encrypt has completed
+(`reencrypt_finished`). For future key rotation, follow the staggered
+per-server procedure (one server at a time, verify status between steps):
 
 ```bash
-# On each k3s server node, one at a time, with monitoring between steps:
-#   k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01
 ssh k3s-srv-nas-01
-
-# Prepare — serializes a new encryption key.
-sudo k3s secrets-encrypt prepare
-
-# Reencrypt etcd contents with the new key. This is the work-doing step.
-sudo k3s secrets-encrypt reencrypt
-
-# Confirm status shows "reencrypt_finished" before moving to the next server.
-sudo k3s secrets-encrypt status
+sudo k3s secrets-encrypt status      # show current state and active key
+sudo k3s secrets-encrypt prepare     # serialize a new key
+sudo k3s secrets-encrypt rotate      # promote the new key
+sudo k3s secrets-encrypt reencrypt   # re-encrypt etcd contents with the new key
+sudo k3s secrets-encrypt status      # confirm "reencrypt_finished"
 ```
 
-See https://docs.k3s.io/cli/secrets-encrypt for the full procedure. Track
-in `docs/16-next-steps.md`.
+Repeat per server. See https://docs.k3s.io/cli/secrets-encrypt for the
+upstream guide.
 
 ## Related Documentation
 

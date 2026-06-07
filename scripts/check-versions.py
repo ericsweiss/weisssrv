@@ -33,7 +33,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -1696,10 +1696,10 @@ def main():
             print(f"Updating {result.name}: {result.current_version} -> {result.latest_version}")
             if update_version_in_file(result.var_name, result.latest_version):
                 print(f"Updated {result.var_name} in {VARS_FILE.name}")
-                print(f"\nNext steps:")
-                print(f"  1. Review the change: git diff ansible/inventories/prod/group_vars/all.yml")
+                print("\nNext steps:")
+                print("  1. Review the change: git diff ansible/inventories/prod/group_vars/all.yml")
                 print(f"  2. Deploy the update: {get_deploy_command(result)}")
-                print(f"  3. Verify deployment: task k3s:status  # Or appropriate status check")
+                print("  3. Verify deployment: task k3s:status  # Or appropriate status check")
                 sys.exit(0)
             else:
                 # The file didn't change — var_name may have been renamed or

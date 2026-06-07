@@ -5,6 +5,44 @@
 # This role only manages configuration files via SSH/SCP
 # It does NOT attempt to manage the OS itself via Ansible
 
+# ---------------------------------------------------------------------
+# SSH host-key pinning
+# ---------------------------------------------------------------------
+# HAOS exposes SSH on port 22222 as root with no sudo, so we cannot use
+# the standard accept-new TOFU path used elsewhere — a swapped HAOS
+# image would silently re-register a new host key. Instead the operator
+# captures the HAOS host key once, pins it in host_vars/home.yml as
+# `home_assistant_host_key`, and we:
+#   1. Assert the pin is non-empty (fail fast with remediation).
+#   2. Write it into the running user's known_hosts so the subsequent
+#      scp/ssh calls succeed under StrictHostKeyChecking=yes.
+# In render-only mode (molecule contract test) we skip both — the
+# scenario doesn't actually contact HAOS.
+# See ansible/roles/home_assistant/README.md "Host-key pinning".
+
+- name: Assert HAOS SSH host-key pin is set
+  ansible.builtin.assert:
+    that:
+      - home_assistant_host_key | default('') | length > 0
+    fail_msg: |
+      home_assistant_host_key is unset. Capture the HAOS host key with:
+
+          ssh-keyscan -t ed25519 -p {{ home_assistant_ssh_port }} {{ home_assistant_host }}
+
+      then paste the algorithm+key portion (without the leading host:port)
+      into ansible/inventories/prod/host_vars/home.yml as
+      `home_assistant_host_key`. See the home_assistant role README
+      "Host-key pinning" section for details.
+    success_msg: "HAOS SSH host-key pin is present"
+  when: not (home_assistant_render_only | default(false))
+
+- name: Pin HAOS host key in operator known_hosts
+  ansible.builtin.known_hosts:
+    name: "[{{ home_assistant_host }}]:{{ home_assistant_ssh_port }}"
+    key: "[{{ home_assistant_host }}]:{{ home_assistant_ssh_port }} {{ home_assistant_host_key }}"
+    state: present
+  when: not (home_assistant_render_only | default(false))
+
 - name: Validate required SMTP relay credentials are set
   ansible.builtin.assert:
     that:
@@ -29,6 +67,42 @@
     success_msg: "OIDC credentials are present"
   no_log: true
 
+- name: Verify HAOS SSL cert files exist (only when ssl_enabled)
+  # configuration.yaml.j2 references /ssl/{fullchain,privkey}.pem when
+  # home_assistant_ssl_enabled=true. If those files aren't there yet
+  # (fresh HAOS, factory reset, or before acme_certs has pushed the
+  # cert), HAOS fails to bind 8123 after the next restart. Pre-flight
+  # the check so we fail loudly with a clear remediation message rather
+  # than crashing HAOS post-deploy. Mirror of gitlab/tasks/main.yml's
+  # cert-presence assert.
+  ansible.builtin.command:
+    cmd: >
+      ssh -p {{ home_assistant_ssh_port }}
+      -o StrictHostKeyChecking=yes
+      root@{{ home_assistant_host }}
+      'test -r /ssl/fullchain.pem && test -r /ssl/privkey.pem'
+  register: haos_ssl_cert_check
+  changed_when: false
+  failed_when: false
+  when:
+    - home_assistant_ssl_enabled | default(false)
+    - not (home_assistant_render_only | default(false))
+
+- name: Assert HAOS SSL cert files are in place when ssl_enabled
+  ansible.builtin.assert:
+    that:
+      - haos_ssl_cert_check.rc == 0
+    fail_msg: |
+      home_assistant_ssl_enabled is true but /ssl/fullchain.pem or
+      /ssl/privkey.pem is missing on HAOS. Run `task dns:deploy` first
+      so acme_certs distributes the cert (cert_distribution_targets
+      entry host=home in host_vars/dns-01.yml), or temporarily set
+      home_assistant_ssl_enabled=false in host_vars/home.yml until the
+      cert is in place.
+  when:
+    - home_assistant_ssl_enabled | default(false)
+    - not (home_assistant_render_only | default(false))
+
 - name: Deploy and validate Home Assistant configuration
   block:
     - name: Generate Home Assistant configuration from template
@@ -44,44 +118,79 @@
         mode: '0600'
       no_log: true
 
-    - name: Deploy configuration.yaml to Home Assistant
+    - name: Stage HA config and secrets to HAOS /tmp (single round trip)
+      # Both files copied to remote /tmp first so the install step has
+      # both staged before either is moved into /config. If the scp
+      # fails, /config keeps its prior state. (Previously the two
+      # files were scp'd directly into /config in two tasks; if the
+      # second scp failed, /config had updated configuration.yaml
+      # referencing !secret keys not yet in deployed secrets.yaml.)
       ansible.builtin.command:
         cmd: >
           scp -P {{ home_assistant_ssh_port }}
-          -o StrictHostKeyChecking=accept-new
+          -o StrictHostKeyChecking=yes
           /tmp/ha-configuration.yaml
-          root@{{ home_assistant_host }}:{{ home_assistant_config_path }}/configuration.yaml
+          /tmp/ha-secrets.yaml
+          root@{{ home_assistant_host }}:/tmp/
       changed_when: true
+      no_log: true  # secrets.yaml content visible in command stdout on error
+      when: not (home_assistant_render_only | default(false))
 
-    - name: Deploy secrets.yaml to Home Assistant
+    - name: Atomically install HA configuration files
+      # Install secrets.yaml first so configuration.yaml's `!secret`
+      # references always resolve against an up-to-date secrets file.
+      # The chained && short-circuits the second mv if the first fails,
+      # leaving /config in its prior consistent state.
       ansible.builtin.command:
         cmd: >
-          scp -P {{ home_assistant_ssh_port }}
-          -o StrictHostKeyChecking=accept-new
-          /tmp/ha-secrets.yaml
-          root@{{ home_assistant_host }}:{{ home_assistant_config_path }}/secrets.yaml
+          ssh -p {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=yes
+          root@{{ home_assistant_host }}
+          'mv /tmp/ha-secrets.yaml {{ home_assistant_config_path }}/secrets.yaml &&
+           mv /tmp/ha-configuration.yaml {{ home_assistant_config_path }}/configuration.yaml'
       changed_when: true
-      no_log: true
+      when: not (home_assistant_render_only | default(false))
 
     - name: Validate Home Assistant configuration
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
-          -o StrictHostKeyChecking=accept-new
+          -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'ha core check'
       register: ha_config_check
       changed_when: false
+      when: not (home_assistant_render_only | default(false))
 
     - name: Display configuration check results
       ansible.builtin.debug:
         var: ha_config_check.stdout_lines
+      when: not (home_assistant_render_only | default(false))
 
   always:
-    - name: Clean up temporary files
+    - name: Clean up local temporary files
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
         - /tmp/ha-configuration.yaml
         - /tmp/ha-secrets.yaml
+      # In render-only mode (molecule contract test) we leave the
+      # rendered files in place so the verify play can slurp + assert
+      # on their contents. Production deploys always reach the cleanup.
+      when: not (home_assistant_render_only | default(false))
+
+    - name: Clean up any leftover staged files on HAOS
+      # If the play aborted between scp-stage and the atomic install
+      # mv, /tmp on HAOS has stale ha-{configuration,secrets}.yaml.
+      # Best-effort cleanup; failure is OK (files already gone /
+      # HAOS unreachable).
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=yes
+          root@{{ home_assistant_host }}
+          'rm -f /tmp/ha-configuration.yaml /tmp/ha-secrets.yaml'
+      changed_when: false
+      failed_when: false
+      when: not (home_assistant_render_only | default(false))

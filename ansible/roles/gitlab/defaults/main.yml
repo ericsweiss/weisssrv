@@ -85,13 +85,27 @@ gitlab_saml_admin_groups: []
 # external_groups: Users in these groups are marked as external (limited access)
 gitlab_saml_external_groups: []
 
-# Let's Encrypt: Disabled in GitLab (hardcoded in gitlab.rb.j2)
-# Traefik handles TLS termination using certs issued by cert-manager/Let's Encrypt.
-# GitLab listens on plain HTTP behind the Traefik reverse proxy.
+# Let's Encrypt: Disabled in GitLab (hardcoded in gitlab.rb.j2).
+# Traefik also has its own cert-manager/Let's Encrypt path; we don't
+# want GitLab racing for the same cert. Instead, the cert distributed
+# to /etc/gitlab/ssl by acme_certs (see host_vars/dns-01.yml's
+# cert_distribution_targets) is what GitLab's nginx serves on 443.
 
-# NGINX configuration (listen on all interfaces for Traefik proxy)
-gitlab_nginx_listen_https: false
-gitlab_nginx_listen_port: 80
+# NGINX configuration. With gitlab_nginx_listen_https: true, GitLab's
+# nginx terminates TLS using the distributed cert and serves 443. The
+# Traefik IngressRoute uses scheme: https with a serversTransport so
+# the Traefik->GitLab hop is no longer plaintext on the LAN.
+#
+# The gitlab role asserts that the cert + key exist on disk before
+# `gitlab-ctl reconfigure` runs, so a fresh-deploy where acme_certs
+# hasn't yet distributed the cert fails the play with a clear pointer
+# instead of crashing the omnibus chef recipe. Set false to fall back
+# to plain port 80 (e.g. during initial bring-up before first cert
+# distribution).
+gitlab_nginx_listen_https: true
+gitlab_nginx_listen_port: 443
+gitlab_nginx_ssl_certificate: /etc/gitlab/ssl/fullchain.pem
+gitlab_nginx_ssl_certificate_key: /etc/gitlab/ssl/privkey.pem
 
 # Trust proxy headers from Traefik
 gitlab_nginx_real_ip_trusted_addresses:
@@ -113,3 +127,9 @@ gitlab_root_password: "{{ lookup('ansible.builtin.env', 'GITLAB_ROOT_PASSWORD') 
 # SSH security hardening
 # fail2ban protects against brute-force attacks on port 2222 (open to internet)
 gitlab_fail2ban_enabled: true
+
+# Kernel tuning for Redis safety (vm.overcommit_memory + THP disable). On real
+# GitLab hosts this MUST stay on (the missing sysctl caused the 2026-06-02
+# Redis BGSAVE SIGSEGV that broke git push). The molecule scenario overrides
+# this to false so converge.yml doesn't mutate the CI runner's kernel state.
+gitlab_kernel_tuning_enabled: true

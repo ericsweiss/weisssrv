@@ -19,6 +19,13 @@
    pam password change = yes
    map to guest = bad user
 
+   # Wire encryption: require SMB3 with encryption on every connection.
+   # Pre-SMB3 clients (Win XP/7, old NAS firmware) will be rejected.
+   # Modern macOS / Windows / Linux smbclient all negotiate SMB3 with
+   # encryption support. Tied to the encryption matrix in docs/06-zfs.md.
+   server min protocol = SMB3_00
+   smb encrypt = required
+
    # Performance
    socket options = TCP_NODELAY IPTOS_LOWDELAY
 

@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Distribute certificates to dns-02 and smtp-relay after acme.sh renewal
-# Runs as root on dns-01, SSHs to remote hosts as eric using dedicated cert key
+#
+# Distribute the renewed wildcard cert to every host listed in
+# `cert_distribution_targets` (`host_vars/dns-01.yml`). Runs as root on
+# dns-01 after every acme.sh renewal hook. Each target's per-entry
+# fields control SSH access, file placement, and reload semantics:
+# see the comment block at the top of cert_distribution_targets in
+# `host_vars/dns-01.yml` for the per-target schema.
 
 set -euo pipefail
 
-FULLCHAIN_SRC="{{ local_cert_dir }}/fullchain.pem"
-PRIVKEY_SRC="{{ local_cert_dir }}/privkey.pem"
-IDENTITY_FILE="/home/eric/.ssh/id_ed25519_certs"
+_CERT_START_TS="$(date +%s)"
 
 PROM_DIR="/var/lib/node_exporter"
+# node_exporter's textfile collector dir is normally created by the
+# node_exporter_host role, but cert-reload can race that on a fresh host
+# (cron-driven reload firing before the role's first deploy completes).
+# mkdir -p is a no-op on the steady state.
+mkdir -p "$PROM_DIR"
 PROM_FILE="${PROM_DIR}/cert_renewal.prom"
-_CERT_START_TS="$(date +%s)"
+PROM_TARGET_FILE="${PROM_DIR}/cert_distribution_targets.prom"
 
 write_prom_metrics() {
   local success="$1" duration="$2"
@@ -34,40 +42,213 @@ write_prom_metrics() {
   mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
 }
 
+# Per-target metrics so a partial failure (one target down) is visible
+# in Prometheus instead of being collapsed into the run-level success
+# bit. Caller appends one entry per target as they finish.
+_TARGET_METRICS_TMP="$(mktemp)"
+_TARGET_METRICS_FLUSHED=0
+write_target_metric() {
+    local host="$1" success="$2"
+    printf 'cert_distribution_target_last_run_success{host="%s"} %d\n' \
+        "$host" "$success" >> "$_TARGET_METRICS_TMP"
+}
+flush_target_metrics() {
+    # Idempotent: the inline call at end-of-script and the EXIT trap
+    # both call this. If we let it run twice the second pass would cat
+    # the already-deleted tmp file and clobber $PROM_TARGET_FILE with
+    # just the HELP/TYPE headers (no host lines).
+    if [[ "$_TARGET_METRICS_FLUSHED" -eq 1 ]]; then
+        return
+    fi
+    {
+        echo "# HELP cert_distribution_target_last_run_success Per-target cert distribution success (1=ok, 0=failed)"
+        echo "# TYPE cert_distribution_target_last_run_success gauge"
+        cat "$_TARGET_METRICS_TMP"
+    } > "$PROM_TARGET_FILE" 2>/dev/null || true
+    rm -f "$_TARGET_METRICS_TMP"
+    _TARGET_METRICS_FLUSHED=1
+}
+
 trap_write_failure_metrics() {
   local end_ts
   end_ts="$(date +%s)"
   local duration=$(( end_ts - _CERT_START_TS ))
   write_prom_metrics 0 "$duration"
+  flush_target_metrics
 }
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics; fi' EXIT
+# shellcheck disable=SC2154 # `rc` is assigned via $? at trap fire time
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics; fi; rm -f "$_TARGET_METRICS_TMP"' EXIT
+
+FULLCHAIN_SRC="{{ local_cert_dir }}/fullchain.pem"
+PRIVKEY_SRC="{{ local_cert_dir }}/privkey.pem"
+IDENTITY_FILE="/home/eric/.ssh/id_ed25519_certs"
+
+# Bail early if the cert files don't exist locally.
+[[ -r "$FULLCHAIN_SRC" && -r "$PRIVKEY_SRC" ]] || {
+    echo "missing $FULLCHAIN_SRC or $PRIVKEY_SRC; nothing to distribute" >&2
+    exit 1
+}
 
 {% for target in cert_distribution_targets %}
 {{ target.host | upper | replace('-', '_') }}_IP="{{ target.ip }}"
 {{ target.host | upper | replace('-', '_') }}_CERT_DIR="{{ target.cert_dir }}"
 {% endfor %}
 
-# Local: restart AdGuard on dns-01 (so it picks up the new cert)
-systemctl restart AdGuardHome
+# Helper: non-interactive ssh/scp with dedicated identity file.
+# StrictHostKeyChecking=yes (not accept-new): host keys for every
+# target are pinned in host_vars/dns-01.yml under
+# cert_distribution_targets[*].host_key and pre-loaded into
+# /root/.ssh/known_hosts by the acme_certs role. A fingerprint
+# mismatch — host rebuild without inventory update, or MITM —
+# fails the cert push loudly instead of silently trusting.
+SSH_OPTS=(-i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ConnectTimeout=10)
+SCP_OPTS=(-q -i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ConnectTimeout=10)
 
-# Helper: non-interactive ssh/scp with dedicated identity file
-SSH_OPTS=(-i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
-SCP_OPTS=(-q -i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+# Per-target push. We capture failure per-host so a single dead target
+# doesn't abort distribution to the others; ANY_FAIL is set if any
+# target fails, and the script exits non-zero at the end (which the
+# trap catches and writes the failure metric).
+ANY_FAIL=0
+
+push_target() {
+    local host="$1" ip="$2" cert_dir="$3" \
+          ssh_user="$4" ssh_port="$5" sudo_prefix="$6" \
+          owner="$7" group="$8" cert_mode="$9" key_mode="${10}" \
+          reload_cmd="${11}"
+
+    # Stage into a per-run, 0700 mktemp dir under /tmp on the target
+    # instead of scp-ing privkey.pem into world-readable /tmp directly.
+    # Previous behavior left the unencrypted wildcard private key
+    # readable by every local user on the target host for the window
+    # between scp landing and the chmod inside the install step
+    # (TOCTOU + symlink-preplacement risk on multi-user VMs).
+    #
+    # The dir is created+chmodded in a single ssh round-trip and
+    # chowned to ${ssh_user} so the subsequent scp can write into it
+    # without sudo. On ssh_no_sudo hosts (HAOS) ssh_user is already
+    # root, so the chown is effectively a no-op. The final rm -rf
+    # inside the install chain cleans up the stage dir under sudo so
+    # neither files nor dir linger after the run.
+    # Use `if ! stage=$(ssh ...); then ...` rather than a bare
+    # assignment + post-check: under `set -euo pipefail` a non-zero exit
+    # from the ssh (target down, key mismatch, etc.) would otherwise
+    # kill the whole script BEFORE we reach the empty-string check,
+    # aborting distribution to every later target instead of failing
+    # this one and continuing.
+    local stage
+    if ! stage=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+            "set -e; \
+             d=\$(${sudo_prefix}mktemp -d /tmp/cert-stage.XXXXXX); \
+             ${sudo_prefix}chmod 0700 \"\$d\"; \
+             ${sudo_prefix}chown ${ssh_user}: \"\$d\"; \
+             printf '%s' \"\$d\"") || [ -z "$stage" ]; then
+        echo "FAIL: could not create staging dir on ${host}" >&2
+        write_target_metric "$host" 0
+        ANY_FAIL=1
+        return
+    fi
+
+    if ! scp -P "$ssh_port" "${SCP_OPTS[@]}" \
+            "$FULLCHAIN_SRC" "$PRIVKEY_SRC" \
+            "${ssh_user}@${ip}:${stage}/"; then
+        echo "FAIL: scp to ${host} failed" >&2
+        # Best-effort cleanup; ignore rc since the dir may not exist.
+        ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+            "${sudo_prefix}rm -rf \"${stage}\"" 2>/dev/null || true
+        write_target_metric "$host" 0
+        ANY_FAIL=1
+        return
+    fi
+
+    # Chain mv + chown + chmod + reload with && so any step failure
+    # short-circuits the remote shell and surfaces a non-zero exit.
+    # Previously these were chained with ; which let a partial mv leave
+    # the cert dir with only one of fullchain/privkey, after which the
+    # service reload still ran against a broken cert pair.
+    #
+    # The reload step does NOT prepend sudo_prefix. Some restart_command
+    # values are compound shell constructs (e.g. an `if … then … else …
+    # fi` for the conditional tlshd reload), and `sudo if …` is invalid
+    # — sudo expects an executable, not a shell keyword. Each target's
+    # restart_command in cert_distribution_targets is responsible for
+    # invoking sudo itself where the underlying command needs root.
+    # Quote path expansions in the remote command so a future inventory
+    # value with a space (or shell-special char) doesn't word-split the
+    # mv/chown/chmod/rm arguments. The values are operator-controlled,
+    # not untrusted user input — this is defense-in-depth, not a
+    # vulnerability fix.
+    if ! ssh -p "$ssh_port" "${SSH_OPTS[@]}" \
+            "${ssh_user}@${ip}" \
+            "${sudo_prefix}mv \"${stage}/fullchain.pem\" \"${stage}/privkey.pem\" \"${cert_dir}/\" \
+             && ${sudo_prefix}chown \"${owner}:${group}\" \"${cert_dir}/fullchain.pem\" \"${cert_dir}/privkey.pem\" \
+             && ${sudo_prefix}chmod \"${cert_mode}\" \"${cert_dir}/fullchain.pem\" \
+             && ${sudo_prefix}chmod \"${key_mode}\" \"${cert_dir}/privkey.pem\" \
+             && ${sudo_prefix}rm -rf \"${stage}\" \
+             && ${reload_cmd}"; then
+        echo "FAIL: remote install/reload on ${host} failed" >&2
+        # Best-effort cleanup if the mv failed mid-step.
+        ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+            "${sudo_prefix}rm -rf \"${stage}\"" 2>/dev/null || true
+        write_target_metric "$host" 0
+        ANY_FAIL=1
+        return
+    fi
+
+    write_target_metric "$host" 1
+    echo "OK: ${host}"
+}
 
 {% for target in cert_distribution_targets %}
-# --- {{ target.host }} ---
-scp "${SCP_OPTS[@]}" "${FULLCHAIN_SRC}" "${PRIVKEY_SRC}" "eric@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}:/tmp/"
-ssh "${SSH_OPTS[@]}" "eric@${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
-  "sudo mv /tmp/fullchain.pem /tmp/privkey.pem ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/;
-   sudo chown {{ target.owner }}:{{ target.group }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
-   sudo chmod {{ target.cert_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/fullchain.pem;
-   sudo chmod {{ target.key_mode }} ${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}/privkey.pem;
-   sudo systemctl restart {{ target.restart_service }}"
+{# Per-target overrides documented in host_vars/dns-01.yml. Defaults
+   apply when the field is unset.
+
+   _reload: when restart_command is provided, it is rendered verbatim
+   (the script no longer prepends sudo because compound shell forms
+   like `if … then … fi` reject `sudo if`). When restart_service is
+   used instead, the shorthand expansion injects sudo automatically
+   for sudo-capable hosts. #}
+{% set _sudo = '' if (target.ssh_no_sudo | default(false)) else 'sudo ' %}
+{% set _reload = target.restart_command | default(_sudo ~ 'systemctl restart ' ~ (target.restart_service | default(''))) %}
+{% set _ssh_port = target.ssh_port | default(22) %}
+{% set _ssh_user = target.ssh_user | default('eric') %}
+push_target \
+    "{{ target.host }}" \
+    "${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
+    "${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}" \
+    "{{ _ssh_user }}" \
+    "{{ _ssh_port }}" \
+    "{{ _sudo }}" \
+    "{{ target.owner }}" \
+    "{{ target.group }}" \
+    "{{ target.cert_mode }}" \
+    "{{ target.key_mode }}" \
+    "{{ _reload }}"
 
 {% endfor %}
+
+# Local: restart AdGuard on dns-01 last, so a local AdGuard config
+# regression doesn't abort distribution to remote hosts.
+if ! systemctl restart AdGuardHome; then
+    echo "FAIL: local AdGuardHome restart failed" >&2
+    write_target_metric "dns-01" 0
+    ANY_FAIL=1
+else
+    write_target_metric "dns-01" 1
+fi
+
+flush_target_metrics
+
+if [ "$ANY_FAIL" -ne 0 ]; then
+    echo "Certificate distribution finished with one or more failed targets." >&2
+    # Distinct exit code so callers can tell partial-target failure (this
+    # path) from a hard local error (exit 1, e.g. cert files unreadable).
+    # Per-target metrics in $PROM_TARGET_FILE name the offending host(s).
+    exit 2
+fi
+
 echo "Certificate distribution complete."
 
-# Write Prometheus textfile metrics on success
+# Write run-level success metric.
 _CERT_END_TS="$(date +%s)"
 _CERT_DURATION=$(( _CERT_END_TS - _CERT_START_TS ))
 write_prom_metrics 1 "$_CERT_DURATION"

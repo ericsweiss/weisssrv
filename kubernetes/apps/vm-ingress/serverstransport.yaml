@@ -1,0 +1,49 @@
+---
+# Shared ServersTransport for Traefik -> external VM backends.
+#
+# Each VM serves its own copy of the *.esweiss.com wildcard cert (placed
+# by acme_certs after every Let's Encrypt renewal). Traefik connects to
+# the service IP, so SNI doesn't naturally match the cert SAN — set
+# serverName explicitly so cert validation succeeds without
+# insecureSkipVerify.
+#
+# IngressRoute -> ServersTransport references resolve in the
+# IngressRoute's own namespace (Traefik's CRD provider is namespace-
+# scoped). The same resource is therefore created in every namespace
+# that has consuming IngressRoutes: `default` (HAOS, Plex), `gitlab`
+# (GitLab Web). When adding a new namespace consumer, add another copy
+# below.
+#
+# TLS-version policy on the backend is the backend's responsibility
+# (GitLab nginx, HAOS http: ssl_*, Plex custom-cert all default to
+# TLS 1.2+); Traefik's ServersTransport CRD does not expose
+# minVersion/cipherSuites for backend connections.
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: vm-tls-wildcard
+  namespace: default
+spec:
+  # Wildcard SAN: server presents *.esweiss.com, valid for any
+  # single-label subdomain. Sentinel name; never resolved.
+  serverName: vm.esweiss.com
+  maxIdleConnsPerHost: 32
+  forwardingTimeouts:
+    dialTimeout: 10s
+    responseHeaderTimeout: 30s
+    idleConnTimeout: 90s
+---
+# Same resource, gitlab namespace. GitLab IngressRoutes live in the
+# gitlab namespace; Traefik resolves serversTransport in the same ns.
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: vm-tls-wildcard
+  namespace: gitlab
+spec:
+  serverName: vm.esweiss.com
+  maxIdleConnsPerHost: 32
+  forwardingTimeouts:
+    dialTimeout: 10s
+    responseHeaderTimeout: 30s
+    idleConnTimeout: 90s

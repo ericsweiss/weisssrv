@@ -1,0 +1,77 @@
+---
+# Molecule scenario for proxmox_ha (smoke test).
+# Runs the role end-to-end against stub Proxmox CLIs that emit minimal valid
+# output for the happy path (cluster quorate, no rules drift, no replication
+# drift). Verifies the role completes without errors and computes the expected
+# inventory-derived facts. Drift-detection branches require real Proxmox state
+# to validate end-to-end and are exercised in production runs only.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: proxmox-ha-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    # /tmp NOT tmpfs — see proxmox_vm/molecule/default/molecule.yml.
+    tmpfs:
+      - /run
+    groups:
+      - proxmox
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+      # Anchor remote_tmp under /tmp; see proxmox_vm/molecule/default/
+      # molecule.yml for the full rationale. Literal path because the
+      # scenario's `env:` block drops USER from the molecule-to-Ansible
+      # env, leaving `${USER}` expanding to empty.
+      remote_tmp: /tmp/ansible-tmp
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        # No HA rules + no replication jobs in the happy-path test — the
+        # included rules.yml / replication.yml / resources.yml / groups.yml
+        # task files all gate work behind `... | length > 0`.
+        ha_rules: []
+        storage_replication_jobs: []
+        ha_resources: []
+        ha_groups: []
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+lint: |
+  set -e
+  yamllint .
+  ansible-lint .

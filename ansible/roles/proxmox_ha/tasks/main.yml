@@ -20,9 +20,10 @@
 
 - name: Parse quorum status from cluster output
   ansible.builtin.set_fact:
-    # Extract the quorum status value from pvecm output
-    # The output format is: "Quorate:          Yes" (with variable whitespace)
-    # Find the line, split on colon, take the value part
+    # Extract the quorum status from "Quorate:          Yes" (whitespace varies).
+    # Ansible's templating round-trips "Yes" through YAML 1.1, so cluster_quorate
+    # ends up as Python bool True at this point — the assert below uses `| bool`
+    # to coerce either the bool or a preserved string back to a real boolean.
     cluster_quorate: >-
       {{
         (cluster_status.stdout_lines
@@ -39,7 +40,7 @@
   ansible.builtin.assert:
     that:
       - cluster_status.rc == 0
-      - cluster_quorate | default('') | lower == 'yes'
+      - cluster_quorate | default(false) | bool
     fail_msg: |
       Proxmox cluster is not configured or not quorate.
       Cluster command return code: {{ cluster_status.rc }}

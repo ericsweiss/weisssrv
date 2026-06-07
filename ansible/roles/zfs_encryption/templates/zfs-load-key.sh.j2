@@ -1,0 +1,260 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# zfs-load-key.sh <pool> [<1p-item-title> [field]]
+#
+# Fetches a ZFS pool encryption passphrase from 1Password Connect and
+# loads it into the kernel via `zfs load-key`. Invoked by
+# zfs-load-key@<pool>.service before zfs-mount.service so encrypted
+# datasets are unlocked at boot.
+#
+# Cold-cluster recovery: if Connect is unreachable for the entire
+# fetch_timeout window, the script exits non-zero and the systemd unit
+# fails. Operator path:
+#     sudo zfs load-key <pool>     # paste passphrase from 1P mobile app
+#     sudo zfs mount -a
+#
+# Authorization: bearer token at /etc/onepassword-connect/token (mode
+# 0400, root). The token is passed to curl via stdin (`-H @-`), never
+# on argv, so it does not appear in /proc/<pid>/cmdline during the curl
+# invocation.
+#
+# Exit codes:
+#   0 — key loaded (or already loaded); zfs-mount.service handles mounting
+#   1 — config / arg / token error
+#   2 — Connect unreachable beyond fetch_timeout
+#   3 — vault/item/field not found
+#   4 — `zfs load-key` failed (wrong passphrase, kernel error, etc.)
+#   5 — pool not imported / does not exist
+#   7 — Connect returned 401/403 (auth failure; no point retrying)
+
+set -euo pipefail
+
+POOL="${1:?pool name required}"
+ITEM_TITLE="${ZFS_ENCRYPTION_ITEM:-${2:-}}"
+FIELD="${ZFS_ENCRYPTION_FIELD:-${3:-passphrase}}"
+
+[[ -n "$ITEM_TITLE" ]] || { echo "ZFS_ENCRYPTION_ITEM unset; pass title as 2nd arg or via env" >&2; exit 1; }
+
+CONNECT_URL="{{ zfs_encryption_connect_url }}"
+# `VAULT_REF` is either a vault NAME (e.g. "Homelab") that we resolve to a
+# UUID at runtime, or a literal 26-char UUID we use directly. The Connect
+# REST API requires UUID in /v1/vaults/<X>/items paths — the `op` CLI does
+# client-side name→UUID resolution; we replicate that here.
+VAULT_REF="{{ zfs_encryption_connect_vault }}"
+TOKEN_FILE="/etc/onepassword-connect/token"
+FETCH_TIMEOUT="{{ zfs_encryption_fetch_timeout_seconds }}"
+RETRY_SLEEP="{{ zfs_encryption_fetch_retry_seconds }}"
+
+log() { logger -t "zfs-load-key[${POOL}]" -s -- "$*"; }
+
+[[ -r "$TOKEN_FILE" ]] || { log "missing $TOKEN_FILE"; exit 1; }
+TOKEN=$(< "$TOKEN_FILE")
+AUTH_HEADER="Authorization: Bearer $TOKEN"
+
+# connect_get <relative-path> <out-file>: GET against Connect with the
+# bearer token piped on stdin (never argv, so it doesn't appear in
+# /proc/<pid>/cmdline during the curl invocation). Writes the body to
+# $2, prints the HTTP code on stdout. Network failures yield code 000.
+connect_get() {
+    local path="$1" out="$2"
+    printf '%s\n' "$AUTH_HEADER" \
+        | curl -sS \
+            --max-time 10 \
+            -H @- \
+            -o "$out" \
+            -w '%{http_code}' \
+            "${CONNECT_URL}${path}" \
+        || echo 000
+}
+
+# Pool must already be imported by zfs-import.target before this unit
+# runs. Distinguish "no such pool" from "pool exists, key not loaded"
+# so a typo in zfs_encryption_pools[*].name fails loudly.
+if ! zpool list -H -o name "$POOL" >/dev/null 2>&1; then
+    log "pool $POOL not imported — check zfs_encryption_pools naming and zfs-import.target ordering"
+    exit 5
+fi
+
+# Already loaded? Skip silently — makes the unit safe to re-run.
+# A transient `zfs get` blip (e.g. ioctl race during early boot) should
+# fall through to the fetch path, not abort under set -euo pipefail.
+key_status=$(zfs get -H -o value keystatus "$POOL" 2>/dev/null || echo unknown)
+if [[ "$key_status" == "available" ]]; then
+    log "key already loaded; nothing to do"
+    exit 0
+fi
+
+# Resolve VAULT_REF to a UUID. 1Password Connect REST paths require UUID
+# in the {vaultUUID} slot — only the GET /v1/vaults?filter=name eq
+# endpoint accepts a name. If VAULT_REF is already a 26-char lowercase
+# alphanumeric (the 1P UUID shape), skip the lookup; otherwise resolve.
+if [[ "$VAULT_REF" =~ ^[a-z0-9]{26}$ ]]; then
+    VAULT="$VAULT_REF"
+else
+    encoded_vault=$(jq -rn --arg v "$VAULT_REF" '$v | @uri')
+    VAULT_PATH="/v1/vaults?filter=name%20eq%20%22${encoded_vault}%22"
+
+    deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
+    VAULT=""
+    while [[ -z "$VAULT" ]]; do
+        if [[ $(date +%s) -ge $deadline ]]; then
+            log "timed out resolving vault UUID for '$VAULT_REF' against $CONNECT_URL"
+            exit 2
+        fi
+
+        tmp=$(mktemp)
+        http=$(connect_get "$VAULT_PATH" "$tmp")
+        body=$(cat "$tmp")
+        rm -f "$tmp"
+
+        case "$http" in
+            200)
+                VAULT=$(printf '%s' "$body" | jq -r '.[0].id // empty')
+                if [[ -z "$VAULT" ]]; then
+                    log "Connect returned 200 but no vault named '$VAULT_REF' visible to this token"
+                    exit 3
+                fi
+                ;;
+            401|403)
+                log "Connect rejected token resolving vault (HTTP $http); refusing to retry"
+                exit 7
+                ;;
+            *)
+                log "Connect HTTP $http resolving vault; will retry"
+                ;;
+        esac
+
+        if [[ -z "$VAULT" ]]; then
+            sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
+            jitter=$(( RANDOM % sleep_base ))
+            sleep "$(( sleep_base + jitter ))"
+        fi
+    done
+    unset body
+fi
+
+# Resolve 1P item ID from title (Connect requires ID for the field
+# fetch endpoint). Use jq for url-encoding (already required).
+encoded=$(jq -rn --arg t "$ITEM_TITLE" '$t | @uri')
+LIST_PATH="/v1/vaults/${VAULT}/items?filter=title%20eq%20%22${encoded}%22"
+
+deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
+ITEM_ID=""
+while [[ -z "$ITEM_ID" ]]; do
+    if [[ $(date +%s) -ge $deadline ]]; then
+        log "timed out resolving item id for '$ITEM_TITLE' against $CONNECT_URL"
+        exit 2
+    fi
+
+    tmp=$(mktemp)
+    http=$(connect_get "$LIST_PATH" "$tmp")
+    body=$(cat "$tmp")
+    rm -f "$tmp"
+
+    case "$http" in
+        200)
+            ITEM_ID=$(printf '%s' "$body" | jq -r '.[0].id // empty')
+            # HTTP 200 + empty result list = item title not in vault.
+            # Fail fast with the documented exit-3 code rather than
+            # looping until fetch_timeout and exiting 2 ("unreachable")
+            # — a typo in zfs_encryption_pools[*].item shouldn't look
+            # like a network outage to the operator.
+            if [[ -z "$ITEM_ID" ]]; then
+                log "Connect returned 200 but no item titled '$ITEM_TITLE' in vault '$VAULT_REF'"
+                exit 3
+            fi
+            ;;
+        401|403)
+            log "Connect rejected token (HTTP $http); refusing to retry"
+            exit 7
+            ;;
+        *)
+            log "Connect HTTP $http resolving item; will retry"
+            ;;
+    esac
+
+    if [[ -z "$ITEM_ID" ]]; then
+        # Spread retries across hosts so a cold-cluster boot doesn't
+        # synchronize traffic against Connect. Floor RETRY_SLEEP at 1
+        # so an operator override of 0 doesn't busy-loop with sleep 0.
+        sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
+        jitter=$(( RANDOM % sleep_base ))
+        sleep "$(( sleep_base + jitter ))"
+    fi
+done
+
+# Fetch the passphrase field. Match on .id first (stable), then fall
+# back to .label (display name; user may have renamed it). 1Password's
+# Password template ships with a 'password' field; the homelab convention
+# uses 'passphrase' for ZFS items. Accept either via FIELD.
+tmp=$(mktemp)
+http=$(connect_get "/v1/vaults/$VAULT/items/$ITEM_ID" "$tmp")
+body=$(cat "$tmp")
+rm -f "$tmp"
+
+case "$http" in
+    200) ;;
+    401|403)
+        log "Connect rejected token fetching item $ITEM_ID (HTTP $http)"
+        exit 7
+        ;;
+    *)
+        log "Connect HTTP $http fetching item $ITEM_ID"
+        exit 2
+        ;;
+esac
+
+# Use jq's `first` to stop at the first matching field (the previous
+# `... | head -n1` pipeline emitted all matches into a sub-process then
+# truncated; under `set -o pipefail` an early head close races jq's
+# write and the pipeline can return non-zero before the script's clean
+# "field missing" branch ever runs).
+PASSPHRASE=$(printf '%s' "$body" | jq -r \
+    --arg f "$FIELD" \
+    'first(.fields[]? | select((.id == $f) or (.label == $f)) | select(.value != null and .value != "") | .value) // empty')
+
+# Scrub the response body from this shell as soon as we've extracted
+# the field — otherwise the cleartext passphrase remains in $body for
+# the rest of the script's lifetime.
+unset body
+
+if [[ -z "$PASSPHRASE" ]]; then
+    # Either the field doesn't exist on the item, or it exists but the
+    # value is null/empty (e.g. someone created the 1P item but never
+    # filled in the passphrase). Either way, this is a config error
+    # that won't fix itself by retrying.
+    log "field '$FIELD' (matching id or label) is missing or empty on item '$ITEM_TITLE'"
+    exit 3
+fi
+
+# Load the key. `-r` (recursive) so this works for both models the
+# docs describe:
+#   1. Pool-level encryption: $POOL itself is an encryption root and
+#      gets the key directly.
+#   2. Dataset-level encryption: $POOL itself is plaintext but selected
+#      children (e.g. tank/share-enc, tank/proxmox-enc) are encryption
+#      roots; `-r` descends and loads all of them with the same
+#      passphrase (the operator's per-pool 1P item).
+# Without `-r`, model 2 would fail with "$POOL is not encrypted".
+#
+# Mounting is handled by zfs-mount.service, which this unit is
+# `Before=` / `RequiredBy=`. Calling `zfs mount -a` here would
+# (a) be redundant on top of the already-ordered service, (b) cause
+# instances racing each other on pve-nas-01 (3 parallel pools) to
+# attempt mounts of siblings whose keys aren't loaded yet — on OpenZFS
+# builds that return non-zero for an unavailable-key dataset, that
+# would fail the entire unit, and (c) might fail to propagate mounts
+# outside the unit's PrivateTmp+ProtectSystem=strict namespace anyway.
+if ! printf '%s\n' "$PASSPHRASE" | zfs load-key -r "$POOL"; then
+    log "zfs load-key -r failed for $POOL"
+    exit 4
+fi
+
+# Defense in depth: scrub the variable from this shell. Memory of the
+# zfs kernel module retains the raw key (that's how decryption works);
+# nothing we can do about that, but at least don't leave it in shell
+# scope.
+unset PASSPHRASE
+
+log "key loaded for $POOL"

@@ -14,29 +14,24 @@ echo ""
 PVE_HOSTS="192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107"
 K3S_SERVERS="192.168.0.222 192.168.0.223 192.168.0.227"
 
-# SSH options for timeout handling during network issues
-SSH_OPTS="-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+# SSH options as an array so word splitting is explicit and shellcheck-clean
+SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
-# Helper function to run commands with timeout
-# Note: timeout is GNU coreutils and not available on stock macOS
-# On macOS, install via 'brew install coreutils' for gtimeout
+# timeout is GNU coreutils; on stock macOS install via 'brew install coreutils' (gtimeout)
 timeout_cmd() {
     local seconds="$1"
     shift
     if command -v timeout &>/dev/null; then
         timeout "$seconds" "$@"
     elif command -v gtimeout &>/dev/null; then
-        # macOS with coreutils installed via Homebrew
         gtimeout "$seconds" "$@"
     else
-        # Fallback: run without timeout (command may hang)
         "$@"
     fi
 }
 
-# Helper function to run SSH with timeout
 ssh_cmd() {
-    timeout_cmd 10 ssh $SSH_OPTS "$@"
+    timeout_cmd 10 ssh "${SSH_OPTS[@]}" "$@"
 }
 
 # Helper function for cross-platform ping with timeout
@@ -78,7 +73,7 @@ echo "4. NETWORK INTERFACE STATS (checking for errors/drops)"
 echo "========================================"
 for host in $PVE_HOSTS; do
     echo "--- $host ---"
-    ssh_cmd eric@$host "ip -s link show | grep -A 4 'vmbr0\|eth0\|enp' 2>/dev/null | head -20" || echo "Host unreachable"
+    ssh_cmd eric@"$host" "ip -s link show | grep -A 4 'vmbr0\|eth0\|enp' 2>/dev/null | head -20" || echo "Host unreachable"
     echo ""
 done
 
@@ -87,7 +82,7 @@ echo "5. ARP TABLE STATE (looking for churn)"
 echo "========================================"
 for host in $PVE_HOSTS; do
     echo "--- $host ARP entries for VIPs ---"
-    ssh_cmd eric@$host "ip neigh show | grep -E '(\.100|\.101|\.150|\.151|\.154|\.160|\.161)'" 2>/dev/null || echo "No VIP entries or host unreachable"
+    ssh_cmd eric@"$host" "ip neigh show | grep -E '(\.100|\.101|\.150|\.151|\.154|\.160|\.161)'" 2>/dev/null || echo "No VIP entries or host unreachable"
     echo ""
 done
 
@@ -120,7 +115,7 @@ if command -v kubectl &> /dev/null; then
     echo "MetalLB speaker logs (last 10 lines each):"
     for pod in $(timeout_cmd 10 kubectl get pods -n metallb-system -l component=speaker -o name 2>/dev/null); do
         echo "--- $pod ---"
-        timeout_cmd 10 kubectl logs $pod -n metallb-system --tail=10 2>/dev/null || echo "Cannot get logs"
+        timeout_cmd 10 kubectl logs "$pod" -n metallb-system --tail=10 2>/dev/null || echo "Cannot get logs"
     done
 else
     echo "kubectl not available on this host"
@@ -137,10 +132,10 @@ for host in $PVE_HOSTS; do
     # "Host unreachable" but you know they're up, try running SSH directly:
     #   ssh eric@192.168.0.102 "cat /etc/network/interfaces | grep -A 10 'auto vmbr'"
     if ping_check "$host" 2; then
-        ssh_cmd eric@$host "cat /etc/network/interfaces 2>/dev/null | grep -A 10 'auto vmbr'" || echo "SSH failed (host reachable but SSH error)"
+        ssh_cmd eric@"$host" "cat /etc/network/interfaces 2>/dev/null | grep -A 10 'auto vmbr'" || echo "SSH failed (host reachable but SSH error)"
     else
         # Try SSH anyway in case ICMP is blocked but host is reachable
-        ssh_cmd eric@$host "cat /etc/network/interfaces 2>/dev/null | grep -A 10 'auto vmbr'" 2>/dev/null || echo "Host unreachable (ping failed, SSH failed)"
+        ssh_cmd eric@"$host" "cat /etc/network/interfaces 2>/dev/null | grep -A 10 'auto vmbr'" 2>/dev/null || echo "Host unreachable (ping failed, SSH failed)"
     fi
     echo ""
 done
@@ -150,7 +145,7 @@ echo "10. RECENT KERNEL NETWORK ERRORS"
 echo "========================================"
 for host in $PVE_HOSTS; do
     echo "--- $host dmesg (last 5 network-related) ---"
-    ssh_cmd eric@$host "sudo dmesg | grep -iE '(eth|network|arp|link|drop)' | tail -5" 2>/dev/null || echo "Host unreachable"
+    ssh_cmd eric@"$host" "sudo dmesg | grep -iE '(eth|network|arp|link|drop)' | tail -5" 2>/dev/null || echo "Host unreachable"
     echo ""
 done
 
@@ -159,7 +154,7 @@ echo "11. K3S SERVER NODE STATUS"
 echo "========================================"
 for host in $K3S_SERVERS; do
     echo "--- $host ---"
-    ssh_cmd eric@$host "sudo systemctl is-active k3s 2>/dev/null && sudo k3s kubectl get nodes 2>/dev/null | head -5" || echo "Host unreachable or k3s not running"
+    ssh_cmd eric@"$host" "sudo systemctl is-active k3s 2>/dev/null && sudo k3s kubectl get nodes 2>/dev/null | head -5" || echo "Host unreachable or k3s not running"
     echo ""
 done
 

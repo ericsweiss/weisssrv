@@ -64,9 +64,21 @@ provisioner:
           cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
           cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
         # Distribution targets (for template rendering, not actual distribution)
+        # The role's "Deploy pubkey to each target's authorized_keys" task
+        # uses delegate_to: item.host which would fall through to the prod
+        # inventory and SSH to 192.168.0.160 from the CI pod (times out).
+        # acme_certs_distribute_pubkeys: false short-circuits it; the rest
+        # of the role (template rendering, acme.sh install, asserts) still
+        # runs against the populated targets list.
+        acme_certs_distribute_pubkeys: false
         cert_distribution_targets:
           - host: dns-02
             ip: 192.168.0.160
+            # Mock pinned host_key — production deploy fails the role
+            # assert without it; the molecule scenario only exercises
+            # template rendering + the known_hosts entry write, so a
+            # syntactically-valid placeholder is sufficient.
+            host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY"
             cert_dir: /opt/AdGuardHome/certs
             owner: root
             group: adguard

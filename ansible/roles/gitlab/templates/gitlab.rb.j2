@@ -32,6 +32,14 @@ gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
 nginx['listen_https'] = {{ gitlab_nginx_listen_https | lower }}
 nginx['listen_port'] = {{ gitlab_nginx_listen_port }}
 
+{% if gitlab_nginx_listen_https %}
+# TLS cert + key. Distributed and rotated by acme_certs on dns-01:
+# /etc/gitlab/ssl/{fullchain,privkey}.pem are written every renewal,
+# followed by `gitlab-ctl hup nginx` to reload.
+nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
+nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
+{% endif %}
+
 # Trust Traefik proxy headers
 nginx['real_ip_trusted_addresses'] = {{ gitlab_nginx_real_ip_trusted_addresses | to_json }}
 nginx['real_ip_header'] = 'X-Forwarded-For'

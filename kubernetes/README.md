@@ -13,21 +13,23 @@ kubernetes/
 │   ├── infrastructure-sources.yaml       # Flux Kustomization → ../../infrastructure/sources (no deps)
 │   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources)
 │   ├── infrastructure-configs.yaml       # Flux Kustomization → ../../infrastructure/configs (dependsOn: controllers)
-│   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-configs)
-│   ├── kustomization.yaml         # Lists flux-system + the 4 top-level Kustomizations + tenants/
+│   ├── infrastructure-observability.yaml # Flux Kustomization → ../../infrastructure/observability (dependsOn: configs)
+│   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-observability)
+│   ├── kustomization.yaml         # Lists flux-system + the 5 top-level Kustomizations + tenants/
 │   └── tenants/                   # One-file-per-tenant wiring (GitRepository + Kustomization + ClusterSecretStore)
 │       └── README.md              # Onboarding examples
 ├── infrastructure/                # Platform (reconciled before apps)
 │   ├── sources/                   # HelmRepository CRs + versions-configmap.yaml (needed by controllers)
-│   ├── controllers/               # HelmReleases: external-secrets, metallb, cert-manager, traefik, external-dns
-│   └── configs/                   # Cluster-wide CRs that require controllers' CRDs to exist first
-│       ├── cluster-secret-store.yaml          # ESO CR
-│       ├── cluster-issuer.yaml                # Let's Encrypt + Cloudflare DNS-01
-│       ├── metallb-ip-pools.yaml              # .100 (public), .101 (internal)
-│       ├── wildcard-certificates.yaml         # *.esweiss.com / *.ericsweiss.com (default ns)
-│       ├── coredns/                           # HelmChartConfig override + PDB
-│       ├── cloudflare-ddns/                   # CronJob + namespace
-│       └── shared-cloudflare-secrets/         # ExternalSecrets for the Cloudflare token in 3 namespaces
+│   ├── controllers/               # HelmReleases: external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns
+│   ├── configs/                   # Cluster-wide CRs that require controllers' CRDs to exist first
+│   │   ├── cluster-secret-store.yaml          # ESO CR
+│   │   ├── cluster-issuer.yaml                # Let's Encrypt + Cloudflare DNS-01
+│   │   ├── metallb-ip-pools.yaml              # .100 (public), .101 (internal)
+│   │   ├── wildcard-certificates.yaml         # *.esweiss.com / *.ericsweiss.com (default ns)
+│   │   ├── coredns/                           # HelmChartConfig override + PDB
+│   │   ├── cloudflare-ddns/                   # CronJob + namespace
+│   │   └── shared-cloudflare-secrets/         # ExternalSecrets for the Cloudflare token in 3 namespaces
+│   └── observability/             # kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress
 └── apps/                          # Workloads
     ├── authentik/                 # SSO — HelmRelease + ExternalSecret + IngressRoutes + PG zvol PVC
     ├── download-clients/          # Media stack — Gluetun + *arr (Kustomize only)
@@ -43,8 +45,8 @@ kubernetes/
 1. `flux bootstrap` (one-time) installs the Flux controllers and commits
    `clusters/weisssrv/flux-system/` to `main`.
 2. Flux's `source-controller` polls this repo (1m interval).
-3. Flux's `kustomize-controller` reconciles `clusters/weisssrv/` →
-   `infrastructure/` → `apps/` in dependency order.
+3. Flux's `kustomize-controller` reconciles in dependency order: `sources` →
+   `controllers` → `configs` → `observability` → `apps`.
 4. `postBuild.substituteFrom: cluster-versions` substitutes `${var}`
    placeholders (e.g., `${authentik_version}`) from the `cluster-versions`
    ConfigMap, generated from `all.yml` via `task flux:sync-versions`.
@@ -96,6 +98,7 @@ task flux:lint              # kustomize build + kubeconform for infra/ and apps/
 | `recipes` | Flux (Kustomize) | Mealie + Bar Assistant + Salt Rim + postgres + meilisearch + redis |
 | `gitlab-runner` | Flux (HelmRelease) | Both shared and privileged runners live here |
 | `gitlab-agent` | Flux (HelmRelease) | `weisssrv-k3s` agent for Kubernetes |
+| `observability` | Flux (HelmRelease + Kustomize) | kube-prometheus-stack, Loki, Alloy, exporters, dashboards |
 | `default` | Flux (Kustomize) | IngressRoutes for non-k8s VMs (via `apps/vm-ingress/`) |
 | `gitlab` | Flux (Kustomize) | IngressRoutes for the GitLab VM (web + registry + pages) |
 
@@ -104,4 +107,5 @@ task flux:lint              # kustomize build + kubeconform for infra/ and apps/
 - **Flux operations**: `docs/29-flux-operations.md`
 - **Multi-repo onboarding**: `docs/30-multi-repo-onboarding.md`
 - **K3s deployment (underlying cluster)**: `docs/19-k3s-deployment.md`
+- **Observability**: `docs/31-observability.md`
 - **Runbooks**: `docs/12-runbooks.md`

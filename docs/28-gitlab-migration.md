@@ -33,7 +33,7 @@ Before starting:
    - **Project name**: `weisssrv`
    - **Project URL**: `https://git.ericsweiss.com/eric/weisssrv`
    - **Visibility level**: Private (or Internal)
-   - **Initialize repository**: Unchecked (we'll push existing code)
+   - **Initialize repository**: Unchecked (existing code is pushed in a later step)
 4. Click **Create project**
 
 ### Step 1.2: Push Repository to GitLab
@@ -309,11 +309,10 @@ Runner token rotation (glrt-* tokens):
 ### Step 5.2: (Optional) Create Additional Schedules
 
 Additional schedules can be created for specific maintenance tasks. Note that scheduled
-pipelines run only the `version-check` job (intentional -- this is the purpose of the
-schedule) and `secret_detection` (runs on scheduled pipelines targeting main). All other jobs (lint,
-validate, test, gate, deploy, and maintenance) are explicitly excluded from scheduled
-pipelines via `when: never` rules, so schedules will never trigger builds, tests,
-deployments, or maintenance operations.
+pipelines run only `version-check` and `secret_detection` -- all other jobs (lint,
+validate, test, ai-review, gate, deploy, and maintenance) are explicitly excluded from
+scheduled pipelines via `when: never` rules, so schedules will never trigger builds,
+tests, deployments, or maintenance operations.
 
 To add a scheduled pipeline:
 1. Click **New schedule**
@@ -514,7 +513,7 @@ After merging to main:
 
 1. Navigate to **CI/CD** > **Schedules**
 2. Click **Play** on the version check schedule
-3. Verify pipeline runs and version-check job completes
+3. Verify pipeline runs and `version-check` and `secret_detection` jobs complete (these are the only two jobs that run on scheduled pipelines)
 
 ## Part 8: Rollback Plan
 

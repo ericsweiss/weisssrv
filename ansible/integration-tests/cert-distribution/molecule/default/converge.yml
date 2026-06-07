@@ -113,6 +113,96 @@
         mode: '0755'
       when: "'cert_clients' in group_names"
 
+# Generate the cert-distribution keypair + collect each client's host key,
+# then add_host inject onto dns-01 so the role gets valid input.
+#
+# Why here and not in prepare.yml: molecule runs prepare and converge as
+# separate ansible-playbook invocations, so add_host vars don't survive.
+# Within a single converge.yml, add_host vars are visible to subsequent
+# plays — including the cert_servers play that applies acme_certs.
+- name: Converge - Collect cert client host keys
+  hosts: cert_clients
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure SSH host keys exist
+      ansible.builtin.command: ssh-keygen -A
+      changed_when: false
+
+    - name: Slurp ed25519 host public key
+      ansible.builtin.slurp:
+        src: /etc/ssh/ssh_host_ed25519_key.pub
+      register: host_ed25519_pub
+
+    - name: Set host_key fact (algorithm + key only, drop trailing user@host comment)
+      ansible.builtin.set_fact:
+        client_host_key: >-
+          {{
+            (host_ed25519_pub.content | b64decode | trim).split()
+            | reject('match', '^[a-zA-Z0-9_.+-]+@')
+            | list
+            | join(' ')
+          }}
+
+- name: Converge - Generate cert-distribution keypair + inject dns-01 vars
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    runtime_cert_targets:
+      - host: cert-client-01
+        ip: cert-client-01
+        cert_dir: /etc/ssl/certs/wildcard
+        owner: root
+        group: root
+        cert_mode: "0644"
+        key_mode: "0600"
+        restart_service: ssh
+        host_key: "{{ hostvars['cert-client-01'].client_host_key }}"
+      - host: cert-client-02
+        ip: cert-client-02
+        cert_dir: /etc/ssl/certs/wildcard
+        owner: root
+        group: root
+        cert_mode: "0644"
+        key_mode: "0600"
+        restart_service: ssh
+        host_key: "{{ hostvars['cert-client-02'].client_host_key }}"
+  tasks:
+    - name: Create temp dir for throwaway keypair
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: cert-dist-keys
+      register: keytmp
+
+    - name: Generate ed25519 keypair (throwaway, scoped to this molecule run)
+      ansible.builtin.command:
+        cmd: ssh-keygen -t ed25519 -N "" -C "cert-distribution@dns-01-test" -f {{ keytmp.path }}/id_ed25519_certs
+        creates: "{{ keytmp.path }}/id_ed25519_certs"
+
+    - name: Read generated private key
+      ansible.builtin.slurp:
+        src: "{{ keytmp.path }}/id_ed25519_certs"
+      register: gen_priv
+
+    - name: Read generated public key
+      ansible.builtin.slurp:
+        src: "{{ keytmp.path }}/id_ed25519_certs.pub"
+      register: gen_pub
+
+    # add_host facts override inventory group_vars — this gives dns-01 the
+    # real keypair and host_key-populated cert_distribution_targets that
+    # the role's asserts and authorized_key/known_hosts tasks demand.
+    - name: Inject real key material onto dns-01 hostvars
+      ansible.builtin.add_host:
+        name: dns-01
+        groups:
+          - cert_stack
+          - cert_servers
+        dns01_ssh_private_key: "{{ gen_priv.content | b64decode | trim }}"
+        dns01_ssh_public_key: "{{ gen_pub.content | b64decode | trim }}"
+        cert_distribution_targets: "{{ runtime_cert_targets }}"
+
 - name: Converge - Certificate Server
   hosts: cert_servers
   become: true
@@ -240,43 +330,14 @@
         skip_cert_issuance: true  # Don't actually issue certs (use mock)
         local_cert_dir: /opt/AdGuardHome/certs
 
-    # After the role runs, regenerate a working SSH key for actual distribution
-    # (the role deploys dummy keys from molecule vars that don't actually work)
-    - name: Generate working SSH key for cert distribution
-      ansible.builtin.shell: |
-        rm -f /home/{{ admin_username }}/.ssh/id_ed25519_certs /home/{{ admin_username }}/.ssh/id_ed25519_certs.pub
-        ssh-keygen -t ed25519 -f /home/{{ admin_username }}/.ssh/id_ed25519_certs -N "" -C "cert-distribution@dns-01"
-        chown {{ admin_username }}:{{ admin_username }} /home/{{ admin_username }}/.ssh/id_ed25519_certs*
-        chmod 600 /home/{{ admin_username }}/.ssh/id_ed25519_certs
-        chmod 644 /home/{{ admin_username }}/.ssh/id_ed25519_certs.pub
-      changed_when: true
+    # The role deploys the real ed25519 keypair (generated in prepare.yml,
+    # injected via add_host) to /home/eric/.ssh/id_ed25519_certs and pushes
+    # the matching pubkey to each cert_distribution_targets host's
+    # authorized_keys via ansible.posix.authorized_key. Both happen inside
+    # acme_certs above, so no post-role keygen / authorized_key push is
+    # needed here.
 
-    - name: Fetch public key for distribution
-      ansible.builtin.slurp:
-        src: /home/{{ admin_username }}/.ssh/id_ed25519_certs.pub
-      register: generated_pubkey
-
-    - name: Set fact for generated public key
-      ansible.builtin.set_fact:
-        cert_distribution_pubkey: "{{ generated_pubkey.content | b64decode | trim }}"
-
-# Third play: Add the generated public key to clients
-- name: Converge - Add Distribution Key to Clients
-  hosts: cert_clients
-  become: true
-  gather_facts: false
-  vars_files:
-    - ../../../../inventories/prod/group_vars/all.yml
-
-  tasks:
-    - name: Add cert distribution public key to authorized_keys
-      ansible.posix.authorized_key:
-        user: "{{ admin_username }}"
-        key: "{{ hostvars['dns-01'].cert_distribution_pubkey }}"
-        state: present
-        comment: "cert-distribution@dns-01"
-
-# Fourth play: Run the distribution script now that keys are in place
+# Third play: Run the distribution script now that keys are in place
 - name: Converge - Run Certificate Distribution
   hosts: cert_servers
   become: true

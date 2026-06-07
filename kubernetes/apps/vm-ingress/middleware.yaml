@@ -1,4 +1,13 @@
 ---
+# App-side middlewares (consumers all live in apps stage).
+#
+# The platform-level middlewares lan-tailscale-only and hsts-header
+# moved to kubernetes/infrastructure/configs/traefik-middlewares.yaml
+# because they are referenced from outside the apps stage (Connect
+# IngressRoute in configs, Loki IngressRoute in observability,
+# Traefik dashboard in controllers). See that file for the full
+# rationale.
+
 # Strip www from ericsweiss.com domains (public only)
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -13,31 +22,6 @@ spec:
     # it with the empty string and every www-redirect would resolve to "https://".
     replacement: "https://$${1}"
     permanent: true
-
----
-# HSTS headers for public services
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: hsts-header
-  namespace: traefik
-spec:
-  headers:
-    stsSeconds: 31536000
-    stsIncludeSubdomains: true
-
----
-# IP allowlist for internal-only services (LAN + Tailscale)
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: lan-tailscale-only
-  namespace: traefik
-spec:
-  ipAllowList:
-    sourceRange:
-      - 192.168.0.0/24     # Local LAN
-      - 100.64.0.0/10      # Tailscale CGNAT range
 
 ---
 # Home Assistant specific headers for reverse proxy

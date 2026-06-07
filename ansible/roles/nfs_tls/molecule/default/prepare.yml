@@ -1,0 +1,125 @@
+---
+# Prepare playbook for nfs_tls role testing.
+#
+# Two preconditions the role expects from the host:
+#   1. /etc/ssl/private/{fullchain,privkey}.pem exist (acme_certs would
+#      have distributed these in production). The role asserts they
+#      exist before rendering tlshd.conf, so we touch synthetic files.
+#   2. tlshd.service must accept a `state: started` request, but the
+#      container lacks the AF_TLSH netlink subsystem the real binary
+#      needs. We pre-install ktls-utils and drop in a unit override
+#      that replaces ExecStart with /bin/true so systemd happily
+#      "starts" the service as far as the role is concerned. The
+#      verify.yml file/config/unit-recognition checks are unaffected.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to be ready
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        systemctl stop unattended-upgrades.service 2>/dev/null || true
+        systemctl disable apt-daily.timer 2>/dev/null || true
+        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp
+        chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    # Synthetic cert files so the role's preflight assertion passes.
+    # In production these are written by acme_certs's homelab-cert-reload.sh.
+    - name: Ensure /etc/ssl/private exists
+      ansible.builtin.file:
+        path: /etc/ssl/private
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Touch synthetic fullchain.pem
+      ansible.builtin.copy:
+        dest: /etc/ssl/private/fullchain.pem
+        content: |
+          -----BEGIN CERTIFICATE-----
+          synthetic-test-fixture-not-a-real-cert
+          -----END CERTIFICATE-----
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Touch synthetic privkey.pem
+      ansible.builtin.copy:
+        dest: /etc/ssl/private/privkey.pem
+        content: |
+          -----BEGIN PRIVATE KEY-----
+          synthetic-test-fixture-not-a-real-key
+          -----END PRIVATE KEY-----
+        owner: root
+        group: root
+        mode: "0600"
+
+    # Pre-install ktls-utils so the unit file is on disk before the
+    # role's apt step runs (the role's apt is then a fast no-op) and so
+    # the drop-in below has something to override.
+    - name: Pre-install ktls-utils
+      ansible.builtin.apt:
+        name: ktls-utils
+        state: present
+        update_cache: true
+
+    # Replace tlshd's ExecStart with /bin/true. Without this the role's
+    # final `systemd: state: started` step fails in a container — tlshd
+    # exits immediately because the kernel-TLS handshake netlink family
+    # isn't compiled into the container's kernel.
+    - name: Create tlshd drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/tlshd.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Drop in test-only no-op ExecStart override
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tlshd.service.d/molecule-test-noop.conf
+        content: |
+          # Molecule-only override: replace the real tlshd ExecStart with
+          # /bin/true so `state: started` succeeds in a container without
+          # AF_TLSH netlink. This file is created by prepare.yml and is
+          # NEVER deployed to production hosts.
+          [Service]
+          ExecStart=
+          ExecStart=/bin/true
+          Type=oneshot
+          RemainAfterExit=yes
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd to pick up the drop-in
+      ansible.builtin.systemd:
+        daemon_reload: true

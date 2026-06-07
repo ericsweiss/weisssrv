@@ -60,7 +60,10 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
-              cpu: 500m
+              # No CPU limit: pve-exporter bursts during scrape (Python parses
+              # /pve API responses for 6 hosts) and CFS throttling at 500m
+              # caused sustained CPUThrottlingHigh false-positives. Memory
+              # limit kept since OOM is a real failure mode.
               memory: 256Mi
 ---
 apiVersion: v1
@@ -93,6 +96,7 @@ spec:
     # pve-nas-01
     - port: metrics
       interval: 60s
+      scrapeTimeout: 30s
       path: /pve
       params:
         target: ["192.168.0.102"]
@@ -103,6 +107,7 @@ spec:
     # pve-laptop-01
     - port: metrics
       interval: 60s
+      scrapeTimeout: 30s
       path: /pve
       params:
         target: ["192.168.0.103"]
@@ -113,6 +118,7 @@ spec:
     # pve-opt-01
     - port: metrics
       interval: 60s
+      scrapeTimeout: 30s
       path: /pve
       params:
         target: ["192.168.0.104"]
@@ -123,6 +129,7 @@ spec:
     # pve-opt-02
     - port: metrics
       interval: 60s
+      scrapeTimeout: 30s
       path: /pve
       params:
         target: ["192.168.0.105"]
@@ -133,6 +140,7 @@ spec:
     # pve-opt-03
     - port: metrics
       interval: 60s
+      scrapeTimeout: 30s
       path: /pve
       params:
         target: ["192.168.0.106"]
@@ -143,6 +151,7 @@ spec:
     # pve-prec-01
     - port: metrics
       interval: 60s
+      scrapeTimeout: 30s
       path: /pve
       params:
         target: ["192.168.0.107"]

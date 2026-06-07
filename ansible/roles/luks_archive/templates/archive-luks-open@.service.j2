@@ -1,0 +1,96 @@
+# {{ ansible_managed }}
+#
+# Opens a LUKS container backing the archive ZFS pool at boot. Instance
+# name is the mapper name (e.g. archive-1); the underlying block device
+# is looked up from /etc/luks/archive/<name>.conf.
+#
+# Ordering:
+#   After=network-online.target nss-lookup.target : need Connect reachable
+#   Before=zfs-import-cache.service               : LUKS mappers must exist
+#                                                   before ZFS scans the
+#                                                   cache file for vdevs
+#   Before=zfs-import-scan.service                : same, for the scan path
+#   Wants=network-online.target nss-lookup.target
+#   RequiredBy=zfs-import-cache.service           : if open fails, import
+#                                                   must fail too — otherwise
+#                                                   ZFS would mark vdevs as
+#                                                   UNAVAIL and any auto-
+#                                                   import would degrade
+#                                                   the pool
+#
+# Restart policy: per-ExecStart wall time is up to ~370s worst-case —
+# up to three sequential Connect lookups (vault UUID resolution if
+# `VAULT_REF` is a name; item list; item fetch — the vault-UUID lookup
+# is skipped when `VAULT_REF` is already a 26-char UUID), each capped
+# at fetch_timeout=120s — plus RestartSec=30s = ~400s minimum cycle.
+# StartLimitBurst=60 / StartLimitIntervalSec=3600s means we never trip
+# the limit on a healthy retry loop; in practice the unit retries
+# forever rather than transitioning to permanent failed state.
+#
+# Operator manual unlock sets the mapper present; next ExecStart
+# short-circuits with the "already exists" check at the top of the
+# script and the unit goes active.
+#
+# RestartPreventExitStatus lists the script exit codes that are
+# operator-config errors and won't fix themselves by retrying:
+#   1 — config/arg/token error
+#   3 — vault/item/field not found
+#   4 — cryptsetup open failed (wrong passphrase, no LUKS header,
+#       mapper name collision) — a rotated/typoed 1P passphrase falls
+#       here; retrying 60×/hour scrolls journald without surfacing the
+#       real problem.
+#   7 — Connect rejected token (401/403)
+# rc=2 (Connect unreachable beyond fetch_timeout) is intentionally
+# absent — that's the cold-cluster boot case where Connect isn't up
+# yet, and we DO want the unit to keep retrying.
+# rc=5 (underlying device not present) is also intentionally absent —
+# a pulled drive returning later is recoverable.
+
+[Unit]
+Description=Open LUKS container %i (archive pool vdev)
+After=network-online.target nss-lookup.target
+Before=zfs-import-cache.service zfs-import-scan.service zfs-import.target
+Wants=network-online.target nss-lookup.target
+ConditionPathExists=/etc/luks/archive/%i.conf
+StartLimitIntervalSec=3600s
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/luks/archive/%i.conf
+ExecStart=/usr/local/sbin/luks-archive-open.sh %i
+# No ExecStop=cryptsetup close — parity with zfs-load-key@.service.
+# At shutdown systemd would race the pool's export sequence and the
+# close would fail with "Device archive-N is still in use" (zpool
+# export hasn't run yet against an active pool); the kernel tears
+# down LUKS mappings as part of shutdown anyway.
+Restart=on-failure
+RestartSec=30s
+RestartPreventExitStatus=1 3 4 7
+
+# Hardening — match zfs-load-key@.service. Difference: ReadWritePaths
+# adds /dev so cryptsetup can create /dev/mapper/<name>. zfs-load-key@
+# doesn't need /dev because `zfs load-key` only touches kernel state
+# through the /dev/zfs ioctl device, which doesn't require creating
+# new device nodes.
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run /var/log /dev
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+# AF_NETLINK needed for glibc getaddrinfo() AI_ADDRCONFIG path (same as
+# zfs-load-key@.service comment).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+# RequiredBy=zfs-import-cache.service: treat LUKS open failure as fatal
+# for the import. Without this the import would still run, find no vdevs
+# matching the cache file, and either mark them UNAVAIL or (with autoexpand
+# / autoreplace / scan) eventually degrade or refuse to mount. Better to
+# fail loud than to silently degrade.
+RequiredBy=zfs-import-cache.service

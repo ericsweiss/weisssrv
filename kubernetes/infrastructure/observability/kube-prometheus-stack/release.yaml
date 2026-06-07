@@ -242,23 +242,39 @@ spec:
         groups:
           - name: homelab.storage
             rules:
+              # efivarfs is the kernel's NVRAM-backed virtual fs at
+              # /sys/firmware/efi/efivars; it commonly sits above 70% (filled
+              # with EFI variables) and isn't a real disk-usage signal.
+              # devtmpfs/iso9660 are also virtual / read-only.
               - alert: DiskUsageWarning
-                expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 > 80
+                expr: >-
+                  (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+                  / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+                  * 100 > 80
                 for: 10m
                 labels:
                   severity: warning
                 annotations:
                   summary: 'Disk usage above 80% on {{ "{{" }} $labels.instance {{ "}}" }}:{{ "{{" }} $labels.mountpoint {{ "}}" }}'
-                  description: 'Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% on {{ "{{" }} $labels.instance {{ "}}" }} mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.'
+                  description: >-
+                    Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}%
+                    on {{ "{{" }} $labels.instance {{ "}}" }}
+                    mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.
 
               - alert: DiskUsageCritical
-                expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 > 90
+                expr: >-
+                  (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+                  / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+                  * 100 > 90
                 for: 5m
                 labels:
                   severity: critical
                 annotations:
                   summary: 'Disk usage above 90% on {{ "{{" }} $labels.instance {{ "}}" }}:{{ "{{" }} $labels.mountpoint {{ "}}" }}'
-                  description: 'Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}% on {{ "{{" }} $labels.instance {{ "}}" }} mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.'
+                  description: >-
+                    Disk usage is {{ "{{" }} $value | printf "%.1f" {{ "}}" }}%
+                    on {{ "{{" }} $labels.instance {{ "}}" }}
+                    mount {{ "{{" }} $labels.mountpoint {{ "}}" }}.
 
               - alert: PVCUsageWarning
                 expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 80
@@ -304,6 +320,28 @@ spec:
                     Flux controller {{ "{{" }} $labels.controller {{ "}}" }}
                     has been producing reconciliation errors
                     at {{ "{{" }} $value | printf "%.2f" {{ "}}" }} errors/s for 15 minutes.
+
+              # Catches the class of failure where a HelmRelease/Kustomization
+              # is durably not Ready (e.g. InvalidChartReference from a stale
+              # chart cache, missing CRD, failing values-render). Complements
+              # FluxReconciliationFailure which fires on error-rate; this fires
+              # on durable Ready=False regardless of error rate.
+              - alert: FluxResourceNotReady
+                expr: gotk_reconcile_condition{type="Ready", status="False"} == 1
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: >-
+                    Flux resource {{ "{{" }} $labels.kind {{ "}}" }}/{{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}
+                    not Ready
+                  description: >-
+                    Flux resource {{ "{{" }} $labels.kind {{ "}}" }}
+                    {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}
+                    has had Ready=False for 15 minutes. Run
+                    `flux get all -A | grep -v True` and
+                    `kubectl describe {{ "{{" }} $labels.kind {{ "}}" }} {{ "{{" }} $labels.name {{ "}}" }}
+                    -n {{ "{{" }} $labels.namespace {{ "}}" }}` to investigate.
 
               - alert: OnePasswordConnectDown
                 expr: >-
@@ -381,7 +419,97 @@ spec:
                   severity: critical
                 annotations:
                   summary: 'Proxmox host {{ "{{" }} $labels.id {{ "}}" }} is down'
-                  description: 'Proxmox host {{ "{{" }} $labels.id {{ "}}" }} has been unreachable for 5 minutes. If id is empty, the Proxmox exporter itself may be down.'
+                  description: >-
+                    Proxmox host {{ "{{" }} $labels.id {{ "}}" }} has been unreachable for 5 minutes.
+                    If id is empty, the Proxmox exporter itself may be down.
+
+              # corosync CPU wedge — incident 2026-05-09: corosync PID stuck at
+              # ~99% CPU on pve-nas-01, process alive (so ProxmoxHostDown stayed
+              # green and the systemd unit stayed "active") but pmxcfs frozen.
+              # Caught by the textfile metric written by
+              # ansible/roles/node_exporter_host/files/corosync-health-collector.sh.
+              # Normal corosync CPU is 1-2%; brief spikes during membership
+              # changes are bounded well below 10m.
+              - alert: CorosyncWedged
+                expr: avg_over_time(proxmox_corosync_cpu_percent[10m]) > 90
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'corosync stuck at high CPU on {{ "{{" }} $labels.instance {{ "}}" }}'
+                  description: >-
+                    corosync on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has averaged
+                    {{ "{{" }} $value | printf "%.1f" {{ "}}" }}%
+                    CPU over the last 10 minutes. Likely wedged
+                    — pmxcfs replication has probably stopped on this node.
+                    Mitigation: `systemctl restart corosync` on that host;
+                    check `journalctl -u corosync` for the last log line
+                    before the silence to file an upstream bug.
+
+              # pmxcfs split-brain — detected via age of
+              # /etc/pve/ha/manager_status, which the HA CRM master rewrites
+              # every few seconds. A 10-minute-old file on any node means
+              # either HA itself is fully broken cluster-wide (catastrophic,
+              # but bounded by HostDown alerts) OR this specific node has
+              # stopped receiving pmxcfs updates (silent split-brain). Same
+              # textfile source as CorosyncWedged above; we use a long
+              # threshold (10m) because legitimate idle updates aren't
+              # strictly per-second.
+              #
+              # A deleted manager_status file shows up as mtime=0, which
+              # `time() - 0` evaluates as huge → alert fires. That's the
+              # desired behavior: the only legitimate way to see mtime=0 on
+              # our cluster is HA being intentionally disabled on the host
+              # (in which case the operator silences). A previous version of
+              # this rule guarded `> 0` to skip such hosts, but that meant a
+              # deliberate or accidental file delete silently suppressed the
+              # split-brain signal it was supposed to detect.
+              - alert: PmxcfsStale
+                expr: >-
+                  time() - proxmox_pmxcfs_manager_status_mtime_seconds > 600
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'pmxcfs on {{ "{{" }} $labels.instance {{ "}}" }} appears stale (split-brain)'
+                  description: >-
+                    /etc/pve/ha/manager_status on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has not been updated in
+                    {{ "{{" }} $value | humanizeDuration {{ "}}" }}.
+                    pmxcfs replication has stopped on this node — its
+                    view of the cluster is frozen. Compare
+                    `sudo cat /etc/pve/ha/manager_status` across nodes
+                    to confirm, then `systemctl restart corosync pve-cluster`
+                    on the affected node.
+
+              # Companion: detects collector meta-failure (the textfile
+              # script ran but is stuck). Per-instance, with usable labels.
+              #
+              # Limitation: this alert is silent when the metric is wholly
+              # absent on a host — i.e. the timer never fires, the unit was
+              # removed, the host fell off the inventory, etc. We don't try
+              # to detect that case here because `up` is on a different
+              # exporter / instance label and joining cleanly across them
+              # needs a recording-rule that doesn't exist yet (tracked as a
+              # follow-up). The shipped failure mode we care about is
+              # "script runs but degrades", which this catches.
+              - alert: CorosyncHealthCollectorStale
+                expr: >-
+                  time() - proxmox_corosync_health_collector_last_success_seconds > 300
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'corosync-health-collector textfile script is degraded on {{ "{{" }} $labels.instance {{ "}}" }}'
+                  description: >-
+                    proxmox_corosync_health_collector_last_success_seconds
+                    on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has not advanced in over 5 minutes. The CorosyncWedged +
+                    PmxcfsStale alerts on this host are now serving stale
+                    inputs. Check
+                    `journalctl -u corosync-health-collector.service` and
+                    `systemctl status corosync-health-collector.timer`.
 
               # ZFS pool capacity — currently only covers NAS node pools
               # (single zfs_exporter on pve-nas-01). Compute node local-ssd
@@ -510,3 +638,202 @@ spec:
                     ZFS pool {{ "{{" }} $labels.pool {{ "}}" }}
                     on {{ "{{" }} $labels.instance {{ "}}" }}
                     has health status {{ "{{" }} $value {{ "}}" }} (0=ONLINE, non-zero=degraded/faulted).
+
+      homelab-temperature:
+        groups:
+          - name: homelab.temperature
+            rules:
+              # SATA drive temperatures via the drivetemp kernel module.
+              # Threshold sized for the archive-pool ST6000NM0024 drives whose
+              # spec ceiling is 55C; the same threshold also catches any SSD
+              # running unusually hot (consumer SSD spec is typically 70C).
+              - alert: SATADriveTempWarning
+                expr: >-
+                  max by (instance, chip) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
+                  ) >= 50
+                for: 15m
+                labels:
+                  severity: warning
+                  component: storage
+                annotations:
+                  summary: >-
+                    SATA drive on {{ "{{" }} $labels.instance {{ "}}" }}
+                    ({{ "{{" }} $labels.chip {{ "}}" }}) at
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C
+                  description: >-
+                    SATA drive {{ "{{" }} $labels.chip {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has been at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C for 15 minutes
+                    (warn threshold 50C). Check airflow for that drive bay.
+
+              - alert: SATADriveTempCritical
+                expr: >-
+                  max by (instance, chip) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
+                  ) >= 55
+                for: 5m
+                labels:
+                  severity: critical
+                  component: storage
+                annotations:
+                  summary: >-
+                    SATA drive on {{ "{{" }} $labels.instance {{ "}}" }}
+                    ({{ "{{" }} $labels.chip {{ "}}" }}) at
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C
+                  description: >-
+                    SATA drive {{ "{{" }} $labels.chip {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }}
+                    is at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C — at or above the
+                    archive-pool drives' spec ceiling. Sustained over-temp is the strongest
+                    accelerant for HDD failure.
+
+              # NVMe via the in-tree nvme hwmon driver. Warning threshold is set
+              # below the typical 80-82C composite warning so we get advance
+              # notice; critical is set just below the throttle threshold.
+              - alert: NVMeDriveTempWarning
+                expr: >-
+                  max by (instance, chip) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
+                  ) >= 65
+                for: 10m
+                labels:
+                  severity: warning
+                  component: storage
+                annotations:
+                  summary: >-
+                    NVMe drive on {{ "{{" }} $labels.instance {{ "}}" }}
+                    ({{ "{{" }} $labels.chip {{ "}}" }}) at
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C
+                  description: >-
+                    NVMe drive {{ "{{" }} $labels.chip {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has been at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C for 10 minutes.
+                    NVMe drives throttle around 80C and warn around 82C; investigate before
+                    that happens.
+
+              - alert: NVMeDriveTempCritical
+                expr: >-
+                  max by (instance, chip) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name="nvme"}
+                  ) >= 75
+                for: 2m
+                labels:
+                  severity: critical
+                  component: storage
+                annotations:
+                  summary: >-
+                    NVMe drive on {{ "{{" }} $labels.instance {{ "}}" }}
+                    ({{ "{{" }} $labels.chip {{ "}}" }}) at
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C
+                  description: >-
+                    NVMe drive {{ "{{" }} $labels.chip {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }}
+                    is at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C — within a few degrees of
+                    thermal throttle.
+
+              # CPU package + per-core temps via the coretemp driver. Threshold
+              # is below most consumer-CPU TJunction (~100C) but well above
+              # idle/normal load; 80C is the typical "high" warning level.
+              - alert: CPUTempWarning
+                expr: >-
+                  max by (instance) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
+                  ) >= 80
+                for: 10m
+                labels:
+                  severity: warning
+                  component: cpu
+                annotations:
+                  summary: 'CPU on {{ "{{" }} $labels.instance {{ "}}" }} sustained {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C'
+                  description: >-
+                    CPU on {{ "{{" }} $labels.instance {{ "}}" }} has been at or above
+                    80C for 10 minutes. Check load and fan health.
+
+              - alert: CPUTempCritical
+                expr: >-
+                  max by (instance) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name="coretemp"}
+                  ) >= 90
+                for: 2m
+                labels:
+                  severity: critical
+                  component: cpu
+                annotations:
+                  summary: 'CPU on {{ "{{" }} $labels.instance {{ "}}" }} at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C'
+                  description: >-
+                    CPU on {{ "{{" }} $labels.instance {{ "}}" }} hit
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C — close to TJunction.
+                    Thermal throttle is imminent if not already underway.
+
+              # GPU temperatures: covers Intel xe (Arc/Battlemage on pve-nas-01
+              # for Plex transcoding), nouveau (legacy NVIDIA on pve-prec-01,
+              # pve-laptop-01), and amdgpu if added later.
+              - alert: GPUTempWarning
+                expr: >-
+                  max by (instance, chip_name) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name=~"xe|nouveau|nvidia|amdgpu|radeon"}
+                  ) >= 85
+                for: 5m
+                labels:
+                  severity: warning
+                  component: gpu
+                annotations:
+                  summary: >-
+                    GPU ({{ "{{" }} $labels.chip_name {{ "}}" }}) on
+                    {{ "{{" }} $labels.instance {{ "}}" }} at
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C
+                  description: >-
+                    GPU ({{ "{{" }} $labels.chip_name {{ "}}" }}) on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has been at or above 85C for 5 minutes.
+
+              - alert: GPUTempCritical
+                expr: >-
+                  max by (instance, chip_name) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name=~"xe|nouveau|nvidia|amdgpu|radeon"}
+                  ) >= 95
+                for: 1m
+                labels:
+                  severity: critical
+                  component: gpu
+                annotations:
+                  summary: >-
+                    GPU ({{ "{{" }} $labels.chip_name {{ "}}" }}) on
+                    {{ "{{" }} $labels.instance {{ "}}" }} at
+                    {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C
+                  description: >-
+                    GPU ({{ "{{" }} $labels.chip_name {{ "}}" }}) on {{ "{{" }} $labels.instance {{ "}}" }}
+                    is at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C — at or beyond the
+                    typical thermal-shutdown threshold for consumer GPUs.
+
+              # NIC temperature — only fires on hosts where node_exporter
+              # actually publishes a nic chip (currently pve-nas-01's AQC113).
+              - alert: NICTempWarning
+                expr: >-
+                  max by (instance, chip_name) (
+                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    * on (instance, chip) group_left(chip_name)
+                    node_hwmon_chip_names{job="node-exporter-host", chip_name=~"nic.*"}
+                  ) >= 90
+                for: 10m
+                labels:
+                  severity: warning
+                  component: network
+                annotations:
+                  summary: 'NIC on {{ "{{" }} $labels.instance {{ "}}" }} at {{ "{{" }} $value | printf "%.0f" {{ "}}" }}C'
+                  description: >-
+                    NIC {{ "{{" }} $labels.chip_name {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }}
+                    has been at or above 90C for 10 minutes — high NIC temps correlate with
+                    link instability on the AQC113.

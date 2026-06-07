@@ -1,0 +1,53 @@
+---
+- name: Prepare
+  # Only target the real Docker-backed molecule platform for the
+  # systemd/apt/tmpdir setup. The scenario's inventory also defines
+  # several `ansible_connection: local` hosts (dns-01, smtp-relay,
+  # pve-laptop-01, etc.) that exist solely to feed the firewall
+  # template-rendering converge with realistic hostvars; running
+  # `systemctl is-system-running` against the local molecule-ci pod
+  # (which has no systemd) hangs the retry loop until it fails.
+  hosts: proxmox-firewall-test
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to be ready
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        systemctl disable apt-daily.timer 2>/dev/null || true
+        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    # Pre-create the per-node parent dir; the role's "ensure firewall dir"
+    # task only handles the firewall subdir.
+    - name: Create stub Proxmox config directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /tmp/pve-firewall-test/firewall
+        - /tmp/pve-firewall-test/nodes/proxmox-firewall-test
+      become: true

@@ -1,0 +1,26 @@
+---
+# Cluster-wide TLS minimum version pin.
+# A TLSOption named `default` in Traefik's namespace is applied to every
+# route that doesn't reference its own TLSOption — so this single resource
+# covers all current and future IngressRoutes.
+#
+# TLS 1.3 only: drops legacy 1.0/1.1/1.2. Cloudflare Edge negotiates 1.3 by
+# default; LAN/Tailscale clients (modern browsers, kubectl, gh CLI, mobile
+# apps) all support 1.3. If a specific client breaks, override per-route by
+# adding `tls.options: { name: legacy-tls12, namespace: traefik }` and adding
+# a second TLSOption alongside this one.
+#
+# TLS 1.3 has a fixed cipher set (AES-GCM + ChaCha20-Poly1305, all forward-
+# secret) — no cipherSuites list needed. curvePreferences set to forward-
+# secret elliptic curves only.
+apiVersion: traefik.io/v1alpha1
+kind: TLSOption
+metadata:
+  name: default
+  namespace: traefik
+spec:
+  minVersion: VersionTLS13
+  curvePreferences:
+    - CurveP521
+    - CurveP384
+    - CurveP256

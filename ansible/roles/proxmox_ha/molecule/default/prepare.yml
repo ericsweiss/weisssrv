@@ -1,0 +1,99 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    # Stubs: emit minimal valid output for every Proxmox CLI the role calls.
+    - name: Pvecm stub (always quorate)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pvecm
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "status" ]; then
+            echo "Cluster information"
+            echo "Name:             weisssrv"
+            echo "Quorate:          Yes"
+            exit 0
+          fi
+          exit 0
+      become: true
+
+    - name: Ha-manager stub (no rules / resources / groups present)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ha-manager
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Empty JSON arrays so rules/resources/groups task files see "no
+          # current state" and any desired-state task that's gated on
+          # `length > 0` is a no-op.
+          case "$1 $2" in
+            "rules list"|"config "*) echo "[]"; exit 0 ;;
+          esac
+          exit 0
+      become: true
+
+    - name: Pvesr stub (no replication jobs)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pvesr
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "list" ]; then echo "[]"; exit 0; fi
+          exit 0
+      become: true
+
+    - name: Qm stub (no VMs locally)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/qm
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "list" ]; then
+            echo "      VMID NAME                 STATUS"
+            exit 0
+          fi
+          exit 0
+      become: true
+
+    - name: Pct stub (no containers locally)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pct
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "list" ]; then
+            echo "VMID       Status     Name"
+            exit 0
+          fi
+          exit 0
+      become: true

@@ -1,0 +1,141 @@
+---
+- name: Converge — exercise storage selection + pool validation
+  hosts: all
+  become: true
+  # See proxmox_vm/molecule/default/converge.yml for the rationale on
+  # deferring gather_facts behind a raw mkdir.
+  gather_facts: false
+  vars:
+    proxmox_host: "{{ inventory_hostname }}"
+    proxmox_role: compute
+    container_id: 199
+    # NOTE: do not override ansible_host here — molecule's docker connection
+    # plugin reads ansible_host as the container name/ID. Overriding it to
+    # an IP makes `docker exec` fail with "No such container: 192.168.0.199".
+    # The role consumes the IP via proxmox_lxc_target_ip (defaults to
+    # ansible_host in prod inventory; pinned to a stub IP here so the pct
+    # create --net0 render still sees a realistic value).
+    proxmox_lxc_target_ip: "192.168.0.199"
+  pre_tasks:
+    - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
+      ansible.builtin.raw: |
+        set -e
+        mkdir -p /tmp/ansible-tmp
+        chmod 1777 /tmp/ansible-tmp
+      changed_when: false
+
+    - name: Gather facts now that remote_tmp exists
+      ansible.builtin.setup:
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+  tasks:
+    # 1. Compute host with no override → expect "local-ssd"
+    # NOTE: no `vars:` block — leaving lxc_storage undefined lets the
+    # role's `default(proxmox_storage_defaults[_proxmox_host_role])` lookup
+    # resolve to 'local-ssd' for the compute role. Setting `lxc_storage:
+    # null` would render as literal "None" because Jinja's default() only
+    # substitutes for undefined, not explicit null.
+    - name: Compute-default run
+      ansible.builtin.include_role:
+        name: proxmox_lxc
+
+    - name: Capture compute-default result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/01-compute-default.json
+        mode: "0644"
+        content: |
+          {"effective_storage": "{{ _effective_lxc_storage | trim }}",
+           "host_role": "{{ _proxmox_host_role }}"}
+
+    # 2. lxc_storage override
+    - name: Override run
+      ansible.builtin.include_role:
+        name: proxmox_lxc
+      vars:
+        lxc_storage: ssd
+
+    - name: Capture override result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/02-override.json
+        mode: "0644"
+        content: |
+          {"effective_storage": "{{ _effective_lxc_storage | trim }}"}
+
+    # 3. Pool-validation failure
+    - name: Pool-validation failure (expect failure)
+      block:
+        - name: Run with nonexistent storage
+          ansible.builtin.include_role:
+            name: proxmox_lxc
+          vars:
+            lxc_storage: nonexistent-pool
+        - name: Should not reach here
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/03-pool-validation.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Record expected failure
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/03-pool-validation.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+
+    # 4. Resource-pool list rejection
+    - name: Resource-pool list rejection (expect failure)
+      block:
+        - name: Run with non-standard resource pool
+          ansible.builtin.include_role:
+            name: proxmox_lxc
+          vars:
+            lxc_storage: local-ssd
+            proxmox_resource_pool: not-a-real-pool
+        - name: Should not reach here
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/04-pool-list.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Record expected failure
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/04-pool-list.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+
+    # 5. Existence guard — when container exists, pct create should not run
+    - name: Reset pct.log
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/pct.log
+        content: ""
+        mode: "0644"
+
+    - name: Flip stub to "container exists"
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/ct_exists_state
+        content: "exists\n"
+        mode: "0644"
+
+    - name: Run role with existing container
+      ansible.builtin.include_role:
+        name: proxmox_lxc
+      vars:
+        lxc_storage: local-ssd
+
+    - name: Count pct create lines
+      ansible.builtin.shell: grep -c '^pct create' /tmp/molecule-stub-state/pct.log || true
+      register: pct_create_lines
+      changed_when: false
+
+    - name: Capture existence-guard result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/05-existence-guard.json
+        mode: "0644"
+        content: |
+          {"pct_create_calls": {{ pct_create_lines.stdout | trim | int }}}

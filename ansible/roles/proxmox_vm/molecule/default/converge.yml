@@ -1,0 +1,146 @@
+---
+- name: Converge — exercise storage selection + pool validation
+  hosts: all
+  become: true
+  # gather_facts deferred: with become: true at play level + the molecule
+  # docker connector, the implicit Gathering Facts task has been failing
+  # to create Ansible's remote_tmp dir (`mkdir … && mkdir …`, exit 1, no
+  # stderr surfaced) on the proxmox_{vm,lxc,ha} scenarios. A raw `mkdir
+  # -p` first then an explicit `ansible.builtin.setup` works around it
+  # — the raw bypasses Ansible's tmpdir-creation path, so the subsequent
+  # setup module finds the directory already in place.
+  gather_facts: false
+  vars:
+    proxmox_host: "{{ inventory_hostname }}"
+    proxmox_role: nas
+    vmid: 999
+    # NOTE: do not override ansible_host here — molecule's docker connection
+    # plugin reads ansible_host as the container name/ID. Overriding it to
+    # an IP makes `docker exec` fail with "No such container: 192.168.0.99".
+    # The role consumes the IP via proxmox_vm_target_ip (defaults to
+    # ansible_host in prod inventory; pinned to a stub IP here so the cloud-
+    # init render still sees a realistic value).
+    proxmox_vm_target_ip: "192.168.0.99"
+  pre_tasks:
+    - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
+      ansible.builtin.raw: |
+        set -e
+        mkdir -p /tmp/ansible-tmp
+        chmod 1777 /tmp/ansible-tmp
+      changed_when: false
+
+    - name: Gather facts now that remote_tmp exists
+      ansible.builtin.setup:
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+  tasks:
+    # 1. NAS host with no override → expect _effective_storage == "ssd"
+    # NOTE: no `vars:` block — leaving proxmox_storage undefined lets the
+    # role's `default(proxmox_storage_defaults[_proxmox_host_role])` lookup
+    # resolve to 'ssd' for the nas role. Setting `proxmox_storage: null`
+    # would render as literal "None" because Jinja's default() only
+    # substitutes for undefined, not explicit null.
+    - name: NAS-default run
+      ansible.builtin.include_role:
+        name: proxmox_vm
+
+    - name: Capture NAS-default result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/01-nas-default.json
+        mode: "0644"
+        content: |
+          {"effective_storage": "{{ _effective_storage | trim }}",
+           "host_role": "{{ _proxmox_host_role }}"}
+
+    # 2. Override to local-ssd
+    - name: Override run
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: local-ssd
+
+    - name: Capture override result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/02-override.json
+        mode: "0644"
+        content: |
+          {"effective_storage": "{{ _effective_storage | trim }}"}
+
+    # 3. Pool-validation failure path
+    - name: Pool-validation failure (expect failure)
+      block:
+        - name: Run with nonexistent storage
+          ansible.builtin.include_role:
+            name: proxmox_vm
+          vars:
+            proxmox_storage: nonexistent-pool
+        - name: Should not reach here
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/03-pool-validation.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Record expected failure
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/03-pool-validation.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+
+    # 4. Resource-pool list rejection
+    - name: Resource-pool list rejection (expect failure)
+      block:
+        - name: Run with non-standard resource pool
+          ansible.builtin.include_role:
+            name: proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            proxmox_resource_pool: not-a-real-pool
+        - name: Should not reach here
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/04-pool-list.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Record expected failure
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/04-pool-list.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+
+    # 5. Existence guard — no qm calls when VM exists
+    - name: Reset qm.log
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Flip stub to "VM exists"
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_exists_state
+        content: "exists\n"
+        mode: "0644"
+
+    - name: Run role with existing VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Count qm calls after existing-VM run
+      ansible.builtin.shell: wc -l < /tmp/molecule-stub-state/qm.log
+      register: qm_lines
+      changed_when: false
+
+    - name: Capture existence-guard result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/05-existence-guard.json
+        mode: "0644"
+        content: |
+          {"qm_calls": {{ qm_lines.stdout | int }}}

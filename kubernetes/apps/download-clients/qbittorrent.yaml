@@ -79,6 +79,9 @@ spec:
           operator: Equal
           value: "true"
           effect: PreferNoSchedule
+      # qBittorrent flushes torrent state on shutdown; default 30s can leave
+      # corrupted resume data on slow NFS. 60s gives a clean exit margin.
+      terminationGracePeriodSeconds: 60
 
       # Pod-level DNS fallback: primary + secondary internal resolvers.
       # When Gluetun is enabled, Gluetun's own DNS_ADDRESS (set below in the

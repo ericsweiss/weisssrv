@@ -1,7 +1,5 @@
 # Architecture Overview
 
-This document describes the architecture of the weisssrv homelab infrastructure.
-
 ## Network Topology
 
 ```
@@ -39,8 +37,8 @@ Internet
     |   +-- Agents (.20X range - workers)
     |       +-- k3s-agt-nas-01    (192.168.0.202) - Agent (NAS workloads)
     |       +-- k3s-agt-laptop-01 (192.168.0.203) - Agent (ingress + general)
-    |       +-- k3s-agt-opt-01    (192.168.0.204) - Agent (general)
-    |       +-- k3s-agt-opt-02    (192.168.0.205) - Agent (general)
+    |       +-- k3s-agt-opt-01    (192.168.0.204) - Agent (ingress + general)
+    |       +-- k3s-agt-opt-02    (192.168.0.205) - Agent (ingress + general)
     |       +-- k3s-agt-opt-03    (192.168.0.206) - Agent (ingress + general)
     |       +-- k3s-agt-prec-01   (192.168.0.207) - Agent (general + compute)
     |
@@ -157,16 +155,15 @@ The base infrastructure automation is complete and production-ready:
 - Monitoring: SMART disk health monitoring and backup jobs
 
 **Automation**:
-- 21 Ansible roles covering all infrastructure services
+- Ansible roles covering all infrastructure services (`ansible/roles/`)
 - Terraform for Cloudflare DNS (*.ericsweiss.com)
 - 1Password integration for secrets (no secrets in git)
 - Update playbooks with rolling deployments
 - Post-deployment verification checks
 
 **Documentation**:
-- 31 documentation files
-- Operational runbooks covering common procedures
-- Disaster recovery procedures
+- Operational runbooks covering common procedures (`docs/12-runbooks.md`)
+- Disaster recovery procedures (`docs/17-disaster-recovery.md`)
 - Maintenance and update strategies
 
 ### K3s Platform (Active)

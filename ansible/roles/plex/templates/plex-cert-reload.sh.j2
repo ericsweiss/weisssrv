@@ -1,0 +1,106 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# Plex Media Server cert-reload hook.
+#
+# acme_certs (running on dns-01) drops fullchain.pem + privkey.pem at
+# /etc/ssl/plex on every Let's Encrypt renewal. This script:
+#   1. Builds a PKCS#12 bundle from the PEM pair (Plex's "Custom
+#      certificate location" option requires PKCS#12 with a passphrase).
+#   2. Verifies the PFX is parseable before swapping it in.
+#   3. Atomically replaces the bundle that Plex reads, keeping the
+#      previous bundle as `.pfx.prev` for one-step revert.
+#   4. Restarts plexmediaserver and verifies the daemon comes back up;
+#      reverts to `.pfx.prev` if the restart fails.
+#
+# The PFX passphrase is in 1Password as "Plex Custom Certificate /
+# password" and must already be configured under Settings -> Network ->
+# "Custom certificate encryption key" in Plex's UI.
+#
+# OpenSSL 3.x defaults to PKCS#12 v2 with PBES2 encryption, which older
+# Plex builds (Mono/legacy crypto) cannot open. -legacy switches back
+# to the v1 KDF set that Plex's runtime supports.
+
+set -euo pipefail
+
+CERT_DIR=/etc/ssl/plex
+PEM_FULLCHAIN="$CERT_DIR/fullchain.pem"
+PEM_KEY="$CERT_DIR/privkey.pem"
+PFX_FILE="$CERT_DIR/plex.pfx"
+PFX_PREV="$CERT_DIR/plex.pfx.prev"
+PFX_PASSPHRASE_FILE="$CERT_DIR/pfx-passphrase"
+
+[[ -r "$PEM_FULLCHAIN" && -r "$PEM_KEY" ]] || {
+    echo "missing PEM input files in $CERT_DIR" >&2
+    exit 1
+}
+[[ -r "$PFX_PASSPHRASE_FILE" ]] || {
+    echo "missing $PFX_PASSPHRASE_FILE (deploy via plex role from 1Password)" >&2
+    exit 1
+}
+[[ -s "$PFX_PASSPHRASE_FILE" ]] || {
+    echo "$PFX_PASSPHRASE_FILE is empty; Plex would silently produce a PFX with empty passphrase" >&2
+    exit 1
+}
+
+# Pass the passphrase to openssl via a file-descriptor reference rather
+# than `pass:` on argv, so it doesn't appear in /proc/<pid>/cmdline
+# during the openssl invocation.
+PFX_TMP=$(mktemp -p "$CERT_DIR" .plex.pfx.XXXXXX)
+trap 'rm -f "$PFX_TMP"' EXIT
+
+openssl pkcs12 \
+    -export \
+    -legacy \
+    -inkey "$PEM_KEY" \
+    -in "$PEM_FULLCHAIN" \
+    -out "$PFX_TMP" \
+    -name "Plex Server Certificate" \
+    -passout "file:$PFX_PASSPHRASE_FILE"
+
+# Verify the bundle: parse it back to confirm it's actually openable
+# with the passphrase before swapping it into place. A PFX that
+# generated successfully but is somehow unparseable would silently
+# break Plex on next restart.
+if ! openssl pkcs12 -info -in "$PFX_TMP" -nokeys -noout \
+        -password "file:$PFX_PASSPHRASE_FILE" >/dev/null 2>&1; then
+    echo "PFX bundle generated but failed verification; aborting swap" >&2
+    exit 1
+fi
+
+chmod 0640 "$PFX_TMP"
+chown plex:plex "$PFX_TMP"
+
+# Keep the prior PFX as a one-step revert. If this is the first
+# install, $PFX_FILE doesn't exist yet — that's fine.
+if [[ -f "$PFX_FILE" ]]; then
+    cp -p "$PFX_FILE" "$PFX_PREV"
+fi
+
+# Disable the trap before mv so a kill-between-mv-and-restart doesn't
+# clean up the now-installed PFX. After mv, $PFX_TMP no longer exists
+# for the trap to remove anyway.
+trap - EXIT
+mv "$PFX_TMP" "$PFX_FILE"
+
+# Restart Plex and verify it actually comes back up. If it doesn't,
+# revert to the prior PFX so we leave the system in a working state
+# even if the new cert is somehow unusable by this Plex version.
+systemctl restart plexmediaserver
+
+# Wait briefly, then check the unit state. systemctl restart returns 0
+# the moment the unit is asked to restart — readiness check confirms
+# the daemon actually came back.
+sleep 3
+if ! systemctl is-active --quiet plexmediaserver; then
+    echo "plexmediaserver failed to come back up after cert swap; reverting" >&2
+    if [[ -f "$PFX_PREV" ]]; then
+        cp -p "$PFX_PREV" "$PFX_FILE"
+        chown plex:plex "$PFX_FILE"
+        chmod 0640 "$PFX_FILE"
+        systemctl restart plexmediaserver || true
+    fi
+    exit 1
+fi
+
+echo "plex cert reloaded ($PFX_FILE)"

@@ -59,7 +59,8 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 300m
+              # No CPU limit: bursty AdGuard API scrape; CFS throttling at 300m
+              # was firing CPUThrottlingHigh on every scrape window.
               memory: 64Mi
 
 ---
@@ -137,7 +138,8 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 300m
+              # No CPU limit: bursty AdGuard API scrape; CFS throttling at 300m
+              # was firing CPUThrottlingHigh on every scrape window.
               memory: 64Mi
 
 ---

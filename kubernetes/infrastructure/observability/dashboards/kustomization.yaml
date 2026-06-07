@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - adguard.yaml
   - alertmanager-self.yaml
+  - alerts-overview.yaml
   - blackbox.yaml
   - cert-manager.yaml
   - cluster-overview.yaml

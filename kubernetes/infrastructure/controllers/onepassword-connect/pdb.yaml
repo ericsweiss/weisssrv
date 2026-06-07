@@ -1,0 +1,16 @@
+---
+# Keep at least one Connect replica available during voluntary disruption
+# (node drains, rolling upgrades). Prevents the secret backend from going
+# offline simultaneously on both replicas, which would block ESO refreshes
+# and the bare-metal ZFS-encryption key-fetch path
+# (zfs-load-key@<pool>.service via connect.esweiss.com).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: onepassword-connect
+  namespace: external-secrets
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: onepassword-connect

@@ -18,6 +18,11 @@ tls-san:
   - "{{ inventory_hostname }}"
   - "{{ ansible_host }}"
 
+# CNI backend. wireguard-native enables WireGuard encryption on every
+# cross-node pod packet (UDP/51820); set to vxlan to roll back. See
+# group_vars/k3s.yml for the full rationale and rollout caveats.
+flannel-backend: "{{ k3s_flannel_backend | default('wireguard-native') }}"
+
 {% if k3s_is_first_server | default(false) %}
 # Enable embedded etcd for HA (first server initializes the cluster)
 cluster-init: true
@@ -32,3 +37,10 @@ write-kubeconfig-mode: "0600"
 # For existing clusters: after enabling, run on a server node:
 #   k3s secrets-encrypt reencrypt
 secrets-encryption: true
+
+{% if k3s_kubelet_args | default([]) | length > 0 %}
+kubelet-arg:
+{% for arg in k3s_kubelet_args %}
+  - "{{ arg }}"
+{% endfor %}
+{% endif %}

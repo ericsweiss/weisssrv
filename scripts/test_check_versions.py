@@ -329,7 +329,6 @@ class TestFetchAptPackages(unittest.TestCase):
         """Test that empty response triggers fallback to .gz."""
         import gzip
         import io
-        import urllib.error
 
         mock_content = b"Package: test\nVersion: 1.0.0\n"
         compressed = io.BytesIO()

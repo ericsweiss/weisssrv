@@ -21,7 +21,7 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 - Guest access where appropriate
 
 ### Mergerfs
-- Unified media directory (/tank/media/unified)
+- Unified media directory (/mnt/media)
 - Combines tank/media, nvme/media with policies
 - Automatic remount on boot
 
@@ -38,28 +38,62 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 ## Configuration
 
 ```yaml
-# ZFS pools (read-only, never created by Ansible)
+# ZFS pools (never created/destroyed by Ansible — manually built).
+# The role only sets properties + creates datasets under existing pools.
 zfs_pools:
-  - tank  # 6x 22TB raidz2
-  - ssd   # 3x 4TB raidz1
-  - nvme  # 1x 4TB single
-  - archive  # 4x 6TB raidz1
+  - name: tank        # 6x 22TB raidz2
+    datasets:
+      - name: tank/media
+        properties:
+          mountpoint: /mnt/tank/media
+          atime: "off"
+          compression: zstd
+          recordsize: 1M
+  - name: ssd         # 3x 4TB raidz1
+  - name: nvme        # 1x 4TB
+  - name: archive     # 4x 6TB raidz1
 
-# NFS exports
+# NFS exports — exports.j2 consumes this exact shape.
+# Each export uses `path:` (the actual exported directory under /export, an
+# NFSv4 root), with `bind_source:` mounted to it; `clients[]` carries one
+# entry per CIDR/host with `spec:` + free-form `options:` string. Optional
+# top-level `xprtsec:` (e.g. "tls") adds RPC-with-TLS to every client line.
 nfs_exports:
-  - path: /tank/media/unified
-    clients: "{{ groups['nfs_clients'] }}"
-    options: "ro,sync,no_subtree_check"
+  - path: /export                     # NFSv4 pseudo-root
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
 
-# Samba shares
+  - path: /export/media               # bind-mounted from /mnt/media (mergerfs)
+    bind_source: /mnt/media
+    owner: 1000
+    group: 2000
+    mode: "02775"
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
+      - spec: "192.168.0.154/32"
+        options: "ro,sync,no_subtree_check,root_squash,fsid=20"
+    # xprtsec: tls    # opt-in NFSv4 over TLS (requires nfs_tls on both sides)
+
+# Samba shares (list of dicts, not a map)
 samba_shares:
-  media:
-    path: /tank/media/unified
-    readonly: true
-  downloads:
-    path: /nvme/media
-    readonly: false
+  - name: media
+    path: /mnt/tank/media
+    comment: Media library
+    browseable: true
+    read_only: false
+    guest_ok: false
+    valid_users: "nas"
+    force_group: "media"
+    create_mask: "0664"
+    directory_mask: "2775"
 ```
+
+Mergerfs unifies `/mnt/nvme/media` (hot) + `/mnt/tank/media` (cold) at
+`/mnt/media`; that path is bind-mounted into `/export/media` for NFS clients.
+See `ansible/inventories/prod/host_vars/pve-nas-01.yml` for the full
+production set of exports, shares, and mergerfs branches.
 
 ## Deployment
 
@@ -80,7 +114,7 @@ pve-nas-01
 │  ├─ ssd (10.9TB, raidz1)
 │  ├─ nvme (2.27TB, single)
 │  └─ archive (21.8TB, raidz1)
-├─ Mergerfs: /tank/media/unified
+├─ Mergerfs: /mnt/media
 │  └─ Combines: tank/media + nvme/media
 ├─ NFS: Exports to k3s nodes
 ├─ Samba: Shares to LAN
@@ -121,16 +155,16 @@ Ansible only sets properties and creates datasets.
 ## Testing
 
 ```bash
-# Test NFS from k3s node
+# Test NFS from k3s node (clients mount /media off the NFSv4 root /export)
 showmount -e pve-nas-01
-mount -t nfs pve-nas-01:/tank/media/unified /mnt/test
+mount -t nfs4 pve-nas-01:/media /mnt/test
 
 # Test Samba from Windows/Mac
 smb://pve-nas-01/media
 
 # Check mergerfs
-df -h /tank/media/unified
-ls /tank/media/unified
+df -h /mnt/media
+ls /mnt/media
 
 # Check media-mover
 systemctl status media-mover.timer

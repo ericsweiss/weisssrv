@@ -294,10 +294,10 @@ firewall_ipset_special_entries:
 ```
 
 **Benefits:**
-- ✅ Single source of truth in inventory
-- ✅ Automatic IPSet updates when hosts added/removed
-- ✅ No duplication between firewall rules and NFS exports
-- ✅ Git history tracks which hosts are in security groups
+- Single source of truth in inventory
+- Automatic IPSet updates when hosts added/removed
+- No duplication between firewall rules and NFS exports
+- Git history tracks which hosts are in security groups
 
 ### Managing Guest Security Groups
 

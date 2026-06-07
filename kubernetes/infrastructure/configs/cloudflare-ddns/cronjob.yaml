@@ -117,6 +117,14 @@ spec:
                   existing_record = records[0] if records else None
                   existing_ip = existing_record.get('content') if existing_record else None
                   record_id = existing_record.get('id') if existing_record else None
+                  # Preserve the record's existing TTL on update instead of
+                  # hardcoding 1. Terraform sets ttl=60 on `git`/`direct`
+                  # (short, since DDNS rewrites the content); hardcoding 1
+                  # here would flip-flop the TTL on every drift cycle:
+                  # Terraform apply sets 60, DDNS run sets 1, repeat.
+                  # Falling back to 1 ("Auto") preserves the previous
+                  # behavior for any record Terraform doesn't manage.
+                  existing_ttl = existing_record.get('ttl', 1) if existing_record else 1
 
                   print(f"Existing IP: {existing_ip or 'none'}")
 
@@ -129,7 +137,7 @@ spec:
                       'type': 'A',
                       'name': record_name,
                       'content': current_ip,
-                      'ttl': 1,
+                      'ttl': existing_ttl,
                       'proxied': proxied
                   }
 

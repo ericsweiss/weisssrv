@@ -162,10 +162,14 @@ External Secrets Operator (1Password Connect provider) supplies all k8s Secrets.
 
 - **Flux controllers** bootstrapped via `flux bootstrap gitlab` into
   `kubernetes/clusters/weisssrv/flux-system/`.
-- **Platform** (`kubernetes/infrastructure/`): sources (HelmRepositories), controllers
-  (MetalLB, Traefik, cert-manager, external-dns, external-secrets), and configs
-  (ClusterSecretStore, ClusterIssuer, CoreDNS HelmChartConfig, DDNS CronJob,
-  versions-configmap).
+- **Platform** (`kubernetes/infrastructure/`) reconciles in four stages via
+  `dependsOn` ordering: sources (HelmRepositories + versions-configmap — runs
+  first so the ConfigMap exists in-cluster before later stages render their
+  HelmRelease `postBuild` substitutions), controllers (MetalLB, Traefik,
+  cert-manager, external-dns, external-secrets), configs (ClusterSecretStore,
+  ClusterIssuer, CoreDNS HelmChartConfig, DDNS CronJob), and observability
+  (kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards).
+  Apps then depend on `infrastructure-observability`.
 - **Apps** (`kubernetes/apps/`): `authentik/`, `download-clients/`, `recipes/`,
   `gitlab-runner/`, `gitlab-runner-privileged/`, `gitlab-agent/`, `vm-ingress/`
   (IngressRoutes for non-k8s services: Plex, Home Assistant, GitLab VM, AdGuard,
@@ -282,15 +286,12 @@ Onboarding flow: fork template → add CI vars → add wiring YAML under
 
 ## Outstanding Follow-Ups
 
-### Complete k3s secrets-encryption
+### Complete k3s secrets-encryption (DONE)
 
-The k3s Ansible role config template has `secrets-encryption: true`, but the
-currently-deployed `config.yaml` on the server nodes does not. Completing this
-requires a k3s role re-run that regenerates the config plus staggered server
-restarts (`systemctl restart k3s` on one server at a time, verifying etcd
-quorum between each). Once done, run `sudo k3s secrets-encrypt status` on
-k3s-srv-nas-01 and, if needed, `sudo k3s secrets-encrypt reencrypt` to
-re-encrypt existing Secrets with the active key.
+Status as of 2026-05-02: encryption enabled cluster-wide, current rotation stage
+`reencrypt_finished`, all server hashes match. Active key
+`aescbckey-2026-04-16T12:29:38-07:00`. Verify periodically via
+`sudo k3s secrets-encrypt status` on k3s-srv-nas-01.
 
 ### AQC113 firmware update (pve-nas-01)
 
@@ -309,6 +310,73 @@ Earlier manual entries still exist in `/etc/network/interfaces` and
 `nic_tuning` role now manages these via drop-ins, so the manual entries are
 redundant (harmless but stale). Remove them in a scheduled cleanup pass and
 verify the role's drop-ins are still authoritative after reboot.
+
+### Traefik → AdGuard admin: HTTPS
+
+GitLab, HAOS, and Plex now terminate TLS themselves and Traefik
+connects via `scheme: https` + the `vm-tls-wildcard` ServersTransport.
+The remaining plaintext Traefik->VM hops are:
+
+- **AdGuard admin** (port 3000 on dns-01 and dns-02). The IngressRoute
+  is `lan-tailscale-only`. AdGuard's admin web UI doesn't natively
+  support TLS on its own port. Workable approaches:
+    1. Front the admin port with `stunnel` on dns-01 / dns-02 (LAN-only),
+       pointing the IngressRoute at the stunnel listener.
+    2. Set `force_https: true` + `tls_listen_addresses: [:443]` in
+       AdGuard's `encryption` block via the AdGuard UI / sync config
+       (this also affects DoH on :443).
+- **Router** — hardware/firmware-dependent. Configure manually if
+  the router exposes a HTTPS UI; otherwise leave plain HTTP behind
+  Traefik (lan-only).
+- **GitLab Container Registry** (port 5050 on the GitLab VM). Intentional:
+  `registry_nginx['listen_https'] = false` + `listen_port = 5050` in
+  `ansible/roles/gitlab/templates/gitlab.rb.j2`. The bundled registry
+  nginx terminates plaintext on 5050; Traefik fronts it with HTTPS at
+  `registry.git.ericsweiss.com`. The hop from Traefik to the registry
+  is LAN-only.
+- **GitLab Pages** (port 8090 on the GitLab VM). Intentional:
+  `pages_nginx['enable'] = false` + `gitlab_pages['listen_proxy'] =
+  "0.0.0.0:8090"` in the same template. `gitlab-pages` listens plaintext
+  on 8090; Traefik fronts the wildcard at `*.pages.git.ericsweiss.com`
+  over HTTPS. Hop is LAN-only.
+
+All four are acceptable as residual LAN-trust hops since they sit behind
+`lan-tailscale-only` (AdGuard, router) or a LAN-only Traefik->VM jump
+(GitLab registry, GitLab Pages) and the user-facing edge is HTTPS.
+
+### NFSv4 + RPC-with-TLS — full activation
+
+Framework is in place (`nfs_tls` role + cert distribution to the NFS
+server and `k3s-agt-nas-01`, exports template supports per-export
+`xprtsec`). Activation is a coordinated rollout because partial state
+breaks mounts:
+
+1. Run `task infra:deploy -- --tags acme_certs` so the wildcard cert
+   reaches every NFS host's `/etc/ssl/private/`.
+2. Set `nfs_tls_enabled: true` on `pve-nas-01` and every NFS client
+   (`k3s-agt-nas-01`, plex, all Proxmox hosts that mount tank-proxmox).
+3. Re-run the Ansible plays to install ktls-utils + start tlshd
+   everywhere.
+4. Update NFS mount options across every client to add `xprtsec=tls`
+   (Proxmox `pve_storage`, k3s NFS PV mountOptions, plex bind mounts).
+   Re-mount on each client; verify they reconnect.
+5. Add `xprtsec: tls` to the relevant entries in `nfs_exports` for
+   `pve-nas-01`. Run nas_storage role; restart `nfs-server`.
+
+Sequence matters: server with `xprtsec=tls` rejects non-TLS clients,
+so flip clients first then enable on server.
+
+### ~~Authentik / Plex bypass routes — internal TLS~~ (DONE)
+
+VM ingresses for HAOS (`kubernetes/apps/vm-ingress/home-assistant.yaml`)
+and Plex (`kubernetes/apps/vm-ingress/plex.yaml`) terminate to the
+backend over `scheme: https` with `serversTransport: vm-tls-wildcard`.
+The earlier ha-bypass IngressRoutes
+(`kubernetes/apps/download-clients/ingress-routes-ha-bypass.yaml`)
+target `*arr` Services inside the cluster, not HAOS or Plex, so the
+plaintext concern that originally lived here no longer applies. Left
+in place as a strikethrough so the diff history makes the resolution
+obvious.
 
 ---
 
@@ -363,6 +431,18 @@ verify the role's drop-ins are still authoritative after reboot.
 - [ ] Disaster recovery runbook updates
 - [ ] Troubleshooting flowcharts
 - [ ] Document ZFS scrub schedule details (see docs/06-zfs.md)
+
+### Observability follow-ups
+
+- [ ] **Recording rule to detect wholly-absent
+  `proxmox_corosync_health_collector_last_success_seconds`.** The
+  `CorosyncHealthCollectorStale` alert (added with the corosync wedge
+  detection) only catches the "metric exists but stuck" case — not the
+  "metric never appeared" case. Bridging it cleanly needs a host-derived
+  label that joins `up{job="observability/node-exporter-host"}` to the
+  textfile metric (their `instance` labels match by construction since
+  both come from the same node_exporter scrape). Add either a recording
+  rule or extend the existing alert once the join is confirmed in prod.
 
 ---
 

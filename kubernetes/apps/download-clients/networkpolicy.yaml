@@ -1,0 +1,338 @@
+---
+# NetworkPolicies for the `downloads` namespace.
+#
+# Threat model: contain a compromise of any *arr app, qBittorrent, or NZBGet so
+# it cannot scan the LAN, hop to other namespaces, or bypass Gluetun's killswitch.
+# Default policy is deny-all in both directions; every flow below is an explicit
+# allow. Pod selectors use the `app.kubernetes.io/name` label set on each
+# Deployment's pod template.
+#
+# k3s ships with the Flannel-based kube-router NetworkPolicy controller enabled
+# by default, so these policies are enforced without additional CNI work.
+#
+# IMPORTANT: qbittorrent and nzbget run with a Gluetun sidecar that shares the
+# pod network namespace. NetworkPolicy is evaluated per-pod, not per-container,
+# so the rules attached to those pods govern Gluetun's traffic too — both VPN
+# tunnel egress AND the qBittorrent/NZBGet UI ingress.
+
+# 1. Default-deny ingress + egress for everything in the namespace.
+#    Every other policy in this file is purely additive on top of this baseline.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: downloads
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# 2. Allow Traefik to reach every UI/API port. HA bypass routes
+#    (192.168.0.154) terminate at Traefik and proxy to the same backend
+#    Services, so Home Assistant traffic is covered here without a separate
+#    cidr-based rule. Selecting by namespace (kubernetes.io/metadata.name) is
+#    safe because Traefik is the only workload in `traefik`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-ingress
+  namespace: downloads
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - { protocol: TCP, port: 8080 }   # qbittorrent UI
+        - { protocol: TCP, port: 6789 }   # nzbget UI
+        - { protocol: TCP, port: 8989 }   # sonarr
+        - { protocol: TCP, port: 7878 }   # radarr
+        - { protocol: TCP, port: 8686 }   # lidarr
+        - { protocol: TCP, port: 9696 }   # prowlarr
+        - { protocol: TCP, port: 3003 }   # pulsarr
+
+---
+# 3. Allow observability (exportarr sidecars in the `observability` namespace)
+#    to scrape the *arr REST APIs. None of the downloads pods expose a native
+#    /metrics endpoint — exportarr calls each app's HTTP API and re-exports the
+#    response, so the scrape path is observability -> *arr API port (NOT a
+#    /metrics port on the pod itself). qbittorrent / nzbget / pulsarr are not
+#    scraped by exportarr and are intentionally omitted.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observability-scrape
+  namespace: downloads
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [sonarr, radarr, lidarr, prowlarr]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - { protocol: TCP, port: 8989 }
+        - { protocol: TCP, port: 7878 }
+        - { protocol: TCP, port: 8686 }
+        - { protocol: TCP, port: 9696 }
+
+---
+# 4. Intra-namespace allows. *arr apps cross-talk for Prowlarr indexer sync and
+#    Pulsarr drives sonarr/radarr via their HTTP APIs. Allowing the full set of
+#    *arr API ports between the relevant pods is simpler than per-direction
+#    rules and matches how the apps are actually wired in practice.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-arr
+  namespace: downloads
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [sonarr, radarr, lidarr, prowlarr, pulsarr, qbittorrent, nzbget]
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [sonarr, radarr, lidarr, prowlarr, pulsarr]
+      ports:
+        - { protocol: TCP, port: 8989 }   # sonarr
+        - { protocol: TCP, port: 7878 }   # radarr
+        - { protocol: TCP, port: 8686 }   # lidarr
+        - { protocol: TCP, port: 9696 }   # prowlarr
+        - { protocol: TCP, port: 8080 }   # qbittorrent (Prowlarr/*arr -> qBt)
+        - { protocol: TCP, port: 6789 }   # nzbget      (Prowlarr/*arr -> NZBGet)
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [sonarr, radarr, lidarr, prowlarr, pulsarr, qbittorrent, nzbget]
+
+---
+# 5. DNS egress. All downloads pods set `dnsPolicy: None` with explicit
+#    nameservers 192.168.0.150 / .160 (or fall back to those IPs when Gluetun
+#    is enabled and crashes). The *arr pods that omit dnsPolicy still use
+#    kube-dns in the kube-system namespace. Allow both paths so behavior is
+#    correct regardless of which mode a pod is in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: downloads
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 192.168.0.150/32 }
+        - ipBlock: { cidr: 192.168.0.160/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+
+---
+# 6. Egress for qbittorrent + nzbget pods (which include the Gluetun sidecar).
+#    Per Gluetun's FIREWALL_OUTBOUND_SUBNETS, the only required LAN reach is
+#    DNS (already allowed above). All other egress is the VPN tunnel itself,
+#    which we cannot pin to a single IP because Gluetun rotates servers — so
+#    we allow the standard OpenVPN/Wireguard ports + 443 to the public
+#    internet, and explicitly EXCLUDE LAN/RFC1918 to enforce the killswitch
+#    at the policy layer (defense-in-depth on top of Gluetun's iptables).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gluetun-vpn-egress
+  namespace: downloads
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [qbittorrent, nzbget]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: UDP, port: 1194 }   # OpenVPN UDP
+        - { protocol: TCP, port: 1194 }   # OpenVPN TCP
+        - { protocol: UDP, port: 443 }    # OpenVPN/Wireguard over 443
+        - { protocol: TCP, port: 443 }    # OpenVPN TCP/443 fallback
+        - { protocol: UDP, port: 51820 }  # Wireguard default
+        - { protocol: TCP, port: 6881 }   # BitTorrent peer (post-tunnel)
+        - { protocol: UDP, port: 6881 }   # BitTorrent peer (post-tunnel)
+
+---
+# 7. Egress for the direct-internet *arr apps (NOT routed through Gluetun).
+#    They need TCP/443 to external metadata providers (TheTVDB, TMDB,
+#    MusicBrainz, indexers). Explicitly EXCLUDE RFC1918 so a compromised *arr
+#    cannot pivot to scan the LAN — same defense-in-depth posture as Gluetun.
+#    Pulsarr also needs to reach Plex's cloud API (plex.tv) over 443.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-arr-external-egress
+  namespace: downloads
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [sonarr, radarr, lidarr, prowlarr, pulsarr]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }    # some indexers / MusicBrainz mirrors
+
+---
+# 7b. Egress for NZBGet in direct mode (vpn_enabled: "false" in
+#     nzbget-vpn-config). NZBGet talks NNTPS (TCP 563) and unencrypted NNTP
+#     (TCP 119) to external Usenet providers. The VPN-egress rule above only
+#     opens 1194/443/51820/6881 — which would silently kill all Usenet
+#     downloads in direct mode. When the ConfigMap is flipped to VPN mode,
+#     this rule is harmless (Gluetun owns the network namespace and rejects
+#     non-tunnel traffic) but keeps the policy intent explicit.
+#     RFC1918 excluded — same defense-in-depth as the *arr rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nzbget-nntp-egress
+  namespace: downloads
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nzbget
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 563 }   # NNTPS (TLS)
+        - { protocol: TCP, port: 119 }   # NNTP (plaintext fallback)
+
+---
+# qBittorrent direct-mode egress. Only takes effect when
+# qbittorrent-vpn-config.vpn_enabled = "false". The repo ships
+# vpn_enabled: "true" so this policy is dormant under the current
+# config, but the ConfigMap exposes the toggle as a supported choice
+# and the gluetun-VPN policy alone (1194/443/51820/6881) isn't enough
+# for direct-mode tracker + peer traffic — without this rule, flipping
+# the toggle would silently break peer/tracker connectivity.
+#
+# Design note (additive policies, accepted): NetworkPolicies cannot key
+# off a ConfigMap, so this rule's podSelector matches qbittorrent in
+# BOTH modes. In VPN mode it's effectively dead — qbittorrent shares
+# gluetun's network namespace, so the pod's actual egress is gluetun's
+# encrypted tunnel and the iptables-level killswitch INSIDE that netns
+# is what enforces "no traffic when VPN down". The high-port range
+# admitted here can never be hit while gluetun owns the netns, so this
+# additive policy does NOT degrade the killswitch's defense-in-depth
+# in normal operation. The residual risk (gluetun + killswitch both
+# silently fail AND qbittorrent finds a route around the netns) is
+# accepted; the alternative would be to de-support direct mode
+# entirely, but the toggle is documented and useful for ad-hoc no-VPN
+# operation.
+#
+# Peer scope: BitTorrent peers advertise arbitrary high ports in their
+# tracker responses, so a working direct-mode policy needs the full
+# ephemeral range (TCP+UDP 1024-65535). We use endPort (NetworkPolicy
+# port range, GA since k8s 1.25) to express this without exploding the
+# rule list. Tracker HTTP/HTTPS on 80/443 are explicitly listed
+# because they're outside the ephemeral range. Public internet only —
+# RFC1918 + link-local excluded.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-qbittorrent-direct-egress
+  namespace: downloads
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 80 }                       # tracker HTTP
+        - { protocol: TCP, port: 443 }                      # tracker HTTPS
+        - { protocol: TCP, port: 1024, endPort: 65535 }     # peer + tracker high ports
+        - { protocol: UDP, port: 1024, endPort: 65535 }     # peer + DHT + uTP
+
+---
+# 8. Egress for sonarr/radarr/lidarr to Plex backend at 192.168.0.152:32400
+#    (post-import notify + library refresh). This is the ONLY LAN host outside
+#    the DNS resolvers that *arr apps may reach — a tight allowlist that the
+#    rule in policy #7 explicitly excludes via `except: 192.168.0.0/16`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-arr-to-plex
+  namespace: downloads
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        # pulsarr's primary integration target IS Plex (Watchlist
+        # automation reads/writes Plex's local API), so it needs LAN
+        # reach to 192.168.0.152:32400 too.
+        values: [sonarr, radarr, lidarr, pulsarr]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 192.168.0.152/32 }
+      ports:
+        - { protocol: TCP, port: 32400 }

@@ -266,6 +266,13 @@ metadata:
   name: node-exporter-host
   namespace: observability
 spec:
+  # Set the Prometheus `job` label to the value of `app.kubernetes.io/name`
+  # (= "node-exporter-host") on every scraped metric. Without this, Prometheus
+  # Operator defaults `job` to the Service name (e.g.
+  # `node-exporter-host-pve-nas-01`), which makes the per-host series
+  # impossible to match with a stable `job="node-exporter-host"` selector —
+  # the thermal alerts and the thermals dashboard rely on that selector.
+  jobLabel: app.kubernetes.io/name
   selector:
     matchLabels:
       app.kubernetes.io/name: node-exporter-host

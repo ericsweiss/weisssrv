@@ -1,0 +1,158 @@
+---
+# Scoped to the docker platform because the rendered cluster.fw / host.fw /
+# guest <vmid>.fw files live on its filesystem (the role's delegate_to
+# targets it). The local-connection inventory entries can't see those files
+# — they're on the CI runner pod's filesystem, not the container's.
+- name: Verify
+  hosts: proxmox-firewall-test
+  become: true
+  gather_facts: true
+  vars:
+    cluster_fw: /tmp/pve-firewall-test/firewall/cluster.fw
+    host_fw: /tmp/pve-firewall-test/nodes/proxmox-firewall-test/host.fw
+    # vmid 100 matches the docker platform's host_vars in molecule.yml.
+    guest_fw: /tmp/pve-firewall-test/firewall/100.fw
+  tasks:
+    - name: Cluster.fw exists
+      ansible.builtin.stat:
+        path: "{{ cluster_fw }}"
+      register: cluster_fw_stat
+      failed_when: not cluster_fw_stat.stat.exists
+
+    - name: Read cluster.fw
+      ansible.builtin.slurp:
+        src: "{{ cluster_fw }}"
+      register: cluster_fw_content
+
+    - name: Decode cluster.fw
+      ansible.builtin.set_fact:
+        cluster_fw_text: "{{ cluster_fw_content.content | b64decode }}"
+
+    - name: Cluster.fw has [OPTIONS] + default policies + built-in IPSets
+      ansible.builtin.assert:
+        that:
+          - "'[OPTIONS]' in cluster_fw_text"
+          - "'enable: 1' in cluster_fw_text"
+          - "'policy_in: DROP' in cluster_fw_text"
+          - "'policy_out: ACCEPT' in cluster_fw_text"
+          - "'[IPSET admin_lan]' in cluster_fw_text"
+          - "'[IPSET admin_ts]' in cluster_fw_text"
+          - "'[IPSET smb_clients]' in cluster_fw_text"
+
+    - name: Cluster.fw renders security groups
+      ansible.builtin.assert:
+        that:
+          - "'[group sg-host-admin]' in cluster_fw_text"
+          - "'[group sg-pve-cluster]' in cluster_fw_text"
+          - "'[group sg-dns]' in cluster_fw_text"
+          - "'[group sg-vm-admin]' in cluster_fw_text"
+          - "'[group sg-smtp-relay]' in cluster_fw_text"
+
+    - name: Dynamic IPSets include sample inventory IPs
+      ansible.builtin.assert:
+        that:
+          - "'[IPSET pve_hosts]' in cluster_fw_text"
+          - "'[IPSET core-cluster]' in cluster_fw_text"
+          - "'192.168.0.102' in cluster_fw_text"   # pve-nas-01
+          - "'192.168.0.103' in cluster_fw_text"   # pve-laptop-01
+          - "'192.168.0.150' in cluster_fw_text"   # dns-01 (LXC)
+          - "'192.168.0.151' in cluster_fw_text"   # smtp-relay (LXC)
+
+    - name: Host.fw exists
+      ansible.builtin.stat:
+        path: "{{ host_fw }}"
+      register: host_fw_stat
+      failed_when: not host_fw_stat.stat.exists
+
+    - name: Read host.fw
+      ansible.builtin.slurp:
+        src: "{{ host_fw }}"
+      register: host_fw_content
+
+    - name: Host.fw enables firewall and references base groups (real check)
+      ansible.builtin.assert:
+        that:
+          - "'enable: 1' in (host_fw_content.content | b64decode)"
+          - "'GROUP sg-pve-cluster' in (host_fw_content.content | b64decode)"
+          - "'GROUP sg-host-admin' in (host_fw_content.content | b64decode)"
+
+    - name: Per-guest 100.fw exists
+      ansible.builtin.stat:
+        path: "{{ guest_fw }}"
+      register: guest_fw_stat
+      failed_when: not guest_fw_stat.stat.exists
+
+    - name: Read 100.fw
+      ansible.builtin.slurp:
+        src: "{{ guest_fw }}"
+      register: guest_fw_content
+
+    - name: Per-guest 100.fw has expected GROUP refs
+      ansible.builtin.assert:
+        that:
+          - "'[OPTIONS]' in (guest_fw_content.content | b64decode)"
+          - "'enable: 1' in (guest_fw_content.content | b64decode)"
+          - "'GROUP sg-vm-admin' in (guest_fw_content.content | b64decode)"
+          - "'GROUP sg-dns' in (guest_fw_content.content | b64decode)"
+          - "'GROUP sg-metrics' in (guest_fw_content.content | b64decode)"
+
+    # Regression guard for the vmid-collision bug fixed in 4f596aa: the
+    # molecule platform deliberately uses vmid 100 to avoid sharing
+    # /tmp/pve-firewall-test/firewall/<vmid>.fw with dns-01 (vmid 150)
+    # and smtp-relay (vmid 151). If a future edit bumps the platform's
+    # vmid back to 150 or 151, the guest task's `delegate_to` would have
+    # both hosts writing the same file every converge, breaking
+    # idempotence AND letting one host's render overwrite another's.
+    # The check below asserts the docker platform's render is on its
+    # own file AND that dns-01's render exists on a separate file AND
+    # that the docker platform's render doesn't carry dns-01's name.
+    - name: Verify per-vmid file separation (vmid-collision regression guard)
+      ansible.builtin.stat:
+        path: "/tmp/pve-firewall-test/firewall/150.fw"
+      register: dns01_guest_fw_stat
+
+    - name: Assert dns-01's 150.fw rendered to its own file
+      ansible.builtin.assert:
+        that:
+          - dns01_guest_fw_stat.stat.exists
+        fail_msg: >-
+          /tmp/pve-firewall-test/firewall/150.fw missing — dns-01's
+          guest firewall didn't render. If the molecule platform's
+          vmid was bumped to 150, the docker-platform render would
+          have overwritten dns-01's file path. Check
+          molecule.yml host_vars.proxmox-firewall-test.vmid.
+
+    - name: Read dns-01's 150.fw
+      ansible.builtin.slurp:
+        src: "/tmp/pve-firewall-test/firewall/150.fw"
+      register: dns01_guest_fw_content
+
+    - name: Assert 100.fw and 150.fw carry their respective inventory_hostname
+      ansible.builtin.assert:
+        that:
+          - "'for proxmox-firewall-test' in (guest_fw_content.content | b64decode)"
+          - "'for dns-01' in (dns01_guest_fw_content.content | b64decode)"
+        fail_msg: >-
+          Per-vmid files don't carry the matching inventory_hostname
+          comment line — most likely the molecule platform reused a
+          vmid already in luks_archive_devices and the renders
+          collided. 100.fw should mention proxmox-firewall-test;
+          150.fw should mention dns-01.
+
+    # Regression guard for the verify scope-creep bug fixed in 234c0e2:
+    # verify.yml used to be `hosts: all`, blowing up on the local-
+    # connection placeholder hosts that can't see files written via
+    # docker exec. This play is explicitly scoped to proxmox-firewall-test;
+    # if a future change broadens it again, the assertion below catches
+    # the regression by checking that the play recap only ran on the
+    # docker host (ansible_play_hosts_all length == 1).
+    - name: Assert verify play is scoped to the docker platform only
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - ansible_play_hosts_all | first == 'proxmox-firewall-test'
+        fail_msg: >-
+          verify.yml ran against {{ ansible_play_hosts_all | length }}
+          hosts ({{ ansible_play_hosts_all | join(', ') }}); should be
+          just 'proxmox-firewall-test'. The local-connection placeholder
+          hosts can't see files written via docker-exec to the container.

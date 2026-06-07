@@ -1,7 +1,10 @@
 ---
 # ACME certificate management with acme.sh
 # Only runs on dns-01 (primary) and distributes to other hosts
-# Certificate distribution uses SSH with eric user (dns-01 -> dns-02, smtp-relay)
+# Certificate distribution uses SSH with eric user; the authoritative
+# target list is host_vars/dns-01.yml under cert_distribution_targets
+# (currently dns-02, smtp-relay, gitlab, pve-nas-01, k3s-agt-nas-01,
+# plex, and home).
 
 - name: Validate required acme.sh variables (dns-01 only)
   ansible.builtin.assert:
@@ -56,26 +59,50 @@
     - dns01_ssh_public_key is defined
     - dns01_ssh_public_key != ''
 
-- name: Deploy dns-01 public key to dns-02 eric authorized_keys
+# Deploy dns-01's cert-distribution pubkey to each target's
+# authorized_keys, regardless of which play invokes the role. Adding a
+# host to host_vars/dns-01.yml's cert_distribution_targets is enough.
+#
+# delegate_to: "{{ item.host }}" runs the task on the target host
+# directly. Without delegation the previous form gated on
+# `inventory_hostname == item.host`, which silently no-op'd whenever
+# the play's host scope didn't include item.host (e.g. `task dns:deploy`
+# only puts dns-01 + dns-02 in scope, so non-DNS targets like gitlab,
+# pve-nas-01, and plex never had the pubkey installed).
+#
+# Skips ssh_no_sudo targets (HAOS) because Ansible's SSH path doesn't
+# manage their authorized_keys; the operator must paste the pubkey via
+# the HAOS SSH add-on UI on first deploy.
+# Don't use `run_once: true` here. Combined with `when: inventory_hostname
+# == 'dns-01'`, run_once picks the first host of the play's host list and
+# evaluates the when-clause against that host — if anything in inventory
+# ever reorders the `dns` group so dns-02 comes before dns-01, run_once
+# picks dns-02, the when-clause is false, and the task is silently
+# skipped (no key distribution). dns-01 happens to be first today, but
+# the dependency on that ordering is fragile. The when-clause alone
+# already provides the single-execution gate: every host in the play
+# evaluates it, only dns-01 runs the task, every other host skips.
+- name: Deploy dns-01 cert-distribution pubkey to each target's authorized_keys
   ansible.posix.authorized_key:
-    user: eric
+    user: "{{ item.ssh_user | default('eric') }}"
     state: present
     key: "{{ dns01_ssh_public_key }}"
     comment: "eric@dns-01 (cert distribution)"
+  loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.host }}"
+  delegate_to: "{{ item.host }}"
   when:
-    - inventory_hostname == 'dns-02'
+    - inventory_hostname == 'dns-01'
+    - not (item.ssh_no_sudo | default(false))
     - dns01_ssh_public_key is defined
-    - dns01_ssh_public_key != ''
-
-- name: Deploy dns-01 public key to smtp-relay eric authorized_keys
-  ansible.posix.authorized_key:
-    user: eric
-    state: present
-    key: "{{ dns01_ssh_public_key }}"
-    comment: "eric@dns-01 (cert distribution)"
-  when:
-    - inventory_hostname == 'smtp-relay'
-    - dns01_ssh_public_key is defined
+    # Molecule overrides cert_distribution_targets in its inventory to
+    # exercise template rendering — but the targets aren't molecule
+    # platforms, so delegate_to falls back to the prod inventory and
+    # tries to SSH to a real LAN IP, which times out from the CI runner
+    # pod. acme_certs_distribute_pubkeys=false in molecule short-circuits
+    # this task while still letting earlier rendering tasks run.
+    - acme_certs_distribute_pubkeys | default(true)
     - dns01_ssh_public_key != ''
 
 - name: Install acme.sh dependencies
@@ -102,14 +129,36 @@
     - inventory_hostname == 'dns-01'
     - not acme_installed.stat.exists
 
-- name: Install acme.sh
+# acme.sh 3.x defaults to ZeroSSL when no --server is passed. Our CAA
+# (terraform/cloudflare/dns.tf) only authorises letsencrypt.org as an
+# issuer; without --server letsencrypt the initial issuance would be
+# refused by Let's Encrypt validation never running (acme.sh wouldn't
+# call them) AND by Cloudflare's CAA enforcement if it tried ZeroSSL.
+# Pin Let's Encrypt as the default CA at install time so subsequent
+# `acme.sh --issue` invocations without --server still hit LE.
+- name: Install acme.sh (default CA pinned to Let's Encrypt)
   ansible.builtin.shell: |
-    sh /tmp/acme_installer.sh --install --nocron --email {{ acme_email }}
+    sh /tmp/acme_installer.sh --install --nocron --email {{ acme_email }} \
+      --server letsencrypt
   args:
     creates: /root/.acme.sh/acme.sh
   when:
     - inventory_hostname == 'dns-01'
     - not acme_installed.stat.exists
+
+# Defensive: even on hosts where acme.sh was installed BEFORE this pin
+# was added, set the default CA so the next renewal uses Let's Encrypt.
+# `--set-default-ca --server letsencrypt` is idempotent.
+- name: Ensure acme.sh default CA is Let's Encrypt
+  ansible.builtin.shell: |
+    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+  args:
+    executable: /bin/bash
+  register: acme_default_ca_set
+  changed_when: false
+  when:
+    - inventory_hostname == 'dns-01'
+    - acme_installed.stat.exists or (not ansible_check_mode)
 
 - name: Remove acme.sh installer
   ansible.builtin.file:
@@ -127,6 +176,63 @@
     group: root
     mode: "0700"
   when: inventory_hostname == 'dns-01'
+
+# Pin SSH host keys for cert distribution targets. The cert-reload
+# script runs as root (cron, post-renewal) with BatchMode and
+# StrictHostKeyChecking=yes — wildcard private keys are pushed over
+# this channel, so opportunistic trust (accept-new + ssh-keyscan
+# refresh) is too weak. host_key is required per target; the deploy
+# fails loudly if any are missing or empty so the operator knows to
+# capture them via `task certs:show-host-keys` and paste into
+# host_vars/dns-01.yml. Rotation = same workflow when a target is
+# rebuilt and its key changes.
+- name: Pin cert distribution target host keys (dns-01 only)
+  when:
+    - inventory_hostname == 'dns-01'
+    - cert_distribution_targets is defined
+  block:
+    - name: Assert every cert distribution target has a pinned host_key
+      ansible.builtin.assert:
+        that:
+          - item.host_key is defined
+          - item.host_key | length > 0
+        fail_msg: |
+          host_vars/dns-01.yml cert_distribution_targets entry for
+          "{{ item.host }}" ({{ item.ip }}) has no host_key set.
+          Capture the current key with:
+              task certs:show-host-keys
+          paste the value into the entry, then re-run.
+      loop: "{{ cert_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }}"
+
+    - name: Ensure root .ssh directory exists
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy pinned host keys to root known_hosts
+      ansible.builtin.known_hosts:
+        path: /root/.ssh/known_hosts
+        # Non-standard ports (HAOS on 22222) must be wrapped as
+        # `[ip]:port` in known_hosts — that's what ssh looks up for a
+        # `ssh -p <port>` connection. Bare IP entries only match
+        # connections to port 22.
+        name: >-
+          {{ '[' ~ item.ip ~ ']:' ~ (item.ssh_port | int)
+             if (item.ssh_port | default(22) | int) != 22
+             else item.ip }}
+        key: >-
+          {{ '[' ~ item.ip ~ ']:' ~ (item.ssh_port | int) ~ ' ' ~ item.host_key
+             if (item.ssh_port | default(22) | int) != 22
+             else item.ip ~ ' ' ~ item.host_key }}
+        state: present
+      loop: "{{ cert_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }} ({{ item.ip }})"
 
 # Automatic certificate installation if certs exist in acme.sh but not in local_cert_dir
 # This handles the case where certs were manually issued but never installed to the target directory
@@ -182,8 +288,9 @@
          export CF_Token=$(op read "{{ secrets.cloudflare_api_token }}")
          export CF_Account_ID=$(op read "{{ secrets.cloudflare_account_id }}")
 
-      2. Issue wildcard certificate:
-         /root/.acme.sh/acme.sh --issue --dns dns_cf \
+      2. Issue wildcard certificate (LE is the default CA per acme.sh
+         install pin, but pass --server explicitly to be safe):
+         /root/.acme.sh/acme.sh --issue --dns dns_cf --server letsencrypt \
            -d "{{ internal_domain }}" \
            -d "*.{{ internal_domain }}"
 
@@ -224,16 +331,14 @@
     - not (skip_cert_distribution | default(false))
   register: cert_distribution_result
   changed_when: cert_distribution_result.rc == 0
-  failed_when: false  # Don't fail the play if distribution fails (target might be down)
-
-- name: Warn if certificate distribution failed
-  ansible.builtin.debug:
-    msg: |
-      WARNING: Certificate distribution failed with return code {{ cert_distribution_result.rc }}.
-      stderr: {{ cert_distribution_result.stderr | default('none') }}
-      Ensure target hosts (dns-02, smtp-relay) are reachable and SSH keys are properly configured.
-  when:
-    - inventory_hostname == 'dns-01'
-    - cert_distribution_result is defined
-    - cert_distribution_result.rc is defined
-    - cert_distribution_result.rc != 0
+  # The script tries every target before exiting and uses distinct exit
+  # codes — rc=1 hard local error (cert files unreadable etc.), rc=2 one
+  # or more targets unreachable but the script delivered to all reachable
+  # targets first. Either way we fail the play: cert renewal is
+  # infrequent enough (~6× per cert per year via the acme.sh post-renew
+  # hook) that a red Ansible run is the right signal to look at the
+  # per-target Prometheus metrics in
+  # /var/lib/node_exporter/cert_distribution_targets.prom
+  # (cert_distribution_target_last_run_success{host=...}) and either
+  # bring the offending target back or fix the cert path on it.
+  failed_when: cert_distribution_result.rc != 0

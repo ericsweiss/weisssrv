@@ -8,9 +8,14 @@
   'pve_hosts': 'Proxmox VE cluster hosts'
 } -%}
 
-{#- Collect all hosts from inventory and their IPSet memberships -#}
+{#- Collect all hosts from inventory and their IPSet memberships.
+    pve_firewall_node_ip wraps ansible_host so molecule scenarios can
+    keep ansible_host pointing at the docker container (= connection
+    target) while still feeding a realistic per-node IP into the IPSet
+    render. Production inventory only sets ansible_host, which the
+    default() picks up. -#}
 {%- for host in groups['all'] -%}
-  {%- set host_ip = hostvars[host]['ansible_host'] -%}
+  {%- set host_ip = hostvars[host]['pve_firewall_node_ip'] | default(hostvars[host]['ansible_host']) -%}
   {%- set host_ipsets = hostvars[host].get('firewall_ipsets', []) -%}
   {%- for ipset_name in host_ipsets -%}
     {%- if ipset_name not in ipset_members -%}

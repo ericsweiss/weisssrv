@@ -17,12 +17,12 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                    # Configuration management
 │   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # 25 roles for all services
+│   ├── roles/                  # 28 roles for all services
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
-│   ├── infrastructure/         # Platform — reconciled in four stages via dependsOn ordering
+│   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order; together with apps/ they form a five-stage Flux Kustomization chain (sources -> controllers -> configs -> observability -> apps)
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
 │   │   ├── controllers/        # external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
 │   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
@@ -169,6 +169,14 @@ task plex:check                   # Plex dry-run
 task proxmox:ha                   # Configure HA rules, resources, and replication
 task proxmox:ha-check             # Dry-run HA configuration
 task proxmox:ha-status            # Show HA manager, rules, and replication status
+
+# ZFS native encryption (boot-time unlock via 1Password Connect)
+task zfs:encrypt-bootstrap        # One-time: deploy script + token + unit template (no pools encrypted yet)
+task zfs:encrypt                  # Re-apply once a pool is encrypted (set zfs_encryption_pools per host_vars)
+
+# LUKS-on-archive (boot-time unlock via 1Password Connect, ordered before zfs-import)
+task luks-archive:bootstrap       # One-time: deploy script + token + unit template (no devices LUKS-formatted yet)
+task luks-archive:apply           # Re-apply after rolling conversion completes (probes cryptsetup isLuks per device)
 
 # K3s cluster (Ansible - separate lifecycle)
 task k3s:provision-vms            # Provision k3s VMs on Proxmox
@@ -386,6 +394,12 @@ In vault "Homelab":
 - **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
 - **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
 - **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
+- **ZFS Encryption Connect Token** - credential (Connect access token used by Proxmox hosts to fetch ZFS pool passphrases at boot; created via `op connect token create weisssrv-zfs --server <id> --vaults Homelab`)
+- **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
+- **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
+- **ZFS Pool nvme Passphrase** - passphrase (zfs-load-key@nvme.service on pve-nas-01)
+- **LUKS Archive Passphrase** - passphrase (random ≥32 chars; shared across all four LUKS containers backing the archive ZFS pool on pve-nas-01; consumed by archive-luks-open@archive-N.service)
+- **Plex Custom Certificate** - password (PFX bundle passphrase used by `/usr/local/sbin/plex-cert-reload.sh` when converting the renewed PEM cert into the PKCS#12 form Plex requires; matching value must be configured under Plex Settings -> Network -> "Custom certificate encryption key")
 
 ### Using 1Password
 
@@ -459,8 +473,11 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 21. **nic_tuning** - NIC/kernel tuning on Proxmox hosts (codifies AQC113 GRO disable + `net.ipv4.ip_forward` sysctl)
 22. **zfs_exporter** - Prometheus ZFS exporter on pve-nas-01 (pool health, dataset usage, scrub status)
 23. **unbound_exporter** - Prometheus Unbound exporter on DNS hosts (cache hit rate, query counts)
-24. **alloy_host** - Grafana Alloy on non-k8s hosts and k3s VMs for shipping journald logs to Loki via NodePort (on k3s VMs, collects kubelet/containerd/etcd/systemd journals; no duplication with in-cluster DaemonSet which covers container logs only)
+24. **alloy_host** - Grafana Alloy on non-k8s hosts and k3s VMs for shipping journald logs to Loki via the internal Traefik IngressRoute (`https://loki.esweiss.com`); collects kubelet/containerd/etcd/systemd journals on k3s VMs and Proxmox/LXC/VM systemd units elsewhere. No duplication with the in-cluster DaemonSet, which covers container logs only. NodePort `:31100` is kept as an emergency fallback (override `alloy_host_loki_url` per-host).
 25. **node_exporter_host** - Prometheus node_exporter on bare-metal Proxmox hosts for hardware metrics (thermals, SMART, disk I/O). Port 9101 to avoid conflict with k3s DaemonSet on 9100
+26. **zfs_encryption** - Boot-time ZFS pool key fetch from 1Password Connect via `connect.esweiss.com`. Deploys per-pool `zfs-load-key@<pool>.service` units ordered before `zfs-mount.service`. Operator-fallback path: SSH + manual `zfs load-key` with passphrase from 1P mobile app. See docs/32-zfs-encryption.md.
+27. **nfs_tls** - Installs `ktls-utils` + configures `tlshd` (kernel TLS handshake daemon) for NFSv4 over TLS (`xprtsec=tls`). Opt-in via `nfs_tls_enabled`; reads the cert pair at `/etc/ssl/private/{fullchain,privkey}.pem` (the same pair acme_certs distributes). Combined with per-export `xprtsec: tls` in `nas_storage`, encrypts the NFS wire.
+28. **luks_archive** - Boot-time LUKS-container unlock for the archive ZFS pool on pve-nas-01, fetching the shared passphrase from 1Password Connect. Sibling to `zfs_encryption` (same Connect token + script structure) but ordered BEFORE `zfs-import-cache.service` so the four `/dev/mapper/archive-N` nodes exist before ZFS scans the cache file. Rolling-conversion runbook in docs/32 §LUKS.
 
 ## User Management
 
@@ -469,7 +486,7 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 - **VMs**: User `eric` via cloud-init
 - **Services**: Run as dedicated users (adguard, unbound, plex; postfix runs as root)
 
-All hosts use `eric` for SSH access with passwordless sudo. LXC containers are unprivileged (mapped UIDs for security). Note that while we SSH as `eric` to smtp-relay, Postfix itself runs as root (which is normal and expected for mail servers).
+All hosts use `eric` for SSH access with passwordless sudo. LXC containers are unprivileged (mapped UIDs for security). On smtp-relay SSH access is via `eric`, but Postfix itself runs as root (normal for mail servers).
 
 ## Testing / Deployment Workflow
 
@@ -645,6 +662,7 @@ See `docs/` for detailed guides:
 - 29-flux-operations.md - Flux day-2 operations: reconcile, suspend/resume, secret rotation, webhook
 - 30-multi-repo-onboarding.md - Adding external tenant repos via `kubernetes/clusters/weisssrv/tenants/`
 - 31-observability.md - Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting)
+- 32-zfs-encryption.md - ZFS native encryption with passphrase-from-Connect boot-time unlock
 
 ## Important Context Files
 

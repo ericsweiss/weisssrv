@@ -12,3 +12,4 @@ resources:
   - bar-assistant.yaml
   - ingress-routes.yaml
   - certificate.yaml
+  - networkpolicy.yaml

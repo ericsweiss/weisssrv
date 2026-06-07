@@ -89,15 +89,18 @@ provisioner:
           - domain: esweiss.com
             dns_provider: dns_cf
 
-        # SSH keys for certificate distribution are generated at runtime in converge.yml
-        # (see "Generate real Ed25519 SSH key for cert distribution" task)
-        # Placeholder values here to satisfy role variable requirements - NOT actual keys
-        dns01_ssh_private_key: "PLACEHOLDER_GENERATED_AT_RUNTIME"
-        dns01_ssh_public_key: "PLACEHOLDER_GENERATED_AT_RUNTIME"
+        # SSH keys (dns01_ssh_private_key, dns01_ssh_public_key) are generated
+        # at runtime in converge.yml and injected onto dns-01's hostvars via
+        # add_host (host facts override inventory group_vars). They're
+        # intentionally not defined here — the role's assert surfaces a clear
+        # error if the runtime injection ever fails.
 
-        # Certificate distribution targets
-        # Use hostnames instead of IPs - Docker DNS resolves container names on the same network
-        # Use 'ssh' as restart_service since it exists in test containers (nginx/apache2 don't)
+        # Certificate distribution targets — host_key is added at runtime in
+        # converge.yml (slurped from each cert_clients container) and the
+        # whole list is re-injected onto dns-01 via add_host so the role
+        # gets the full structure. We keep a copy of the static fields here
+        # so verify.yml (which runs as a separate ansible-playbook invocation,
+        # without converge's add_host facts) can still read the list shape.
         cert_distribution_targets:
           - host: cert-client-01
             ip: cert-client-01

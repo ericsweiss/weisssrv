@@ -14,15 +14,50 @@ k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
 k3s_cluster_dns: "10.43.0.10"
 
+# DNS resolver search-suffix list. Empty for k3s VMs because kubelet copies
+# the host's /etc/resolv.conf search domains into every pod, and ndots:5
+# combined with `search esweiss.com` causes every cluster-internal lookup
+# (e.g. radarr.downloads.svc.cluster.local) to be suffixed and probed
+# externally first. Pod resolvers still get cluster.local search via
+# kubelet's --cluster-domain.
+resolv_conf_search_domains: []
+
 # Disable built-in components (we deploy our own)
 k3s_disable:
   - servicelb   # Using MetalLB
   - traefik     # Deploying our own Traefik
 
-# Server configuration flags
-k3s_server_args:
-  - "--tls-san={{ k3s_api_vip }}"
-  - "--tls-san=k3s.{{ internal_domain }}"
+# Flannel backend = wireguard-native: pod-to-pod traffic across nodes
+# is encrypted with WireGuard (kernel module). Replaces the default
+# vxlan backend (UDP/8472, plaintext) with UDP/51820 + WireGuard.
+# The wire-encryption closes the in-cluster plaintext rows from
+# docs/06-zfs.md (Traefik->pod, ESO->Connect, Alloy->Loki, etc.) in
+# one shot, at ~5% throughput cost.
+#
+# Set vxlan to roll back. Switching the backend on a running cluster
+# requires server-by-server restart (cluster API briefly unavailable
+# during each restart); see docs/19-k3s-deployment.md 'Switching
+# flannel backend' for the procedure. Firewall rule for UDP/51820
+# between k3s_nodes is in proxmox_firewall sg-k3s-core; the UDP/8472
+# rule is retained as a documented rollback path.
+#
+# Rendered as `flannel-backend:` in /etc/rancher/k3s/config.yaml by
+# the k3s-server-config.yaml.j2 template — k3s reads this on every
+# server restart, no INSTALL_K3S_EXEC plumbing required.
+k3s_flannel_backend: "wireguard-native"
+
+# Kubelet args applied to every k3s node (server + agent) via the kubelet-arg
+# field in /etc/rancher/k3s/config.yaml.
+#
+# image-gc-{high,low}-threshold: percentages of the kubelet's filesystem
+# (root by default) at which kubelet starts/stops pruning unused container
+# images. Defaults are 85/80, which on the 64 GiB k3s VM root disks lets
+# /var/lib/rancher/k3s/agent/containerd grow to ~50 GiB before kicking in
+# (observed: agt-prec-01 at 75% root with 30 GiB of overlayfs layers and
+# 8.8 GiB of unused image content). 70/50 reclaims earlier, more often.
+k3s_kubelet_args:
+  - "image-gc-high-threshold=70"
+  - "image-gc-low-threshold=50"
 
 # MetalLB IP ranges
 metallb_public_range: "192.168.0.100-192.168.0.100"

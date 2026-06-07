@@ -1,6 +1,18 @@
 ---
 # Default VM configuration for Proxmox VMs
 
+# When true, skip cloud-image download + the final SSH-reachability wait_for.
+# Lets the role run under molecule against stub `qm`/`pvesh` shims without
+# attempting to fetch the real Debian cloud image or wait for SSH on a fake IP.
+proxmox_vm_skip_create: false
+
+# IP address handed to the role's cloud-init + SSH-wait logic. Defaults to
+# ansible_host because production inventory routes traffic to each VM via
+# that field. Molecule scenarios override this so they can keep ansible_host
+# pointing at the docker container (= connection target) while still feeding
+# a realistic per-VM IP into the role's cloud-init render.
+proxmox_vm_target_ip: "{{ ansible_host }}"
+
 # VM resource defaults
 vm_cores: 2
 vm_memory: 2048

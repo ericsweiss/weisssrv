@@ -2,6 +2,8 @@
 # Role metadata
 
 galaxy_info:
+  role_name: proxmox_firewall
+  namespace: weisssrv
   author: Eric Weiss
   description: Proxmox VE firewall management (cluster, host, guest, IPSets, Security Groups)
   license: MIT

@@ -34,15 +34,67 @@ ansible/roles/home_assistant/
 ## Quick Start
 
 ```bash
-# Deploy both ingress and configuration (recommended)
-task home-assistant:deploy
-
-# Deploy configuration only
+# Deploy configuration to HAOS (the ingress/IngressRoute is Flux-managed
+# under kubernetes/apps/vm-ingress/home-assistant.yaml; only the HAOS
+# configuration deploy uses Ansible).
 task home-assistant:deploy-config
 
 # Deploy and restart in one step
 task home-assistant:deploy-config && task home-assistant:restart-after-config
 ```
+
+## Host-key pinning
+
+HAOS runs SSH on a non-standard port (22222) as `root` with no `sudo`, so
+the global `accept-new` TOFU path used by the rest of the inventory isn't
+appropriate here — a swapped HAOS image (rebuild, factory reset,
+restore-from-backup) would silently register a new host key and the role
+would still happily push secrets to it.
+
+Instead, the host key is **pinned** in
+`ansible/inventories/prod/host_vars/home.yml` as `home_assistant_host_key`
+and the role:
+
+1. Asserts the pin is non-empty (fails fast with the capture command if not).
+2. Writes the pin into the operator's `~/.ssh/known_hosts` for
+   `[192.168.0.154]:22222` via the `ansible.builtin.known_hosts` module.
+3. Runs every `scp` / `ssh` to HAOS with `StrictHostKeyChecking=yes` so a
+   key change blows up loudly instead of being silently accepted.
+
+### Capturing the pin (first deploy)
+
+```bash
+ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+```
+
+Paste the algorithm + base64 key portion (the part **after**
+`[192.168.0.154]:22222`) into `host_vars/home.yml`:
+
+```yaml
+home_assistant_host_key: "ssh-ed25519 AAAAC3Nza...example..."
+```
+
+Commit and run the deploy.
+
+### Rotating the pin after a HAOS rebuild
+
+If the HAOS VM is reinstalled, restored from a snapshot taken before the
+SSH add-on was configured, or otherwise re-keys, the role's pre-flight
+SSH calls will fail with a host-key mismatch. To recover:
+
+1. Remove any stale entry from your local known_hosts (the `known_hosts`
+   module won't overwrite an existing key with a different value cleanly):
+   ```bash
+   ssh-keygen -R "[192.168.0.154]:22222"
+   ```
+2. Re-capture and update the pin in `host_vars/home.yml`:
+   ```bash
+   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+   ```
+3. Commit the new pin (the change should be reviewable — a HAOS rebuild
+   is a real event that warrants a deliberate update, which is the whole
+   point of pinning).
+4. Re-run `task home-assistant:deploy-config`.
 
 ## Required 1Password Items
 

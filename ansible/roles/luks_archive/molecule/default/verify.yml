@@ -1,0 +1,238 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    expected_device: archive-1
+    expected_item: "LUKS Archive Passphrase"
+  tasks:
+    # ========================================================================
+    # 1. Connect token file
+    # ========================================================================
+    - name: Stat /etc/onepassword-connect/token
+      ansible.builtin.stat:
+        path: /etc/onepassword-connect/token
+      register: token_stat
+
+    - name: Assert token file exists with strict mode 0400 root:root
+      ansible.builtin.assert:
+        that:
+          - token_stat.stat.exists
+          - token_stat.stat.mode == '0400'
+          - token_stat.stat.pw_name == 'root'
+          - token_stat.stat.gr_name == 'root'
+        fail_msg: |
+          token file missing or wrong perms: exists={{ token_stat.stat.exists }},
+          mode={{ token_stat.stat.mode | default('?') }},
+          owner={{ token_stat.stat.pw_name | default('?') }}:{{ token_stat.stat.gr_name | default('?') }}
+
+    - name: Read token file
+      ansible.builtin.slurp:
+        src: /etc/onepassword-connect/token
+      register: token_content
+
+    - name: Assert token file content matches injected fake token
+      ansible.builtin.assert:
+        that:
+          - (token_content.content | b64decode) is search('fake-test-token-must-be-non-empty')
+        fail_msg: "token file does not contain the fake test token"
+
+    # ========================================================================
+    # 2. Per-device environment file
+    # ========================================================================
+    - name: Stat /etc/luks/archive/archive-1.conf
+      ansible.builtin.stat:
+        path: "/etc/luks/archive/{{ expected_device }}.conf"
+      register: device_conf
+
+    - name: Assert per-device env file exists with strict mode 0400 root:root
+      ansible.builtin.assert:
+        that:
+          - device_conf.stat.exists
+          - device_conf.stat.mode == '0400'
+          - device_conf.stat.pw_name == 'root'
+          - device_conf.stat.gr_name == 'root'
+        fail_msg: |
+          per-device env file missing or wrong perms: exists={{ device_conf.stat.exists }},
+          mode={{ device_conf.stat.mode | default('?') }},
+          owner={{ device_conf.stat.pw_name | default('?') }}:{{ device_conf.stat.gr_name | default('?') }}
+
+    - name: Read per-device env file
+      ansible.builtin.slurp:
+        src: "/etc/luks/archive/{{ expected_device }}.conf"
+      register: device_conf_content
+
+    - name: Assert per-device env file has DEVICE / ITEM / FIELD lines
+      ansible.builtin.assert:
+        that:
+          - (device_conf_content.content | b64decode) is search('^LUKS_ARCHIVE_DEVICE=/dev/null', multiline=True)
+          - (device_conf_content.content | b64decode) is search('^LUKS_ARCHIVE_ITEM=' ~ expected_item, multiline=True)
+          - (device_conf_content.content | b64decode) is search('^LUKS_ARCHIVE_FIELD=passphrase', multiline=True)
+        fail_msg: |
+          per-device env file is missing DEVICE/ITEM/FIELD lines or has wrong values:
+          {{ device_conf_content.content | b64decode }}
+
+    # ========================================================================
+    # 3. Boot-time unlock script
+    # ========================================================================
+    - name: Stat /usr/local/sbin/luks-archive-open.sh
+      ansible.builtin.stat:
+        path: /usr/local/sbin/luks-archive-open.sh
+      register: script_stat
+
+    - name: Assert script exists with mode 0750 root:root and executable
+      ansible.builtin.assert:
+        that:
+          - script_stat.stat.exists
+          - script_stat.stat.mode == '0750'
+          - script_stat.stat.pw_name == 'root'
+          - script_stat.stat.gr_name == 'root'
+          - script_stat.stat.executable
+
+    - name: Read script for content sanity
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/luks-archive-open.sh
+      register: script_content
+
+    - name: Assert script declares the expected exit-code taxonomy + safe shell mode
+      ansible.builtin.assert:
+        that:
+          - (script_content.content | b64decode) is search('set -euo pipefail')
+          - (script_content.content | b64decode) is search('Exit codes')
+          # token-via-stdin (-H @-) — never on argv (avoids /proc/<pid>/cmdline leak)
+          - (script_content.content | b64decode) is search('-H @-')
+          # cryptsetup open with --key-file - (passphrase on stdin, not argv)
+          - (script_content.content | b64decode) is search('cryptsetup open --key-file -')
+
+    # ========================================================================
+    # 4. Systemd template unit
+    # ========================================================================
+    - name: Stat /etc/systemd/system/archive-luks-open@.service
+      ansible.builtin.stat:
+        path: /etc/systemd/system/archive-luks-open@.service
+      register: unit_stat
+
+    - name: Assert unit file exists with mode 0644
+      ansible.builtin.assert:
+        that:
+          - unit_stat.stat.exists
+          - unit_stat.stat.mode == '0644'
+
+    - name: Read unit file
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/archive-luks-open@.service
+      register: unit_content
+
+    - name: Assert unit ordering and Install hooks
+      ansible.builtin.assert:
+        that:
+          # Before=zfs-import-cache.service — mappers exist before ZFS scans cache
+          - (unit_content.content | b64decode) is search('Before=.*zfs-import-cache\\.service')
+          # RequiredBy (not WantedBy) — import fails when open fails
+          - (unit_content.content | b64decode) is search('RequiredBy=zfs-import-cache\\.service')
+          # ExecStop is intentionally ABSENT — parity with zfs-load-key@.
+          # At shutdown, ExecStop=cryptsetup close races the pool's export
+          # sequence and fails "Device archive-N is still in use"; the kernel
+          # tears down LUKS mappings as part of shutdown anyway. Asserting
+          # absence here so a future "helpful" re-add gets caught in CI.
+          - not ((unit_content.content | b64decode) is search('^ExecStop=', multiline=True))
+          # RestartPreventExitStatus = 1 3 7 surfaces config-level errors
+          # (token/item missing, auth failure) as `failed` instead of
+          # retrying for hours.
+          - (unit_content.content | b64decode) is search('RestartPreventExitStatus=1 3 4 7')
+          # ConditionPathExists guards against unknown mappers
+          - (unit_content.content | b64decode) is search('ConditionPathExists=/etc/luks/archive/%i\\.conf')
+          # Same StartLimit budget as zfs-load-key@
+          - (unit_content.content | b64decode) is search('StartLimitBurst=60')
+          - (unit_content.content | b64decode) is search('StartLimitIntervalSec=3600s')
+
+    - name: Verify systemd recognizes the template unit  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl cat archive-luks-open@.service
+      register: systemctl_cat
+      changed_when: false
+      failed_when: systemctl_cat.rc != 0
+
+    # ========================================================================
+    # 5. Per-device service is enabled
+    # ========================================================================
+    - name: Check archive-luks-open@archive-1.service enabled state  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-enabled archive-luks-open@archive-1.service
+      register: device_unit_enabled
+      changed_when: false
+      failed_when: device_unit_enabled.rc != 0
+
+    - name: Assert per-device service is enabled
+      ansible.builtin.assert:
+        that:
+          - device_unit_enabled.stdout | trim == 'enabled'
+        fail_msg: >-
+          Expected archive-luks-open@archive-1.service to be 'enabled',
+          got '{{ device_unit_enabled.stdout | trim }}'
+
+    # ========================================================================
+    # 6. Drift reconciliation
+    #
+    # Re-run the role with luks_archive_devices: [] and assert the env
+    # file disappears AND the per-device unit is disabled. This protects
+    # the two `find ... when: <name> not in <desired>` cleanup blocks in
+    # tasks/main.yml — a regression there would let orphan
+    # archive-luks-open@<old>.service units linger on hosts where a
+    # device was removed from inventory, fail at boot, and block archive
+    # pool import via RequiredBy=zfs-import-cache.service.
+    # ========================================================================
+    - name: Re-run luks_archive with empty device list (drift simulation)
+      ansible.builtin.include_role:
+        name: luks_archive
+      vars:
+        luks_archive_devices: []
+        # bootstrap_only doesn't matter here — both cleanup blocks run
+        # unconditionally and the enable/probe blocks are no-ops with
+        # an empty device list. Kept true to match the inventory-empty
+        # production scenario (host has no archive devices today).
+        luks_archive_bootstrap_only: true
+
+    - name: Stat env file after drift run (should be absent)
+      ansible.builtin.stat:
+        path: "/etc/luks/archive/{{ expected_device }}.conf"
+      register: device_conf_after_drift
+
+    - name: Assert per-device env file removed by drift reconciliation
+      ansible.builtin.assert:
+        that:
+          - not device_conf_after_drift.stat.exists
+        fail_msg: >-
+          /etc/luks/archive/{{ expected_device }}.conf survived a converge
+          with luks_archive_devices: [] — the "Remove stale device env
+          files" task in tasks/main.yml regressed (grep the task name to
+          find current line range).
+
+    - name: Check archive-luks-open@archive-1.service state after drift  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-enabled archive-luks-open@archive-1.service
+      register: device_unit_after_drift
+      changed_when: false
+      failed_when: false
+
+    - name: Assert per-device service disabled by drift reconciliation
+      ansible.builtin.assert:
+        that:
+          - device_unit_after_drift.stdout | trim != 'enabled'
+        fail_msg: >-
+          archive-luks-open@archive-1.service was still 'enabled' after a
+          converge with luks_archive_devices: [] — the "Disable stale
+          per-device archive-luks-open services" task regressed. Got
+          state: '{{ device_unit_after_drift.stdout | trim }}'
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Connect token file deployed (0400 root:root)"
+          - "Per-device env file rendered with DEVICE/ITEM/FIELD"
+          - "luks-archive-open.sh deployed (0750, set -euo pipefail, -H @-, --key-file -)"
+          - "archive-luks-open@.service template ordering + Install hooks correct"
+          - "systemctl recognizes the template unit"
+          - "archive-luks-open@archive-1.service enabled"
+          - "Drift: empty device list removed env file + disabled unit"
+          - "All luks_archive role verifications passed"

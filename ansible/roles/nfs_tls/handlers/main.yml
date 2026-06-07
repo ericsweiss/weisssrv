@@ -1,0 +1,6 @@
+---
+- name: Restart tlshd
+  ansible.builtin.systemd:
+    name: tlshd.service
+    state: restarted
+    daemon_reload: true

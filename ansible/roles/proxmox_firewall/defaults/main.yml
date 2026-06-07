@@ -3,6 +3,15 @@
 
 pve_firewall_enabled: true
 
+# Filesystem paths for the Proxmox firewall config. Defaults match the real
+# clustered FUSE filesystem; molecule scenarios override these to redirect
+# template writes to a stub directory.
+pve_firewall_config_dir: /etc/pve/firewall
+pve_firewall_node_dir: /etc/pve/nodes
+# When true, skip pveum / pve-firewall systemd tasks so the role can run in
+# a container without the real Proxmox CLI.
+pve_firewall_skip_pveum: false
+
 # Core cluster nodes (Proxmox hosts)
 pve_firewall_core_cluster:
   - 192.168.0.102  # pve-nas-01

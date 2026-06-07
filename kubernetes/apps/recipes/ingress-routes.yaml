@@ -45,6 +45,8 @@ spec:
     - match: Host(`food.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
@@ -142,6 +144,8 @@ spec:
     - match: Host(`bar.esweiss.com`) && PathPrefix(`/api`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
@@ -153,6 +157,8 @@ spec:
     - match: Host(`bar.esweiss.com`) && PathPrefix(`/uploads`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
@@ -164,6 +170,8 @@ spec:
     - match: Host(`bar.esweiss.com`) && PathPrefix(`/search`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header
@@ -177,6 +185,8 @@ spec:
     - match: Host(`bar.esweiss.com`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: strip-www
           namespace: traefik
         - name: hsts-header

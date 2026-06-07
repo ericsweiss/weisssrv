@@ -94,13 +94,13 @@
   become: true
   tasks:
     - name: Test SSH to dns-02 (certificate distribution)
-      ansible.builtin.command: ssh -i /home/eric/.ssh/id_ed25519_certs -o StrictHostKeyChecking=no -o ConnectTimeout=5 eric@192.168.0.160 'echo success'
+      ansible.builtin.command: ssh -i /home/eric/.ssh/id_ed25519_certs -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 eric@192.168.0.160 'echo success'
       changed_when: false
       register: dns02_ssh
       failed_when: "'success' not in dns02_ssh.stdout"
 
     - name: Test SSH to smtp-relay (certificate distribution)
-      ansible.builtin.command: ssh -i /home/eric/.ssh/id_ed25519_certs -o StrictHostKeyChecking=no -o ConnectTimeout=5 eric@192.168.0.151 'echo success'
+      ansible.builtin.command: ssh -i /home/eric/.ssh/id_ed25519_certs -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 eric@192.168.0.151 'echo success'
       changed_when: false
       register: smtp_ssh
       failed_when: "'success' not in smtp_ssh.stdout"

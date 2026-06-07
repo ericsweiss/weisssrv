@@ -23,6 +23,16 @@
   roles:
     - k3s
 
+# Opt-in NFSv4-over-TLS daemon for k3s NFS clients (currently k3s-agt-nas-01,
+# which mounts pve-nas-01 directly). The role's tasks are individually guarded
+# by `nfs_tls_enabled | default(false)`, so this is a no-op unless that var is
+# set true in host_vars or group_vars on the relevant agents.
+- name: Deploy NFSv4-over-TLS daemon on NFS-mounting agents
+  hosts: k3s_agents
+  become: true
+  roles:
+    - nfs_tls
+
 - name: Deploy guest firewall rules
   hosts: k3s
   roles:

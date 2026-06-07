@@ -4,8 +4,16 @@
 #
 # Required variables:
 #   - host_dns_servers: list of nameserver IPs
-#   - internal_domain: domain for search/domain directives
+#   - internal_domain: domain for the `domain` directive
+#
+# Optional variables:
+#   - resolv_conf_search_domains: list of search-suffix domains
+#     (defaults to [internal_domain]; set to [] to omit the search line)
 
+# unsafe_writes is needed in container test environments where
+# /etc/resolv.conf is bind-mounted from the host and atomic rename
+# returns EBUSY. On real hosts the rename works fine; the variable
+# defaults to false so production behavior is unchanged.
 - name: Configure /etc/resolv.conf
   ansible.builtin.template:
     src: resolv.conf.j2
@@ -13,4 +21,5 @@
     owner: root
     group: root
     mode: "0644"
+    unsafe_writes: "{{ resolv_conf_unsafe_writes | default(false) }}"
   register: resolv_conf_result
