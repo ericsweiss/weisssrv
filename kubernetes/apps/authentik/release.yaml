@@ -200,10 +200,10 @@ spec:
       resources:
         requests:
           cpu: 100m
-          memory: 512Mi
+          memory: 768Mi
         limits:
           cpu: 1000m
-          memory: 1Gi
+          memory: 1536Mi
 
     # Bundled PostgreSQL - consider external for HA
     postgresql:
