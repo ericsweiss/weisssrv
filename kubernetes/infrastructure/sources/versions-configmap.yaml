@@ -5,46 +5,46 @@
 apiVersion: v1
 data:
   adguard_exporter_version: v1.2.1
-  adguard_home_version: 0.107.74
+  adguard_home_version: 0.107.77
   adguardhome_sync_version: 0.9.0
-  authentik_version: 2026.2.2
+  authentik_version: 2026.5.2
   bar_assistant_version: 5.15.0
-  busybox_version: '1.37'
+  busybox_version: '1.38'
   debian_version: '13'
   exportarr_version: v2.3.0
-  gitlab_agent_helm_version: 2.26.0
-  gitlab_runner_helm_version: 0.88.1
-  gitlab_version: 18.11.2-ee.0
+  gitlab_agent_helm_version: 2.27.0
+  gitlab_runner_helm_version: 0.89.1
+  gitlab_version: 19.0.1-ee.0
   gluetun_version: v3.41.1
-  helm_chart_versions_alloy: 1.8.0
+  helm_chart_versions_alloy: 1.8.2
   helm_chart_versions_cert_manager: v1.20.2
   helm_chart_versions_external_dns: 1.21.1
-  helm_chart_versions_external_secrets: 2.4.1
-  helm_chart_versions_kube_prometheus_stack: 84.5.0
-  helm_chart_versions_loki: 13.5.0
-  helm_chart_versions_metallb: 0.15.3
+  helm_chart_versions_external_secrets: 2.6.0
+  helm_chart_versions_kube_prometheus_stack: 86.2.0
+  helm_chart_versions_loki: 17.2.0
+  helm_chart_versions_metallb: 0.16.1
   helm_chart_versions_onepassword_connect: 2.4.1
-  helm_chart_versions_prometheus_blackbox_exporter: 11.9.2
-  helm_chart_versions_traefik: 40.0.0-ea.3
-  k3s_version: v1.35.4+k3s1
-  kube_vip_version: v1.1.2
+  helm_chart_versions_prometheus_blackbox_exporter: 11.11.0
+  helm_chart_versions_traefik: 40.2.0
+  k3s_version: v1.36.1+k3s1
+  kube_vip_version: v1.2.0
   lidarr_version: 3.1.0.4875
-  mealie_postgresql_version: 18.3-alpine
-  mealie_version: v3.16.0
+  mealie_postgresql_version: 18.4-alpine
+  mealie_version: v3.19.2
   meilisearch_version: v1.15.2
   nzbget_version: '26.1'
-  plex_version: 1.43.1.10611-1e34174b1
-  postgresql_version: 18.3-trixie
+  plex_version: 1.43.2.10687-563d026ea
+  postgresql_version: 18.4-trixie
   prowlarr_version: 2.3.5.5327
-  proxmox_exporter_version: 3.8.3
-  pulsarr_version: 0.15.4
-  qbittorrent_version: 5.1.4
+  proxmox_exporter_version: 3.9.0
+  pulsarr_version: 0.16.0
+  qbittorrent_version: 5.2.1
   radarr_version: 6.1.1.10360
-  redis_exporter_version: v1.83.0
-  redis_version: 8.6.2-alpine
+  redis_exporter_version: v1.86.0
+  redis_version: 8.8.0-alpine
   salt_rim_version: 4.15.0
   sonarr_version: 4.0.17.2952
-  tailscale_version: 1.96.4
+  tailscale_version: 1.98.5
   unbound_exporter_version: 0.4.6
   zfs_exporter_version: 2.3.12
 kind: ConfigMap

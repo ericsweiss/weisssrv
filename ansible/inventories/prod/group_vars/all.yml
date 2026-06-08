@@ -117,26 +117,26 @@ ntp_servers:
   - 3.pool.ntp.org
 
 # Application version pins
-adguard_home_version: "0.107.74"
+adguard_home_version: "0.107.77"
 adguardhome_sync_version: "0.9.0"
-tailscale_version: "1.96.4"
+tailscale_version: "1.98.5"
 debian_version: "13"
-k3s_version: "v1.35.4+k3s1"
-kube_vip_version: "v1.1.2"
+k3s_version: "v1.36.1+k3s1"
+kube_vip_version: "v1.2.0"
 
 # Authentik SSO identity provider
 # Latest stable version (released Feb 2, 2026)
-authentik_version: "2026.2.2"
+authentik_version: "2026.5.2"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
 # Available tags: https://hub.docker.com/_/postgres/tags
-postgresql_version: "18.3-trixie"
+postgresql_version: "18.4-trixie"
 
 # PostgreSQL version for Mealie (standalone deployment)
 # Using Alpine base for lighter footprint
 # Available tags: https://hub.docker.com/_/postgres/tags
-mealie_postgresql_version: "18.3-alpine"
+mealie_postgresql_version: "18.4-alpine"
 
 # Download clients and media stack versions
 # Pinned to specific versions for reproducible deployments and controlled updates.
@@ -147,15 +147,15 @@ mealie_postgresql_version: "18.3-alpine"
 # Gluetun: https://github.com/qdm12/gluetun/releases
 # Pulsarr: https://github.com/jamcalli/Pulsarr/releases
 # busybox: init container utility image used by VPN sidecar pre-checks
-busybox_version: "1.37"
+busybox_version: "1.38"
 gluetun_version: "v3.41.1"
 nzbget_version: "26.1"
-qbittorrent_version: "5.1.4"
+qbittorrent_version: "5.2.1"
 prowlarr_version: "2.3.5.5327"
 sonarr_version: "4.0.17.2952"
 radarr_version: "6.1.1.10360"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.15.4"
+pulsarr_version: "0.16.0"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
@@ -163,26 +163,26 @@ pulsarr_version: "0.15.4"
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
-mealie_version: "v3.16.0"
+mealie_version: "v3.19.2"
 bar_assistant_version: "5.15.0"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
-redis_version: "8.6.2-alpine"
+redis_version: "8.8.0-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
-plex_version: "1.43.1.10611-1e34174b1"
+plex_version: "1.43.2.10687-563d026ea"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "18.11.2-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
+gitlab_version: "19.0.1-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.88.1"
+gitlab_runner_helm_version: "0.89.1"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.26.0"
+gitlab_agent_helm_version: "2.27.0"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions above.
@@ -195,12 +195,12 @@ gitlab_agent_helm_version: "2.26.0"
 # Unbound Exporter: https://github.com/letsencrypt/unbound_exporter/releases
 # Redis Exporter: https://hub.docker.com/r/oliver006/redis_exporter/tags
 exportarr_version: "v2.3.0"
-proxmox_exporter_version: "3.8.3"
+proxmox_exporter_version: "3.9.0"
 zfs_exporter_version: "2.3.12"
 adguard_exporter_version: "v1.2.1"
 # v0.4.6 is the latest version with binary releases (v0.5.0 is source-only)
 unbound_exporter_version: "0.4.6"
-redis_exporter_version: "v1.83.0"
+redis_exporter_version: "v1.86.0"
 
 # Helm chart versions for k3s platform workloads
 # These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
@@ -214,15 +214,15 @@ redis_exporter_version: "v1.83.0"
 # - cert-manager: https://artifacthub.io/packages/helm/cert-manager/cert-manager
 # - external-dns: https://artifacthub.io/packages/helm/external-dns/external-dns
 helm_chart_versions:
-  metallb: "0.15.3"
-  traefik: "40.0.0-ea.3"  # App version v3.6.7
+  metallb: "0.16.1"
+  traefik: "40.2.0"  # App version v3.6.7
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0
-  external_secrets: "2.4.1"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "84.5.0"
-  loki: "13.5.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
-  alloy: "1.8.0"
-  prometheus_blackbox_exporter: "11.9.2"
+  external_secrets: "2.6.0"  # ESO with 1Password Connect provider
+  kube_prometheus_stack: "86.2.0"
+  loki: "17.2.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  alloy: "1.8.2"
+  prometheus_blackbox_exporter: "11.11.0"
   onepassword_connect: "2.4.1"
 
 # Proxmox resource pools
