@@ -17,9 +17,12 @@
 # password" and must already be configured under Settings -> Network ->
 # "Custom certificate encryption key" in Plex's UI.
 #
-# OpenSSL 3.x defaults to PKCS#12 v2 with PBES2 encryption, which older
-# Plex builds (Mono/legacy crypto) cannot open. -legacy switches back
-# to the v1 KDF set that Plex's runtime supports.
+# Use OpenSSL 3.x's default modern PKCS#12 format (PBES2/PBKDF2/AES-256-CBC).
+# The earlier `-legacy` flag was carried over from a historical Plex build
+# (Mono/legacy crypto) that needed the v1 RC2-40-CBC KDF, but Plex 1.43.x
+# refuses to parse RC2-40-CBC bundles ("PKCS12_parse failed: error:0308010C:
+# digital envelope routines::unsupported") and silently falls back to its
+# plex.direct cert, breaking Traefik's TLS verification of the upstream.
 
 set -euo pipefail
 
@@ -51,7 +54,6 @@ trap 'rm -f "$PFX_TMP"' EXIT
 
 openssl pkcs12 \
     -export \
-    -legacy \
     -inkey "$PEM_KEY" \
     -in "$PEM_FULLCHAIN" \
     -out "$PFX_TMP" \

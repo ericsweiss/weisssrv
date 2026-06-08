@@ -3,7 +3,17 @@
 # Downloads binary from GitHub releases and runs as a systemd service
 
 - name: Check installed zfs_exporter version
-  ansible.builtin.command: /usr/local/bin/zfs_exporter --version
+  # zfs_exporter --version writes to stderr (kingpin behavior), and the
+  # output line is `zfs_exporter, version X.Y.Z (branch: ..., revision: ...)`.
+  # Extract just the version token with awk so the equality check below
+  # is exact-equal — substring matching against the whole output would
+  # be fooled by unrelated text containing the desired version (e.g. a
+  # build timestamp or revision hash that happens to contain it).
+  ansible.builtin.shell: |
+    set -o pipefail
+    /usr/local/bin/zfs_exporter --version 2>&1 | awk '/^zfs_exporter, version/ { print $3; exit }'
+  args:
+    executable: /bin/bash
   register: zfs_exporter_current
   changed_when: false
   failed_when: false
@@ -13,14 +23,14 @@
     url: "https://github.com/pdf/zfs_exporter/releases/download/v{{ zfs_exporter_version }}/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     dest: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     mode: "0644"
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
 
 - name: Extract zfs_exporter tarball
   ansible.builtin.unarchive:
     src: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     dest: /tmp
     remote_src: true
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
 
 - name: Install zfs_exporter binary
   ansible.builtin.copy:
@@ -28,7 +38,7 @@
     dest: /usr/local/bin/zfs_exporter
     mode: "0755"
     remote_src: true
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
   notify: Restart zfs_exporter
 
 - name: Clean up downloaded files
@@ -38,7 +48,7 @@
   loop:
     - "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     - "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64"
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_version not in zfs_exporter_current.stdout
+  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
 
 - name: Deploy zfs-exporter systemd service
   ansible.builtin.template:

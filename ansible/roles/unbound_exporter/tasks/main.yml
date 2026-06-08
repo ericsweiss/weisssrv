@@ -3,7 +3,26 @@
 # Installs .deb package from GitHub releases and runs as a systemd service
 
 - name: Check installed unbound_exporter version
-  ansible.builtin.command: /usr/bin/unbound_exporter --version
+  # The unbound_exporter binary has no --version flag (its --help exits
+  # rc=1 with no version string), so query dpkg instead — the role
+  # installs it via .deb so the package DB is the source of truth.
+  # Normalize the Debian version `[epoch:]upstream[-debian_revision]`
+  # to the upstream version that all.yml pins:
+  #   * `s/^[0-9]+://`  strips the epoch (`1:`).
+  #   * `s/-[^-]*$//`   strips the debian_revision (everything after
+  #                     the LAST `-`). Per debian-policy §5.6.12 a
+  #                     hyphen in upstream is only allowed when a
+  #                     debian_revision is also present, so this is
+  #                     safe for hyphenated upstream tags like
+  #                     `0.5.0-rc1-1` → `0.5.0-rc1`.
+  # Without this normalization a substring check would let `0.4.6`
+  # match `0.4.60-1` (false skip) or fail to match `1:0.4.6-1` (false
+  # reinstall).
+  ansible.builtin.shell: |
+    set -o pipefail
+    dpkg-query -W -f='${Version}' unbound_exporter 2>/dev/null | sed -E 's/^[0-9]+://; s/-[^-]*$//'
+  args:
+    executable: /bin/bash
   register: unbound_exporter_current
   changed_when: false
   failed_when: false
@@ -12,7 +31,7 @@
   vars:
     _ue_base: "https://github.com/letsencrypt/unbound_exporter/releases/download"
     _ue_file: "unbound_exporter-v{{ unbound_exporter_version }}.x86_64.deb"
-    _needs_install: "{{ unbound_exporter_current.rc != 0 or unbound_exporter_version not in unbound_exporter_current.stdout }}"
+    _needs_install: "{{ unbound_exporter_current.rc != 0 or unbound_exporter_current.stdout != unbound_exporter_version }}"
   ansible.builtin.get_url:
     url: "{{ _ue_base }}/v{{ unbound_exporter_version }}/{{ _ue_file }}"
     dest: "/tmp/{{ _ue_file }}"
@@ -22,7 +41,7 @@
 - name: Install unbound_exporter deb package
   vars:
     _ue_file: "unbound_exporter-v{{ unbound_exporter_version }}.x86_64.deb"
-    _needs_install: "{{ unbound_exporter_current.rc != 0 or unbound_exporter_version not in unbound_exporter_current.stdout }}"
+    _needs_install: "{{ unbound_exporter_current.rc != 0 or unbound_exporter_current.stdout != unbound_exporter_version }}"
   ansible.builtin.apt:
     deb: "/tmp/{{ _ue_file }}"
     state: present
@@ -33,7 +52,7 @@
   ansible.builtin.file:
     path: "/tmp/unbound_exporter-v{{ unbound_exporter_version }}.x86_64.deb"
     state: absent
-  when: unbound_exporter_current.rc != 0 or unbound_exporter_version not in unbound_exporter_current.stdout
+  when: unbound_exporter_current.rc != 0 or unbound_exporter_current.stdout != unbound_exporter_version
 
 - name: Deploy unbound-exporter systemd service
   ansible.builtin.template:

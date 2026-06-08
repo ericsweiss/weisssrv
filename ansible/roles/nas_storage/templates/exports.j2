@@ -8,7 +8,7 @@
 # client; partial rollouts will fail mounts with EACCES.
 
 {% for export in nfs_exports %}
-# {{ export.path }}{% if export.xprtsec is defined and export.xprtsec %} (xprtsec={{ export.xprtsec }}){% endif %}
+# {{ export.path }}{{ ' (xprtsec=' ~ export.xprtsec ~ ')' if (export.xprtsec is defined and export.xprtsec) else '' }}
 {{ export.path }} {% for client in export.clients %}{{ client.spec }}({{ client.options }}{% if export.xprtsec is defined and export.xprtsec %},xprtsec={{ export.xprtsec }}{% endif %}) {% if not loop.last %}\
         {% endif %}{% endfor %}
 
