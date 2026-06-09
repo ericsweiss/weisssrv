@@ -790,14 +790,28 @@ def debian_version_compare(a: str, b: str) -> int:
       0.5.0~rc1-1 < 0.5.0-1 (tilde is pre-release)
       0.4.6-1ubuntu1 > 0.4.6-1 (revision tail)
     """
-    # Split epoch
+    # Split epoch. Per debian-policy §5.6.12 the epoch is "a single
+    # (generally small) unsigned integer". Anything else with a `:` in it
+    # is malformed and we raise rather than silently dropping back to
+    # epoch=0 (which would otherwise hide upstream metadata bugs as
+    # "version unchanged" reports). The `:` itself is reserved as the
+    # epoch separator so there's no legitimate non-epoch case to fall
+    # back to.
     def split(v: str) -> tuple[int, str, str]:
         if ":" in v:
             ep_s, rest = v.split(":", 1)
             try:
                 ep = int(ep_s)
-            except ValueError:
-                ep, rest = 0, v
+            except ValueError as e:
+                raise ValueError(
+                    f"malformed Debian version {v!r}: epoch prefix "
+                    f"{ep_s!r} before ':' must be an unsigned integer"
+                ) from e
+            if ep < 0:
+                raise ValueError(
+                    f"malformed Debian version {v!r}: epoch must be "
+                    f"non-negative (got {ep})"
+                )
         else:
             ep, rest = 0, v
         # Split upstream / debian_revision on LAST '-'
