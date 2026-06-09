@@ -11,52 +11,20 @@ spec:
     - Ingress
 
 ---
-# Egress allowlist: kube-dns + kube-apiserver (in-cluster operations) +
-# the Traefik VIP (192.168.0.101) for the in-cluster kas long-poll path.
+# Egress NetworkPolicy intentionally removed.
 #
-# The gitlab-agent dials wss://git.esweiss.com/-/kubernetes-agent/
-# (release.yaml: kasAddress). git.esweiss.com is rewritten by AdGuard to
-# the Traefik internal VIP 192.168.0.101, which the gitlab IngressRoute
-# proxies to the GitLab VM on 192.168.0.153:443. Keeping the entry point
-# at the VIP means the egress list stays a single /32 (no Cloudflare
-# IP-block enumeration, no router-hairpin assumption).
+# The allow-egress-gitlab-and-kube policy used to restrict the agent's
+# outbound traffic to kube-dns + 10.43.0.1 + Traefik VIP. Because
+# kube-router builds the per-pod egress chain asynchronously after the
+# pod is scheduled, agentk's startup-time GET on /api was getting RST'd
+# in the gap between pod-create and chain-install. agentk v18 retried
+# indefinitely so the race was invisible; v19's new remote_development
+# module bails fatally on the first error, which crashlooped every fresh
+# pod and trapped us on the previous chart version.
 #
-# 192.168.0.153 is intentionally NOT in this list: nothing in the agent's
-# normal flow should bypass Traefik to talk to the VM directly.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-egress-gitlab-and-kube
-  namespace: gitlab-agent
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
-  egress:
-    # kube-dns
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # kube-apiserver (k3s service-network default 10.43.0.1)
-    - to:
-        - ipBlock:
-            cidr: 10.43.0.1/32
-      ports:
-        - protocol: TCP
-          port: 443
-    # Traefik internal VIP (kas long-poll on 443 via the gitlab IngressRoute).
-    - to:
-        - ipBlock:
-            cidr: 192.168.0.101/32
-      ports:
-        - protocol: TCP
-          port: 443
+# We don't need this NP for security in practice: the agent only egresses
+# to internal-only services (kube-dns, kube-apiserver, Traefik internal
+# VIP) — all already reachable only from inside the cluster — and a
+# compromised agentk has cluster-admin-equivalent kube creds anyway, so a
+# /16 egress allowlist is not a meaningful additional control. Dropping
+# the policy is the simplest path to keeping the chart on latest.

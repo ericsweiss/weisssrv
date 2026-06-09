@@ -182,7 +182,7 @@ gitlab_runner_helm_version: "0.89.1"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.26.0"
+gitlab_agent_helm_version: "2.27.0"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions above.

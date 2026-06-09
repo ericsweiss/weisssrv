@@ -12,7 +12,7 @@ data:
   busybox_version: '1.38'
   debian_version: '13'
   exportarr_version: v2.3.0
-  gitlab_agent_helm_version: 2.26.0
+  gitlab_agent_helm_version: 2.27.0
   gitlab_runner_helm_version: 0.89.1
   gitlab_version: 19.0.1-ee.0
   gluetun_version: v3.41.1
