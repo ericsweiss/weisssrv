@@ -299,11 +299,15 @@ SERVICE_REGISTRY: list[dict] = [
     {
         "name": "Tailscale",
         "var_name": "tailscale_version",
-        "category": "github",
-        "github_repo": "tailscale/tailscale",
-        "version_prefix": "v",
-        "strip_prefix": True,
-        "source_url": "https://github.com/tailscale/tailscale/releases",
+        # Track the Tailscale apt repo instead of GitHub releases — the apt
+        # publish cadence lags GitHub by days/weeks and we install via apt
+        # (base role → tailscale_version pin → `apt install tailscale=...`).
+        # Reporting the GitHub version repeatedly suggests bumps the apt
+        # repo can't satisfy yet.
+        "category": "apt_repo",
+        "apt_index_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
+        "apt_package": "tailscale",
+        "source_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
     },
     # --- GitLab ---
     {
@@ -712,6 +716,47 @@ def version_compare(a: str, b: str) -> int:
 # ---------------------------------------------------------------------------
 # Version fetchers
 # ---------------------------------------------------------------------------
+
+def fetch_apt_repo_version(svc: dict) -> str:
+    """Fetch latest version from a Debian apt repo's Packages index.
+
+    Use for upstream-managed apt repos (e.g. pkgs.tailscale.com) where the
+    GitHub release cadence runs ahead of the apt publish cadence. Tracking
+    GitHub would advertise versions that `apt-get install` can't satisfy.
+
+    Required keys in `svc`:
+      apt_index_url: URL to the gzipped Packages file
+                     (e.g. https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz)
+      apt_package:   Binary package name (e.g. "tailscale")
+    """
+    url = svc["apt_index_url"]
+    pkg = svc["apt_package"]
+    req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-version-check/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    text = gzip.decompress(raw).decode("utf-8", errors="replace") if url.endswith(".gz") else raw.decode("utf-8", errors="replace")
+
+    # Packages files are stanzas separated by blank lines; each stanza has
+    # `Package:` and `Version:` lines among others. Collect all Version
+    # lines for stanzas whose Package matches our target, then return the
+    # highest.
+    versions: list[str] = []
+    in_pkg = False
+    for line in text.splitlines():
+        if line.startswith("Package:"):
+            in_pkg = line.split(":", 1)[1].strip() == pkg
+        elif in_pkg and line.startswith("Version:"):
+            versions.append(line.split(":", 1)[1].strip())
+    if not versions:
+        raise RuntimeError(f"package '{pkg}' not found in {url}")
+    # Pick the lexicographically-highest *semantic* version. Debian-style
+    # versions sort fine with our version_greater() helper.
+    latest = versions[0]
+    for v in versions[1:]:
+        if version_greater(v, latest):
+            latest = v
+    return latest
+
 
 def fetch_github_release(svc: dict) -> str:
     """Fetch latest release version from GitHub.
@@ -1335,6 +1380,8 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
             latest = fetch_plex_version(svc_def)
         elif category == "gitlab":
             latest = fetch_gitlab_version(svc_def)
+        elif category == "apt_repo":
+            latest = fetch_apt_repo_version(svc_def)
         else:
             result.error = f"Unknown category: {category}"
             return result
