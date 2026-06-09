@@ -304,6 +304,14 @@ SERVICE_REGISTRY: list[dict] = [
         # (base role → tailscale_version pin → `apt install tailscale=...`).
         # Reporting the GitHub version repeatedly suggests bumps the apt
         # repo can't satisfy yet.
+        #
+        # The Packages index URL is hardcoded to trixie/amd64 because every
+        # host that gets Tailscale installed is a Debian Trixie / amd64
+        # Proxmox node (CLAUDE.md > "Current Infrastructure"). If we add a
+        # different suite/arch to the fleet, also extend this to a list and
+        # check every relevant index — otherwise we'd advertise a version
+        # the actual `apt install` target can't satisfy (which is exactly
+        # the bug this entry is meant to prevent).
         "category": "apt_repo",
         "apt_index_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
         "apt_package": "tailscale",
@@ -717,6 +725,98 @@ def version_compare(a: str, b: str) -> int:
 # Version fetchers
 # ---------------------------------------------------------------------------
 
+def _debian_version_part_compare(a: str, b: str) -> int:
+    """Compare one Debian upstream_version or debian_revision part per
+    debian-policy §5.6.12: alternate non-digit and digit chunks. Non-digit
+    chunks compare lexically with the tweak that letters sort before all
+    non-letters and `~` sorts before everything (including the empty
+    string); digit chunks compare numerically.
+    """
+    def order(c: str) -> int:
+        # Sort key inside a non-digit chunk:
+        #   '~'  → -1   (sorts before end-of-string and before everything else)
+        #   ''   →  0   (end of chunk, before any non-tilde char)
+        #   letter → ord (a..z, A..Z) — sorts before non-letter non-tilde
+        #   other → ord + 256  (sorts after letters)
+        if c == "~":
+            return -1
+        if c == "":
+            return 0
+        if c.isalpha():
+            return ord(c)
+        return ord(c) + 256
+
+    i = j = 0
+    while i < len(a) or j < len(b):
+        # Non-digit run
+        sa = ""
+        while i < len(a) and not a[i].isdigit():
+            sa += a[i]
+            i += 1
+        sb = ""
+        while j < len(b) and not b[j].isdigit():
+            sb += b[j]
+            j += 1
+        # Compare character by character with Debian's ordering tweaks
+        for k in range(max(len(sa), len(sb))):
+            ca = sa[k] if k < len(sa) else ""
+            cb = sb[k] if k < len(sb) else ""
+            if order(ca) != order(cb):
+                return -1 if order(ca) < order(cb) else 1
+
+        # Digit run — compare numerically (skipping leading zeros)
+        na = ""
+        while i < len(a) and a[i].isdigit():
+            na += a[i]
+            i += 1
+        nb = ""
+        while j < len(b) and b[j].isdigit():
+            nb += b[j]
+            j += 1
+        if (int(na) if na else 0) != (int(nb) if nb else 0):
+            return -1 if (int(na) if na else 0) < (int(nb) if nb else 0) else 1
+    return 0
+
+
+def debian_version_compare(a: str, b: str) -> int:
+    """Compare two Debian package version strings per debian-policy
+    §5.6.12 (epoch:upstream_version[-debian_revision]). Returns -1, 0, +1.
+
+    Reimplemented in pure Python so the controller doesn't need dpkg
+    installed (e.g. when run from a macOS dev machine). Cross-checked
+    against `dpkg --compare-versions` in CI via tests:
+      0:1.98.4 < 1.98.5
+      1:0.4.6-1 > 0.4.6 (epoch wins)
+      0.5.0~rc1-1 < 0.5.0-1 (tilde is pre-release)
+      0.4.6-1ubuntu1 > 0.4.6-1 (revision tail)
+    """
+    # Split epoch
+    def split(v: str) -> tuple[int, str, str]:
+        if ":" in v:
+            ep_s, rest = v.split(":", 1)
+            try:
+                ep = int(ep_s)
+            except ValueError:
+                ep, rest = 0, v
+        else:
+            ep, rest = 0, v
+        # Split upstream / debian_revision on LAST '-'
+        if "-" in rest:
+            up, rev = rest.rsplit("-", 1)
+        else:
+            up, rev = rest, ""
+        return ep, up, rev
+
+    ea, ua, ra = split(a)
+    eb, ub, rb = split(b)
+    if ea != eb:
+        return -1 if ea < eb else 1
+    rc = _debian_version_part_compare(ua, ub)
+    if rc != 0:
+        return rc
+    return _debian_version_part_compare(ra, rb)
+
+
 def fetch_apt_repo_version(svc: dict) -> str:
     """Fetch latest version from a Debian apt repo's Packages index.
 
@@ -725,21 +825,35 @@ def fetch_apt_repo_version(svc: dict) -> str:
     GitHub would advertise versions that `apt-get install` can't satisfy.
 
     Required keys in `svc`:
-      apt_index_url: URL to the gzipped Packages file
-                     (e.g. https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz)
-      apt_package:   Binary package name (e.g. "tailscale")
+      apt_index_url: URL to the (typically gzipped) Packages file, e.g.
+                     https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz
+                     Detect gzip from the response payload header rather
+                     than the URL suffix — apt mirrors often serve the
+                     index with a redirect and/or the `.gz` may be
+                     stripped in the final URL.
+      apt_package:   Binary package name (e.g. "tailscale").
     """
     url = svc["apt_index_url"]
     pkg = svc["apt_package"]
     req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-version-check/1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read()
-    text = gzip.decompress(raw).decode("utf-8", errors="replace") if url.endswith(".gz") else raw.decode("utf-8", errors="replace")
+    # gzip magic bytes are 0x1f 0x8b. Sniff the payload rather than the
+    # URL extension so an apt-mirror redirect that drops `.gz` from the
+    # path (or one that serves un-gzipped content over a `.gz` URL)
+    # parses correctly.
+    text = (
+        gzip.decompress(raw).decode("utf-8", errors="replace")
+        if raw[:2] == b"\x1f\x8b"
+        else raw.decode("utf-8", errors="replace")
+    )
 
     # Packages files are stanzas separated by blank lines; each stanza has
     # `Package:` and `Version:` lines among others. Collect all Version
     # lines for stanzas whose Package matches our target, then return the
-    # highest.
+    # highest using debian-policy version ordering (epochs, revisions,
+    # and `~` pre-release semantics — a plain string-tuple compare would
+    # silently get these wrong).
     versions: list[str] = []
     in_pkg = False
     for line in text.splitlines():
@@ -749,11 +863,9 @@ def fetch_apt_repo_version(svc: dict) -> str:
             versions.append(line.split(":", 1)[1].strip())
     if not versions:
         raise RuntimeError(f"package '{pkg}' not found in {url}")
-    # Pick the lexicographically-highest *semantic* version. Debian-style
-    # versions sort fine with our version_greater() helper.
     latest = versions[0]
     for v in versions[1:]:
-        if version_greater(v, latest):
+        if debian_version_compare(v, latest) > 0:
             latest = v
     return latest
 
