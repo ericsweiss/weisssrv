@@ -16,3 +16,13 @@ ci_access:
 observability:
   logging:
     level: warn
+
+# Disable the remote_development module: as of agentk v19 it makes a
+# synchronous GET to /api on the in-cluster K8s apiserver at startup and
+# bails fatally on any error. We don't use Web IDE / remote workspaces
+# from this agent, and the startup probe was racing with kube-router's
+# NetworkPolicy enforcement and crashlooping the pod. Disabling skips
+# the call entirely so agentk comes up cleanly regardless of the egress
+# race window.
+remote_development:
+  enabled: false
