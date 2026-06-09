@@ -119,7 +119,7 @@ ntp_servers:
 # Application version pins
 adguard_home_version: "0.107.77"
 adguardhome_sync_version: "0.9.0"
-tailscale_version: "1.98.5"
+tailscale_version: "1.98.4"
 debian_version: "13"
 k3s_version: "v1.36.1+k3s1"
 kube_vip_version: "v1.2.0"
