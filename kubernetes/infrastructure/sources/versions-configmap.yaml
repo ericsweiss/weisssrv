@@ -12,7 +12,7 @@ data:
   busybox_version: '1.38'
   debian_version: '13'
   exportarr_version: v2.3.0
-  gitlab_agent_helm_version: 2.26.0
+  gitlab_agent_helm_version: 2.27.0
   gitlab_runner_helm_version: 0.89.1
   gitlab_version: 19.0.1-ee.0
   gluetun_version: v3.41.1
@@ -38,7 +38,7 @@ data:
   prowlarr_version: 2.3.5.5327
   proxmox_exporter_version: 3.9.0
   pulsarr_version: 0.16.0
-  qbittorrent_version: 5.1.4
+  qbittorrent_version: 5.2.1
   radarr_version: 6.1.1.10360
   redis_exporter_version: v1.86.0
   redis_version: 8.8.0-alpine

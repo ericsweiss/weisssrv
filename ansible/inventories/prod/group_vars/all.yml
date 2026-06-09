@@ -150,7 +150,7 @@ mealie_postgresql_version: "18.4-alpine"
 busybox_version: "1.38"
 gluetun_version: "v3.41.1"
 nzbget_version: "26.1"
-qbittorrent_version: "5.1.4"
+qbittorrent_version: "5.2.1"
 prowlarr_version: "2.3.5.5327"
 sonarr_version: "4.0.17.2952"
 radarr_version: "6.1.1.10360"
@@ -182,7 +182,7 @@ gitlab_runner_helm_version: "0.89.1"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.26.0"
+gitlab_agent_helm_version: "2.27.0"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions above.

@@ -48,3 +48,42 @@ spec:
       limits:
         cpu: 100m
         memory: 128Mi
+
+    # Wait for the in-cluster K8s API to be reachable before agentk starts.
+    # agentk v19 (chart 2.27+) added a synchronous remote_development module
+    # that GETs /api on the apiserver at startup and bails fatally on any
+    # error. Combined with kube-router's per-pod NetworkPolicy egress chain
+    # not always being fully wired by the time the container exec's, the
+    # first attempt RST's with "connection refused" and the pod crashloops.
+    # This probe loop waits up to 60s for the apiserver to accept a TCP
+    # handshake — by then kube-router has caught up and agentk's first
+    # /api call succeeds. agentk v18 retried indefinitely so the race was
+    # invisible; v19 doesn't, hence the explicit init container.
+    initContainers:
+      - name: wait-for-apiserver
+        image: busybox:1.38
+        command:
+          - sh
+          - -c
+          - |
+            # Use the env-vars kubelet injects (KUBERNETES_SERVICE_HOST/PORT)
+            # so the probe doesn't depend on cluster DNS being warm — cluster
+            # DNS resolves via the same kube-router-protected egress and would
+            # be subject to the same race we're trying to ride out.
+            for i in $(seq 1 30); do
+              if nc -z -w 2 "$KUBERNETES_SERVICE_HOST" "$KUBERNETES_SERVICE_PORT_HTTPS" 2>/dev/null; then
+                echo "apiserver reachable at $KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT_HTTPS"
+                exit 0
+              fi
+              echo "attempt $i: apiserver not yet reachable, sleeping 2s"
+              sleep 2
+            done
+            echo "apiserver never became reachable" >&2
+            exit 1
+        resources:
+          requests:
+            cpu: 5m
+            memory: 8Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
