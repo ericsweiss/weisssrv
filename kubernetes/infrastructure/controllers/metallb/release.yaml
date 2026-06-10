@@ -28,12 +28,19 @@ spec:
       remediateLastFailure: true
   values:
     # Chart pinned to 0.15.3 in versions ConfigMap to dodge a 0.16.x
-    # apiserver-flooding regression (metallb#3063). Skip the chart-managed
-    # CRDs so a chart downgrade can't roll the cluster's existing 0.16
-    # CRDs back to the 0.15 schema; the 0.16 CRDs are upstream-documented
-    # as schema-compatible with the 0.15.3 controller+speaker images.
+    # apiserver-flooding regression (metallb#3063). `crds.enabled: true`
+    # so the chart manages CRDs — when we previously had it false the
+    # 0.16 -> 0.15 chart switch *deleted* the existing CRDs entirely
+    # (the 0.15 chart's CRD templates render as deletions when their
+    # source-of-truth diverges), and that took every IPAddressPool +
+    # L2Advertisement + ServiceL2Status down with them. Net effect was
+    # all LoadBalancer EXTERNAL-IPs flipped to <pending>. Letting the
+    # 0.15 chart own the CRDs means the v1beta1/v1beta2 group is the
+    # 0.15 shape (matches the 0.15.3 controller+speaker), and a future
+    # roll-forward to 0.16 will be handled by the chart's CRD upgrade
+    # template rather than ad-hoc apply.
     crds:
-      enabled: false
+      enabled: true
     prometheus:
       serviceMonitor:
         enabled: true
