@@ -1,45 +1,16 @@
 ---
-# Scrape GitLab metrics from the external VM.
-# Requires prometheus_monitoring['enable'] = true in gitlab.rb
-# (currently disabled — enable it before expecting data from this target).
-apiVersion: v1
-kind: Service
-metadata:
-  name: gitlab-metrics
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: gitlab
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 80
-      targetPort: 80
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: gitlab-metrics
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.153
-    ports:
-      - name: metrics
-        port: 80
-
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: gitlab
-  namespace: observability
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: gitlab
-  endpoints:
-    - port: metrics
-      interval: 60s
-      path: /-/metrics
+# GitLab metrics scraping is intentionally left out of the cluster until
+# `prometheus_monitoring['enable'] = true` is set in /etc/gitlab/gitlab.rb
+# on the GitLab VM. The Service/Endpoints/ServiceMonitor stanzas that used
+# to live here pointed at port 80 of the VM, but:
+#   * After the Plex/HAOS HTTPS rollout we also flipped the GitLab nginx
+#     to bind only on :443 (gitlab role: `gitlab_nginx_listen_https=true`),
+#     so the port-80 target was unconditionally TargetDown.
+#   * Even if we re-pointed at :443, gitlab.rb's prometheus_monitoring
+#     stanza is still disabled — `/-/metrics` returns the GitLab login
+#     page, not metric exposition.
+# Re-add the manifests below once prometheus_monitoring['enable'] flips
+# to true and reconfigure runs. The previous shape (Service + Endpoints
+# + ServiceMonitor with scheme: https + tlsConfig.serverName=git.esweiss.com
+# + bearerTokenFile from observability-exporter-secrets[gitlab-monitoring-token])
+# is in git history if needed.

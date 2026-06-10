@@ -336,7 +336,7 @@ data:
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "SATA drive temperatures via the drivetemp kernel module. Threshold reflects archive-pool ST6000NM0024 spec ceiling (55C). Requires drivetemp module (loaded by node_exporter_host role).",
+          "description": "SATA HDD temperatures via the drivetemp kernel module. Scoped to pve-nas-01 (192.168.0.102), the only host with physical SATA HDDs — the archive-pool ST6000NM0024 spec ceiling (55C) only applies to those drives. drivetemp also reports SSDs on compute hosts but their 70-85C spec ceiling makes the 50/55C thresholds here misleading; view those in the 'Non-CPU hwmon Temperatures' panel instead. Requires drivetemp module (loaded by node_exporter_host role).",
           "fieldConfig": {
             "defaults": {
               "color": { "mode": "palette-classic" },
@@ -373,7 +373,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"$host\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"drivetemp.*\"}",
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"192\\.168\\.0\\.102:.*\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"drivetemp.*\"}",
               "legendFormat": "{{ instance }} {{ chip }}",
               "refId": "A"
             }

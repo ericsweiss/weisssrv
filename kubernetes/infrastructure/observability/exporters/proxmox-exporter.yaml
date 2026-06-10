@@ -115,17 +115,18 @@ spec:
       relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
-    # pve-opt-01
-    - port: metrics
-      interval: 60s
-      scrapeTimeout: 30s
-      path: /pve
-      params:
-        target: ["192.168.0.104"]
-        module: ["default"]
-      relabelings:
-        - sourceLabels: [__param_target]
-          targetLabel: target
+    # pve-opt-01 — INTENTIONALLY COMMENTED OUT (dead PSU since 2026-06-02,
+    # mirrored with node-exporter-host.yaml). Restore when the host comes back.
+    # - port: metrics
+    #   interval: 60s
+    #   scrapeTimeout: 30s
+    #   path: /pve
+    #   params:
+    #     target: ["192.168.0.104"]
+    #     module: ["default"]
+    #   relabelings:
+    #     - sourceLabels: [__param_target]
+    #       targetLabel: target
     # pve-opt-02
     - port: metrics
       interval: 60s

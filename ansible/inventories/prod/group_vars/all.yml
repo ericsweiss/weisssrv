@@ -214,7 +214,13 @@ redis_exporter_version: "v1.86.0"
 # - cert-manager: https://artifacthub.io/packages/helm/cert-manager/cert-manager
 # - external-dns: https://artifacthub.io/packages/helm/external-dns/external-dns
 helm_chart_versions:
-  metallb: "0.16.1"
+  # 0.16.x has an open regression in the L2 ServiceL2Status reconciler that
+  # floods the apiserver (~34 r/s 500s in our setup, enough to trip
+  # KubeAPIErrorBudgetBurn). Pinned to 0.15.3 — the v0.16 CRDs already in
+  # the cluster are schema-compatible with the 0.15.3 controller+speaker
+  # images per upstream. Re-evaluate when the fix lands.
+  # Upstream issue: https://github.com/metallb/metallb/issues/3063
+  metallb: "0.15.3"
   traefik: "40.3.0"  # App version v3.6.7
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0

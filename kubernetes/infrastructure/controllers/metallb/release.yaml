@@ -27,11 +27,24 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # Chart pinned to 0.15.3 in versions ConfigMap to dodge a 0.16.x
+    # apiserver-flooding regression (metallb#3063). Skip the chart-managed
+    # CRDs so a chart downgrade can't roll the cluster's existing 0.16
+    # CRDs back to the 0.15 schema; the 0.16 CRDs are upstream-documented
+    # as schema-compatible with the 0.15.3 controller+speaker images.
+    crds:
+      enabled: false
     prometheus:
       serviceMonitor:
         enabled: true
-      serviceAccount: metallb-controller
-      namespace: metallb-system
+      # 0.15.3 + 0.16.x both serve the metrics endpoint via kube-rbac-proxy
+      # when `rbacPrometheus: true` (chart default). The chart generates a
+      # (Cluster)Role+Binding that authorises ONE specific (ServiceAccount,
+      # namespace) to scrape — those two values must point at the
+      # *Prometheus* SA, not metallb's own SA. Point them at our
+      # kube-prometheus-stack Prometheus instance.
+      serviceAccount: kube-prometheus-stack-prometheus
+      namespace: observability
     speaker:
       # Only run speakers on nodes labeled for ingress traffic.
       nodeSelector:

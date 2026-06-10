@@ -644,13 +644,23 @@ spec:
           - name: homelab.temperature
             rules:
               # SATA drive temperatures via the drivetemp kernel module.
-              # Threshold sized for the archive-pool ST6000NM0024 drives whose
-              # spec ceiling is 55C; the same threshold also catches any SSD
-              # running unusually hot (consumer SSD spec is typically 70C).
+              # Threshold sized for the archive-pool ST6000NM0024 spinning
+              # disks whose spec ceiling is 55C. Scoped to the NAS host
+              # specifically because:
+              #   * The other Proxmox hosts have local-ssd Samsung 870 EVO
+              #     drives that the kernel's drivetemp module also reports
+              #     as `chip_name="drivetemp"` (same SATA SMART path), but
+              #     consumer SSDs spec a 70-85C operating ceiling and
+              #     routinely run at 55-60C under k3s workloads — the alert
+              #     would page on a healthy SSD.
+              #   * The HDDs that this alert actually exists to protect
+              #     are physically only on pve-nas-01 (archive + tank
+              #     pools). Restricting `instance` keeps the alert tight.
+              # If we add HDDs to another host, also extend this filter.
               - alert: SATADriveTempWarning
                 expr: >-
                   max by (instance, chip) (
-                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.102:.*"}
                     * on (instance, chip) group_left(chip_name)
                     node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
                   ) >= 50
@@ -671,7 +681,7 @@ spec:
               - alert: SATADriveTempCritical
                 expr: >-
                   max by (instance, chip) (
-                    node_hwmon_temp_celsius{job="node-exporter-host"}
+                    node_hwmon_temp_celsius{job="node-exporter-host", instance=~"192\\.168\\.0\\.102:.*"}
                     * on (instance, chip) group_left(chip_name)
                     node_hwmon_chip_names{job="node-exporter-host", chip_name=~"drivetemp.*"}
                   ) >= 55

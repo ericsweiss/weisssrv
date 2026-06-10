@@ -69,35 +69,44 @@ subsets:
 
 ---
 # ---------------------------------------------------------------------------
-# pve-opt-01 (192.168.0.104)
+# pve-opt-01 (192.168.0.104) — INTENTIONALLY COMMENTED OUT
+#
+# pve-opt-01 has been physically offline since 2026-06-02 (dead PSU,
+# replacement pending). Leaving an Endpoints pointed at 192.168.0.104
+# while the host is down causes Prometheus's `host unreachable` retries
+# to surface as a sustained TargetDown alert.
+#
+# Restore the Service + Endpoints stanza below when the PSU is replaced
+# and the host comes back online; until then this block is the canonical
+# "the host doesn't exist right now" marker.
 # ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-pve-opt-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-opt-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-pve-opt-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.104
-    ports:
-      - name: metrics
-        port: 9101
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: node-exporter-host-pve-opt-01
+#   namespace: observability
+#   labels:
+#     app.kubernetes.io/name: node-exporter-host
+#     app.kubernetes.io/instance: pve-opt-01
+# spec:
+#   clusterIP: None
+#   ports:
+#     - name: metrics
+#       port: 9101
+#       targetPort: 9101
+#
+# ---
+# apiVersion: v1
+# kind: Endpoints
+# metadata:
+#   name: node-exporter-host-pve-opt-01
+#   namespace: observability
+# subsets:
+#   - addresses:
+#       - ip: 192.168.0.104
+#     ports:
+#       - name: metrics
+#         port: 9101
 
 ---
 # ---------------------------------------------------------------------------
