@@ -124,6 +124,42 @@ spec:
             - name: tun
               mountPath: /dev/net/tun
 
+        # qBittorrent leaves a lockfile + IPC socket in /config/qBittorrent/
+        # when it shuts down ungracefully (SIGKILL from kubelet on probe
+        # timeout, node reboot, OOM, etc.). On the next start, qbittorrent
+        # detects the stale IPC socket as a "running" instance, gracefully
+        # terminates immediately, and the pod enters CrashLoopBackOff with
+        # the cycle "qBittorrent v5.2.1 started ... qBittorrent termination
+        # initiated" repeating every ~1s.
+        #
+        # Removing the stale files on every start is safe because the
+        # config PVC (`qbittorrent-config`) is `ReadWriteOnce`: kube itself
+        # enforces single-pod attachment, so no other live qbittorrent can
+        # be holding the lock when this initContainer runs. The Deployment
+        # is also single-replica with `Recreate` strategy for the same
+        # reason — if either of those changes (RWX PVC or RollingUpdate
+        # strategy), this initContainer must be revisited because a live
+        # peer's lock could be deleted. The files are recreated on
+        # successful start.
+        #
+        # `rm -f` already silently ignores missing files (exit 0); we do
+        # NOT swallow other failures (e.g. EPERM from a bad subPath mount)
+        # so the initContainer fails loudly and the pod surfaces the real
+        # problem instead of looping into the same CrashLoopBackOff.
+        #
+        # Incident 2026-06-10: this stale-lock cycle blocked qbittorrent
+        # for 2 days until the lock was manually removed inside the pod;
+        # this initContainer keeps it from recurring after the next crash.
+        - name: clean-stale-locks
+          image: busybox:${busybox_version}
+          command:
+            - sh
+            - -ec
+            - rm -fv /config/qBittorrent/lockfile /config/qBittorrent/ipc-socket
+          volumeMounts:
+            - name: config
+              mountPath: /config
+
       containers:
         # Gluetun VPN sidecar - provides VPN tunnel when enabled
         # When VPN is disabled, this container runs `sleep infinity` (minimal
