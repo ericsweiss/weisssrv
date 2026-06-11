@@ -124,13 +124,22 @@ SERVICE_REGISTRY: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
+        # Authentik is deployed via the goauthentik Helm chart, so the
+        # version we pin in `authentik_version` is read as a chart tag
+        # (e.g. `version: "{{ authentik_version }}"` in the HelmRelease).
+        # The Helm chart publishes a few days after the GitHub release tag
+        # — see incident 2026-06-10 where the checker reported 2026.5.3
+        # from `goauthentik/authentik` GitHub releases, MR #76 picked it
+        # up, Flux failed with "no 'authentik' chart with version matching
+        # '2026.5.3' found", and MR #78 reverted to 2026.5.2 (the latest
+        # actually present in the helm repo). Query the chart repo
+        # directly to avoid the lag.
         "name": "Authentik",
         "var_name": "authentik_version",
-        "category": "github",
-        "github_repo": "goauthentik/authentik",
-        "version_prefix": "version/",
-        "strip_prefix": True,
-        "tag_filter": r"^version/\d{4}\.\d+\.\d+$",
+        "category": "helm",
+        "helm_repo": "https://charts.goauthentik.io",
+        "helm_chart": "authentik",
+        "source_url": "https://github.com/goauthentik/authentik/releases",
     },
     {
         "name": "PostgreSQL (Authentik)",
