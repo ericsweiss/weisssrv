@@ -154,10 +154,28 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # bar-assistant connects to its own Redis for app state.
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: bar-assistant
+      ports:
+        - protocol: TCP
+          port: 6379
+    # redis-exporter in the observability namespace scrapes this Redis on
+    # 6379 for the Redis dashboard + alert rules. Without this rule the
+    # exporter's liveness probe (HTTP GET on its /metrics endpoint, which
+    # redis-exporter only serves after it has connected to Redis) fails
+    # permanently and kubelet keeps killing the pod — which in turn keeps
+    # the parent infrastructure-observability Flux Kustomization stuck in
+    # HealthCheckFailed, blocking the apps cascade.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-exporter
       ports:
         - protocol: TCP
           port: 6379
