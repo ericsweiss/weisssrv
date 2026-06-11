@@ -126,7 +126,7 @@ kube_vip_version: "v1.2.0"
 
 # Authentik SSO identity provider
 # Latest stable version (released Feb 2, 2026)
-authentik_version: "2026.5.2"
+authentik_version: "2026.5.3"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
@@ -151,9 +151,9 @@ busybox_version: "1.38"
 gluetun_version: "v3.41.1"
 nzbget_version: "26.1"
 qbittorrent_version: "5.2.1"
-prowlarr_version: "2.3.5.5327"
+prowlarr_version: "2.4.0.5397"
 sonarr_version: "4.0.17.2952"
-radarr_version: "6.1.1.10360"
+radarr_version: "6.2.1.10461"
 lidarr_version: "3.1.0.4875"
 pulsarr_version: "0.16.0"
 
@@ -174,7 +174,7 @@ plex_version: "1.43.2.10687-563d026ea"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "19.0.1-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
+gitlab_version: "19.0.2-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
@@ -226,7 +226,7 @@ helm_chart_versions:
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
   kube_prometheus_stack: "86.2.2"
-  loki: "17.2.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  loki: "17.3.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.9.0"
   prometheus_blackbox_exporter: "11.11.0"
   onepassword_connect: "2.4.1"
