@@ -23,7 +23,10 @@
       Run deployment with: task dns:deploy (which injects 1Password secrets)
     success_msg: "Required acme.sh variables are present"
   when: inventory_hostname == 'dns-01'
-  tags: [validation, always]
+  # Deliberately NOT tags: always — that made every unrelated tag-limited
+  # run against dns-01 (e.g. --tags proxmox_firewall without op env) fail
+  # this secrets assert and abort the host's remaining plays.
+  tags: [acme_certs, validation]
 
 - name: Ensure eric .ssh directory exists for cert distribution
   ansible.builtin.file:
@@ -63,25 +66,16 @@
 # authorized_keys, regardless of which play invokes the role. Adding a
 # host to host_vars/dns-01.yml's cert_distribution_targets is enough.
 #
-# delegate_to: "{{ item.host }}" runs the task on the target host
-# directly. Without delegation the previous form gated on
-# `inventory_hostname == item.host`, which silently no-op'd whenever
-# the play's host scope didn't include item.host (e.g. `task dns:deploy`
-# only puts dns-01 + dns-02 in scope, so non-DNS targets like gitlab,
-# pve-nas-01, and plex never had the pubkey installed).
+# delegate_to runs on each target directly, so targets outside the play's
+# host scope (gitlab, pve-nas-01, plex, ...) still get the pubkey.
 #
 # Skips ssh_no_sudo targets (HAOS) because Ansible's SSH path doesn't
 # manage their authorized_keys; the operator must paste the pubkey via
 # the HAOS SSH add-on UI on first deploy.
-# Don't use `run_once: true` here. Combined with `when: inventory_hostname
-# == 'dns-01'`, run_once picks the first host of the play's host list and
-# evaluates the when-clause against that host — if anything in inventory
-# ever reorders the `dns` group so dns-02 comes before dns-01, run_once
-# picks dns-02, the when-clause is false, and the task is silently
-# skipped (no key distribution). dns-01 happens to be first today, but
-# the dependency on that ordering is fragile. The when-clause alone
-# already provides the single-execution gate: every host in the play
-# evaluates it, only dns-01 runs the task, every other host skips.
+#
+# No run_once: combined with the dns-01 when-clause it would silently
+# skip if dns-02 ever sorted first in the play; the when-clause alone
+# already limits execution to dns-01.
 - name: Deploy dns-01 cert-distribution pubkey to each target's authorized_keys
   ansible.posix.authorized_key:
     user: "{{ item.ssh_user | default('eric') }}"
@@ -138,13 +132,31 @@
 # `acme.sh --issue` invocations without --server still hit LE.
 - name: Install acme.sh (default CA pinned to Let's Encrypt)
   ansible.builtin.shell: |
-    sh /tmp/acme_installer.sh --install --nocron --email {{ acme_email }} \
+    sh /tmp/acme_installer.sh --install --email {{ acme_email }} \
       --server letsencrypt
   args:
     creates: /root/.acme.sh/acme.sh
   when:
     - inventory_hostname == 'dns-01'
     - not acme_installed.stat.exists
+
+# acme.sh's installer manages its own renewal cron. Earlier role versions
+# passed --nocron, leaving renewals unscheduled on fresh installs; ensure
+# the job exists regardless of install vintage.
+- name: Ensure acme.sh renewal cronjob exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    if ! crontab -l 2>/dev/null | grep -q '\.acme\.sh.*--cron'; then
+      /root/.acme.sh/acme.sh --install-cronjob
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: acme_cron_ensure
+  changed_when: "'CHANGED' in (acme_cron_ensure.stdout | default(''))"
+  when:
+    - inventory_hostname == 'dns-01'
+    - not ansible_check_mode
 
 # Defensive: even on hosts where acme.sh was installed BEFORE this pin
 # was added, set the default CA so the next renewal uses Let's Encrypt.

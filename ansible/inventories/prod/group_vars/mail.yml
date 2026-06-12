@@ -1,8 +1,7 @@
 ---
 # SMTP relay server configuration
 
-# SSH configuration - SMTP relay container now uses 'eric' user like other hosts
-# Root login disabled for consistency with other LXC containers
+# Root SSH login disabled; access is via the standard 'eric' user
 ssh_permit_root_login: "no"
 
 # LXC container settings
@@ -22,7 +21,8 @@ smtp_relay_config:
   mynetworks: "127.0.0.0/8,192.168.0.0/24,10.42.0.0/16"
   inet_interfaces: "all"
   inet_protocols: "ipv4"
-  smtp_tls_security_level: "encrypt"
+  # "secure" = encrypt AND verify Gmail's certificate against CAfile.
+  smtp_tls_security_level: "secure"
   smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
   smtp_sasl_auth_enable: "yes"
   smtp_sasl_security_options: "noanonymous"
@@ -41,7 +41,10 @@ smtp_relay_config:
   smtpd_sasl_path: "smtpd"
   smtpd_sasl_security_options: "noanonymous"
   broken_sasl_auth_clients: "yes"
-  smtpd_sasl_auth_enable: "yes"
+  # Port-25 AUTH off (cleartext-permitted + broken by chroot); submission
+  # re-enables it per-service behind mandatory TLS.
+  smtpd_sasl_auth_enable: "no"
+  smtpd_tls_auth_only: "yes"
   smtpd_sasl_local_domain: "$myhostname"
 
 # TLS certificate paths

@@ -1,6 +1,7 @@
 ---
 # Grafana Alloy — log collector DaemonSet (successor to Promtail).
-# Tails container logs from /var/log/pods on every node and ships to Loki.
+# Streams container logs from every node via the Kubernetes API
+# (loki.source.kubernetes) and ships them to Loki.
 # Tolerates all taints to run on every node including NAS, ingress, compute,
 # and control-plane nodes.
 apiVersion: helm.toolkit.fluxcd.io/v2
@@ -31,6 +32,13 @@ spec:
   values:
     alloy:
       enableReporting: false
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
       configMap:
         content: |
           // Discover all pods on this node
@@ -84,20 +92,11 @@ spec:
 
     controller:
       type: daemonset
+      tolerations:
+        - operator: Exists
+
+    serviceMonitor:
+      enabled: true
 
     # The chart sets HOSTNAME from spec.nodeName via downward API by default.
     # sys.env("HOSTNAME") in the River config resolves to the node name.
-
-    tolerations:
-      - operator: Exists
-
-    resources:
-      requests:
-        cpu: 25m
-        memory: 64Mi
-      limits:
-        cpu: 200m
-        memory: 256Mi
-
-    mounts:
-      varlog: true

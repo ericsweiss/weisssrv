@@ -32,7 +32,7 @@ GitLab is deployed as a standalone VM on pve-nas-01 with:
         |                   |                   |
 +-------v-------+   +-------v-------+   +-------v-------+
 |   GitLab Web  |   |   Registry    |   |    Pages      |
-|    :80        |   |    :5050      |   |    :8090      |
+|  :443 (TLS)   |   |  :5050 (TLS)  |   |  :8443 (TLS)  |
 +---------------+   +---------------+   +---------------+
         |                   |                   |
         +-------------------+-------------------+
@@ -595,8 +595,8 @@ Pages are available at:
 4. **Firewall**: The `sg-gitlab` security group has differentiated access:
    - Port 2222 (Git SSH): Open to WAN for external collaborators
    - Port 22 (Admin SSH + LAN Git): Restricted to admin networks (LAN + Tailscale)
-   - Port 80 (GitLab Web): Restricted to k3s nodes and admin networks
-   - Ports 5050/8090 (Registry/Pages): Restricted to k3s nodes only (routed via Traefik)
+   - Port 443 (GitLab Web, TLS): k3s nodes + admin networks; port 80 stays open to admin sources for the HTTP→HTTPS redirect
+   - Ports 5050/8443 (Registry/Pages, both TLS via the distributed wildcard cert): Restricted to k3s nodes only (routed via Traefik)
 5. **Secrets**: All credentials via 1Password; never committed to git
 
 ## Related Documentation
@@ -616,7 +616,7 @@ GitLab's Web IDE serves the VS Code editor and per-extension iframes from a sepa
 | Extension host | `*.ide.git.ericsweiss.com` (DNS-only via Cloudflare → MetalLB public VIP) |
 | Apex | `ide.git.ericsweiss.com` (same target) |
 | Cert | cert-manager `gitlab-web-ide-wildcard` → secret `gitlab-web-ide-ericsweiss-tls`, DNS-01 via Cloudflare |
-| Route | Traefik `IngressRoute gitlab-web-ide` (HostRegexp single-label wildcard + apex Host) → `gitlab-web` Service:80 |
+| Route | Traefik `IngressRoute gitlab-web-ide` (HostRegexp single-label wildcard + apex Host) → `gitlab-web` Service:443 (HTTPS, `vm-tls-wildcard` ServersTransport) |
 | Backend | Same GitLab nginx + Workhorse that fronts `git.ericsweiss.com` (catch-all server_name) |
 
 ### GitLab settings (Application Settings API)

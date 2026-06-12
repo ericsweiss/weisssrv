@@ -174,6 +174,8 @@ The base infrastructure automation is complete and production-ready:
 - [x] kube-vip for API HA (192.168.0.161)
 - [x] MetalLB for LoadBalancer services
 - [x] Traefik ingress, cert-manager, external-dns
+- [x] External Secrets Operator with 1Password Connect
+- [x] Observability stack (Prometheus + Grafana + Loki + Alloy, see [31-observability.md](31-observability.md))
 - [x] Authentik SSO identity provider
 - [x] Application workloads (*arr stack, Mealie, Bar Assistant)
 - [x] Plex Media Server (LXC container with Traefik ingress)

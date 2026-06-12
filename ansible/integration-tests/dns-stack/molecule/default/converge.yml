@@ -74,20 +74,20 @@
 
     # Deploy AdGuard Home on all DNS servers
     # INTEGRATION TEST LIMITATION:
-    # AdGuard Home API configuration is skipped because:
-    # 1. API endpoints require completing the initial setup wizard first
-    # 2. The setup wizard is interactive (web-based) and cannot be automated
-    # 3. Without setup completion, AdGuard Home runs in "setup mode" and
-    #    the /control/dns_config endpoint returns 403 Forbidden
+    # The role completes the setup wizard automatically (POST to
+    # /control/install/configure), but the post-setup API configuration
+    # (api_base_config.yml / api_config.yml) is skipped here via
+    # skip_adguard_api_config, so upstreams, rewrites, and filtering rules
+    # are not applied.
     #
     # What IS tested:
     # - Binary installation and systemd service
-    # - Configuration file deployment (AdGuardHome.yaml)
+    # - Initial setup wizard completion (config file created)
     # - Web UI accessibility on port 3000
     # - adguardhome-sync service configuration and timer
     #
-    # What is NOT tested (due to setup wizard requirement):
-    # - DNS listening on port 53 (requires setup completion)
+    # What is NOT tested (skip_adguard_api_config: true):
+    # - API-driven config: upstream DNS to Unbound, rewrites, filtering
     # - DNS query resolution via AdGuard (tested via Unbound instead)
     # - Full sync operation (sync config deployed, but API auth not exercised)
     #
@@ -99,8 +99,7 @@
         # Use local Unbound as upstream
         adguard_dns_upstream_servers:
           - "127.0.0.1:5335"
-        # Skip API configuration in integration tests
-        # (requires fully initialized instance with initial setup completed)
+        # Skip post-setup API configuration (upstreams/rewrites/filtering)
         skip_adguard_api_config: true
         # Note: Other vars (ports, admin credentials) come from molecule.yml inventory
 

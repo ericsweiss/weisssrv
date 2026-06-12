@@ -11,3 +11,4 @@ resources:
   - service-monitors
   - ingress
   - dashboards
+  - vpa.yaml

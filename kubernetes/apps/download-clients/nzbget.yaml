@@ -12,9 +12,7 @@
 #   - Direct internet access
 #
 # Switch modes: edit the nzbget-vpn-config ConfigMap below (vpn_enabled and
-# vpn_provider). To apply: commit + push (Flux reconciles automatically).
-# To force pod restart: kubectl rollout restart deployment/nzbget -n downloads
-# See kubernetes/apps/download-clients/README.md § Per-App VPN Control.
+# vpn_provider); see README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -25,9 +23,6 @@ metadata:
     app.kubernetes.io/name: nzbget
     app.kubernetes.io/component: config
 data:
-  # VPN settings - change these to control VPN behavior
-  # vpn_enabled: "true" = VPN sidecar active, killswitch enforced
-  # vpn_enabled: "false" = direct internet, no VPN
   vpn_enabled: "false"
   # VPN provider: "privado", "vpn unlimited"
   vpn_provider: "privado"
@@ -35,11 +30,8 @@ data:
   server_countries: "Netherlands"
 
 ---
-# Deployment with conditional VPN sidecar
-# The sidecar pattern ensures:
-# 1. When VPN is enabled, both containers share network namespace
-# 2. Gluetun owns the network stack, NZBGet uses it
-# 3. If Gluetun crashes/loses VPN, NZBGet has no network (killswitch)
+# Deployment with conditional Gluetun VPN sidecar (killswitch semantics: see
+# file header / README.md).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -154,10 +146,9 @@ spec:
             # VPN credentials: NOT optional. If vpn-credentials is missing or
             # a field is blank (e.g., ESO lost access to 1Password), we want the
             # pod to fail to start — that's clearer than Gluetun CrashLoopBackOff
-            # with silent auth failures. Gluetun only reads these when VPN_TYPE
-            # is "openvpn"; the init container no-ops them for "wireguard" or
-            # when vpn_enabled=false (kill switch mode still needs an IP but not
-            # these specific creds).
+            # with silent auth failures. Gluetun reads these only when it
+            # actually starts (OpenVPN mode); with vpn_enabled=false the
+            # sidecar execs `sleep infinity` and never consumes them.
             - name: OPENVPN_USER
               valueFrom:
                 secretKeyRef:

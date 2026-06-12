@@ -13,3 +13,4 @@ resources:
   - ingress-routes.yaml
   - certificate.yaml
   - networkpolicy.yaml
+  - vpa.yaml

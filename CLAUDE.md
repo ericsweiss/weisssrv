@@ -24,12 +24,13 @@ weisssrv/
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order; together with apps/ they form a five-stage Flux Kustomization chain (sources -> controllers -> configs -> observability -> apps)
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
-│   │   ├── controllers/        # external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns (HelmReleases; dependsOn sources)
+│   │   ├── controllers/        # external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns, vpa (HelmReleases; dependsOn sources)
 │   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, service-monitors, dashboards, ingress (dependsOn configs)
 │   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability)
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
+├── docker/                     # Molecule test/CI container images
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
 └── .github/workflows/          # Legacy workflows (disabled)
 ```
@@ -84,50 +85,16 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 - 3-node etcd quorum (tolerates 1 server failure)
 - Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password Connect backend
 - Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting); k3s-irrelevant components disabled (kubeProxy, kubeScheduler, kubeControllerManager, kubeEtcd); alertmanager config uses ExternalSecret template for webhook injection
+- Autoscaling: VPA (Auto/Initial/Off tiers per workload class) + CoreDNS HPA pin — see docs/33-autoscaling.md
 
-**Applications**:
-- Authentik SSO (auth.esweiss.com) - Identity provider for SSO/OIDC/SAML
-  - Version managed in all.yml
-  - PostgreSQL data on persistent ZFS zvol (ssd/appdata/authentik/postgres, 10GB)
-- Plex Media Server (plex.esweiss.com) - LXC container with Traefik ingress
-- Download clients + media stack (downloads namespace):
-  - Gluetun (VPN gateway with killswitch)
-  - NZBGet (nzbget.esweiss.com) - Usenet
-  - qBittorrent (qbittorrent.esweiss.com) - BitTorrent
-  - Prowlarr (prowlarr.esweiss.com) - Indexer manager
-  - Sonarr (tv.esweiss.com) - TV shows
-  - Radarr (movies.esweiss.com) - Movies
-  - Lidarr (music.esweiss.com) - Music
-  - Pulsarr (pulsarr.esweiss.com) - Plex Watchlist automation (pinned to NAS nodes, requires AVX)
-- Recipe management stack (recipes namespace):
-  - Mealie (food.esweiss.com) - Recipe management and meal planning
-  - Bar Assistant (bar.esweiss.com) - Cocktail/bar recipe management
-  - Authentik SSO integration for both apps
-  - OpenAI integration for Mealie recipe parsing
-  - Mealie PostgreSQL on persistent ZFS zvol (ssd/appdata/mealie/postgres, 32GB)
-- Home Assistant (home.esweiss.com / home.ericsweiss.com):
-  - HAOS VM on pve-prec-01 (192.168.0.154, HA-managed with multi-node replication)
-  - Traefik ingress with WebSocket support
-  - Authentik SSO via hass-openid custom integration (OIDC)
-  - API bypass routes for HA integrations (sonarr, radarr, lidarr, nzbget, qbittorrent)
-  - NFS media mount (read-only access to unified media library)
-- GitLab (git.esweiss.com / git.ericsweiss.com):
-  - GitLab EE (CE features) on pve-nas-01 (192.168.0.153) — version in all.yml
-  - VM with 6 vCPUs, 16GB RAM, 100GB root disk
-  - Repository data on separate ZFS zvol (ssd/appdata/gitlab/repos, 200GB)
-  - Container Registry (registry.git.ericsweiss.com)
-  - GitLab Pages (*.pages.git.ericsweiss.com)
-  - Web IDE extension host (*.ide.git.ericsweiss.com) — per-extension SOP isolation, CVE-2026-5816 mitigation
-  - CI/CD Runners on k3s cluster (infrastructure runner for weisssrv, shared runner for other projects)
-  - Authentik SSO integration
-  - Git SSH on port 22 (internal), port 2222 (external)
-
-- Grafana (grafana.esweiss.com):
-  - Community dashboards imported for Node Exporter, Traefik, AdGuard, Redis, Prometheus, Alertmanager
-  - Custom dashboards for Cluster Overview, Home Assistant, Media Stack, Recipes, DNS Combined, Mail, Infrastructure, Thermals, Blackbox Exporter, cert-manager, Flux Cluster, Unbound, GitLab
-  - Authentik OIDC SSO integration
-  - Loki datasource for log queries
-  - Dashboard sidecar auto-discovers ConfigMaps with `grafana_dashboard` label
+**Applications** (deployment details live in the per-app docs):
+- Authentik SSO (auth.esweiss.com) — identity provider for OIDC/SAML; PostgreSQL on a dedicated zvol
+- Plex Media Server (plex.esweiss.com) — LXC container with Traefik ingress (docs/20)
+- Download/media stack, `downloads` namespace (docs/21): Gluetun VPN gateway with killswitch, NZBGet (nzbget.\*), qBittorrent (qbittorrent.\*), Prowlarr (prowlarr.\*), Sonarr (tv.\*), Radarr (movies.\*), Lidarr (music.\*), Pulsarr (pulsarr.\*, NAS-pinned/AVX)
+- Recipes stack, `recipes` namespace (docs/22-23): Mealie (food.\*, PostgreSQL on zvol, OpenAI parsing), Bar Assistant (bar.\*); both behind Authentik OIDC
+- Home Assistant (home.esweiss.com / home.ericsweiss.com, docs/24): HAOS VM (.154, Proxmox-HA-managed), websocket ingress, hass-openid SSO, \*arr API bypass routes, read-only NFS media mount
+- GitLab (git.esweiss.com / git.ericsweiss.com, docs/27): EE omnibus VM on pve-nas-01 (.153), repos on 200GB zvol, Container Registry, Pages, Web IDE extension host (CVE-2026-5816 SOP isolation), k3s CI runners (infrastructure + shared), SAML SSO, SSH 22/2222
+- Grafana (grafana.esweiss.com, docs/31): community + custom dashboards via `grafana_dashboard` ConfigMap sidecar, Authentik OIDC, Loki datasource
 
 **Planned**:
 - Apps: Immich, Nextcloud
@@ -239,7 +206,8 @@ task home-assistant:console       # SSH to Home Assistant (requires SSH add-on)
 task home-assistant:snapshot      # Create Proxmox VM snapshot
 
 # GitLab (VM on pve-nas-01 with Traefik ingress)
-# Note: GitLab runners, agent, and ingress routes live in kubernetes/apps/gitlab-runner*, gitlab-agent, and vm-ingress
+# Note: GitLab runners, agent, and ingress routes live under kubernetes/apps/
+# (gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress)
 # and are reconciled by Flux. The VM-side tasks below manage the GitLab server itself.
 task gitlab:deploy                # Deploy GitLab (VM + application)
 task gitlab:deploy-check          # Dry-run deployment
@@ -251,7 +219,7 @@ task gitlab:logs                  # View GitLab logs
 task gitlab:reconfigure           # Reconfigure GitLab after changes
 
 # Version discovery (automated update checking)
-task maintenance:check-versions        # Check all 40 managed services for available updates
+task maintenance:check-versions        # Check all managed services for available updates
 task maintenance:check-versions-json   # JSON output for scripting
 task maintenance:update-version        # Update single service: SERVICE=gluetun
 task maintenance:update-all-versions   # Update all outdated versions in all.yml
@@ -543,7 +511,7 @@ See `docs/29-flux-operations.md` for day-2 operations including secret rotation,
 Application versions are centralized in `ansible/inventories/prod/group_vars/all.yml`. See that file for current version pins — they include base infrastructure (k3s, kube-vip, Authentik, Plex, GitLab), Helm charts (MetalLB, Traefik, cert-manager, external-dns), download clients (Gluetun, NZBGet, qBittorrent, Prowlarr, Sonarr, Radarr, Lidarr, Pulsarr), recipe stack (Mealie, Bar Assistant, Salt Rim), and PostgreSQL versions. Home Assistant (HAOS) is updated manually via its UI and is not version-pinned in all.yml.
 
 **Automated version discovery** (`scripts/check-versions.py`):
-- Checks 40 managed services across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos
+- Checks every managed service across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos (registry in `SERVICE_REGISTRY`)
 - Run `task maintenance:check-versions` to see available updates
 - Run `task maintenance:update-version SERVICE=<name>` to update a single version in all.yml
 - Run `task maintenance:update-all-versions` to update all outdated versions
@@ -564,22 +532,12 @@ Application versions are centralized in `ansible/inventories/prod/group_vars/all
 
 ## Storage Architecture
 
-### Storage Strategy
+Full pool topology, creation commands, and design rationale (storage-tier
+selection, lz4-vs-zstd) live in `docs/06-zfs.md`. Quick reference:
 
-**Automated Storage Selection**: The `proxmox_vm` and `proxmox_lxc` Ansible roles automatically select storage based on the Proxmox host's role:
-
-| Proxmox Host | Role | Default Storage | Details |
-|--------------|------|-----------------|---------|
-| pve-nas-01 | `nas` | `ssd` | 3x 4TB Samsung SSDs (raidz1) - App data and databases |
-| pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 | `compute` / `general` | `local-ssd` | 1TB Samsung 870 EVO per host - VM/container workloads |
-
-Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_storage` in the inventory.
-
-**Why local-ssd for compute nodes?**
-- **Proxmox HA**: ZFS pools required on all nodes for replication and failover
-- **Performance**: Compression (lz4), snapshots, checksumming, atomic operations
-- **Stateless workloads**: K3s agents, DNS, SMTP have redundancy via k8s or multiple instances
-- **Cost-effective**: 1TB SSD per node is sufficient for local workloads
+**Automated Storage Selection**: `proxmox_vm` / `proxmox_lxc` pick storage
+from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →
+`local-ssd` — overridable per-guest via `proxmox_storage` / `lxc_storage`.
 
 ### NAS Node (pve-nas-01) - Specialized ZFS Pools
 
@@ -603,17 +561,9 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 
 ### Compute Nodes - local-ssd ZFS Pool
 
-**All compute nodes** (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01):
-- Pool: `local-ssd` - 1x 1TB Samsung 870 EVO (~900GB usable)
-- Compression: **lz4** (low-latency, optimized for VM workloads)
-- Properties: ashift=12, atime=off, autotrim=on, xattr=sa
-- Used for k3s VMs and HA-managed containers (dns-01, dns-02, smtp-relay, home-assistant)
-
-**Why lz4 instead of zstd?**
-- VM workloads are latency-sensitive (random I/O patterns)
-- lz4 has ~10x faster decompression than zstd
-- Near-zero CPU overhead vs zstd's higher cost
-- Industry standard for VM storage (Proxmox defaults to lz4)
+All five compute nodes carry a 1TB `local-ssd` pool (lz4, ashift=12,
+atime=off, autotrim=on) for k3s VMs and the HA-managed containers
+(dns-01/02, smtp-relay, home-assistant). Rationale in docs/06.
 
 ### Resource Pools and Storage Management
 
@@ -663,6 +613,7 @@ See `docs/` for detailed guides:
 - 30-multi-repo-onboarding.md - Adding external tenant repos via `kubernetes/clusters/weisssrv/tenants/`
 - 31-observability.md - Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting)
 - 32-zfs-encryption.md - ZFS native encryption with passphrase-from-Connect boot-time unlock
+- 33-autoscaling.md - VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance
 
 ## Important Context Files
 

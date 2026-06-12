@@ -43,7 +43,7 @@ trap_write_failure_metrics() {
   local duration=$(( end_ts - _MM_START_TS ))
   write_prom_metrics 0 "$duration"
 }
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics; fi' EXIT
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then trap_write_failure_metrics; fi' EXIT
 
 parse_age_to_minutes() {
   local s="$1"
@@ -82,6 +82,12 @@ cd "$SRC"
 if ! find . -type f -mmin +"$AGE_MINUTES" -print0 | \
   rsync "${RSYNC_FLAGS[@]}" --from0 --files-from=- --relative ./ "$DST/"; then
   exit 1
+fi
+
+# Dry-run must not mutate anything: no dir deletion, no success metrics.
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  echo "dry-run: skipping empty-dir cleanup and metrics"
+  exit 0
 fi
 
 # Clean up empty directories left behind (keep SRC root)

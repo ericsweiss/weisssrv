@@ -48,4 +48,5 @@ smtpd_sasl_path = {{ smtp_relay_config.smtpd_sasl_path }}
 smtpd_sasl_security_options = {{ smtp_relay_config.smtpd_sasl_security_options }}
 broken_sasl_auth_clients = {{ smtp_relay_config.broken_sasl_auth_clients }}
 smtpd_sasl_auth_enable = {{ smtp_relay_config.smtpd_sasl_auth_enable }}
+smtpd_tls_auth_only = {{ smtp_relay_config.smtpd_tls_auth_only | default('yes') }}
 smtpd_sasl_local_domain = {{ smtp_relay_config.smtpd_sasl_local_domain }}

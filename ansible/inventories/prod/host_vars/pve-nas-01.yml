@@ -140,7 +140,7 @@ zfs_scrub_schedule: "monthly"
 
 # NVMe fast storage
 nvme_storage:
-  data: /mnt/nvme/media           # Renamed from /mnt/nvme/data
+  data: /mnt/nvme/media
   appdata: /mnt/ssd/appdata
 
 # MergerFS configuration
@@ -149,7 +149,7 @@ nvme_storage:
 mergerfs_mounts:
   - name: media
     sources:
-      - /mnt/nvme/media          # Hot tier (renamed from nvme/data)
+      - /mnt/nvme/media          # Hot tier
       - /mnt/tank/media          # Cold tier (only tank/media, not entire tank)
     target: /mnt/media
     options:
@@ -238,7 +238,7 @@ nfs_exports:
       - spec: "192.168.0.154/32"
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 
-  # Proxmox backup target (requires no_root_squash, owned by root)
+  # Proxmox backup target (requires no_root_squash)
   - path: /export/tank-proxmox
     bind_source: /mnt/tank/proxmox
     owner: 1000  # eric
@@ -286,8 +286,8 @@ samba_shares:
 # Media mover configuration
 # Moves old files from NVMe (hot tier) to tank (cold tier) to free up fast storage
 media_mover_enabled: true
-media_mover_src: /mnt/nvme/media/library    # Hot tier library (renamed from nvme/data/media)
-media_mover_dst: /mnt/tank/media/library    # Cold tier library (restructured)
+media_mover_src: /mnt/nvme/media/library    # Hot tier library
+media_mover_dst: /mnt/tank/media/library    # Cold tier library
 media_mover_schedule: "*-*-* 02:00:00"  # Daily at 2 AM (systemd calendar format)
 
 # Proxmox storage configuration

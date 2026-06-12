@@ -41,15 +41,8 @@ vm_packages:
 # Fail2ban provides intrusion prevention by banning IPs after failed auth attempts
 # Enabled by default on all hosts for SSH protection
 #
-# LXC Container Compatibility:
-# On unprivileged LXC containers, iptables/nftables cannot perform packet filtering
-# due to missing CAP_NET_ADMIN capabilities. The role automatically detects this
-# and uses the 'route' banaction (ip route add blackhole) instead.
-#
-# Container mode trade-offs:
-#   - Bans are IP-wide (cannot ban specific ports)
-#   - Recidive jail is automatically disabled
-#   - Single routing table shared across jails
+# LXC container mode uses banaction=route — see the header in
+# tasks/fail2ban.yml for the trade-offs and references.
 
 fail2ban_enabled: true
 
@@ -81,7 +74,7 @@ fail2ban_sshd_bantime: 1h
 fail2ban_sshd_findtime: 10m
 
 # Proxmox web UI (pveproxy) jail - only for Proxmox hosts
-# Uses apache-auth filter since pveproxy logs auth failures to /var/log/daemon.log
+# Uses the custom 'proxmox' filter (filter.d/proxmox.conf) with the systemd journal backend
 fail2ban_pveproxy_enabled: false  # Explicitly enabled on proxmox hosts
 fail2ban_pveproxy_port: 8006
 fail2ban_pveproxy_maxretry: 5

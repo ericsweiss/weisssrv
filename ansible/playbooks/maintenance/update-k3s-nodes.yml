@@ -72,9 +72,9 @@
     # any task fails mid-sequence (e.g., upgrade failure, restart timeout).
     - name: Upgrade k3s server with guaranteed uncordon
       block:
-        # NOTE: Drain/cordon commands delegate to the first server node.
-        # With a single-server cluster, this means the server drains itself.
-        # For multi-server HA, consider delegating to a different healthy server.
+        # Drain/cordon delegate to a server OTHER than the one being upgraded;
+        # falls back to k3s_servers[0] when it is the only server (a
+        # single-server cluster drains itself).
         - name: Cordon node before upgrade
           ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
           changed_when: true

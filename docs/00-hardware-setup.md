@@ -83,7 +83,7 @@ This homelab currently consists of:
 
 - **Hostname**: pve-laptop-01
 - **IP Address**: 192.168.0.103
-- **CPU**: Intel Core i7-5700HQ @ 2.70GHz (4 cores / 8 threads, Haswell)
+- **CPU**: Intel Core i7-5700HQ @ 2.70GHz (4 cores / 8 threads, Broadwell)
 - **RAM**: 16GB
 - **Storage**:
   - OS: 128GB Toshiba THNSNJ128G8NU SSD
@@ -237,6 +237,9 @@ Proxmox includes enterprise repositories by default. For homelab use, switch to 
 # Remove legacy .list files if they exist
 rm -f /etc/apt/sources.list.d/pve-enterprise.list
 rm -f /etc/apt/sources.list.d/ceph.list
+
+# Remove the Ceph enterprise repo (also requires a subscription)
+rm -f /etc/apt/sources.list.d/ceph.sources
 
 # Disable enterprise repo (comment out Enabled line or set to no)
 cat > /etc/apt/sources.list.d/pve-enterprise.sources << 'EOF'
@@ -417,99 +420,29 @@ chattr +i /etc/resolv.conf
 
 ## Storage Pool Setup
 
-### NAS Node: ZFS Pool Configuration
+Pool topology is host-specific — the exact creation commands for pve-nas-01's
+pools (tank, ssd, nvme, archive) live in
+[docs/06-zfs.md](06-zfs.md#current-cluster-configuration), and the compute-node
+`local-ssd` pool is covered in the same doc. Do not improvise topology here;
+recreate from docs/06.
 
-For the NAS node (pve-nas-01), create ZFS pools for different storage tiers.
-
-**Identify available disks**:
+General guidance that applies to all pools:
 
 ```bash
+# Identify available disks
 lsblk
 fdisk -l
+
+# Always reference disks by stable path, never /dev/sdX
+ls -l /dev/disk/by-id/
+
+# Always set ashift=12 at creation (4K sectors); it cannot be changed later
+zpool create -o ashift=12 ...
 ```
 
-**Create ZFS pools**:
-
-```bash
-# NVMe pool (fast tier - downloads/hot media)
-zpool create -f nvme /dev/nvme0n1
-zfs set compression=lz4 nvme
-zfs set atime=off nvme
-
-# SSD pool (app data)
-zpool create -f ssd /dev/sda
-zfs set compression=lz4 ssd
-zfs set atime=off ssd
-
-# HDD pool - tank (bulk media storage)
-zpool create -f tank raidz /dev/sdb /dev/sdc /dev/sdd /dev/sde
-zfs set compression=lz4 tank
-zfs set atime=off tank
-
-# Archive pool (long-term archival)
-zpool create -f archive mirror /dev/sdf /dev/sdg
-zfs set compression=lz4 archive
-zfs set atime=off archive
-zfs set com.sun:auto-snapshot=false archive
-```
-
-**Create datasets**:
-
-```bash
-# NVMe datasets
-zfs create nvme/media
-
-# SSD datasets
-zfs create ssd/appdata
-zfs create ssd/vms
-
-# Tank datasets
-zfs create tank/media
-zfs create tank/share
-zfs create tank/proxmox-backup
-
-# Archive datasets
-zfs create archive/backups
-```
-
-**Verify pools**:
-
-```bash
-zpool list
-zpool status
-zfs list
-```
-
-### Compute Nodes: Local Storage
-
-For compute nodes, configure local storage:
-
-```bash
-# Use local-lvm for VM images
-# Use local for ISO images, container templates
-
-# Verify storage in Proxmox UI
-# Datacenter → Storage
-```
-
-### Add ZFS to Proxmox Storage
-
-**Via Web UI**:
-1. Datacenter → Storage → Add → ZFS
-2. ID: `nvme-pool`
-3. ZFS Pool: `nvme`
-4. Content: Disk image, Container
-5. Nodes: pve-nas-01
-
-Repeat for `ssd`, `tank`, `archive` pools.
-
-**Via CLI**:
-
-```bash
-pvesm add zfspool nvme-pool --pool nvme --content images,rootdir
-pvesm add zfspool ssd-pool --pool ssd --content images,rootdir
-pvesm add zfspool tank-pool --pool tank --content images,rootdir
-```
+After pool creation, register each pool as Proxmox storage (Web UI:
+Datacenter → Storage → Add → ZFS, or `pvesm add zfspool`); the exact storage
+IDs in use are listed in docs/06.
 
 ## Pre-Ansible Checklist
 
@@ -569,7 +502,7 @@ After bootstrap, verify SSH access: `ssh eric@<host-ip>`
 
 ### Proxmox Cluster
 
-- [ ] Proxmox VE version 8.0+ (`pveversion`)
+- [ ] Proxmox VE version 9.0+ (`pveversion`)
 - [ ] Cluster created (if HA) or node standalone
 - [ ] Web UI accessible (https://<node-ip>:8006)
 - [ ] Time synchronized across nodes (`timedatectl`)

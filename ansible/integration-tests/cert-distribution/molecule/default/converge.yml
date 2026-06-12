@@ -325,13 +325,12 @@
       ansible.builtin.include_role:
         name: acme_certs
       vars:
-        # Override defaults for container testing
-        skip_acme_install: false  # Install acme.sh
-        skip_cert_issuance: true  # Don't actually issue certs (use mock)
+        # Override defaults for container testing (cert issuance is mocked
+        # by the pre-created /root/.acme.sh content above)
         local_cert_dir: /opt/AdGuardHome/certs
 
-    # The role deploys the real ed25519 keypair (generated in prepare.yml,
-    # injected via add_host) to /home/eric/.ssh/id_ed25519_certs and pushes
+    # The role deploys the real ed25519 keypair (generated earlier in this
+    # converge, injected via add_host) to /home/eric/.ssh/id_ed25519_certs and pushes
     # the matching pubkey to each cert_distribution_targets host's
     # authorized_keys via ansible.posix.authorized_key. Both happen inside
     # acme_certs above, so no post-role keygen / authorized_key push is

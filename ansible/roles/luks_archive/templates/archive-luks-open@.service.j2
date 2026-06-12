@@ -5,18 +5,22 @@
 # is looked up from /etc/luks/archive/<name>.conf.
 #
 # Ordering:
-#   After=network-online.target nss-lookup.target : need Connect reachable
-#   Before=zfs-import-cache.service               : LUKS mappers must exist
-#                                                   before ZFS scans the
-#                                                   cache file for vdevs
-#   Before=zfs-import-scan.service                : same, for the scan path
-#   Wants=network-online.target nss-lookup.target
-#   RequiredBy=zfs-import-cache.service           : if open fails, import
-#                                                   must fail too — otherwise
-#                                                   ZFS would mark vdevs as
-#                                                   UNAVAIL and any auto-
-#                                                   import would degrade
-#                                                   the pool
+#   DefaultDependencies=no              : REQUIRED. This unit is Before= the
+#                                         early ZFS import path (which sits
+#                                         before local-fs.target); default
+#                                         service deps add After=basic.target
+#                                         and would close an ordering cycle —
+#                                         as would any After=network-online
+#                                         ordering, which is why network
+#                                         readiness is left to the script's
+#                                         own retry loop instead.
+#   Before=zfs-import-cache.service     : LUKS mappers must exist before ZFS
+#                                         scans the cache file for vdevs
+#   Before=zfs-import-scan.service      : same, for the scan path
+#   RequiredBy=zfs-import-cache.service : if open fails, import must fail too
+#                                         — otherwise ZFS would mark vdevs as
+#                                         UNAVAIL and any auto-import would
+#                                         degrade the pool
 #
 # Restart policy: per-ExecStart wall time is up to ~370s worst-case —
 # up to three sequential Connect lookups (vault UUID resolution if
@@ -48,9 +52,9 @@
 
 [Unit]
 Description=Open LUKS container %i (archive pool vdev)
-After=network-online.target nss-lookup.target
-Before=zfs-import-cache.service zfs-import-scan.service zfs-import.target
-Wants=network-online.target nss-lookup.target
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=zfs-import-cache.service zfs-import-scan.service zfs-import.target shutdown.target
 ConditionPathExists=/etc/luks/archive/%i.conf
 StartLimitIntervalSec=3600s
 StartLimitBurst=60

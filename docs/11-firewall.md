@@ -20,7 +20,7 @@ The Proxmox cluster uses the built-in firewall with centralized rules in `/etc/p
 IPSets define groups of IPs for use in rules. IPSets are **dynamically generated from inventory** - hosts are automatically added to IPSets based on their `firewall_ipsets` metadata.
 
 ```ini
-[IPSET dc/core-cluster]
+[IPSET core-cluster]
 # Proxmox hosts
 192.168.0.102  # pve-nas-01
 192.168.0.103  # pve-laptop-01
@@ -29,7 +29,7 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 192.168.0.106  # pve-opt-03
 192.168.0.107  # pve-prec-01
 
-[IPSET dc/k3s-nodes]
+[IPSET k3s_nodes]
 # K3s cluster VMs
 192.168.0.222  # k3s-srv-nas-01
 192.168.0.223  # k3s-srv-laptop-01
@@ -41,7 +41,7 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 192.168.0.206  # k3s-agt-opt-03
 192.168.0.207  # k3s-agt-prec-01
 
-[IPSET dc/nfs_clients]
+[IPSET nfs_clients]
 # Hosts allowed NFS access
 192.168.0.102
 192.168.0.103
@@ -53,10 +53,13 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 192.168.0.200/29
 192.168.0.220/29
 
-[IPSET dc/smb_clients]
+[IPSET smb_clients]
 # Hosts allowed SMB access
 192.168.0.0/24
 ```
+
+The `dc/` scope prefix appears only when rules *reference* an ipset
+(`-source +dc/k3s_nodes`), never in the declaration header.
 
 ### Security Groups
 
@@ -156,9 +159,13 @@ IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
 
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog  # etcd
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog      # kubelet
-IN ACCEPT -source +dc/k3s_nodes -p udp -dport 8472 -log nolog       # Flannel VXLAN
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog      # Flannel WireGuard (active CNI backend; VXLAN/8472 retired 2026-06-11)
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7946 -log nolog       # MetalLB memberlist
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 7946 -log nolog       # MetalLB memberlist
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog       # k3s supervisor
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 6443 -log nolog       # Kubernetes API
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 6443 -log nolog        # kubectl from Tailscale
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 6443 -log nolog       # kubectl from LAN
 ```
 
 **sg-plex** - Plex Media Server:
@@ -192,9 +199,10 @@ Each Proxmox host has a host.fw that references security groups. All Proxmox hos
 enable: 1
 
 [RULES]
-# All Proxmox hosts need cluster communication and admin access
+# All Proxmox hosts need cluster communication, admin access, and exporter scraping
 GROUP sg-pve-cluster
 GROUP sg-host-admin
+GROUP sg-metrics
 
 # NAS-specific rules
 GROUP sg-nfs-server
@@ -207,9 +215,10 @@ GROUP sg-smb-server
 enable: 1
 
 [RULES]
-# All Proxmox hosts need cluster communication and admin access
+# All Proxmox hosts need cluster communication, admin access, and exporter scraping
 GROUP sg-pve-cluster
 GROUP sg-host-admin
+GROUP sg-metrics
 ```
 
 ## Guest Firewall (VMs and LXC Containers)
@@ -224,6 +233,7 @@ enable: 1
 [RULES]
 GROUP sg-vm-admin
 GROUP sg-dns
+GROUP sg-metrics
 ```
 
 **smtp-relay (VMID 151) firewall:**
@@ -234,6 +244,7 @@ enable: 1
 [RULES]
 GROUP sg-vm-admin
 GROUP sg-smtp-relay
+GROUP sg-metrics
 ```
 
 **k3s-agt-opt-03 (VMID 206) firewall:**
@@ -246,6 +257,7 @@ GROUP sg-vm-admin
 GROUP sg-k3s-core
 GROUP sg-k3s-ingress-int
 GROUP sg-k3s-ingress-pub
+GROUP sg-metrics
 ```
 
 ## Ansible Role
@@ -314,6 +326,7 @@ dns:
       guest_security_groups:
         - sg-vm-admin     # SSH + ICMP for admin access
         - sg-dns          # DNS service ports
+        - sg-metrics      # Prometheus exporter scraping
 ```
 
 **Example - K3s ingress node:**
@@ -328,6 +341,7 @@ k3s_agents:
         - sg-k3s-core         # K3s cluster communication
         - sg-k3s-ingress-int  # Internal ingress (admin networks)
         - sg-k3s-ingress-pub  # Public ingress (all sources)
+        - sg-metrics          # Prometheus exporter scraping
 ```
 
 **Available Security Groups:**
@@ -344,6 +358,8 @@ k3s_agents:
 | `sg-gitlab` | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
 | `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
 | `sg-windows` | Windows RDP | Windows VMs |
+| `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes (9100/9101/9134/9167/8123/32400/3000/7472/7473) + Loki NodePort 31100 from core-cluster | **All hosts and guests** |
+| `sg-xmrig` | Mining pool egress | Hosts running xmrig |
 
 **Deployment:**
 

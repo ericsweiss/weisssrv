@@ -65,8 +65,8 @@ haos_type: "qcow2"    # Image format
 # Backup before major version updates
 
 # Monitoring
-# Home Assistant exposes metrics via Prometheus integration
-# Future: Add to cluster monitoring stack when implemented
+# Scraped by Prometheus via /api/prometheus (token: 1P 'Home Assistant API
+# Token'; firewall sg-metrics opens 8123 to k3s nodes)
 
 # SSO Integration
 # Authentik SSO via hass-openid custom integration (OIDC method)

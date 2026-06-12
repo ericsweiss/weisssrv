@@ -272,6 +272,12 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_repo": "https://metallb.github.io/metallb",
         "helm_chart": "metallb",
         "source_url": "https://artifacthub.io/packages/helm/metallb/metallb",
+        "notes": (
+            "0.16.x intentionally held back: open apiserver-flooding "
+            "regression (metallb#3063). Rationale in "
+            "kubernetes/infrastructure/controllers/metallb/release.yaml; "
+            "re-evaluate when the issue closes."
+        ),
     },
     {
         "name": "Traefik",
@@ -382,6 +388,30 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_repo": "https://prometheus-community.github.io/helm-charts",
         "helm_chart": "prometheus-blackbox-exporter",
         "source_url": "https://artifacthub.io/packages/helm/prometheus-community/prometheus-blackbox-exporter",
+    },
+    {
+        "name": "1Password Connect",
+        "var_name": "helm_chart_versions.onepassword_connect",
+        "category": "helm",
+        "helm_repo": "https://1password.github.io/connect-helm-charts",
+        "helm_chart": "connect",
+        "source_url": "https://artifacthub.io/packages/helm/1password/connect",
+    },
+    {
+        "name": "VPA",
+        "var_name": "helm_chart_versions.vpa",
+        "category": "helm",
+        "helm_repo": "https://charts.fairwinds.com/stable",
+        "helm_chart": "vpa",
+        "source_url": "https://artifacthub.io/packages/helm/fairwinds-stable/vpa",
+    },
+    {
+        "name": "Flux CLI (CI verify)",
+        "var_name": "flux_version",
+        "category": "github",
+        "github_repo": "fluxcd/flux2",
+        "version_prefix": "v",
+        "strip_prefix": True,
     },
     {
         "name": "Exportarr",
@@ -1617,6 +1647,7 @@ def format_table(results: list[ServiceVersion]) -> str:
         "helm": "Helm Charts",
         "gitlab": "GitLab (packages.gitlab.com)",
         "plex": "Plex Media Server",
+        "apt_repo": "APT Repositories (upstream)",
         "manual": "Manual / APT Managed",
     }
 
@@ -1767,6 +1798,10 @@ def get_deploy_command(result: ServiceVersion) -> str:
         return "task maintenance:update-k3s-nodes"
     if var_name == "kube_vip_version":
         return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
+
+    # Flux CLI used by CI deploy-verify (pin + sha256 live together)
+    if var_name == "flux_version":
+        return "edit FLUX_VERSION + sha256 in .gitlab-ci.yml deploy-verify, update all.yml, task flux:sync-versions, commit"
 
     # Plex (LXC, Ansible-managed)
     if var_name == "plex_version":

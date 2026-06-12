@@ -26,8 +26,9 @@ smtp_relay_config:
   smtpd_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
   smtpd_tls_mandatory_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
 
-  # TLS for outgoing connections (to Gmail)
-  smtp_tls_security_level: "encrypt"
+  # TLS for outgoing connections (to Gmail). "secure" = encrypt AND verify
+  # the server certificate against CAfile (encrypt alone accepts any cert).
+  smtp_tls_security_level: "secure"
   smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
   smtp_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
 
@@ -37,10 +38,14 @@ smtp_relay_config:
   smtp_sasl_security_options: "noanonymous"
   smtp_sasl_tls_security_options: "noanonymous"
 
-  # SASL authentication for null clients (incoming)
+  # SASL authentication for null clients (incoming). Disabled on the
+  # chrooted port-25 smtpd (where it would permit cleartext AUTH and the
+  # chroot breaks the saslauthd socket anyway); the submission service
+  # re-enables it per-service in master.cf behind mandatory TLS.
   smtpd_sasl_type: "cyrus"
   smtpd_sasl_path: "smtpd"
-  smtpd_sasl_auth_enable: "yes"
+  smtpd_sasl_auth_enable: "no"
+  smtpd_tls_auth_only: "yes"
   smtpd_sasl_security_options: "noanonymous"
   smtpd_sasl_local_domain: "$myhostname"
   broken_sasl_auth_clients: "yes"

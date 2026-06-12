@@ -97,7 +97,7 @@ else
             exit 2
         fi
 
-        tmp=$(mktemp)
+        tmp=$(mktemp -p /dev/shm)
         http=$(connect_get "$VAULT_PATH" "$tmp")
         body=$(cat "$tmp")
         rm -f "$tmp"
@@ -140,7 +140,7 @@ while [[ -z "$ITEM_ID" ]]; do
         exit 2
     fi
 
-    tmp=$(mktemp)
+    tmp=$(mktemp -p /dev/shm)
     http=$(connect_get "$LIST_PATH" "$tmp")
     body=$(cat "$tmp")
     rm -f "$tmp"
@@ -170,7 +170,7 @@ while [[ -z "$ITEM_ID" ]]; do
 done
 
 # Fetch the passphrase field.
-tmp=$(mktemp)
+tmp=$(mktemp -p /dev/shm)
 http=$(connect_get "/v1/vaults/$VAULT/items/$ITEM_ID" "$tmp")
 body=$(cat "$tmp")
 rm -f "$tmp"

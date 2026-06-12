@@ -71,7 +71,7 @@ if ! openssl pkcs12 -info -in "$PFX_TMP" -nokeys -noout \
 fi
 
 chmod 0640 "$PFX_TMP"
-chown plex:plex "$PFX_TMP"
+chown root:plex "$PFX_TMP"
 
 # Keep the prior PFX as a one-step revert. If this is the first
 # install, $PFX_FILE doesn't exist yet — that's fine.
@@ -88,17 +88,20 @@ mv "$PFX_TMP" "$PFX_FILE"
 # Restart Plex and verify it actually comes back up. If it doesn't,
 # revert to the prior PFX so we leave the system in a working state
 # even if the new cert is somehow unusable by this Plex version.
-systemctl restart plexmediaserver
+# Capture the restart's own failure too — under set -e a failed restart
+# would otherwise abort the script before the revert path runs.
+restart_rc=0
+systemctl restart plexmediaserver || restart_rc=$?
 
 # Wait briefly, then check the unit state. systemctl restart returns 0
 # the moment the unit is asked to restart — readiness check confirms
 # the daemon actually came back.
 sleep 3
-if ! systemctl is-active --quiet plexmediaserver; then
+if [[ $restart_rc -ne 0 ]] || ! systemctl is-active --quiet plexmediaserver; then
     echo "plexmediaserver failed to come back up after cert swap; reverting" >&2
     if [[ -f "$PFX_PREV" ]]; then
         cp -p "$PFX_PREV" "$PFX_FILE"
-        chown plex:plex "$PFX_FILE"
+        chown root:plex "$PFX_FILE"
         chmod 0640 "$PFX_FILE"
         systemctl restart plexmediaserver || true
     fi

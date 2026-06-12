@@ -76,11 +76,10 @@
       ansible.builtin.pause:
         seconds: 10
 
-    # INTEGRATION TEST LIMITATION - Port 53 / DNS queries:
-    # AdGuard Home requires completing the interactive setup wizard before it
-    # binds to port 53 and accepts DNS queries. Without setup completion:
-    # - Port 53 is not bound (service runs in "setup mode")
-    # - /control/dns_config API returns 403 Forbidden
+    # INTEGRATION TEST LIMITATION - DNS queries via AdGuard:
+    # The role completes the setup wizard automatically, but converge skips
+    # the post-setup API configuration (skip_adguard_api_config), so AdGuard
+    # is not pointed at Unbound and its resolution path is not representative.
     #
     # We test DNS resolution via Unbound (AdGuard's upstream) which validates:
     # - Unbound DoT recursive resolution works
@@ -101,8 +100,7 @@
       ansible.builtin.debug:
         msg: "AdGuard Home UI returned status {{ adguard_ui.status }}"
 
-    # Note: DNS queries via port 53 require full AdGuard initialization
-    # We verify the service is running and web UI is accessible
+    # We verify the service is running and web UI is accessible;
     # DNS resolution is tested via Unbound (which is AdGuard's upstream)
 
     # ============================================

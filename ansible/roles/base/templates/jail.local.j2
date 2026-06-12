@@ -17,23 +17,9 @@ maxretry = {{ fail2ban_default_maxretry }}
 backend = systemd
 
 {% if is_container | default(false) %}
-# LXC Container Mode: Use route-based banning
-# ============================================================================
-# Unprivileged LXC containers cannot use iptables/nftables packet filtering
-# because they lack CAP_NET_ADMIN capabilities for netfilter subsystem.
-# The 'route' action uses kernel routing table (ip route add blackhole <ip>)
-# which works in containers without elevated privileges.
-#
-# Trade-offs vs iptables:
-#   - Cannot ban by port (IP-only bans)
-#   - Single routing table shared across jails (no duplicate routes)
-#   - Recidive jail disabled (requires banaction_allports)
-#
-# This is acceptable for homelab LXC containers because:
-#   - SSH is the primary attack vector we're protecting
-#   - Internal services have limited external exposure
-#   - Proxmox firewall provides network-level protection
-# ============================================================================
+# LXC container mode: route-based banning (ip route add blackhole) because
+# unprivileged containers lack CAP_NET_ADMIN for iptables/nftables.
+# Trade-offs are documented in the base role's tasks/fail2ban.yml header.
 banaction = route
 {% else %}
 # Physical/VM Mode: Use iptables for full packet filtering
@@ -85,9 +71,11 @@ mode = aggressive
 enabled = true
 port = {{ fail2ban_pveproxy_port }}
 filter = proxmox
-# Use systemd journal instead of log file (Proxmox 9.x uses journald)
+# Use systemd journal instead of log file (Proxmox 9.x uses journald).
+# Authentication failures are logged by pvedaemon (pveproxy only proxies
+# the request), so match both units.
 backend = systemd
-journalmatch = _SYSTEMD_UNIT=pveproxy.service + _COMM=pveproxy
+journalmatch = _SYSTEMD_UNIT=pvedaemon.service + _SYSTEMD_UNIT=pveproxy.service
 maxretry = {{ fail2ban_pveproxy_maxretry }}
 bantime = {{ fail2ban_pveproxy_bantime }}
 findtime = {{ fail2ban_pveproxy_findtime }}

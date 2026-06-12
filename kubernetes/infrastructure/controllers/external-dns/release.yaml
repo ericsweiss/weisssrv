@@ -4,15 +4,6 @@
 # substituted from cluster-versions ConfigMap. The `cloudflare-api-token` Secret
 # referenced by env.CF_API_TOKEN is managed by an ExternalSecret in
 # infrastructure/configs/shared-cloudflare-secrets/.
-# Bootstrap ordering: the cloudflare-api-token Secret referenced by
-# env.CF_API_TOKEN is created by an ExternalSecret in configs stage (which
-# depends on controllers). install.disableWait prevents a deadlock —
-# without it, Helm --wait blocks on pod readiness, pods need the Secret,
-# Secret needs configs, configs needs controllers Ready. With disableWait
-# the HelmRelease reports Ready immediately after manifest apply; pods
-# crashloop briefly until configs creates the Secret (~2 minutes).
-# Only install needs this; upgrades run in steady-state where the Secret
-# already exists.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -44,7 +35,6 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # Provider configuration
     provider:
       name: cloudflare
 
@@ -52,7 +42,6 @@ spec:
     extraArgs:
       - --cloudflare-proxied
 
-    # Cloudflare API token from secret
     env:
       - name: CF_API_TOKEN
         valueFrom:
@@ -60,13 +49,11 @@ spec:
             name: cloudflare-api-token
             key: api-token
 
-    # DNS sources to watch
     sources:
       - ingress
       - service
       - traefik-proxy  # Watch Traefik IngressRoute CRDs
 
-    # Domain filters
     domainFilters:
       - ericsweiss.com  # External domain managed by Cloudflare
 
@@ -74,20 +61,15 @@ spec:
     txtOwnerId: "k3s-external-dns"
     txtPrefix: "_external-dns."
 
-    # Policy
     policy: sync  # Sync mode - create and delete records
 
-    # Registry type
     registry: txt
 
-    # Log level
     logLevel: info
     logFormat: json
 
-    # Interval for checking DNS records
     interval: 5m
 
-    # Trigger loop on Kubernetes events
     triggerLoopOnEvent: true
 
     # RBAC permissions for Traefik IngressRoutes
@@ -106,7 +88,6 @@ spec:
     serviceMonitor:
       enabled: true
 
-    # Resource limits
     resources:
       requests:
         cpu: 50m

@@ -1,8 +1,7 @@
 ---
 # DNS server configuration (dns-01, dns-02)
 
-# SSH configuration - DNS containers now use 'eric' user like other hosts
-# Root login disabled for consistency with other LXC containers
+# Root SSH login disabled; access is via the standard 'eric' user
 ssh_permit_root_login: "no"
 
 # LXC container settings
@@ -27,7 +26,6 @@ adguard_dot_port: 853
 adguard_https_port: 443
 adguard_admin_user: eric
 # Password from 1Password; bcrypt hash is generated at deploy time by the adguard_home role
-# This ensures password and hash are always in sync (single source of truth)
 adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD', default='') }}"
 
 # TLS/Encryption configuration

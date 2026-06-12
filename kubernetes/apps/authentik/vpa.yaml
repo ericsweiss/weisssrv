@@ -1,0 +1,45 @@
+---
+# VPA: Initial for the stateless server/worker (resize on natural restarts,
+# no proactive eviction of an SSO provider), Off for PostgreSQL (zvol-backed;
+# recommendations only — apply by hand in release.yaml).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-server
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: authentik-server}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 50m, memory: 256Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-worker
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: authentik-worker}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 256Mi}
+        maxAllowed: {cpu: 1, memory: 1536Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-postgresql
+spec:
+  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: authentik-postgresql}
+  updatePolicy: {updateMode: "Off"}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 50m, memory: 128Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]

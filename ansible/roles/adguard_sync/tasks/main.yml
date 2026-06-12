@@ -44,7 +44,7 @@
         path: "{{ item }}"
         state: absent
       loop:
-        - /tmp/adguardhome-sync.tar.gz
+        - "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
         - /tmp/adguardhome-sync
       when: not sync_binary.stat.exists
 

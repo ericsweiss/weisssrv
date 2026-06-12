@@ -32,7 +32,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 ---
 apiVersion: v1

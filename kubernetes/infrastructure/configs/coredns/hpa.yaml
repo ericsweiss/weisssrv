@@ -1,0 +1,25 @@
+---
+# Pins k3s's built-in CoreDNS at 2 replicas for HA. k3s manages the CoreDNS
+# Deployment as a wrangler AddOn (NOT a HelmChart), so it resets replicas on
+# every server restart/upgrade; this HPA scales it back within seconds. The
+# previous HelmChartConfig was a silent no-op for the same reason.
+# Topology spread is left to the default scheduler (PDB still guards drains).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: coredns
+  namespace: kube-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: coredns
+  minReplicas: 2
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 90

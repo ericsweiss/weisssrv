@@ -19,7 +19,7 @@ The `qol` role configures a comfortable development environment for the `eric` u
 Applied by the `qol` Ansible role:
 
 ```bash
-ansible-playbook ansible/playbooks/base.yml --tags qol
+ansible-playbook ansible/playbooks/site.yml --tags qol
 ```
 
 ### Oh My Zsh Theme
@@ -37,7 +37,6 @@ omz_plugins:
   - 1password          # 1Password CLI completions
   - ansible            # Ansible completions
   - command-not-found  # Suggests package for missing commands
-  - direnv             # Directory-specific environment variables
   - docker             # Docker completions
   - docker-compose     # Docker Compose completions
   - dotenv             # Auto-load .env files
@@ -48,40 +47,38 @@ omz_plugins:
   - rsync              # Rsync completions
   - systemd            # Systemd unit management shortcuts
   - terraform          # Terraform completions
-  - thefuck            # Corrects previous console command
   - tmux               # Tmux integration and aliases
   - vscode             # VS Code integration
-  - zsh-autosuggestions  # Fish-like autosuggestions
-  - zsh-syntax-highlighting  # Syntax highlighting
 ```
 
 ### Custom Aliases
 
-Located in `~/.alias.zsh`:
+Located in `~/.alias.zsh` (deployed from `roles/qol/templates/alias.zsh.j2`):
 
 ```bash
-# Navigation
-alias ..="cd .."
-alias ...="cd ../.."
-
-# List variants
-alias ll="ls -lah"
-alias la="ls -A"
-
-# Git shortcuts
-alias gs="git status"
-alias gp="git pull"
-alias gc="git commit"
+export EDITOR="nvim"
 
 # Config editing
-alias ez="$EDITOR ~/.zshrc"
-alias ea="$EDITOR ~/.alias.zsh"
-alias el="$EDITOR ~/.local.zsh"
-alias sz="source ~/.zshrc"
+alias ez="$EDITOR ~/.zshrc"       # Edit Zshrc
+alias ea="$EDITOR ~/.alias.zsh"   # Edit Alias
+alias el="$EDITOR ~/.local.zsh"   # Edit Local
+alias sz='exec zsh'               # Source Zsh
 
-# System shortcuts
-alias update="sudo apt update && sudo apt upgrade -y"
-alias ports="sudo netstat -tulanp"
+# Bookmarks
+alias @tmp='cd ~/tmp'
+alias @downloads='cd ~/Downloads'
+alias @src='cd ~/src'
+alias @repo='cd ~/src/repo'
+
+# Directory navigation
+alias ..='..'          # up one directory
+alias ...='../..'      # up two directories
+alias ....='../../..'  # up three directories
+
+# Applications
+alias v='nvim'
+alias vim='nvim'
+alias kn='kubectl config set-context --current --namespace'
 ```
 
 ### Shell Files
@@ -107,31 +104,24 @@ nvim_plugins:
 
 ### Configuration
 
-Located at `~/.config/nvim/init.vim`:
+Located at `~/.config/nvim/init.vim` (deployed from `roles/qol/templates/init.vim.j2`):
 
 ```vim
-" Enable line numbers
-set number
+" Vundle bootstrap
+set nocompatible
+filetype off
+set rtp+=~/.vim/bundle/Vundle.vim
+call vundle#begin()
+Plugin 'VundleVim/Vundle.vim'
+" ... plugins from nvim_plugins ...
+call vundle#end()
+filetype plugin indent on
 
-" Enable syntax highlighting
+" Editor settings
+set mouse=r
 syntax on
-
-" Set color scheme
 colorscheme onedark
-
-" Enable mouse support
-set mouse=a
-
-" Tab settings
-set tabstop=2
-set shiftwidth=2
-set expandtab
-
-" Search settings
-set ignorecase
-set smartcase
-set hlsearch
-set incsearch
+set tabstop=4 shiftwidth=4 softtabstop=0 expandtab smarttab
 ```
 
 ### Installing Additional Plugins
@@ -234,23 +224,14 @@ sz
 
 ## Environment Variables
 
-Common environment variables set in `~/.zprofile`:
+The deployed `~/.zprofile` is a single PATH line:
 
 ```bash
-# Default editor
-export EDITOR=nvim
-export VISUAL=nvim
-
-# PATH additions
 export PATH="$HOME/.local/bin:$PATH"
-
-# Go development
-export GOPATH="$HOME/go"
-export PATH="$GOPATH/bin:$PATH"
-
-# 1Password CLI
-export OP_ACCOUNT="my.1password.com"
 ```
+
+`EDITOR` is set in `~/.alias.zsh` (`export EDITOR="nvim"`). Anything else
+belongs in `~/.local.zsh` (per-host overrides, not managed by Ansible).
 
 ## Ansible Deployment
 
@@ -258,20 +239,10 @@ export OP_ACCOUNT="my.1password.com"
 
 ```bash
 # Deploy to all Proxmox hosts
-ansible-playbook ansible/playbooks/base.yml --tags qol
+ansible-playbook ansible/playbooks/site.yml --tags qol
 
 # Deploy to specific host
-ansible-playbook ansible/playbooks/base.yml --tags qol --limit pve-nas-01
-```
-
-### Individual Components
-
-```bash
-# Install Oh My Zsh only
-ansible-playbook ansible/playbooks/base.yml --tags omz
-
-# Install Neovim config only
-ansible-playbook ansible/playbooks/base.yml --tags nvim
+ansible-playbook ansible/playbooks/site.yml --tags qol --limit pve-nas-01
 ```
 
 ## Troubleshooting
@@ -290,7 +261,7 @@ ansible-playbook ansible/playbooks/base.yml --tags nvim
 
 3. **Re-run role**:
    ```bash
-   ansible-playbook ansible/playbooks/base.yml --tags qol --limit $(hostname)
+   ansible-playbook ansible/playbooks/site.yml --tags qol --limit $(hostname)
    ```
 
 ### Plugin Not Working
@@ -316,25 +287,13 @@ ansible-playbook ansible/playbooks/base.yml --tags nvim
 
 1. **Install Vundle**:
    ```bash
-   git clone https://github.com/VundleVim/Vundle.vim.git ~/.config/nvim/bundle/Vundle.vim
+   git clone https://github.com/VundleVim/Vundle.vim.git ~/.vim/bundle/Vundle.vim
    ```
 
 2. **Install plugins**:
    ```bash
    nvim +PluginInstall +qall
    ```
-
-### Command Not Found (thefuck)
-
-The `thefuck` plugin requires installation:
-
-```bash
-sudo apt install thefuck
-# Or via pip
-pip3 install thefuck
-```
-
-Then restart shell.
 
 ## References
 

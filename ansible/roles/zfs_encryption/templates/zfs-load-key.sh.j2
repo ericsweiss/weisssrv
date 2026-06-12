@@ -103,7 +103,7 @@ else
             exit 2
         fi
 
-        tmp=$(mktemp)
+        tmp=$(mktemp -p /dev/shm)
         http=$(connect_get "$VAULT_PATH" "$tmp")
         body=$(cat "$tmp")
         rm -f "$tmp"
@@ -147,7 +147,7 @@ while [[ -z "$ITEM_ID" ]]; do
         exit 2
     fi
 
-    tmp=$(mktemp)
+    tmp=$(mktemp -p /dev/shm)
     http=$(connect_get "$LIST_PATH" "$tmp")
     body=$(cat "$tmp")
     rm -f "$tmp"
@@ -188,7 +188,7 @@ done
 # back to .label (display name; user may have renamed it). 1Password's
 # Password template ships with a 'password' field; the homelab convention
 # uses 'passphrase' for ZFS items. Accept either via FIELD.
-tmp=$(mktemp)
+tmp=$(mktemp -p /dev/shm)
 http=$(connect_get "/v1/vaults/$VAULT/items/$ITEM_ID" "$tmp")
 body=$(cat "$tmp")
 rm -f "$tmp"

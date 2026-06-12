@@ -1,10 +1,7 @@
 ---
-# Handlers for postfix null client role
-
-- name: Reload postfix
-  ansible.builtin.service:
-    name: postfix
-    state: reloaded
+# Handlers for postfix null client role.
+# Definition order is execution order: the map rebuilds must run before
+# 'Reload postfix' so the reload picks up fresh .db files.
 
 - name: Postmap sasl_passwd
   ansible.builtin.command: postmap /etc/postfix/sasl_passwd
@@ -17,3 +14,8 @@
 - name: Newaliases
   ansible.builtin.command: newaliases
   changed_when: true
+
+- name: Reload postfix
+  ansible.builtin.service:
+    name: postfix
+    state: reloaded

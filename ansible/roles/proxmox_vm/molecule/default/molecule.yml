@@ -92,7 +92,3 @@ scenario:
     - verify
     - cleanup
     - destroy
-lint: |
-  set -e
-  yamllint .
-  ansible-lint .

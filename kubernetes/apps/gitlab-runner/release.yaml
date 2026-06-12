@@ -57,7 +57,7 @@ spec:
       name: k3s-runner-shared
 
       # Existing Secret (created by ESO externalsecret.yaml) containing the
-      # runner-token. Replaces the previous imperative --set runnerToken flag.
+      # runner-token.
       secret: gitlab-runner-token
 
       # Tags for explicit targeting from other projects
@@ -90,6 +90,11 @@ spec:
             namespace = "gitlab-runner"
             image = "debian:trixie"
             privileged = false
+
+            # NetworkPolicy selector: shared job pods get internet-only
+            # egress (no RFC1918) — see networkpolicy.yaml.
+            [runners.kubernetes.pod_labels]
+              "esweiss.com/runner-class" = "shared"
 
             # CPU/Memory limits for job pods
             cpu_limit = "2"

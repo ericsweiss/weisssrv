@@ -17,6 +17,9 @@
   register: zfs_exporter_current
   changed_when: false
   failed_when: false
+  # Read-only probe; must run under --check or the rc/stdout comparisons
+  # below explode on a skipped-task result.
+  check_mode: false
 
 - name: Download zfs_exporter tarball
   ansible.builtin.get_url:

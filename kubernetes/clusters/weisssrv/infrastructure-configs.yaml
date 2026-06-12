@@ -2,7 +2,7 @@
 # Flux Kustomization: platform configs (CRs that depend on the controllers'
 # CRDs being installed). Includes ClusterSecretStore (ESO), ClusterIssuer +
 # wildcard Certificates (cert-manager), IPAddressPool + L2Advertisement
-# (MetalLB), CoreDNS HelmChartConfig (k3s helm-controller), cloudflare-ddns
+# (MetalLB), the CoreDNS HPA replica pin, VPA policies, cloudflare-ddns
 # CronJob, and shared-cloudflare-secrets ExternalSecrets.
 #
 # Depends on infrastructure-controllers being Ready so all required CRDs

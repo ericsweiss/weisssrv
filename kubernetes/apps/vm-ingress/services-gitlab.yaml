@@ -75,7 +75,7 @@ endpoints:
 
 ---
 # =============================================================================
-# GitLab Pages (port 8090)
+# GitLab Pages (pages_nginx TLS on 8443)
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -85,8 +85,8 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: 8090
-      targetPort: 8090
+    - port: 8443
+      targetPort: 8443
       protocol: TCP
 ---
 apiVersion: discovery.k8s.io/v1
@@ -99,7 +99,7 @@ metadata:
     endpointslice.kubernetes.io/managed-by: manual
 addressType: IPv4
 ports:
-  - port: 8090
+  - port: 8443
     protocol: TCP
 endpoints:
   - addresses:

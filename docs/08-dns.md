@@ -50,6 +50,8 @@ forward-zone:
   forward-tls-upstream: yes
   forward-addr: 1.1.1.1@853#cloudflare-dns.com
   forward-addr: 1.0.0.1@853#cloudflare-dns.com
+  forward-addr: 9.9.9.9@853#dns.quad9.net
+  forward-addr: 149.112.112.112@853#dns.quad9.net
   forward-addr: 8.8.8.8@853#dns.google
   forward-addr: 8.8.4.4@853#dns.google
 ```
@@ -83,55 +85,38 @@ ReadWritePaths=/opt/AdGuardHome
 
 ### DNS Rewrites
 
-Internal services use AdGuard rewrites instead of split-horizon DNS. Configure these in AdGuard Home (https://dns-01.esweiss.com, Traefik-fronted with the wildcard cert) under **DNS Settings → DNS rewrites**.
+Internal services use AdGuard rewrites instead of split-horizon DNS. Rewrites
+are **not** configured in the UI — they are codified as `adguard_rewrites` in
+`ansible/inventories/prod/group_vars/dns.yml` (the source of truth) and applied
+via the AdGuard API by the `adguard_home` role on `task dns:deploy`. The role
+also **deletes any rewrite not in the codified list**, so UI-added entries
+(Filters → DNS rewrites) are reverted on the next deploy. To add a permanent
+rewrite, edit dns.yml and redeploy.
 
-#### Forward DNS (A Records)
+The codified list covers (see dns.yml for the authoritative entries):
 
-| Domain | IP | Description |
-|--------|-----|-------------|
-| dns-01.esweiss.com | 192.168.0.150 | Primary DNS server |
-| dns-02.esweiss.com | 192.168.0.160 | Secondary DNS server |
-| smtp-relay.esweiss.com | 192.168.0.151 | SMTP relay |
-| pve-nas-01.esweiss.com | 192.168.0.102 | Proxmox NAS host |
-| pve-opt-03.esweiss.com | 192.168.0.106 | Proxmox compute host |
-| pve-prec-01.esweiss.com | 192.168.0.107 | Proxmox compute host |
-| k3s-srv-nas-01.esweiss.com | 192.168.0.222 | K3s server node |
-| k3s-srv-laptop-01.esweiss.com | 192.168.0.223 | K3s server |
-| k3s-srv-prec-01.esweiss.com | 192.168.0.227 | K3s server |
-| k3s-agt-nas-01.esweiss.com | 192.168.0.202 | K3s agent (NAS) |
-| k3s-agt-laptop-01.esweiss.com | 192.168.0.203 | K3s agent (ingress + general) |
-| k3s-agt-opt-01.esweiss.com | 192.168.0.204 | K3s agent (ingress + general) |
-| k3s-agt-opt-02.esweiss.com | 192.168.0.205 | K3s agent (ingress + general) |
-| k3s-agt-opt-03.esweiss.com | 192.168.0.206 | K3s agent (ingress + general) |
-| k3s-agt-prec-01.esweiss.com | 192.168.0.207 | K3s agent (general + compute) |
-| k3s.esweiss.com | 192.168.0.161 | K3s API VIP (kube-vip) |
-| vip-public.esweiss.com | 192.168.0.100 | MetalLB public pool |
-| vip-internal.esweiss.com | 192.168.0.101 | MetalLB internal pool |
+- All six Proxmox hosts (`pve-*.esweiss.com` → .102–.107)
+- Infrastructure VMs/LXCs: `smtp-relay` (.151), `plex-direct` (.152),
+  `gitlab` (.153), `home-direct` (.154), `windows` (.155)
+- All nine k3s nodes plus `k3s.esweiss.com` → .161 (API VIP)
+- `dns.esweiss.com` → .150/.160 (direct DoT access);
+  `dns-01`/`dns-02.esweiss.com` → **192.168.0.101** (Traefik internal VIP,
+  for the HTTPS-fronted admin UIs — not the hosts' own IPs)
+- `vip-public.ericsweiss.com` → .100; `vip-internal.esweiss.com` → .101
+- ~25 app/service hostnames (`auth`, `git`, `grafana`, `loki`, `connect`,
+  `traefik`, `plex`, `home`, `food`, `bar`, the *arr stack, etc.) → .101
 
 #### Reverse DNS (PTR Records)
 
-Configure these as additional rewrites for proper reverse lookups:
+PTR records are implemented as `$dnsrewrite` filter rules in
+`adguard_user_rules` (same file, deployed the same way), e.g.:
 
-| PTR Record | FQDN |
-|------------|------|
-| 150.0.168.192.in-addr.arpa | dns-01.esweiss.com |
-| 160.0.168.192.in-addr.arpa | dns-02.esweiss.com |
-| 151.0.168.192.in-addr.arpa | smtp-relay.esweiss.com |
-| 102.0.168.192.in-addr.arpa | pve-nas-01.esweiss.com |
-| 106.0.168.192.in-addr.arpa | pve-opt-03.esweiss.com |
-| 107.0.168.192.in-addr.arpa | pve-prec-01.esweiss.com |
-| 202.0.168.192.in-addr.arpa | k3s-agt-nas-01.esweiss.com |
-| 203.0.168.192.in-addr.arpa | k3s-agt-laptop-01.esweiss.com |
-| 204.0.168.192.in-addr.arpa | k3s-agt-opt-01.esweiss.com |
-| 205.0.168.192.in-addr.arpa | k3s-agt-opt-02.esweiss.com |
-| 206.0.168.192.in-addr.arpa | k3s-agt-opt-03.esweiss.com |
-| 207.0.168.192.in-addr.arpa | k3s-agt-prec-01.esweiss.com |
-| 222.0.168.192.in-addr.arpa | k3s-srv-nas-01.esweiss.com |
-| 223.0.168.192.in-addr.arpa | k3s-srv-laptop-01.esweiss.com |
-| 227.0.168.192.in-addr.arpa | k3s-srv-prec-01.esweiss.com |
-| 161.0.168.192.in-addr.arpa | k3s.esweiss.com |
-| 100.0.168.192.in-addr.arpa | vip-public.esweiss.com |
-| 101.0.168.192.in-addr.arpa | vip-internal.esweiss.com |
+```
+'||150.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;dns-01.{{ internal_domain }}.'
+```
+
+dns.yml carries PTR rules for the infrastructure hosts (.102–.107,
+.150/.151/.160, .152–.155), all k3s nodes, and the VIPs.
 
 **Note**: AdGuard Home syncs DNS rewrites from dns-01 to dns-02 automatically via adguardhome-sync.
 
@@ -177,8 +162,13 @@ features:
     serverConfig: true
     rewrites: true
   filters: true
-  tlsConfig: true
+  tlsConfig: false  # Disabled - each host has its own TLS server name (dns-01 vs dns-02)
 ```
+
+The block above is abbreviated — the full synced feature set
+(dhcp, generalSettings, queryLogConfig, statsConfig, clientSettings,
+services, theme) is defined in `adguardhome_sync_features` in
+`group_vars/dns.yml`.
 
 ### Ansible Role
 

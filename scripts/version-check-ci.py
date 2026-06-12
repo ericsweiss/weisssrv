@@ -100,13 +100,18 @@ def main():
             update_lines = []
             for svc in data.get("services", []):
                 if svc.get("update_available"):
+                    # Registry notes carry intent (e.g. "intentionally held
+                    # back: open upstream regression") — show them so the
+                    # comment distinguishes actionable updates from
+                    # documented holds.
+                    notes = svc.get("notes", "")
                     update_lines.append(
-                        f"| {svc['name']} | {svc['current_version']} | {svc['latest_version']} |"
+                        f"| {svc['name']} | {svc['current_version']} | {svc['latest_version']} | {notes} |"
                     )
             body = (
                 "## Version Check\n\n"
-                "| Service | Current | Latest |\n"
-                "|---------|---------|--------|\n"
+                "| Service | Current | Latest | Notes |\n"
+                "|---------|---------|--------|-------|\n"
                 + "\n".join(update_lines)
                 + "\n\nRun `task maintenance:check-versions` locally for details."
             )

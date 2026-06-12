@@ -32,5 +32,11 @@ loki.relabel "journal" {
 loki.write "default" {
   endpoint {
     url = "{{ alloy_host_loki_url }}"
+{% if alloy_host_loki_user | length > 0 %}
+    basic_auth {
+      username = {{ alloy_host_loki_user | to_json }}
+      password = {{ alloy_host_loki_password | to_json }}
+    }
+{% endif %}
   }
 }

@@ -10,9 +10,9 @@ The NAS server (pve-nas-01) provides file sharing via NFS and Samba.
 |---------|-------------|---------|
 | tank/media | /mnt/tank/media | Media library (cold tier) |
 | tank/share | /mnt/tank/share | General file share |
-| tank/downloads | /mnt/tank/downloads | Download staging |
 | tank/proxmox | /mnt/tank/proxmox | VM backups |
 | tank/pve | /mnt/tank/pve | VM disk images |
+| nvme/media | /mnt/nvme/media | Hot tier (downloads land here inside the mergerfs union) |
 
 ### Tiered Storage with MergerFS
 
@@ -40,13 +40,10 @@ Fast NVMe storage is merged with slower HDD storage:
 
 ### Media Mover
 
-A daily cron job moves aged files from NVMe to HDD:
-
-```bash
-# /usr/local/sbin/media-mover.sh
-# Runs daily at 2 AM
-# Moves files older than 24 hours from hot to cold tier
-```
+A systemd timer (`media-mover.timer`, daily at 02:00) runs
+`/usr/local/sbin/media-mover.sh`, which moves files older than 12 hours
+(`media_mover_min_age`) from `/mnt/nvme/media/library` to
+`/mnt/tank/media/library`.
 
 ## Permission Model
 
@@ -145,7 +142,7 @@ With setgid + GID 2000:
 | Export | Clients | Access |
 |--------|---------|--------|
 | /export | Proxmox hosts, k3s VMs, .154 | RW, crossmnt |
-| /export/appdata | k3s VMs (192.168.0.200/29) | RW |
+| /export/appdata | k3s VMs (192.168.0.200/29, 192.168.0.220/29) | RW |
 | /export/share | k3s VMs | RW |
 | /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) |
 | /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash |
@@ -161,6 +158,16 @@ mount -t nfs4 192.168.0.102:/media /mnt/media
 # In fstab
 192.168.0.102:/media  /mnt/media  nfs4  defaults,_netdev  0  0
 ```
+
+## Transport Security
+
+- **Samba**: every SMB session is encrypted — `smb encrypt = required` and
+  `server min protocol = SMB3_00` in smb.conf.
+- **NFS**: NFSv4-over-TLS is available but opt-in via the `nfs_tls` role
+  (`nfs_tls_enabled: true` on server and every client) plus per-export
+  `xprtsec: tls`. See `ansible/roles/nfs_tls/README.md` for the
+  coordinated-rollout sequence and docs/06's in-transit matrix for the
+  current posture.
 
 ## Samba Shares
 

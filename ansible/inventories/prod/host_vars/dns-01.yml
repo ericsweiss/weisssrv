@@ -133,7 +133,8 @@ cert_distribution_targets:
     ip: 192.168.0.152
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO41P4DvFdeHkZW7Np3w71NH7WV2gGr2BQISIyjyeozB"
     cert_dir: /etc/ssl/plex
-    owner: plex
+    # root-owned with plex group read — see plex role configure.yml.
+    owner: root
     group: plex
     cert_mode: "0644"
     key_mode: "0640"

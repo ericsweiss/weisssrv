@@ -4,7 +4,8 @@
 # still runs verify after this script exits, regardless of pass/fail.
 
 set -eo pipefail
-cd "$(dirname "$0")/../ansible"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../ansible"
 
 echo "=== 1/6 OS package updates ==="
 op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
@@ -28,44 +29,9 @@ op run -- ansible-playbook -i inventories/prod playbooks/proxmox-ha.yml
 echo ""
 
 echo "=== 6/6 Home Assistant restart ==="
-# `'proxmox[0]'` quoted so bash globbing doesn't expand the host pattern
-# before ansible sees it.
-op run -- ansible "proxmox[0]" -i inventories/prod -m shell -a "ha-manager restart vm:154"
-
-# Readiness loop instead of a fixed sleep — VM startup time varies (cold
-# reboot vs warm restart) and a hard 30s often isn't enough. Require an
-# observed down-then-up transition so we don't mark success on the first
-# curl before the restart has actually taken effect. Debounce the down
-# detection with a 2-failure streak so one transient curl error doesn't
-# count as "went down" on its own.
-echo "Waiting for Home Assistant to come back online (up to 5 min)..."
-ha_healthy=false
-ha_went_down=false
-ha_down_streak=0
-ha_start=$(date +%s)
-while true; do
-  if curl -sf --max-time 5 -o /dev/null https://home.esweiss.com 2>/dev/null; then
-    ha_down_streak=0
-    if [ "$ha_went_down" = true ]; then
-      echo "  Home Assistant healthy after $(( $(date +%s) - ha_start ))s"
-      ha_healthy=true
-      break
-    fi
-  else
-    ha_down_streak=$((ha_down_streak + 1))
-    if [ "$ha_down_streak" -ge 2 ]; then
-      ha_went_down=true
-    fi
-  fi
-  elapsed=$(( $(date +%s) - ha_start ))
-  if [ "$elapsed" -ge 300 ]; then break; fi
-  [ $((elapsed % 30)) -lt 5 ] && echo "  still waiting (${elapsed}s)..."
-  sleep 5
-done
-if [ "$ha_healthy" != "true" ]; then
-  echo "ERROR: Home Assistant did not come back online within 5 min"
-  exit 1
-fi
+# Restart + down-then-up readiness wait live in maintenance-ha-restart.sh
+# (single implementation; this used to be a verbatim copy).
+bash "$SCRIPT_DIR/maintenance-ha-restart.sh"
 
 echo ""
 echo "=== All 6 maintenance ops complete ==="

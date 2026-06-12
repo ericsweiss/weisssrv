@@ -48,7 +48,7 @@
     cmd: chattr +i /etc/resolv.conf
   # Only report changed if immutable flag was not already set
   # lsattr output format: "----i--------e-- /etc/resolv.conf" where 'i' indicates immutable
-  changed_when: resolv_conf_attrs.stdout is not search('-i-')
+  changed_when: resolv_conf_attrs.stdout | default('') is not search('^[^ ]*i[^ ]* ')
   failed_when: false
   # Skip in check mode to avoid modifying system state during dry-run
   when: not ansible_check_mode

@@ -50,11 +50,13 @@
 # from a 1Password item; operator configures the matching value once
 # under Plex Settings -> Network -> Custom certificate encryption key.
 
+# root-owned, plex group-readable: a compromised plex account must not be
+# able to swap files that root's cert-reload script later consumes.
 - name: Ensure /etc/ssl/plex directory exists
   ansible.builtin.file:
     path: /etc/ssl/plex
     state: directory
-    owner: "{{ plex_user }}"
+    owner: root
     group: "{{ plex_user }}"
     mode: "0750"
 

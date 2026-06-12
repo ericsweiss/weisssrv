@@ -117,8 +117,10 @@
   when: not (skip_k3s_install | default(false))
 
 - name: Wait for kube-vip to assign VIP
-  ansible.builtin.pause:
-    seconds: 15
+  ansible.builtin.wait_for:
+    host: "{{ k3s_api_vip }}"
+    port: "{{ k3s_api_port }}"
+    timeout: 120
   when:
     - k3s_is_first_server | default(false)
     - not (skip_k3s_install | default(false))

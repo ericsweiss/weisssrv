@@ -19,14 +19,14 @@ The NAS has four ZFS pools with different performance characteristics:
 
 **Configuration**:
 - **Data VDEVs**: raidz2 with 6x ST22000NM000C (22TB enterprise drives)
-- **Special Device**: 2x 2TB NVMe mirror (metadata + small blocks)
-- **L2ARC Cache**: 1x 2TB NVMe
+- **Special Device**: 2x 2TB NVMe mirror (CT2000P5PSSD8, metadata + small blocks)
+- **L2ARC Cache**: 1x 4TB NVMe (Samsung 990 PRO with Heatsink)
 
 **Properties**:
 ```bash
 atime: off
 compression: zstd
-recordsize: 128K (default)
+recordsize: 1M (tank/media), 128K (tank/share, default)
 ```
 
 **Datasets**:
@@ -58,7 +58,12 @@ zpool create -o ashift=12 \
              /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0EJDZ \
              /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0ZZ1R \
              /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0HR34 \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0FEGJ
+             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0FEGJ \
+             special mirror \
+             /dev/disk/by-id/nvme-CT2000P5PSSD8_2334429F310B \
+             /dev/disk/by-id/nvme-CT2000P5PSSD8_2334429F32EE \
+             cache \
+             /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_with_Heatsink_4TB_S7DSNJ0Y608388N
 
 # Verify pool creation
 zpool status tank
@@ -101,8 +106,8 @@ zpool list -v ssd
 
 **Pool Properties**:
 - `ashift=12`: 4K sector size
-- `recordsize`: Override to 16K for databases (set per dataset)
 - Same base properties as tank pool
+- Databases live on zvols (volblocksize set at zvol creation, not recordsize)
 
 **Capacity**: With raidz1, usable capacity is approximately 8TB (4TB × 2 data drives)
 
@@ -152,7 +157,7 @@ zpool create -o ashift=12 \
              -O com.sun:auto-snapshot=false \
              -m /mnt/archive \
              archive raidz1 \
-             /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1NC3Z \
+             /dev/disk/by-id/ata-SEAGATE_ST6000NM0024_Z4D2BDD2 \
              /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6 \
              /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM \
              /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
@@ -167,6 +172,17 @@ zpool list -v archive
 - `com.sun:auto-snapshot=false`: Disable automatic snapshots for cold storage
 
 **Capacity**: With raidz1, usable capacity is approximately 18TB (6TB × 3 data drives)
+
+**Drive mapping** (source of truth for which physical drive backs each
+`archive-N` LUKS container in `host_vars/pve-nas-01.yml`; after the LUKS
+rolling conversion the pool members are `/dev/mapper/archive-{1..4}`):
+
+| LUKS container | Physical drive (by-id) | Notes |
+|----------------|------------------------|-------|
+| archive-1 | ata-SEAGATE_ST6000NM0024_Z4D2BDD2 | Replaced Z4D1NC3Z 2026-06-06 |
+| archive-2 | ata-ST6000NM0024-1HT17Z_Z4D1JCL6 | |
+| archive-3 | ata-ST6000NM0024-1HT17Z_Z4D1RQSM | |
+| archive-4 | ata-ST6000NM0024-1HT17Z_Z4D1JQBA | |
 
 ### local-ssd (Compute Node Storage)
 
@@ -278,8 +294,8 @@ zpool create -f -o ashift=12 \
 **Properties**:
 ```bash
 atime: off
-compression: zstd
-recordsize: 16K (for databases)
+compression: lz4 (ssd/appdata; pool default zstd)
+# Databases live on zvols — volblocksize is set at zvol creation, not recordsize
 ```
 
 **Datasets**:
@@ -437,7 +453,7 @@ Monitor ARC usage:
 sudo arc_summary
 
 # Current ARC size
-grep "c_max\|c\|size" /proc/spl/kstat/zfs/arcstats
+awk '$1 ~ /^(c|c_max|size)$/' /proc/spl/kstat/zfs/arcstats
 ```
 
 ## Monitoring and Maintenance
@@ -490,10 +506,10 @@ sudo zfs snapshot ssd/appdata@backup-$(date +%Y%m%d)
 sudo zfs send ssd/appdata@backup-$(date +%Y%m%d) | \
   sudo zfs receive archive/backups/appdata
 
-# Incremental send
+# Incremental send (incremental source = the previous snapshot)
+PREV=$(zfs list -t snapshot -o name -s creation ssd/appdata | tail -1)
 sudo zfs snapshot ssd/appdata@backup-$(date +%Y%m%d)
-sudo zfs send -i ssd/appdata@backup-$(date +%Y%m%d-%H%M) \
-  ssd/appdata@backup-$(date +%Y%m%d) | \
+sudo zfs send -i "$PREV" ssd/appdata@backup-$(date +%Y%m%d) | \
   sudo zfs receive archive/backups/appdata
 ```
 
@@ -510,8 +526,8 @@ ZFS configuration is managed by the `nas_storage` role.
 ### Deploying ZFS Configuration
 
 ```bash
-# Deploy ZFS settings
-ansible-playbook ansible/playbooks/storage.yml --tags zfs
+# Deploy ZFS settings (storage.yml defines no tags — run untagged, or use task storage:deploy)
+ansible-playbook ansible/playbooks/storage.yml
 
 # Verify configuration
 ansible pve-nas-01 -m shell -a "zfs get all tank/media"
@@ -540,7 +556,7 @@ ZFS ARC can use significant RAM:
 
 ```bash
 # View ARC size
-grep "c_max\|c\|size" /proc/spl/kstat/zfs/arcstats
+awk '$1 ~ /^(c|c_max|size)$/' /proc/spl/kstat/zfs/arcstats
 
 # Limit ARC (temporary)
 echo 34359738368 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 32GB
@@ -582,25 +598,27 @@ the posture is explicit rather than assumed.
 
 ### At Rest
 
-> **Current state (pre-rollout).** The table below documents the **actual production
-> posture today** — ZFS pools are not yet encrypted. The `zfs_encryption` role and
-> the rollout plan in [`docs/32-zfs-encryption.md`](32-zfs-encryption.md) describe
-> the **target state**: `tank`/`ssd`/`nvme` move to ZFS-native encryption with
-> boot-time passphrase unlock via 1Password Connect, `archive` moves to LUKS after
-> the next drive swap, and compute-node `local-ssd` pools stay plaintext on purpose
-> (avoids a chicken-and-egg dependency on the Connect VIP at boot). Treat this
-> section as a snapshot of where the cluster is **before** that work lands.
+> **Current state (post-rollout, 2026-06).** `tank`/`ssd`/`nvme` use ZFS-native
+> dataset-level encryption with boot-time passphrase unlock via 1Password Connect
+> (`zfs_encryption` role; model and runbooks in
+> [`docs/32-zfs-encryption.md`](32-zfs-encryption.md)). Pool roots stay plaintext;
+> the encryption roots are the sensitive child datasets. `archive` moves to LUKS
+> via the rolling conversion in docs/32 §LUKS (role bootstrapped; conversion
+> follows the 2026-06-06 drive swap). Compute-node `local-ssd` pools stay
+> plaintext on purpose (avoids a chicken-and-egg dependency on the Connect VIP
+> at boot).
 
 | Subsystem | Encrypted? | Notes |
 |---|---|---|
-| ZFS pools `tank`, `ssd`, `nvme`, `archive` | No | `encryption=off` on every dataset. Acceptable on a LAN-trusted homelab; risk class is disk theft / RMA / disposal. Target state in `docs/32-zfs-encryption.md`. |
-| Compute-node `local-ssd` ZFS pools (5 hosts) | No | Same defaults. Intentionally remains plaintext post-rollout — see `docs/32-zfs-encryption.md` for rationale. |
-| App PVCs (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki, Grafana) | No | All zvol-backed → inherit parent dataset state. |
-| Proxmox VM disks | No | Same as parent ZFS. |
+| ZFS pools `tank`, `ssd`, `nvme` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/proxmox`, `ssd/appdata/*`, `nvme/*`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
+| ZFS pool `archive` | Pending | LUKS rolling conversion per `docs/32-zfs-encryption.md` §LUKS; `luks_archive` role deployed in bootstrap mode until all four drives are converted. |
+| Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
+| App PVCs (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki, Grafana) | Yes | All zvol-backed under `ssd/appdata/*` → inherit the encrypted parent. |
+| Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted; VM root disks on `local-ssd`, `tank/pve`, and the `ssd` pool root are not. |
 | K3s Secrets in etcd | Yes | `secrets-encryption: true` (`reencrypt_finished` confirmed). |
 | 1Password Connect on-disk cache | Yes | Connect server's encrypted SQLite (AES via bootstrap creds). |
 | 1Password vault (cloud + Connect sync source) | Yes | Vendor end-to-end (SRP + secret key). |
-| Backups (NAS archive pool, ZFS snapshots, GitLab backups) | No | Live on `archive`/`tank`. |
+| Backups (NAS archive pool, ZFS snapshots, GitLab backups) | Partial | `tank/proxmox` (VM backup target) is encrypted; `archive` is pending the LUKS conversion. |
 | Proxmox host root filesystems | No | Standard install, no LUKS. |
 
 ### In Transit
@@ -613,8 +631,8 @@ the posture is explicit rather than assumed.
 | Traefik → in-cluster app pods | Yes (cross-node) | Plain HTTP at the L7 layer; flannel-wireguard encrypts every cross-node packet (`--flannel-backend=wireguard-native`). Same-node hops stay on the local bridge unencrypted at L3 — acceptable per LAN-trust threat model since the attacker would already need root on the node. |
 | Traefik → VM backends (GitLab web, HAOS, Plex) | Yes | Each backend terminates TLS using the *.esweiss.com wildcard distributed by acme_certs (gitlab nginx :443, HAOS http.ssl_certificate :8123, Plex custom-cert PFX :32400); Traefik connects with `scheme: https` + the shared `vm-tls-wildcard` ServersTransport. Auto-renewal is part of the standard acme.sh post-renewal hook. |
 | Traefik → AdGuard admin (dns-01/dns-02) :3000 | Accepted exception | LAN-only (lan-tailscale-only middleware) plain HTTP. AdGuard's admin UI doesn't natively support TLS on its own port; flipping to AdGuard's :443 (DoH+admin) requires UI/sync config outside Ansible's reach. User-facing hop (browser/Tailscale → Traefik) is HTTPS; only the LAN-internal Traefik → AdGuard hop is plain. Bounded by LAN-trust threat model. |
-| Traefik → GitLab Container Registry :5050 | Accepted exception | `gitlab.rb.j2` sets `registry_nginx['listen_https'] = false`. Omnibus's outer nginx terminates TLS at :443 for `registry.git.{ericsweiss,esweiss}.com`; :5050 is the registry backend on the GitLab VM and is never exposed to clients — only Traefik's HTTPS frontend reaches it. Public/Tailscale path is encrypted; the in-VM/cross-LAN-Traefik hop is not. Same LAN-trust class as AdGuard. |
-| Traefik → GitLab Pages :8090 | Accepted exception | `gitlab.rb.j2` sets `pages_nginx['enable'] = false` so Traefik connects directly to the gitlab_pages daemon on :8090. Traefik terminates TLS at :443 for `*.pages.git.{ericsweiss,esweiss}.com`; the :8090 backend is only consumable from Traefik. User-facing path is HTTPS; the backend hop is not. |
+| Traefik → GitLab Container Registry :5050 | Yes | `registry_nginx['listen_https'] = true` with the distributed wildcard cert; Traefik connects `scheme: https` + `vm-tls-wildcard` ServersTransport. |
+| Traefik → GitLab Pages :8443 | Yes | `pages_nginx` terminates TLS on :8443 (wildcard cert) and proxies to the pages daemon, which binds localhost only; Traefik connects `scheme: https` + `vm-tls-wildcard`. |
 | Traefik → router | No | Hardware-specific; configure router's TLS endpoint manually if/when it's worth the effort. |
 | Pod-to-pod (CNI) | Yes (cross-node) | flannel-wireguard-native, UDP/51820, WireGuard (Curve25519 + ChaCha20-Poly1305). Same-node pod-to-pod stays on the local bridge unencrypted. |
 | ESO → 1Password Connect | Yes (cross-node) | Plain HTTP at L7; cross-node hops ride flannel-wireguard. Same-node hop on `cni0` is unencrypted. |
@@ -622,7 +640,7 @@ the posture is explicit rather than assumed.
 | Host Alloy → Loki | Yes | `alloy_host_loki_url` defaults to `https://loki.esweiss.com/loki/api/v1/push` (Traefik IngressRoute, lan-tailscale-only). The plain NodePort `:31100` is kept as an emergency fallback. |
 | AdGuard sync (dns-01 → dns-02) | Yes | adguardhome-sync URLs target the Traefik-fronted `dns-{01,02}.esweiss.com` hostnames; TLS terminated by Traefik with the wildcard cert. |
 | Local clients → smtp-relay | Yes | `smtp_tls_security_level: encrypt`. |
-| smtp-relay → Gmail | Yes | `smtp_tls_security_level: encrypt`. |
+| smtp-relay → Gmail | Yes | `smtp_tls_security_level: secure` (encrypts AND verifies Gmail's certificate against the system CA bundle). |
 | Unbound → upstream resolvers | Yes | DoT with `tls-cert-bundle`. |
 | LAN clients → AdGuard (port 53) | Partial | Plain UDP/TCP 53; DoT exposed but stub resolvers rarely use it. |
 | NFS exports | Opt-in | New `nfs_tls` role + per-export `xprtsec=tls` (NFSv4 over kernel-TLS via `tlshd`). Off by default; activating requires `nfs_tls_enabled: true` on server + every client AND `xprtsec: tls` set on the export. See `ansible/roles/nfs_tls/README.md` for the coordinated-rollout sequence; `docs/16-next-steps.md` tracks the follow-up. |
@@ -654,147 +672,18 @@ in `docs/32-zfs-encryption.md`. Scope (post-rollout):
 
 **Open follow-up:**
 
-1. **LUKS on the `archive` pool.** It's cold-tier offline, no perf concern,
-   and decommissioned drives are most likely to leave the building. Key
-   stored in 1Password + a USB recovery copy. Bundled with the failing
-   archive-pool drive replacement. LUKS rather than ZFS-native because
-   (a) the pool currently has unrecoverable errors and we're re-creating
-   it anyway during the drive swap, (b) LUKS keeps the encryption layer
-   below ZFS so per-dataset `zfs send -w` semantics stay clean, and
-   (c) `archive` isn't mounted at boot — operator unlock at use-time is
-   acceptable.
-
-   Procedure (executed at drive-swap time on `pve-nas-01`).
-   `set -euo pipefail` is at the top of each block so a `cryptsetup` failure
-   on disk 3 of 4 does not silently proceed to `zpool create` with a
-   non-LUKS member.
-
-   The disk list is enumerated explicitly because the failing
-   `Z4D1NC3Z` is being replaced and the replacement is unlikely to be the
-   same `ST6000NM0024` model — a glob like `ata-ST6000NM0024-*` would
-   quietly skip it. Update `ARCHIVE_DISKS` once at swap time with the four
-   actual `/dev/disk/by-id/ata-*` paths visible from
-   `ls -l /dev/disk/by-id/ | grep -i 6T` after the new drive is seated.
-
-   ```bash
-   # 0. Define the four archive members up front. Update at swap time.
-   set -euo pipefail
-   ARCHIVE_DISKS=(
-     /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
-     /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
-     /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
-     /dev/disk/by-id/ata-<NEW-DRIVE-ID>          # replaces Z4D1NC3Z
-   )
-
-   # Derive a stable, bay-traceable mapper name from each disk's serial.
-   # `archive-Z4D1JCL6` is greppable back to the smartd config, the
-   # physical drive label, and `zpool status archive` output — unlike a
-   # UUID prefix which obscures which bay to pull on failure.
-   mapper_name() {
-     local disk_id; disk_id=$(basename "$1")
-     # Strip the by-id model prefix, keep the trailing serial.
-     printf 'archive-%s' "${disk_id##*_}"
-   }
-
-   # Pre-flight: every entry must be a real device. Catches the
-   # <NEW-DRIVE-ID> placeholder + any other placeholder string an
-   # operator might paste in, before luksFormat starts destroying data.
-   for DISK in "${ARCHIVE_DISKS[@]}"; do
-     if [ ! -e "$DISK" ]; then
-       echo "ARCHIVE_DISKS entry '$DISK' does not exist — edit array before running." >&2
-       exit 1
-     fi
-   done
-   ```
-
-   ```bash
-   # 1. Generate the shared LUKS passphrase and store it in 1Password.
-   set -euo pipefail
-   op item create --category=password --vault=Homelab \
-     --title='ZFS Pool archive LUKS Passphrase' \
-     password="$(op item generate-password --length=64)"
-
-   # 2. Drain + destroy the existing degraded pool.
-   sudo zpool export archive
-   sudo zpool destroy archive
-
-   # 3. Format each member as LUKS2 (argon2id KDF). printf (not echo -n)
-   #    so passphrases that happen to contain backslash escapes or look
-   #    like `-e`/`-n` are passed verbatim to cryptsetup stdin.
-   PASS=$(op read 'op://Homelab/ZFS Pool archive LUKS Passphrase/password')
-   for DISK in "${ARCHIVE_DISKS[@]}"; do
-     printf '%s' "$PASS" | sudo cryptsetup luksFormat --type luks2 \
-       --pbkdf argon2id --batch-mode "$DISK" -
-     NAME=$(mapper_name "$DISK")
-     printf '%s' "$PASS" | sudo cryptsetup open "$DISK" "$NAME" -
-   done
-
-   # 4. Create the new ZFS pool on top of the LUKS containers.
-   sudo zpool create -o ashift=12 -O atime=off -O compression=zstd \
-     archive raidz1 \
-     $(for D in "${ARCHIVE_DISKS[@]}"; do echo "/dev/mapper/$(mapper_name "$D")"; done)
-
-   # 5. Persist via /etc/crypttab (noauto = manual unlock-at-use, not
-   #    mounted at boot). The crypttab UUID column is the LUKS-header UUID
-   #    blkid returns from the underlying disk after luksFormat.
-   for DISK in "${ARCHIVE_DISKS[@]}"; do
-     UUID=$(sudo blkid -s UUID -o value "$DISK")
-     NAME=$(mapper_name "$DISK")
-     printf '%s\n' "$NAME UUID=$UUID none luks,noauto" \
-       | sudo tee -a /etc/crypttab
-   done
-   ```
-
-   Operator unlock procedure (run when needing archive access). The
-   block is self-contained — own `set -euo pipefail`, own
-   `ARCHIVE_DISKS`, own `mapper_name()`. If you change `mapper_name()`
-   in one place, change it in the other; the format block above and
-   this block must agree on the per-disk mapper names.
-
-   The two pre-flight guards (`[ -e "$DISK" ]` and the placeholder
-   pattern check) together catch: an array still containing the
-   `<NEW-DRIVE-ID>` placeholder, an operator who used a different
-   placeholder string (`PLACEHOLDER`, `TODO`, etc.), and a stale entry
-   for a drive that was physically removed. Without them the loop
-   would silently call `cryptsetup open` on a non-existent path and
-   the failure would not surface until the later `zpool import`.
-
-   ```bash
-   set -euo pipefail
-   # EDIT BEFORE RUNNING — same list as the format block above. Keep the
-   # canonical copy in /usr/local/sbin/archive-unlock.sh.
-   ARCHIVE_DISKS=(
-     /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
-     /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
-     /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
-     /dev/disk/by-id/ata-<NEW-DRIVE-ID>
-   )
-   mapper_name() {
-     local disk_id; disk_id=$(basename "$1")
-     printf 'archive-%s' "${disk_id##*_}"
-   }
-
-   # Pre-flight: every entry must be a real device. This catches the
-   # <NEW-DRIVE-ID> placeholder, any other placeholder token an operator
-   # might have left in, and stale entries pointing to removed drives.
-   for DISK in "${ARCHIVE_DISKS[@]}"; do
-     if [ ! -e "$DISK" ]; then
-       echo "ARCHIVE_DISKS entry '$DISK' does not exist — edit array before running." >&2
-       exit 1
-     fi
-   done
-
-   PASS=$(op read 'op://Homelab/ZFS Pool archive LUKS Passphrase/password')
-   for DISK in "${ARCHIVE_DISKS[@]}"; do
-     NAME=$(mapper_name "$DISK")
-     printf '%s' "$PASS" | sudo cryptsetup open "$DISK" "$NAME" -
-   done
-   sudo zpool import archive
-   ```
-
-   Once stable, codify the unlock as `/usr/local/sbin/archive-unlock.sh`
-   + add a USB-stick recovery copy of the passphrase per
-   `docs/17-disaster-recovery.md`.
+1. **LUKS on the `archive` pool.** It's cold-tier, no perf concern, and
+   decommissioned drives are most likely to leave the building. LUKS rather
+   than ZFS-native because the encryption layer sits below ZFS, keeping
+   per-dataset `zfs send -w` semantics clean. Implemented by the
+   `luks_archive` role: the rolling-conversion runbook (one drive at a
+   time, no pool destroy) and the operator unlock procedure live in
+   [`docs/32-zfs-encryption.md`](32-zfs-encryption.md) §"LUKS rolling
+   conversion (archive pool)". 1Password item: **LUKS Archive Passphrase**;
+   the mapper names `archive-1..4` and their physical-drive mapping are
+   defined in `host_vars/pve-nas-01.yml` (`luks_archive_devices`) and in
+   the drive-mapping table under [Archive Pool Creation](#archive-pool-creation)
+   above.
 
 **Shipped (active in current configuration):**
 

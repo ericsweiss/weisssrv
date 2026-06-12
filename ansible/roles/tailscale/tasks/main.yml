@@ -1,6 +1,7 @@
 ---
 # Tailscale VPN setup
-# Note: tailscale up must be run manually with auth key to avoid storing keys in git
+# Note: `tailscale up` runs automatically when TAILSCALE_AUTH_KEY is injected
+# via `op run`; otherwise the play ends with the exact manual command to run
 
 - name: Create keyrings directory
   ansible.builtin.file:
@@ -9,20 +10,15 @@
     mode: '0755'
   when: ansible_facts['os_family'] == "Debian"
 
-- name: Check if Tailscale GPG key exists
-  ansible.builtin.stat:
-    path: /usr/share/keyrings/tailscale-archive-keyring.gpg
-  register: tailscale_gpg_key
-  when: ansible_facts['os_family'] == "Debian"
-
+# get_url without force never re-downloads an existing dest, so a rotated
+# upstream signing key requires removing the file manually; the fingerprint
+# verification below is the gate against a tampered download
 - name: Download Tailscale GPG key
   ansible.builtin.get_url:
     url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
     dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
     mode: '0644'
   when: ansible_facts['os_family'] == "Debian"
-  register: gpg_download_result
-  changed_when: gpg_download_result.changed and not tailscale_gpg_key.stat.exists
 
 - name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
   ansible.builtin.shell: |
@@ -106,14 +102,17 @@
   failed_when: false
   when: not ansible_check_mode
 
+# Auth key via TS_AUTHKEY env (tailscale reads it natively) so it never
+# appears on the command line / in the process list.
 - name: Authenticate Tailscale with auth key
   ansible.builtin.command: >
     tailscale up
-    --authkey={{ lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY') }}
     --accept-routes={{ tailscale_accept_routes | lower }}
     --accept-dns={{ tailscale_accept_dns | lower }}
     {% if tailscale_advertise_routes | length > 0 %}--advertise-routes={{ tailscale_advertise_routes | join(',') }}{% endif %}
     {% if tailscale_additional_flags is defined %}{{ tailscale_additional_flags | join(' ') }}{% endif %}
+  environment:
+    TS_AUTHKEY: "{{ lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY') }}"
   when:
     - not ansible_check_mode
     - tailscale_status.rc != 0 or (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') != "Running"

@@ -20,4 +20,5 @@ resources:
   - grafana.yaml
   - grafana-community.yaml
   - onepassword-connect.yaml
+  - fairwinds.yaml
   - versions-configmap.yaml

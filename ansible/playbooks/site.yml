@@ -1,5 +1,7 @@
 ---
-# Main site playbook - deploy everything
+# Base infrastructure playbook (Proxmox hosts, DNS, mail, NAS, firewall,
+# host-level observability). k3s, Plex, GitLab, and Home Assistant have
+# dedicated playbooks with separate lifecycles.
 
 - name: Deploy base configuration to all managed hosts
   hosts: base_managed
@@ -20,6 +22,7 @@
       tags: [postfix_null_client]
     - role: tailscale
       tags: [tailscale]
+      when: tailscale_enabled | bool
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 

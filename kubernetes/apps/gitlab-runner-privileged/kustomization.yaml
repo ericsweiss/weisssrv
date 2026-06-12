@@ -5,3 +5,4 @@ namespace: gitlab-runner
 resources:
   - externalsecret.yaml
   - release.yaml
+  - vpa.yaml

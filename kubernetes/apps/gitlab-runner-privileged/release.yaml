@@ -54,7 +54,7 @@ spec:
       name: k3s-runner-infrastructure
 
       # Existing Secret (created by ESO externalsecret.yaml) containing the
-      # runner-token. Replaces the previous imperative --set runnerToken flag.
+      # runner-token.
       secret: gitlab-runner-privileged-token
 
       # Tags - ONLY run jobs tagged "infrastructure" (weisssrv project jobs)
@@ -78,6 +78,12 @@ spec:
             namespace = "gitlab-runner"
             image = "python:3.11"
             privileged = true
+
+            # NetworkPolicy selector: infrastructure job pods keep
+            # unrestricted egress (ansible/SSH to the whole LAN) — see
+            # ../gitlab-runner/networkpolicy.yaml.
+            [runners.kubernetes.pod_labels]
+              "esweiss.com/runner-class" = "infrastructure"
 
             # CPU/Memory limits for job pods
             # Higher limits for DinD test jobs; lint/deploy jobs use less

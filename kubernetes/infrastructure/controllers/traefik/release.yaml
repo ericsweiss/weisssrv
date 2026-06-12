@@ -1,8 +1,7 @@
 ---
 # Traefik HelmRelease — adopts the existing release `traefik` in traefik
 # namespace (matching releaseName + targetNamespace). Chart version substituted
-# from cluster-versions ConfigMap. Values inlined from the previous
-# kubernetes/apps/traefik/values.yaml (preserved verbatim).
+# from cluster-versions ConfigMap.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -21,9 +20,13 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
+    crds: CreateReplace
     remediation:
       retries: 3
   upgrade:
+    # Without this the traefik.io CRDs stay frozen at their first-install
+    # schema while the chart/controller move on (Flux default is Skip).
+    crds: CreateReplace
     remediation:
       retries: 3
       remediateLastFailure: true
@@ -46,7 +49,7 @@ spec:
       type: LoadBalancer
       annotations:
         # Use MetalLB public pool for external Traefik traffic
-        metallb.universe.tf/loadBalancerIPs: "192.168.0.100"
+        metallb.io/loadBalancerIPs: "192.168.0.100"
       # Preserve source IP for IP allowlist middleware to work correctly
       spec:
         externalTrafficPolicy: Local
@@ -102,7 +105,7 @@ spec:
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
 
-    # Node selector - prefer ingress nodes
+    # Hard requirement: run only on ingress-labeled nodes
     nodeSelector:
       esweiss.com/ingress: "true"
 

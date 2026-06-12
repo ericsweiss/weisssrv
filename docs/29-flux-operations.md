@@ -535,6 +535,29 @@ The `flux logs` command aggregates controller logs by resource, which is far mor
 
 ---
 
+## GitLab outage: pointing Flux at the GitHub mirror
+
+Flux's only Git source is the self-hosted GitLab (`gotk-sync.yaml`), so a
+GitLab VM outage freezes desired-state delivery (running workloads are
+unaffected). The read-only GitHub mirror is the failover source:
+
+```bash
+# Temporary, until GitLab is back (Flux will NOT push back; mirror is RO):
+kubectl -n flux-system patch gitrepository flux-system --type merge \
+  -p '{"spec":{"url":"https://github.com/ericsweiss/weisssrv"}}'
+task flux:reconcile
+
+# Revert once GitLab is healthy (or just let the next `flux bootstrap`/
+# git-controlled gotk-sync change win):
+kubectl -n flux-system patch gitrepository flux-system --type merge \
+  -p '{"spec":{"url":"https://git.ericsweiss.com/eric/weisssrv.git"}}'
+```
+
+Caveats: the mirror lags by its sync cadence, and the flux-system
+Kustomization will revert the patched URL on its next reconcile of
+`gotk-sync.yaml` — for a long outage, suspend it first
+(`task flux:suspend -- flux-system/kustomization/flux-system`).
+
 ## Webhook Setup
 
 One-time setup to replace the default 1-minute GitRepository poll with sub-second push-triggered reconciliation.

@@ -14,12 +14,9 @@
 #     filtering, retries on the next watch cycle once configs runs.
 #     Acceptable: the dashboard is internal-only by hostname anyway).
 #
-# Putting them in apps stage previously created a reconcile-order gap:
-# those IngressRoutes were registered before the middlewares existed,
-# so Traefik logged "middleware not found" and served the routes
-# unfiltered until apps reconciled (next ~minute). Moving the two
-# platform middlewares here closes that window for everything in
-# configs/ and observability stages.
+# If they lived in a later stage, those routes would briefly register
+# without the IP filter (Traefik logs "middleware not found" and serves
+# the route unfiltered until the middleware reconciles).
 #
 # strip-www and home-assistant-headers stay in apps/vm-ingress/middleware.yaml
 # because all of their consumers are in the apps stage.

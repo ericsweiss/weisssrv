@@ -114,6 +114,8 @@ spec:
       services:
         - name: gitlab-registry
           port: 5050
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-services-ericsweiss-tls
 
@@ -138,6 +140,8 @@ spec:
       services:
         - name: gitlab-registry
           port: 5050
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-services-esweiss-tls
 
@@ -153,7 +157,7 @@ spec:
 #
 # This is intentional - wildcard certs (*.pages.git.ericsweiss.com) only cover one level.
 # GitLab Pages for nested groups (group/subgroup) should use hyphenated names (group-subgroup).
-# See certificate.yaml for more details on this limitation.
+# See gitlab-certificate.yaml for more details on this limitation.
 
 # External - *.pages.git.ericsweiss.com and pages.git.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -175,7 +179,9 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-pages
-          port: 8090
+          port: 8443
+          scheme: https
+          serversTransport: vm-tls-wildcard
     # Apex pages domain
     - match: Host(`pages.git.ericsweiss.com`)
       kind: Rule
@@ -184,7 +190,9 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-pages
-          port: 8090
+          port: 8443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-pages-ericsweiss-tls
 
@@ -211,7 +219,9 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-pages
-          port: 8090
+          port: 8443
+          scheme: https
+          serversTransport: vm-tls-wildcard
     # Apex pages domain
     - match: Host(`pages.git.esweiss.com`)
       kind: Rule
@@ -222,7 +232,9 @@ spec:
           namespace: traefik
       services:
         - name: gitlab-pages
-          port: 8090
+          port: 8443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: gitlab-pages-esweiss-tls
 

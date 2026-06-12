@@ -139,7 +139,7 @@
             path: "{{ item }}"
             state: absent
           loop:
-            - /tmp/adguardhome-{{ adguard_home_version }}.tar.gz
+            - "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
             - /tmp/AdGuardHome
 
       rescue:
@@ -397,11 +397,7 @@
       when: plex_version != 'latest' and (needs_plex_upgrade | default(false))
       register: plex_upgrade_pinned
 
-    # Safe handling of upgrade result registers
-    # The pattern (var | default({})).changed | default(false) ensures:
-    # 1. If var is undefined, we get {} (empty dict)
-    # 2. Accessing .changed on {} returns undefined, which defaults to false
-    # This avoids Ansible errors when a register was never set (e.g., skipped tasks)
+    # default({}) guards registers from skipped tasks (no .changed attribute)
     - name: Set combined upgrade result
       ansible.builtin.set_fact:
         plex_was_upgraded: >-

@@ -59,13 +59,39 @@ The storage management in this infrastructure is designed to be non-destructive:
 - Formatting disks
 - Deleting data permanently
 
-All storage tasks are idempotent and will fail safely if expected resources don't exist rather than creating them automatically.
+The *regular* storage tasks (`task storage:deploy` / the `nas_storage`
+role) are idempotent and fail safely if expected resources don't exist
+rather than creating them. The *bootstrap* flow documented below is the
+deliberate exception: it creates missing datasets/directories, but only
+interactively and after an explicit confirmation step — pools are never
+created by either path.
+
+## Accepted Risk: NAS-Concentrated State
+
+All zvol-backed application state (Authentik + Mealie PostgreSQL,
+Prometheus, Loki, GitLab repos) deliberately lives on pve-nas-01's `ssd`
+pool — a NAS or pool failure takes those services down together. This is
+an explicit single-box tradeoff, mitigated by raidz1 + ZFS snapshots +
+the archive replication job (`archive-backupctl`) + GitLab's nightly
+backups, not by replication-grade HA. Recovery is restore-from-backup
+with the RTO that implies. Revisit if a second storage-capable node ever
+joins.
+
+## etcd Snapshots
+
+k3s's built-in scheduled snapshots are active on every server node
+(12-hour cadence, retention 5, `/var/lib/rancher/k3s/server/db/snapshots/`),
+plus `task k3s:backup` for on-demand ones. Gap (tracked in
+docs/16): snapshots currently live only on the server nodes — no offsite
+copy. Restore procedure: `k3s server --cluster-reset
+--cluster-reset-restore-path=<snapshot>` on one server, then rejoin the
+others.
 
 ---
 
 ## Overview
 
-The storage bootstrap process consists of 7 phases:
+The storage bootstrap process consists of 8 phases:
 
 1. **Pre-flight Checks** - Verify target host and display warnings
 2. **Infrastructure Detection** - Scan for existing ZFS pools, datasets, directories
@@ -733,4 +759,4 @@ If you need help during disaster recovery:
 
 ---
 
-**Last Updated**: 2026-04-16
+**Last Updated**: 2026-06-11

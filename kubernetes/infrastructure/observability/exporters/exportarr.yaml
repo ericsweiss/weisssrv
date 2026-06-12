@@ -1,10 +1,9 @@
 ---
 # Exportarr — Prometheus exporters for *arr applications.
 # Each app gets a Deployment + Service + ServiceMonitor.
-# Sonarr/Radarr/Lidarr/Prowlarr require API keys (from observability-exporter-secrets)
-# for full metrics. Uncomment the API_KEY env blocks after creating the
-# "Download Client API Keys" 1Password item and uncommenting the corresponding
-# entries in externalsecret.yaml.
+# Sonarr/Radarr/Lidarr/Prowlarr API keys (each app's Settings > General) come
+# from the observability-exporter-secrets Secret (externalsecret.yaml), sourced
+# from the "Download Client API Keys" 1Password item.
 
 # ---------------------------------------------------------------------------
 # Sonarr

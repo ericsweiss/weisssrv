@@ -39,8 +39,8 @@ proxmox_startup_delay: 10
 #   - eric:media (1000:2000) on the host
 #   - Inside container, plex user is added to media group (GID 2000 mapped)
 #
-# LXC bind mount configuration (added manually after container creation)
-# These are defined here for documentation and will be applied via pct set
+# LXC bind mounts — applied by the proxmox_lxc role via `pct set --mpN`
+# at container-creation time
 lxc_bind_mounts:
   # Plex configuration/database
   - host_path: /mnt/ssd/appdata/plex

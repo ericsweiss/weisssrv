@@ -131,8 +131,8 @@ scenario:
     - create
     - prepare
     - converge
-    # Skip idempotence: SSH keys are intentionally regenerated on each run
-    # because the role deploys dummy keys and we overwrite with working keys
+    # Skip idempotence: a fresh throwaway keypair is generated per run, so
+    # the deployed key files always change between converges
     # - idempotence
     - verify
     - cleanup

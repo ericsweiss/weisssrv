@@ -27,13 +27,9 @@
     success_msg: "SMTP relay auth credentials are present"
   no_log: true
 
-- name: Deploy dns-01 certificate distribution key to eric user
-  ansible.posix.authorized_key:
-    user: "{{ admin_user }}"
-    state: present
-    key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') }}"
-    comment: "dns-01-certs"
-  when: lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') != ''
+# Cert-distribution pubkey deployment lives in acme_certs (single owner for
+# every target); a duplicate task here with a different key comment caused a
+# permanent changed flip-flop between the two.
 
 - name: Install postfix and dependencies
   ansible.builtin.apt:
@@ -122,13 +118,16 @@
   failed_when: false
   changed_when: false
 
+# Secret reaches saslpasswd2 via the task environment, never the argv.
 - name: Create/update relay user in SASL database
   ansible.builtin.shell: |
     set -o pipefail
-    echo "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') }}" | \
-      saslpasswd2 -p -c -u {{ smtp_relay_config.myhostname }} {{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}
+    printf '%s' "$SASL_PW" | saslpasswd2 -p -c -u {{ smtp_relay_config.myhostname }} "$SASL_USER"
   args:
     executable: /bin/bash
+  environment:
+    SASL_PW: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') }}"
+    SASL_USER: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}"
   no_log: true
   changed_when: sasl_user_check.rc != 0
   notify: Reload postfix

@@ -67,6 +67,13 @@ spec:
               topologyKey: kubernetes.io/hostname
     webhook:
       replicaCount: 2
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
       nodeSelector:
         esweiss.com/cpu: modern
       tolerations:
@@ -89,6 +96,13 @@ spec:
                 topologyKey: kubernetes.io/hostname
     certController:
       replicaCount: 2
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
       nodeSelector:
         esweiss.com/cpu: modern
       tolerations:

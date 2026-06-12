@@ -68,9 +68,12 @@
     src: config.alloy.j2
     dest: /etc/alloy/config.alloy
     owner: root
-    group: root
-    mode: "0644"
+    group: alloy
+    # Group-readable only: the config embeds the Loki push credential —
+    # which is also why diffs are suppressed here.
+    mode: "0640"
   notify: Restart alloy
+  no_log: true
 
 - name: Enable and start Alloy service
   ansible.builtin.systemd:

@@ -1,0 +1,86 @@
+---
+# VPA: Initial for the apps (resize on natural restarts), Off for the
+# zvol-backed PostgreSQL (recommendations only).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: mealie
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: mealie}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: mealie-postgres
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: mealie-postgres}
+  updatePolicy: {updateMode: "Off"}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: bar-assistant
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: bar-assistant}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: bar-assistant-meilisearch
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: bar-assistant-meilisearch}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: bar-assistant-redis
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: bar-assistant-redis}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 512Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: salt-rim
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: salt-rim}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]

@@ -7,11 +7,12 @@ data:
   adguard_exporter_version: v1.2.1
   adguard_home_version: 0.107.77
   adguardhome_sync_version: 0.9.0
-  authentik_version: 2026.5.2
+  authentik_version: 2026.5.3
   bar_assistant_version: 5.15.0
   busybox_version: '1.38'
   debian_version: '13'
   exportarr_version: v2.3.0
+  flux_version: 2.8.8
   gitlab_agent_helm_version: 2.27.0
   gitlab_runner_helm_version: 0.89.1
   gitlab_version: 19.0.2-ee.0
@@ -26,6 +27,7 @@ data:
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.11.0
   helm_chart_versions_traefik: 40.3.0
+  helm_chart_versions_vpa: 4.11.0
   k3s_version: v1.36.1+k3s1
   kube_vip_version: v1.2.0
   lidarr_version: 3.1.0.4875

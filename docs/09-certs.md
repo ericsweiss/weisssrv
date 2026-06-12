@@ -20,9 +20,14 @@ dns-01 (Primary)
   ├── acme.sh issues cert via Cloudflare DNS-01
   ├── Installs to /opt/AdGuardHome/certs
   ├── Runs homelab-cert-reload.sh hook
-  └── Distributes certs to:
+  └── Distributes certs to (cert_distribution_targets in host_vars/dns-01.yml):
       ├── dns-02 (AdGuard Home)
-      └── smtp-relay (Postfix TLS)
+      ├── smtp-relay (Postfix TLS)
+      ├── gitlab (/etc/gitlab/ssl, `gitlab-ctl hup nginx`)
+      ├── pve-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
+      ├── k3s-agt-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
+      ├── plex (/etc/ssl/plex, PKCS#12 conversion via plex-cert-reload.sh)
+      └── home (HAOS /ssl via SSH :22222, `ha core restart`)
 ```
 
 ## Certificate Issuance
@@ -41,7 +46,7 @@ This role:
 - Installs acme.sh on dns-01
 - Creates the certs directory at `/opt/AdGuardHome/certs`
 - Deploys the `homelab-cert-reload.sh` distribution script
-- Sets up SSH keys for cert distribution to dns-02 and smtp-relay
+- Sets up SSH keys for cert distribution to every target in `cert_distribution_targets`
 - **Automatically installs certificates** if they exist in acme.sh but are not yet in the target directory
 - Configures the `--reloadcmd` hook for automatic distribution on future renewals
 
@@ -75,7 +80,7 @@ This will:
 1. Detect that certificates exist in `/root/.acme.sh/esweiss.com_ecc/`
 2. Install them to `/opt/AdGuardHome/certs/` on dns-01
 3. Configure the `--reloadcmd` hook to run `homelab-cert-reload.sh`
-4. The reload script distributes certs to dns-02 and smtp-relay, then restarts services
+4. The reload script distributes certs to all seven targets, then restarts/reloads each service
 
 **Important**: This is idempotent - once certificates are installed, subsequent runs will skip
 the installation step.
@@ -97,11 +102,19 @@ If you prefer to install manually instead of using Ansible:
 
 ### Distribution Script
 
-The `homelab-cert-reload.sh` script on `dns-01` handles:
+The `homelab-cert-reload.sh` script on `dns-01` is generated from the
+data-driven `cert_distribution_targets` list in `host_vars/dns-01.yml` —
+the source of truth for targets, per-target SSH host-key pinning, cert
+paths/permissions, and restart commands. It also emits per-target
+Prometheus metrics. Current flow:
 
 1. **Local AdGuard Home**: Restart service to load new cert
-2. **Remote dns-02**: Copy certs via SSH, fix permissions, restart AdGuard
-3. **Remote smtp-relay**: Copy certs to `/etc/postfix/tls`, fix permissions, restart Postfix
+2. **dns-02**: Copy certs via SSH, fix permissions, restart AdGuard
+3. **smtp-relay**: Copy certs to `/etc/postfix/tls`, restart Postfix
+4. **gitlab**: Copy to `/etc/gitlab/ssl`, `gitlab-ctl hup nginx`
+5. **pve-nas-01 / k3s-agt-nas-01**: Copy to `/etc/ssl/private` (tlshd for NFS-over-TLS)
+6. **plex**: Copy to `/etc/ssl/plex`, convert to PKCS#12 via `plex-cert-reload.sh`
+7. **home (HAOS)**: Copy to `/ssl` via SSH :22222 as root, `ha core restart`
 
 ### Script Location
 
@@ -131,7 +144,7 @@ DoT (DNS-over-TLS) on port 853 and HTTPS admin on port 443:
 tls:
   enabled: true
   server_name: dns.esweiss.com
-  force_https: true
+  force_https: false  # admin UI is Traefik-fronted; forcing HTTPS would break the :3000 backend hop
   port_https: 443
   port_dns_over_tls: 853
   certificate_path: /opt/AdGuardHome/certs/fullchain.pem
@@ -232,7 +245,9 @@ sudo journalctl -u postfix -f
 
 ### Distribution Failing
 
-1. **Check SSH connectivity** (using cert distribution key):
+1. **Check SSH connectivity** (using cert distribution key; repeat for each
+   target in `cert_distribution_targets` — dns-02, smtp-relay, gitlab,
+   pve-nas-01, k3s-agt-nas-01, plex, home):
    ```bash
    # From dns-01 - uses dedicated cert distribution key
    ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.160 "echo OK"  # dns-02
@@ -308,11 +323,11 @@ The acme.sh pipeline remains active for non-k3s services (AdGuard Home, SMTP rel
 ### Deploy Certificate Pipeline
 
 ```bash
-# Full deployment
-ansible-playbook ansible/playbooks/dns.yml --tags acme
+# Full pipeline (site.yml tags the role as acme_certs; dns.yml defines no tags)
+ansible-playbook ansible/playbooks/site.yml --tags acme_certs
 
-# Distribution script only
-ansible-playbook ansible/playbooks/dns.yml --tags acme-distribute
+# Manual distribution: run the reload script on dns-01
+# sudo /usr/local/sbin/homelab-cert-reload.sh
 ```
 
 ### Variables

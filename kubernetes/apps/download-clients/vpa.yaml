@@ -1,0 +1,102 @@
+---
+# VPA: Initial across the media stack — requests resize when pods restart
+# (image bumps, node drains) instead of via proactive eviction, so an active
+# download or import is never killed for a resize. Covers VPN sidecars too
+# (containerName "*").
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: nzbget
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: nzbget}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: qbittorrent
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: qbittorrent}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: prowlarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: prowlarr}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: sonarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: sonarr}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: radarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: radarr}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: lidarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: lidarr}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: pulsarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: pulsarr}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]

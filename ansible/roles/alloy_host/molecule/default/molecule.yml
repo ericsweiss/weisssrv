@@ -1,7 +1,8 @@
 ---
 # Molecule configuration for alloy_host role testing
-# Tests: APT repo setup, package install (mocked), config deployment, systemd service
-# Partial testing: Grafana APT repo not available in Docker (alloy binary is mocked)
+# Tests: APT repo setup, real package install from apt.grafana.com, config
+# deployment, systemd enable + /-/ready health check
+# Partial testing: the Loki endpoint is a mock URL (no log shipping verified)
 dependency:
   name: galaxy
   options:
@@ -56,7 +57,3 @@ scenario:
     - verify
     - cleanup
     - destroy
-lint: |
-  set -e
-  yamllint .
-  ansible-lint .

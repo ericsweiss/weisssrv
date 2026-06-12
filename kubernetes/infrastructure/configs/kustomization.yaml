@@ -20,3 +20,4 @@ resources:
   - coredns
   - cloudflare-ddns
   - shared-cloudflare-secrets
+  - vpa

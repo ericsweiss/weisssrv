@@ -1,7 +1,6 @@
 ---
-# NFS storage for recipes stack
-# App configs stored on SSD-backed storage at /appdata/{app}
-# PostgreSQL data stored alongside app config for backup consistency
+# Recipes storage: app configs on NFS (/appdata/{app} from pve-nas-01);
+# Mealie PostgreSQL on a dedicated ZFS zvol (hostPath on k3s-agt-nas-01).
 
 # =============================================================================
 # Mealie App Config Storage
@@ -26,7 +25,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 
 ---
@@ -110,7 +108,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 
 ---

@@ -23,7 +23,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - rsize=1048576
     - wsize=1048576
     - noatime
@@ -67,7 +66,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 
 ---
@@ -106,7 +104,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 
 ---
@@ -145,7 +142,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 
 ---
@@ -184,7 +180,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
     - actimeo=3
     - lookupcache=positive
@@ -225,7 +220,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
     - actimeo=3
     - lookupcache=positive
@@ -266,7 +260,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
     - actimeo=3
     - lookupcache=positive
@@ -307,7 +300,6 @@ spec:
   mountOptions:
     - nfsvers=4.2
     - hard
-    - intr
     - noatime
 
 ---

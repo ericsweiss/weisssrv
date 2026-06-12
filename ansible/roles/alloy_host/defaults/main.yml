@@ -10,3 +10,11 @@
 # emergencies (e.g. Traefik down). Override on a host that needs the
 # fallback by setting alloy_host_loki_url in host_vars.
 alloy_host_loki_url: "https://loki.esweiss.com/loki/api/v1/push"
+
+# Basic auth for the Traefik loki-push-auth middleware (1P item "Loki Push
+# Auth"; injected by the task wrapper). Empty user renders no basic_auth
+# block — pushes then fail 401 once the middleware is live, so deploys
+# without `op run` are loud, not silently unauthenticated. The NodePort
+# fallback bypasses Traefik and ignores these.
+alloy_host_loki_user: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_USER') | default('', true) }}"
+alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD') | default('', true) }}"

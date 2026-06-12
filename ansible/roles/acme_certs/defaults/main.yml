@@ -14,10 +14,13 @@ acme_domains:
   - "*.{{ internal_domain }}"
   - "{{ internal_domain }}"
 
-# Certificate distribution targets
+# Certificate distribution targets — see the schema in
+# inventories/prod/host_vars/dns-01.yml for the full field set
+# (host_key is REQUIRED per target; get it via `task certs:show-host-keys`).
 # cert_distribution_targets:
 #   - host: dns-02
 #     ip: 192.168.0.160
+#     host_key: "ssh-ed25519 AAAA..."
 #     cert_dir: /opt/AdGuardHome/certs
 #     owner: root
 #     group: adguard

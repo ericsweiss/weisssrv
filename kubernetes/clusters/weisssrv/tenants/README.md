@@ -94,6 +94,29 @@ spec:
   # Private repo: create a deploy token in GitLab → add its secret to
   # flux-system namespace → reference here via secretRef.name.
 ---
+# Tenant reconciliation runs under a namespace-scoped ServiceAccount —
+# without serviceAccountName, kustomize-controller applies tenant manifests
+# with its own cluster-admin credentials.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: example-app-flux
+  namespace: example-app
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: example-app-flux-admin
+  namespace: example-app
+subjects:
+  - kind: ServiceAccount
+    name: example-app-flux
+    namespace: example-app
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -103,6 +126,7 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  serviceAccountName: example-app-flux
   sourceRef:
     kind: GitRepository
     name: example-app

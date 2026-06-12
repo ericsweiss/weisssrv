@@ -54,7 +54,7 @@ brew install --cask 1password-cli   # Secrets management
 
 # Install helpful tools
 brew install jq yq                  # JSON/YAML processors
-brew install kdig                   # DNS testing (for DoT verification)
+brew install knot                   # provides kdig for DoT verification
 ```
 
 **Linux (Debian/Ubuntu)**:
@@ -86,7 +86,7 @@ sudo apt install -y jq knot-dnsutils
 # Check versions
 task --version        # Should be 3.x
 ansible --version     # Should be 2.15+
-terraform --version   # Should be 1.5+
+terraform --version   # Should be 1.15+ (matches versions.tf floor + CI image)
 op --version          # Should be 2.x+
 
 # Check Python (required by Ansible)
@@ -118,6 +118,7 @@ Expected collections:
 - `community.general`
 - `ansible.posix`
 - `community.crypto`
+- `community.docker` (required by Molecule tests)
 
 ### 5. Install Linting Tools
 
@@ -223,6 +224,9 @@ Type: Login
 Fields:
   - username: eric
   - password: [your-adguard-password]
+  - password_hash: [any bcrypt hash; the field must exist for `op run` to resolve
+    the Taskfile reference — the role regenerates the live hash from `password`
+    at deploy time]
 ```
 
 **Tailscale Auth Key**:
@@ -241,6 +245,27 @@ Fields:
   - public key: ssh-ed25519 AAAA... eric@MacBookPro.esweiss.com
   - private key: [optional, for automation]
 ```
+
+**Samba NAS User** (needed by `task storage:deploy`, Phase 5):
+```
+Title: Samba NAS User
+Type: Login
+Fields:
+  - password: [password for the nas Samba user]
+```
+
+**DNS-01 SSH Key** (needed by `task dns:deploy`, Phase 6 — cert distribution):
+```
+Title: DNS-01 SSH Key
+Type: SSH Key
+Fields:
+  - private key: [ed25519 private key]
+  - public key: ssh-ed25519 AAAA... acme@dns-01
+```
+
+This is the minimum set for the deployment phases in this guide. The complete
+item list (k3s, applications, observability, encryption) is in CLAUDE.md under
+"Required 1Password Items".
 
 ### 4. Test 1Password CLI Access
 
@@ -340,7 +365,7 @@ The firewall should already allow SSH from:
 ssh eric@192.168.0.102
 
 # Or via Tailscale
-ssh eric@pve-nas-01.tail-scale.ts.net
+ssh eric@pve-nas-01.<tailnet>.ts.net  # replace <tailnet> with your tailnet name
 ```
 
 ## Installation Steps
@@ -502,8 +527,8 @@ dig @192.168.0.150 google.com
 ### 3. AdGuard Home
 
 ```bash
-# Access web UI
-open https://192.168.0.150:3000
+# Access web UI (or http://192.168.0.150:3000 for direct access — port 3000 is plain HTTP)
+open https://dns-01.esweiss.com
 
 # Verify custom rules are present
 # Check DNS rewrites
@@ -557,8 +582,8 @@ nc -zv 192.168.0.150 3000  # AdGuard admin
 # Generate current state snapshot
 task collect-state
 
-# Review output
-cat cluster-state-$(date +%Y%m%d).txt
+# Review output (collect-state copies successful runs here)
+cat CLUSTER_STATUS.txt
 ```
 
 ## Troubleshooting

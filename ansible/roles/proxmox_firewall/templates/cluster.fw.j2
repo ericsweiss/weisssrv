@@ -62,8 +62,8 @@ IN ACCEPT -source +dc/admin_ts -p tcp -dport 80 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog
 # GitLab Container Registry (port 5050, routed via Traefik)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 5050 -log nolog
-# GitLab Pages (port 8090, routed via Traefik)
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8090 -log nolog
+# GitLab Pages (pages_nginx TLS on 8443, routed via Traefik)
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8443 -log nolog
 # GitLab SSH (Git protocol on port 2222) - INTENTIONALLY open to WAN for external Git access
 # Security: Protected by fail2ban (gitlab-ssh jail) with aggressive sshd filter
 # Monitoring: SSH auth failures logged to systemd journal, banned after 5 failures for 1 hour
@@ -112,12 +112,13 @@ IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
 
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog
-# Flannel VXLAN backend (default 8472) — kept open for backwards
-# compatibility / rollback. Active backend is wireguard-native on 51820;
-# remove the vxlan rule after the rollout settles and `wg show` confirms
-# every node speaks WireGuard.
-IN ACCEPT -source +dc/k3s_nodes -p udp -dport 8472 -log nolog
+# Flannel wireguard-native backend (pod-to-pod encrypted). Migrated
+# 2026-06-11; the VXLAN/8472 rollback rule was removed once every node
+# carried flannel-wg and stale vxlan routes were cleaned.
 IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog
+# MetalLB speaker memberlist (L2 leader election between speakers)
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7946 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p udp -dport 7946 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9345 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 6443 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 6443 -log nolog
@@ -155,9 +156,7 @@ IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog  # node-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9101 -log nolog  # node-exporter-host (bare metal)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9134 -log nolog  # zfs-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9167 -log nolog  # unbound-exporter
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9221 -log nolog  # proxmox-exporter API
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8123 -log nolog  # home-assistant
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 80 -log nolog    # gitlab metrics
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 32400 -log nolog # plex
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog  # adguard API
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7472 -log nolog  # metallb speaker

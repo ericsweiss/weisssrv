@@ -117,11 +117,10 @@ push_target() {
           reload_cmd="${11}"
 
     # Stage into a per-run, 0700 mktemp dir under /tmp on the target
-    # instead of scp-ing privkey.pem into world-readable /tmp directly.
-    # Previous behavior left the unencrypted wildcard private key
-    # readable by every local user on the target host for the window
-    # between scp landing and the chmod inside the install step
-    # (TOCTOU + symlink-preplacement risk on multi-user VMs).
+    # instead of scp-ing privkey.pem into world-readable /tmp directly —
+    # avoids a window where the unencrypted wildcard key is readable by
+    # every local user (TOCTOU + symlink-preplacement risk on multi-user
+    # VMs).
     #
     # The dir is created+chmodded in a single ssh round-trip and
     # chowned to ${ssh_user} so the subsequent scp can write into it
@@ -161,10 +160,9 @@ push_target() {
     fi
 
     # Chain mv + chown + chmod + reload with && so any step failure
-    # short-circuits the remote shell and surfaces a non-zero exit.
-    # Previously these were chained with ; which let a partial mv leave
-    # the cert dir with only one of fullchain/privkey, after which the
-    # service reload still ran against a broken cert pair.
+    # short-circuits the remote shell and surfaces a non-zero exit
+    # (a `;` chain would let the reload run against a broken cert pair
+    # after a partial mv).
     #
     # The reload step does NOT prepend sudo_prefix. Some restart_command
     # values are compound shell constructs (e.g. an `if … then … else …
@@ -174,9 +172,7 @@ push_target() {
     # invoking sudo itself where the underlying command needs root.
     # Quote path expansions in the remote command so a future inventory
     # value with a space (or shell-special char) doesn't word-split the
-    # mv/chown/chmod/rm arguments. The values are operator-controlled,
-    # not untrusted user input — this is defense-in-depth, not a
-    # vulnerability fix.
+    # mv/chown/chmod/rm arguments.
     if ! ssh -p "$ssh_port" "${SSH_OPTS[@]}" \
             "${ssh_user}@${ip}" \
             "${sudo_prefix}mv \"${stage}/fullchain.pem\" \"${stage}/privkey.pem\" \"${cert_dir}/\" \

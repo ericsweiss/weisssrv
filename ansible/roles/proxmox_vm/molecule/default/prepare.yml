@@ -74,13 +74,25 @@
           echo "local-ssd        zfspool  active      1000000000       100000000       900000000   10.00%"
       become: true
 
-    - name: Install qm stub (records calls)
+    - name: Install qm stub (records calls, answers `config`)
       ansible.builtin.copy:
         dest: /usr/local/bin/qm
         mode: "0755"
         content: |
           #!/bin/bash
           echo "qm $*" >> /tmp/molecule-stub-state/qm.log
+          # The role's firewall reconcile parses `qm config` for the
+          # net0 line. Default: NIC already carries firewall=1 (no-op).
+          # The override file, when present, supplies the net0 value
+          # verbatim so converge can exercise legacy variants (flag
+          # missing entirely, or explicit firewall=0).
+          if [ "$1" = "config" ]; then
+            if [ -f /tmp/molecule-stub-state/vm_net0_override ]; then
+              echo "net0: $(cat /tmp/molecule-stub-state/vm_net0_override)"
+            else
+              echo "net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1"
+            fi
+          fi
           exit 0
       become: true
 

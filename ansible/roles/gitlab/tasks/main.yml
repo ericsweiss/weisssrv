@@ -318,25 +318,18 @@
   when:
     - not (skip_gitlab_install | default(false))
 
-# Unhold package before upgrade (allows apt to change version)
-- name: Unhold GitLab package for upgrade
-  ansible.builtin.dpkg_selections:
-    name: gitlab-ee
-    selection: install
-  when:
-    - not (skip_gitlab_install | default(false))
-  failed_when: false
-
-# Install or upgrade GitLab EE to the pinned version
+# Install or upgrade GitLab EE to the pinned version. allow_change_held_packages
+# upgrades through the apt hold without the old unhold/hold cycle (which
+# reported changed every run and briefly left the package unheld).
 # EXTERNAL_URL and GITLAB_ROOT_PASSWORD are only used during initial install
 # and are safely ignored on upgrades (existing config is preserved)
-# Skip if already installed (gitlab_installed check) unless skip_gitlab_install is explicitly set
 - name: Install/upgrade GitLab EE (pinned version)
   ansible.builtin.apt:
     name: "gitlab-ee={{ gitlab_version }}"
     state: present
     update_cache: true
     allow_downgrade: true
+    allow_change_held_packages: true
   environment:
     EXTERNAL_URL: "{{ gitlab_external_url }}"
     GITLAB_ROOT_PASSWORD: "{{ gitlab_root_password }}"
@@ -414,12 +407,15 @@
     group: git
     mode: '0700'
 
+# gitlab-backup deliberately excludes gitlab-secrets.json and gitlab.rb —
+# without them a restore cannot decrypt CI variables, 2FA, or runner
+# tokens. Copy them alongside the data backup (dir is git-owned 0700).
 - name: Configure GitLab backup cron job
   ansible.builtin.cron:
     name: "GitLab backup"
     minute: "0"
     hour: "2"
-    job: "/opt/gitlab/bin/gitlab-backup create CRON=1"
+    job: "/opt/gitlab/bin/gitlab-backup create CRON=1 && cp -p /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb {{ gitlab_backup_path }}/"
     user: root
 
 - name: Check if GitLab is installed (for check mode safety)

@@ -372,6 +372,38 @@ deploy-coverage-check:
       when: manual
       allow_failure: true
 
+# deploy-verify hardcodes FLUX_VERSION + tarball sha256 as a pin pair
+# (supply-chain), with a runtime guard against versions-configmap. But
+# deploy-verify only runs on main, so a flux_version bump that forgets
+# the CI pin would surface AFTER merge. This job runs the same drift
+# check in MR pipelines so the incomplete bump fails before merge.
+flux-version-pin-check:
+  needs: []
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - |
+      set -eu
+      PIN=$(sed -n 's/^ *FLUX_VERSION="\([0-9.]*\)"$/\1/p' .gitlab-ci.yml | head -1)
+      CM=$(sed -n 's/^ *flux_version: *//p' kubernetes/infrastructure/sources/versions-configmap.yaml | head -1)
+      echo "deploy-verify FLUX_VERSION pin: ${PIN:-<not found>} / versions-configmap flux_version: ${CM:-<not found>}"
+      [ -n "$PIN" ] || { echo "Could not extract FLUX_VERSION pin from .gitlab-ci.yml"; exit 1; }
+      [ -n "$CM" ] || { echo "Could not extract flux_version from versions-configmap.yaml"; exit 1; }
+      [ "$PIN" = "$CM" ] || { echo "FLUX_VERSION pin (${PIN}) drifted from versions-configmap flux_version (${CM}) — bump the deploy-verify version + sha256 pair in .gitlab-ci.yml"; exit 1; }
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - .gitlab-ci.yml
+        - kubernetes/infrastructure/sources/versions-configmap.yaml
+        - ansible/inventories/prod/group_vars/all.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - .gitlab-ci.yml
+        - kubernetes/infrastructure/sources/versions-configmap.yaml
+        - ansible/inventories/prod/group_vars/all.yml
+
 yaml-lint:
   needs: []
   stage: lint
@@ -447,7 +479,7 @@ terraform-fmt:
   needs: []
   stage: lint
   image:
-    name: hashicorp/terraform:1.5
+    name: hashicorp/terraform:1.15
     entrypoint: [""]
   script:
     - cd terraform/cloudflare
@@ -541,7 +573,7 @@ terraform-validate:
   needs: []
   stage: validate
   image:
-    name: hashicorp/terraform:1.5
+    name: hashicorp/terraform:1.15
     entrypoint: [""]
   script:
     - cd terraform/cloudflare
@@ -562,7 +594,7 @@ terraform-plan:
   needs: []
   stage: validate
   image:
-    name: hashicorp/terraform:1.5
+    name: hashicorp/terraform:1.15
     entrypoint: [""]
   variables:
     TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
@@ -880,7 +912,12 @@ molecule-tests:
   extends: .molecule-base
   retry:
     max: 2
-    when: script_failure
+    when:
+      - script_failure
+      # Wide molecule fan-outs can exhaust schedulable CPU/memory and
+      # the job pod times out Pending (runner_system_failure) before
+      # any test runs — retry instead of failing the pipeline.
+      - runner_system_failure
   script:
     - cd "ansible/roles/$ROLE"
     - molecule test -s "$SCENARIO" || exit 1
@@ -986,7 +1023,10 @@ integration-tests:
   extends: .molecule-base
   retry:
     max: 2
-    when: script_failure
+    when:
+      - script_failure
+      # Same pod-scheduling-timeout tolerance as molecule-tests.
+      - runner_system_failure
   script:
     - cd "ansible/integration-tests/$TEST"
     - molecule test || exit 1
@@ -1063,7 +1103,7 @@ secret_detection:
 
 validation-gate:
   stage: gate
-  image: alpine:latest
+  image: alpine:3.23
   needs:
     # -- Path-filtered jobs (may not exist in pipeline) --
     - job: shellcheck
@@ -1113,7 +1153,7 @@ deploy-terraform:
   stage: deploy
   interruptible: false
   image:
-    name: hashicorp/terraform:1.5
+    name: hashicorp/terraform:1.15
     entrypoint: [""]
   variables:
     TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
@@ -1347,6 +1387,10 @@ deploy-ansible-mail:
       changes:
         - ansible/roles/smtp_relay/**
         - ansible/roles/postfix_null_client/**
+        # Mail group vars: relay/null-client settings consumed by the
+        # site.yml --limit mail run, so a vars-only change must trigger
+        # a redeploy (mirrors group_vars/dns.yml on the dns job).
+        - ansible/inventories/prod/group_vars/mail.yml
 
 deploy-ansible-certs:
   stage: deploy
@@ -1605,9 +1649,14 @@ deploy-verify:
       # Install flux CLI alongside the kubectl already provisioned by
       # .k3s-deploy-base. Flux is the source of truth for k8s workload state,
       # so verification queries Flux CRs rather than individual Deployments.
-      FLUX_VERSION="2.8.5"
+      # Version + checksum are pinned together (supply-chain); bump both in
+      # one change. check-versions tracks flux_version in all.yml, and the
+      # guard below fails the job if this pin drifts from it.
+      FLUX_VERSION="2.8.8"
+      grep -q "flux_version: ${FLUX_VERSION}" kubernetes/infrastructure/sources/versions-configmap.yaml \
+        || { echo "FLUX_VERSION ${FLUX_VERSION} drifted from versions-configmap flux_version"; exit 1; }
       curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" -o /tmp/flux.tar.gz
-      echo "63c178ba938a5443265b2ce02691c005acf4ef6188d4dbb9b9d87333558948c4  /tmp/flux.tar.gz" | sha256sum -c -
+      echo "3791d8fbb73b967ada021186f7b46686a2b180ce206d3c279c3f2ad183877a7f  /tmp/flux.tar.gz" | sha256sum -c -
       tar xzf /tmp/flux.tar.gz -C /usr/local/bin flux
       flux --version
     - |

@@ -21,14 +21,13 @@ vm_bridge: vmbr0
 vm_ostype: l26
 vm_agent_enabled: true
 vm_cpu_type: Penryn  # Baseline CPU for live migration across heterogeneous cluster
-# Override to 'host' per-host for NAS-only VMs that need AVX/AVX2
-# Penryn provides SSE3/SSSE3/SSE4.1 - compatible with oldest node:
-#   Core 2 Quad Q9650 (pve-opt-03, Penryn arch, NO SSE4.2/AVX)
-# Use 'host' for VMs pinned to modern CPUs (pve-nas-01, 12th Gen Intel)
+# Override to 'host' for VMs pinned to a specific node (all k3s and gitlab
+# VMs do this) — exposes the full host CPU, e.g. AVX/AVX2 on modern nodes.
+# Penryn (SSE3/SSSE3/SSE4.1, NO SSE4.2/AVX) is only needed for guests that
+# may live-migrate across the OptiPlex Core 2 Quad Q9650 nodes.
 
 # Cloud image settings
 cloud_image_url: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
-cloud_image_storage: local
 cloud_image_name: "debian-13-generic-amd64.qcow2"
 
 # Cloud-init defaults

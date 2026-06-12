@@ -41,10 +41,39 @@ spec:
               equal:
                 - alertname
                 - namespace
+            # The custom warning/critical pairs use different alertnames
+            # (DiskUsageWarning vs DiskUsageCritical, CPUTempWarning vs
+            # CPUTempCritical, ...) so the rule above never matches them;
+            # pair them on instance+component instead.
+            - source_matchers:
+                - severity="critical"
+                - component=~".+"
+              target_matchers:
+                - severity="warning"
+                - component=~".+"
+              equal:
+                - instance
+                - component
+            - source_matchers:
+                - alertname="DiskUsageCritical"
+              target_matchers:
+                - alertname="DiskUsageWarning"
+              equal:
+                - instance
+                - mountpoint
             - source_matchers:
                 - alertname="InfoInhibitor"
               target_matchers:
                 - severity="info"
+            # Node outage storm control: while a node is down, per-pod /
+            # per-target warnings are pure noise (2026-06-10 outage produced
+            # ~25 distinct warnings and Discord rate-limiting). Tradeoff:
+            # an unrelated pod failure elsewhere is also suppressed during
+            # the outage window.
+            - source_matchers:
+                - alertname=~"KubeNodeNotReady|KubeNodeUnreachable"
+              target_matchers:
+                - alertname=~"KubePodNotReady|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch|KubeletInstanceUnreachable|TargetDown|EndpointDown"
 
           route:
             receiver: discord-default
@@ -52,7 +81,7 @@ spec:
               - alertname
               - namespace
             group_wait: 30s
-            group_interval: 5m
+            group_interval: 10m
             repeat_interval: 4h
             routes:
               - receiver: "null"
@@ -64,6 +93,7 @@ spec:
               - receiver: discord-default
                 matchers:
                   - severity="warning"
+                repeat_interval: 12h
 
           receivers:
             - name: "null"

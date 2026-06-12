@@ -403,6 +403,24 @@ Excluded paths:
 - `docs/` - Documentation may contain example values
 - `ansible/roles/*/molecule/` - Test fixtures
 
+## Runner Network Boundaries
+
+Job pods carry an `esweiss.com/runner-class` label set by each runner's
+executor config, and NetworkPolicies in the `gitlab-runner` namespace
+(`kubernetes/apps/gitlab-runner/networkpolicy.yaml`) enforce per-class
+egress:
+
+- **shared** (other projects' untagged jobs): internet-only — DNS, the
+  kube-API, and the internal Traefik VIP are allowed, but RFC1918,
+  CGNAT (`100.64.0.0/10`, i.e. the tailnet), and link-local ranges are
+  blocked.
+- **infrastructure** (weisssrv-tagged jobs): unrestricted egress —
+  these jobs run ansible/SSH against the whole LAN by design.
+- All ingress to the namespace is denied. Runner managers get DNS, the
+  kube-API, and public HTTPS egress (GitLab sits behind Cloudflare, so
+  its addresses aren't enumerable — the policy allows :443 to non-RFC1918
+  destinations rather than a fixed GitLab IP set).
+
 ## GitHub Mirror
 
 GitHub is configured as a read-only push mirror:

@@ -6,21 +6,17 @@ metadata:
   name: letsencrypt-prod
 spec:
   acme:
-    # Let's Encrypt production server
     server: https://acme-v02.api.letsencrypt.org/directory
 
     # Email for certificate expiration notifications
     email: ericsweiss1@gmail.com
 
-    # Secret to store the ACME account private key
     privateKeySecretRef:
       name: letsencrypt-prod-account-key
 
-    # DNS-01 challenge using Cloudflare
     solvers:
       - dns01:
           cloudflare:
-            email: ericsweiss1@gmail.com
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token

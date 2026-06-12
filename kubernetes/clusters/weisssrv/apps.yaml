@@ -1,8 +1,6 @@
 ---
 # Flux Kustomization for application workloads.
-# Reconciles kubernetes/apps/ which contains one folder per app (authentik,
-# download-clients, recipes, gitlab-runner, gitlab-runner-privileged,
-# gitlab-agent, vm-ingress).
+# Reconciles kubernetes/apps/ (one folder per app; see apps/kustomization.yaml).
 #
 # dependsOn infrastructure-observability: apps will not reconcile until the
 # full infrastructure chain (sources → controllers → configs → observability)

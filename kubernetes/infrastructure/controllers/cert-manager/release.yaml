@@ -1,8 +1,12 @@
 ---
 # cert-manager HelmRelease — adopts the existing release `cert-manager` in
 # cert-manager namespace (matching releaseName + targetNamespace). Chart version
-# substituted from cluster-versions ConfigMap. CRDs managed via install/upgrade
-# crds: CreateReplace (replaces the chart's installCRDs values flag).
+# substituted from cluster-versions ConfigMap.
+#
+# CRDs: the jetstack chart ships CRDs as templates gated by values.crds.enabled
+# (NOT a crds/ directory), so Flux's install/upgrade crds policy has no effect
+# here — crds.enabled below is what makes upgrades manage them. crds.keep
+# protects them (and every Certificate) on uninstall.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -34,6 +38,9 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    crds:
+      enabled: true
+      keep: true
     replicaCount: 1
     prometheus:
       enabled: true

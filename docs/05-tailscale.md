@@ -18,7 +18,7 @@ Tailscale is deployed via the `tailscale` Ansible role on all Proxmox hosts.
 
 ```bash
 # Deploy Tailscale to all Proxmox hosts
-ansible-playbook ansible/playbooks/base.yml --tags tailscale
+ansible-playbook ansible/playbooks/site.yml --tags tailscale
 ```
 
 ### Manual Installation (if needed)
@@ -91,7 +91,7 @@ sudo tailscale netcheck
 Once configured, you can SSH directly via Tailscale hostnames:
 
 ```bash
-ssh eric@pve-nas-01.tail-scale.ts.net
+ssh eric@pve-nas-01.<tailnet>.ts.net  # replace <tailnet> with your tailnet name
 ```
 
 Or via Tailscale IP:
@@ -107,8 +107,7 @@ The Proxmox firewall includes an `admin_ts` IP Set (`100.64.0.0/10`) that allows
 
 - **SSH** (port 22)
 - **Proxmox Web UI** (port 8006)
-- **DNS** (ports 53, 853, 3000)
-- **AdGuard Home** (ports 3000, 443, 853)
+- **DNS containers (sg-dns)**: 53 udp/tcp, 853 udp/tcp (DoT), 3000 (admin UI; HTTPS UI goes via Traefik ingress on 443)
 - **k3s Ingress** (ports 80, 443)
 
 See [11-firewall.md](11-firewall.md) for details.

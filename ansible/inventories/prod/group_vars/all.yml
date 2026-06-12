@@ -1,6 +1,5 @@
 ---
 # Global variables for all hosts in the homelab
-# Last full deploy: 2026-04-15
 
 # Domain configuration
 internal_domain: esweiss.com
@@ -31,7 +30,7 @@ smtp_relay_port: 587
 
 # Admin user configuration
 admin_user: eric
-admin_email: "{{ lookup('ansible.builtin.env', 'ROOT_EMAIL_ALIAS', default='root@localhost') }}"
+admin_email: "{{ lookup('ansible.builtin.env', 'ROOT_EMAIL_ALIAS') or undef(hint='ROOT_EMAIL_ALIAS env var must be set (run via the task wrapper / op run)') }}"
 
 # SSH configuration
 ssh_port: 22
@@ -109,13 +108,6 @@ tailscale_accept_routes: false  # Hosts should NOT accept routes (prevents routi
 tailscale_accept_dns: false  # Use local DNS infrastructure
 tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should advertise routes
 
-# NTP configuration
-ntp_servers:
-  - 0.pool.ntp.org
-  - 1.pool.ntp.org
-  - 2.pool.ntp.org
-  - 3.pool.ntp.org
-
 # Application version pins
 adguard_home_version: "0.107.77"
 adguardhome_sync_version: "0.9.0"
@@ -123,10 +115,12 @@ tailscale_version: "1.98.4"
 debian_version: "13"
 k3s_version: "v1.36.1+k3s1"
 kube_vip_version: "v1.2.0"
+# Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
+# update both together when bumping.
+flux_version: "2.8.8"
 
 # Authentik SSO identity provider
-# Latest stable version (released Feb 2, 2026)
-authentik_version: "2026.5.2"
+authentik_version: "2026.5.3"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
@@ -185,10 +179,10 @@ gitlab_runner_helm_version: "0.89.1"
 gitlab_agent_helm_version: "2.27.0"
 
 # Observability stack versions
-# kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions above.
+# kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.
 # Container image versions for standalone exporters:
 # Exportarr: https://github.com/onedr0p/exportarr/releases
-# Blackbox exporter chart version is in helm_chart_versions above.
+# Blackbox exporter chart version is in helm_chart_versions below.
 # Proxmox VE Exporter: https://github.com/prometheus-pve/prometheus-pve-exporter/releases
 # ZFS Exporter: https://github.com/pdf/zfs_exporter/releases
 # AdGuard Exporter: https://github.com/henrywhitaker3/adguard-exporter/releases
@@ -213,6 +207,7 @@ redis_exporter_version: "v1.86.0"
 # - Traefik: https://github.com/traefik/traefik-helm-chart/releases
 # - cert-manager: https://artifacthub.io/packages/helm/cert-manager/cert-manager
 # - external-dns: https://artifacthub.io/packages/helm/external-dns/external-dns
+# - VPA: https://artifacthub.io/packages/helm/fairwinds-stable/vpa
 helm_chart_versions:
   # 0.16.x has an open regression in the L2 ServiceL2Status reconciler that
   # floods the apiserver (~34 r/s 500s in our setup, enough to trip
@@ -230,6 +225,7 @@ helm_chart_versions:
   alloy: "1.9.0"
   prometheus_blackbox_exporter: "11.11.0"
   onepassword_connect: "2.4.1"
+  vpa: "4.11.0"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs
@@ -298,7 +294,7 @@ ha_resources:
 # Replication jobs provide near-synchronous data replication for fast failover
 # Jobs replicate from primary node to ALL other eligible nodes every 15 minutes
 #
-# BEST PRACTICE: Multi-target replication
+# Multi-target replication:
 # - Proxmox supports replicating a guest to MULTIPLE target nodes
 # - Each service replicates to ALL 4 other local-ssd nodes (not just one)
 # - This allows HA to failover to ANY available node, not just a single backup
@@ -315,8 +311,8 @@ ha_resources:
 storage_replication_jobs:
   # dns-01 (VMID 150) - Primary on pve-laptop-01
   # Replicate to all other local-ssd nodes
-  # Staggered schedule: offset 0 (minutes 0,15,30,45)
-  # NOTE: Using explicit times instead of */15 to ensure proper staggering
+  # Staggered: offset 0 (explicit times instead of */15 so the four
+  # services' offsets stay deterministic)
   - id: "150-0"
     source_node: pve-laptop-01
     target_node: pve-opt-01
@@ -344,7 +340,7 @@ storage_replication_jobs:
 
   # smtp-relay (VMID 151) - Primary on pve-opt-01
   # Replicate to all other local-ssd nodes
-  # Staggered schedule: offset 3 (minutes 3,18,33,48)
+  # Staggered: offset 3 from dns-01's slots
   - id: "151-0"
     source_node: pve-opt-01
     target_node: pve-laptop-01
@@ -372,7 +368,7 @@ storage_replication_jobs:
 
   # dns-02 (VMID 160) - Primary on pve-opt-03
   # Replicate to all other local-ssd nodes
-  # Staggered schedule: offset 6 (minutes 6,21,36,51)
+  # Staggered: offset 6
   - id: "160-0"
     source_node: pve-opt-03
     target_node: pve-laptop-01
@@ -400,7 +396,7 @@ storage_replication_jobs:
 
   # home-assistant (VMID 154) - Primary on pve-prec-01
   # Replicate to all other local-ssd nodes
-  # Staggered schedule: offset 9 (minutes 9,24,39,54)
+  # Staggered: offset 9
   - id: "154-0"
     source_node: pve-prec-01
     target_node: pve-laptop-01

@@ -114,7 +114,9 @@
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
 
-    # 5. Existence guard — no qm calls when VM exists
+    # 5. Existence guard — when the VM exists and its NIC already has
+    # firewall=1, the only qm activity allowed is the read-only
+    # `qm config` probe from the firewall reconcile. No mutations.
     - name: Reset qm.log
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/qm.log
@@ -134,7 +136,13 @@
         proxmox_storage: ssd
 
     - name: Count qm calls after existing-VM run
-      ansible.builtin.shell: wc -l < /tmp/molecule-stub-state/qm.log
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^qm ' /tmp/molecule-stub-state/qm.log || true)
+        config=$(grep -c '^qm config ' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"qm_calls\": ${total}, \"qm_config_calls\": ${config}}"
+      args:
+        executable: /bin/bash
       register: qm_lines
       changed_when: false
 
@@ -143,4 +151,98 @@
         dest: /tmp/molecule-results/05-existence-guard.json
         mode: "0644"
         content: |
-          {"qm_calls": {{ qm_lines.stdout | int }}}
+          {"qm_calls": {{ (qm_lines.stdout | from_json).qm_calls }},
+           "qm_config_calls": {{ (qm_lines.stdout | from_json).qm_config_calls }},
+           "reconcile_changed": {{ vm_net0_firewall.changed | to_json }}}
+
+    # 6. Firewall reconcile — existing VM whose NIC predates firewall=1
+    # must get exactly one `qm set … --net0 …,firewall=1` repair call.
+    - name: Reset qm.log for reconcile case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Stub NIC without a firewall key
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_net0_override
+        content: "virtio=BC:24:11:AA:BB:CC,bridge=vmbr0"
+        mode: "0644"
+
+    - name: Run role against legacy-NIC VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Count reconcile qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^qm ' /tmp/molecule-stub-state/qm.log || true)
+        config=$(grep -c '^qm config ' /tmp/molecule-stub-state/qm.log || true)
+        repair=$(grep -c '^qm set 999 --net0 virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1$' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"qm_calls\": ${total}, \"qm_config_calls\": ${config}, \"repair_calls\": ${repair}}"
+      args:
+        executable: /bin/bash
+      register: qm_reconcile_lines
+      changed_when: false
+
+    - name: Capture firewall-reconcile result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/06-firewall-reconcile.json
+        mode: "0644"
+        content: |
+          {"qm_calls": {{ (qm_reconcile_lines.stdout | from_json).qm_calls }},
+           "qm_config_calls": {{ (qm_reconcile_lines.stdout | from_json).qm_config_calls }},
+           "repair_calls": {{ (qm_reconcile_lines.stdout | from_json).repair_calls }},
+           "reconcile_changed": {{ vm_net0_firewall.changed | to_json }}}
+
+    # 7. Firewall reconcile with explicit firewall=0 — the stale key
+    # must be REPLACED, not appended to (no duplicate firewall= keys
+    # in the resulting net0 string).
+    - name: Reset qm.log for firewall=0 case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Stub NIC with firewall=0
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_net0_override
+        content: "virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=0"
+        mode: "0644"
+
+    - name: Run role against firewall=0 VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Remove net0 override
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/vm_net0_override
+        state: absent
+
+    - name: Count firewall=0 reconcile qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^qm ' /tmp/molecule-stub-state/qm.log || true)
+        config=$(grep -c '^qm config ' /tmp/molecule-stub-state/qm.log || true)
+        repair=$(grep -c '^qm set 999 --net0 virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1$' /tmp/molecule-stub-state/qm.log || true)
+        dup=$(grep -c 'firewall=0' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"qm_calls\": ${total}, \"qm_config_calls\": ${config}, \"repair_calls\": ${repair}, \"stale_key_in_set\": ${dup}}"
+      args:
+        executable: /bin/bash
+      register: qm_fwzero_lines
+      changed_when: false
+
+    - name: Capture firewall=0 reconcile result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/07-firewall-zero.json
+        mode: "0644"
+        content: |
+          {"qm_calls": {{ (qm_fwzero_lines.stdout | from_json).qm_calls }},
+           "qm_config_calls": {{ (qm_fwzero_lines.stdout | from_json).qm_config_calls }},
+           "repair_calls": {{ (qm_fwzero_lines.stdout | from_json).repair_calls }},
+           "stale_key_in_set": {{ (qm_fwzero_lines.stdout | from_json).stale_key_in_set }},
+           "reconcile_changed": {{ vm_net0_firewall.changed | to_json }}}

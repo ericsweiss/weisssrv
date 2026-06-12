@@ -82,8 +82,12 @@ gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
 {% if gitlab_registry_enabled %}
 registry_external_url '{{ gitlab_registry_external_url }}'
 registry['enable'] = true
-registry_nginx['listen_https'] = false
+# TLS with the distributed wildcard cert so the Traefik->registry hop is
+# encrypted (same posture as the web UI on 443).
+registry_nginx['listen_https'] = true
 registry_nginx['listen_port'] = 5050
+registry_nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
+registry_nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
 {% endif %}
 
 # =============================================================================
@@ -93,10 +97,16 @@ registry_nginx['listen_port'] = 5050
 {% if gitlab_pages_enabled %}
 pages_external_url '{{ gitlab_pages_external_url }}'
 gitlab_pages['enable'] = true
-# GitLab Pages listens directly on 0.0.0.0:8090 for Traefik
-gitlab_pages['listen_proxy'] = "0.0.0.0:8090"
-# Disable pages_nginx (Traefik connects directly to gitlab_pages)
-pages_nginx['enable'] = false
+# pages_nginx terminates TLS on 8443 with the distributed wildcard cert
+# (encrypting the Traefik->pages hop) and proxies to the pages daemon,
+# which binds localhost only.
+gitlab_pages['listen_proxy'] = "localhost:8090"
+pages_nginx['enable'] = true
+pages_nginx['listen_port'] = 8443
+pages_nginx['listen_https'] = true
+pages_nginx['redirect_http_to_https'] = false
+pages_nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
+pages_nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
 {% endif %}
 
 # =============================================================================

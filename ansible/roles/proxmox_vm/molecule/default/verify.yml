@@ -13,6 +13,8 @@
         - 03-pool-validation.json
         - 04-pool-list.json
         - 05-existence-guard.json
+        - 06-firewall-reconcile.json
+        - 07-firewall-zero.json
       register: artifacts
 
     - name: Decode artifacts
@@ -22,6 +24,8 @@
         pool_val: "{{ artifacts.results[2].content | b64decode | from_json }}"
         pool_list: "{{ artifacts.results[3].content | b64decode | from_json }}"
         existence: "{{ artifacts.results[4].content | b64decode | from_json }}"
+        fw_reconcile: "{{ artifacts.results[5].content | b64decode | from_json }}"
+        fw_zero: "{{ artifacts.results[6].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -46,7 +50,32 @@
           - pool_list.failed
           - "'not-a-real-pool' in pool_list.msg"
 
-    - name: Existence guard prevents qm calls when VM already exists
+    # The firewall reconcile is deliberately ungated by the existence
+    # check, so one read-only `qm config` probe is expected. The guard
+    # contract is: no MUTATING qm calls when the VM exists and its NIC
+    # already carries firewall=1.
+    - name: Existence guard prevents mutating qm calls when VM already exists
       ansible.builtin.assert:
         that:
-          - existence.qm_calls == 0
+          - existence.qm_config_calls >= 1
+          - existence.qm_calls == existence.qm_config_calls
+          - not existence.reconcile_changed
+
+    - name: Firewall reconcile repairs a legacy NIC with one qm set
+      ansible.builtin.assert:
+        that:
+          - fw_reconcile.repair_calls == 1
+          # The repair must be the only mutation: total calls = the
+          # config probe(s) + exactly one qm set.
+          - fw_reconcile.qm_calls == fw_reconcile.qm_config_calls + 1
+          - fw_reconcile.reconcile_changed
+
+    - name: Firewall reconcile replaces firewall=0 without duplicating the key
+      ansible.builtin.assert:
+        that:
+          - fw_zero.repair_calls == 1
+          - fw_zero.qm_calls == fw_zero.qm_config_calls + 1
+          # The stale firewall=0 must not survive into the qm set
+          # argument (would mean append-instead-of-replace).
+          - fw_zero.stale_key_in_set == 0
+          - fw_zero.reconcile_changed

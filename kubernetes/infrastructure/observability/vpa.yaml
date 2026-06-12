@@ -1,0 +1,258 @@
+---
+# VPA policies for the observability stack.
+#   Auto    — exporters and stack components that tolerate eviction.
+#   Initial — Grafana (single replica; resize on natural restarts).
+#   Off     — Prometheus / Alertmanager / Loki (operator- or chart-managed
+#             stateful sets with hand-tuned requests in their HelmReleases;
+#             VPA records recommendations without acting).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: adguard-exporter-dns01
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: adguard-exporter-dns01}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: adguard-exporter-dns02
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: adguard-exporter-dns02}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: exportarr-sonarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: exportarr-sonarr}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: exportarr-radarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: exportarr-radarr}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: exportarr-lidarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: exportarr-lidarr}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: exportarr-prowlarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: exportarr-prowlarr}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: plex-exporter
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: plex-exporter}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: proxmox-exporter
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: proxmox-exporter}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 500m, memory: 384Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: redis-exporter
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: redis-exporter}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: blackbox-exporter
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: blackbox-exporter-prometheus-blackbox-exporter}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kube-prometheus-stack-operator
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: kube-prometheus-stack-operator}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 64Mi}
+        maxAllowed: {cpu: 500m, memory: 512Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kube-state-metrics
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: kube-prometheus-stack-kube-state-metrics}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 64Mi}
+        maxAllowed: {cpu: 300m, memory: 384Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: alloy
+spec:
+  targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: alloy}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 500m, memory: 512Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: node-exporter
+spec:
+  targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: kube-prometheus-stack-prometheus-node-exporter}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: grafana
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: kube-prometheus-stack-grafana}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: prometheus
+spec:
+  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: prometheus-kube-prometheus-stack-prometheus}
+  updatePolicy: {updateMode: "Off"}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 100m, memory: 512Mi}
+        maxAllowed: {cpu: 2, memory: 4Gi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: alertmanager
+spec:
+  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: alertmanager-kube-prometheus-stack-alertmanager}
+  updatePolicy: {updateMode: "Off"}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki
+spec:
+  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: loki}
+  updatePolicy: {updateMode: "Off"}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 50m, memory: 128Mi}
+        maxAllowed: {cpu: 1, memory: 2Gi}
+        controlledResources: [cpu, memory]

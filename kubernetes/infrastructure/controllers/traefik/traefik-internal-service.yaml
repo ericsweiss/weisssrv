@@ -12,13 +12,13 @@ metadata:
   name: traefik-internal
   namespace: traefik
   annotations:
-    metallb.universe.tf/loadBalancerIPs: "192.168.0.101"
+    metallb.io/loadBalancerIPs: "192.168.0.101"
 spec:
   type: LoadBalancer
   externalTrafficPolicy: Local  # Preserve source IP for IP allowlist middleware
   selector:
     app.kubernetes.io/name: traefik
-    # Verified: Traefik chart sets instance=traefik-traefik (fullname includes chart name)
+    # Traefik chart instance label = <releaseName>-<namespace> ("traefik"-"traefik"); update if either changes
     app.kubernetes.io/instance: traefik-traefik
   ports:
     - name: web

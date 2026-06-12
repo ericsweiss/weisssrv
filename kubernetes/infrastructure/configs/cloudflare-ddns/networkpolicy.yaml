@@ -46,15 +46,10 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
-              # Link-local (RFC 3927 + IPv4 unspecified-network) — never
-              # a legitimate destination for outbound HTTPS.
+              # Link-local (RFC 3927) — never a legitimate HTTPS destination.
               - 169.254.0.0/16
-              # Tailscale CGNAT (RFC 6598 100.64.0.0/10) — the comment on
-              # this policy says "external HTTPS only / no private-LAN
-              # egress", but the lan-trust threat model in docs/06 lumps
-              # Tailscale into the same trust boundary. Excluding it
-              # matches the documented intent (the DDNS pod has no
-              # business dialing Tailscale peers).
+              # Tailscale CGNAT (RFC 6598) — same trust boundary as the LAN;
+              # exclude it too.
               - 100.64.0.0/10
       ports:
         - protocol: TCP

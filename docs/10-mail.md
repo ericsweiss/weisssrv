@@ -30,13 +30,25 @@ The relay server accepts mail from the internal network and forwards to Gmail.
 
 ```ini
 myhostname = smtp-relay.esweiss.com
-mynetworks = 127.0.0.0/8,192.168.0.0/24
+mynetworks = 127.0.0.0/8,192.168.0.0/24,10.42.0.0/16   # 10.42/16 = k3s pod CIDR (Alertmanager relays from in-cluster)
 relayhost = [smtp.gmail.com]:587
 smtp_sasl_auth_enable = yes
 smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
 smtpd_tls_cert_file = /etc/postfix/tls/fullchain.pem
 smtpd_tls_key_file = /etc/postfix/tls/privkey.pem
 ```
+
+### Incoming Authentication
+
+The relay accepts mail on two paths (`smtp_relay_config` /
+`smtp_submission_config` in `group_vars/mail.yml`):
+
+- **Port 25**: `permit_mynetworks` only — SASL AUTH is disabled on this
+  port (cleartext would be permitted and the chrooted smtpd breaks it).
+- **Port 587 (submission)**: mandatory TLS (`smtpd_tls_security_level =
+  encrypt`) plus SASL auth (`permit_sasl_authenticated,reject`). Null
+  clients authenticate with the "SMTP Relay Auth" credentials from
+  1Password.
 
 ### Gmail App Password
 
@@ -84,7 +96,7 @@ postmaster: root
 nobody: root
 hostmaster: root
 webmaster: root
-root: eric@esweiss.com
+root: {{ admin_email }}   # ROOT_EMAIL_ALIAS via 1Password 'Email Config/root_alias'
 ```
 
 Run `newaliases` after changes.
@@ -103,8 +115,8 @@ IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
 ### Send Test Email
 
 ```bash
-# From any Proxmox host
-echo "Test from $(hostname)" | mail -s "Test Subject" eric@esweiss.com
+# From any Proxmox host (delivered to the external root alias)
+echo "Test from $(hostname)" | mail -s "Test Subject" root
 ```
 
 ### Check Mail Queue

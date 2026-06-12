@@ -63,6 +63,16 @@ write_prom_metrics() {
       echo "# HELP archive_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
       echo "# TYPE archive_backup_last_success_timestamp_seconds gauge"
       echo "archive_backup_last_success_timestamp_seconds ${ts}"
+    else
+      # Preserve the last-known success timestamp so the staleness alert
+      # measures time-since-last-success, not time-since-last-attempt.
+      local prev
+      prev="$(awk '/^archive_backup_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+      if [ -n "$prev" ]; then
+        echo "# HELP archive_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+        echo "# TYPE archive_backup_last_success_timestamp_seconds gauge"
+        echo "archive_backup_last_success_timestamp_seconds ${prev}"
+      fi
     fi
   } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
@@ -142,7 +152,7 @@ maybe_resume_receive() {
   if [[ -n "$tok" && "$tok" != "-" ]]; then
     log "Resuming interrupted receive into ${dst}"
     unlock_for_receive "$dst"
-    zfs send -t "$tok" | zfs receive -u "${RECV_SAFE_OPTS[@]}" "$dst"
+    zfs send -t "$tok" | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$dst"
     lock_backup_tree "$dst"
   fi
 }
@@ -270,7 +280,7 @@ replicate_one() {
   if ! dataset_present "$dst"; then
     log "Initial replicate -> ${dst}"
     zfs send -R "${src}@${snap_now}" \
-      | zfs receive -u "${RECV_SAFE_OPTS[@]}" "${dst}"
+      | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "${dst}"
     lock_backup_tree "$dst"
   else
     unlock_for_receive "$dst"
@@ -281,11 +291,11 @@ replicate_one() {
     if [[ -z "$prev" ]]; then
       log "No common ${SNAP_PREFIX}-* snapshots; full replicate to ${dst} (receive -F)"
       zfs send -R "${src}@${snap_now}" \
-        | zfs receive -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
+        | zfs receive -s -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
     else
       log "Incremental: ${src}@${prev} -> ${src}@${snap_now} into ${dst} (receive -F)"
       zfs send -R -i "${src}@${prev}" "${src}@${snap_now}" \
-        | zfs receive -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
+        | zfs receive -s -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
     fi
 
     lock_backup_tree "$dst"
@@ -299,6 +309,13 @@ replicate_one() {
 # --- COMMANDS ----------------------------------------------------------------
 
 cmd_run() {
+  # Single-instance guard: a timer run colliding with a manual run would
+  # interleave sends to the same target datasets.
+  exec 9>/run/archive-backup.lock
+  if ! flock -n 9; then
+    log "archive-backup already running; exiting"
+    exit 0
+  fi
   _BACKUP_METRICS_ACTIVE=1
   if ! pool_present; then
     log "Pool '${POOL_DST}' not present (exported/unplugged). Nothing to do."

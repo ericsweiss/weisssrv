@@ -5,116 +5,22 @@
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------
-# CLASSIFICATION AUDIT — regular STATUS (OK/PARTIAL/FAILED) vs
-# --json {healthy, degraded}. Both paths classify the SAME cluster state
-# from the SAME probes; this block documents every input, comparison,
-# and boundary so the two modes cannot silently drift apart.
-#
-# Three traffic-light states, mutually exclusive in both modes:
-#   green   -> regular OK         / json healthy=true,  degraded=false
-#   yellow  -> regular PARTIAL    / json healthy=false, degraded=true
-#   red     -> regular FAILED     / json healthy=false, degraded=false
-#
-# Side-by-side condition table.
-#
-# State          | Regular STATUS                          | --json
-# ---------------|-----------------------------------------|--------------------------------
-# Catastrophic   | PVE_REACHABLE_REG  == 0  OR             | $pve_up    == 0  OR
-#  (red:         | K3S_NODES_READY_REG == 0  OR            | $k3s_ready == 0
-#   FAILED       | HOST_COVERAGE_PCT  <  COVERAGE_FLOOR_PCT|     [no equivalent — see note 1]
-#   /neither)    |                  (default 50)           |
-# ---------------|-----------------------------------------|--------------------------------
-# Healthy/OK     | HOSTS_OK         == HOSTS_TOTAL  AND    | $pve_up        == $pve_total AND
-#  (green:       |     [see note 2 — broader than json]    |     [see note 2]
-#   OK /         | FLUX_NOT_READY_REG == 0          AND    | $flux_not_ready == 0          AND
-#   healthy)     | ZFS_DEGRADED_REG   == 0          AND    | $zfs_degraded   == 0          AND
-#                | WARNING_EVENTS_REG == 0                 | $warning_events == 0          AND
-#                |                                         | $pve_up        > 0           AND
-#                |                                         | $k3s_ready     > 0
-#                |                                         |     [the > 0 guards are
-#                |                                         |     transitively true in
-#                |                                         |     regular mode because
-#                |                                         |     the catastrophic gate
-#                |                                         |     above already excludes
-#                |                                         |     pve == 0 / k3s == 0]
-# ---------------|-----------------------------------------|--------------------------------
-# Imperfect/     | (HOSTS_OK         != HOSTS_TOTAL  OR    | ($pve_up        <  $pve_total OR
-#  Degraded      |  FLUX_NOT_READY_REG > 0           OR    |  $flux_not_ready > 0          OR
-#  (yellow:      |  ZFS_DEGRADED_REG   > 0           OR    |  $zfs_degraded   > 0          OR
-#   PARTIAL /    |  WARNING_EVENTS_REG > 0)         AND    |  $warning_events > 0)         AND
-#   degraded)    | core infra still up (transitive,        | $pve_up         > 0           AND
-#                | because catastrophic gate above already | $k3s_ready      > 0
-#                | took FAILED off the table)              |
-#
-# Probe parity (same input, same threshold, same comparison):
-#
-#   probe                   | regular var               | --json var       | identical?
-#   ------------------------|---------------------------|------------------|-----------
-#   Proxmox SSH reachable   | PVE_REACHABLE_REG         | PVE_UP           | YES (same
-#                           | (3s timeout, `true`)      | (3s timeout,     | loop, same
-#                           |                           |  `true`)         | host list)
-#   Proxmox total           | PVE_TOTAL_REG (=6)        | PVE_TOTAL  (=6)  | YES
-#   K3s nodes Ready=True    | K3S_NODES_READY_REG       | K3S_READY        | YES (same
-#                           | (jq, 5s req timeout,      | (jq,             | jq filter)
-#                           |  default 0 on failure)    |  default 0)      |
-#   Flux not-ready          | FLUX_NOT_READY_REG        | FLUX_NOT_READY   | YES (same
-#                           | (jq Kustomization +       | (jq same)        | filter)
-#                           |  HelmRelease, default 0)  |                  |
-#   ZFS degraded pools      | ZFS_DEGRADED_REG          | ZFS_DEGRADED     | YES (first
-#                           | (first reachable Proxmox, | (first           | reachable
-#                           |  awk: count != ONLINE,    |  reachable, jq:  | host wins;
-#                           |  default 0)               |  count !=        | identical
-#                           |                           |  ONLINE)         | semantics)
-#   Warning events 1h       | WARNING_EVENTS_REG        | WARNING_EVENTS   | YES (same
-#                           | (jq lastTimestamp >=      | (jq same         | cutoff,
-#                           |  cutoff, default 0)       |  filter)         | same fallback
-#                           |                           |                  | date chain)
-#
-# Notes:
-#
-# 1. Coverage-floor (HOST_COVERAGE_PCT < COVERAGE_FLOOR_PCT) is REGULAR-ONLY
-#    by design. Regular mode runs the full collect loop (Proxmox + DNS +
-#    mail + k3s VMs + GitLab + HAOS) and tracks SSH success per host as
-#    HOSTS_OK / HOSTS_TOTAL. If too few collections succeed, the artifact
-#    is sparse/misleading and we don't trust it enough to overwrite
-#    CLUSTER_STATUS.txt; we exit with rc=2 and FAILED. --json mode is a
-#    fast health snapshot that does NOT collect from those auxiliary
-#    hosts, so it has no equivalent coverage to fall below — the floor
-#    is meaningless there.
-#
-# 2. HOSTS_OK == HOSTS_TOTAL (regular OK) is STRICTLY STRICTER than
-#    pve_up == pve_total (--json healthy). Regular's HOSTS_OK includes
-#    DNS, mail, k3s VMs, GitLab, and HAOS (~18 SSH attempts);
-#    --json's pve_up only counts the 6 Proxmox hosts. So if e.g. a DNS
-#    host is unreachable, regular reports PARTIAL but --json reports
-#    healthy=true. This is intentional: regular's job is to produce a
-#    complete artifact, so any missing collection downgrades the run;
-#    --json's job is to report core-infra health for dashboards/CI, so
-#    it focuses on the Proxmox + k3s API + Flux + ZFS + events signal.
-#    The asymmetry is "regular catches everything --json catches, plus
-#    auxiliary-host SSH failures" — never the reverse.
-#
-# 3. Catastrophic boundary is IDENTICAL between modes: regular FAILED
-#    triggers on PVE_REACHABLE_REG == 0 OR K3S_NODES_READY_REG == 0
-#    (same `== 0` comparison, same probes); --json's neither-healthy-
-#    nor-degraded triggers on $pve_up == 0 OR $k3s_ready == 0. After
-#    round 5 these share the same inputs and thresholds, so the two
-#    modes cannot disagree on whether the cluster is catastrophically
-#    broken. The only regular-only catastrophic trigger is the coverage
-#    floor (note 1).
-#
-# 4. Default values when probes fail are aligned: kubectl unreachable
-#    -> K3S_(NODES_)READY = 0 in both modes (catastrophic). jq parse
-#    failure on Flux/events/zfs -> 0 in both modes (treated as healthy
-#    on that signal — defensible, since the alternative is to crash the
-#    classifier on a transient API hiccup). SSH unreachable for the ZFS
-#    pool probe -> 0 (no degraded pools detected) in both modes.
-#
-# Maintenance: when adding a new signal to one mode, mirror it in the
-# other AND update this table. The two paths must classify the same
-# cluster state the same way modulo the documented note-2 asymmetry.
-# ---------------------------------------------------------------------
+# Classification invariant: regular mode (OK/PARTIAL/FAILED) and --json
+# mode (healthy/degraded/neither) are the same tri-state classifier fed
+# by the same probes (Proxmox SSH, k3s nodes ALL Ready, Flux not-ready,
+# ZFS degraded, GitLab /-/health via the internal VIP, warning events;
+# probe failures default to 0 / unhealthy-only-degrades).
+# Differences, both deliberate:
+#   - the host-coverage floor is regular-only (only regular collects from
+#     auxiliary hosts, and a sparse artifact must not overwrite
+#     CLUSTER_STATUS.txt);
+#   - regular OK requires ALL collected hosts reachable (DNS/mail/k3s
+#     VMs/GitLab — HAOS is probed separately and not in the counters)
+#     while --json healthy only counts the 6 Proxmox hosts — regular is
+#     strictly stricter, never the reverse.
+# When adding a signal to one mode, mirror it in the other.
+
+PVE_HOSTS=(pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01)
 
 # Handle --json mode
 if [ "${1:-}" = "--json" ]; then
@@ -122,9 +28,9 @@ if [ "${1:-}" = "--json" ]; then
 
     # Proxmox nodes reachability
     PVE_UP=0; PVE_TOTAL=0
-    for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+    for host in "${PVE_HOSTS[@]}"; do
         PVE_TOTAL=$((PVE_TOTAL + 1))
-        if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes "eric@${host}" "true" 2>/dev/null; then
             PVE_UP=$((PVE_UP + 1))
         fi
     done
@@ -149,14 +55,18 @@ if [ "${1:-}" = "--json" ]; then
         POD_RUNNING=$(jq '[.items[] | select(.status.phase=="Running" or .status.phase=="Succeeded")] | length' "$K3S_PODS_JSON" 2>/dev/null || echo 0)
     fi
 
-    # ZFS pool health (from first reachable Proxmox host)
+    # ZFS pool health — aggregate across ALL reachable Proxmox hosts (a
+    # degraded local-ssd on a compute node must not hide behind a healthy
+    # NAS). Pool detail list keeps the first reachable host's pools.
     ZFS_POOLS="[]"
     ZFS_DEGRADED=0
-    for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
-        if POOLS=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "zpool list -H -o name,health,size,alloc,free 2>/dev/null" 2>/dev/null); then
-            ZFS_POOLS=$(echo "$POOLS" | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {name:.[0], health:.[1], size:.[2], alloc:.[3], free:.[4]}]' 2>/dev/null || echo "[]")
-            ZFS_DEGRADED=$(echo "$ZFS_POOLS" | jq '[.[] | select(.health != "ONLINE")] | length' 2>/dev/null || echo 0)
-            break
+    for host in "${PVE_HOSTS[@]}"; do
+        if POOLS=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "eric@${host}" "zpool list -H -o name,health,size,alloc,free 2>/dev/null" 2>/dev/null); then
+            HOST_DEGRADED=$(echo "$POOLS" | awk -F'\t' 'NF>=2 && $2 != "ONLINE" {c++} END{print c+0}')
+            ZFS_DEGRADED=$((ZFS_DEGRADED + HOST_DEGRADED))
+            if [ "$ZFS_POOLS" = "[]" ]; then
+                ZFS_POOLS=$(echo "$POOLS" | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {name:.[0], health:.[1], size:.[2], alloc:.[3], free:.[4]}]' 2>/dev/null || echo "[]")
+            fi
         fi
     done
 
@@ -173,6 +83,15 @@ if [ "${1:-}" = "--json" ]; then
         WARNING_EVENTS=$(echo "$EVENTS_JSON" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(.lastTimestamp >= $cutoff)] | length' 2>/dev/null || echo 0)
     fi
 
+    # GitLab application health through the full delivery chain (internal
+    # DNS -> Traefik VIP -> GitLab nginx). GitLab is the GitOps source of
+    # truth, so its health gates green (degrades; never catastrophic).
+    # TLS is verified (no -k): a broken cert chain or failed rotation is
+    # a real degradation this probe should surface, not mask.
+    GITLAB_OK=0
+    GITLAB_HTTP=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://git.esweiss.com/-/health 2>/dev/null || true)
+    [ "$GITLAB_HTTP" = "200" ] && GITLAB_OK=1
+
     # ---------------------------------------------------------------------
     # Collector context — distinguishes "cluster genuinely unhealthy" (e.g.
     # nodes truly unreachable) from "collector misconfigured" (e.g. wrong
@@ -185,42 +104,17 @@ if [ "${1:-}" = "--json" ]; then
     CTX_USER=$(id -un 2>/dev/null || echo "unknown")
     CTX_KUBECONFIG="${KUBECONFIG:-}"
     CTX_KUBE_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "none")
-    # ssh-add -l output format is "<bits> <fingerprint> <comment> (<type>)" —
-    # one line per loaded identity. When the agent has no identities it prints
-    # "The agent has no identities." and exits 1; when no agent is reachable it
-    # exits 2. We match lines starting with digits (the bit count) so the
-    # "no identities" message doesn't get counted as a key. The brace-group
-    # `|| true` neutralises ssh-add's non-zero exits under `set -euo pipefail`
-    # without injecting an extra line into the pipeline; awk's `c+0` coerces
-    # to integer and END always emits exactly one line, so the captured value
-    # is guaranteed numeric even when SSH_AUTH_SOCK is unset.
+    # Count loaded identities (lines starting with a bit count); `|| true`
+    # absorbs ssh-add's non-zero exit when no agent/identities exist.
     CTX_SSH_AGENT_KEYS=$({ ssh-add -l 2>/dev/null || true; } | awk '/^[0-9]+ /{c++} END{print c+0}')
     CTX_GIT_SHA=$(git -C "$(dirname "$0")/.." rev-parse HEAD 2>/dev/null | cut -c1-12)
     CTX_GIT_SHA="${CTX_GIT_SHA:-unknown}"
 
-    # Build final JSON.
-    #
-    # Three traffic-light states (mutually exclusive — exactly one is
-    # true at any time):
-    #   healthy=true,  degraded=false   green:  nothing wrong anywhere
-    #   healthy=false, degraded=true    yellow: imperfections present
-    #                                           but core infra still up
-    #                                           (k3s API + at least one
-    #                                           Proxmox host reachable)
-    #   healthy=false, degraded=false   red:    catastrophic — k3s API
-    #                                           down or no Proxmox host
-    #                                           reachable; collector or
-    #                                           cluster fundamentally
-    #                                           broken
-    #
-    # `healthy` is strict: full Proxmox coverage, at least one k3s node
-    # Ready, zero Flux Ready=False, zero non-ONLINE pools, ZERO warning
-    # events. The previous threshold of < 25 warnings allowed healthy
-    # AND degraded to overlap when warnings were 1..24.
-    #
-    # `degraded` covers any imperfection AND requires that core infra
-    # is still reachable; without that gate, a fully-down cluster
-    # would also report degraded=true (drowning the urgent signal).
+    # Tri-state (mutually exclusive): healthy = green (strict: full
+    # Proxmox coverage, zero Flux/ZFS/warning-event imperfections);
+    # degraded = yellow (any imperfection with core infra still up —
+    # the gate keeps a fully-down cluster from reading as merely
+    # degraded); neither = red/catastrophic.
     jq -n \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson pve_up "$PVE_UP" \
@@ -234,6 +128,7 @@ if [ "${1:-}" = "--json" ]; then
         --argjson zfs_degraded "$ZFS_DEGRADED" \
         --argjson flux_not_ready "$FLUX_NOT_READY" \
         --argjson warning_events "$WARNING_EVENTS" \
+        --argjson gitlab_ok "$GITLAB_OK" \
         --arg ctx_host "$CTX_HOST" \
         --arg ctx_user "$CTX_USER" \
         --arg ctx_kubeconfig "$CTX_KUBECONFIG" \
@@ -244,20 +139,25 @@ if [ "${1:-}" = "--json" ]; then
             timestamp: $ts,
             healthy: (($pve_up > 0)
                      and ($pve_up == $pve_total)
-                     and ($k3s_ready > 0)
+                     and ($k3s_total > 0)
+                     and ($k3s_ready == $k3s_total)
                      and ($flux_not_ready == 0)
                      and ($zfs_degraded == 0)
+                     and ($gitlab_ok == 1)
                      and ($warning_events == 0)),
             degraded: ((($pve_up < $pve_total)
+                       or ($k3s_ready < $k3s_total)
                        or ($warning_events > 0)
                        or ($flux_not_ready > 0)
-                       or ($zfs_degraded > 0))
+                       or ($zfs_degraded > 0)
+                       or ($gitlab_ok == 0))
                       and ($pve_up > 0)
                       and ($k3s_ready > 0)),
             proxmox: { reachable: $pve_up, total: $pve_total },
             k3s: { nodes_ready: $k3s_ready, nodes_total: $k3s_total, version: $k3s_version, pods_running: $pod_running, pods_total: $pod_total },
             zfs: { pools: $zfs_pools, degraded_count: $zfs_degraded },
             flux: { not_ready_count: $flux_not_ready },
+            gitlab: { healthy: ($gitlab_ok == 1) },
             events: { warnings_last_hour: $warning_events },
             collector_context: {
                 host: $ctx_host,
@@ -282,8 +182,7 @@ TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Hosts to collect from
-# 6-node Proxmox cluster
-PROXMOX_HOSTS=("pve-nas-01" "pve-laptop-01" "pve-opt-01" "pve-opt-02" "pve-opt-03" "pve-prec-01")
+PROXMOX_HOSTS=("${PVE_HOSTS[@]}")
 DNS_HOSTS=("192.168.0.150" "192.168.0.160")  # dns-01, dns-02 (use IPs since hostnames resolve to VIP)
 MAIL_HOSTS=("smtp-relay")
 GITLAB_HOST="gitlab"  # 192.168.0.153 (gitlab VM on pve-nas-01)
@@ -457,8 +356,25 @@ echo ""
 echo "--- ZFS Datasets ---"
 zfs list -o name,mountpoint,used,avail 2>/dev/null | head -50 || echo "No ZFS"
 echo ""
+echo "--- ZFS Encryption Keystatus ---"
+zfs get -H -o name,value keystatus 2>/dev/null | awk '$2 == "available" || $2 == "unavailable"' | head -20
+echo ""
+echo "--- LUKS Archive Mappers ---"
+ls -l /dev/mapper/archive-* 2>/dev/null || echo "No archive mappers on this host"
+echo ""
 echo "--- SMART Status ---"
 sudo systemctl is-active smartd 2>/dev/null || echo "smartd not active"
+echo ""
+echo "--- SMART Pending/Reallocated Sectors (SATA) ---"
+for d in /dev/sd?; do
+    [ -b "$d" ] || continue
+    v=$(sudo smartctl -A "$d" 2>/dev/null | awk '/Reallocated_Sector_Ct|Current_Pending_Sector/ {printf "%s=%s ", $2, $10}')
+    [ -n "$v" ] && echo "  $d: $v"
+done
+echo ""
+echo "--- Boot-time Unlock Units (ZFS native / LUKS archive) ---"
+systemctl list-units --all --no-legend 'zfs-load-key@*' 'archive-luks-open@*' 2>/dev/null | awk '{print "  " $1, $3, $4}'
+[ -z "$(systemctl list-units --all --no-legend 'zfs-load-key@*' 'archive-luks-open@*' 2>/dev/null)" ] && echo "  none configured on this host"
 echo ""
 echo "--- NFS Exports ---"
 sudo cat /etc/exports 2>/dev/null || echo "No exports"
@@ -904,15 +820,12 @@ if systemctl is-active k3s &>/dev/null; then
     echo "--- Grafana Dashboards ---"
     sudo k3s kubectl get configmap -n observability -l grafana_dashboard --no-headers 2>/dev/null | wc -l | xargs -I{} echo "Dashboard ConfigMaps: {}"
     echo ""
+    echo "--- Alertmanager Active Alerts ---"
+    sudo k3s kubectl -n observability exec alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager -- \
+        amtool --alertmanager.url=http://localhost:9093 alert query 2>/dev/null | head -30 || echo "Cannot query alertmanager"
+    echo ""
     echo "--- Cluster Warning Events (last 20) ---"
     sudo k3s kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp 2>/dev/null | tail -20 || echo "Cannot get events"
-    echo ""
-    echo "--- Alloy Host Log Collection ---"
-    for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01 dns-01 dns-02 smtp-relay gitlab plex; do
-        status=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=3 "$host" "systemctl is-active alloy || true" 2>/dev/null)
-        [ -z "$status" ] && status="unreachable"
-        echo "  $host: $status"
-    done
 else
     echo "(Not a k3s server node, skipping cluster-wide data)"
     exit 2
@@ -931,6 +844,22 @@ EOF
             echo "Failed to collect cluster-wide data from $host (rc=$rc), will retry on next server node"
         fi
     fi
+}
+
+# Alloy log-shipper status across all hosts, checked from the collector
+# machine (the k3s nodes have no SSH keys to other hosts, so this cannot
+# run nested inside collect_k3s — it previously reported every host
+# "unreachable" for that reason).
+collect_alloy_status() {
+    echo "=== Alloy host log shippers ==="
+    # plex by IP: the short name resolves through the AdGuard rewrite to the
+    # Traefik VIP, not the LXC (same trap as DNS_HOSTS).
+    for host in "${PVE_HOSTS[@]}" "${DNS_HOSTS[@]}" "${MAIL_HOSTS[@]}" "$GITLAB_HOST" 192.168.0.152 "${K3S_HOSTS[@]}"; do
+        local status
+        status=$(ssh -o BatchMode=yes -o ConnectTimeout=3 "eric@${host}" 'systemctl is-active alloy 2>/dev/null' 2>/dev/null) || true
+        echo "  $host: ${status:-unreachable}"
+    done
+    echo ""
 }
 
 collect_home_assistant() {
@@ -1002,13 +931,10 @@ fi
 echo ""
 echo "--- GitLab Health Check ---"
 if command -v curl &>/dev/null; then
-    # Check GitLab health endpoint (internal, no TLS)
-    health=$(curl -s --connect-timeout 5 http://localhost/-/health 2>/dev/null)
-    if [ -n "$health" ]; then
-        echo "Health endpoint: $health"
-    else
-        echo "Health endpoint: unreachable"
-    fi
+    # nginx serves the git.esweiss.com cert; --resolve pins that name to
+    # loopback so the probe stays local AND validates the chain (no -k).
+    code=$(curl -s --resolve git.esweiss.com:443:127.0.0.1 -o /dev/null -w '%{http_code}' --connect-timeout 5 https://git.esweiss.com/-/health 2>/dev/null)
+    echo "Health endpoint (https://git.esweiss.com/-/health via 127.0.0.1): HTTP ${code:-unreachable}"
 fi
 echo ""
 echo "--- GitLab Disk Usage ---"
@@ -1108,9 +1034,9 @@ K3S_NODES_READY_REG=0
 K3S_NODES_TOTAL_REG=0
 
 # Proxmox reachability — mirrors --json mode's `pve_up` loop.
-for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+for host in "${PVE_HOSTS[@]}"; do
     PVE_TOTAL_REG=$((PVE_TOTAL_REG + 1))
-    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "true" 2>/dev/null; then
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "eric@${host}" "true" 2>/dev/null; then
         PVE_REACHABLE_REG=$((PVE_REACHABLE_REG + 1))
     fi
 done
@@ -1127,12 +1053,12 @@ if FLUX_JSON_REG=$(kubectl --request-timeout=5s get kustomizations.kustomize.too
     FLUX_NOT_READY_REG=$(echo "$FLUX_JSON_REG" | jq '[.items[] | select(any(.status.conditions[]?; .type=="Ready" and .status!="True"))] | length' 2>/dev/null || echo 0)
 fi
 
-# ZFS pool health — query the first reachable Proxmox host and count
-# pools whose health is not ONLINE. Mirrors the --json branch's loop.
-for host in pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
-    if POOLS_REG=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "zpool list -H -o name,health 2>/dev/null" 2>/dev/null); then
-        ZFS_DEGRADED_REG=$(echo "$POOLS_REG" | awk -F'\t' 'NF>=2 && $2 != "ONLINE" {c++} END{print c+0}')
-        break
+# ZFS pool health — aggregate non-ONLINE pools across ALL reachable
+# Proxmox hosts. Mirrors the --json branch's loop.
+for host in "${PVE_HOSTS[@]}"; do
+    if POOLS_REG=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "eric@${host}" "zpool list -H -o name,health 2>/dev/null" 2>/dev/null); then
+        HOST_DEGRADED_REG=$(echo "$POOLS_REG" | awk -F'\t' 'NF>=2 && $2 != "ONLINE" {c++} END{print c+0}')
+        ZFS_DEGRADED_REG=$((ZFS_DEGRADED_REG + HOST_DEGRADED_REG))
     fi
 done
 
@@ -1140,6 +1066,13 @@ done
 if EVENTS_JSON_REG=$(kubectl --request-timeout=5s get events -A --field-selector type=Warning -o json 2>/dev/null); then
     WARNING_EVENTS_REG=$(echo "$EVENTS_JSON_REG" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(.lastTimestamp >= $cutoff)] | length' 2>/dev/null || echo 0)
 fi
+
+# GitLab application health — mirrors the --json probe (full chain through
+# the internal Traefik VIP, TLS verified). Unhealthy GitLab downgrades OK
+# to PARTIAL.
+GITLAB_OK_REG=0
+GITLAB_HTTP_REG=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://git.esweiss.com/-/health 2>/dev/null || true)
+[ "$GITLAB_HTTP_REG" = "200" ] && GITLAB_OK_REG=1
 
 {
     for host in "${PROXMOX_HOSTS[@]}"; do
@@ -1165,6 +1098,8 @@ fi
         collect_k3s "$host"
         echo ""
     done
+
+    collect_alloy_status
 
     # Home Assistant
     collect_home_assistant "$HOME_ASSISTANT_HOST"
@@ -1219,8 +1154,11 @@ if [ "$PVE_REACHABLE_REG" -eq 0 ] \
     STATUS="FAILED"
 elif [ "$HOSTS_OK" -eq "$HOSTS_TOTAL" ] \
      && [ "$K3S_API_OK" = true ] \
+     && [ "$K3S_NODES_TOTAL_REG" -gt 0 ] \
+     && [ "$K3S_NODES_READY_REG" -eq "$K3S_NODES_TOTAL_REG" ] \
      && [ "$FLUX_NOT_READY_REG" -eq 0 ] \
      && [ "$ZFS_DEGRADED_REG" -eq 0 ] \
+     && [ "$GITLAB_OK_REG" -eq 1 ] \
      && [ "$WARNING_EVENTS_REG" -eq 0 ]; then
     STATUS="OK"
 else
@@ -1239,6 +1177,7 @@ fi
     echo "# K3s API reachable: $K3S_API_OK"
     echo "# Flux not-ready: $FLUX_NOT_READY_REG"
     echo "# ZFS degraded pools: $ZFS_DEGRADED_REG"
+    echo "# GitLab health (https://git.esweiss.com/-/health): HTTP ${GITLAB_HTTP_REG:-unreachable}"
     echo "# Warning events (last hour): $WARNING_EVENTS_REG"
     echo "# Coverage floor: $COVERAGE_FLOOR_PCT% (run is FAILED below this)"
     echo "# Redacted: Yes"

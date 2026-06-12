@@ -8,3 +8,4 @@ resources:
   - traefik
   - external-dns
   - onepassword-connect
+  - vpa

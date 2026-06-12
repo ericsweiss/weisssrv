@@ -19,7 +19,7 @@
         that:
           - item.size_available > (item.size_total * 0.10)
         fail_msg: "{{ item.mount }} has less than 10% free space"
-      loop: "{{ ansible_mounts | selectattr('mount', 'equalto', '/') }}"
+      loop: "{{ ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') }}"
       loop_control:
         label: "{{ item.mount }}"
 
@@ -28,8 +28,8 @@
         name: ssh
         state: started
       check_mode: true
-      register: ssh_check
-      failed_when: ssh_check.changed
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
     - name: Verify admin user can sudo
       ansible.builtin.command: sudo -n true
@@ -52,6 +52,8 @@
         name: postfix
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
 - name: Verify DNS services
   hosts: dns
@@ -62,6 +64,8 @@
         name: unbound
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
     - name: Test DNS resolution via Unbound
       ansible.builtin.command: dig @127.0.0.1 -p {{ unbound_port }} google.com +short
@@ -74,6 +78,8 @@
         name: AdGuardHome
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
     - name: Test AdGuard Home API (401 is OK - means it's running)
       ansible.builtin.uri:
@@ -110,8 +116,8 @@
         name: adguardhome-sync.timer
         enabled: true
       check_mode: true
-      register: sync_timer
-      failed_when: sync_timer.changed
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
 - name: Verify SMTP relay
   hosts: mail
@@ -122,6 +128,8 @@
         name: postfix
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
     - name: Test Postfix is accepting connections on submission port
       ansible.builtin.wait_for:
@@ -259,6 +267,8 @@
         name: smartd
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
       when: smartd_enabled | default(true)
 
     - name: Check Proxmox backup job status
@@ -277,6 +287,8 @@
         name: nfs-kernel-server
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
 
     - name: Check NFS exports are active
       ansible.builtin.command: showmount -e localhost
@@ -289,6 +301,8 @@
         name: "{{ item }}"
         state: started
       check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
       loop:
         - smbd
         - nmbd
@@ -304,8 +318,8 @@
         name: media-mover.timer
         enabled: true
       check_mode: true
-      register: mover_timer
-      failed_when: mover_timer.changed
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
       when: media_mover_enabled | default(false)
 
     - name: Check last media-mover run status
@@ -348,19 +362,7 @@
   tasks:
     - name: Summary
       ansible.builtin.debug:
-        msg:
-          - "========================================="
-          - "Post-Deployment Verification: PASSED"
-          - "========================================="
-          - "- SSH access verified on all hosts"
-          - "- DNS services operational (Unbound + AdGuard)"
-          - "- SMTP relay configured and running"
-          - "- NFS/Samba services active on NAS"
-          - "- Certificate delivery SSH access confirmed"
-          - "- ZFS pool health verified (ONLINE)"
-          - "- MergerFS mounts active"
-          - "- SMART disk health checks passed"
-          - "- Backup jobs configured"
-          - "- Media mover timer running"
-          - "- K3s persistent storage mounts verified"
-          - "========================================="
+        msg: >-
+          Post-deployment verification completed — review the task output
+          above for failures or skips (plays may be skipped under --limit
+          or --tags).

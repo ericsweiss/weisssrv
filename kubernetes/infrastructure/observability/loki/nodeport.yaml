@@ -1,6 +1,7 @@
 ---
-# Expose Loki push API to non-k8s hosts via NodePort.
-# Hosts run Alloy and ship journald logs to http://<any-k3s-node>:31100.
+# Emergency-fallback NodePort for the Loki push API. Hosts running Alloy
+# normally ship journald logs via https://loki.esweiss.com (Traefik); set
+# alloy_host_loki_url per-host to use http://<any-k3s-node>:31100 instead.
 apiVersion: v1
 kind: Service
 metadata:

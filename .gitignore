@@ -106,3 +106,6 @@ temp/
 # Kubernetes
 kubeconfig
 *.kubeconfig
+
+# Helm chart pull scratch (created by flux/helm validation runs)
+.helm-tmp/

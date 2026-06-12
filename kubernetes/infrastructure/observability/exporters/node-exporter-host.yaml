@@ -1,7 +1,8 @@
 ---
 # Node Exporter (host-level) — remote scrape of prometheus-node-exporter running
-# directly on bare-metal Proxmox hosts.  Provides hardware metrics (hwmon thermals,
-# SMART, NIC details, disk I/O) that VMs cannot see.
+# directly on the bare-metal Proxmox hosts plus the dns-01/dns-02 LXCs.
+# Provides hardware metrics (hwmon thermals, SMART, NIC details, disk I/O) that
+# VMs cannot see; the LXCs contribute filesystem/textfile metrics only.
 # Runs on port 9101 to avoid conflicting with the k3s DaemonSet on 9100.
 
 # ---------------------------------------------------------------------------

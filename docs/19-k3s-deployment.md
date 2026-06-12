@@ -525,9 +525,22 @@ kubectl run -it --rm --image=alpine net-test -- sh -c \
 ### Rollback
 
 If something is wrong, set `k3s_flannel_backend: vxlan` in
-`group_vars/k3s.yml` and re-run the same `ansible-playbook` calls.
-The vxlan firewall rule (UDP/8472) is intentionally still open for
-this reason.
+`group_vars/k3s.yml`, re-add the UDP/8472 rule to `sg-k3s-core` in
+`cluster.fw.j2` (removed once the migration completed), redeploy the
+firewall, and re-run the same `ansible-playbook` calls.
+
+### Status + a step the procedure above omits
+
+Executed 2026-06-11; all 9 nodes carry `flannel-wg`. One addition to the
+procedure: after the backend flip, the retired `flannel.1` device lingers
+with stale per-subnet `/24` routes that out-rank the new `/16 dev
+flannel-wg` route, silently keeping some node pairs on unmanaged VXLAN.
+Clean it cluster-wide after all nodes have migrated:
+
+```bash
+ansible k3s -m ansible.builtin.shell -a 'ip link del flannel.1 2>/dev/null; ip route | grep -c flannel.1'
+# every host should report 0
+```
 
 ## Troubleshooting
 

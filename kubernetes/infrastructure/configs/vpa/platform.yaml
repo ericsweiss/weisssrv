@@ -1,0 +1,213 @@
+---
+# VPA policies for platform controllers (updateMode Auto: the updater may
+# evict to apply new requests — all of these tolerate restarts; Traefik has
+# 3 replicas + PDB). Lives in configs/ because the VPA CRD is installed by
+# controllers/vpa.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: metallb-controller
+  namespace: metallb-system
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metallb-controller
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: metallb-speaker
+  namespace: metallb-system
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: metallb-speaker
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 300m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: traefik
+  namespace: traefik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: traefik
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 50m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 512Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cert-manager
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cert-manager-cainjector
+  namespace: cert-manager
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cert-manager-cainjector
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 384Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cert-manager-webhook
+  namespace: cert-manager
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cert-manager-webhook
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-dns
+  namespace: external-dns
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-dns
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 500m, memory: 512Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-secrets-webhook
+  namespace: external-secrets
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets-webhook
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-secrets-cert-controller
+  namespace: external-secrets
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets-cert-controller
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: onepassword-connect
+  namespace: external-secrets
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: onepassword-connect
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 500m, memory: 512Mi}
+        controlledResources: [cpu, memory]

@@ -14,7 +14,7 @@ data:
       "annotations": {
         "list": []
       },
-      "description": "Blackbox exporter endpoint probes and TLS status. Note: SSO-protected services (sonarr, radarr, lidarr, prowlarr, nzbget, qbittorrent, plex) show DOWN because unauthenticated probes are redirected to Authentik.",
+      "description": "Blackbox exporter endpoint probes and TLS status. SSO-protected services use the http_sso module, which treats 302/401/403 (redirect to Authentik) as up.",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,

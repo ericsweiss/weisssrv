@@ -373,7 +373,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"192\\.168\\.0\\.102:.*\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"drivetemp.*\"}",
+              "expr": "node_hwmon_temp_celsius{job=\"node-exporter-host\", instance=~\"192\\\\.168\\\\.0\\\\.102:.*\"} * on (instance, chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"drivetemp.*\"}",
               "legendFormat": "{{ instance }} {{ chip }}",
               "refId": "A"
             }

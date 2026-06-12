@@ -12,9 +12,7 @@
 #   - Direct internet access
 #
 # Switch modes: edit the qbittorrent-vpn-config ConfigMap below (vpn_enabled
-# and vpn_provider). To apply: commit + push (Flux reconciles automatically).
-# To force pod restart: kubectl rollout restart deployment/qbittorrent -n downloads
-# See kubernetes/apps/download-clients/README.md § Per-App VPN Control.
+# and vpn_provider); see README.md § Per-App VPN Control.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -25,9 +23,6 @@ metadata:
     app.kubernetes.io/name: qbittorrent
     app.kubernetes.io/component: config
 data:
-  # VPN settings - change these to control VPN behavior
-  # vpn_enabled: "true" = VPN sidecar active, killswitch enforced
-  # vpn_enabled: "false" = direct internet, no VPN
   vpn_enabled: "true"
   # VPN provider: "privado", "vpn unlimited"
   vpn_provider: "privado"
@@ -35,11 +30,8 @@ data:
   server_countries: "Netherlands"
 
 ---
-# Deployment with conditional VPN sidecar
-# The sidecar pattern ensures:
-# 1. When VPN is enabled, both containers share network namespace
-# 2. Gluetun owns the network stack, qBittorrent uses it
-# 3. If Gluetun crashes/loses VPN, qBittorrent has no network (killswitch)
+# Deployment with conditional Gluetun VPN sidecar (killswitch semantics: see
+# file header / README.md).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -133,14 +125,13 @@ spec:
         # initiated" repeating every ~1s.
         #
         # Removing the stale files on every start is safe because the
-        # config PVC (`qbittorrent-config`) is `ReadWriteOnce`: kube itself
-        # enforces single-pod attachment, so no other live qbittorrent can
-        # be holding the lock when this initContainer runs. The Deployment
-        # is also single-replica with `Recreate` strategy for the same
-        # reason — if either of those changes (RWX PVC or RollingUpdate
-        # strategy), this initContainer must be revisited because a live
-        # peer's lock could be deleted. The files are recreated on
-        # successful start.
+        # Deployment is single-replica with `Recreate` strategy, so no other
+        # qbittorrent pod is running when this initContainer executes. (The
+        # config PVC is `ReadWriteOnce`, but NFS-backed RWO is enforced
+        # per-node, not per-pod — don't rely on it as a lock.) If replicas>1,
+        # RollingUpdate, or an RWX PVC is ever introduced, this initContainer
+        # must be revisited because a live peer's lock could be deleted. The
+        # files are recreated on successful start.
         #
         # `rm -f` already silently ignores missing files (exit 0); we do
         # NOT swallow other failures (e.g. EPERM from a bad subPath mount)

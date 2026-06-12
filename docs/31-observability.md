@@ -26,7 +26,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **Plex Exporter** | `jsclayton/prometheus-plex-exporter` | Plex Media Server metrics |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
 | **Node Exporter (host)** | `prometheus-node-exporter` (on Proxmox hosts) | Bare-metal hardware metrics (thermals, SMART, disk I/O) on port 9101 |
-| **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on non-k8s hosts + 9 k3s VMs → Loki via NodePort |
+| **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on non-k8s hosts + 9 k3s VMs → Loki via HTTPS ingress (`loki.esweiss.com`) |
 
 ### Service Monitors
 
@@ -100,7 +100,7 @@ Grafana uses an NFS-backed PV for its SQLite database (user preferences, service
 
 **In-cluster:** Alloy runs as a DaemonSet on all 9 k8s nodes (tolerates all taints). It tails pod logs from `/var/log/pods` and ships them to Loki's ClusterIP service.
 
-**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT repository on all non-k8s hosts and k3s VMs. This includes 6 Proxmox hosts, 2 DNS containers, smtp-relay, GitLab VM, Plex LXC, and all 9 k3s VMs (3 servers + 6 agents). It reads from systemd journald and ships to Loki via a NodePort service (port 31100) through the kube-vip VIP (192.168.0.161) for failover across the 3 k3s server nodes.
+**Host-side:** The `alloy_host` Ansible role installs Alloy from the Grafana APT repository on all non-k8s hosts and k3s VMs. This includes 6 Proxmox hosts, 2 DNS containers, smtp-relay, GitLab VM, Plex LXC, and all 9 k3s VMs (3 servers + 6 agents). It reads from systemd journald and ships to Loki over the TLS ingress at `https://loki.esweiss.com/loki/api/v1/push` (lan-tailscale-only + basic-auth middleware; credentials from the "Loki Push Auth" 1Password item, injected at deploy time). The plain NodePort `:31100` via the kube-vip VIP remains only as an emergency fallback — override `alloy_host_loki_url` per host if Traefik is down.
 
 On k3s VMs, alloy_host collects kubelet, containerd, etcd, and other systemd journal entries. This complements (not duplicates) the in-cluster DaemonSet, which only collects container logs from `/var/log/pods`. The two collectors cover different log sources with no overlap.
 
@@ -423,9 +423,19 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
 | Severity | Receivers | Repeat Interval |
 |----------|-----------|-----------------|
 | **critical** | Email (`ericsweiss1@gmail.com`) + Discord webhook | 4h |
-| **warning** | Discord webhook only | 4h |
+| **warning** | Discord webhook only | 12h |
 
-Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 5m group interval.
+Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 10m group interval; warnings repeat at 12h. Node-outage inhibition suppresses per-pod/per-target warnings while a `KubeNodeNotReady`/`KubeNodeUnreachable` alert is firing, and the custom warning/critical pairs inhibit on `instance`+`component`.
+
+### Flux readiness alerting
+
+Flux controllers no longer export per-resource readiness, so
+`FluxResourceNotReady` is driven by kube-state-metrics
+`customResourceState` (`gotk_resource_info`), covering `Kustomization`,
+`HelmRelease`, and the source kinds in use (`GitRepository`,
+`HelmRepository`, `HelmChart`) — a failing source therefore alerts even
+while workloads merely go stale. Add new kinds (e.g. `OCIRepository`)
+to the customResourceState config + RBAC when they're first adopted.
 
 ### Alert Rules
 

@@ -126,13 +126,33 @@
       --memory {{ vm_memory }} \
       --cores {{ vm_cores }} \
       --cpu {{ vm_cpu_type | default('host') }} \
-      --net0 virtio,bridge={{ vm_bridge }} \
+      --net0 virtio,bridge={{ vm_bridge }},firewall=1 \
       --ostype {{ vm_ostype }} \
       --agent enabled={{ vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
   changed_when: true
+
+# Per-guest .fw rules are only enforced when the NIC carries firewall=1;
+# reconcile VMs created before the flag was added to qm create above.
+- name: Ensure VM NIC has the guest firewall flag
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$(qm config {{ vm_id }} | sed -n 's/^net0: //p')
+    if [ -n "$current" ] && ! printf '%s' "$current" | grep -Eq '(^|,)firewall=1($|,)'; then
+      # Strip any existing firewall=<v> (e.g. firewall=0) first so the
+      # repair cannot produce a duplicate key in the net0 string.
+      cleaned=$(printf '%s' "$current" | sed -E 's/(^|,)firewall=[^,]*//g' | sed -E 's/^,//')
+      qm set {{ vm_id }} --net0 "${cleaned},firewall=1"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: vm_net0_firewall
+  changed_when: "'CHANGED' in (vm_net0_firewall.stdout | default(''))"
+  when: not ansible_check_mode
 
 - name: Import cloud image disk
   delegate_to: "{{ proxmox_host }}"
@@ -182,6 +202,20 @@
     - not ansible_check_mode
     - vm_exists.rc != 0
   changed_when: true
+
+# An empty key would still "provision successfully" — and leave the VM
+# unreachable over SSH.
+- name: Assert SSH public key is available for cloud-init
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') | length > 0
+    fail_msg: >-
+      SSH_PUBLIC_KEY is empty. Run via the task wrapper (op run) so
+      cloud-init gets an authorized key.
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - not (proxmox_vm_skip_create | default(false))
 
 - name: Deploy SSH public key for cloud-init
   delegate_to: "{{ proxmox_host }}"

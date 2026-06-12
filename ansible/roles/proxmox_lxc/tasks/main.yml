@@ -1,10 +1,11 @@
 ---
 # Proxmox LXC container provisioning
 
-- name: Set container ID from IP last octet
+# Mirror proxmox_vm: an explicit inventory vmid wins; fall back to the
+# IP last octet.
+- name: Set container ID
   ansible.builtin.set_fact:
-    container_id: "{{ proxmox_lxc_target_ip.split('.')[-1] }}"
-  when: container_id is not defined
+    container_id: "{{ vmid | default(proxmox_lxc_target_ip.split('.')[-1]) }}"
 
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
@@ -225,7 +226,7 @@
       --memory {{ lxc_memory }} \
       --swap {{ lxc_swap }} \
       --rootfs {{ _effective_lxc_storage }}:{{ lxc_disk_size | regex_replace('G$', '') }} \
-      --net0 name=eth0,bridge={{ lxc_bridge }},ip={{ proxmox_lxc_target_ip }}/24,gw={{ lxc_gateway }} \
+      --net0 name=eth0,bridge={{ lxc_bridge }},firewall=1,ip={{ proxmox_lxc_target_ip }}/24,gw={{ lxc_gateway }} \
       --nameserver "{{ lxc_nameserver }}" \
       --searchdomain "{{ lxc_searchdomain }}" \
       --unprivileged {{ lxc_unprivileged | ternary(1, 0) }} \
@@ -237,6 +238,26 @@
     - container_exists.rc != 0
   changed_when: true
   register: container_create
+
+# Per-guest .fw rules are only enforced when the NIC carries firewall=1;
+# reconcile containers created before the flag was added to pct create.
+- name: Ensure LXC NIC has the guest firewall flag
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$(pct config {{ container_id }} | sed -n 's/^net0: //p')
+    if [ -n "$current" ] && ! printf '%s' "$current" | grep -Eq '(^|,)firewall=1($|,)'; then
+      # Strip any existing firewall=<v> (e.g. firewall=0) first so the
+      # repair cannot produce a duplicate key in the net0 string.
+      cleaned=$(printf '%s' "$current" | sed -E 's/(^|,)firewall=[^,]*//g' | sed -E 's/^,//')
+      pct set {{ container_id }} --net0 "${cleaned},firewall=1"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: lxc_net0_firewall
+  changed_when: "'CHANGED' in (lxc_net0_firewall.stdout | default(''))"
+  when: not ansible_check_mode
 
 # Configure bind mounts for containers that need host storage access
 # This must be done before starting the container

@@ -269,6 +269,7 @@ weisssrv/
 | alloy_host | Grafana Alloy on non-k8s hosts and k3s VMs for journald → Loki |
 | zfs_encryption | Boot-time ZFS pool key fetch from 1Password Connect |
 | nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |
+| luks_archive | Boot-time LUKS unlock for the archive pool via 1Password Connect |
 
 ## Secrets Management
 
@@ -432,6 +433,7 @@ Self-hosted Git repository and CI/CD platform:
 | [30-multi-repo-onboarding](docs/30-multi-repo-onboarding.md) | Adding external repos that deploy into this cluster via Flux |
 | [31-observability](docs/31-observability.md) | Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting) |
 | [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
+| [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
 
 ## User Management
 

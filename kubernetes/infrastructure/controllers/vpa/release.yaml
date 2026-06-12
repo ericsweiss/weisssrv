@@ -1,0 +1,82 @@
+---
+# Vertical Pod Autoscaler (Fairwinds chart). Recommender + updater +
+# admission controller; per-workload VerticalPodAutoscaler policies live
+# next to the workloads (configs/vpa/, observability/vpa.yaml,
+# apps/*/vpa.yaml). Metrics come from the k3s-bundled metrics-server.
+#
+# nodeSelector esweiss.com/cpu: modern — same constraint as ESO: generic
+# Go controller images SIGILL on the Core 2 Quad opt nodes.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vpa
+  namespace: vpa-system
+spec:
+  interval: 30m
+  releaseName: vpa
+  chart:
+    spec:
+      chart: vpa
+      version: "${helm_chart_versions_vpa}"
+      sourceRef:
+        kind: HelmRepository
+        name: fairwinds-stable
+        namespace: flux-system
+      interval: 12h
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    recommender:
+      enabled: true
+      # Defaults (25m / 250Mi) would floor every recommendation above what
+      # the small exporters actually need.
+      extraArgs:
+        pod-recommendation-min-cpu-millicores: 10
+        pod-recommendation-min-memory-mb: 32
+      nodeSelector:
+        esweiss.com/cpu: modern
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 512Mi
+    updater:
+      enabled: true
+      # Upstream default --min-replicas=2 refuses to evict single-replica
+      # workloads, which describes most of this cluster — without this every
+      # updateMode: Auto policy is inert.
+      extraArgs:
+        min-replicas: "1"
+      nodeSelector:
+        esweiss.com/cpu: modern
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    admissionController:
+      enabled: true
+      # certgen Jobs need the same CPU constraint as the controllers.
+      certGen:
+        nodeSelector:
+          esweiss.com/cpu: modern
+      nodeSelector:
+        esweiss.com/cpu: modern
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi

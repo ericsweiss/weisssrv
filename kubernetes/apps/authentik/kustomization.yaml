@@ -12,3 +12,4 @@ resources:
   - middleware.yaml
   - certificate.yaml
   - networkpolicy.yaml
+  - vpa.yaml

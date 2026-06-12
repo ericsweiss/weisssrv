@@ -1,5 +1,5 @@
 # DNS Records managed by Terraform
-# Note: Service CNAME records (bar, food, plex, home) are managed by external-dns in k3s
+# Note: Service CNAME records (auth, bar, food, plex, home) are managed by external-dns in k3s
 
 # Root domain A record - IP managed by DDNS, config managed by Terraform
 resource "cloudflare_record" "root" {
@@ -73,10 +73,8 @@ resource "cloudflare_record" "caa_iodef" {
 # GitLab Web UI + SSH - git.ericsweiss.com
 # DNS-only mode allows both HTTPS (via Traefik) and SSH access on the same hostname
 # Note: Origin IP is already exposed via direct.ericsweiss.com, so no additional security impact
-# CUTOVER NOTE: On first apply, DNS may briefly resolve to the placeholder IP until
-# the Flux-managed DDNS CronJob (kubernetes/infrastructure/configs/cloudflare-ddns/)
-# runs on its */5-minute schedule. Apply during low-traffic window. To trigger
-# an immediate update:
+# Fresh applies briefly resolve to the placeholder IP until the DDNS CronJob's
+# next */5 run; trigger one immediately with:
 #   kubectl -n cloudflare-ddns create job --from=cronjob/cloudflare-ddns manual-$(date +%s)
 resource "cloudflare_record" "git" {
   zone_id = data.cloudflare_zone.external.id

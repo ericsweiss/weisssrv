@@ -110,7 +110,7 @@
         path: "{{ item }}"
         state: absent
       loop:
-        - /tmp/adguardhome.tar.gz
+        - "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
         - /tmp/AdGuardHome
 
 - name: Deploy AdGuard Home systemd service
@@ -129,7 +129,10 @@
 - name: Flush handlers before starting service
   ansible.builtin.meta: flush_handlers
 
-- name: Fix AdGuardHome.sig permissions (known issue on dns-02)
+# The .sig file has been observed with restrictive perms (on dns-02),
+# unreadable by the non-root adguard user; failed_when: false because the
+# file may legitimately not exist
+- name: Ensure AdGuardHome.sig is readable by the adguard user
   ansible.builtin.file:
     path: "{{ adguard_install_path }}/AdGuardHome.sig"
     mode: "0644"
@@ -395,6 +398,18 @@
 # Update resolv.conf to use localhost now that AdGuard Home is verified working
 # Architecture: resolv.conf -> AdGuard Home (53) -> Unbound (5335) -> Internet (DoT)
 # Skip in molecule tests - Docker containers have resolv.conf as a bind mount that can't be replaced
+# Capture the immutable-flag state BEFORE any chattr runs so the +i task
+# below can report changed only on a real absent->present transition.
+- name: Check if resolv.conf is already immutable
+  ansible.builtin.command:
+    cmd: lsattr /etc/resolv.conf
+  register: adguard_resolv_conf_attrs
+  changed_when: false
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - not (skip_resolv_conf_update | default(false))
+
 - name: Remove immutable flag from resolv.conf for update
   ansible.builtin.command:
     cmd: chattr -i /etc/resolv.conf
@@ -404,6 +419,11 @@
   when:
     - not ansible_check_mode
     - not (skip_resolv_conf_update | default(false))
+    # lsattr output format: "----i--------e-- /etc/resolv.conf" where 'i'
+    # indicates immutable. Anchor the match to the first (attr) field so
+    # it still hits when neighbouring attribute letters are set (a literal
+    # '-i-' would miss e.g. '-ia-').
+    - adguard_resolv_conf_attrs.stdout | default('') is search('^[^ ]*i[^ ]* ')
 
 # Override host_dns_servers to use localhost
 # This must use set_fact (not task-level vars) to ensure the template module
@@ -445,7 +465,7 @@
     cmd: chattr +i /etc/resolv.conf
   # Only report changed if immutable flag was not already set
   # lsattr output format: "----i--------e-- /etc/resolv.conf" where 'i' indicates immutable
-  changed_when: adguard_resolv_conf_attrs.stdout is not search('-i-')
+  changed_when: adguard_resolv_conf_attrs.stdout | default('') is not search('^[^ ]*i[^ ]* ')
   failed_when: false
   when:
     - not ansible_check_mode

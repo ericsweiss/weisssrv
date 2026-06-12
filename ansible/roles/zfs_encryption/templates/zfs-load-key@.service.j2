@@ -6,9 +6,17 @@
 # /etc/zfs/encryption/pools/<pool>.conf.
 #
 # Ordering:
+#   DefaultDependencies=no   : REQUIRED. This unit is Before=zfs-mount,
+#                              which is before local-fs.target/basic.target;
+#                              default service deps add After=basic.target
+#                              and would close an ordering cycle. For the
+#                              same reason there is deliberately NO
+#                              After=network-online.target — network
+#                              readiness is handled by the script's own
+#                              retry loop (Connect lives in k8s and comes
+#                              up much later than this unit anyway).
 #   After=zfs-import.target  : pool must be imported first
 #   Before=zfs-mount.service : encrypted datasets need a key before mount
-#   Wants=network-online.target : Connect lives in k8s; needs DNS + LAN
 #   RequiredBy=zfs-mount.service : if key load fails, mount fails too
 #                                  (otherwise services start against an
 #                                  empty mountpoint, which is worse)
@@ -31,9 +39,10 @@
 
 [Unit]
 Description=Load ZFS encryption key for %i from 1Password Connect
-After=zfs-import.target network-online.target nss-lookup.target
-Before=zfs-mount.service zfs-share.service zfs.target
-Wants=network-online.target nss-lookup.target
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=zfs-import.target
+Before=zfs-mount.service zfs-share.service zfs.target shutdown.target
 ConditionPathExists=/etc/zfs/encryption/pools/%i.conf
 # StartLimit* belong in [Unit] (not [Service]) since systemd 230 — placing
 # them in [Service] silently drops them. With the values below the unit

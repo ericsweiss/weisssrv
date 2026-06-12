@@ -489,3 +489,6 @@ echo "All changed roles/playbooks/inventory paths are covered by at least one de
 [ -n "$CHANGED_ROLES" ] && echo "Changed roles:           $(echo "$CHANGED_ROLES" | tr '\n' ' ')"
 [ -n "$CHANGED_PLAYBOOKS" ] && echo "Changed playbooks:       $(echo "$CHANGED_PLAYBOOKS" | tr '\n' ' ')"
 [ -n "$CHANGED_INVENTORY_PATHS" ] && echo "Changed inventory paths: $(echo "$CHANGED_INVENTORY_PATHS" | tr '\n' ' ')"
+# The && chains above leave $? = 1 when the last list is empty — don't let
+# the success path exit non-zero.
+exit 0

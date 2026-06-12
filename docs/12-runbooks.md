@@ -68,7 +68,7 @@ This document provides step-by-step procedures for common operational tasks.
 
 6. **Deploy Firewall**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --tags firewall
+   ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall
    ```
 
 7. **Verify**:
@@ -227,15 +227,20 @@ Managed via AdGuard Home rewrites.
 
 2. **Deploy**:
    ```bash
-   ansible-playbook ansible/playbooks/dns.yml --tags adguard
+   ansible-playbook ansible/playbooks/site.yml --tags adguard_home
+   # Or: task dns:deploy
    ```
 
-**Via AdGuard UI**:
+**Via AdGuard UI** (temporary changes only):
 
-1. Access https://192.168.0.150:3000
+1. Access https://dns-01.esweiss.com
 2. Navigate to Filters → DNS rewrites
 3. Add new entry
 4. Changes sync automatically to dns-02 via adguardhome-sync
+
+**Warning**: UI-added rewrites are deleted on the next Ansible deploy — the
+adguard_home role prunes any rewrite not in the codified `adguard_rewrites`
+list. Codify in `group_vars/dns.yml` (Option 1) for anything permanent.
 
 ### External Records (*.ericsweiss.com)
 
@@ -243,11 +248,11 @@ Managed via Terraform + Cloudflare.
 
 1. **Edit Terraform**:
    ```hcl
-   # terraform/cloudflare/main.tf
+   # terraform/cloudflare/dns.tf
    resource "cloudflare_record" "new_service" {
-     zone_id = var.zone_id
+     zone_id = data.cloudflare_zone.external.id
      name    = "new-service"
-     value   = "192.168.0.XXX"  # Or public IP
+     content = "192.168.0.XXX"  # Or public IP
      type    = "A"
      ttl     = 3600
    }
@@ -510,7 +515,7 @@ The version checker (`scripts/check-versions.py`) automatically queries official
 
 **Check for available updates**:
 ```bash
-# Check all 40 managed services
+# Check all managed services
 task maintenance:check-versions
 
 # Check a specific service
@@ -1366,6 +1371,23 @@ For critical issues:
 2. Check cluster status: `sudo pvecm status`
 3. Review firewall: `sudo pve-firewall status`
 4. Collect state: `task collect-state`
+
+### Reading collect-state status
+
+Both modes share one tri-state classifier (`scripts/collect-state.sh`
+header documents the invariant):
+
+| Regular | `--json` | Meaning |
+|---|---|---|
+| `OK` | `healthy: true` | every gate green: all collected hosts reachable, ALL k3s nodes Ready, zero Flux not-ready, zero non-ONLINE ZFS pools (all hosts), GitLab `/-/health` 200 via the internal VIP, zero Warning events in the last hour |
+| `PARTIAL` | `degraded: true` | any imperfection with core infra still up — a Warning-event spike alone downgrades green, so `PARTIAL` right after deploys/restarts is normal and decays within the hour |
+| `FAILED` | neither flag | catastrophic: no Proxmox host reachable, k3s API up with zero Ready nodes, or (regular only) host coverage below the floor — `CLUSTER_STATUS.txt` is not overwritten. In `--json` mode, "neither flag" also occurs when node data is simply unavailable (local kubectl/kubeconfig failure leaves `k3s.nodes_ready: 0` / `k3s.nodes_total: 0`) — check `collector_context` to distinguish collector-side from cluster-side |
+
+One intentional asymmetry: the "all collected hosts reachable" gate is
+regular-mode only (it SSHes DNS/mail/k3s VMs/GitLab); `--json` is a fast
+core probe whose host gate covers just the 6 Proxmox hosts — so an
+unreachable auxiliary host yields `PARTIAL` from regular while `--json`
+can still say `healthy: true`.
 
 ---
 

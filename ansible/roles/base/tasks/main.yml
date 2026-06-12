@@ -21,9 +21,11 @@
   when: ansible_facts['os_family'] == "Debian"
   tags: [packages, base]
 
+# Downstream tasks gate on this fact — it must exist for any --tags subset.
 - name: Detect if running in a VM
   ansible.builtin.set_fact:
     is_virtual_machine: "{{ ansible_facts['virtualization_role'] == 'guest' and ansible_facts['virtualization_type'] == 'kvm' }}"
+  tags: [always]
 
 - name: Install VM-specific packages
   ansible.builtin.apt:
@@ -126,9 +128,12 @@
   when: not (skip_ssh_config | default(false))
   tags: [ssh, security, base]
 
+# Downstream tasks (timezone, fail2ban template) gate on this fact — it
+# must exist for any --tags subset.
 - name: Detect if running in a container (no hwclock access)
   ansible.builtin.set_fact:
     is_container: "{{ ansible_facts['virtualization_type'] | default('') in ['docker', 'lxc', 'container', 'podman'] }}"
+  tags: [always]
 
 - name: Set timezone (physical/VM - with hwclock)
   community.general.timezone:

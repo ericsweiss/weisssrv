@@ -6,18 +6,12 @@
 # - git.ericsweiss.com (not proxied) - GitLab web + SSH (unified URL for both)
 #
 # Runs every 5 minutes to keep records pointing to the current public IP
-#
-# Uses python:3-slim (Debian) for reliable JSON parsing and DNS resolution.
-# Alpine/musl has getaddrinfo() issues in Kubernetes. Previous versions used
-# curlimages/curl with grep/sed which was brittle when response shapes changed.
-#
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: cloudflare-ddns
   namespace: cloudflare-ddns
 spec:
-  # Run every 5 minutes
   schedule: "*/5 * * * *"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -35,8 +29,7 @@ spec:
       backoffLimit: 2
       template:
         spec:
-          # NOTE: hostNetwork removed - not required for making outbound API calls
-          # The job only needs egress to api.ipify.org and api.cloudflare.com
+          # No hostNetwork — only outbound egress to api.ipify.org / api.cloudflare.com
           restartPolicy: Never
           automountServiceAccountToken: false
           securityContext:

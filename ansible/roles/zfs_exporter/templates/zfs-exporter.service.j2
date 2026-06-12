@@ -7,7 +7,21 @@ Type=simple
 ExecStart=/usr/local/bin/zfs_exporter --web.listen-address=:{{ zfs_exporter_port }}
 Restart=always
 RestartSec=5
+# Root is required for ZFS introspection, but the process gets the same
+# sandbox as the unlock units. PrivateDevices must stay OFF — the exporter
+# talks to /dev/zfs ioctls.
 User=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

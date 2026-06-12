@@ -1,8 +1,9 @@
 ---
 # Plex Exporter — Prometheus metrics for Plex Media Server.
 # Uses jsclayton/prometheus-plex-exporter because exportarr does not support Plex.
-# NOTE: This image has no versioned releases on Docker Hub — pinned to "latest".
-# Consider replacing with a tagged alternative when one becomes available.
+# NOTE: upstream publishes no versioned tags on GHCR — pinned to "latest"
+# (documented exception to the no-latest rule). Replace with a tagged
+# alternative when one becomes available.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

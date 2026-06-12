@@ -1,8 +1,8 @@
 ---
 # Converge playbook for alloy_host role testing
 # Installs Alloy from the real Grafana APT repo (publicly available).
-# The alloy service may not fully start in Docker (no real journald),
-# so the health check is skipped via ansible_check_mode guard in the role.
+# The systemd test container runs journald, so Alloy starts and the role's
+# /-/ready health check runs for real during converge.
 - name: Converge
   hosts: all
   become: true

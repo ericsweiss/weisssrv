@@ -25,16 +25,33 @@
     create_home: false
     state: present
 
+# Password reaches smbpasswd via stdin (never the shell command text).
+# Idempotency comes from probing whether the current 1Password value
+# already authenticates — so rotations apply, but steady-state runs
+# report ok.
+# smbclient reads PASSWD from the environment — the secret never appears
+# in argv/process listings.
+- name: Check whether the current Samba password already works
+  ansible.builtin.command:
+    cmd: smbclient -L localhost -U nas
+  environment:
+    PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
+  register: samba_password_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  check_mode: false
+  when: lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+
 - name: Set Samba password for nas user
-  ansible.builtin.shell: |
-    set -o pipefail
-    (echo "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}";
-     echo "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}") |
-    smbpasswd -a -s nas
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    cmd: smbpasswd -a -s nas
+    stdin: "{{ pw }}\n{{ pw }}"
+  vars:
+    pw: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
   when:
     - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+    - samba_password_check.rc | default(1) != 0
   no_log: true
   register: samba_password_set
   changed_when: true

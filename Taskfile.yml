@@ -156,7 +156,9 @@ tasks:
   infra:deploy:
     desc: Deploy base infrastructure (Proxmox, DNS, NAS, mail - excludes k3s)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
+    # Anchor shared with infra:check so dry-run and deploy can never
+    # diverge on which secrets are injected.
+    env: &infra_env
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
@@ -169,6 +171,8 @@ tasks:
       SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
     preconditions:
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed. Install Ansible first (pip install ansible or brew install ansible), then run: task ansible:install-collections"
@@ -223,19 +227,7 @@ tasks:
   infra:check:
     desc: Check mode - show what would change
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-      SMTP_GMAIL_USER: op://Homelab/SMTP Relay Gmail/username
-      SMTP_GMAIL_PASSWORD: op://Homelab/SMTP Relay Gmail/password
-      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
-      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
-      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
-      SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
-      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
-      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    env: *infra_env
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml --check --diff {{.CLI_ARGS}}
 

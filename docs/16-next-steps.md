@@ -286,6 +286,99 @@ Onboarding flow: fork template → add CI vars → add wiring YAML under
 
 ## Outstanding Follow-Ups
 
+### 2026-06-11 review backlog (deferred findings)
+
+Items surfaced by the full-repo review that were deliberately deferred (the
+review MR fixed the bug/security/correctness classes; these are refactors,
+test debt, and follow-ups that deserve their own changes). Grouped, with the
+owning files:
+
+**Live ops** (firewall 7946/8443 deploy, VXLAN→WireGuard migration with
+stale-route cleanup, Loki Push Auth item + alloy credential deploy) were
+all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
+- Re-deploy roles touched by the review after merge: smtp_relay,
+  nas_storage (smartd, scripts, samba), plex, gitlab (registry/pages TLS —
+  coordinate with the merged vm-ingress 8443 routes),
+  zfs_encryption/luks_archive (unit ordering), exporters, tailscale, base
+  (fail2ban)
+- Offsite copies of the k3s etcd snapshots (built-in 12h schedule works;
+  3-2-1 needs them shipped off the server nodes — e.g. an archive-backupctl
+  source or rclone target) and a periodic restore drill
+- Watch agent image-filesystem usage (71-78% on 64G roots seen 2026-06-11);
+  if FreeDiskSpaceFailed events persist outside churn windows, lower the
+  kubelet image-gc thresholds in group_vars/k3s.yml
+- Optional governance hardening for multi-author/AI velocity: CODEOWNERS on
+  ansible/roles/{proxmox_*,zfs_*,luks_archive}/ + kubernetes/infrastructure/,
+  and a policy check (conftest) for risky manifest classes
+
+**Test debt**:
+- proxmox_ha molecule exercises none of the drift logic (stub ha-manager/pvesr
+  with invocation logging + JSON fixtures)
+- AdGuard API-config path (drift detection, rewrites reconciliation) has zero
+  coverage — extend the dns integration scenario past skip_adguard_api_config
+- check-versions parser fixtures: fetch_helm_version (multi-chart index +
+  pre-release), apt-Packages variants, Docker Hub tag selection,
+  update_version_in_file, debian_version_compare
+- shellcheck CI pattern misses *.j2 shell templates (archive-backupctl,
+  media-mover, cert-reload) — add a render-then-shellcheck step
+- cert-distribution postflight asserts only 2 of 7 targets
+- Samba password-rotation path (smbclient auth-probe → smbpasswd) has no
+  molecule coverage; same for the qm/pct firewall=1 reconcile failure path
+  (inject a failing qm set in the existing stub) and collect-state's
+  tri-state classification (partial-readiness fixtures)
+
+**Refactors (explicitness vs duplication tradeoffs documented in review)**:
+- update-k3s-nodes.yml: ~90-line cordon/drain/runner-relocation block ×3 →
+  `_k3s-drain-node.yml` include (pattern: `_reboot-if-needed.yml`)
+- base: e1000e/atlantic NIC workaround near-twins; k3s role server/agent.yml
+  ~60-line overlap
+- check-versions.py: three apt-Packages fetch/parse implementations → one
+  helper; .gitlab-ci.yml: kubectl+kubeconfig install block ×2, versions-render
+  logic ×4 → scripts/flux-render.sh
+- archive-backupctl: derive MAP/RMAP/lock lists from SRC_LIST; add `-s` to the
+  restore-path receives (replication receives already resumable)
+
+**Smaller correctness/hardening follow-ups**:
+- zfs_exporter tarball sha256 pin (digest fetch was rate-limited during the
+  review; add `zfs_exporter_sha256` to all.yml + get_url checksum)
+- nas_storage: mergerfs auto-remount chain is structurally dead (findmnt -t
+  none / SOURCE matching) — rewrite or remove + always warn; zfs.yml property
+  task compare-before-set idempotency; stop managing archive/* mountpoints in
+  host_vars (fights backupctl lockdown); add x-systemd.requires=zfs-mount to
+  mergerfs fstab options; guard xprtsec exports on nfs_tls_enabled
+- unbound: drop unbound-control-setup certs (unix socket needs none);
+  adguard_home: immutable-flag dance always-changed + masked chattr failures
+- proxmox_lxc: surface pveam download failures at download time; DNS-verify
+  task can rewrite resolv.conf but is changed_when: false
+- proxmox_vm: document create-only semantics (cores/memory don't reconcile);
+  vm_additional_disks positional-slot lifecycle; nic_tuning per-NIC
+  persistence via if-up.d + stale drop-in cleanup when list empties
+- proxmox_ha: groups.yml legacy path; rule-comment removal never converges;
+  cluster.fw: confirm 9345 (RKE2 supervisor, not k3s) can drop; decide fate
+  of unreferenced sg-xmrig group
+- base: ssh hardening should account for /etc/ssh/sshd_config.d overrides;
+  requirements.yml >= floors vs pinning philosophy; alloy apt package unpinned
+- node_exporter_host: smartmontools installed but no SMART textfile collector
+  wired; home_assistant: no rollback when `ha core check` fails post-deploy
+- smtp_relay: role-default smtpd cert paths point at a layout nothing
+  populates; submission service should override smtpd_relay_restrictions;
+  smtp_tls_mandatory_protocols unset; molecule sasldb assert uses AND-ed
+  failed_when list (can never fail)
+- update-k3s-nodes: assert k3s_token non-empty before agent upgrades;
+  proxmox-enable-autostart: honor inventory vmid + real changed detection
+- CI: host_vars changes don't trigger consuming deploy jobs; version-check
+  schedule hard-fails on routine "updates available" and its MR-comment path
+  never gets GITLAB_API_TOKEN; prefer the GitLab agent context over the
+  static kubeconfig in .k3s-deploy-base; audit whether
+  OP_SERVICE_ACCOUNT_TOKEN is "protected" (would skip MR pipelines);
+  .github/workflows remain dispatchable and reference pre-Flux paths
+- k8s: add helm.sh/resource-policy=keep annotations for MetalLB/ESO CRDs;
+  consider a staging ClusterIssuer for cert iteration; gotk-sync.yaml carries
+  an obsolete migration comment block
+- Alertmanager: AlertmanagerClusterFailedToSendAlerts fires critical at tiny
+  failure ratios during storms (1 failed Discord post in a 5m window) —
+  consider routing it warning-severity or raising the threshold
+
 ### Complete k3s secrets-encryption (DONE)
 
 Status as of 2026-05-02: encryption enabled cluster-wide, current rotation stage
@@ -328,21 +421,15 @@ The remaining plaintext Traefik->VM hops are:
 - **Router** — hardware/firmware-dependent. Configure manually if
   the router exposes a HTTPS UI; otherwise leave plain HTTP behind
   Traefik (lan-only).
-- **GitLab Container Registry** (port 5050 on the GitLab VM). Intentional:
-  `registry_nginx['listen_https'] = false` + `listen_port = 5050` in
-  `ansible/roles/gitlab/templates/gitlab.rb.j2`. The bundled registry
-  nginx terminates plaintext on 5050; Traefik fronts it with HTTPS at
-  `registry.git.ericsweiss.com`. The hop from Traefik to the registry
-  is LAN-only.
-- **GitLab Pages** (port 8090 on the GitLab VM). Intentional:
-  `pages_nginx['enable'] = false` + `gitlab_pages['listen_proxy'] =
-  "0.0.0.0:8090"` in the same template. `gitlab-pages` listens plaintext
-  on 8090; Traefik fronts the wildcard at `*.pages.git.ericsweiss.com`
-  over HTTPS. Hop is LAN-only.
+- ~~GitLab Container Registry / Pages backend hops~~ — RESOLVED 2026-06-11:
+  both now terminate TLS on the VM with the distributed wildcard cert
+  (`registry_nginx` on :5050, `pages_nginx` on :8443) and Traefik connects
+  `scheme: https`. Canonical transport table: docs/06-zfs.md §In Transit;
+  implementation: docs/27-gitlab-deployment.md.
 
-All four are acceptable as residual LAN-trust hops since they sit behind
-`lan-tailscale-only` (AdGuard, router) or a LAN-only Traefik->VM jump
-(GitLab registry, GitLab Pages) and the user-facing edge is HTTPS.
+The two remaining items (AdGuard admin, router) are acceptable residual
+LAN-trust hops since they sit behind `lan-tailscale-only` and the
+user-facing edge is HTTPS.
 
 ### NFSv4 + RPC-with-TLS — full activation
 

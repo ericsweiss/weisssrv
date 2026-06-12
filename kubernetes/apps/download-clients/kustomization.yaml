@@ -25,6 +25,7 @@ resources:
   # NetworkPolicies: default-deny + per-app egress allowlist (Gluetun-fronted
   # qb/nzbget excluded from RFC1918, *arr direct internet for media APIs).
   - networkpolicy.yaml
+  - vpa.yaml
 # Use 'labels' instead of 'commonLabels' to avoid modifying deployment selectors.
 # commonLabels injects labels into spec.selector.matchLabels, which is immutable
 # after deployment creation, causing idempotency issues on re-deploy.
