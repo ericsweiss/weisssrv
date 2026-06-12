@@ -310,6 +310,11 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
 - Optional governance hardening for multi-author/AI velocity: CODEOWNERS on
   ansible/roles/{proxmox_*,zfs_*,luks_archive}/ + kubernetes/infrastructure/,
   and a policy check (conftest) for risky manifest classes
+- Dedicated CI deploy SSH keypair, separate from the operator key: the
+  shared key's `from=` now includes the k3s pod CIDR (runner-pod hairpin,
+  !82). Splitting keys would let the operator key drop the pod range and
+  scope the CI key to exactly the deploy paths (new 1P item, CI variables
+  swap, authorized_keys gains a second entry)
 
 **Test debt**:
 - proxmox_ha molecule exercises none of the drift logic (stub ha-manager/pvesr

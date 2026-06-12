@@ -40,9 +40,19 @@ ssh_pubkey_authentication: true
 
 # SSH authorized keys
 # IMPORTANT: SSH_PUBLIC_KEY must be set via 'op run' - empty key will fail validation
+#
+# from= ranges: LAN, Tailscale, and the k3s pod CIDR. The pod CIDR is
+# required because CI deploy jobs run as runner pods in-cluster: a pod
+# SSHing to any OTHER host is masqueraded to its node's LAN IP (already
+# permitted), but a pod SSHing to its OWN node hairpins without SNAT and
+# arrives with its 10.42.x.x pod IP — sshd then rejects the deploy key
+# with "Refused by key options" and that node drops out of the play
+# (pipeline 355, k3s-agt-opt-02). Since cross-host pod connections are
+# already permitted via masquerade, listing the pod CIDR adds no
+# practical exposure beyond what the SNAT path always allowed.
 ssh_authorized_keys:
   - >-
-    from="192.168.0.0/24,100.64.0.0/10"
+    from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16"
     {{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') or undef(hint='SSH_PUBLIC_KEY env var must be set') }}
 
 # 1Password secret references
@@ -221,11 +231,11 @@ helm_chart_versions:
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
   kube_prometheus_stack: "86.2.2"
-  loki: "17.3.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  loki: "17.3.2"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.9.0"
-  prometheus_blackbox_exporter: "11.11.0"
+  prometheus_blackbox_exporter: "11.12.0"
   onepassword_connect: "2.4.1"
-  vpa: "4.11.0"
+  vpa: "4.12.0"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

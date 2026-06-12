@@ -70,6 +70,9 @@ provisioner:
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
+    # Samba user password: converge sets the smbpasswd for `nas` from this
+    # (anonymous access is hardened off, so verify authenticates with it).
+    SAMBA_NAS_PASSWORD: molecule-test-samba-pw
   config_options:
     defaults:
       callbacks_enabled: profile_tasks, timer

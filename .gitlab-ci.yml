@@ -107,6 +107,14 @@ workflow:
   # Deploys touch shared infrastructure; never cancel a running deploy when a new
   # pipeline starts — wait for it to complete instead.
   interruptible: false
+  # Runner-pod casualties (scheduling timeout, NoExecute taint eviction
+  # when a node degrades mid-job — pipeline 355 lost deploy-ansible-base
+  # to DeletionByTaintManager) are environmental, and the playbooks are
+  # idempotent: retry instead of failing the whole needs chain.
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
   variables:
     ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
   before_script:
@@ -278,14 +286,14 @@ build-molecule-images:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - docker/molecule-test/**
-        - docker/molecule-ci/**
+        - docker/molecule-test/**/*
+        - docker/molecule-ci/**/*
         - requirements.txt
         - ansible/requirements.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - docker/molecule-test/**
-        - docker/molecule-ci/**
+        - docker/molecule-test/**/*
+        - docker/molecule-ci/**/*
         - requirements.txt
         - ansible/requirements.yml
     - if: '$CI_PIPELINE_SOURCE == "web"'
@@ -315,11 +323,11 @@ shellcheck:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - scripts/**
+        - scripts/**/*
         - ansible/roles/**/*.sh
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - scripts/**
+        - scripts/**/*
         - ansible/roles/**/*.sh
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
@@ -358,16 +366,16 @@ deploy-coverage-check:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - ansible/roles/**
-        - ansible/playbooks/**
+        - ansible/roles/**/*
+        - ansible/playbooks/**/*
         # Covers group_vars/, host_vars/, hosts.yml, and any other
         # top-level inventory file under ansible/inventories/prod/.
-        - ansible/inventories/prod/**
+        - ansible/inventories/prod/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - ansible/roles/**
-        - ansible/playbooks/**
-        - ansible/inventories/prod/**
+        - ansible/roles/**/*
+        - ansible/playbooks/**/*
+        - ansible/inventories/prod/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
@@ -419,13 +427,13 @@ yaml-lint:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - ansible/**
-        - kubernetes/**
+        - ansible/**/*
+        - kubernetes/**/*
         - .gitlab-ci.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - ansible/**
-        - kubernetes/**
+        - ansible/**/*
+        - kubernetes/**/*
         - .gitlab-ci.yml
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
@@ -469,10 +477,10 @@ ansible-lint:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - ansible/**
+        - ansible/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - ansible/**
+        - ansible/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-fmt:
@@ -489,10 +497,10 @@ terraform-fmt:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - terraform/**
+        - terraform/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - terraform/**
+        - terraform/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
@@ -584,10 +592,10 @@ terraform-validate:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - terraform/**
+        - terraform/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - terraform/**
+        - terraform/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-plan:
@@ -632,10 +640,10 @@ terraform-plan:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - terraform/**
+        - terraform/**/*
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - terraform/**
+        - terraform/**/*
 
 flux-versions-sync:
   needs: []
@@ -699,11 +707,11 @@ python-tests:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - scripts/**
+        - scripts/**/*
         - ansible/inventories/prod/group_vars/all.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - scripts/**
+        - scripts/**/*
         - ansible/inventories/prod/group_vars/all.yml
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
@@ -823,11 +831,11 @@ flux-lint:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - kubernetes/**
+        - kubernetes/**/*
         - ansible/inventories/prod/group_vars/all.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - kubernetes/**
+        - kubernetes/**/*
         - ansible/inventories/prod/group_vars/all.yml
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
@@ -1009,18 +1017,22 @@ molecule-tests:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - ansible/roles/**
-        - ansible/playbooks/**
-        - ansible/inventories/prod/group_vars/**
+        - ansible/roles/**/*
+        - ansible/playbooks/**/*
+        - ansible/inventories/prod/group_vars/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - ansible/roles/**
-        - ansible/playbooks/**
-        - ansible/inventories/prod/group_vars/**
+        - ansible/roles/**/*
+        - ansible/playbooks/**/*
+        - ansible/inventories/prod/group_vars/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 integration-tests:
   extends: .molecule-base
+  # Multi-container scenarios run 2-3 systemd containers through full
+  # role stacks; base-infrastructure alone is ~12m idle and blew the
+  # inherited 20m ceiling under pipeline fan-out contention (361).
+  timeout: 35m
   retry:
     max: 2
     when:
@@ -1043,16 +1055,15 @@ integration-tests:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - ansible/integration-tests/**
-        - ansible/roles/**
-        - ansible/inventories/**
+        - ansible/integration-tests/**/*
+        - ansible/roles/**/*
+        - ansible/inventories/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - ansible/integration-tests/**
-        - ansible/roles/**
-        - ansible/inventories/**
+        - ansible/integration-tests/**/*
+        - ansible/roles/**/*
+        - ansible/inventories/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
-  timeout: 20m
 
 # ============================================================================
 # SECURITY STAGE - Secret detection and scanning
@@ -1186,7 +1197,7 @@ deploy-terraform:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - terraform/**
+        - terraform/**/*
 
 # ------------------------------------------------------------------------------
 # Ansible Infrastructure
@@ -1200,6 +1211,13 @@ deploy-ansible-base:
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    # alloy_host renders loki.write basic_auth from these; without them
+    # the role renders a credential-less config and every host's journal
+    # shipping 401s against the loki-push-auth middleware (pipeline 355
+    # silently clobbered the fleet's alloy configs exactly this way).
+    # The role now asserts these are non-empty.
+    LOKI_PUSH_USER: "op://Homelab/Loki Push Auth/username"
+    LOKI_PUSH_PASSWORD: "op://Homelab/Loki Push Auth/password"
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/base.yml
@@ -1217,17 +1235,17 @@ deploy-ansible-base:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/base/**
-        - ansible/roles/nic_tuning/**
+        - ansible/roles/base/**/*
+        - ansible/roles/nic_tuning/**/*
         # Transitive: resolv_conf is invoked by base when skip_dns_config=false.
-        - ansible/roles/resolv_conf/**
+        - ansible/roles/resolv_conf/**/*
         # node_exporter_host + alloy_host live in site.yml and run on the
         # same host set base does. The script above runs site.yml with
         # --tags node_exporter_host,alloy_host as a second step so these
         # changes actually deploy when this rule fires (previously the
         # rule advertised coverage that base.yml alone did not provide).
-        - ansible/roles/node_exporter_host/**
-        - ansible/roles/alloy_host/**
+        - ansible/roles/node_exporter_host/**/*
+        - ansible/roles/alloy_host/**/*
         - ansible/playbooks/base.yml
         - ansible/playbooks/site.yml
         - ansible/inventories/prod/group_vars/proxmox.yml
@@ -1260,9 +1278,9 @@ deploy-ansible-proxmox:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/qol/**
-        - ansible/roles/tailscale/**
-        - ansible/roles/postfix_null_client/**
+        - ansible/roles/qol/**/*
+        - ansible/roles/tailscale/**/*
+        - ansible/roles/postfix_null_client/**/*
 
 deploy-ansible-firewall:
   stage: deploy
@@ -1284,7 +1302,7 @@ deploy-ansible-firewall:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/proxmox_firewall/**
+        - ansible/roles/proxmox_firewall/**/*
 
 deploy-ansible-dns:
   stage: deploy
@@ -1313,14 +1331,14 @@ deploy-ansible-dns:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/unbound/**
-        - ansible/roles/adguard_home/**
-        - ansible/roles/adguard_sync/**
-        - ansible/roles/postfix_null_client/**
+        - ansible/roles/unbound/**/*
+        - ansible/roles/adguard_home/**/*
+        - ansible/roles/adguard_sync/**/*
+        - ansible/roles/postfix_null_client/**/*
         # Transitive: resolv_conf used by adguard_home; unbound_exporter
         # invoked from dns.yml.
-        - ansible/roles/resolv_conf/**
-        - ansible/roles/unbound_exporter/**
+        - ansible/roles/resolv_conf/**/*
+        - ansible/roles/unbound_exporter/**/*
         - ansible/playbooks/dns.yml
         # DNS group/host vars: lxc settings, ssh policy, cert distribution
         # targets — all consumed by the dns playbook, so a vars-only change
@@ -1350,12 +1368,12 @@ deploy-ansible-storage:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/nas_storage/**
+        - ansible/roles/nas_storage/**/*
         # zfs_exporter is invoked from storage.yml; nfs_tls is the
         # opt-in NFSv4-over-TLS daemon that runs on the same NAS host
         # plus the k3s NFS clients (cert paths shared with acme_certs).
-        - ansible/roles/zfs_exporter/**
-        - ansible/roles/nfs_tls/**
+        - ansible/roles/zfs_exporter/**/*
+        - ansible/roles/nfs_tls/**/*
         - ansible/playbooks/storage.yml
 
 deploy-ansible-mail:
@@ -1385,8 +1403,8 @@ deploy-ansible-mail:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/smtp_relay/**
-        - ansible/roles/postfix_null_client/**
+        - ansible/roles/smtp_relay/**/*
+        - ansible/roles/postfix_null_client/**/*
         # Mail group vars: relay/null-client settings consumed by the
         # site.yml --limit mail run, so a vars-only change must trigger
         # a redeploy (mirrors group_vars/dns.yml on the dns job).
@@ -1417,7 +1435,7 @@ deploy-ansible-certs:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/acme_certs/**
+        - ansible/roles/acme_certs/**/*
         # host_vars/dns-01.yml carries the pinned host_key entries that
         # acme_certs uses for cert distribution; a change to those
         # fingerprints needs a redeploy.
@@ -1454,8 +1472,8 @@ deploy-plex:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/plex/**
-        - ansible/roles/proxmox_lxc/**
+        - ansible/roles/plex/**/*
+        - ansible/roles/proxmox_lxc/**/*
         - ansible/playbooks/plex.yml
 
 deploy-gitlab:
@@ -1512,10 +1530,10 @@ deploy-gitlab:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/gitlab/**
+        - ansible/roles/gitlab/**/*
         # zvol_mount is invoked by the gitlab role for the
         # /mnt/gitlab-repos persistent volume.
-        - ansible/roles/zvol_mount/**
+        - ansible/roles/zvol_mount/**/*
         - ansible/playbooks/gitlab.yml
         # all.yml triggers deploy for gitlab_version changes; may also trigger
         # on unrelated version bumps but the playbook is idempotent and safe to re-run
@@ -1547,7 +1565,7 @@ deploy-home-assistant-config:
       when: never
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
-        - ansible/roles/home_assistant/**
+        - ansible/roles/home_assistant/**/*
         - ansible/playbooks/home-assistant.yml
         - ansible/inventories/prod/host_vars/home.yml
 

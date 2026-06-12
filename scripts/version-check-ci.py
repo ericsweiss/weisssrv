@@ -66,14 +66,15 @@ def main():
         total = summary.get("total", summary.get("total_services", 0))
         up_to_date = summary.get("up_to_date", 0)
         updates = summary.get("updates_available", 0)
+        held = summary.get("updates_held", 0)
         errors = summary.get("errors", 0)
 
-        print(f"Version check: {total} services, {up_to_date} up to date, {updates} updates, {errors} errors")
+        print(f"Version check: {total} services, {up_to_date} up to date, {updates} updates, {held} held, {errors} errors")
 
         if updates > 0:
             print("\nUpdates available:")
             for svc in data.get("services", []):
-                if svc.get("update_available"):
+                if svc.get("update_available") and not svc.get("held"):
                     print(f"  {svc['name']}: {svc['current_version']} -> {svc['latest_version']}")
 
         if errors > 0:
@@ -99,7 +100,9 @@ def main():
         if rc == 1 and updates > 0:
             update_lines = []
             for svc in data.get("services", []):
-                if svc.get("update_available"):
+                # Held updates are documented non-actionable holds; they'd
+                # otherwise re-post the same comment on every pipeline.
+                if svc.get("update_available") and not svc.get("held"):
                     # Registry notes carry intent (e.g. "intentionally held
                     # back: open upstream regression") — show them so the
                     # comment distinguishes actionable updates from

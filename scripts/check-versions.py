@@ -67,6 +67,10 @@ class ServiceVersion:
     error: Optional[str] = None
     var_name: str = ""  # Variable name in all.yml
     notes: str = ""
+    # A held update is reported but not actionable: it doesn't flip the
+    # exit code or trigger MR comments (e.g. MetalLB 0.16.x blocked on an
+    # open upstream regression). The registry entry documents why in notes.
+    held: bool = False
 
 
 # Service definitions - maps var_name to lookup configuration
@@ -272,6 +276,7 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_repo": "https://metallb.github.io/metallb",
         "helm_chart": "metallb",
         "source_url": "https://artifacthub.io/packages/helm/metallb/metallb",
+        "held": True,
         "notes": (
             "0.16.x intentionally held back: open apiserver-flooding "
             "regression (metallb#3063). Rationale in "
@@ -1492,6 +1497,7 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
         current_version=current,
         var_name=var_name,
         notes=notes,
+        held=bool(svc_def.get("held", False)),
     )
 
     # Set source URLs
@@ -1679,6 +1685,8 @@ def format_table(results: list[ServiceVersion]) -> str:
                 status = c(RED, "ERROR")
                 latest_str = "?"
                 errors += 1
+            elif r.update_available and r.held:
+                status = c(DIM, "HELD")
             elif r.update_available:
                 status = c(YELLOW, "UPDATE AVAILABLE")
                 updates_available += 1
@@ -1700,13 +1708,16 @@ def format_table(results: list[ServiceVersion]) -> str:
     # Summary
     lines.append(c(BOLD, "--- Summary ---"))
     total = len(results)
-    up_to_date = total - updates_available - errors
+    held = sum(1 for r in results if r.update_available and r.held)
+    up_to_date = total - updates_available - held - errors
     lines.append(f"  Total services: {total}")
     lines.append(f"  Up to date:     {c(GREEN, str(up_to_date))}")
     if updates_available > 0:
         lines.append(f"  Updates:        {c(YELLOW, str(updates_available))}")
     else:
         lines.append(f"  Updates:        {updates_available}")
+    if held > 0:
+        lines.append(f"  Held:           {c(DIM, str(held))} (documented holds, not actionable)")
     if errors > 0:
         lines.append(f"  Errors:         {c(RED, str(errors))}")
     else:
@@ -1725,7 +1736,13 @@ def format_table(results: list[ServiceVersion]) -> str:
 
 
 def format_json(results: list[ServiceVersion]) -> str:
-    """Format results as JSON."""
+    """Format results as JSON.
+
+    Summary semantics: `updates_available` counts ACTIONABLE updates only;
+    registry-held updates (held=True) are excluded and counted separately
+    in `updates_held`. version-check-ci.py keys its exit code and MR
+    comment off this distinction.
+    """
     data = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "source_file": str(VARS_FILE),
@@ -1733,7 +1750,8 @@ def format_json(results: list[ServiceVersion]) -> str:
         "summary": {
             "total": len(results),
             "up_to_date": sum(1 for r in results if not r.update_available and not r.error),
-            "updates_available": sum(1 for r in results if r.update_available),
+            "updates_available": sum(1 for r in results if r.update_available and not r.held),
+            "updates_held": sum(1 for r in results if r.update_available and r.held),
             "errors": sum(1 for r in results if r.error),
         },
     }
@@ -1750,6 +1768,8 @@ def format_json(results: list[ServiceVersion]) -> str:
         }
         if r.error:
             entry["error"] = r.error
+        if r.held:
+            entry["held"] = True
         if r.notes:
             entry["notes"] = r.notes
         if r.release_url:
@@ -2016,7 +2036,7 @@ def main():
 
     # Exit code: 0 = all up to date, 1 = updates available, 2 = errors
     has_errors = any(r.error for r in results)
-    has_updates = any(r.update_available for r in results)
+    has_updates = any(r.update_available and not r.held for r in results)
     if has_errors:
         sys.exit(2)
     elif has_updates:

@@ -149,8 +149,25 @@
         timeout: 5
       register: samba_port
 
-    - name: List local Samba shares
+    # Anonymous access is hardened off (restrict anonymous); the listing
+    # contract is now: -N is DENIED, authenticated as nas succeeds.
+    - name: Anonymous share listing is denied
       ansible.builtin.command: smbclient -L localhost -N
+      register: anon_samba_shares
+      changed_when: false
+      failed_when: false
+
+    - name: Assert anonymous listing is rejected
+      ansible.builtin.assert:
+        that:
+          - anon_samba_shares.rc != 0
+        fail_msg: "Anonymous smbclient listing unexpectedly succeeded (hardening regression)"
+        success_msg: "Anonymous listing correctly denied"
+
+    - name: List local Samba shares (authenticated)
+      ansible.builtin.command: smbclient -L localhost -U nas
+      environment:
+        PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: local_samba_shares
       changed_when: false
 
@@ -207,7 +224,9 @@
         success_msg: "smbclient package is installed"
 
     - name: Test Samba connectivity to nas-server
-      ansible.builtin.command: smbclient -L //nas-server -N
+      ansible.builtin.command: smbclient -L //nas-server -U nas
+      environment:
+        PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_list
       changed_when: false
 
@@ -225,7 +244,9 @@
         success_msg: "Can list Samba shares from client"
 
     - name: Test reading from media share
-      ansible.builtin.command: smbclient //nas-server/media -N -c "ls"
+      ansible.builtin.command: smbclient //nas-server/media -U nas -c "ls"
+      environment:
+        PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_media_ls
       changed_when: false
 
@@ -242,7 +263,9 @@
         success_msg: "Can read from media share"
 
     - name: Test reading from share share
-      ansible.builtin.command: smbclient //nas-server/share -N -c "ls"
+      ansible.builtin.command: smbclient //nas-server/share -U nas -c "ls"
+      environment:
+        PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_share_ls
       changed_when: false
 
@@ -260,7 +283,9 @@
 
     - name: Test writing to media share
       ansible.builtin.command: >
-        smbclient //nas-server/media -N -c "put /etc/hostname client_test.txt"
+        smbclient //nas-server/media -U nas -c "put /etc/hostname client_test.txt"
+      environment:
+        PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_write_test
       changed_when: false
       failed_when: false
@@ -270,7 +295,9 @@
         msg: "Write test: {{ 'SUCCESS' if smb_write_test.rc == 0 else 'FAILED (may be expected in some configs)' }}"
 
     - name: Verify written file exists
-      ansible.builtin.command: smbclient //nas-server/media -N -c "ls client_test.txt"
+      ansible.builtin.command: smbclient //nas-server/media -U nas -c "ls client_test.txt"
+      environment:
+        PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
       register: smb_verify_write
       changed_when: false
       when: smb_write_test.rc == 0

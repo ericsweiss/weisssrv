@@ -2,6 +2,23 @@
 # Grafana Alloy — journald log collection agent
 # Installs Alloy from the Grafana APT repository and ships journald logs to Loki
 
+# The Traefik route enforces basic auth (loki-push-auth middleware), so a
+# config rendered with empty credentials ships 401s and silently drops the
+# fleet's journals — exactly what happened when a CI deploy ran without the
+# LOKI_PUSH_* env vars (pipeline 355). Fail at deploy time instead. The
+# NodePort fallback bypasses Traefik and legitimately needs no creds.
+- name: Assert Loki push credentials are present
+  ansible.builtin.assert:
+    that:
+      - alloy_host_loki_user | trim | length > 0
+      - alloy_host_loki_password | trim | length > 0
+    fail_msg: >-
+      LOKI_PUSH_USER / LOKI_PUSH_PASSWORD are empty. Run via the task
+      wrapper or `op run` (1P item "Loki Push Auth") so the rendered
+      config can authenticate to the loki-push-auth middleware.
+    quiet: true
+  when: "'loki.esweiss.com' in alloy_host_loki_url"
+
 - name: Create apt keyrings directory
   ansible.builtin.file:
     path: /etc/apt/keyrings

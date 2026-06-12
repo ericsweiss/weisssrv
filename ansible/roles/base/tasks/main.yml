@@ -95,6 +95,7 @@
     group: "{{ admin_user }}"
     mode: "0700"
   when: admin_user != 'root'
+  tags: [ssh, users, security, base]
 
 - name: Validate SSH keys are not empty
   ansible.builtin.assert:
@@ -105,6 +106,7 @@
     quiet: true
   loop: "{{ ssh_authorized_keys | default([]) }}"
   when: ssh_authorized_keys is defined and ssh_authorized_keys | length > 0
+  tags: [ssh, users, security, base]
 
 - name: Deploy authorized_keys for admin user
   ansible.posix.authorized_key:
@@ -113,6 +115,7 @@
     key: "{{ item }}"
   loop: "{{ ssh_authorized_keys | default([]) }}"
   when: ssh_authorized_keys is defined and ssh_authorized_keys | length > 0
+  tags: [ssh, users, security, base]
 
 - name: Configure sudoers for admin user (passwordless sudo)
   ansible.builtin.lineinfile:
@@ -122,6 +125,7 @@
     mode: "0440"
     validate: "{{ 'visudo -cf %s' if not (skip_sudoers_validation | default(false)) else omit }}"
   when: admin_user != 'root'
+  tags: [ssh, users, security, base]
 
 - name: Include SSH hardening tasks
   ansible.builtin.include_tasks: ssh.yml
