@@ -182,8 +182,14 @@ spec:
 
       # SQLite on NFS cannot tolerate two writers; RollingUpdate would run
       # old+new pods against the same DB during every upgrade.
+      # rollingUpdate must be explicitly nulled: the live Deployment
+      # carries rollingUpdate defaults from its RollingUpdate days, and
+      # a patch that only sets type=Recreate leaves them in place — the
+      # API rejects the combination ("rollingUpdate: Forbidden ... when
+      # strategy type is 'Recreate'", v106 upgrade failure post-!81).
       deploymentStrategy:
         type: Recreate
+        rollingUpdate: null
 
       # p95 working set ~470Mi — the old 512Mi limit left no headroom.
       resources:
