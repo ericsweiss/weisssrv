@@ -25,7 +25,7 @@
     # 2. Device is formatted as ext4
     # ========================================================================
     - name: Check device filesystem type with blkid
-      ansible.builtin.command: blkid -s TYPE -o value /dev/loop0
+      ansible.builtin.command: blkid -s TYPE -o value /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
       register: blkid_result
       changed_when: false
       failed_when: blkid_result.rc != 0
@@ -41,7 +41,7 @@
     # 3. Device is mounted at the correct mount point
     # ========================================================================
     - name: Check device is mounted with findmnt
-      ansible.builtin.command: findmnt -n -o TARGET /dev/loop0
+      ansible.builtin.command: findmnt -n -o TARGET --source /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
       register: findmnt_result
       changed_when: false
       failed_when: findmnt_result.rc != 0
@@ -57,7 +57,7 @@
     # 4. fstab entry exists with UUID and correct mount point
     # ========================================================================
     - name: Get filesystem UUID
-      ansible.builtin.command: blkid -s UUID -o value /dev/loop0
+      ansible.builtin.command: blkid -s UUID -o value /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
       register: disk_uuid
       changed_when: false
       failed_when: disk_uuid.rc != 0

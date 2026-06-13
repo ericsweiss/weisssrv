@@ -62,14 +62,25 @@
       args:
         creates: /tmp/test-disk.img
 
-    - name: Create loopback device
-      ansible.builtin.command: losetup /dev/loop0 /tmp/test-disk.img
-      register: losetup_result
-      changed_when: losetup_result.rc == 0
-      failed_when:
-        - losetup_result.rc != 0
-        # Tolerate "device or resource busy" if loop0 is already set up (idempotence)
-        - "'busy' not in losetup_result.stderr"
+    # Loop devices are KERNEL-GLOBAL: privileged CI containers on the same
+    # node share the namespace, so a hardcoded /dev/loop0 collides whenever
+    # two molecule jobs run concurrently (pipeline 365: "device node
+    # /dev/loop0 (7:0) is lost" — another job's container owned it).
+    # `losetup -f` allocates the first free device via /dev/loop-control;
+    # the -j probe makes re-runs reuse the existing attachment.
+    - name: Attach loopback device (dynamic allocation, reuse if attached)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        existing=$(losetup -j /tmp/test-disk.img 2>/dev/null | cut -d: -f1 | head -1 || true)
+        if [ -n "$existing" ]; then
+          printf '%s' "$existing"
+        else
+          losetup -f --show /tmp/test-disk.img
+        fi
+      args:
+        executable: /bin/bash
+      register: zvol_loop_device
+      changed_when: false
 
     # Create the /dev/disk/by-id/ directory and symlink
     # This simulates what QEMU/Proxmox creates for SCSI-attached disks
@@ -81,6 +92,7 @@
 
     - name: Create symlink simulating SCSI device path
       ansible.builtin.file:
-        src: /dev/loop0
+        src: "{{ zvol_loop_device.stdout | trim }}"
         dest: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
         state: link
+        force: true

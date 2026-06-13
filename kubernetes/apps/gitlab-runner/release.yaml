@@ -86,15 +86,16 @@ spec:
           # See: https://gitlab.com/gitlab-org/gitlab-runner/-/issues/37408
           environment = ["HOME=/home/gitlab-runner", "GIT_CONFIG_GLOBAL=/home/gitlab-runner/.gitconfig"]
 
+          # TOML sections are POSITIONAL — scalar keys must precede any
+          # sub-table or they silently land inside it. The !81 layout had
+          # cpu/memory limits parsing as pod_labels (chart defaults
+          # silently applied instead) and pull_policy +
+          # node_selector_overwrite_allowed swallowed by the empty_dir
+          # volume table. Scalars first, sub-tables last.
           [runners.kubernetes]
             namespace = "gitlab-runner"
             image = "debian:trixie"
             privileged = false
-
-            # NetworkPolicy selector: shared job pods get internet-only
-            # egress (no RFC1918) — see networkpolicy.yaml.
-            [runners.kubernetes.pod_labels]
-              "esweiss.com/runner-class" = "shared"
 
             # CPU/Memory limits for job pods
             cpu_limit = "2"
@@ -104,6 +105,18 @@ spec:
 
             # Service account
             service_account = "gitlab-runner"
+
+            # Pull policy
+            pull_policy = ["if-not-present"]
+
+            # Allow individual CI jobs to override node selector for CPU-compatibility only.
+            # Restricted to the esweiss.com/cpu label to prevent jobs from targeting arbitrary nodes.
+            node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
+            # NetworkPolicy selector: shared job pods get internet-only
+            # egress (no RFC1918) — see networkpolicy.yaml.
+            [runners.kubernetes.pod_labels]
+              "esweiss.com/runner-class" = "shared"
 
             # Pod security context - secure by default (non-root)
             # Non-root execution is appropriate for this shared runner:
@@ -127,13 +140,6 @@ spec:
             [[runners.kubernetes.volumes.empty_dir]]
               name = "home"
               mount_path = "/home/gitlab-runner"
-
-            # Pull policy
-            pull_policy = ["if-not-present"]
-
-            # Allow individual CI jobs to override node selector for CPU-compatibility only.
-            # Restricted to the esweiss.com/cpu label to prevent jobs from targeting arbitrary nodes.
-            node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
 
     # RBAC configuration
     # clusterWideAccess: false restricts the runner to only manage resources in its own namespace.

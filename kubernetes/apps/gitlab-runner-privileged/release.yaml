@@ -73,17 +73,19 @@ spec:
 
       # Kubernetes executor config
       config: |
+        # TOML sections are POSITIONAL: every key after a [section] header
+        # belongs to that section until the next header. All scalar
+        # [runners.kubernetes] keys must therefore come BEFORE any
+        # sub-table. The !81 revision inserted [runners.kubernetes.
+        # pod_labels] mid-section, which swallowed every key after it —
+        # pull_policy (a list) then failed pod_labels' string-map decode
+        # and the runner crash-looped on first render (the HelmRelease
+        # had been stalled behind the observability block until !83).
         [[runners]]
           [runners.kubernetes]
             namespace = "gitlab-runner"
             image = "python:3.11"
             privileged = true
-
-            # NetworkPolicy selector: infrastructure job pods keep
-            # unrestricted egress (ansible/SSH to the whole LAN) — see
-            # ../gitlab-runner/networkpolicy.yaml.
-            [runners.kubernetes.pod_labels]
-              "esweiss.com/runner-class" = "infrastructure"
 
             # CPU/Memory limits for job pods
             # Higher limits for DinD test jobs; lint/deploy jobs use less
@@ -113,6 +115,13 @@ spec:
             # Restricted to esweiss.com/cpu=modern|legacy to prevent arbitrary node targeting.
             # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
             node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
+            # NetworkPolicy selector: infrastructure job pods keep
+            # unrestricted egress (ansible/SSH to the whole LAN) — see
+            # ../gitlab-runner/networkpolicy.yaml. Keep this sub-table
+            # LAST (see TOML positionality note above).
+            [runners.kubernetes.pod_labels]
+              "esweiss.com/runner-class" = "infrastructure"
 
     # RBAC configuration
     # Restricted to gitlab-runner namespace (principle of least privilege)

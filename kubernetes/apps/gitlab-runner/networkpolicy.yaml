@@ -46,12 +46,22 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
+    # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
+    # evaluation, so the policy must allowlist the server node IPs on
+    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet
+    # (it blocked both runner managers when this policy first applied;
+    # only conntrack grace masked it for a while).
     - to:
         - ipBlock:
-            cidr: 10.43.0.1/32
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
       ports:
         - protocol: TCP
-          port: 443
+          port: 6443
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -93,12 +103,22 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
+    # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy
+    # evaluation, so the policy must allowlist the server node IPs on
+    # 6443 — a 10.43.0.1/32 rule never matches the post-DNAT packet
+    # (it blocked both runner managers when this policy first applied;
+    # only conntrack grace masked it for a while).
     - to:
         - ipBlock:
-            cidr: 10.43.0.1/32
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
       ports:
         - protocol: TCP
-          port: 443
+          port: 6443
     - to:
         - ipBlock:
             cidr: 192.168.0.101/32

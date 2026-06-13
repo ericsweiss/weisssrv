@@ -928,7 +928,24 @@ molecule-tests:
       - runner_system_failure
   script:
     - cd "ansible/roles/$ROLE"
-    - molecule test -s "$SCENARIO" || exit 1
+    # In-job retry with destroy + jitter. Under full pipeline fan-out,
+    # simultaneous systemd-container starts on a shared node race cgroup
+    # setup and die at prepare ("Container X is not running" — pipelines
+    # 360/361/365, several roles, always the same second). Job-level
+    # retry re-rolls the same dice (all attempts land in the same
+    # storm); destroy + a randomized 15-45s sleep de-conflicts the
+    # restart instead. $RANDOM is per-shell and the runner pod start
+    # times differ, so the jitter genuinely spreads.
+    - |
+      attempt=1; max=3
+      until molecule test -s "$SCENARIO"; do
+        rc=$?
+        attempt=$((attempt+1))
+        if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
+        echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
+        molecule destroy -s "$SCENARIO" || true
+        sleep $(( (RANDOM % 31) + 15 ))
+      done
   parallel:
     matrix:
       # Each role/scenario combo gets its own parallel job. Roles with a
@@ -1041,7 +1058,18 @@ integration-tests:
       - runner_system_failure
   script:
     - cd "ansible/integration-tests/$TEST"
-    - molecule test || exit 1
+    # Same in-job destroy+jitter retry as molecule-tests (see comment
+    # there) — multi-container scenarios are the most start-storm-prone.
+    - |
+      attempt=1; max=3
+      until molecule test; do
+        rc=$?
+        attempt=$((attempt+1))
+        if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
+        echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
+        molecule destroy || true
+        sleep $(( (RANDOM % 31) + 15 ))
+      done
   parallel:
     matrix:
       - TEST:
