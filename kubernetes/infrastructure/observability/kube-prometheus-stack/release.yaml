@@ -623,9 +623,113 @@ spec:
                     `journalctl -u corosync-health-collector.service` and
                     `systemctl status corosync-health-collector.timer`.
 
-              # ZFS pool capacity — currently only covers NAS node pools
-              # (single zfs_exporter on pve-nas-01). Compute node local-ssd
-              # pools are not monitored until zfs_exporter is deployed there.
+              # ZFS pool integrity — fed by the zpool-status textfile
+              # collector (node_exporter_host role) on every Proxmox host,
+              # so compute-node local-ssd pools are covered, not just the
+              # NAS. Exists because pool HEALTH alone misses the silent-
+              # corruption mode that ate pve-laptop-01's local-ssd
+              # (2026-06-12): vdev checksum errors accumulate while the
+              # pool stays ONLINE — a May 10 scrub had already counted
+              # errors and no alert fired. Counters survive `zpool clear`
+              # only by resetting to 0, so a firing alert clears once the
+              # operator has investigated and cleared the pool.
+              - alert: ZFSPoolDeviceErrors
+                expr: sum by (instance, pool) (zfs_pool_status_errors_total) > 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has device errors'
+                  description: >-
+                    zpool status reports {{ $value | printf "%.0f" }}
+                    read/write/cksum errors on pool {{ $labels.pool }}
+                    ({{ $labels.instance }}). The pool may still show
+                    ONLINE — this is the silent-corruption signature.
+                    Run `zpool status -v {{ $labels.pool }}` on the host,
+                    identify affected datasets, and `zpool clear` only
+                    after investigating.
+
+              - alert: ZFSPoolDataErrors
+                expr: zfs_pool_status_data_errors > 0
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has permanent data errors'
+                  description: >-
+                    zpool status -v lists {{ $value | printf "%.0f" }}
+                    entries with unrecoverable data on pool
+                    {{ $labels.pool }} ({{ $labels.instance }}). Affected
+                    files/zvols need restore-or-rebuild; on a single-vdev
+                    pool ZFS cannot self-heal these.
+
+              - alert: ZFSPoolNotOnline
+                expr: zfs_pool_status_health_code > 0
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is not ONLINE'
+                  description: >-
+                    Pool {{ $labels.pool }} on {{ $labels.instance }}
+                    reports DEGRADED or worse (health code
+                    {{ $value | printf "%.0f" }}).
+
+              # The == 0 branch covers never-scrubbed pools (and makes a
+              # scrub-timestamp parser regression loud instead of silent —
+              # the collector emits 0 when it cannot parse a completion
+              # time). New pools alert after the 6h hold-off: a nudge to
+              # run the first scrub, not noise.
+              - alert: ZFSPoolScrubStale
+                expr: >-
+                  (zfs_pool_status_last_scrub_seconds == 0)
+                  or (
+                    zfs_pool_status_last_scrub_seconds > 0
+                    and time() - zfs_pool_status_last_scrub_seconds > 35 * 86400
+                  )
+                for: 6h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has no recent completed scrub'
+                  description: >-
+                    Pool {{ $labels.pool }} on {{ $labels.instance }}
+                    either has never completed a scrub (timestamp 0) or
+                    its last scrub finished more than 35 days ago.
+                    Without scrubs, latent corruption surfaces only when
+                    something reads the bad blocks (e.g. vzdump).
+
+              # The `or ... unless` branch closes the missing-series blind
+              # spot: a staleness expression produces nothing if the
+              # collector never wrote a sample at all. The corosync
+              # sentinel (same hosts, same scrape job) acts as the
+              # existence witness — any instance reporting corosync but
+              # not zpool metrics has a broken/undeployed zpool collector.
+              - alert: ZFSPoolCollectorStale
+                expr: >-
+                  (time() - zfs_pool_status_collector_last_success_seconds > 900)
+                  or on(instance) (
+                    proxmox_corosync_health_collector_last_success_seconds
+                    unless on(instance) zfs_pool_status_collector_last_success_seconds
+                  )
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'zpool-status-collector is degraded or missing on {{ $labels.instance }}'
+                  description: >-
+                    zfs_pool_status_collector_last_success_seconds on
+                    {{ $labels.instance }} is stale (>15m) or entirely
+                    absent while the host reports other collector metrics —
+                    the ZFS pool alerts on this host are serving stale or
+                    no inputs. Check
+                    `journalctl -u zpool-status-collector.service` and
+                    `systemctl status zpool-status-collector.timer`.
+
+              # ZFS pool capacity — fed by zfs_exporter on pve-nas-01
+              # (NAS pools only; compute pools get capacity via the
+              # node_exporter zfs collector if ever needed — the
+              # integrity alerts above already cover them).
               - alert: ZFSPoolSpaceWarning
                 expr: (max by (pool) (zfs_pool_allocated_bytes) / max by (pool) (zfs_pool_size_bytes)) * 100 > 80
                 for: 10m

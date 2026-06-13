@@ -132,11 +132,62 @@
   tags:
     - molecule-notest
 
-# Note: we deliberately do NOT auto-clean the collector on hosts dropped
+# ---------------------------------------------------------------------------
+# zpool status collector (Proxmox hosts only — they carry the ZFS pools)
+# ---------------------------------------------------------------------------
+# Catches the failure class that corrupted pve-laptop-01's local-ssd
+# (2026-06-12): a pool accumulating vdev checksum errors stays ONLINE, so
+# health-based monitoring (zfs_exporter on the NAS, SMART) never fires —
+# a May 10 scrub had already counted errors and nothing surfaced it. The
+# collector exports per-pool error counters + scrub age fleet-wide;
+# companion alerts live in release.yaml (homelab.storage group).
+- name: Install zpool status collector script (proxmox hosts only)
+  ansible.builtin.copy:
+    src: zpool-status-collector.sh
+    dest: /usr/local/sbin/zpool-status-collector.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['proxmox'] | default([])
+
+- name: Install zpool status collector service unit
+  ansible.builtin.template:
+    src: zpool-status-collector.service.j2
+    dest: /etc/systemd/system/zpool-status-collector.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+  notify: Reload systemd for zpool status collector
+
+- name: Install zpool status collector timer unit
+  ansible.builtin.copy:
+    src: zpool-status-collector.timer
+    dest: /etc/systemd/system/zpool-status-collector.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+  notify: Reload systemd for zpool status collector
+
+- name: Enable + start zpool status collector timer
+  ansible.builtin.systemd:
+    name: zpool-status-collector.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - inventory_hostname in groups['proxmox'] | default([])
+    - not ansible_check_mode
+  tags:
+    - molecule-notest
+
+# Note: we deliberately do NOT auto-clean the collectors on hosts dropped
 # from the proxmox group. The natural conditional
 # `inventory_hostname not in groups['proxmox'] | default([])` fails OPEN
 # (an undefined group → empty list → membership-not-test is True
 # everywhere), and a wrong-cleanup risk on actual Proxmox hosts is worse
 # than stale files on a host that was demoted. Operator removes manually
 # in that rare case (`rm /usr/local/sbin/corosync-health-collector.sh
-# /etc/systemd/system/corosync-health-collector.*`).
+# /etc/systemd/system/corosync-health-collector.*` and the zpool
+# equivalents).

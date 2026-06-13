@@ -1,0 +1,16 @@
+# Managed by Ansible node_exporter_host role.
+# Fires the zpool status collector every minute — same cadence and
+# OnUnitInactiveSec rationale as corosync-health-collector.timer (the
+# alert windows in release.yaml use 10-15m staleness thresholds, so
+# minute granularity is ample and survives oneshot failures).
+[Unit]
+Description=Periodically sample zpool status
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=zpool-status-collector.service
+
+[Install]
+WantedBy=timers.target

@@ -17,12 +17,12 @@ data:
   gitlab_runner_helm_version: 0.89.1
   gitlab_version: 19.0.2-ee.0
   gluetun_version: v3.41.1
-  helm_chart_versions_alloy: 1.9.0
+  helm_chart_versions_alloy: 1.10.0
   helm_chart_versions_cert_manager: v1.20.2
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.6.0
   helm_chart_versions_kube_prometheus_stack: 86.2.2
-  helm_chart_versions_loki: 17.3.2
+  helm_chart_versions_loki: 17.3.3
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.12.0

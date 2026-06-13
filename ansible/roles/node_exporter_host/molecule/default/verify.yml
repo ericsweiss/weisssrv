@@ -130,3 +130,62 @@
           - "'proxmox_pmxcfs_manager_status_mtime_seconds ' in (corosync_prom_content.content | b64decode)"
           - "'proxmox_corosync_health_collector_last_success_seconds ' in (corosync_prom_content.content | b64decode)"
         fail_msg: "corosync_health.prom missing one or more metrics"
+
+    # ── zpool status collector (proxmox-group-only) ───────────────────────
+    # Same deploy-contract checks as the corosync collector above. The CI
+    # container has no zpool binary, so the end-to-end invocation exercises
+    # the no-ZFS path: only the last_success sentinel is emitted, which is
+    # exactly what a non-ZFS host should produce.
+
+    - name: Verify zpool collector script is present and executable
+      ansible.builtin.stat:
+        path: /usr/local/sbin/zpool-status-collector.sh
+      register: zpool_script
+
+    - name: Assert zpool collector script is mode 0755 root:root
+      ansible.builtin.assert:
+        that:
+          - zpool_script.stat.exists
+          - zpool_script.stat.mode == "0755"
+          - zpool_script.stat.pw_name == "root"
+          - zpool_script.stat.gr_name == "root"
+        fail_msg: "zpool-status-collector.sh missing or has wrong perms"
+
+    - name: Verify zpool collector service unit is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/zpool-status-collector.service
+      register: zpool_svc
+
+    - name: Assert zpool collector service unit is mode 0644
+      ansible.builtin.assert:
+        that:
+          - zpool_svc.stat.exists
+          - zpool_svc.stat.mode == "0644"
+        fail_msg: "zpool-status-collector.service missing or has wrong perms"
+
+    - name: Verify zpool collector timer unit is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/zpool-status-collector.timer
+      register: zpool_timer
+
+    - name: Assert zpool collector timer unit is mode 0644
+      ansible.builtin.assert:
+        that:
+          - zpool_timer.stat.exists
+          - zpool_timer.stat.mode == "0644"
+        fail_msg: "zpool-status-collector.timer missing or has wrong perms"
+
+    - name: Invoke zpool collector once to produce textfile metric
+      ansible.builtin.command: /usr/local/sbin/zpool-status-collector.sh
+      changed_when: false
+
+    - name: Read zpool .prom file
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/zfs_pool_status.prom
+      register: zpool_prom_content
+
+    - name: Assert zpool .prom emits the sentinel (no-ZFS host path)
+      ansible.builtin.assert:
+        that:
+          - "'zfs_pool_status_collector_last_success_seconds ' in (zpool_prom_content.content | b64decode)"
+        fail_msg: "zfs_pool_status.prom missing the collector sentinel"
