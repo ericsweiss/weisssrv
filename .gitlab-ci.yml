@@ -1527,6 +1527,10 @@ deploy-plex:
     - job: deploy-ansible-base
       optional: true
   variables:
+    # plex.yml runs postfix_null_client, which renders mail_aliases
+    # (root -> admin_email -> ROOT_EMAIL_ALIAS); without it the aliases
+    # task fails with AnsibleUndefinedVariable. Mirrors the other deploy jobs.
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
     SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
