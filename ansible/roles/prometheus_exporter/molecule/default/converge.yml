@@ -5,8 +5,10 @@
 #   1. tarball SKIP path  — version-check prints the pinned version so
 #      needs_install=false and nothing downloads/installs.
 #   2. deb SKIP path      — same gate, deb branch.
-#   3. tarball INSTALL path — version-check prints a stale version so
-#      needs_install=true; download_url is a file:// URL pointing at a tiny
+#   3. tarball INSTALL path — version-check queries the installed binary, which
+#      is absent on the first converge (needs_install=true) and prints the
+#      pinned version once installed (needs_install=false, so it stays
+#      idempotent); download_url is a file:// URL pointing at a tiny
 #      locally-staged tarball fixture, exercising the real
 #      get_url -> unarchive -> copy -> cleanup chain (the .deb install branch
 #      is covered live by the unbound_exporter deploy; a real .deb fixture is
@@ -87,6 +89,7 @@
         mode: "0755"
         content: |
           #!/bin/bash
+          if [ "$1" = "--version" ]; then echo "{{ _pe_install_version }}"; exit 0; fi
           while true; do sleep 3600; done
 
     - name: Pack the fixture tarball  # noqa: command-instead-of-module
@@ -144,8 +147,10 @@
         prometheus_exporter_checksum: ""
         prometheus_exporter_binary_path: "/usr/local/bin/pe-install-mock"
         prometheus_exporter_archive_member: "pe-install-mock-{{ _pe_install_version }}.linux-amd64/pe-install-mock"
-        # version-check reports the OLD version => needs_install=true.
-        prometheus_exporter_version_check_cmd: "echo 0.0.0"
+        # version-check queries the installed binary: rc!=0 (binary absent) on
+        # the first converge => needs_install=true; prints the pinned version
+        # once installed => needs_install=false. This keeps the path idempotent.
+        prometheus_exporter_version_check_cmd: "/usr/local/bin/pe-install-mock --version"
         prometheus_exporter_service_name: "pe-install-mock"
         prometheus_exporter_port: 19997
         # Extract under a dedicated scratch dir so the role's archive download
