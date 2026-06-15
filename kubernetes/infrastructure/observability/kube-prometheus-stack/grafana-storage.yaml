@@ -27,12 +27,21 @@ spec:
     namespace: observability
     name: grafana-data
   nfs:
-    server: 192.168.0.102
+    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
+    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
+    # AdGuard and matches the wildcard. See docs/07 Transport Security.
+    server: pve-nas-01.esweiss.com
     path: /appdata/grafana
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # NFSv4-over-TLS: tlshd runs on every k3s agent (nfs_tls role). The
+    # /appdata export is permissive (none:tls); this option drives the
+    # encrypted mount. Changing server: on a bound PV is immutable — the
+    # live cutover deletes+recreates this PV (Retain → data safe) and
+    # restarts grafana. See docs/16 cutover procedure.
+    - xprtsec=tls
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

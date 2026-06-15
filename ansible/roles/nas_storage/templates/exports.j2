@@ -1,15 +1,25 @@
 # {{ ansible_managed }}
 # NFS exports configuration - see exports(5)
 #
-# Per-export `xprtsec` (added 2026-05-04): opt-in transport-layer
-# encryption via NFSv4 + tlshd. Setting xprtsec=tls (or =mtls) in
-# nfs_exports[*] adds the option to every client line for that export.
-# Requires the nfs_tls role to be active on the server AND every
-# client; partial rollouts will fail mounts with EACCES.
+# Transport-layer encryption via NFSv4 + tlshd (opt-in). Two scopes:
+#   - export.xprtsec  : applies to every client line of the export.
+#   - client.xprtsec  : per-client override; takes precedence over the
+#                       export-level value, including a falsy value to
+#                       opt one client OUT.
+# Production uses "none:tls" (permissive: advertises TLS, still accepts
+# plaintext) rather than "tls" (reject-plaintext). A client line with no
+# xprtsec leaves the server at its default policy (none:tls:mtls), also
+# permissive. This per-client granularity lets a shared export carry
+# TLS-advertising k3s clients alongside a plaintext-only client (e.g.
+# HAOS .154 on /export/media, which cannot speak xprtsec — see docs/24).
+# The wire is encrypted by clients that MOUNT with xprtsec=tls (by
+# hostname, so the *.esweiss.com cert verifies); requires the nfs_tls role
+# active on the server AND on every client that mounts TLS.
 
 {% for export in nfs_exports %}
-# {{ export.path }}{{ ' (xprtsec=' ~ export.xprtsec ~ ')' if (export.xprtsec is defined and export.xprtsec) else '' }}
+{% set export_xprtsec = export.xprtsec | default('') %}
+# {{ export.path }}{{ ' (xprtsec=' ~ export_xprtsec ~ ')' if export_xprtsec else '' }}
 {{ export.path }} {% for client in export.clients %}{% if not loop.first %} \
-        {% endif %}{{ client.spec }}({{ client.options }}{% if export.xprtsec is defined and export.xprtsec %},xprtsec={{ export.xprtsec }}{% endif %}){% endfor %}
+        {% endif %}{% set client_xprtsec = client.xprtsec | default(export_xprtsec) %}{{ client.spec }}({{ client.options }}{% if client_xprtsec %},xprtsec={{ client_xprtsec }}{% endif %}){% endfor %}
 
 {% endfor %}

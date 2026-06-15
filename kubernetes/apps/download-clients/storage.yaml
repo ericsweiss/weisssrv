@@ -3,6 +3,11 @@
 # Unified /media mount enables hard linking between downloads and library
 # NFS export: /media (bind from /mnt/media mergerfs)
 # Pod mount: /media (via volumeMounts)
+#
+# All xprtsec=tls PVs below use server: pve-nas-01.esweiss.com (NOT the IP) so
+# the TLS handshake matches the *.esweiss.com cert. server: is an immutable PV
+# field — the live IP->hostname cutover deletes+recreates each PV (Retain →
+# data safe) and rolls the consuming pod. See docs/16 cutover procedure.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -18,7 +23,11 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102  # pve-nas-01
+    # Hostname, not IP: xprtsec=tls verifies the server cert, whose SAN is
+    # *.esweiss.com. Mounting by 192.168.0.102 fails the handshake
+    # ("Certificate owner unexpected"); pve-nas-01.esweiss.com resolves to
+    # .102 via AdGuard and matches the wildcard. See docs/07 Transport Security.
+    server: pve-nas-01.esweiss.com
     path: /media           # NFS export path (exposes /mnt/media mergerfs via bind mount)
   mountOptions:
     - nfsvers=4.2
@@ -26,6 +35,10 @@ spec:
     - rsize=1048576
     - wsize=1048576
     - noatime
+    # k3s mounts /export/media over TLS; the export is permissive (none:tls),
+    # so HAOS (.154) shares it in plaintext via its own client line — see
+    # host_vars/pve-nas-01.yml + docs/24.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -61,12 +74,17 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/nzbget
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -99,12 +117,17 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/qbittorrent
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -137,12 +160,17 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/prowlarr
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -175,7 +203,9 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/sonarr
   mountOptions:
     - nfsvers=4.2
@@ -183,6 +213,9 @@ spec:
     - noatime
     - actimeo=3
     - lookupcache=positive
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -215,7 +248,9 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/radarr
   mountOptions:
     - nfsvers=4.2
@@ -223,6 +258,9 @@ spec:
     - noatime
     - actimeo=3
     - lookupcache=positive
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -255,7 +293,9 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/lidarr
   mountOptions:
     - nfsvers=4.2
@@ -263,6 +303,9 @@ spec:
     - noatime
     - actimeo=3
     - lookupcache=positive
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -295,12 +338,17 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102
+    # Hostname required for xprtsec=tls (cert SAN is *.esweiss.com; IP fails
+    # cert verification). See the downloads-data PV above + docs/07.
+    server: pve-nas-01.esweiss.com
     path: /appdata/pulsarr
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1

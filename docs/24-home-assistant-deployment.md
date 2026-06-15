@@ -439,6 +439,35 @@ ls /mnt/media/
 
 **Note**: The mount is read-only (`ro`) since Home Assistant only needs to browse media, not write to it. The NFSv4 path is `/media` (relative to the fsid=0 root at `/export`), not `/export/media`.
 
+**NFS transport is plaintext for HAOS — by necessity, not oversight.** The
+rest of the cluster mounts `/export/media` with `xprtsec=tls` (NFSv4 over
+kernel-TLS, by hostname `pve-nas-01.esweiss.com` so the `*.esweiss.com` cert
+verifies; see docs/07 Transport Security), but HAOS cannot:
+
+- The Home Assistant Supervisor hardcodes its NFS mount options
+  (`supervisor/mounts/mount.py`, `NFSMount.options` returns
+  `softerr,timeo=100,retrans=2` plus `ro`/`port=`) and exposes no free-form
+  mount-options field — there is no way to add `xprtsec=tls`.
+- HAOS ships no `tlshd` (the ktls-utils handshake daemon) and the locked
+  appliance image can't have it installed, so even the hand-edited `/etc/fstab`
+  mount above couldn't complete a TLS handshake. HAOS 17.x's kernel (6.12)
+  *does* meet the kTLS bar, but the userspace daemon is the blocker.
+
+The `/export/media` k3s client lines are **permissive** (`xprtsec=none:tls`):
+they advertise TLS but still accept plaintext, and the k3s pods drive the
+encrypted mount via their own `xprtsec=tls`. The `.154` line omits `xprtsec`
+entirely, so HAOS's plaintext mount is accepted on the same export. Do **not**
+add `xprtsec` to the `.154` line in `host_vars/pve-nas-01.yml` — HAOS has no
+`tlshd` and would be locked out of its media mount. Note that even with
+permissive exports, HAOS must keep mounting by hostname
+(`pve-nas-01.esweiss.com`, as the fstab line above does) — it works for HAOS
+because the mount is plaintext, but the hostname is also what a TLS client
+needs (the `*.esweiss.com` cert has no IP SAN). The media is non-sensitive and
+the read-only mount sits behind the LAN-trust boundary, so plaintext is an
+accepted exception (tracked in docs/16). SMB3 (which is encrypted) was
+considered and rejected to avoid adding a second protocol + credential path
+for one browse mount.
+
 ### Backup Configuration
 
 **Step 1: Create NFS Mount for Backups** (Optional but Recommended)

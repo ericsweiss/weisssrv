@@ -92,9 +92,14 @@ cert_distribution_targets:
     cert_mode: "0644"
     key_mode: "0600"
     restart_command: "sudo gitlab-ctl hup nginx"
-  # NFS+TLS endpoints: both NFS server (pve-nas-01) and the only
-  # current NFS client that mounts pve-nas-01 directly through tlshd
-  # (k3s-agt-nas-01 — others mount via Proxmox-managed pve_storage).
+  # NFS+TLS endpoints: the NFS server (pve-nas-01) plus EVERY k3s agent.
+  # All six agents get the cert because the NFS-backed PVs (grafana, *arr,
+  # recipes, downloads data) float across the cluster — a pod can schedule
+  # to any agent, so any agent may become the tlshd NFS client. k3s SERVER
+  # nodes (.222/.223/.227) do NOT mount NFS, so they are intentionally
+  # absent. HAOS (.154) is NOT here as a TLS endpoint: it keeps a plaintext
+  # NFS media mount (Supervisor can't request xprtsec; see docs/24) — its
+  # existing HAOS cert entry below is for the HTTPS frontend, not tlshd.
   #
   # restart_command is shared via a YAML anchor: `systemctl restart
   # tlshd` only fires when the unit exists and is enabled; before
@@ -120,6 +125,61 @@ cert_distribution_targets:
   - host: k3s-agt-nas-01
     ip: 192.168.0.202
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj+KnY1GNhTydCQiX0jb7rONeK1IoWG9aKtkuPb2HFB"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: *tlshd_reload_if_enabled
+  # The five remaining k3s agents. host_key MUST be captured against the
+  # live host before the next dns:deploy:
+  #     task certs:show-host-keys
+  # and pasted in below, replacing the CAPTURE-VIA-... placeholder. The
+  # placeholder is non-empty (so the acme_certs host_key assert passes for
+  # lint/syntax) but is NOT a real key: with StrictHostKeyChecking=yes the
+  # cert push to that agent fails safe on a host-key mismatch rather than
+  # pushing the wildcard key to an unverified host. Until the real key is
+  # pasted, that agent has no cert, so the nfs_tls assert will (correctly)
+  # block the k3s deploy — do the capture first.
+  - host: k3s-agt-laptop-01
+    ip: 192.168.0.203
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEf3UC60qsa4OT5LTT/0xhZpUZE5wx2AWHnRunA69268"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: *tlshd_reload_if_enabled
+  - host: k3s-agt-opt-01
+    ip: 192.168.0.204
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtDQgT9F7S8pF5Md2OqU2Q6NKvS88jLTQ8sMQ1NQtGI"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: *tlshd_reload_if_enabled
+  - host: k3s-agt-opt-02
+    ip: 192.168.0.205
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsfGxqZJINMEJoWibUCcBySbpU7W9d3LCjvesjRg/Jd"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: *tlshd_reload_if_enabled
+  - host: k3s-agt-opt-03
+    ip: 192.168.0.206
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPgktfPF6unrbua/8tAipNH1QvJNuxAAtX3n0BO9wYsS"
+    cert_dir: /etc/ssl/private
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: *tlshd_reload_if_enabled
+  - host: k3s-agt-prec-01
+    ip: 192.168.0.207
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINh53na7EhfKpTOo7LFPyYYf0PM9a4OiliOS4clVaicp"
     cert_dir: /etc/ssl/private
     owner: root
     group: root

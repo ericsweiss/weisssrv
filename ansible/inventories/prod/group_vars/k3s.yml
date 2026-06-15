@@ -59,6 +59,19 @@ k3s_kubelet_args:
   - "image-gc-high-threshold=70"
   - "image-gc-low-threshold=50"
 
+# NFSv4-over-TLS: install + start tlshd on every k3s agent so a pod that
+# schedules to ANY agent can mount pve-nas-01's exports (/appdata, /share,
+# /media) with xprtsec=tls. Those exports are permissive (none:tls — accept
+# plaintext + TLS); the PVs drive the encrypted mount, by hostname
+# (pve-nas-01.esweiss.com, so the *.esweiss.com cert verifies). Set
+# group-wide rather than per-agent because the NFS-backed PVs (grafana,
+# *arr, recipes, downloads data) float across the cluster. The nfs_tls role
+# only runs on k3s_agents (playbooks/k3s.yml); on k3s servers this var is
+# unused. Each agent needs the wildcard cert at /etc/ssl/private/ first —
+# distributed via cert_distribution_targets in host_vars/dns-01.yml. The
+# role asserts the cert exists and fails loud if a target was missed.
+nfs_tls_enabled: true
+
 # MetalLB IP ranges
 metallb_public_range: "192.168.0.100-192.168.0.100"
 metallb_internal_range: "192.168.0.101-192.168.0.101"

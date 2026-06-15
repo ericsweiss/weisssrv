@@ -25,6 +25,51 @@
       failed_when: exports_check.rc != 0
       changed_when: false
 
+    # exports.j2 xprtsec precedence (the per-client override that keeps a
+    # plaintext client on a mixed export whose other clients advertise TLS —
+    # the HAOS .154 lockout-class regression guard). Exports are permissive
+    # (none:tls), so this guards that no xprtsec at all leaks onto the .154
+    # line. grep each rendered client line directly; client lines are
+    # backslash-continued so each client spec lands on its own physical line,
+    # which is exactly what we match.
+
+    - name: Assert plaintext export has no xprtsec on its client line
+      ansible.builtin.command: >-
+        grep -F '192.168.0.0/24(ro,sync,no_subtree_check)' /etc/exports
+      register: plain_grep
+      changed_when: false
+      failed_when: plain_grep.rc != 0 or 'xprtsec' in plain_grep.stdout
+
+    - name: Assert export-level xprtsec=none:tls reaches the first client line
+      ansible.builtin.command: >-
+        grep -F '/tank/appdata/tls 192.168.0.200/29(rw,sync,no_subtree_check,fsid=91,xprtsec=none:tls)' /etc/exports
+      register: tls_first
+      changed_when: false
+      failed_when: tls_first.rc != 0
+
+    - name: Assert export-level xprtsec=none:tls reaches the continued client line
+      ansible.builtin.command: >-
+        grep -F '192.168.0.220/29(rw,sync,no_subtree_check,fsid=91,xprtsec=none:tls)' /etc/exports
+      register: tls_cont
+      changed_when: false
+      failed_when: tls_cont.rc != 0
+
+    - name: Assert mixed export advertises TLS (none:tls) on the opted-in k3s client
+      ansible.builtin.command: >-
+        grep -F '/tank/media/mixed 192.168.0.200/29(rw,sync,no_subtree_check,fsid=92,xprtsec=none:tls)' /etc/exports
+      register: mixed_tls
+      changed_when: false
+      failed_when: mixed_tls.rc != 0
+
+    - name: Assert mixed export leaves the .154 client plaintext (no xprtsec)
+      ansible.builtin.command: >-
+        grep -F '192.168.0.154/32(ro,sync,no_subtree_check,fsid=92)' /etc/exports
+      register: mixed_plain
+      changed_when: false
+      # rc 0 = the exact plaintext spec is present; if xprtsec had leaked onto
+      # the .154 line the option string would differ and this grep would miss.
+      failed_when: mixed_plain.rc != 0 or 'xprtsec' in mixed_plain.stdout
+
     - name: Check if Samba is installed
       ansible.builtin.package:
         name: samba

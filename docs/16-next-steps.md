@@ -350,7 +350,7 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
   none / SOURCE matching) — rewrite or remove + always warn; zfs.yml property
   task compare-before-set idempotency; stop managing archive/* mountpoints in
   host_vars (fights backupctl lockdown); add x-systemd.requires=zfs-mount to
-  mergerfs fstab options; guard xprtsec exports on nfs_tls_enabled
+  mergerfs fstab options
 - unbound: drop unbound-control-setup certs (unix socket needs none);
   adguard_home: immutable-flag dance always-changed + masked chattr failures
 - proxmox_lxc: surface pveam download failures at download time; DNS-verify
@@ -436,27 +436,83 @@ The two remaining items (AdGuard admin, router) are acceptable residual
 LAN-trust hops since they sit behind `lan-tailscale-only` and the
 user-facing edge is HTTPS.
 
-### NFSv4 + RPC-with-TLS — full activation
+### NFSv4 + RPC-with-TLS — k3s done; two documented plaintext exceptions
 
-Framework is in place (`nfs_tls` role + cert distribution to the NFS
-server and `k3s-agt-nas-01`, exports template supports per-export
-`xprtsec`). Activation is a coordinated rollout because partial state
-breaks mounts:
+**Status: enabled for k3s clients (permissive exports, validated live).**
+`tlshd` runs on `pve-nas-01` and on **every k3s agent**
+(`nfs_tls_enabled: true` in `group_vars/k3s.yml` + `host_vars/pve-nas-01.yml`).
+The k3s client lines of `/export/{appdata,share,media}` carry
+`xprtsec=none:tls` — **permissive**: they advertise TLS but still accept
+plaintext. The wire is encrypted because the k3s PVs *mount* with
+`xprtsec=tls`. The exports template (`nas_storage/templates/exports.j2`)
+supports **per-client** `xprtsec`, which makes the mixed `/export/media`
+export possible (k3s clients advertise TLS, HAOS plaintext on the same
+export). NFS-over-TLS rides the same TCP/2049 — no firewall change.
 
-1. Run `task infra:deploy -- --tags acme_certs` so the wildcard cert
-   reaches every NFS host's `/etc/ssl/private/`.
-2. Set `nfs_tls_enabled: true` on `pve-nas-01` and every NFS client
-   (`k3s-agt-nas-01`, plex, all Proxmox hosts that mount tank-proxmox).
-3. Re-run the Ansible plays to install ktls-utils + start tlshd
-   everywhere.
-4. Update NFS mount options across every client to add `xprtsec=tls`
-   (Proxmox `pve_storage`, k3s NFS PV mountOptions, plex bind mounts).
-   Re-mount on each client; verify they reconnect.
-5. Add `xprtsec: tls` to the relevant entries in `nfs_exports` for
-   `pve-nas-01`. Run nas_storage role; restart `nfs-server`.
+**CRITICAL — TLS clients mount by hostname, never by IP.** The distributed
+cert is the wildcard `*.esweiss.com` (no IP SAN). Mounting
+`192.168.0.102:/...` with `xprtsec=tls` fails the handshake (`tlshd`:
+"Certificate owner unexpected", confirmed live). Mounting
+`pve-nas-01.esweiss.com:/...` (resolves to .102 via AdGuard, matches the
+wildcard) succeeds ("Handshake with pve-nas-01.esweiss.com was successful").
+Every k3s NFS PV with `xprtsec=tls` therefore sets
+`server: pve-nas-01.esweiss.com`, not the IP.
 
-Sequence matters: server with `xprtsec=tls` rejects non-TLS clients,
-so flip clients first then enable on server.
+**Why permissive (`none:tls`) and not reject-plaintext (`tls`):** permissive
+removes the deploy-ordering lockout entirely — a client mid-cutover, a node
+missing `tlshd`, or HAOS all still mount. The encryption is client-driven,
+so the security posture for the k3s clients is unchanged. Hardening the
+exports to reject plaintext (`xprtsec: tls`) is a **documented future step**,
+to be done only after verifying every client is actually on TLS
+(`exportfs -v`, `cat /proc/mounts` on each agent, `journalctl -u tlshd`).
+
+**Why all six agents, not just `k3s-agt-nas-01`:** the NFS-backed PVs
+(grafana, `*arr`, recipes, downloads data) float across the cluster, so a
+pod can become the tlshd client on any agent. All six agents are in
+`cert_distribution_targets` (`host_vars/dns-01.yml`). k3s **server** nodes
+(.222/.223/.227) don't mount NFS and are intentionally absent.
+
+**Operator prerequisite (requires prod access):** the five newly added
+agent `cert_distribution_targets` entries carry a placeholder `host_key`.
+Capture the real keys with `task certs:show-host-keys` and paste them in
+before `task dns:deploy`, then `task k3s:deploy`. The order matters — the
+cert must land on each agent (`/etc/ssl/private/`) before `nfs_tls`'s assert
+runs, or the play fails loud (by design).
+
+**Live cutover (post-merge, deliberate — NOT automatic on Flux reconcile):**
+`server:` is an immutable PV field, so the IP→hostname switch on an
+already-bound PV cannot be applied in place — Flux can't patch it. Per PV
+(downloads-data, the seven downloads-appdata PVs, the two recipes PVs, and
+grafana-data):
+
+1. `kubectl delete pv <name>` — the Retain reclaim policy detaches the PV
+   object without touching the NFS data on the NAS (data safe).
+2. Flux recreates the PV from the manifest (now `server:
+   pve-nas-01.esweiss.com`, `xprtsec=tls`), and the PVC re-binds.
+3. `kubectl rollout restart` the consuming workload so the pod remounts
+   against the new server name over TLS.
+
+Until each pod is restarted it keeps its old (plaintext, IP) mount —
+degraded, not broken, because the export is permissive.
+
+**Plaintext exceptions (deliberate, not gaps):**
+
+- **HAOS (.154) on `/export/media`** — Home Assistant's Supervisor hardcodes
+  its NFS mount options (`supervisor/mounts/mount.py` `NFSMount.options`:
+  `softerr,timeo=100,retrans=2` + `ro`/`port=`, no free-form field) and the
+  locked HAOS image ships no `tlshd`, so it can never request `xprtsec`. Its
+  `.154` client line omits `xprtsec`; the server's default policy
+  (`none:tls:mtls`) accepts the plaintext mount. SMB3 migration was
+  considered and rejected — it adds a second protocol + the `nas` credential
+  for one read-only media browse mount of non-sensitive data. See docs/24.
+- **Proxmox `tank-proxmox` backup target** — deferred. It's Proxmox-managed
+  NFS storage (`pve_storage`, applied by `pvesm`/`storage.cfg`, not the
+  Ansible exports template), the storage plugin doesn't cleanly expose
+  `xprtsec`, and a botched cutover breaks the nightly vzdump target across
+  all six hosts. When attempted (maintenance window): add `tlshd` to each
+  Proxmox host, set `xprtsec=tls` on the six `/export/tank-proxmox` client
+  lines, and add `options xprtsec=tls` to the `tank-proxmox` `storage.cfg`
+  entry. Until then the six `.10x` client lines stay plaintext.
 
 ### ~~Authentik / Plex bypass routes — internal TLS~~ (DONE)
 

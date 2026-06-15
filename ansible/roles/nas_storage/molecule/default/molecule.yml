@@ -46,12 +46,33 @@ provisioner:
         internal_domain: test.local
         skip_ssh_config: true
         skip_dns_config: true
-        # NFS configuration
+        # NFS configuration. Three exports exercise the exports.j2 xprtsec
+        # precedence: plaintext (no xprtsec anywhere), export-level permissive
+        # TLS (every client line gets none:tls), and mixed per-client (one
+        # none:tls client + one explicitly plaintext client — the
+        # /export/media shape that advertises TLS to k3s while keeping HAOS
+        # .154 with no xprtsec at all). none:tls matches the production value:
+        # permissive (accepts plaintext + TLS); clients drive the encrypted
+        # mount via their own xprtsec=tls option.
         nfs_exports:
           - path: /tank/media/unified
             clients:
               - spec: "192.168.0.0/24"
                 options: "ro,sync,no_subtree_check"
+          - path: /tank/appdata/tls
+            xprtsec: "none:tls"
+            clients:
+              - spec: "192.168.0.200/29"
+                options: "rw,sync,no_subtree_check,fsid=91"
+              - spec: "192.168.0.220/29"
+                options: "rw,sync,no_subtree_check,fsid=91"
+          - path: /tank/media/mixed
+            clients:
+              - spec: "192.168.0.200/29"
+                options: "rw,sync,no_subtree_check,fsid=92"
+                xprtsec: "none:tls"
+              - spec: "192.168.0.154/32"
+                options: "ro,sync,no_subtree_check,fsid=92"
         # Samba configuration
         samba_shares:
           - name: media

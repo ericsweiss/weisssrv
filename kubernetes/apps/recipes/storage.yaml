@@ -1,6 +1,11 @@
 ---
 # Recipes storage: app configs on NFS (/appdata/{app} from pve-nas-01);
 # Mealie PostgreSQL on a dedicated ZFS zvol (hostPath on k3s-agt-nas-01).
+#
+# The NFS PVs use server: pve-nas-01.esweiss.com (NOT the IP) so xprtsec=tls
+# matches the *.esweiss.com cert. server: is an immutable PV field — the live
+# IP->hostname cutover deletes+recreates each PV (Retain → data safe) and rolls
+# the consuming pod. See docs/16 cutover procedure.
 
 # =============================================================================
 # Mealie App Config Storage
@@ -20,12 +25,18 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102  # pve-nas-01
+    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
+    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
+    # AdGuard and matches the wildcard. See docs/07 Transport Security.
+    server: pve-nas-01.esweiss.com
     path: /appdata/mealie
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1
@@ -103,12 +114,18 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   nfs:
-    server: 192.168.0.102  # pve-nas-01
+    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
+    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
+    # AdGuard and matches the wildcard. See docs/07 Transport Security.
+    server: pve-nas-01.esweiss.com
     path: /appdata/bar-assistant
   mountOptions:
     - nfsvers=4.2
     - hard
     - noatime
+    # Encrypt the /appdata wire with tlshd (on every agent). The export is
+    # permissive (none:tls), so TLS is client-driven via this option.
+    - xprtsec=tls
 
 ---
 apiVersion: v1

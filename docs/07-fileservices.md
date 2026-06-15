@@ -139,13 +139,20 @@ With setgid + GID 2000:
 
 ### Access Control
 
-| Export | Clients | Access |
-|--------|---------|--------|
-| /export | Proxmox hosts, k3s VMs, .154 | RW, crossmnt |
-| /export/appdata | k3s VMs (192.168.0.200/29, 192.168.0.220/29) | RW |
-| /export/share | k3s VMs | RW |
-| /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) |
-| /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash |
+| Export | Clients | Access | Transport |
+|--------|---------|--------|-----------|
+| /export | Proxmox hosts, k3s VMs, .154 | RW, crossmnt | plaintext (fsid=0 root; permissive) |
+| /export/appdata | k3s VMs (192.168.0.200/29, 192.168.0.220/29) | RW | permissive (`xprtsec=none:tls`); k3s clients mount TLS |
+| /export/share | k3s VMs | RW | permissive (`xprtsec=none:tls`); k3s clients mount TLS |
+| /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) | permissive (`none:tls` on k3s lines); k3s mounts TLS, **.154 plaintext** (HAOS can't do `xprtsec`) |
+| /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | plaintext (TLS deferred) |
+
+**Exports are permissive, not require-TLS.** The k3s client lines advertise
+`xprtsec=none:tls` (accepts both plaintext and TLS); the wire is encrypted
+because the k3s PVs *mount* with `xprtsec=tls`. This avoids a deploy-ordering
+lockout — a client not yet on TLS, or a node missing `tlshd`, still mounts.
+Reject-plaintext hardening (export `xprtsec: tls`) is a future step once every
+client is verified on TLS (docs/16).
 
 **Note**: Plex LXC (.152) uses a bind mount (`/mnt/media`) directly, not NFS.
 
@@ -159,15 +166,46 @@ mount -t nfs4 192.168.0.102:/media /mnt/media
 192.168.0.102:/media  /mnt/media  nfs4  defaults,_netdev  0  0
 ```
 
+**TLS clients MUST mount by hostname, never by IP.** A `xprtsec=tls` mount
+verifies the server certificate, whose only SAN is the wildcard
+`*.esweiss.com`. Mounting `192.168.0.102:/media` with `xprtsec=tls` fails the
+handshake (`tlshd`: "Certificate owner unexpected"). Mount
+`pve-nas-01.esweiss.com:/media` instead — AdGuard resolves it to .102 and the
+name matches the wildcard:
+
+```bash
+mount -t nfs4 -o xprtsec=tls pve-nas-01.esweiss.com:/media /mnt/media
+```
+
+The k3s NFS PVs already use `server: pve-nas-01.esweiss.com` for this reason
+(plaintext clients like HAOS may keep using the IP).
+
 ## Transport Security
 
 - **Samba**: every SMB session is encrypted — `smb encrypt = required` and
   `server min protocol = SMB3_00` in smb.conf.
-- **NFS**: NFSv4-over-TLS is available but opt-in via the `nfs_tls` role
-  (`nfs_tls_enabled: true` on server and every client) plus per-export
-  `xprtsec: tls`. See `ansible/roles/nfs_tls/README.md` for the
-  coordinated-rollout sequence and docs/06's in-transit matrix for the
-  current posture.
+- **NFS**: NFSv4-over-TLS (`xprtsec=tls`) is enabled for k3s clients via the
+  `nfs_tls` role (`nfs_tls_enabled: true` on `pve-nas-01` + every k3s agent —
+  `tlshd` runs everywhere a pod might schedule). The k3s client lines of
+  `/export/{appdata,share,media}` carry `xprtsec=none:tls` — **permissive**:
+  they advertise TLS but still accept plaintext. The wire is encrypted because
+  the k3s PVs *mount* with `xprtsec=tls`, **by hostname**
+  (`pve-nas-01.esweiss.com`, so the `*.esweiss.com` cert verifies — an IP mount
+  fails the handshake). The permissive export eliminates the deploy-ordering
+  lockout (a client mid-cutover, or a node missing `tlshd`, still mounts).
+  Two documented plaintext exceptions:
+  - **HAOS (.154) on `/export/media`** — Home Assistant's Supervisor hardcodes
+    its NFS mount options and the appliance ships no `tlshd`, so it cannot
+    speak `xprtsec`. Its client line omits `xprtsec` entirely; the permissive
+    export accepts its plaintext mount. See docs/24.
+  - **Proxmox `tank-proxmox` backup target** — Proxmox-managed NFS storage;
+    TLS rollout deferred (see docs/16).
+
+  The fsid=0 `/export` root carries no `xprtsec` (HAOS and Proxmox traverse
+  it). `xprtsec` is applied per client line, so a TLS-advertising client and a
+  plaintext-only client share one export. Reject-plaintext hardening (export
+  `xprtsec: tls`) is a future step once every client is on TLS (docs/16). See
+  `ansible/roles/nfs_tls/README.md` and docs/06's in-transit matrix.
 
 ## Samba Shares
 

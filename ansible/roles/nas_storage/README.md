@@ -56,15 +56,40 @@ zfs_pools:
 # NFS exports — exports.j2 consumes this exact shape.
 # Each export uses `path:` (the actual exported directory under /export, an
 # NFSv4 root), with `bind_source:` mounted to it; `clients[]` carries one
-# entry per CIDR/host with `spec:` + free-form `options:` string. Optional
-# top-level `xprtsec:` (e.g. "tls") adds RPC-with-TLS to every client line.
+# entry per CIDR/host with `spec:` + free-form `options:` string.
+#
+# RPC-with-TLS (NFSv4 over kernel-TLS via the nfs_tls role) has two scopes:
+#   - export-level `xprtsec:` — applies to every client line.
+#   - per-client `xprtsec:` — overrides the export-level value for that one
+#     client, INCLUDING a falsy value to opt a single client OUT.
+# The production exports use "none:tls" (PERMISSIVE: advertises TLS but still
+# accepts plaintext) rather than "tls" (reject-plaintext). The wire is still
+# encrypted because the k3s PVs MOUNT with xprtsec=tls — by HOSTNAME
+# (pve-nas-01.esweiss.com, so the *.esweiss.com cert verifies; an IP mount
+# fails the TLS handshake). Permissive avoids a deploy-ordering lockout and
+# lets a TLS-advertising and a plaintext-only client share one export (e.g.
+# /export/media: k3s clients advertise TLS, HAOS .154 has no xprtsec because
+# its Supervisor can't request it — see docs/24). A client line with no
+# xprtsec is left at the server default (none:tls:mtls), also permissive.
+# Requires nfs_tls active on the server AND on every client that mounts TLS.
+# Reject-plaintext hardening (xprtsec: tls) is a future step — see docs/16.
 nfs_exports:
-  - path: /export                     # NFSv4 pseudo-root
+  - path: /export                     # NFSv4 pseudo-root (left plaintext)
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
 
-  - path: /export/media               # bind-mounted from /mnt/media (mergerfs)
+  - path: /export/appdata             # k3s-only -> export-level permissive TLS
+    bind_source: /mnt/ssd/appdata
+    owner: 1000
+    group: 2000
+    mode: "02775"
+    xprtsec: "none:tls"               # every client line gets xprtsec=none:tls
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
+
+  - path: /export/media               # mixed: per-client permissive TLS
     bind_source: /mnt/media
     owner: 1000
     group: 2000
@@ -72,9 +97,9 @@ nfs_exports:
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
-      - spec: "192.168.0.154/32"
+        xprtsec: "none:tls"           # k3s client: advertises TLS, accepts plaintext
+      - spec: "192.168.0.154/32"      # HAOS: no xprtsec -> plaintext accepted
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
-    # xprtsec: tls    # opt-in NFSv4 over TLS (requires nfs_tls on both sides)
 
 # Samba shares (list of dicts, not a map)
 samba_shares:
@@ -157,7 +182,11 @@ Ansible only sets properties and creates datasets.
 ```bash
 # Test NFS from k3s node (clients mount /media off the NFSv4 root /export)
 showmount -e pve-nas-01
+# Plaintext mount (any name/IP works):
 mount -t nfs4 pve-nas-01:/media /mnt/test
+# TLS mount MUST use a name the *.esweiss.com cert covers (an IP fails the
+# handshake — "Certificate owner unexpected"):
+mount -t nfs4 -o xprtsec=tls pve-nas-01.esweiss.com:/media /mnt/test
 
 # Test Samba from Windows/Mac
 smb://pve-nas-01/media

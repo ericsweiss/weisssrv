@@ -262,8 +262,12 @@ knowing up front:
   `zfs-mount.service`, while `archive-luks-open@archive-N` runs before
   `zfs-import-cache.service` so the `/dev/mapper/archive-N` nodes exist first.
   Runbooks in `docs/32-zfs-encryption.md`.
-- **nfs_tls** is opt-in (`nfs_tls_enabled`); it pairs with per-export
-  `xprtsec: tls` in `nas_storage` to encrypt the NFS wire.
+- **nfs_tls** (`nfs_tls_enabled`) runs tlshd on `pve-nas-01` + every k3s
+  agent. The `nas_storage` exports are permissive (`xprtsec: none:tls`); the
+  wire is encrypted because the k3s NFS PVs *mount* with `xprtsec=tls` — **by
+  hostname** (`server: pve-nas-01.esweiss.com`, since the `*.esweiss.com` cert
+  has no IP SAN; an IP mount fails the handshake). HAOS (.154) and the Proxmox
+  `tank-proxmox` target are documented plaintext exceptions (docs/24, docs/16).
 - **resolv_conf** / **zvol_mount** are shared helper roles (used by base/adguard
   and k3s/gitlab respectively).
 
