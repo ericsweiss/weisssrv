@@ -718,9 +718,9 @@ flux-versions-sync:
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 python-tests:
-  # Runs pytest against scripts/. Both test files are kept near the scripts
-  # they exercise: test_check_versions.py for the version-update tooling and
-  # test_generate_versions_configmap.py for the ConfigMap generator.
+  # Runs pytest against scripts/. test_*.py live next to the scripts they
+  # exercise (version-update tooling, the ConfigMap generator, the HPA/VPA
+  # invariant guard).
   stage: test
   needs: []  # run in parallel with lint stage
   image: python:3.11-slim
@@ -791,6 +791,12 @@ flux-lint:
       done <<< "$VARS_OUTPUT"
       ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
 
+      # Accumulate the full rendered corpus so the HPA/VPA invariant check
+      # (below) sees standalone HPAs + VPAs across every namespace at once.
+      # Mirrors the Taskfile flux:lint RENDER_ALL pattern.
+      RENDER_ALL=$(mktemp)
+      trap 'rm -f "$RENDER_ALL"' EXIT
+
       # Iterate every Flux Kustomization under clusters/weisssrv/ and validate
       # the target path it points at. This picks up new top-level Kustomizations
       # automatically without CI edits.
@@ -838,6 +844,7 @@ flux-lint:
           continue
         fi
         RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+        printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
         if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.35.0 \
             -schema-location default \
@@ -846,6 +853,16 @@ flux-lint:
           FAILED=1
         fi
       done
+
+      # HPA/VPA invariant: no workload may have both an HPA and a VPA driving
+      # the same resource (docs/33-autoscaling.md). Covers standalone HPAs in the
+      # kustomize-build corpus; chart-native HPAs (Traefik/authentik/Connect)
+      # live inside HelmReleases not expanded here and are reviewed at the
+      # values level.
+      echo "=== Checking HPA/VPA invariant ==="
+      if ! python3 scripts/check-hpa-vpa-invariant.py < "$RENDER_ALL"; then
+        FAILED=1
+      fi
 
       # Also build the cluster root to catch malformed top-level kustomization.yaml
       # (the loop above validates target paths, not the cluster root itself).

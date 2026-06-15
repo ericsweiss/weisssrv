@@ -9,10 +9,13 @@ any workload that gains an HPA carries a memory-only VPA
 (controlledResources: [memory], no cpu).
 
 This guards that invariant in CI. It reads a stream of rendered Kubernetes
-manifests on stdin (the same render `task flux:lint` produces, so chart-native
-HPAs — which only exist after `helm template` — are covered too), then for every
-HPA finds the VPA targeting the same (namespace, kind, name) and fails if that
-VPA controls a resource the HPA also scales.
+manifests on stdin (the corpus `task flux:lint` builds with
+`kustomize build | envsubst` — no `helm template`), then for every HPA finds the
+VPAs targeting the same (namespace, kind, name) and fails if any of them controls
+a resource the HPA also scales. Because the corpus is kustomize-only, this covers
+STANDALONE HPAs/VPAs in the kustomize-build stream; chart-native HPAs that live
+inside HelmReleases (Traefik, authentik, onepassword-connect) are not expanded
+here and are reviewed at the HelmRelease values level instead.
 
 Usage (wired into flux:lint):
   kustomize build <path> | envsubst | python3 scripts/check-hpa-vpa-invariant.py
@@ -36,9 +39,19 @@ def _target_key(ns: str, ref: dict) -> tuple[str, str, str]:
 
 
 def _hpa_metrics(spec: dict) -> set[str]:
-    """Resource names an HPA scales on (cpu/memory). Non-resource metrics ignored."""
+    """Resource names an HPA scales on (cpu/memory).
+
+    An HPA with no `metrics` field (or an empty list) defaults to CPU 80% under
+    autoscaling/v2, so that case yields {"cpu"}. But if `metrics` IS present and
+    holds only non-Resource entries (External/Object/Pods), the HPA scales on
+    nothing the VPA touches — return the empty set so no phantom CPU is assumed.
+    """
+    metrics = spec.get("metrics") or []
+    if not metrics:
+        # No metrics declared: autoscaling/v2 implicitly targets CPU at 80%.
+        return {"cpu"}
     resources: set[str] = set()
-    for metric in spec.get("metrics", []) or []:
+    for metric in metrics:
         if metric.get("type") == "Resource":
             name = (metric.get("resource") or {}).get("name")
             if name:
@@ -65,8 +78,12 @@ def _vpa_resources(spec: dict) -> set[str]:
 def main() -> int:
     docs = [d for d in yaml.safe_load_all(sys.stdin) if isinstance(d, dict)]
 
+    # Multiple HPAs or VPAs can target one workload, so aggregate per key rather
+    # than last-wins: union the resource sets so a memory-only VPA can never mask
+    # a cpu-controlling one on the same target.
     hpas: dict[tuple[str, str, str], set[str]] = {}
-    vpas: dict[tuple[str, str, str], tuple[str, set[str]]] = {}
+    vpas: dict[tuple[str, str, str], set[str]] = {}
+    vpa_names: dict[tuple[str, str, str], list[str]] = {}
 
     for d in docs:
         kind = d.get("kind")
@@ -75,7 +92,8 @@ def main() -> int:
         spec = d.get("spec") or {}
         if kind == HPA_KIND:
             ref = spec.get("scaleTargetRef") or {}
-            hpas[_target_key(ns, ref)] = _hpa_metrics(spec)
+            key = _target_key(ns, ref)
+            hpas[key] = hpas.get(key, set()) | _hpa_metrics(spec)
         elif kind == VPA_KIND:
             # updateMode "Off" is recommend-only: it never mutates pods, so it
             # cannot fight an HPA (this is how coredns pairs a min==max HPA pin
@@ -84,20 +102,25 @@ def main() -> int:
             if mode == "Off":
                 continue
             ref = spec.get("targetRef") or {}
-            vpas[_target_key(ns, ref)] = (meta.get("name", "?"), _vpa_resources(spec))
+            key = _target_key(ns, ref)
+            vpas[key] = vpas.get(key, set()) | _vpa_resources(spec)
+            vpa_names.setdefault(key, []).append(meta.get("name", "?"))
 
     violations: list[str] = []
     for key, hpa_res in hpas.items():
         if key not in vpas:
             continue
-        vpa_name, vpa_res = vpas[key]
-        # An HPA with no resource metrics (object/external only) can't clash.
-        clash = (hpa_res or {"cpu"}) & vpa_res
+        vpa_res = vpas[key]
+        # hpa_res already encodes the autoscaling/v2 default: it is {"cpu"} when
+        # no metrics were declared and empty when metrics held only non-Resource
+        # (External/Object/Pods) entries, which can't clash with a VPA.
+        clash = hpa_res & vpa_res
         if clash:
             ns, tkind, tname = key
+            names = ", ".join(repr(n) for n in sorted(vpa_names[key]))
             violations.append(
-                f"  {ns}/{tkind}/{tname}: HPA scales {sorted(hpa_res) or ['cpu']} "
-                f"but VPA {vpa_name!r} also controls {sorted(clash)} "
+                f"  {ns}/{tkind}/{tname}: HPA scales {sorted(hpa_res)} "
+                f"but VPA(s) {names} also control {sorted(clash)} "
                 f"(set the VPA to controlledResources excluding {sorted(clash)})"
             )
 
