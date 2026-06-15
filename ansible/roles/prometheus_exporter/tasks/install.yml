@@ -74,6 +74,6 @@
       {{ [_prometheus_exporter_archive]
          + ([(prometheus_exporter_tmp_dir ~ '/' ~ (prometheus_exporter_archive_member | dirname))]
             if prometheus_exporter_artifact_type == 'tarball'
-            and (prometheus_exporter_archive_member | dirname) | length > 0
+            and (prometheus_exporter_archive_member | dirname) not in ['', '.']
             else []) }}
   when: prometheus_exporter_needs_install
