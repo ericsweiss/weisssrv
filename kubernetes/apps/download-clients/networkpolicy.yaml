@@ -85,6 +85,31 @@ spec:
         - { protocol: TCP, port: 9696 }
 
 ---
+# 3b. Allow observability (Prometheus) to scrape the gluetun-exporter sidecar
+#     on qbittorrent. This is INGRESS to :8002 only — it does NOT relax the
+#     Gluetun killswitch, which is enforced on EGRESS by policy #6. qbittorrent
+#     is deliberately excluded from policy #3 (no *arr-style API scrape), so
+#     this narrow rule is the single inbound exception for the VPN-health
+#     exporter. nzbget is omitted: it ships VPN-off and carries no exporter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observability-vpn-scrape
+  namespace: downloads
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - { protocol: TCP, port: 8002 }
+
+---
 # 4. Intra-namespace allows. *arr apps cross-talk for Prowlarr indexer sync and
 #    Pulsarr drives sonarr/radarr via their HTTP APIs. Allowing the full set of
 #    *arr API ports between the relevant pods is simpler than per-direction

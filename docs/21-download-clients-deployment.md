@@ -71,6 +71,32 @@ The *arr apps (Sonarr, Radarr, etc.) do **NOT** use VPN because:
 - Actual downloads go through VPN-protected download clients
 - VPN would add unnecessary latency and complexity
 
+### VPN Health Monitoring
+
+The qBittorrent pod carries a `gluetun-exporter` sidecar
+(`ghcr.io/thecfu/gluetun-exporter`, pinned by `@sha256` digest) that polls the
+Gluetun control server on `127.0.0.1:8001` and exposes a Prometheus
+`gluetun_vpn_status` gauge on `:8002` (`1` = running, `0` = stopped/unreachable,
+`-1` = error). The killswitch means only an in-pod sidecar can reach the control
+API, so the exporter shares the pod network namespace rather than running in the
+`observability` namespace like the other exporters.
+
+- **Scrape**: a `PodMonitor` (`gluetun-qbittorrent`) in the `downloads`
+  namespace targets the `vpn-metrics` port; the kube-prometheus-stack discovers
+  PodMonitors cluster-wide. Because `downloads` is default-deny ingress, the
+  `allow-observability-vpn-scrape` NetworkPolicy opens TCP 8002 from the
+  `observability` namespace. This is inbound metrics only — it does NOT relax
+  the Gluetun egress killswitch.
+- **Alerts** (in `kube-prometheus-stack` `release.yaml`): `VPNDown` fires when
+  `gluetun_vpn_status != 1` for 15m; `VPNExporterDown` fires when the series is
+  absent for 15m (pod/exporter gone). The 15m window exceeds a Recreate rollout
+  plus OpenVPN reconnect, so normal restarts do not page.
+- **Why qBittorrent only**: the exporter's gauge defaults to `0` when the
+  control server is unreachable, and NZBGet ships VPN-off by default (Gluetun
+  runs `sleep infinity`, control server not listening). Adding the sidecar there
+  would report `gluetun_vpn_status=0` forever and false-fire `VPNDown`. If
+  NZBGet's VPN is ever enabled, replicate the sidecar + PodMonitor on it.
+
 ## Prerequisites
 
 ### 1. 1Password Setup
@@ -156,7 +182,7 @@ kubernetes/apps/download-clients/
 ├── storage.yaml                # PVCs + PVs for appdata and media NFS mounts
 ├── certificate.yaml            # Wildcard cert in the downloads namespace
 ├── nzbget.yaml                 # Deployment + per-app VPN ConfigMap (nzbget-vpn-config) + Gluetun sidecar inline
-├── qbittorrent.yaml
+├── qbittorrent.yaml            # As nzbget + gluetun-exporter sidecar + PodMonitor (VPN-always-on)
 ├── prowlarr.yaml
 ├── sonarr.yaml
 ├── radarr.yaml
@@ -164,6 +190,8 @@ kubernetes/apps/download-clients/
 ├── pulsarr.yaml
 ├── ingress-routes.yaml         # Traefik IngressRoutes for all apps
 ├── ingress-routes-ha-bypass.yaml  # High-priority routes bypassing SSO for Home Assistant's IP
+├── networkpolicy.yaml          # default-deny + per-app allowlist (incl. observability->qbittorrent:8002 VPN scrape)
+├── vpa.yaml                    # VerticalPodAutoscalers (per-container sizing, incl. gluetun-exporter)
 └── kustomization.yaml
 ```
 

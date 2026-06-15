@@ -452,8 +452,41 @@ spec:
         groups:
           - name: homelab.infrastructure
             rules:
-              # No VPNDown alert yet — needs a Gluetun exporter or blackbox
-              # probe that produces a gluetun_vpn_status metric.
+              # VPN health for the Gluetun-fronted qbittorrent pod. The
+              # gluetun-exporter sidecar (downloads/qbittorrent.yaml) emits
+              # gluetun_vpn_status: 1 = running, 0 = stopped/unreachable,
+              # -1 = error, -2 = unknown. !=1 covers every non-healthy state.
+              #
+              # Only qbittorrent carries the exporter (VPN-always-on); nzbget
+              # ships VPN-off and emits no series, so this can't false-fire on
+              # its direct mode. 15m comfortably exceeds a Recreate rollout +
+              # OpenVPN reconnect (~2-3m), so normal restarts stay quiet.
+              - alert: VPNDown
+                expr: gluetun_vpn_status != 1
+                for: 15m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'Gluetun VPN unhealthy on {{ $labels.pod }}'
+                  description: >-
+                    gluetun_vpn_status is {{ $value }} (1 = running) on
+                    {{ $labels.pod }} for 15m. The download client is
+                    killswitched — no egress until the VPN reconnects.
+
+              # Catches the case where the qbittorrent pod or its exporter is
+              # gone entirely (metric absent, not just non-1). VPN state is then
+              # unknown, which for an always-on VPN client warrants a page.
+              - alert: VPNExporterDown
+                expr: absent(gluetun_vpn_status)
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Gluetun VPN-health metric missing for qbittorrent'
+                  description: >-
+                    No gluetun_vpn_status series for 15m — the qbittorrent pod
+                    or its gluetun-exporter sidecar may be down. VPN state is
+                    unknown.
 
               # Loki is a single-replica RF=1 SPOF pinned to the NAS (accepted
               # homelab tradeoff); senders do not buffer, so silent ingestion

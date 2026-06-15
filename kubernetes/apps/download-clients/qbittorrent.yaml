@@ -223,6 +223,12 @@ spec:
             - name: health
               containerPort: 8000
               protocol: TCP
+            # Control server (HTTP_CONTROL_SERVER_ADDRESS :8001). Reached only
+            # on loopback by the gluetun-exporter sidecar below; declared so the
+            # port is documented, not exposed by the Service.
+            - name: gluetun-ctrl
+              containerPort: 8001
+              protocol: TCP
             - name: qbittorrent
               containerPort: 8080
               protocol: TCP
@@ -276,6 +282,67 @@ spec:
               mountPath: /dev/net/tun
             - name: vpn-config
               mountPath: /gluetun
+
+        # Gluetun VPN-health exporter. Polls the gluetun control server on
+        # loopback (shares the pod network namespace) and serves a Prometheus
+        # gluetun_vpn_status gauge on :8002 (1 = running, 0 = stopped/unreachable,
+        # -1 = error). Scraped by the PodMonitor at the end of this file and
+        # alerted on by VPNDown (kube-prometheus-stack release.yaml).
+        #
+        # Only added to qbittorrent, which ships VPN-always-on. The exporter's
+        # gauge defaults to 0 when the control server is unreachable, so adding
+        # it to a VPN-off pod (e.g. nzbget's default direct mode, where gluetun
+        # runs `sleep infinity` and the control server isn't listening) would
+        # report gluetun_vpn_status=0 forever and false-fire VPNDown. If
+        # nzbget's VPN is ever enabled, replicate this sidecar + PodMonitor there.
+        #
+        # No first-party gluetun exporter exists; thecfu/gluetun-exporter is a
+        # small MIT Go binary that only reads the control API over loopback.
+        # Pinned by immutable @sha256 digest (the 0.1.1-standalone tag) — same
+        # convention as plex-exporter — so an upstream tag move can't silently
+        # change the running image. Re-resolve the digest when bumping the tag.
+        # readOnlyRootFilesystem + drop ALL + no mounts + no extra egress keep
+        # the blast radius minimal for a low-profile third-party image.
+        - name: gluetun-exporter
+          image: ghcr.io/thecfu/gluetun-exporter:0.1.1-standalone@sha256:bafeabb2a9638bf6b0800c2d3d47d49c6236d879bd01eec8caea45dfca2b50c5
+          imagePullPolicy: IfNotPresent
+          env:
+            # Control server lives on :8001 here (not the exporter's :8000
+            # default); the exporter serves its own /metrics on EXPORTER_PORT.
+            - name: GLUETUN_URL
+              value: "http://127.0.0.1:8001"
+            - name: EXPORTER_PORT
+              value: "8002"
+            - name: EXPORTER_INTERVAL
+              value: "30"
+            # standalone build has no netlink throughput collection
+            - name: EXPORTER_BUNDLED
+              value: "false"
+          ports:
+            - name: vpn-metrics
+              containerPort: 8002
+              protocol: TCP
+          # Liveness only — never gate pod readiness on the exporter, so a
+          # scrape blip can't take qbittorrent out of rotation.
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: vpn-metrics
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 
         # qBittorrent - main application container
         # Version managed in ansible/inventories/prod/group_vars/all.yml
@@ -365,3 +432,25 @@ spec:
       port: 8080
       targetPort: 8080
   type: ClusterIP
+
+---
+# Scrape the gluetun-exporter sidecar directly (PodMonitor, not ServiceMonitor):
+# the exporter port is pod-local and the app Service only fronts the UI. The
+# kube-prometheus-stack discovers PodMonitors cluster-wide. Prometheus reaching
+# :8002 requires the allow-observability-vpn-scrape NetworkPolicy in
+# networkpolicy.yaml (downloads is default-deny ingress).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gluetun-qbittorrent
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  podMetricsEndpoints:
+    - port: vpn-metrics
+      path: /metrics
+      interval: 30s
