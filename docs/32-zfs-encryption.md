@@ -149,12 +149,12 @@ exposure as if a Connect server admin role were leaked.
 
 ## Rollout procedure
 
-### Step 1: Bootstrap the host-side mechanism (no-op until pools exist)
+### Step 1: Deploy the host-side mechanism (no-op until pools exist)
 
 The role can be deployed safely before any pool is actually encrypted:
 it installs the script, the systemd unit template, and the Connect
 token; nothing runs until `zfs_encryption_pools` is non-empty for that
-host AND `zfs_encryption_bootstrap_only` is `false`.
+host.
 
 ```bash
 # Make sure Connect HA + the connect.esweiss.com IngressRoute are
@@ -167,8 +167,10 @@ task flux:status
 op connect token create weisssrv-zfs --server <connect-id> --vaults Homelab
 # -> paste output into "ZFS Encryption Connect Token" / credential
 
-# Bootstrap the role on every Proxmox host:
-task zfs:encrypt-bootstrap
+# Deploy the role on every Proxmox host. On a host with an empty
+# zfs_encryption_pools this deploys the mechanism only (no token, no
+# enabled units); on a host with pools it also activates the boot units.
+task zfs:encrypt
 ```
 
 After this step:
@@ -181,7 +183,8 @@ After this step:
   don't receive the token even after bootstrap — the role gates the
   copy on the per-host pools list to keep the token's blast radius
   scoped to hosts that will actually use it
-- No pools changed; no per-pool services enabled
+- No pools changed; no per-pool services enabled on hosts with an empty
+  pool list
 
 ### Step 2: Encrypt data
 
@@ -277,8 +280,8 @@ sudo zfs destroy -r "${SRC}-pre-enc"
 ### Step 3: Activate per-pool boot units
 
 For each host that now has at least one encrypted pool, set
-`zfs_encryption_pools` in its `host_vars/<host>.yml` and re-run the
-playbook without `bootstrap_only`:
+`zfs_encryption_pools` in its `host_vars/<host>.yml` and re-run
+`task zfs:encrypt`:
 
 ```yaml
 # ansible/inventories/prod/host_vars/pve-nas-01.yml

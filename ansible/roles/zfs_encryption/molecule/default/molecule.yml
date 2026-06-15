@@ -49,6 +49,9 @@ provisioner:
         # don't trigger here).
         internal_domain: "test.local"
         zfs_encryption_connect_token: "fake-test-token-must-be-non-empty"
+        # Non-empty pools exercise the single deployment mode (token +
+        # per-pool enable). The role has no two-phase flag; the pools list
+        # alone decides whether units get activated.
         zfs_encryption_pools:
           - name: testpool
             item: "ZFS Pool testpool Passphrase"

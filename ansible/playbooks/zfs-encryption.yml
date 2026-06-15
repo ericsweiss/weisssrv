@@ -3,8 +3,7 @@
 #
 # Run via the Taskfile wrappers (which handle Connect token + SSH key
 # injection from 1Password automatically):
-#   task zfs:encrypt-bootstrap                          # before any pool is encrypted
-#   task zfs:encrypt -- --limit pve-nas-01              # after pool is encrypted; activates services
+#   task zfs:encrypt -- --limit pve-nas-01              # deploys mechanism; activates services on hosts with pools
 # See docs/32-zfs-encryption.md for the full per-pool workflow.
 
 - name: Deploy ZFS-encryption boot-time unlock

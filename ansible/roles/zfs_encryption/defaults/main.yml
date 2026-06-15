@@ -27,7 +27,7 @@ zfs_encryption_connect_vault: "Homelab"
 # or (preferred) by setting the variable in group_vars referencing op://
 # and running through `op run --`.
 #
-# Required in active mode; ignored in bootstrap-only mode.
+# Required on any host with a non-empty zfs_encryption_pools.
 zfs_encryption_connect_token: ""
 
 # Per-host list of encrypted pools and their 1Password items.
@@ -35,13 +35,10 @@ zfs_encryption_connect_token: ""
 #   - name: tank          # ZFS pool name
 #     item: "ZFS Pool tank Passphrase"   # 1P item title in vault above
 #     field: passphrase   # field on the item that holds the passphrase
-# Empty list = bootstrap-only (deploy script + unit but don't enable).
+# Empty list = deploy the script + unit template only (no token, no
+# per-pool services enabled) — used for hosts whose pools are not yet
+# encrypted, or that are intentionally plaintext (compute).
 zfs_encryption_pools: []
-
-# When true, install the script + unit but do not enable any
-# zfs-load-key@<pool>.service instances. Use during the rollout phase
-# before pools are actually encrypted.
-zfs_encryption_bootstrap_only: false
 
 # How long the boot-time fetch retries before giving up. The unit will
 # also be retried by systemd on Restart=on-failure, so total wait can

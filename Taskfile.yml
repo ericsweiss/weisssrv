@@ -269,17 +269,8 @@ tasks:
       - ansible-playbook -i {{.INVENTORY}} playbooks/show-cert-host-keys.yml {{.CLI_ARGS}}
 
   # === ZFS Encryption Tasks ===
-  zfs:encrypt-bootstrap:
-    desc: Bootstrap ZFS-encryption host-side mechanism (no-op until pools exist)
-    dir: "{{.ANSIBLE_DIR}}"
-    env:
-      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
-      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
-    cmds:
-      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/zfs-encryption.yml -e zfs_encryption_bootstrap_only=true {{.CLI_ARGS}}
-
   zfs:encrypt:
-    desc: Activate ZFS-encryption boot units (after pools are encrypted; set zfs_encryption_pools per host_vars)
+    desc: Deploy ZFS-encryption mechanism + activate boot units for hosts with zfs_encryption_pools set
     dir: "{{.ANSIBLE_DIR}}"
     env:
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key

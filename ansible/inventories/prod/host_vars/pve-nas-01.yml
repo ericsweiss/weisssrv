@@ -16,15 +16,11 @@
 # local-ssd; Connect runs in k3s; encrypting it deadlocks cold boot). The
 # control there is the drive-wipe SOP in docs/15-credential-rotation.md.
 #
-# The list below records the END-STATE intent. Per-pool activation requires
-# the pool to actually be encrypted first (docs/32 §2a) — otherwise the
-# zfs-load-key@<pool>.service would fail at boot and drag zfs-mount.service
-# down with it. Operator workflow:
-#   1. Run `task zfs:encrypt-bootstrap` (forces bootstrap_only=true → mechanism
-#      deployed, no services activated). Safe to re-run anytime.
-#   2. Encrypt pools one at a time per docs/32 §2a.
-#   3. After the listed pools are encrypted, run `task zfs:encrypt -- --limit pve-nas-01`
-#      (drops the bootstrap_only override → activates the per-pool services).
+# Each listed pool must already have at least one encrypted dataset
+# (docs/32 §2a) — the role asserts this and refuses to activate
+# zfs-load-key@<pool>.service on a fully plaintext pool (the unit would
+# fail at boot and drag zfs-mount.service down via RequiredBy=). To stage
+# before encryption, leave this list empty.
 zfs_encryption_pools:
   - name: tank
     item: "ZFS Pool tank Passphrase"

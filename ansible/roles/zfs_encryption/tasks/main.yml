@@ -1,7 +1,7 @@
 ---
 # Deploys the boot-time ZFS key-fetch mechanism. Idempotent; safe to
-# re-run. Behaves as a no-op for hosts without zfs_encryption_pools set
-# (bootstrap-only).
+# re-run. Behaves as a no-op (script + unit template only) for hosts
+# without zfs_encryption_pools set.
 
 # Splits the package install into two tasks so the molecule test image
 # (which doesn't carry the contrib repo where zfsutils-linux lives) can
@@ -26,20 +26,18 @@
     - ansible_facts['os_family'] == "Debian"
     - zfs_encryption_install_zfsutils | default(true)
 
-# Fail loudly when the operator forgets `op run --` on the active
-# (non-bootstrap) deploy. Without the token the per-pool services
-# silently exit 1 at boot with a misleading "missing token file"; this
-# assert short-circuits with a clear pointer.
-- name: Validate Connect token is present (active mode)
+# Fail loudly when the operator forgets `op run --` on a host that has
+# pools to unlock. Without the token the per-pool services silently exit
+# 1 at boot with a misleading "missing token file"; this assert
+# short-circuits with a clear pointer.
+- name: Validate Connect token is present
   ansible.builtin.assert:
     that: zfs_encryption_connect_token | length > 0
     fail_msg: >-
       zfs_encryption_connect_token is empty. Run with `op run -- env
       ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read 'op://Homelab/ZFS Encryption Connect Token/credential')"
       ansible-playbook ...` (see docs/32-zfs-encryption.md).
-  when:
-    - not (zfs_encryption_bootstrap_only | default(false))
-    - zfs_encryption_pools | default([]) | length > 0
+  when: zfs_encryption_pools | default([]) | length > 0
 
 # Connect token deploy is gated on zfs_encryption_pools — there's no point
 # placing a Connect token on a host that's never going to load a key
@@ -129,13 +127,7 @@
 - name: Apply pending systemd reloads
   ansible.builtin.meta: flush_handlers
 
-# In bootstrap_only mode we leave the per-pool services disabled. The
-# operator enables them after encrypting each pool by re-running the
-# role with bootstrap_only: false (or directly: systemctl enable
-# zfs-load-key@<pool>.service).
-#
-# Footgun guard: if an operator runs the activation path (bootstrap_only:
-# false) before actually encrypting one of the listed pools, the
+# Footgun guard: if a listed pool isn't actually encrypted yet, the
 # zfs-load-key@<pool>.service would fail at next boot trying to load a
 # key on a plaintext pool, and RequiredBy=zfs-mount.service would drag
 # zfs-mount down with it. Check each pool's encryption property up front
@@ -181,7 +173,6 @@
   loop_control:
     label: "{{ item.name }}"
   when:
-    - not zfs_encryption_bootstrap_only
     - zfs_encryption_pools | length > 0
     # Skip when ZFS isn't installed (molecule test image runs without
     # contrib repo / zfsutils-linux). The role's `zfs get` command would
@@ -204,15 +195,15 @@
       zfs-load-key@{{ item.item.name }}.service on a fully plaintext
       pool would fail at next boot ('Key must be loaded') and drag
       zfs-mount.service down with it. Encrypt at least one dataset
-      per docs/32-zfs-encryption.md §2a first, OR re-run with
-      `task zfs:encrypt-bootstrap` (bootstrap_only=true) which leaves
-      services disabled, OR remove {{ item.item.name }} from
-      zfs_encryption_pools in host_vars/{{ inventory_hostname }}.yml.
+      per docs/32-zfs-encryption.md §2a first, OR leave
+      zfs_encryption_pools empty for {{ inventory_hostname }} until the
+      pool is encrypted (deploys the mechanism without activating
+      units), OR remove {{ item.item.name }} from zfs_encryption_pools
+      in host_vars/{{ inventory_hostname }}.yml.
   loop: "{{ zfs_encryption_pool_states.results | default([]) }}"
   loop_control:
     label: "{{ item.item.name }}"
   when:
-    - not zfs_encryption_bootstrap_only
     - zfs_encryption_pools | length > 0
     - zfs_encryption_install_zfsutils | default(true)
 
@@ -224,9 +215,7 @@
   loop: "{{ zfs_encryption_pools }}"
   loop_control:
     label: "{{ item.name }}"
-  when:
-    - not zfs_encryption_bootstrap_only
-    - zfs_encryption_pools | length > 0
+  when: zfs_encryption_pools | length > 0
 
 # Reconcile stale unit instances + env files. If the operator removes a
 # pool from zfs_encryption_pools (or renames it), the previously-deployed

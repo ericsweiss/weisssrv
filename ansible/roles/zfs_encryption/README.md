@@ -82,21 +82,23 @@ See `defaults/main.yml`. Key ones:
 
 | Variable | Required | Notes |
 |----------|----------|-------|
-| `zfs_encryption_connect_token` | yes (active mode) | Provide via `op read` at runtime |
+| `zfs_encryption_connect_token` | yes (host with pools) | Provide via `op read` at runtime |
 | `zfs_encryption_pools` | yes | List of `{name, item, field}` per pool |
-| `zfs_encryption_bootstrap_only` | no (default `false`) | If `true`, install but don't enable units |
 | `zfs_encryption_connect_url` | no | Defaults to `https://connect.{{ internal_domain }}` |
 | `zfs_encryption_connect_vault` | no | Defaults to `Homelab` |
 
-## Bootstrap workflow
+## Deployment
 
-1. Apply role with `zfs_encryption_bootstrap_only: true` to seed the
-   token, script, and unit template before any pool is encrypted. Safe
-   to leave deployed; the per-pool services are only enabled later.
-2. Encrypt each pool (one at a time) per the procedure in
-   `docs/32-zfs-encryption.md`.
-3. After encryption, add the pool to `zfs_encryption_pools` for the
-   host and re-apply with `zfs_encryption_bootstrap_only: false`.
+Run `task zfs:encrypt` (or the playbook directly with `op run`). The role
+deploys the script + unit template to every Proxmox host. On hosts whose
+`host_vars/<host>.yml` declares a non-empty `zfs_encryption_pools`, it also
+deploys the Connect token, asserts each listed pool has at least one
+encrypted dataset, and enables `zfs-load-key@<pool>.service`. Hosts with an
+empty `zfs_encryption_pools` (compute nodes, or pools not yet encrypted) get
+the mechanism only — no token, no enabled units.
+
+To stage a host before its pool is encrypted, leave `zfs_encryption_pools`
+empty, encrypt the pool per docs/32 §2a, then add the pool and re-run.
 
 ## Required 1Password items
 
