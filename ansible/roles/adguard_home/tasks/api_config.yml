@@ -45,6 +45,7 @@
     - not ansible_check_mode
     - item.domain not in codified_domains
   no_log: true
+  failed_when: false
   register: deleted_rewrites
 
 - name: Build list of codified domain-answer pairs
@@ -78,6 +79,7 @@
     - codified_pairs | selectattr('domain', 'equalto', item.domain) |
       selectattr('answer', 'equalto', item.answer) | list | length == 0
   no_log: true
+  failed_when: false
   register: updated_rewrites_deleted
 
 - name: Refresh existing DNS rewrites after deletions
@@ -115,6 +117,7 @@
       list |
       length == 0
   no_log: true
+  failed_when: false
   register: added_rewrites
 
 - name: Get existing custom filtering rules
@@ -149,7 +152,32 @@
     - not ansible_check_mode
     - current_user_rules != adguard_user_rules
   no_log: true
+  failed_when: false
   register: rules_updated
+
+# Surface any non-200 API responses that failed_when:false above let through,
+# without exposing the basic-auth credentials carried in the requests.
+- name: Collect failed AdGuard rewrite/filtering API responses
+  ansible.builtin.set_fact:
+    adguard_home_api_failed_status: >-
+      {{ ((deleted_rewrites.results | default([]))
+          + (updated_rewrites_deleted.results | default([]))
+          + (added_rewrites.results | default([]))
+          + ([rules_updated] if rules_updated is not skipped else []))
+         | selectattr('status', 'defined')
+         | rejectattr('status', 'equalto', 200)
+         | map(attribute='status') | list }}
+  when: not ansible_check_mode
+
+- name: Assert AdGuard rewrite and filtering API calls succeeded
+  ansible.builtin.assert:
+    that:
+      - adguard_home_api_failed_status | default([]) | length == 0
+    fail_msg: >-
+      AdGuard rewrite/filtering API call(s) returned non-200 HTTP status(es):
+      {{ adguard_home_api_failed_status | default('unknown') }}
+    success_msg: "AdGuard rewrites and filtering rules applied"
+  when: not ansible_check_mode
 
 - name: Display DNS rewrite summary
   ansible.builtin.debug:

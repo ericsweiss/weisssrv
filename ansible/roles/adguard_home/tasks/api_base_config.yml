@@ -75,8 +75,22 @@
       (current_dns_config.json.cache_ttl_min | default(0) != adguard_cache_ttl_min) or
       (current_dns_config.json.cache_ttl_max | default(0) != adguard_cache_ttl_max) or
       (current_dns_config.json.cache_optimistic | default(false) != adguard_cache_optimistic)
+  # no_log protects the basic-auth credentials in the request; failed_when is
+  # disabled so the credential-free assert below can surface the real HTTP
+  # status and response body instead of a censored "no_log" failure.
   no_log: true
+  failed_when: false
   register: dns_config_updated
+
+- name: Assert AdGuard DNS configuration update succeeded
+  ansible.builtin.assert:
+    that:
+      - dns_config_updated is skipped or (dns_config_updated.status | default(0)) == 200
+    fail_msg: >-
+      AdGuard /control/dns_config update failed (HTTP {{ dns_config_updated.status | default('n/a') }}):
+      {{ dns_config_updated.json | default(dns_config_updated.content | default(dns_config_updated.msg | default('no response body'))) }}
+    success_msg: "AdGuard DNS configuration applied"
+  when: not ansible_check_mode
 
 # Check if TLS certificates exist before attempting TLS configuration
 # Certificates are deployed by acme_certs role which runs AFTER adguard_home
@@ -163,7 +177,18 @@
       (current_tls_config.json.certificate_path | default('')) != (adguard_cert_path + '/fullchain.pem') or
       (current_tls_config.json.private_key_path | default('')) != (adguard_cert_path + '/privkey.pem')
   no_log: true
+  failed_when: false
   register: tls_config_updated
+
+- name: Assert AdGuard TLS configuration update succeeded
+  ansible.builtin.assert:
+    that:
+      - tls_config_updated is skipped or (tls_config_updated.status | default(0)) == 200
+    fail_msg: >-
+      AdGuard /control/tls/configure update failed (HTTP {{ tls_config_updated.status | default('n/a') }}):
+      {{ tls_config_updated.json | default(tls_config_updated.content | default(tls_config_updated.msg | default('no response body'))) }}
+    success_msg: "AdGuard TLS configuration applied"
+  when: not ansible_check_mode
 
 - name: Get current DHCP configuration
   ansible.builtin.uri:
@@ -193,7 +218,18 @@
     - not adguard_dhcp_enabled
     - current_dhcp_config.json.enabled | default(false)
   no_log: true
+  failed_when: false
   register: dhcp_config_updated
+
+- name: Assert AdGuard DHCP configuration update succeeded
+  ansible.builtin.assert:
+    that:
+      - dhcp_config_updated is skipped or (dhcp_config_updated.status | default(0)) == 200
+    fail_msg: >-
+      AdGuard /control/dhcp/set_config update failed (HTTP {{ dhcp_config_updated.status | default('n/a') }}):
+      {{ dhcp_config_updated.json | default(dhcp_config_updated.content | default(dhcp_config_updated.msg | default('no response body'))) }}
+    success_msg: "AdGuard DHCP configuration applied"
+  when: not ansible_check_mode
 
 - name: Set TLS certificates status
   ansible.builtin.set_fact:
