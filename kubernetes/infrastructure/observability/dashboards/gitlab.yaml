@@ -1,4 +1,10 @@
 ---
+# NOTE: GitLab VM Prometheus scraping is intentionally disabled
+# (service-monitors/kustomization.yaml omits gitlab.yaml until
+# prometheus_monitoring is enabled in gitlab.rb), so the Prometheus-datasource
+# panels in this dashboard render "No data" by design — only the Loki host-log
+# panels are live. This is documented in the dashboard description so an empty
+# panel is not misread as an outage.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -12,7 +18,7 @@ data:
   gitlab.json: |
     {
       "annotations": { "list": [] },
-      "description": "GitLab service health, availability, and host logs",
+      "description": "GitLab service health, availability, and host logs. NOTE: Prometheus panels show 'No data' until GitLab VM metrics are enabled (prometheus_monitoring in gitlab.rb + the gitlab ServiceMonitor); the Loki host-log panels are always live.",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,

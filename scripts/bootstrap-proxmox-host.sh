@@ -91,7 +91,7 @@ echo ""
 # This expands $ERIC_PASSWORD_B64 locally before sending, keeping the secret out of
 # process arguments on both machines. All remote variables must be escaped (\$).
 # shellcheck disable=SC2087  # Unquoted heredoc is intentional for variable expansion
-ssh -o StrictHostKeyChecking=accept-new "root@${HOST_IP}" bash << REMOTE_SCRIPT
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "root@${HOST_IP}" bash << REMOTE_SCRIPT
 set -euo pipefail
 
 # Password embedded via heredoc expansion (not visible in process list)
@@ -216,7 +216,7 @@ echo "=== Step 2: Deploying SSH public key ==="
 # process arguments on both machines. All remote variables must be escaped (\$).
 SSH_KEY_B64=$(printf '%s' "$SSH_PUBLIC_KEY" | base64)
 # shellcheck disable=SC2087  # Unquoted heredoc is intentional for variable expansion
-ssh "root@${HOST_IP}" bash << DEPLOY_KEY
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "root@${HOST_IP}" bash << DEPLOY_KEY
 SSH_KEY_B64="$SSH_KEY_B64"
 SSH_KEY=\$(echo "\$SSH_KEY_B64" | base64 -d)
 echo "\$SSH_KEY" > /home/eric/.ssh/authorized_keys
@@ -232,14 +232,14 @@ echo "=== Step 3: Verifying SSH access as eric ==="
 sleep 2
 
 # Test SSH as eric (should not prompt for password)
-if ssh -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "echo 'SSH access as eric: SUCCESS'"; then
+if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "echo 'SSH access as eric: SUCCESS'"; then
     echo ""
     echo "=== Step 4: Verifying sudo access ==="
-    SUDO_USER=$(ssh "eric@${HOST_IP}" "sudo whoami")
-    if [[ "$SUDO_USER" == "root" ]]; then
+    REMOTE_SUDO_WHOAMI=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "sudo whoami")
+    if [[ "$REMOTE_SUDO_WHOAMI" == "root" ]]; then
         echo "Sudo access: SUCCESS (sudo whoami returned 'root')"
     else
-        echo "ERROR: Sudo access failed (got '$SUDO_USER' instead of 'root')"
+        echo "ERROR: Sudo access failed (got '$REMOTE_SUDO_WHOAMI' instead of 'root')"
         exit 1
     fi
 

@@ -1,9 +1,11 @@
 ---
 # Plex Exporter — Prometheus metrics for Plex Media Server.
 # Uses jsclayton/prometheus-plex-exporter because exportarr does not support Plex.
-# NOTE: upstream publishes no versioned tags on GHCR — pinned to "latest"
-# (documented exception to the no-latest rule). Replace with a tagged
-# alternative when one becomes available.
+# NOTE: upstream publishes no versioned tags on GHCR, so we pin the immutable
+# @sha256 digest of what was `latest` instead (reproducible; an upstream tag
+# move can no longer silently change the running image). Re-resolve the digest
+# from `latest` when intentionally updating. imagePullPolicy: IfNotPresent
+# because the digest is immutable — no need to re-pull on every restart.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,8 +25,8 @@ spec:
     spec:
       containers:
         - name: plex-exporter
-          image: ghcr.io/jsclayton/prometheus-plex-exporter:latest
-          imagePullPolicy: Always
+          image: ghcr.io/jsclayton/prometheus-plex-exporter:latest@sha256:18ef1b2197efbcb75bd7276380955760995f10a9fbe55106809a6fcff91c2940
+          imagePullPolicy: IfNotPresent
           env:
             - name: PLEX_SERVER
               value: "http://192.168.0.152:32400"

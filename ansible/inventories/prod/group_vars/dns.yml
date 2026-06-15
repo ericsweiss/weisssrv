@@ -7,9 +7,8 @@ ssh_permit_root_login: "no"
 # LXC container settings
 lxc_nesting: true  # Required for systemd 257+
 
-# Boot order configuration
-proxmox_startup_order: 10
-proxmox_startup_delay: 30
+# Boot order (proxmox_startup_order/delay) is set per host in
+# host_vars/dns-01.yml and host_vars/dns-02.yml (both order 10, delay 10).
 
 # Unbound configuration
 # Most settings (interface, forwarders, performance tuning) are in role defaults
@@ -123,7 +122,9 @@ adguard_rewrites:
   # Loki push API for host-side Alloy (replaces the plaintext NodePort).
   - domain: "loki.{{ internal_domain }}"
     answer: "192.168.0.101"
-  - domain: "vip-public.{{ external_domain }}"
+  # Internal name for the public MetalLB VIP (.100); matches the PTR below
+  # so forward/reverse round-trip. External clients reach .100 via Cloudflare.
+  - domain: "vip-public.{{ internal_domain }}"
     answer: "192.168.0.100"
   # Traefik dashboard and observability
   - domain: "traefik.{{ internal_domain }}"
@@ -206,21 +207,9 @@ adguard_user_rules:
 # DHCP configuration
 adguard_dhcp_enabled: false
 
-# Postfix null client configuration for DNS LXCs
-postfix_config:
-  myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
-  myorigin: "/etc/mailname"
-  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
-  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
-  mynetworks: "127.0.0.0/8"
-  inet_interfaces: "loopback-only"
-  smtp_tls_security_level: "encrypt"
-  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
-  smtp_sasl_auth_enable: "yes"
-  smtp_sasl_security_options: "noanonymous"
-  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
-
-# postfix_sasl_user, postfix_sasl_password, and mail_aliases are defined in all.yml
+# Postfix null client uses the role default postfix_config (relay via
+# smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
+# postfix_sasl_password, and mail_aliases are defined in all.yml.
 
 # dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
 dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY', default='') }}"
@@ -232,7 +221,8 @@ dns01_ssh_public_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', 
 # wildcard cert, so the dns-01 -> dns-02 sync hop is now end-to-end
 # encrypted on the wire. The lan-tailscale-only middleware on the
 # IngressRoute ensures only LAN/Tailscale sources reach the API.
-adguardhome_sync_enabled: true
+# The adguard_sync role gates on inventory_hostname == 'dns-01', so it
+# runs on the primary only — there is no separate enable/disable toggle.
 adguardhome_sync_origin: "https://dns-01.{{ internal_domain }}"
 adguardhome_sync_replica: "https://dns-02.{{ internal_domain }}"
 adguardhome_sync_features:

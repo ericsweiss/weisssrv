@@ -534,6 +534,194 @@ class TestGetDeployCommand(unittest.TestCase):
                     )
 
 
+class TestDebianVersionCompare(unittest.TestCase):
+    """debian_version_compare ordering rules (referenced by its docstring)."""
+
+    def setUp(self):
+        self.cmp = check_versions.debian_version_compare
+
+    def test_plain_patch(self):
+        self.assertEqual(self.cmp("1.98.4", "1.98.5"), -1)
+        self.assertEqual(self.cmp("1.98.5", "1.98.4"), 1)
+        self.assertEqual(self.cmp("1.98.4", "1.98.4"), 0)
+
+    def test_epoch_wins(self):
+        # 1:0.4.6-1 outranks 0.4.6 regardless of upstream version
+        self.assertEqual(self.cmp("1:0.4.6-1", "0.4.6"), 1)
+        # explicit zero epoch is the default
+        self.assertEqual(self.cmp("0:1.98.4", "1.98.5"), -1)
+
+    def test_tilde_is_prerelease(self):
+        self.assertEqual(self.cmp("0.5.0~rc1-1", "0.5.0-1"), -1)
+
+    def test_revision_tail(self):
+        self.assertEqual(self.cmp("0.4.6-1ubuntu1", "0.4.6-1"), 1)
+
+    def test_malformed_epoch_raises(self):
+        with self.assertRaises(ValueError):
+            self.cmp("x:1.0", "1.0")
+
+
+class TestParseVersionTupleEpoch(unittest.TestCase):
+    """parse_version_tuple must drop a Debian epoch prefix."""
+
+    def test_epoch_stripped(self):
+        self.assertEqual(
+            check_versions.parse_version_tuple("1:1.80.0"),
+            check_versions.parse_version_tuple("1.80.0"),
+        )
+
+    def test_no_epoch_unchanged(self):
+        self.assertEqual(
+            check_versions.parse_version_tuple("1.80.0"),
+            ((0, 1), (0, 80), (0, 0)),
+        )
+
+
+class TestHelmIndexParser(unittest.TestCase):
+    """fetch_helm_version tolerates extra post-colon whitespace and skips appVersion."""
+
+    INDEX = (
+        "apiVersion: v1\n"
+        "entries:\n"
+        "  mychart:\n"
+        "  - apiVersion: v2\n"
+        "    appVersion: 9.9.9\n"
+        "    version:   1.2.3\n"  # three spaces after the colon
+        "  - apiVersion: v2\n"
+        "    appVersion: 9.9.9\n"
+        "    version: 1.2.2\n"
+    )
+
+    def test_extra_spaces_and_appversion_excluded(self):
+        svc = {"helm_repo": "https://example.com", "helm_chart": "mychart"}
+        with patch.object(check_versions, "_make_request", return_value=self.INDEX):
+            latest = check_versions.fetch_helm_version(svc)
+        # 1.2.3 (highest version:), not 9.9.9 (appVersion), and the 3-space line parsed
+        self.assertEqual(latest, "1.2.3")
+
+
+class TestContainerFetcherGuards(unittest.TestCase):
+    """Docker Hub / LSIO fetchers raise a clear error on a non-JSON body."""
+
+    def test_dockerhub_non_json_raises(self):
+        svc = {"docker_image": "library/foo", "tag_regex": r"^(\d+\.\d+\.\d+)$"}
+        with patch.object(check_versions, "_make_request", return_value="<html>maintenance</html>"):
+            with self.assertRaises(RuntimeError):
+                check_versions.fetch_dockerhub_version(svc)
+
+    def test_lsio_non_json_raises(self):
+        svc = {"docker_image": "linuxserver/foo", "lsio_version_regex": r"^version-(\d+\.\d+\.\d+)$"}
+        with patch.object(check_versions, "_make_request", return_value="not json"):
+            with self.assertRaises(RuntimeError):
+                check_versions.fetch_lsio_version(svc)
+
+
+class TestUpdateVersionInFile(unittest.TestCase):
+    """update_version_in_file round-trips on a temp file, preserving format."""
+
+    def _write_tmp(self, content):
+        import tempfile
+        tf = tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False)
+        tf.write(content)
+        tf.close()
+        return Path(tf.name)
+
+    def test_top_level_roundtrip_preserves_quotes_and_comment(self):
+        import os
+        path = self._write_tmp(
+            'gluetun_version: "v3.40.0"  # Currently deployed v3.40.0\n'
+            "other_version: 1.2.3\n"
+        )
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                self.assertTrue(
+                    check_versions.update_version_in_file("gluetun_version", "v3.41.0")
+                )
+            out = path.read_text()
+            self.assertIn('gluetun_version: "v3.41.0"', out)
+            self.assertIn("# Currently deployed v3.41.0", out)
+            self.assertIn("other_version: 1.2.3", out)  # untouched
+        finally:
+            os.unlink(path)
+
+    def test_missing_var_returns_false(self):
+        import os
+        path = self._write_tmp("foo_version: 1.0.0\n")
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                self.assertFalse(
+                    check_versions.update_version_in_file("nonexistent_version", "9.9.9")
+                )
+        finally:
+            os.unlink(path)
+
+    def test_helm_nested_key(self):
+        import os
+        path = self._write_tmp(
+            "helm_chart_versions:\n"
+            '  traefik: "40.3.0"  # Currently deployed 40.3.0\n'
+        )
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                self.assertTrue(
+                    check_versions.update_version_in_file("helm_chart_versions.traefik", "40.4.0")
+                )
+            self.assertIn('traefik: "40.4.0"', path.read_text())
+        finally:
+            os.unlink(path)
+
+
+class TestHeldUpdateGuard(unittest.TestCase):
+    """A held service must never be written by --update-all (the MetalLB hold)."""
+
+    def test_metallb_registry_entry_is_held(self):
+        metallb = [s for s in check_versions.SERVICE_REGISTRY
+                   if s.get("var_name") == "helm_chart_versions.metallb"]
+        self.assertTrue(metallb, "MetalLB must be in the registry")
+        self.assertTrue(metallb[0].get("held"), "MetalLB must carry held=True (documented hold)")
+
+    def test_update_all_skips_held(self):
+        SV = check_versions.ServiceVersion
+        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+                  latest_version="0.16.0", update_available=True,
+                  var_name="helm_chart_versions.metallb", held=True)
+        normal = SV(name="Foo", category="helm", current_version="1.0",
+                    latest_version="1.1", update_available=True, var_name="foo_version")
+        with patch.object(check_versions, "check_all", return_value=[held, normal]), \
+             patch.object(check_versions, "read_current_versions", return_value={}), \
+             patch.object(check_versions, "get_deploy_command", return_value="deploy"), \
+             patch.object(check_versions, "update_version_in_file", return_value=True) as muf, \
+             patch.object(check_versions.sys, "argv", ["check-versions.py", "--update-all"]):
+            with self.assertRaises(SystemExit):
+                check_versions.main()
+        written_vars = [call.args[0] for call in muf.call_args_list]
+        self.assertIn("foo_version", written_vars)
+        self.assertNotIn("helm_chart_versions.metallb", written_vars)
+
+    def test_single_update_skips_held(self):
+        """`--update <service>` must also refuse to write a held version.
+
+        This is an independent code path from --update-all (it calls
+        check_service, not check_all), so it needs its own guard test — a
+        regression here would let `check-versions.py --update metallb` write a
+        held version into all.yml even while --update-all stayed green.
+        """
+        SV = check_versions.ServiceVersion
+        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+                  latest_version="0.16.0", update_available=True,
+                  var_name="helm_chart_versions.metallb", held=True)
+        with patch.object(check_versions, "check_service", return_value=held), \
+             patch.object(check_versions, "read_current_versions", return_value={}), \
+             patch.object(check_versions, "update_version_in_file", return_value=True) as muf, \
+             patch.object(check_versions.sys, "argv",
+                          ["check-versions.py", "--update", "metallb"]):
+            with self.assertRaises(SystemExit) as cm:
+                check_versions.main()
+        muf.assert_not_called()                  # held => never written
+        self.assertEqual(cm.exception.code, 0)   # a held hold is a clean exit
+
+
 if __name__ == "__main__":
     if PYTEST_AVAILABLE:
         # Use pytest for better output formatting when available

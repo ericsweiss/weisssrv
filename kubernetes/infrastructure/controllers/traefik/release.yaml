@@ -36,12 +36,31 @@ spec:
       enabled: true
       minAvailable: 1
 
-    # Deployment configuration
-    deployment:
-      replicas: 3  # HA with 3 replicas across different ingress nodes
-      podAnnotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9100"
+    # Horizontal autoscaling via the chart's own autoscaling (min 2 / max 4 on
+    # ~70% CPU). Using the chart's `autoscaling.enabled` (rather than a separate
+    # HorizontalPodAutoscaler) makes the chart omit `.spec.replicas` from the
+    # Deployment entirely — a standalone HPA would leave the chart re-asserting
+    # the default `replicas: 1` on every helm upgrade, briefly dropping below
+    # the HA floor before the HPA scaled back up. The Traefik VPA
+    # (configs/vpa/platform.yaml) controls memory only, so it does not contend
+    # with this HPA on CPU.
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+      metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+              type: Utilization
+              averageUtilization: 70
+
+    # Deployment configuration. No static `replicas` (autoscaling owns it).
+    # Metrics are scraped via the ServiceMonitor below; no prometheus.io/scrape
+    # podAnnotations (kube-prometheus-stack does not run an annotation-based
+    # scrape job, so they were dead config).
+    deployment: {}
 
     # Service configuration (external/public traffic - *.ericsweiss.com)
     # Note: traefik-internal-service.yaml provides separate LoadBalancer for internal traffic (*.esweiss.com) on .101

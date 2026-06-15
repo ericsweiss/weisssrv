@@ -5,6 +5,12 @@
 # Note: We intentionally do NOT use 'set -e' here because we want the script
 # to continue gathering diagnostics from reachable hosts even if some hosts
 # are unreachable (which is useful during network troubleshooting).
+#
+# Dependency: a wall-clock `timeout` (GNU coreutils, or `gtimeout` from
+# `brew install coreutils` on macOS) hard-bounds each SSH. If neither is
+# present the timeout_cmd helper falls through to a bare ssh; in that case
+# the ServerAliveInterval/CountMax options in SSH_OPTS are the only guard
+# against a post-connect stall on a hung host.
 
 echo "=== Network Diagnostics for weisssrv Cluster ==="
 echo "Generated: $(date)"
@@ -14,8 +20,11 @@ echo ""
 PVE_HOSTS="192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107"
 K3S_SERVERS="192.168.0.222 192.168.0.223 192.168.0.227"
 
-# SSH options as an array so word splitting is explicit and shellcheck-clean
-SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+# SSH options as an array so word splitting is explicit and shellcheck-clean.
+# ServerAlive* bound a post-connect stall even on the no-timeout fallback path
+# (host without GNU/BSD timeout) so a hung remote can't block a section.
+SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+          -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
 # timeout is GNU coreutils; on stock macOS install via 'brew install coreutils' (gtimeout)
 timeout_cmd() {

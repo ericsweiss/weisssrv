@@ -488,6 +488,11 @@
     - container_exists.rc != 0
   changed_when: true
 
+# NOTE: create-time only. The authorized_keys file is written once (with `>`,
+# overwriting any template/cloud-init keys) when the container is first
+# created. Rotating or adding keys on an existing container is NOT reconciled
+# here — recreate the container, or update the file in-place via
+# `pct exec <id> -- vi /home/<user>/.ssh/authorized_keys`.
 - name: Deploy SSH authorized keys for eric user
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |

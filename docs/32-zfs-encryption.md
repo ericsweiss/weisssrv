@@ -17,28 +17,43 @@ app.
 
 ## What is encrypted, what isn't
 
-The model is **dataset-level encryption, not pool-level**. The tank /
-ssd / nvme pool roots stay plaintext; individual child datasets that
-hold sensitive data are encryption roots, recreated and populated via
-`zfs send | zfs recv` (per pool §2a procedure below). At boot
-`zfs-load-key.sh` runs `zfs load-key -r <pool>` which descends into
-every encryption root within the pool, so the role's per-pool entry in
-`zfs_encryption_pools` (e.g. `name: tank`) covers all encrypted
-descendants without requiring the pool root itself to be encrypted.
+The model is **per-dataset encryption roots, not pool-level**. The tank /
+ssd pool roots stay plaintext; individual child datasets that hold
+sensitive data are each their own encryption root (the dataset name equals
+its `encryptionroot`), all sharing the one per-pool passphrase. New
+datasets are created encrypted from the start (§2a); the datasets that
+predated the rollout were migrated in place via `zfs send | zfs recv` +
+`zfs change-key`.
+
+At boot `zfs-load-key.sh` enumerates the encryption roots under the pool
+(`zfs get -r encryptionroot <pool>`, keeping the rows where name == value)
+and loads the per-pool passphrase into each one individually. It does
+**not** use `zfs load-key -r <pool>`: `-r` reads the passphrase from stdin
+only once, so with more than one encryption root it satisfies the first and
+fails the rest with "encryption failure". Inheriting children (datasets
+that are not their own root) are unlocked automatically when their root is
+loaded. The role's per-pool entry in `zfs_encryption_pools` (e.g.
+`name: tank`) therefore covers every encrypted descendant without the pool
+root itself being encrypted.
 
 ### Encrypted (post-rollout)
 
+All encrypted datasets are their own encryption root (Model B), so the
+dataset names — and therefore every `/dev/zvol` path, Proxmox storage
+reference, and NFS export path — are unchanged by encryption.
+
 - **NAS (`pve-nas-01`)**:
-  - `tank/share` (LAN file share) — recreated encrypted, data migrated
-    via send/recv.
-  - `tank/proxmox` (Proxmox VM backup target) — recreated encrypted.
-  - `tank/nextcloud-data` — to be created encrypted during rollout
-    (Nextcloud not yet deployed).
-  - `tank/immich-data` — to be created encrypted during rollout
-    (Immich not yet deployed).
-  - `ssd/appdata/{authentik,gitlab,loki,mealie,prometheus}` — every app
-    PV / DB. Migrated one at a time via `zfs send | zfs recv`.
-  - `nvme/*` — recreated encrypted.
+  - `tank/share` (LAN file share) — migrated via send/recv.
+  - `tank/proxmox` (Proxmox VM backup target, ~3T referenced) — migrated.
+  - `tank/backups` (765G) — migrated via send/recv.
+  - `tank/nextcloud-data` — created encrypted (Nextcloud not yet deployed).
+  - `tank/immich-data` — created encrypted (Immich not yet deployed).
+  - `ssd/appdata` and its children (`authentik` + `authentik/postgres` are
+    their own roots; `gitlab`, `loki`, `mealie`, `prometheus` inherit from
+    `ssd/appdata`) — every app PV / DB. Migrated one at a time.
+  - `ssd/databases` — migrated.
+  - `ssd/pve` (`vm-153-disk-0` + `vm-153-cloudinit`, the GitLab VM disks) —
+    migrated; the Proxmox storage `ssd` reference is unchanged.
 
   GitLab's backup tarball lives on the VM's root disk
   (`/var/opt/gitlab/backups`) and is out of scope for ZFS encryption;
@@ -47,8 +62,16 @@ descendants without requiring the pool root itself to be encrypted.
 
 ### Not encrypted (by design)
 
-- `tank/media` — public-domain or licensed media; LAN-trust is fine
-  and encryption breaks `zfs send` to off-pool replicas without `-w`.
+- **The media domain** — `tank/media` (the ~14.5T Plex library) plus all of
+  `nvme` (`nvme/media` hot tier, `nvme/fast` transcode scratch, `nvme/pve`
+  ephemeral images). `/mnt/media` is a mergerfs union of `nvme/media` +
+  `tank/media`, so the two tiers are one logical store. Media is
+  non-sensitive (LAN-trust is fine); the only way to encrypt the 14.5T
+  `tank/media` tier is a multi-day `zfs send | zfs recv` (there is no
+  in-place ZFS encryption) that has destabilized this host under sustained
+  load, and AES would tax the streaming/transcode hot path for no at-rest
+  benefit. Encryption also breaks `zfs send` to off-pool replicas without
+  `-w`.
 - `tank/pve` — ephemeral Proxmox VM/LXC images. (`tank/proxmox` is in
   the encrypted list above because it holds VM backup tarballs that
   contain persistent app state.)
@@ -73,14 +96,13 @@ descendants without requiring the pool root itself to be encrypted.
 │   systemd: zfs-import.target                                      │
 │      |                                                            │
 │      v                                                            │
-│   zfs-load-key@tank.service ─┐                                    │
-│   zfs-load-key@ssd.service   │  Each unit runs:                   │
-│   zfs-load-key@nvme.service  ├─ zfs-load-key.sh <pool>            │
-│      ...                     │     - read /etc/onepassword-connect/token │
+│   zfs-load-key@tank.service ─┐  Each unit runs:                   │
+│   zfs-load-key@ssd.service   ├─ zfs-load-key.sh <pool>            │
+│                              │     - read /etc/onepassword-connect/token │
 │                              │     - HTTPS GET connect.esweiss.com/v1/...│
 │                              │     - parse passphrase from response      │
-│                              │     - `zfs load-key <pool>` via stdin     │
-│                              │     (mount handled by zfs-mount.service)  │
+│                              │     - load it into each encryption root   │
+│                              │       under <pool> (mount via zfs-mount)   │
 │      |                                                            │
 │      v                                                            │
 │   zfs-mount.service                                               │
@@ -110,7 +132,6 @@ template:
 |------------|------|------------|-------------|
 | `ZFS Pool tank Passphrase` | tank | `passphrase` | random ≥ 32 chars |
 | `ZFS Pool ssd Passphrase` | ssd | `passphrase` | random ≥ 32 chars |
-| `ZFS Pool nvme Passphrase` | nvme | `passphrase` | random ≥ 32 chars |
 
 Generate with `op item generate-password --length 64`.
 
@@ -162,58 +183,96 @@ After this step:
   scoped to hosts that will actually use it
 - No pools changed; no per-pool services enabled
 
-### Step 2: Encrypt a pool (per pool, one at a time)
+### Step 2: Encrypt data
 
-ZFS native encryption requires either:
-- A new dataset created with `encryption=on` and a key, with data
-  migrated in via `zfs send | zfs recv`, OR
-- An entire pool re-created (only viable for compute `local-ssd` since
-  contents are replicated/rebuildable).
+There is no in-place ZFS encryption: a dataset is either **created
+encrypted**, or its data is copied into an encrypted dataset. Prefer the
+former — encryption is baked into dataset creation, not bootstrapped on
+afterward.
 
-#### 2a. NAS dataset migration (per app on `ssd/appdata/<app>`)
+#### 2a. New datasets — create encrypted from the start (preferred)
 
-For each child dataset (authentik, gitlab, loki, mealie, prometheus):
+When adding a dataset to a pool already in the encrypted set (`tank`,
+`ssd`), create it as its own encryption root with the per-pool passphrase.
+There is no separate "migrate later" step:
 
 ```bash
-APP=authentik
-SRC=ssd/appdata/$APP
-ENC=ssd/appdata-enc/$APP
-
-# 1. Stop the consumer (k3s pod, LXC, or VM)
-kubectl scale deploy/$APP -n $APP --replicas=0
-# (or the equivalent for non-k3s consumers)
-
-# 2. Take a clean snapshot
-sudo zfs snapshot -r ${SRC}@encrypt-migrate
-
-# 3. Create an encrypted parent if it doesn't exist
-sudo zfs list ssd/appdata-enc 2>/dev/null || \
-  sudo zfs create \
-    -o encryption=on \
-    -o keyformat=passphrase \
-    -o keylocation=prompt \
-    ssd/appdata-enc
-# (key prompted; paste from 1P "ZFS Pool ssd Passphrase" — the same
-#  passphrase will be used for every encrypted dataset on this pool
-#  because they all inherit the wrapping key)
-
-# 4. Send|recv into the encrypted parent
-sudo zfs send -R ${SRC}@encrypt-migrate | \
-  sudo zfs recv -F ${ENC}
-
-# 5. Swap mountpoints
-sudo zfs unmount ${SRC}
-sudo zfs set mountpoint=$(zfs get -H -o value mountpoint ${SRC}) ${ENC}
-sudo zfs rename ${SRC} ${SRC}-pre-encryption
-sudo zfs rename ${ENC} ${SRC}
-
-# 6. Bring the consumer back up
-kubectl scale deploy/$APP -n $APP --replicas=1
-
-# 7. After verifying the app works, destroy the unencrypted source
-#    AND its snapshot.
-sudo zfs destroy -r ${SRC}-pre-encryption
+# Paste the passphrase from 1P "ZFS Pool <pool> Passphrase" at the prompt.
+sudo zfs create \
+  -o encryption=aes-256-gcm \
+  -o keyformat=passphrase \
+  -o keylocation=prompt \
+  -o mountpoint=/mnt/ssd/appdata/<app> \
+  ssd/appdata/<app>
 ```
+
+The dataset's name equals its `encryptionroot`, so the boot unit's
+per-root loop (see Architecture) unlocks it automatically — nothing else to
+configure. Record it in docs/06's pool layout, and if it backs a VM zvol,
+in `vm_additional_disks` in `hosts.yml`.
+
+#### 2b. Migrating an existing plaintext dataset (reference)
+
+This is how the pre-rollout datasets were encrypted **in place while
+preserving their names** (so `/dev/zvol` paths, Proxmox storage refs, and
+NFS export paths did not change — "Model B"). One dataset at a time, with
+the consumer stopped.
+
+```bash
+SRC=ssd/appdata/authentik          # existing plaintext dataset
+ENCPARENT=ssd/enc                  # temporary encrypted staging root
+NAME=$(basename "$SRC")
+MNT=$(zfs get -H -o value mountpoint "$SRC")
+
+# 1. Stop the consumer so the data is quiescent.
+kubectl scale deploy/authentik-server -n authentik --replicas=0
+
+# 2. Snapshot.
+sudo zfs snapshot -r "${SRC}@enc-migrate"
+
+# 3. Encrypted staging root (once per pool), keyed with the per-pool
+#    passphrase from 1P "ZFS Pool <pool> Passphrase".
+sudo zfs list "$ENCPARENT" 2>/dev/null || sudo zfs create \
+  -o encryption=aes-256-gcm -o keyformat=passphrase -o keylocation=prompt \
+  -o mountpoint=none -o canmount=off "$ENCPARENT"
+
+# 4. send | recv into the staging root, EXCLUDING the encryption property so
+#    the copy INHERITS the parent's key (and is therefore encrypted).
+#    Without `-x encryption`, `send -R` replays the source's encryption=off
+#    and you get an UNENCRYPTED copy — the most common mistake here.
+sudo zfs send -R "${SRC}@enc-migrate" | \
+  sudo zfs recv -x encryption "${ENCPARENT}/${NAME}"
+
+# 5. Make the copy its OWN encryption root so it can be renamed out of the
+#    staging parent (an inheriting child cannot be renamed across roots).
+sudo zfs change-key -o keyformat=passphrase -o keylocation=prompt \
+  "${ENCPARENT}/${NAME}"      # paste the same per-pool passphrase
+
+# 6. Preserve the name: park the plaintext original, promote the encrypted
+#    copy into its place, restore the mountpoint, clear readonly.
+sudo zfs set readonly=off -r "${ENCPARENT}/${NAME}"
+sudo zfs rename "${SRC}" "${SRC}-pre-enc"
+sudo zfs rename "${ENCPARENT}/${NAME}" "${SRC}"
+sudo zfs set mountpoint="${MNT}" "${SRC}"
+sudo zfs mount "${SRC}"
+
+# 7. Bring the consumer back and verify it works against the encrypted data.
+kubectl scale deploy/authentik-server -n authentik --replicas=1
+
+# 8. Only after verifying, destroy the parked plaintext copy + its snapshot.
+sudo zfs destroy -r "${SRC}-pre-enc"
+```
+
+> **NFS submounts:** if the dataset is exported, redo the `/export` bind
+> (`mount --rbind`) AFTER the dataset is read-write — `mount --rbind`
+> captures the read-only flag at bind time. Never `systemctl stop` an
+> `export-*.mount` unit; stopping it cascades to `nfs-server`. Always
+> confirm `systemctl is-active nfs-server` after any storage surgery.
+>
+> **Large datasets:** a multi-hour `send | recv` over SSH will drop; run it
+> server-side under `nohup`/`systemd-run`. Sustained multi-TB encrypted
+> send/recv has destabilized this host — stage big migrations and avoid
+> encrypting the 14.5T media tier (see "Not encrypted").
 
 ### Step 3: Activate per-pool boot units
 
@@ -228,8 +287,6 @@ zfs_encryption_pools:
     item: "ZFS Pool tank Passphrase"
   - name: ssd
     item: "ZFS Pool ssd Passphrase"
-  - name: nvme
-    item: "ZFS Pool nvme Passphrase"
 ```
 
 ```bash
@@ -243,14 +300,21 @@ reboot test should now show keys auto-loaded; `zfs get keystatus
 ### Step 4: Verify and rotate
 
 ```bash
-# Verify auto-load works
-sudo zfs unload-key -a   # only safe if you're prepared to remount
+# Verify auto-load works (a cold reboot is the real test; this re-runs the
+# units, which no-op on already-loaded roots):
 sudo systemctl restart 'zfs-load-key@*.service'
-sudo zfs get keystatus tank ssd nvme
+sudo zfs get -r keystatus tank ssd   # every encryption root => available
 
-# Rotate passphrase (yearly, or after suspected exposure):
-sudo zfs change-key -o keylocation=prompt tank   # paste new passphrase
-# Update the 1P item with the new value
+# Rotate the passphrase (yearly, or after suspected exposure). Each dataset is
+# its own encryption root (Model B) and the plaintext pool root is NOT a key
+# holder, so change-key every encryption root in the pool with the new
+# passphrase — `zfs change-key tank` alone would fail ("not an encryption
+# root"):
+for root in $(zfs get -H -t filesystem,volume -o name,value -r encryptionroot tank \
+                | awk -F'\t' '$1==$2{print $1}'); do
+  sudo zfs change-key -o keyformat=passphrase -o keylocation=prompt "$root"
+done
+# Update "ZFS Pool tank Passphrase" in 1P with the new value.
 # Other hosts pick up the new value at next reboot or:
 sudo systemctl restart zfs-load-key@tank.service
 ```
@@ -271,7 +335,7 @@ The chain is:
 3. Connect (`replicas: 2` in `external-secrets` namespace) gets
    scheduled and serves at `connect.esweiss.com` via Traefik.
 4. `pve-nas-01` powers on. Each
-   `zfs-load-key@{tank,ssd,nvme}.service` queries Connect. If Connect
+   `zfs-load-key@{tank,ssd}.service` queries Connect. If Connect
    (or its DNS, or its Traefik route) hasn't come up yet, the unit
    retries continuously under `Restart=on-failure` +
    `RestartSec=30s` until it succeeds. (`StartLimitBurst=60` over
@@ -291,26 +355,34 @@ broken, or DNS for `connect.esweiss.com` is broken. In that case,
 manually unlock pve-nas-01's pools using the passphrases from the
 1Password mobile app:
 
+Each dataset is its own encryption root (Model B), all sharing the per-pool
+passphrase; load the passphrase into every root (the plaintext pool root is
+not a key holder, so `zfs load-key tank` would fail). Manually, pasting each
+pool's passphrase from the 1Password mobile app when prompted:
+
 ```bash
 ssh pve-nas-01
-sudo zfs load-key tank      # paste from "ZFS Pool tank Passphrase"
-sudo zfs load-key ssd       # paste from "ZFS Pool ssd Passphrase"
-sudo zfs load-key nvme      # paste from "ZFS Pool nvme Passphrase"
+for pool in tank ssd; do
+  read -rsp "Passphrase for $pool: " POOL_PASS; echo
+  for root in $(zfs get -H -t filesystem,volume -o name,value -r encryptionroot "$pool" \
+                  | awk -F'\t' '$1==$2{print $1}'); do
+    printf '%s\n' "$POOL_PASS" | sudo zfs load-key "$root"
+  done
+done
 sudo zfs mount -a
 ```
 
-Or scripted from a workstation with `op signin` active:
+Or scripted from a workstation with `op signin` active (the passphrase is piped
+over stdin, so it never lands in a remote process's argv):
 
 ```bash
 #!/usr/bin/env bash
-PASSPHRASE_TANK=$(op read "op://Homelab/ZFS Pool tank Passphrase/passphrase")
-PASSPHRASE_SSD=$(op read "op://Homelab/ZFS Pool ssd Passphrase/passphrase")
-PASSPHRASE_NVME=$(op read "op://Homelab/ZFS Pool nvme Passphrase/passphrase")
-
-ssh pve-nas-01 "echo '$PASSPHRASE_TANK' | sudo zfs load-key tank && \
-                echo '$PASSPHRASE_SSD'  | sudo zfs load-key ssd && \
-                echo '$PASSPHRASE_NVME' | sudo zfs load-key nvme && \
-                sudo zfs mount -a"
+set -euo pipefail
+for pool in tank ssd; do
+  op read "op://Homelab/ZFS Pool ${pool} Passphrase/passphrase" \
+    | ssh pve-nas-01 "pass=\$(cat); for root in \$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot ${pool} | awk -F'\t' '\$1==\$2{print \$1}'); do printf '%s\n' \"\$pass\" | sudo zfs load-key \"\$root\"; done"
+done
+ssh pve-nas-01 "sudo zfs mount -a"
 ```
 
 (Once Connect is back up, the per-pool systemd units will resume
@@ -506,9 +578,10 @@ follow-up project.
     "Yes" only AFTER all four drives have completed the LUKS rolling
     conversion above. During the in-progress window — typically ~24-32
     hours between starting drive 1 and finishing drive 4 — drives that
-    haven't been converted yet are still plaintext. `tank`, `ssd`, and
-    `nvme` are encrypted at the ZFS layer from the start, so this
-    caveat doesn't apply to them.
+    haven't been converted yet are still plaintext. `tank` and `ssd` are
+    encrypted at the ZFS layer (their sensitive datasets), so this caveat
+    doesn't apply to them; `nvme` and `tank/media` are plaintext by design
+    (see "Not encrypted").
 
 ## References
 

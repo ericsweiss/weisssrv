@@ -156,11 +156,11 @@
 #   https://redis.io/docs/latest/operate/oss_and_stack/management/admin/
 #   https://docs.gitlab.com/omnibus/settings/redis.html
 #
-# These three tasks are intentionally NOT gated by skip_gitlab_install: kernel
-# tuning is required for Redis safety on any host that already runs the
-# Omnibus stack, and the operator who passes skip_gitlab_install=true does so
-# to avoid touching the apt package — they still expect the host config to
-# converge.
+# The kernel-tuning tasks below are gated only by gitlab_kernel_tuning_enabled
+# and are deliberately independent of skip_gitlab_install: tuning is required
+# for Redis safety on any host that already runs the Omnibus stack, and the
+# operator who passes skip_gitlab_install=true does so to avoid touching the
+# apt package — they still expect the host config to converge.
 
 - name: Install sysctl drop-in for Redis memory overcommit
   ansible.builtin.copy:

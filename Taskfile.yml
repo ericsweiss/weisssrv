@@ -165,7 +165,6 @@ tasks:
       SMTP_GMAIL_USER: op://Homelab/SMTP Relay Gmail/username
       SMTP_GMAIL_PASSWORD: op://Homelab/SMTP Relay Gmail/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
       TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
@@ -929,7 +928,6 @@ tasks:
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
       TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
@@ -944,7 +942,6 @@ tasks:
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
       TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
@@ -959,7 +956,6 @@ tasks:
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      ADGUARD_ADMIN_PASSWORD_HASH: op://Homelab/AdGuard Home/password_hash
       TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
@@ -1139,8 +1135,7 @@ tasks:
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
     env:
       # GitLab Terraform state backend configuration
-      # IMPORTANT: Set GITLAB_PROJECT_ID to your weisssrv project ID
-      # Find it at: git.ericsweiss.com/eric/weisssrv (shown on project overview page)
+      # GITLAB_PROJECT_ID defined in top-level vars
       TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
       TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
       TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
@@ -1738,12 +1733,12 @@ tasks:
       - echo "=== GitLab Runner Pods ==="
       - kubectl get pods -n gitlab-runner -o wide 2>/dev/null || echo "No runners found"
       - echo ""
-      - echo "=== GitLab Runner Helm Releases ==="
-      - helm list -n gitlab-runner 2>/dev/null || echo "No Helm releases found"
+      - echo "=== GitLab Runner HelmReleases (Flux-managed) ==="
+      - kubectl get helmrelease -n gitlab-runner 2>/dev/null || echo "No HelmReleases found"
       - echo ""
       - echo "=== GitLab Agent ==="
       - kubectl get pods -n gitlab-agent 2>/dev/null || echo "No agent pods found"
-      - helm list -n gitlab-agent 2>/dev/null || echo "No agent Helm release found"
+      - kubectl get helmrelease -n gitlab-agent 2>/dev/null || echo "No agent HelmRelease found"
 
   gitlab:verify:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)

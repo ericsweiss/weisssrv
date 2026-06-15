@@ -10,8 +10,10 @@ terraform {
 
   required_providers {
     cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 4.0"
+      source = "cloudflare/cloudflare"
+      # Patch-floating pin: minor bumps are deliberate (v4 minors have shipped
+      # schema/deprecation changes). v5 is a breaking rewrite — migrate explicitly.
+      version = "~> 4.52"
     }
   }
 }

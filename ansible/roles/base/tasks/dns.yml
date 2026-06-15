@@ -30,11 +30,7 @@
   ansible.builtin.include_role:
     name: resolv_conf
 
-- name: Notify handler if resolv.conf changed
-  ansible.builtin.debug:
-    msg: "resolv.conf was updated"
-  changed_when: resolv_conf_result.changed | default(false)
-  notify: Restart networking
+# resolv.conf changes take effect immediately; no networking restart is needed.
 
 - name: Check if resolv.conf is already immutable
   ansible.builtin.command:

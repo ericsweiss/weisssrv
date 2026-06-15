@@ -3,7 +3,13 @@
 # Primary NAS/storage server running Proxmox VE
 
 # ZFS native encryption — boot-time passphrase fetch from 1Password Connect.
-# tank/ssd/nvme are encrypted; archive is LUKS (separate effort tied to the
+# tank and ssd are encrypted (appdata, databases, backups, personal share,
+# VM disks). The media domain is NOT encrypted by design: tank/media (the
+# ~14.5T Plex library) and all of nvme (hot-tier media, transcode scratch,
+# ephemeral VM images). Media is non-sensitive, the only path to encrypt the
+# 14.5T tier is a send/recv that has destabilized this host, and AES would
+# tax the streaming/transcode hot path — see docs/32 "What is encrypted,
+# what isn't". archive is LUKS (separate effort tied to the
 # failing-drive replacement, tracked in docs/06-zfs.md). local-ssd on the
 # compute hosts is intentionally NOT encrypted — see docs/32 "What is
 # encrypted, what isn't" for the chicken-and-egg rationale (k3s VMs live on
@@ -17,17 +23,14 @@
 #   1. Run `task zfs:encrypt-bootstrap` (forces bootstrap_only=true → mechanism
 #      deployed, no services activated). Safe to re-run anytime.
 #   2. Encrypt pools one at a time per docs/32 §2a.
-#   3. After ALL three are encrypted, run `task zfs:encrypt -- --limit pve-nas-01`
-#      (drops the bootstrap_only override → activates the three services).
+#   3. After the listed pools are encrypted, run `task zfs:encrypt -- --limit pve-nas-01`
+#      (drops the bootstrap_only override → activates the per-pool services).
 zfs_encryption_pools:
   - name: tank
     item: "ZFS Pool tank Passphrase"
     field: passphrase
   - name: ssd
     item: "ZFS Pool ssd Passphrase"
-    field: passphrase
-  - name: nvme
-    item: "ZFS Pool nvme Passphrase"
     field: passphrase
 
 # LUKS containers backing the archive ZFS pool. Same END-STATE-intent
@@ -119,20 +122,13 @@ zfs_pools:
           recordsize: 1M
           com.sun:auto-snapshot: "true"
 
+  # The archive pool's datasets (archive/proxmox, archive/backups, ...) are
+  # owned by archive-backupctl, which locks them to mountpoint=inherit,
+  # canmount=off, readonly=on as `zfs receive -F` targets. Managing them here
+  # too would unlock them on every deploy and fight the replication lockdown,
+  # so the pool carries no datasets entry — only the scrub timer applies.
   - name: archive
-    datasets:
-      - name: archive/proxmox
-        properties:
-          mountpoint: /mnt/archive/proxmox
-          atime: "off"
-          compression: zstd
-          com.sun:auto-snapshot: "false"
-      - name: archive/backups
-        properties:
-          mountpoint: /mnt/archive/backups
-          atime: "off"
-          compression: zstd
-          com.sun:auto-snapshot: "false"
+    datasets: []
 
 # ZFS scrub timer
 zfs_scrub_enabled: true

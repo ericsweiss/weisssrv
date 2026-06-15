@@ -12,9 +12,18 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # Size the gluetun sidecar independently — its real footprint is far
+      # below the download client's, so the "*" caps would over-floor it.
+      # Must precede "*" (VPA uses the first matching containerName).
+      - containerName: gluetun
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+      # maxAllowed matches the nzbget container's 4Gi/2cpu limit so the
+      # request can grow into the unrar/par2 headroom the limit signals.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 2, memory: 2Gi}
+        maxAllowed: {cpu: 2, memory: 4Gi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -26,6 +35,12 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # Size the gluetun sidecar independently from the download client.
+      # Must precede "*" (VPA uses the first matching containerName).
+      - containerName: gluetun
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 2, memory: 2Gi}

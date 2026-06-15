@@ -3,11 +3,15 @@
 
 - name: Include ZFS tasks
   ansible.builtin.include_tasks: zfs.yml
-  when: zfs_pools is defined
+  when:
+    - zfs_pools is defined
+    - not (skip_zfs_operations | default(false))
 
 - name: Include MergerFS tasks
   ansible.builtin.include_tasks: mergerfs.yml
-  when: mergerfs_mounts is defined
+  when:
+    - mergerfs_mounts is defined
+    - not (skip_mergerfs | default(false))
 
 - name: Include NFS tasks
   ansible.builtin.include_tasks: nfs.yml

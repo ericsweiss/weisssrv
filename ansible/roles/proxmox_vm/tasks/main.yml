@@ -256,6 +256,10 @@
     - vm_exists.rc != 0
   changed_when: true
 
+# NOTE: onboot/startup (and the agent flag above) are only applied at VM
+# creation. Changing proxmox_startup_order/proxmox_startup_delay/onboot in
+# inventory does NOT reconcile onto an existing VM — recreate the VM (or run
+# `qm set <vmid> --onboot/--startup …` manually) to apply startup changes.
 - name: Configure VM autostart and boot order
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -330,14 +334,15 @@
     - item.stdout is defined
   changed_when: false
 
+# Remove the temporary public key unconditionally so a partial/failed create
+# run does not leave the file behind on the shared Proxmox host (state: absent
+# is idempotent and a no-op when nothing was written).
 - name: Clean up temporary SSH key
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.file:
     path: "/tmp/ssh_key_{{ vm_id }}.pub"
     state: absent
-  when:
-    - not ansible_check_mode
-    - vm_exists.rc != 0
+  when: not ansible_check_mode
 
 - name: Start VM
   delegate_to: "{{ proxmox_host }}"
@@ -350,7 +355,7 @@
   register: vm_start
 
 - name: Wait for VM to be reachable via SSH
-  delegate_to: localhost
+  delegate_to: "{{ proxmox_vm_ssh_wait_delegate }}"
   ansible.builtin.wait_for:
     host: "{{ proxmox_vm_target_ip }}"
     port: 22

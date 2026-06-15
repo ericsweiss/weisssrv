@@ -6,6 +6,12 @@
 # attempting to fetch the real Debian cloud image or wait for SSH on a fake IP.
 proxmox_vm_skip_create: false
 
+# Host the post-create SSH-reachability wait_for is delegated to. Defaults to
+# localhost (the controller), which works from a LAN-attached runner. Set to
+# the Proxmox host (which always shares the VM's bridge) when running from an
+# off-LAN/Tailscale controller where the VM's 192.168.0.x is unroutable.
+proxmox_vm_ssh_wait_delegate: localhost
+
 # IP address handed to the role's cloud-init + SSH-wait logic. Defaults to
 # ansible_host because production inventory routes traffic to each VM via
 # that field. Molecule scenarios override this so they can keep ansible_host

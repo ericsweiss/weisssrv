@@ -24,7 +24,8 @@ proxmox_startup_delay: 10
 vm_cores: 4
 vm_memory: 8192
 vm_disk_size: 64G
-vm_storage: local-lvm
+# local-ssd ZFS pool: required for the ZFS-to-ZFS HA replication of vmid 154
+vm_storage: local-ssd
 
 # Home Assistant OS details
 haos_version: "17.0"  # Installed version (update manually via UI)
@@ -90,13 +91,9 @@ home_assistant_ssl_enabled: true
 # HAOS host-key pin for SSH/SCP from the home_assistant role.
 # HAOS runs SSH on a non-standard port (22222) as root with no sudo,
 # so the role can't go through the standard ansible.cfg trust path —
-# we pin the key explicitly here and the role asserts it on every run.
-#
-# To capture (or rotate after a HAOS rebuild):
-#   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
-# Paste the value WITHOUT the leading "[host]:port" — just the
-# algorithm + base64 key, e.g.:
-#   "ssh-ed25519 AAAAC3Nza...example..."
-# The role prepends "[192.168.0.154]:22222 " before writing into
-# the operator's known_hosts.
-home_assistant_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"
+# we pin the key and the role asserts it on every run. The key value
+# itself is the shared haos_ssh_host_key defined in group_vars/all.yml
+# (single source of truth; also consumed by the `home` cert target in
+# host_vars/dns-01.yml). The role prepends "[192.168.0.154]:22222 "
+# before writing into the operator's known_hosts.
+home_assistant_host_key: "{{ haos_ssh_host_key }}"

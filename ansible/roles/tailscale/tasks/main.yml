@@ -10,14 +10,15 @@
     mode: '0755'
   when: ansible_facts['os_family'] == "Debian"
 
-# get_url without force never re-downloads an existing dest, so a rotated
-# upstream signing key requires removing the file manually; the fingerprint
-# verification below is the gate against a tampered download
+# force: true re-fetches on every run so a rotated upstream signing key is
+# picked up without manual file removal; the fingerprint verification below
+# is the gate against a tampered download.
 - name: Download Tailscale GPG key
   ansible.builtin.get_url:
     url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
     dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
     mode: '0644'
+    force: true
   when: ansible_facts['os_family'] == "Debian"
 
 - name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
@@ -117,7 +118,7 @@
     - not ansible_check_mode
     - tailscale_status.rc != 0 or (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') != "Running"
     - lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY', default='') != ''
-  no_log: true  # Don't log the auth key
+  no_log: true
   register: tailscale_up
   changed_when: "'Success' in tailscale_up.stdout or tailscale_up.rc == 0"
 

@@ -160,6 +160,10 @@
           'ha core check'
       register: ha_config_check
       changed_when: false
+      # `ha core check` returns non-zero on an invalid config; fail the play
+      # so the operator is alerted rather than silently shipping a config that
+      # breaks HAOS on its next restart.
+      failed_when: ha_config_check.rc != 0
       when: not (home_assistant_render_only | default(false))
 
     - name: Display configuration check results

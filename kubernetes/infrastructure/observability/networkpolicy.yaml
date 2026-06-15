@@ -1,0 +1,91 @@
+---
+# Pod-network controls for the observability namespace.
+#
+# Before this, no NetworkPolicy existed here: Loki runs auth_enabled=false and
+# its ClusterIP :3100 was reachable from any pod cluster-wide (the
+# loki-push-auth basicAuth middleware only guards the Traefik IngressRoute, not
+# the ClusterIP). Prometheus, Alertmanager (holds the Discord webhook + SMTP
+# secret), and Grafana were likewise unguarded at the pod layer.
+#
+# Default-deny ingress + scoped allows below. Egress is intentionally left open:
+# the exporters in this namespace reach many LAN hosts (Proxmox API, AdGuard,
+# Unbound, Plex, ZFS), Alertmanager reaches smtp-relay + Discord, and Prometheus
+# remote-scrapes the host node-exporters — a default-deny-egress would require
+# enumerating the entire LAN surface and is out of scope for this hardening.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Allow all intra-namespace ingress so the stack keeps working: Prometheus
+# scrapes every component in-namespace, Grafana queries Prometheus + Loki,
+# Prometheus scrapes Alertmanager, the operator talks to its workloads.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-ingress
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+
+---
+# Loki :3100 — push ingestion from the in-cluster Alloy DaemonSet and the
+# host-side Alloy (which arrives via the Traefik internal IngressRoute), plus
+# the LogQL UI hop from Traefik. No other namespace may reach Loki directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-loki-ingress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 3100
+
+---
+# Grafana / Prometheus / Alertmanager UIs — reachable from Traefik only
+# (everything else is covered by the intra-namespace allow above).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ui-ingress-from-traefik
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 3000  # Grafana
+        - protocol: TCP
+          port: 9090  # Prometheus
+        - protocol: TCP
+          port: 9093  # Alertmanager

@@ -13,4 +13,9 @@ variable "external_domain" {
   description = "External domain managed in Cloudflare"
   type        = string
   default     = "ericsweiss.com"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)*\\.[a-z]{2,}$", var.external_domain))
+    error_message = "external_domain must be a bare FQDN (no scheme, trailing dot, or slash), e.g. ericsweiss.com."
+  }
 }

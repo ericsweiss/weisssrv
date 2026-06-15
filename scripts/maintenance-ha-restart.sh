@@ -8,7 +8,7 @@
 # currently hosting the VM. `'proxmox[0]'` is quoted so bash globbing
 # here doesn't expand the host pattern before ansible parses it.
 
-set -eo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/../ansible"
 
 echo "Restarting Home Assistant VM..."

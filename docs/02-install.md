@@ -264,7 +264,8 @@ Fields:
 ```
 
 This is the minimum set for the deployment phases in this guide. The complete
-item list (k3s, applications, observability, encryption) is in CLAUDE.md under
+item list (k3s, applications, observability, encryption) is in
+[docs/15-credential-rotation.md](./15-credential-rotation.md) under
 "Required 1Password Items".
 
 ### 4. Test 1Password CLI Access

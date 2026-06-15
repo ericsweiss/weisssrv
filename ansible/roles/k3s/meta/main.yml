@@ -13,5 +13,7 @@ galaxy_info:
       versions:
         - trixie
 
-dependencies:
-  - role: base
+# base/qol/postfix_null_client are run explicitly by playbooks/k3s.yml's first
+# play against the k3s group, so this role declares no meta dependency on base
+# (declaring one here would run the full base role a second time per host).
+dependencies: []

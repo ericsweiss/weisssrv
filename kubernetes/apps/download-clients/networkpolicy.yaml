@@ -265,19 +265,16 @@ spec:
 # for direct-mode tracker + peer traffic — without this rule, flipping
 # the toggle would silently break peer/tracker connectivity.
 #
-# Design note (additive policies, accepted): NetworkPolicies cannot key
-# off a ConfigMap, so this rule's podSelector matches qbittorrent in
-# BOTH modes. In VPN mode it's effectively dead — qbittorrent shares
-# gluetun's network namespace, so the pod's actual egress is gluetun's
-# encrypted tunnel and the iptables-level killswitch INSIDE that netns
-# is what enforces "no traffic when VPN down". The high-port range
-# admitted here can never be hit while gluetun owns the netns, so this
-# additive policy does NOT degrade the killswitch's defense-in-depth
-# in normal operation. The residual risk (gluetun + killswitch both
-# silently fail AND qbittorrent finds a route around the netns) is
-# accepted; the alternative would be to de-support direct mode
-# entirely, but the toggle is documented and useful for ad-hoc no-VPN
-# operation.
+# Gating (preserves the killswitch defense-in-depth): NetworkPolicies
+# cannot key off a ConfigMap, so this rule is gated on an explicit pod
+# label `esweiss.com/vpn: disabled` instead of selecting qbittorrent
+# unconditionally. The shipped (VPN-on) Deployment pod template does
+# NOT carry that label, so this rule is ABSENT under the current config
+# — the broad ephemeral-range egress it opens cannot leak torrent
+# traffic if gluetun's killswitch fails. To run direct mode, set
+# vpn_enabled: "false" AND add `esweiss.com/vpn: disabled` to the
+# qbittorrent pod template labels; doing so deliberately removes the
+# policy-layer killswitch (acceptable for ad-hoc no-VPN operation).
 #
 # Peer scope: BitTorrent peers advertise arbitrary high ports in their
 # tracker responses, so a working direct-mode policy needs the full
@@ -295,6 +292,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: qbittorrent
+      esweiss.com/vpn: disabled
   policyTypes: [Egress]
   egress:
     - to:

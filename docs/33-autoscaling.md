@@ -20,14 +20,29 @@ stays manual — see the last section for why.
 - **CoreDNS HPA pin** (`kubernetes/infrastructure/configs/coredns/hpa.yaml`):
   min=max=2. k3s manages CoreDNS as a wrangler AddOn and resets replicas on
   server restarts; the HPA scales it back within seconds.
+- **Horizontal autoscaling for the stateless, HA-fronting tiers**, via each
+  chart's own `autoscaling.enabled` rather than a standalone HPA — so the chart
+  omits static `.spec.replicas` and nothing re-asserts a replica count against
+  the HPA on a helm upgrade:
+  - Traefik (`controllers/traefik/release.yaml`): min 2 / max 4 @ ~70% CPU.
+  - authentik-server (`apps/authentik/release.yaml`): min 2 / max 4 @ ~75% CPU;
+    the worker stays single-replica. Both carry memory-only VPAs so CPU is
+    owned solely by the HPA.
 
 ## Update-mode tiers
 
 | Mode | Used for | Behavior |
 |---|---|---|
-| `Auto` | exporters, MetalLB, cert-manager, external-dns, ESO, Connect, Traefik, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
-| `Initial` | apps (downloads, recipes, authentik server/worker, runners, agent), Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile |
+| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound), MetalLB, cert-manager, external-dns, ESO, Connect, Traefik, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
+| `Initial` | apps (downloads incl. the gluetun sidecars caught by wildcard `*` policies, recipes incl. bar-assistant redis/meilisearch/salt-rim, authentik server/worker, runners, agent), Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile |
 | `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive) |
+
+The rows above are representative, not exhaustive — the canonical coverage
+lives in the VPA policy files under `kubernetes/infrastructure/configs/vpa/`
+(platform + Flux; `platform.yaml`, `flux-system.yaml`),
+`kubernetes/infrastructure/observability/vpa.yaml`, and
+`kubernetes/apps/<app>/vpa.yaml`. Audit live coverage with
+`kubectl get vpa -A`.
 
 Every policy carries `minAllowed`/`maxAllowed` caps so a recommendation
 can't starve or balloon a workload.

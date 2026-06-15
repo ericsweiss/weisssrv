@@ -17,6 +17,57 @@ consumer paths and they rotate differently:
   secrets at playbook-run time. Rotate by updating 1Password, then
   re-running the relevant Ansible playbook.
 
+## Required 1Password Items
+
+This is the canonical, authoritative inventory of every item the deployment
+expects in the **Homelab** vault. CLAUDE.md, `docs/02-install.md`,
+`docs/13-ci-cd.md`, and `docs/28-gitlab-migration.md` all point here; update
+this list (not those files) when an item is added or its fields change.
+
+- **Cloudflare DNS Token** - API token (credential) + account ID (username field)
+- **SMTP Relay Gmail** - username + app password
+- **SMTP Relay Auth** - username + password (for null client auth to smtp-relay)
+- **Email Config** - root_alias (ericsweiss1@gmail.com)
+- **AdGuard Home** - admin username + password (the `adguard_home` role generates the bcrypt hash in `AdGuardHome.yaml` from this plaintext password at deploy time; no `password_hash` field is injected or consumed)
+- **Tailscale Auth Key** - auth key
+- **SSH Key** - public + private key
+- **Samba NAS User** - nas user password
+- **DNS-01 SSH Key** - private + public key (for cert distribution)
+- **K3s Cluster Token** - cluster join token (credential)
+- **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
+- **PrivadoVPN Credentials** - openvpn-user, openvpn-password (for Gluetun VPN sidecar)
+- **VPN Unlimited Credentials** - openvpn-user, openvpn-password (alternate VPN provider)
+- **Mealie Secrets** - postgres-password
+- **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
+- **Bar Assistant Secrets** - meilisearch-master-key
+- **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
+- **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
+- **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
+- **Home Assistant API Token** - token (long-lived access token for Prometheus /api/prometheus endpoint)
+- **GitLab** - root-password (initial GitLab root user password)
+- **GitLab API Token** - credential (personal access token for PR-Agent AI code review)
+- **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
+- **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
+- **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
+- **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
+- **GitHub Token** - credential (personal access token for version checker API rate limits)
+- **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
+- **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
+- **Service Account Auth Token weisssrv** - 1Password Service Account token used by CI (`OP_SERVICE_ACCOUNT_TOKEN` in `.gitlab-ci.yml`)
+- **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
+- **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
+- **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
+- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General)
+- **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
+- **Loki Push Auth** - htpasswd (bcrypt users file for the Loki push IngressRoute basicAuth middleware)
+- **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
+- **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
+- **ZFS Encryption Connect Token** - credential (Connect access token used by Proxmox hosts to fetch ZFS pool passphrases at boot; created via `op connect token create weisssrv-zfs --server <id> --vaults Homelab`)
+- **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
+- **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
+- **LUKS Archive Passphrase** - passphrase (random ≥32 chars; shared across all four LUKS containers backing the archive ZFS pool on pve-nas-01; consumed by archive-luks-open@archive-N.service)
+- **Plex Custom Certificate** - password (PFX bundle passphrase used by `/usr/local/sbin/plex-cert-reload.sh` when converting the renewed PEM cert into the PKCS#12 form Plex requires; matching value must be configured under Plex Settings -> Network -> "Custom certificate encryption key")
+
 ## Kubernetes workloads (External Secrets Operator)
 
 For any secret consumed inside the k3s cluster (every `ExternalSecret` in
@@ -179,38 +230,30 @@ cloudflare-ddns (all three read it via ESO from 1Password).
 **Location**: 1Password → Homelab vault → AdGuard Home
 
 **Fields Required**:
-- `password` - Plaintext password (for login)
-- `password_hash` - bcrypt hash (for Ansible deployment)
+- `password` - Plaintext password (for login and API config)
+
+The `adguard_home` role generates the bcrypt hash in `AdGuardHome.yaml` from
+this plaintext password at deploy time (passlib on the target host), and only
+regenerates it when the existing hash no longer verifies. There is **no**
+separate `password_hash` field to maintain — rotating the plaintext password is
+sufficient.
 
 **Rotation Procedure**:
 
 ```bash
-# 1. Choose new password
-NEW_PASSWORD="your-new-secure-password"
+# 1. Update the 'password' field in 1Password with the new plaintext password.
+eval $(op signin)
+op read "op://Homelab/AdGuard Home/password"   # verify the new value reads back
 
-# 2. Generate bcrypt hash using htpasswd
-# Install apache2-utils if needed: sudo apt install apache2-utils
-BCRYPT_HASH=$(htpasswd -nbB admin "$NEW_PASSWORD" | cut -d: -f2)
-
-# 3. Verify hash format (should start with $2y$)
-echo "$BCRYPT_HASH"
-# Example: $2y$05$KwJ0zPQqVNQ1vL4EkdgZm.xxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# 4. Update both fields in 1Password
-# - Update 'password' field with plaintext password
-# - Update 'password_hash' field with the bcrypt hash
-
-# 5. Verify both values are readable from 1Password
-op read "op://Homelab/AdGuard Home/password"
-op read "op://Homelab/AdGuard Home/password_hash"
-
-# 6. Deploy AdGuard configuration
+# 2. Deploy AdGuard configuration. The role regenerates the bcrypt hash in
+#    AdGuardHome.yaml from the new password (idempotent: it only rewrites the
+#    hash when the existing one no longer verifies).
 task dns:deploy
 
-# 7. Verify deployment
+# 3. Verify deployment
 ansible-playbook ansible/playbooks/postflight.yml --limit dns-01,dns-02
 
-# 8. Test login with new password
+# 4. Test login with new password
 open https://192.168.0.150:3000
 # Login with username: eric, new password from step 1
 ```
@@ -481,8 +524,14 @@ encrypted at the time the drive held data.
 sudo zfs get encryption,creation <pool>
 # encryption should be aes-256-gcm; creation should pre-date drive insertion
 
-# 2. Rotate the passphrase BEFORE the drive leaves
-sudo zfs change-key -o keylocation=prompt <pool>   # paste new passphrase
+# 2. Rotate the passphrase BEFORE the drive leaves. Each dataset is its own
+#    encryption root (Model B) and the plaintext pool root is NOT a key holder,
+#    so change-key every encryption root in the pool — `zfs change-key <pool>`
+#    alone fails ("not an encryption root"). See docs/32-zfs-encryption.md §4.
+for root in $(zfs get -H -t filesystem,volume -o name,value -r encryptionroot <pool> \
+                | awk -F'\t' '$1==$2{print $1}'); do
+  sudo zfs change-key -o keyformat=passphrase -o keylocation=prompt "$root"  # paste new passphrase
+done
 op item edit "ZFS Pool <pool> Passphrase" 'passphrase=<new value>'
 
 # 3. Issue ATA Secure Erase (SATA SSD/HDD) or NVMe sanitize

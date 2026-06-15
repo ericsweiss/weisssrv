@@ -13,7 +13,7 @@ proxmox_startup_order: 10
 proxmox_startup_delay: 10
 
 # This host runs acme.sh for certificate generation
-acme_enabled: true
+# (the acme_certs role gates on inventory_hostname == 'dns-01')
 acme_email: "{{ admin_email }}"
 acme_dns_provider: dns_cf
 acme_domains:
@@ -148,7 +148,9 @@ cert_distribution_targets:
     ssh_port: 22222
     ssh_user: root
     ssh_no_sudo: true
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"
+    # Shared HAOS key — single source of truth in group_vars/all.yml,
+    # also consumed by home_assistant_host_key in host_vars/home.yml.
+    host_key: "{{ haos_ssh_host_key }}"
     cert_dir: /ssl
     owner: root
     group: root
@@ -161,5 +163,5 @@ acme_cert_dir: "/root/.acme.sh/{{ internal_domain }}_ecc"
 local_cert_dir: /opt/AdGuardHome/certs
 
 # AdGuard Home Sync runs from dns-01
-adguardhome_sync_enabled: true
+# (the adguard_sync role gates on inventory_hostname == 'dns-01')
 adguardhome_sync_schedule: "*:0/5"  # Every 5 minutes

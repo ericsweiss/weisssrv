@@ -4,9 +4,9 @@ Installs the [letsencrypt/unbound_exporter](https://github.com/letsencrypt/unbou
 on dns-01 / dns-02 to expose Unbound stats (cache hit rate, query counts,
 DNSSEC validations) to Prometheus.
 
-Talks to Unbound via `unbound-control` over its TLS-protected control socket.
-The `unbound` role provisions the cert pair and grants the `unbound-exporter`
-user access to it.
+Talks to Unbound via `unbound-control` over its local Unix control socket
+(`/run/unbound.ctl`, `control-use-cert: no`). The `unbound` role provisions
+the socket and grants the `unbound-exporter` user access to it.
 
 ## Deployment
 

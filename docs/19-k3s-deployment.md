@@ -10,9 +10,10 @@ K3s deployment is a three-phase approach:
 - **Phase 2 (Ansible)**: Deploys k3s + kube-vip to servers/agents.
 - **Phase 3 (Flux bootstrap)**: Bootstraps Flux, which then reconciles every
   platform component (MetalLB, Traefik, cert-manager, external-dns,
-  external-secrets, CoreDNS HelmChartConfig, DDNS, cluster-issuer, IngressRoute
-  middlewares) and every application (Authentik, downloads, recipes, gitlab-*,
-  vm-ingress) from this repo.
+  external-secrets, VPA, CoreDNS HelmChartConfig, DDNS, cluster-issuer,
+  IngressRoute middlewares — autoscaling details in docs/33-autoscaling.md) and
+  every application (Authentik, downloads, recipes, gitlab-*, vm-ingress) from
+  this repo.
 
 **All Ansible tasks are idempotent** — safe to re-run at any time.
 

@@ -61,6 +61,30 @@ spec:
               equal:
                 - instance
                 - mountpoint
+            # Same pattern for the other warning/critical pairs that use
+            # distinct alertnames and carry no component label, so neither
+            # generic rule above matches them. Pair each on its own identity
+            # labels so crossing the critical threshold doesn't page twice.
+            - source_matchers:
+                - alertname="PVCUsageCritical"
+              target_matchers:
+                - alertname="PVCUsageWarning"
+              equal:
+                - namespace
+                - persistentvolumeclaim
+            - source_matchers:
+                - alertname="ZFSPoolSpaceCritical"
+              target_matchers:
+                - alertname="ZFSPoolSpaceWarning"
+              equal:
+                - pool
+            - source_matchers:
+                - alertname="CertExpiringCritical"
+              target_matchers:
+                - alertname="CertExpiringWarning"
+              equal:
+                - namespace
+                - name
             - source_matchers:
                 - alertname="InfoInhibitor"
               target_matchers:

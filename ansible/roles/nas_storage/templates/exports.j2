@@ -9,7 +9,7 @@
 
 {% for export in nfs_exports %}
 # {{ export.path }}{{ ' (xprtsec=' ~ export.xprtsec ~ ')' if (export.xprtsec is defined and export.xprtsec) else '' }}
-{{ export.path }} {% for client in export.clients %}{{ client.spec }}({{ client.options }}{% if export.xprtsec is defined and export.xprtsec %},xprtsec={{ export.xprtsec }}{% endif %}) {% if not loop.last %}\
-        {% endif %}{% endfor %}
+{{ export.path }} {% for client in export.clients %}{% if not loop.first %} \
+        {% endif %}{{ client.spec }}({{ client.options }}{% if export.xprtsec is defined and export.xprtsec %},xprtsec={{ export.xprtsec }}{% endif %}){% endfor %}
 
 {% endfor %}

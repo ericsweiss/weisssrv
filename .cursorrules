@@ -4,7 +4,7 @@ You are working in the weisssrv homelab infrastructure repository. This reposito
 
 **Tech Stack**: Ansible, Terraform, k3s, Flux CD, External Secrets Operator (1Password Connect), ZFS, Proxmox VE, Debian 13 (trixie)
 
-See `CLAUDE.md` for the complete project overview, architecture, IP allocation, commands, storage architecture, secrets management, version management, and documentation index.
+See `CLAUDE.md` for the project overview, architecture, storage and secrets/version management, and agent-specific guidance. CLAUDE.md points to the canonical sources for things owned elsewhere: `README.md` for the roles table and documentation index, `docs/01-overview.md` for IP allocation, `docs/15-credential-rotation.md` for the 1Password items list, and `task --list` for commands.
 
 ## Critical Rules
 
@@ -75,7 +75,7 @@ See `docs/18-bootstrap-new-systems.md`
 1. `task maintenance:check-versions` - Check for updates
 2. `task maintenance:update-version SERVICE=<name>` - Update version in `ansible/inventories/prod/group_vars/all.yml`
 3. For Kubernetes workloads: `task flux:sync-versions` then `git commit` + `git push` - Flux rolls the new version out
-4. For base infra: run the appropriate deploy task (see `CLAUDE.md` for full task list)
+4. For base infra: run the appropriate deploy task (run `task --list` for the full set)
 5. Verify: `task infra:verify` (base infra), `task flux:status` (k8s), or `task k3s:status`
 
 ## Ansible Patterns
@@ -133,7 +133,7 @@ See `docs/18-bootstrap-new-systems.md`
 - **Task runner**: `Taskfile.yml` (run `task --list` for all tasks)
 - **Flux entrypoint**: `kubernetes/clusters/weisssrv/` (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 - **Platform sources**: `kubernetes/infrastructure/sources/` (HelmRepository CRs, versions-configmap.yaml)
-- **Platform controllers**: `kubernetes/infrastructure/controllers/` (external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns)
+- **Platform controllers**: `kubernetes/infrastructure/controllers/` (external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns, vpa)
 - **Platform configs**: `kubernetes/infrastructure/configs/` (cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/)
 - **Apps**: `kubernetes/apps/` (authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress)
-- **All docs**: `docs/` (see `CLAUDE.md` Documentation section for the index)
+- **All docs**: `docs/` (see the `README.md` Documentation section for the numbered index)

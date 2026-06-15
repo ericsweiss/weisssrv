@@ -2,6 +2,11 @@
 # VPA: Initial for the stateless server/worker (resize on natural restarts,
 # no proactive eviction of an SSO provider), Off for PostgreSQL (zvol-backed;
 # recommendations only — apply by hand in release.yaml).
+#
+# authentik-server is memory-only here: its CPU is owned by the chart-native
+# HPA (server.autoscaling in release.yaml, scales 2→4 on login bursts), so the
+# VPA must leave CPU alone to avoid HPA/VPA-on-CPU thrashing. The worker stays
+# single-replica + full VPA.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -12,9 +17,9 @@ spec:
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
-        minAllowed: {cpu: 50m, memory: 256Mi}
-        maxAllowed: {cpu: 2, memory: 2Gi}
-        controlledResources: [cpu, memory]
+        minAllowed: {memory: 256Mi}
+        maxAllowed: {memory: 2Gi}
+        controlledResources: [memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler

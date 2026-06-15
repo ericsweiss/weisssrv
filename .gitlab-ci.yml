@@ -97,8 +97,15 @@ workflow:
   before_script:
     - apk add --no-cache curl bash gnupg jq
     - |
-      curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor > /etc/apk/keys/1password.gpg
-      echo "https://downloads.1password.com/linux/alpinelinux/stable" >> /etc/apk/repositories
+      # 1Password's apk repo is signed with their published RSA key; fetch the
+      # public key into /etc/apk/keys under its exact filename so apk can verify
+      # the index. The older `curl 1password.asc | gpg --dearmor` form broke once
+      # 1Password moved to this RSA key — apk reported "UNTRUSTED signature" and
+      # 1password-cli became unselectable. See 1password.dev/cli/get-started.
+      curl -sSf https://downloads.1password.com/linux/keys/alpinelinux/support@1password.com-61ddfc31.rsa.pub \
+        -o /etc/apk/keys/support@1password.com-61ddfc31.rsa.pub
+      echo "https://downloads.1password.com/linux/alpinelinux/stable/" >> /etc/apk/repositories
+      apk update
       apk add --no-cache 1password-cli
     - op --version
 
@@ -317,6 +324,26 @@ shellcheck:
         echo "Checking: $script"
         shellcheck --severity=warning --exclude=SC1091,SC2034 "$script"
       done
+    - |
+      # Lint shell-script Jinja templates (*.sh.j2) shipped in roles —
+      # including the boot-time crypto-unlock units. We can't render real
+      # values in CI, so neutralize Jinja to shellcheck-parseable placeholders:
+      # drop {# #} comment blocks and {% %} statements, turn the {{"{"}} /
+      # {{"}"}} literal-brace emitters into braces, and replace remaining
+      # {{ ... }} expressions with a placeholder shell word. This catches shell
+      # logic/quoting bugs in the template body, not Jinja correctness.
+      rendered=$(mktemp)
+      find ansible/roles -name '*.sh.j2' -type f | while read -r tmpl; do
+        echo "Checking: $tmpl"
+        sed -E \
+          -e '/\{#/,/#\}/d' \
+          -e '/\{%.*%\}/d' \
+          -e 's/\{\{"\{"\}\}/{/g' \
+          -e 's/\{\{"\}"\}\}/}/g' \
+          -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+        shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered"
+      done
+      rm -f "$rendered"
     - echo "ShellCheck passed"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -325,10 +352,12 @@ shellcheck:
       changes:
         - scripts/**/*
         - ansible/roles/**/*.sh
+        - ansible/roles/**/*.sh.j2
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - scripts/**/*
         - ansible/roles/**/*.sh
+        - ansible/roles/**/*.sh.j2
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # Catches role changes that aren't mapped to any deploy-* job. Fails
@@ -534,8 +563,7 @@ pr-agent-review:
   variables:
     CONFIG__GIT_PROVIDER: "gitlab"
     GITLAB__URL: "https://git.ericsweiss.com"
-    # Model configuration: GPT-5.3-Codex (OpenAI's most capable agentic coding model)
-    # GPT-5.4 is now available but gpt-5.3-codex is optimized specifically for code review
+    # CONFIG__MODEL pinned to gpt-5.3-codex (code-review-tuned).
     # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
     CONFIG__MODEL: "gpt-5.3-codex"
     # Maximize review depth: use full context window and maximum effort
@@ -617,11 +645,13 @@ terraform-plan:
     - !reference [.install-1password-alpine, before_script]
   script:
     - cd terraform/cloudflare
-    - terraform init
+    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (provider
+    # hashes are committed; a CI-side change would mask supply-chain drift).
+    - terraform init -lockfile=readonly
     - |
       export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
       export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
-      terraform plan -input=false -no-color -out=tfplan
+      terraform plan -input=false -no-color -lock-timeout=120s -out=tfplan
     # Generate plan report for MR widget (shows resource change counts in merge requests)
     - terraform show -json tfplan | jq -r '
         ([.resource_changes[]?.change.actions?]|flatten)|
@@ -1172,6 +1202,19 @@ validation-gate:
     # -- Always-run jobs (no path filter, always present on main pushes) --
     - job: secret_detection
   script:
+    # Guard: every deploy-* job gates on `$CI_COMMIT_BRANCH == "main" &&
+    # $OP_SERVICE_ACCOUNT_TOKEN`. If the token is unset/empty those jobs are
+    # silently never created and main goes green having deployed nothing.
+    # Fail loudly here (this gate always runs on main, no token guard) so a
+    # missing CI/CD variable surfaces as a red pipeline instead of a no-op.
+    - |
+      if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+        echo "ERROR: OP_SERVICE_ACCOUNT_TOKEN is unset/empty on a main pipeline." >&2
+        echo "       All deploy-* jobs gate on this token and would be silently skipped," >&2
+        echo "       deploying nothing while the pipeline reports success." >&2
+        echo "       Set the OP_SERVICE_ACCOUNT_TOKEN CI/CD variable (masked, protected)." >&2
+        exit 1
+      fi
     - echo "All applicable checks passed - deploy jobs may proceed"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -1211,11 +1254,13 @@ deploy-terraform:
     - !reference [.install-1password-alpine, before_script]
   script:
     - cd terraform/cloudflare
-    - terraform init
+    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (provider
+    # hashes are committed; a CI-side change would mask supply-chain drift).
+    - terraform init -lockfile=readonly
     - |
       export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
       export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
-      terraform apply -auto-approve tfplan
+      terraform apply -auto-approve -lock-timeout=120s tfplan
   environment:
     name: production/cloudflare
   rules:
@@ -1373,6 +1418,7 @@ deploy-ansible-dns:
         # must trigger a redeploy.
         - ansible/inventories/prod/group_vars/dns.yml
         - ansible/inventories/prod/host_vars/dns-01.yml
+        - ansible/inventories/prod/host_vars/dns-02.yml
 
 deploy-ansible-storage:
   stage: deploy
@@ -1563,6 +1609,9 @@ deploy-gitlab:
         # /mnt/gitlab-repos persistent volume.
         - ansible/roles/zvol_mount/**/*
         - ansible/playbooks/gitlab.yml
+        # gitlab_servers group vars (postfix null-client, kernel tuning) are
+        # consumed by the gitlab playbook, so a vars-only change must redeploy.
+        - ansible/inventories/prod/group_vars/gitlab_servers.yml
         # all.yml triggers deploy for gitlab_version changes; may also trigger
         # on unrelated version bumps but the playbook is idempotent and safe to re-run
         - ansible/inventories/prod/group_vars/all.yml
@@ -2395,8 +2444,10 @@ version-check:
     expire_in: 7 days
     when: always
   rules:
-    # Run on schedule (weekly check)
+    # Run on schedule (weekly check). Soft-fail: rc=1 just means updates are
+    # available, which must not red the scheduled pipeline.
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      allow_failure: true
     # Manual trigger on web pipelines (must precede main rule to avoid auto-run)
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual

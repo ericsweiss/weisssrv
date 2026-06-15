@@ -72,7 +72,24 @@ spec:
         password: ""  # From existingSecret
 
     server:
-      replicas: 2
+      # Horizontal autoscaling via the chart's own server.autoscaling (min 2 /
+      # max 4 on ~75% CPU). Using the chart toggle (not a standalone HPA) makes
+      # the chart omit `.spec.replicas` from the server Deployment, so a helm
+      # upgrade can't reset it to a static value and churn against the HPA.
+      # CPU is owned here; vpa.yaml scopes authentik-server to memory only so
+      # the VPA does not contend with the HPA on CPU. The worker stays single-
+      # replica with full VPA and no HPA.
+      autoscaling:
+        enabled: true
+        minReplicas: 2
+        maxReplicas: 4
+        metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: 75
 
       pdb:
         enabled: true
@@ -103,9 +120,13 @@ spec:
               name: authentik-secrets
               key: smtp-password
 
+      # CPU request sized so the HPA's 75% utilization target (~150m) sits
+      # well above the ~60-70m idle draw — otherwise the threshold trips at
+      # near-idle and the HPA pins to maxReplicas. VPA manages memory only
+      # for this Deployment (see vpa.yaml), so this CPU request stays static.
       resources:
         requests:
-          cpu: 100m
+          cpu: 200m
           memory: 1Gi
         limits:
           cpu: 1000m

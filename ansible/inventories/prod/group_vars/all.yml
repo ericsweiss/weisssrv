@@ -38,6 +38,15 @@ ssh_permit_root_login: "no"
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 
+# Pinned HAOS (Home Assistant OS) SSH host key. Single source of truth
+# consumed by both the home_assistant role (via home_assistant_host_key
+# in host_vars/home.yml) and the acme_certs cert push (via the `home`
+# entry in cert_distribution_targets in host_vars/dns-01.yml). Rotate
+# here once after a HAOS rebuild:
+#   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+# Paste only the algorithm + base64 key (no leading "[host]:port").
+haos_ssh_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcIncJ961hzakmaNlj9Nw6zwOWRZm0sEYgDntiKDb9O"
+
 # SSH authorized keys
 # IMPORTANT: SSH_PUBLIC_KEY must be set via 'op run' - empty key will fail validation
 #
@@ -168,7 +177,7 @@ pulsarr_version: "0.16.0"
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
 mealie_version: "v3.19.2"
-bar_assistant_version: "5.15.0"
+bar_assistant_version: "5.15.2"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
 redis_version: "8.8.0-alpine"
@@ -201,6 +210,10 @@ gitlab_agent_helm_version: "2.27.0"
 exportarr_version: "v2.3.0"
 proxmox_exporter_version: "3.9.0"
 zfs_exporter_version: "2.3.12"
+# sha256 of zfs_exporter-<version>.linux-amd64.tar.gz from the release's
+# sha256sums.txt — verified by get_url so a tampered/MITM'd binary (run as
+# root with /dev/zfs access) fails the download. Update on every version bump.
+zfs_exporter_checksum: "sha256:7f2c953967bfcbd5ddd4931fb9d74122c45fa36df72be78d1025ab2371514a2d"
 adguard_exporter_version: "v1.2.1"
 # v0.4.6 is the latest version with binary releases (v0.5.0 is source-only)
 unbound_exporter_version: "0.4.6"
@@ -230,8 +243,8 @@ helm_chart_versions:
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "86.2.2"
-  loki: "17.3.3"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  kube_prometheus_stack: "86.2.3"
+  loki: "17.4.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.12.0"
   onepassword_connect: "2.4.1"

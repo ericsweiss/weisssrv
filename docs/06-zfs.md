@@ -8,7 +8,7 @@ The NAS has four ZFS pools with different performance characteristics:
 
 | Pool | Type | Capacity | Use Case |
 |------|------|----------|----------|
-| `tank` | raidz2 (6x 22TB) + special device + cache | 122TB | Bulk media storage |
+| `tank` | raidz2 (6x 22TB) + special device + cache | ~88TB usable (122TB raw) | Bulk media storage |
 | `ssd` | raidz1 (3x 4TB SSD) | 10.9TB | App data, databases |
 | `nvme` | Single NVMe 4TB | 2.27TB | Hot downloads, fast scratch |
 | `archive` | raidz1 (4x 6TB) | 21.8TB | Cold backups |
@@ -598,11 +598,13 @@ the posture is explicit rather than assumed.
 
 ### At Rest
 
-> **Current state (post-rollout, 2026-06).** `tank`/`ssd`/`nvme` use ZFS-native
+> **Current state (post-rollout, 2026-06).** `tank` and `ssd` use ZFS-native
 > dataset-level encryption with boot-time passphrase unlock via 1Password Connect
 > (`zfs_encryption` role; model and runbooks in
 > [`docs/32-zfs-encryption.md`](32-zfs-encryption.md)). Pool roots stay plaintext;
-> the encryption roots are the sensitive child datasets. `archive` moves to LUKS
+> the encryption roots are the sensitive child datasets. `nvme` is plaintext by
+> design — it is the media domain (hot-tier media, transcode scratch, ephemeral
+> images), non-sensitive like `tank/media`. `archive` moves to LUKS
 > via the rolling conversion in docs/32 §LUKS (role bootstrapped; conversion
 > follows the 2026-06-06 drive swap). Compute-node `local-ssd` pools stay
 > plaintext on purpose (avoids a chicken-and-egg dependency on the Connect VIP
@@ -610,7 +612,8 @@ the posture is explicit rather than assumed.
 
 | Subsystem | Encrypted? | Notes |
 |---|---|---|
-| ZFS pools `tank`, `ssd`, `nvme` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/proxmox`, `ssd/appdata/*`, `nvme/*`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
+| ZFS pools `tank`, `ssd` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/backups`, `tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `ssd/appdata` (+ children), `ssd/databases`, `ssd/pve`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
+| ZFS pool `nvme` | No | Media domain (hot-tier media, transcode scratch, ephemeral images) — non-sensitive, plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `archive` | Pending | LUKS rolling conversion per `docs/32-zfs-encryption.md` §LUKS; `luks_archive` role deployed in bootstrap mode until all four drives are converted. |
 | Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
 | App PVCs (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki, Grafana) | Yes | All zvol-backed under `ssd/appdata/*` → inherit the encrypted parent. |
@@ -656,11 +659,14 @@ The biggest concrete gain for the LAN-trust threat model is encrypting
 ZFS native encryption with passphrase-from-Connect unlock is documented
 in `docs/32-zfs-encryption.md`. Scope (post-rollout):
 
-- Encrypted: `tank/share`, `tank/proxmox` (Proxmox VM backup target —
-  holds VM tarballs with persistent app state), `tank/nextcloud-data`,
-  `tank/immich-data`, `ssd/appdata/*` (per-app via send/recv), `nvme/*`.
-- Not encrypted (by design): `tank/media` (LAN-trust acceptable;
-  encryption complicates `zfs send` to off-pool replicas),
+- Encrypted: `tank/share`, `tank/backups`, `tank/proxmox` (Proxmox VM backup
+  target — holds VM tarballs with persistent app state), `tank/nextcloud-data`,
+  `tank/immich-data`, `ssd/appdata` (+ children, per-app via send/recv),
+  `ssd/databases`, `ssd/pve` (GitLab VM disks).
+- Not encrypted (by design): `tank/media` plus the whole `nvme` pool
+  (`nvme/media` hot tier, `nvme/fast` transcode scratch, `nvme/pve` ephemeral
+  images) — one logical media domain, LAN-trust acceptable and encryption
+  complicates `zfs send` to off-pool replicas,
   `tank/pve` (ephemeral VM/LXC images), `archive` pool
   (separate LUKS effort, see #1 below), every compute node's
   `local-ssd` pool (encrypting it deadlocks cold-boot — k3s VMs live
@@ -697,7 +703,7 @@ in `docs/32-zfs-encryption.md`. Scope (post-rollout):
 - **AdGuard sync over HTTPS** — `adguardhome_sync_origin/replica`
   target the Traefik-fronted `dns-{01,02}.esweiss.com` hostnames.
 
-Earlier guidance was to skip ZFS-native encryption on `tank`/`ssd`/`nvme`. That
+Earlier guidance was to skip ZFS-native encryption on `tank`/`ssd`. That
 was reversed once 1Password Connect HA + internal exposure removed the
 manual-passphrase boot dependency — passphrase is fetched at boot from
 Connect, with a manual SSH-and-paste fallback for cold-cluster

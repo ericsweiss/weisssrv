@@ -39,6 +39,7 @@ k3s. It picks up untagged jobs from any project.
 
 ```yaml
 stages:
+  - build         # Build/push the Molecule CI container images (rebuilt only when Dockerfiles/requirements change)
   - lint          # Code quality checks
   - validate      # Schema and configuration validation
   - test          # Unit and integration tests
@@ -51,11 +52,17 @@ stages:
 
 ### Jobs by Stage
 
+#### Build Stage
+| Job | Triggers | Description |
+|-----|----------|-------------|
+| `build-molecule-images` | docker/**, ansible/requirements*.yml (and on a schedule) | Builds + pushes the `molecule-test` and `molecule-ci` images consumed by the test stage; emits image digests for downstream `needs:` |
+
 #### Lint Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
 | `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/sources/versions-configmap.yaml`, `scripts/generate-versions-configmap.py` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
+| `deploy-coverage-check` | All MRs/pushes | Runs `scripts/check-deploy-coverage.sh`; asserts every Ansible role maps to a deploy job or is in the intentionally-unmapped list |
 | `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
@@ -173,6 +180,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 | `maintenance-update-k3s-nodes` | K3s node rolling update (drain/cordon) |
 | `maintenance-proxmox-ha` | Proxmox HA configuration |
 | `maintenance-home-assistant-restart` | Restart Home Assistant after config deployment |
+| `maintenance-run-all` | Wrapper that runs the six maintenance ops in sequence via `scripts/maintenance-run-with-verify.sh` (verify always runs after) |
 | `maintenance-verify` | Post-maintenance cluster health validation (fails on critical issues) |
 
 ## Pipeline Triggers
@@ -317,8 +325,9 @@ See `task flux:bootstrap-onepassword` for instructions and `docs/29-flux-operati
 
 ### Required 1Password Items
 
-Core 1Password items used by the CI/CD pipeline (see CLAUDE.md for the complete list
-of items referenced by ExternalSecrets in the cluster):
+Core 1Password items used by the CI/CD pipeline (see
+[docs/15-credential-rotation.md](./15-credential-rotation.md) "Required 1Password
+Items" for the complete list of items referenced by ExternalSecrets in the cluster):
 
 | Item | Fields | Used By |
 |------|--------|---------|

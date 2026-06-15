@@ -6,11 +6,6 @@
     name: "{{ ssh_service_name | default('sshd') }}"
     state: restarted
 
-- name: Restart networking
-  ansible.builtin.debug:
-    msg: "DNS configuration updated - changes take effect immediately"
-  changed_when: false
-
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true

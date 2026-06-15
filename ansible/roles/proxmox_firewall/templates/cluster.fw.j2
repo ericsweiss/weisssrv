@@ -81,14 +81,8 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 8123 -log nolog
 # SSH add-on (port 22222)
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 22222 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 22222 -log nolog
-# ICMP from admin sources for ping/traceroute. Without this the
-# supervisor's NFS media mount looks broken to anyone pinging
-# pve-nas-01 from HAOS during triage (incident 2026-06-10: a
-# pve-firewall reload during infra:deploy briefly broke conntrack
-# RELATED,ESTABLISHED for tap154 on pve-opt-03 and the mount appeared
-# to be a HAOS network failure when it was actually a transient
-# host-firewall artifact). Outbound NFS to pve-nas-01 still relies on
-# RELATED,ESTABLISHED at PVEFW-FORWARD level.
+# ICMP from admin sources for ping/traceroute during triage; see
+# docs/11-firewall.md (2026-06-10 conntrack incident).
 IN ACCEPT -source +dc/admin_ts -p icmp -log nolog
 IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
 
@@ -192,18 +186,6 @@ OUT ACCEPT -p tcp -dport 587 -log nolog
 
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 3389 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 3389 -log nolog
-
-[group sg-xmrig]
-
-# Mining pool outbound connections
-OUT ACCEPT -p tcp -dport 20128 -log nolog
-OUT ACCEPT -p tcp -dport 18192 -log nolog
-OUT ACCEPT -p tcp -dport 10128 -log nolog
-OUT ACCEPT -p tcp -dport 10032 -log nolog
-OUT ACCEPT -p tcp -dport 10001 -log nolog
-# DNS resolution
-OUT ACCEPT -p udp -dport 53 -log nolog
-OUT ACCEPT -p tcp -dport 53 -log nolog
 
 [RULES]
 

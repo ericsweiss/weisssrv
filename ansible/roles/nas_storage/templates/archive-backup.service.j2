@@ -1,6 +1,11 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Replicate ZFS datasets to archive pool
+# Ordered after ZFS mounts so source datasets (tank/*, ssd/*) are settled
+# before replication runs; archive-backupctl additionally probes each
+# source for presence, so a still-importing source is skipped, not replicated
+# from an empty mountpoint dir.
+After=zfs-mount.service
 
 [Service]
 Type=oneshot

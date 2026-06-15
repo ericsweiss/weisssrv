@@ -1,7 +1,6 @@
 ---
-# Manage Proxmox storage replication jobs
+# Manage ZFS storage replication jobs for Proxmox HA failover.
 #
-# This task file manages ZFS replication jobs for HA failover.
 # Multi-target replication is supported: each VM/CT can replicate to
 # multiple target nodes, allowing failover to ANY available node.
 #
@@ -36,22 +35,8 @@
   when: current_replication_jobs_raw.stdout == '' or current_replication_jobs_raw.rc != 0
   tags: [proxmox_ha_replication]
 
-# Build a lookup dictionary of current jobs: { "job_id": { "source": ..., "target": ... } }
-# This allows us to check both source and target for drift detection
-- name: Build current jobs lookup dictionary
-  ansible.builtin.set_fact:
-    current_jobs_lookup: >-
-      {{
-        current_replication_jobs | default([])
-        | items2dict(key_name='id', value_name='target')
-        | dict2items
-        | map('combine', {'dummy': true})
-        | list
-        | default([])
-      }}
-  tags: [proxmox_ha_replication]
-
-# Build a proper lookup with source, target, schedule, and comment info
+# Build a lookup with source, target, schedule, and comment info keyed by job
+# ID. Used for both source and target drift detection.
 - name: Build detailed current jobs lookup
   ansible.builtin.set_fact:
     current_jobs_detail: >-

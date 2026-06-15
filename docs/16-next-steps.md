@@ -251,7 +251,7 @@ runs on a weekly schedule and surfaces updates without noise.
 - [x] **kube-prometheus-stack** -- Prometheus, Grafana, Alertmanager, node-exporter, kube-state-metrics
 - [x] **Loki** -- Log aggregation (single-binary mode, 30-day retention, 75GB ZFS zvol)
 - [x] **Alloy** -- DaemonSet log collector on all nodes (successor to Promtail)
-- [x] **Exporters** -- Proxmox (all 6 hosts), ZFS, AdGuard, Unbound, Blackbox, Plex, Exportarr (NZBGet + qBittorrent active; Sonarr/Radarr/Lidarr/Prowlarr staged at replicas:0 pending API keys)
+- [x] **Exporters** -- Proxmox (all 6 hosts), ZFS, AdGuard, Unbound, Blackbox, Plex, Exportarr (all four -- Sonarr/Radarr/Lidarr/Prowlarr -- active at replicas:1 with API keys configured; see docs/31-observability.md)
 - [x] **Service Monitors** -- Flux controllers (GitLab VM and Home Assistant VM manifests ready, activate after enabling metrics on each)
 - [x] **Alerting** -- Discord webhook + email via smtp-relay, custom alert rules for storage, infrastructure, and backups
 - [x] **Grafana** -- `grafana.esweiss.com` with Authentik OIDC, Loki datasource, dashboard sidecar
@@ -508,7 +508,12 @@ obvious.
 
 - [x] Add fail2ban to Proxmox hosts (deployed)
 - [ ] Network segmentation with VLANs (IoT, guest, management)
-- [ ] Implement Network Policies in k3s (default-deny ingress)
+- [x] Implement Network Policies in k3s (default-deny ingress) -- substantially
+  done: default-deny + scoped policies live in download-clients, recipes,
+  authentik, gitlab-runner, gitlab-agent, cloudflare-ddns, and onepassword-connect
+  namespaces (per-class runner egress documented in docs/13-ci-cd.md § Runner
+  Network Boundaries). Still uncovered: observability and several controller/ingress
+  namespaces (cert-manager, external-dns, traefik, metallb-system, vpa-system).
 - [x] External Secrets Operator with 1Password Connect provider (deployed -- see docs/29-flux-operations.md)
 
 ### Storage Enhancements

@@ -13,6 +13,37 @@ populated by:
 - `acme_certs` role: cert renewal/distribution writes `cert_renewal_*` metrics
   (consumed by `CertRenewalFailed` PrometheusRule)
 - This role's own corosync + pmxcfs health collector (see below)
+- This role's own zpool-status collector (see below)
+
+## zpool-status collector (hosts with ZFS pools)
+
+This role also installs a per-pool ZFS health collector that runs once a
+minute. It exists because pool *health* alone misses silent-corruption: a
+single-vdev pool accumulating checksum errors stays `ONLINE` while
+`zpool status` quietly counts errors (the failure mode that corrupted
+pve-laptop-01's `local-ssd` on 2026-06-12).
+
+Components installed wherever a `zpool` binary is present:
+
+- `/usr/local/sbin/zpool-status-collector.sh` — oneshot script that parses
+  `zpool status -v` per pool and writes a `.prom` file atomically.
+- `zpool-status-collector.service` + `.timer` — oneshot unit fired every minute.
+
+Emitted metrics (in `/var/lib/node_exporter/zfs_pool_status.prom`):
+
+| Metric | Meaning |
+|--------|---------|
+| `zfs_pool_status_health_code{pool}` | `0`=ONLINE `1`=DEGRADED `2`=other/FAULTED. |
+| `zfs_pool_status_errors_total{pool,type}` | Summed per-vdev READ/WRITE/CKSUM counters; non-zero while still ONLINE is the silent-corruption signature. |
+| `zfs_pool_status_data_errors{pool}` | Entries in the `zpool status -v` permanent-error list. |
+| `zfs_pool_status_last_scrub_seconds{pool}` | Unix time the last scrub completed (an in-progress scrub counts as fresh; `0` = never). |
+| `zfs_pool_status_collector_last_success_seconds` | Sentinel — staleness means the collector itself is broken. |
+
+Hosts without ZFS emit only the sentinel. Companion alerts live in the
+`homelab.storage` group of
+`kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`:
+`ZFSPoolDeviceErrors`, `ZFSPoolNotOnline`, `ZFSPoolScrubStale`,
+`ZFSPoolCollectorStale`.
 
 ## Corosync + pmxcfs health collector (Proxmox hosts only)
 

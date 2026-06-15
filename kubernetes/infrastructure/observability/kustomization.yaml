@@ -4,6 +4,7 @@ kind: Kustomization
 namespace: observability
 resources:
   - namespace.yaml
+  - networkpolicy.yaml
   - kube-prometheus-stack
   - loki
   - alloy

@@ -1,8 +1,12 @@
 # Cloudflare static resource configuration
 # DNS records are managed by external-dns in the K3s cluster
 
+# account_id scopes the lookup — Cloudflare zone names are not unique across
+# accounts, so a like-named zone visible to the token would make a name-only
+# lookup ambiguous.
 data "cloudflare_zone" "external" {
-  name = var.external_domain
+  account_id = var.cloudflare_account_id
+  name       = var.external_domain
 }
 
 # Zone-wide TLS/perf/caching settings (HSTS + Always Use HTTPS enforced)

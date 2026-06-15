@@ -17,8 +17,10 @@
       line: "PasswordAuthentication {{ ssh_password_authentication | ternary('yes', 'no') }}"
     - regexp: "^#?PubkeyAuthentication"
       line: "PubkeyAuthentication {{ ssh_pubkey_authentication | ternary('yes', 'no') }}"
-    - regexp: "^#?ChallengeResponseAuthentication"
-      line: "ChallengeResponseAuthentication no"
+    # KbdInteractiveAuthentication replaces the deprecated
+    # ChallengeResponseAuthentication alias on OpenSSH 9.x (Debian trixie).
+    - regexp: "^#?KbdInteractiveAuthentication"
+      line: "KbdInteractiveAuthentication no"
     - regexp: "^#?UsePAM"
       line: "UsePAM yes"
     - regexp: "^#?X11Forwarding"

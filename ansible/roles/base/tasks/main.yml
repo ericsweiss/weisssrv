@@ -34,6 +34,7 @@
   when:
     - ansible_facts['os_family'] == "Debian"
     - is_virtual_machine | bool
+  tags: [packages, base]
 
 - name: Enable and start qemu-guest-agent service
   ansible.builtin.systemd:
@@ -43,6 +44,7 @@
   when:
     - ansible_facts['os_family'] == "Debian"
     - is_virtual_machine | bool
+  tags: [packages, base]
 
 # Disable unattended-upgrades on VMs to prevent unexpected updates/reboots
 # We manage updates via controlled Task/Ansible workflows instead
@@ -51,6 +53,7 @@
     path: /etc/apt/apt.conf.d/20auto-upgrades
   register: auto_upgrades_config
   when: is_virtual_machine | bool
+  tags: [config, base]
 
 - name: Disable unattended-upgrades auto-update
   ansible.builtin.copy:
@@ -68,6 +71,7 @@
   when:
     - is_virtual_machine | bool
     - auto_upgrades_config.stat.exists | default(false)
+  tags: [config, base]
 
 - name: Stop and disable unattended-upgrades service
   ansible.builtin.systemd:
@@ -76,6 +80,37 @@
     state: stopped
   failed_when: false  # Service may not exist on all systems
   when: is_virtual_machine | bool
+  tags: [config, base]
+
+# OpenIPMI ships an LSB init script that tries to load IPMI drivers at boot.
+# On hosts with no BMC/IPMI hardware the load fails ("ipmi_si: Unable to find
+# any System Interface(s)"), leaving the unit failed and the whole system in
+# 'degraded' state on every boot. Mask it where there's no IPMI device so the
+# boot stays clean. No-op where openipmi isn't installed (VMs/containers/CI) or
+# where real IPMI hardware exists. The role only masks (never unmasks): if a
+# host later gains a BMC, re-enable manually with `systemctl unmask
+# openipmi.service` — the conditional below won't auto-revert it.
+- name: Check for IPMI hardware device
+  ansible.builtin.stat:
+    path: /dev/ipmi0
+  register: base_ipmi_device
+  tags: [config, base]
+
+- name: Check whether openipmi init script is present
+  ansible.builtin.stat:
+    path: /etc/init.d/openipmi
+  register: base_openipmi_initscript
+  tags: [config, base]
+
+- name: Mask openipmi.service on hosts without IPMI hardware
+  ansible.builtin.systemd:
+    name: openipmi.service
+    masked: true
+  failed_when: false  # Unit may not be generated yet on first run
+  when:
+    - base_openipmi_initscript.stat.exists
+    - not base_ipmi_device.stat.exists
+  tags: [config, base]
 
 - name: Ensure admin user exists with sudo group
   ansible.builtin.user:

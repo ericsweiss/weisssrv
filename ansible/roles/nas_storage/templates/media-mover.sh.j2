@@ -43,6 +43,7 @@ trap_write_failure_metrics() {
   local duration=$(( end_ts - _MM_START_TS ))
   write_prom_metrics 0 "$duration"
 }
+# shellcheck disable=SC2154 # `rc` is assigned via $? at trap fire time
 trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then trap_write_failure_metrics; fi' EXIT
 
 parse_age_to_minutes() {

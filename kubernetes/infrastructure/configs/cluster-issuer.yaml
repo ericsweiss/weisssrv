@@ -8,7 +8,6 @@ spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
 
-    # Email for certificate expiration notifications
     email: ericsweiss1@gmail.com
 
     privateKeySecretRef:

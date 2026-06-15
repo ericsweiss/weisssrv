@@ -227,7 +227,7 @@ weisssrv/
 │   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
 │   │                         #   that form the first four stages of the five-stage Flux Kustomization chain:
 │   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap)
-│   │                         #     infrastructure-controllers   (HelmReleases for ESO, Connect, MetalLB, cert-manager, Traefik, external-dns)
+│   │                         #     infrastructure-controllers   (HelmReleases for ESO, Connect, MetalLB, cert-manager, Traefik, external-dns, VPA)
 │   │                         #     infrastructure-configs       (ClusterSecretStore, ClusterIssuer, Traefik middlewares, wildcard certs, CoreDNS, DDNS, Connect IngressRoute)
 │   │                         #     infrastructure-observability (kube-prometheus-stack, Loki, Alloy, exporters, dashboards)
 │   └── apps/                 # Sibling top-level Kustomization (fifth stage; dependsOn infrastructure-observability):
@@ -383,6 +383,16 @@ Self-hosted Git repository and CI/CD platform:
   - Authentik SAML SSO integration
   - Git SSH access on port 2222 (external)
 - **Documentation**: [docs/27-gitlab-deployment.md](docs/27-gitlab-deployment.md)
+
+### Observability (Grafana)
+
+Metrics, logs, dashboards, and alerting for the whole platform:
+
+- **URL**: grafana.esweiss.com
+- **Stack**: Prometheus + Grafana + Loki + Alloy, plus exporters (Proxmox, ZFS, AdGuard, Unbound, Blackbox, Plex, Exportarr)
+- **Authentication**: Authentik OIDC
+- **Features**: community + custom dashboards via the `grafana_dashboard` ConfigMap sidecar, Loki log datasource, Discord/email alerting
+- **Documentation**: [docs/31-observability.md](docs/31-observability.md)
 
 ## Documentation
 

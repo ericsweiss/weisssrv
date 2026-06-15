@@ -30,6 +30,15 @@
     path: /etc/apt/keyrings/grafana.gpg
   register: alloy_host_gpg_key
 
+# The verify/dearmor steps below call gpg. The base role normally provisions
+# gnupg, but this role has no meta dependency on it, so install it explicitly
+# (gated on the same condition as the key steps) to stay correct standalone.
+- name: Ensure gnupg is installed
+  ansible.builtin.apt:
+    name: gnupg
+    state: present
+  when: not alloy_host_gpg_key.stat.exists
+
 - name: Download Grafana GPG key
   ansible.builtin.get_url:
     url: https://apt.grafana.com/gpg.key

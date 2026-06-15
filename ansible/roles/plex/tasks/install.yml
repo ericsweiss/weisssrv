@@ -54,11 +54,22 @@
     - /usr/share/keyrings/plex-archive-keyring.gpg
     - /usr/share/keyrings/plexmediaserver.gpg
 
+# The keyring (/etc/apt/keyrings/plexmediaserver.v2.gpg) is the persistent
+# artifact; gate the whole download -> verify -> dearmor -> cleanup sequence on
+# its absence so the role stays idempotent. Without this gate, the cleanup task
+# below deletes the temp key, which makes get_url re-download (changed) and the
+# cleanup re-delete (changed) on every subsequent run — breaking idempotence.
+- name: Check whether the Plex v2 GPG keyring already exists
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/plexmediaserver.v2.gpg
+  register: plex_v2_keyring
+
 - name: Download Plex v2 GPG key
   ansible.builtin.get_url:
     url: https://downloads.plex.tv/plex-keys/PlexSign.v2.key
     dest: /tmp/PlexSign.v2.key
     mode: "0644"
+  when: not plex_v2_keyring.stat.exists
 
 - name: Verify Plex v2 GPG key fingerprint (primary key must match exactly)
   ansible.builtin.shell: |
@@ -71,12 +82,20 @@
   args:
     executable: /bin/bash
   changed_when: false
+  when: not plex_v2_keyring.stat.exists
 
 - name: Add Plex v2 GPG key to keyring
   ansible.builtin.shell: |
     gpg --yes --dearmor -o /etc/apt/keyrings/plexmediaserver.v2.gpg < /tmp/PlexSign.v2.key
   args:
     creates: /etc/apt/keyrings/plexmediaserver.v2.gpg
+  when: not plex_v2_keyring.stat.exists
+
+- name: Clean up downloaded GPG key
+  ansible.builtin.file:
+    path: /tmp/PlexSign.v2.key
+    state: absent
+  when: not plex_v2_keyring.stat.exists
 
 - name: Add Plex v2 repository
   ansible.builtin.apt_repository:

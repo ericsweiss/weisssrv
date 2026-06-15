@@ -74,6 +74,9 @@ set -euo pipefail
 #                    `task proxmox:ha`.
 #   zfs_encryption — ZFS-native passphrase activation; sensitive cold-boot
 #                    operation. Manual via `task zfs:encrypt`.
+#   luks_archive   — boot-time LUKS-mapper unlock for the archive pool;
+#                    sensitive cold-boot operation. Manual via
+#                    `task luks-archive:bootstrap` / `task luks-archive:apply`.
 INTENTIONALLY_UNMAPPED_ROLES=(
     k3s
     proxmox_vm

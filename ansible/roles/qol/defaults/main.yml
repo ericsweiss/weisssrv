@@ -3,6 +3,14 @@
 
 admin_user: eric
 
+# Packages installed by the QoL role (override per host/group as needed).
+qol_packages:
+  - zsh
+  - neovim
+  - fzf
+  - ripgrep
+  - fd-find
+
 # Oh My Zsh pinned commit (no release tags; pin to specific commit for reproducibility)
 # Update by checking: https://github.com/ohmyzsh/ohmyzsh/commits/master
 omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"

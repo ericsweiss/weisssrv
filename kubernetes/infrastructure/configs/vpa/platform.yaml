@@ -1,8 +1,9 @@
 ---
-# VPA policies for platform controllers (updateMode Auto: the updater may
-# evict to apply new requests — all of these tolerate restarts; Traefik has
-# 3 replicas + PDB). Lives in configs/ because the VPA CRD is installed by
-# controllers/vpa.
+# VPA policies for platform controllers. Most use updateMode Auto (the updater
+# may evict to apply new requests — these tolerate restarts; Traefik has a PDB
+# and an HPA, and is memory-only here). external-dns is single-replica with no
+# PDB so it uses Initial to avoid eviction-driven reconciliation gaps. Lives in
+# configs/ because the VPA CRD is installed by controllers/vpa.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
@@ -54,11 +55,15 @@ spec:
   updatePolicy:
     updateMode: Auto
   resourcePolicy:
+    # Memory only: Traefik's chart-native autoscaling (autoscaling.enabled in
+    # controllers/traefik/release.yaml) scales on CPU, so this VPA must not also
+    # control CPU (an HPA and a VPA driving the same resource conflict).
+    # controlledResources excludes cpu accordingly.
     containerPolicies:
       - containerName: "*"
-        minAllowed: {cpu: 50m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 512Mi}
-        controlledResources: [cpu, memory]
+        minAllowed: {memory: 64Mi}
+        maxAllowed: {memory: 512Mi}
+        controlledResources: [memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -127,8 +132,12 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: external-dns
+  # Initial (not Auto): external-dns runs a single replica with no PDB, so the
+  # updater evicting the only pod to apply new requests would briefly halt
+  # Cloudflare record reconciliation. Initial applies recommendations on the
+  # next natural restart instead.
   updatePolicy:
-    updateMode: Auto
+    updateMode: Initial
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
@@ -210,4 +219,28 @@ spec:
       - containerName: "*"
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 500m, memory: 512Mi}
+        controlledResources: [cpu, memory]
+---
+# CoreDNS is HPA-pinned (configs/coredns/hpa.yaml, min==max==2), so this VPA is
+# recommend-only (updateMode: Off) — it never mutates pods (which would conflict
+# with the HPA), it just records a right-sizing signal for the operator so a
+# request bump is data-driven if DNS QPS grows. Inspect with
+# `kubectl describe vpa coredns -n kube-system`.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: coredns
+  namespace: kube-system
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: coredns
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 32Mi}
+        maxAllowed: {cpu: 500m, memory: 256Mi}
         controlledResources: [cpu, memory]

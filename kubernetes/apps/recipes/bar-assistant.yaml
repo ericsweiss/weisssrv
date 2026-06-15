@@ -58,7 +58,12 @@ spec:
           image: redis:${redis_version}
           imagePullPolicy: IfNotPresent
           env:
-            # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes
+            # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes.
+            # Accepted tradeoff: this cache is unauthenticated but the
+            # recipes namespace runs default-deny + the allow-bar-assistant-redis
+            # ingress only admits the bar-assistant pod, so exposure is
+            # in-namespace only. If more pods ever land in recipes, set a
+            # password from recipes-secrets instead.
             - name: ALLOW_EMPTY_PASSWORD
               value: "yes"
           ports:

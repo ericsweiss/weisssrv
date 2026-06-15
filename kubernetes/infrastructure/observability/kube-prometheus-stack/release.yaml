@@ -412,12 +412,72 @@ spec:
                   summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 90%'
                   description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
+              # Inode exhaustion: byte-usage rules above miss a filesystem that
+              # fills its inode table (many tiny files) while still having free
+              # bytes. The chart's default NodeFilesystemAlmostOutOfFiles only
+              # covers the in-cluster node-exporter; this fires across both that
+              # job and the bare-metal node-exporter-host job (port 9101) so a
+              # Proxmox host root running out of inodes is caught too.
+              - alert: InodeUsageWarning
+                expr: >-
+                  (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+                  / node_filesystem_files{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+                  * 100 < 10
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Inodes below 10% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
+                  description: >-
+                    Only {{ $value | printf "%.1f" }}% of inodes are free
+                    on {{ $labels.instance }}
+                    mount {{ $labels.mountpoint }}.
+
+              - alert: InodeUsageCritical
+                expr: >-
+                  (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"}
+                  / node_filesystem_files{fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"})
+                  * 100 < 5
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: 'Inodes below 5% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
+                  description: >-
+                    Only {{ $value | printf "%.1f" }}% of inodes are free
+                    on {{ $labels.instance }}
+                    mount {{ $labels.mountpoint }}.
+
       homelab-infrastructure:
         groups:
           - name: homelab.infrastructure
             rules:
               # No VPNDown alert yet — needs a Gluetun exporter or blackbox
               # probe that produces a gluetun_vpn_status metric.
+
+              # Loki is a single-replica RF=1 SPOF pinned to the NAS (accepted
+              # homelab tradeoff); senders do not buffer, so silent ingestion
+              # breakage loses logs without surfacing. This catches a sustained
+              # 5xx rate on Loki's HTTP API (push/query) so the breakage pages.
+              - alert: LokiRequestFailures
+                expr: >-
+                  sum(rate(loki_request_duration_seconds_count{status_code=~"5..",
+                  job="observability/loki"}[5m]))
+                  /
+                  sum(rate(loki_request_duration_seconds_count{job="observability/loki"}[5m]))
+                  > 0.05
+                  and sum(rate(loki_request_duration_seconds_count{job="observability/loki"}[5m])) > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Loki is returning 5xx on more than 5% of requests'
+                  description: >-
+                    Loki is serving HTTP 5xx on
+                    {{ $value | printf "%.1f" }}% of requests over the last
+                    5 minutes (push/query). Log ingestion may be silently
+                    failing — senders do not buffer.
+
               - alert: FluxReconciliationFailure
                 expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{job="observability/flux-system"}[5m])) > 0
                 for: 15m
@@ -479,6 +539,28 @@ spec:
                 annotations:
                   summary: 'ExternalSecret {{ $labels.name }} sync failing'
                   description: 'ExternalSecret {{ $labels.name }} in {{ $labels.namespace }} has not synced for 15 minutes.'
+
+              # The cloudflare-ddns CronJob runs every 5m to keep the public-IP
+              # A records current. KubeJobFailed catches hard pod failures; this
+              # catches the silent case where successful runs stop advancing
+              # (token revoked → jobs fail, schedule stuck) so external services
+              # don't break unnoticed on the next WAN IP change. (It does not
+              # detect an IP that drifted while a run "succeeded" — that needs a
+              # blackbox/textfile IP-match probe, not yet deployed.)
+              - alert: DDNSStale
+                expr: >-
+                  (time() - kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"} > 3600)
+                  or absent(kube_cronjob_status_last_successful_time{namespace="cloudflare-ddns", cronjob="cloudflare-ddns"})
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'Cloudflare DDNS has not had a successful run in over 1 hour'
+                  description: >-
+                    The cloudflare-ddns CronJob (every 5m) has had no successful
+                    completion for more than an hour, or the metric is absent.
+                    Public-IP A records (ericsweiss.com, direct/git) may go stale
+                    on the next WAN IP change.
 
               - alert: CertExpiringWarning
                 expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
@@ -824,23 +906,26 @@ spec:
                   summary: 'Certificate renewal failed'
                   description: 'The certificate renewal and distribution script has not completed successfully.'
 
-      homelab-backup:
-        groups:
-          - name: homelab.backup
-            rules:
-              # No snapshot-staleness alert yet — the zfs_exporter exposes no
-              # snapshot-level timestamp metrics.
-              - alert: ZFSPoolDegraded
-                expr: zfs_pool_health > 0
-                for: 5m
+              - alert: CertRenewalStale
+                expr: (time() - cert_renewal_last_success_timestamp_seconds > 86400 * 2) or absent(cert_renewal_last_success_timestamp_seconds)
+                for: 1h
                 labels:
-                  severity: critical
+                  severity: warning
                 annotations:
-                  summary: 'ZFS pool {{ $labels.pool }} is degraded'
+                  summary: 'Certificate renewal has not succeeded in over 2 days'
                   description: >-
-                    ZFS pool {{ $labels.pool }}
-                    on {{ $labels.instance }}
-                    has health status {{ $value }} (0=ONLINE, non-zero=degraded/faulted).
+                    No successful acme.sh certificate renewal/distribution has
+                    been recorded for more than 48 hours, or the metric is
+                    missing (timer removed, host off inventory). cert-manager's
+                    CertExpiring alerts cover in-cluster certs but not these
+                    host-distributed acme.sh certs.
+
+      # The former homelab-backup group's ZFSPoolDegraded (zfs_exporter,
+      # zfs_pool_health, NAS-only) was removed: it double-fired with the
+      # textfile-collector ZFSPoolNotOnline above (zfs_pool_status_health_code,
+      # all hosts, same critical severity) on a single degraded pool. There is
+      # still no snapshot-staleness alert — the zfs_exporter exposes no
+      # snapshot-level timestamp metric.
 
       homelab-temperature:
         groups:

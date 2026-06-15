@@ -25,7 +25,7 @@
       - "k3s_api_vip: {{ k3s_api_vip }}"
       - "k3s_labels: {{ k3s_labels }}"
       - "Config will be written to: /etc/rancher/k3s/config.yaml"
-  tags: [debug, always]
+  tags: [debug]
 
 - name: Deploy k3s agent config
   ansible.builtin.template:
@@ -147,7 +147,9 @@
     - groups['k3s_servers'] is defined
     - groups['k3s_servers'] | length > 0
   delegate_to: "{{ groups['k3s_servers'][0] | default(inventory_hostname) }}"
-  changed_when: false
+  register: k3s_label_result
+  # kubectl prints "node/X labeled" on mutation, "node/X not labeled" on no-op.
+  changed_when: "' not labeled' not in (k3s_label_result.stdout | default(''))"
 
 - name: Apply node taints
   ansible.builtin.command: >
@@ -160,4 +162,8 @@
     - groups['k3s_servers'] is defined
     - groups['k3s_servers'] | length > 0
   delegate_to: "{{ groups['k3s_servers'][0] | default(inventory_hostname) }}"
-  changed_when: false
+  register: k3s_taint_result
+  # kubectl prints "node/X tainted/untainted/modified" on mutation.
+  changed_when: >-
+    ('tainted' in (k3s_taint_result.stdout | default('')))
+    or ('modified' in (k3s_taint_result.stdout | default('')))

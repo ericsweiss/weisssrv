@@ -1,0 +1,64 @@
+---
+# Default-deny ingress for Traefik. Traefik is the ingress edge so its data
+# ports must stay open to the whole network (MetalLB forwards external/LAN
+# traffic with externalTrafficPolicy: Local, preserving arbitrary client IPs),
+# but the dashboard/api and metrics ports are locked to known sources.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: traefik
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Edge data plane: web (80) + websecure (443) reachable from anywhere
+# (LoadBalancer client traffic). release.yaml overrides the web/websecure
+# entrypoint container ports to 80/443 (ports.web.port / ports.websecure.port),
+# and the LoadBalancer Services target those container ports directly with
+# externalTrafficPolicy: Local, so the NetworkPolicy is evaluated at 80/443.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-ingress
+  namespace: traefik
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+
+---
+# Metrics scrape from observability (metrics entrypoint container port 9100).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-ingress
+  namespace: traefik
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 9100
+
+# Egress is intentionally unrestricted: Traefik proxies to backend Services in
+# every namespace, so a default-deny-egress would require enumerating the entire
+# cluster service surface.

@@ -29,6 +29,14 @@
   when: not (nic_tuning_ip_forward | bool)
   notify: Disable sysctl ip_forward
 
+- name: Install ethtool for NIC overrides
+  ansible.builtin.apt:
+    name: ethtool
+    state: present
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - nic_tuning_overrides | length > 0
+
 - name: Ensure /etc/network/interfaces.d exists
   ansible.builtin.file:
     path: /etc/network/interfaces.d
@@ -77,3 +85,6 @@
   loop_control:
     label: "{{ item.0.interface }} {{ item.1.feature }}={{ item.1.value }}"
   changed_when: false
+  # Tolerant like the ifup drop-in's `|| logger` fallback: a transient ethtool
+  # failure here should not fail the play (the boot-time drop-in re-applies it).
+  failed_when: false

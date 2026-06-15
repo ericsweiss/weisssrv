@@ -31,8 +31,28 @@ if [[ ! "$VMID" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
+# Hard wall-clock bound for the SSH probes. ConnectTimeout=2 only bounds the
+# TCP connect phase — a host that accepts the connection but stalls in PAM/sssd
+# or a disk-stuck remote shell would otherwise hang the step-1 loop and step-4
+# qm scan (and the Taskfile task calling this script) indefinitely. ServerAlive*
+# trips on a dead post-connect channel; the outer `timeout` is the backstop.
+# `timeout` is GNU coreutils (gtimeout via brew on macOS); falls through to a
+# bare ssh if neither exists.
+timeout_cmd() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
 ssh_quick() {
-    ssh -o ConnectTimeout=2 -o BatchMode=yes "$@"
+    timeout_cmd 6 ssh -o ConnectTimeout=2 -o BatchMode=yes \
+        -o ServerAliveInterval=2 -o ServerAliveCountMax=2 "$@"
 }
 
 # Step 1: pick a reachable host as cluster entry point.

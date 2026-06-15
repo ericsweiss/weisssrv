@@ -1,22 +1,44 @@
 ---
 # ZFS dataset configuration and scrub timers
 
+# Pools can be legitimately absent at deploy time — the archive pool's
+# documented steady state is exported/unplugged. Probe each pool once and
+# skip its datasets/scrub timer when it is not imported, rather than
+# hard-failing the whole storage deploy on a `zfs list` miss.
+- name: Probe imported ZFS pools
+  ansible.builtin.command: zpool list -H -o name
+  register: zfs_imported_pools
+  changed_when: false
+  check_mode: false
+
+# Reads each property's current value and only `zfs set`s on a mismatch,
+# so the task reports changed only when it actually changed something.
+# Datasets in a pool that is not imported are skipped (not failed).
 - name: Verify ZFS datasets exist and set properties
   ansible.builtin.shell: |
-    if zfs list {{ item.1.name }} >/dev/null 2>&1; then
-      {% for prop, value in item.1.properties.items() %}
-      zfs set {{ prop }}={{ value }} {{ item.1.name }}
-      {% endfor %}
-      echo "CONFIGURED"
-    else
+    if ! zfs list {{ item.1.name }} >/dev/null 2>&1; then
       echo "DATASET_MISSING"
+      exit 0
     fi
+    changed=0
+    {% for prop, value in item.1.properties.items() %}
+    current=$(zfs get -H -o value {{ prop }} {{ item.1.name }} 2>/dev/null)
+    if [ "$current" != "{{ value }}" ]; then
+      zfs set {{ prop }}={{ value }} {{ item.1.name }}
+      changed=1
+    fi
+    {% endfor %}
+    if [ "$changed" -eq 1 ]; then echo "CHANGED"; else echo "OK"; fi
   loop: "{{ zfs_pools | subelements('datasets') }}"
   loop_control:
     label: "{{ item.1.name }}"
   register: zfs_result
-  changed_when: "'CONFIGURED' in zfs_result.stdout"
+  changed_when: "'CHANGED' in zfs_result.stdout"
+  # The pool is imported (the when: gate guarantees it), so a missing dataset
+  # here is a real misconfiguration, not the exported-archive steady state —
+  # surface it. Datasets in an un-imported pool are skipped by the when: gate.
   failed_when: "'DATASET_MISSING' in zfs_result.stdout"
+  when: item.0.name in zfs_imported_pools.stdout_lines
 
 - name: Enable ZFS scrub timer
   ansible.builtin.systemd:
@@ -26,7 +48,9 @@
   loop: "{{ zfs_pools }}"
   loop_control:
     label: "{{ item.name }}"
-  when: zfs_scrub_enabled | default(true)
+  when:
+    - zfs_scrub_enabled | default(true)
+    - item.name in zfs_imported_pools.stdout_lines
   failed_when: false
 
 - name: Ensure zfs-auto-snapshot is installed

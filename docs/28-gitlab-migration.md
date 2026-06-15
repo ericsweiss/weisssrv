@@ -147,7 +147,7 @@ Configure GitHub as a read-only push mirror so changes pushed to GitLab automati
 
 ### Step 3.2: Verify Required 1Password Items
 
-The service account needs read access to these items in the "Homelab" vault. The table below covers the core items needed to get started. For the complete and authoritative list of all required 1Password items (including items added as new pipeline jobs are created), see the **Required 1Password Items** section in `docs/13-ci-cd.md` or `CLAUDE.md`.
+The service account needs read access to these items in the "Homelab" vault. The table below covers the core items needed to get started. For the complete and authoritative list of all required 1Password items (including items added as new pipeline jobs are created), see the **Required 1Password Items** section in `docs/15-credential-rotation.md`.
 
 | Item Name | Required Fields | Used By |
 |-----------|----------------|---------|
@@ -158,8 +158,8 @@ The service account needs read access to these items in the "Homelab" vault. The
 
 Most cluster secrets (Authentik, VPN, Mealie/Bar Assistant, runner tokens, agent
 token, SMTP, etc.) are consumed in-cluster by ExternalSecrets, not by CI — they do
-not need to be visible to the CI service account. See `CLAUDE.md` for the complete
-list of 1Password items.
+not need to be visible to the CI service account. See
+`docs/15-credential-rotation.md` for the complete list of 1Password items.
 
 ### Step 3.3: Create K3s Kubeconfig Item (Optional)
 

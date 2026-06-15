@@ -105,15 +105,25 @@ mkdir -p "$OUT_DIR"
                 f {f=0}
                 END {print c+0}')
 
-            # Scrub completion time: "scrub repaired ... on <date>". Convert
-            # via date -d (GNU date on all Proxmox/Debian hosts).
+            # Last-scan completion time. zpool reports a finished scrub as
+            # "scrub repaired ... on <date>" and a finished resilver as
+            # "resilvered ... on <date>"; match both so a completed resilver
+            # also counts as a fresh scan (otherwise the post-resilver /
+            # pre-next-scrub window would falsely trip ZFSPoolScrubStale).
+            # Convert via date -d (GNU date on all Proxmox/Debian hosts).
+            # A scan in progress shows no "... on <date>" line, which would
+            # leave scrub_ts at 0 and falsely trip the alert mid-scan on a long
+            # raidz2 pool — treat an in-progress scrub/resilver as fresh (now)
+            # so the alert only fires when no scan has run for the alert window.
             scrub_ts=0
-            scrub_date=$(printf '%s\n' "$status" | sed -n 's/.*scrub repaired.*on \(.*\)$/\1/p' | head -1)
+            scrub_date=$(printf '%s\n' "$status" | sed -n 's/.*\(scrub repaired\|resilvered\).*on \(.*\)$/\2/p' | head -1)
             if [ -n "$scrub_date" ]; then
                 set +e
                 scrub_ts=$(date -d "$scrub_date" +%s 2>/dev/null)
                 set -e
                 case "$scrub_ts" in ''|*[!0-9]*) scrub_ts=0 ;; esac
+            elif printf '%s\n' "$status" | grep -Eq 'scrub in progress|resilver in progress'; then
+                scrub_ts=$(date +%s)
             fi
 
             printf 'zfs_pool_status_health_code{pool="%s"} %d\n' "$pool" "$code"

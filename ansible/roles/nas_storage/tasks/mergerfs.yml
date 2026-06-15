@@ -22,21 +22,6 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-# Build the expected fstab options string for comparison
-- name: Build expected MergerFS fstab options
-  ansible.builtin.set_fact:
-    mergerfs_expected_opts: >-
-      {{ item.options | join(',') }}
-      ,fsname={{ item.name }}
-      {%- if item.systemd_requires is defined -%}
-      ,{{ item.systemd_requires
-          | map('regex_replace', '^(.*)$', 'x-systemd.requires-mounts-for=\\1')
-          | join(',') }}
-      {%- endif -%}
-  loop: "{{ mergerfs_mounts }}"
-  loop_control:
-    label: "{{ item.name }}"
-
 - name: Configure MergerFS mounts in fstab
   ansible.posix.mount:
     path: "{{ item.target }}"

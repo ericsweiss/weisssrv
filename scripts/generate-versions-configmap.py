@@ -15,7 +15,8 @@ Keys are flattened:
 
 Produced keys MUST match the Flux postBuild identifier grammar
   [A-Za-z_][A-Za-z0-9_]*
-or kustomize-controller rejects them (silently, before 0.x; today it logs).
+or kustomize-controller skips the substitution (older releases failed
+silently; current releases log the rejected variable).
 
 Idempotent. Run via `task flux:sync-versions`. CI fails if the committed
 output differs from what this script produces.

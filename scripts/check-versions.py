@@ -9,7 +9,7 @@ Supports:
   - GitHub releases (binary tools, container images with GitHub releases)
   - Docker Hub / ghcr.io / LinuxServer.io container image tags
   - Helm chart versions from OCI/HTTP repositories
-  - APT package versions (documented only)
+  - APT package versions from live repo indexes (Tailscale, Plex, GitLab EE)
 
 Usage:
   ./scripts/check-versions.py                     # Check all services
@@ -71,6 +71,10 @@ class ServiceVersion:
     # exit code or trigger MR comments (e.g. MetalLB 0.16.x blocked on an
     # open upstream regression). The registry entry documents why in notes.
     held: bool = False
+    # True only when this check performed a live network fetch (not a cache
+    # hit or a manual/no-check service). Lets check_all skip the rate-limit
+    # sleep on cache hits.
+    fetched_live: bool = False
 
 
 # Service definitions - maps var_name to lookup configuration
@@ -467,7 +471,7 @@ SERVICE_REGISTRY: list[dict] = [
         "docker_image": "oliver006/redis_exporter",
         "tag_regex": r"^(v\d+\.\d+\.\d+)$",
     },
-    # --- APT / Manual ---
+    # --- Plex (apt repo, auto-checked via fetch_plex_version) ---
     {
         "name": "Plex Media Server",
         "var_name": "plex_version",
@@ -652,6 +656,11 @@ def parse_version_tuple(version_str: str) -> tuple:
     """
     # Remove leading 'v' for comparison
     v = version_str.lstrip("v")
+    # Drop a Debian epoch prefix (e.g. "1:1.80.0" -> "1.80.0") so the epoch
+    # integer is not parsed as a leading version segment.
+    epoch_match = re.match(r"^\d+:(.*)$", v)
+    if epoch_match:
+        v = epoch_match.group(1)
     # Replace + with . for k3s-style versions
     v = v.replace("+", ".")
     # Split on . and - and try to convert to ints
@@ -827,8 +836,8 @@ def debian_version_compare(a: str, b: str) -> int:
     §5.6.12 (epoch:upstream_version[-debian_revision]). Returns -1, 0, +1.
 
     Reimplemented in pure Python so the controller doesn't need dpkg
-    installed (e.g. when run from a macOS dev machine). Cross-checked
-    against `dpkg --compare-versions` in CI via tests:
+    installed (e.g. when run from a macOS dev machine). The ordering rules
+    below are asserted in test_check_versions.py (TestDebianVersionCompare):
       0:1.98.4 < 1.98.5
       1:0.4.6-1 > 0.4.6 (epoch wins)
       0.5.0~rc1-1 < 0.5.0-1 (tilde is pre-release)
@@ -1021,6 +1030,8 @@ def fetch_dockerhub_version(svc: dict) -> str:
     if version_prefix:
         url += f"&name={version_prefix}"
     data = _make_request(url)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected non-JSON response from {url}")
 
     best_tag = None
     best_tuple = None
@@ -1083,6 +1094,8 @@ def fetch_lsio_version(svc: dict) -> str:
     if version_prefix:
         url += f"&name={version_prefix}"
     data = _make_request(url)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected non-JSON response from {url}")
 
     best_version = None
     best_tuple = None
@@ -1215,9 +1228,11 @@ def fetch_helm_version(svc: dict) -> str:
             if line_indent <= chart_indent and not stripped.startswith("-"):
                 break
 
-            # Look for "version:" lines within chart entries
-            # These are indented deeper than the chart name
-            if stripped.startswith("version:") and not stripped.startswith("version:  "):
+            # Look for "version:" lines within chart entries (indented
+            # deeper than the chart name). Match on the exact key so
+            # "appVersion:" is excluded and arbitrary post-colon
+            # whitespace (YAML permits it) doesn't drop the line.
+            if stripped.split(":", 1)[0].strip() == "version":
                 ver = stripped.split(":", 1)[1].strip().strip('"').strip("'")
                 if not re.search(r"(alpha|beta|rc|dev|snapshot)", ver, re.IGNORECASE):
                     versions.append(ver)
@@ -1532,6 +1547,7 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
             return result
 
     # Fetch latest version
+    result.fetched_live = True
     try:
         # Add current version to svc_def for major version pinning
         svc_def_with_current = svc_def.copy()
@@ -1603,8 +1619,10 @@ def check_all(
     for svc_def in services:
         result = check_service(svc_def, current_versions, use_cache=use_cache)
         results.append(result)
-        # Small delay between API calls to be nice to rate limits
-        time.sleep(0.2)
+        # Small delay between live API calls to be nice to rate limits.
+        # Skip it on cache hits / manual services (no network call made).
+        if result.fetched_live:
+            time.sleep(0.2)
 
     return results
 
@@ -1930,6 +1948,12 @@ def main():
                 print(f"{result.name} is already at the latest version ({result.current_version})")
                 sys.exit(0)
 
+            if result.held:
+                print(f"{result.name} is held back: {result.notes or 'documented hold'}")
+                print(f"Not updating (would write {result.latest_version} into {VARS_FILE.name}).")
+                print("Remove the 'held' flag in SERVICE_REGISTRY to override.")
+                sys.exit(0)
+
             print(f"Updating {result.name}: {result.current_version} -> {result.latest_version}")
             if update_version_in_file(result.var_name, result.latest_version):
                 print(f"Updated {result.var_name} in {VARS_FILE.name}")
@@ -1951,8 +1975,9 @@ def main():
             updated = []
             write_failed = []
             errored = [r for r in results if r.error]
+            held_skipped = [r for r in results if r.update_available and r.held and not r.error]
             for r in results:
-                if r.update_available and not r.error:
+                if r.update_available and not r.error and not r.held:
                     print(f"Updating {r.name}: {r.current_version} -> {r.latest_version}")
                     if update_version_in_file(r.var_name, r.latest_version):
                         updated.append(r)
@@ -1972,6 +1997,12 @@ def main():
                 print(f"\nWARNING: {len(errored)} service(s) had errors and were NOT checked:")
                 for r in errored:
                     print(f"  - {r.name}: {r.error}")
+
+            if held_skipped:
+                print(f"\nNOTE: {len(held_skipped)} update(s) intentionally held back (not written):")
+                for r in held_skipped:
+                    print(f"  - {r.name}: {r.current_version} -> {r.latest_version} "
+                          f"({r.notes or 'documented hold'})")
 
             if updated:
                 print(f"\nUpdated {len(updated)} services in {VARS_FILE.name}")

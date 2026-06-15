@@ -1,0 +1,102 @@
+---
+# Default-deny ingress for cert-manager. This namespace holds the Cloudflare
+# API token Secret (DNS-01 solver), so a compromised co-tenant pod should face
+# a pod-network barrier, not an open path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: cert-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Allow ingress to the cert-manager webhook (called by the kube-apiserver, which
+# arrives post-DNAT from a server node IP) and metrics scrapes from
+# observability. The apiserver source is not pinned by IP because the webhook
+# call originates from whichever server is active; allow the webhook port from
+# anywhere and rely on cert-manager's own TLS/authz for the webhook.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-webhook-and-metrics-ingress
+  namespace: cert-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Webhook (cert-manager-webhook listens on 10250)
+    - ports:
+        - protocol: TCP
+          port: 10250
+    # Prometheus metrics scrape (controller :9402)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 9402
+
+---
+# Scoped egress: kube-dns, kube-apiserver (order/challenge reconciliation), and
+# public HTTPS (Let's Encrypt ACME directory + Cloudflare API for DNS-01).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-cert-manager
+  namespace: cert-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # kube-apiserver: kube-proxy DNATs the in-cluster VIP to the server node IPs
+    # before NetworkPolicy evaluation, so allowlist the real server IPs on 6443.
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    # Public HTTPS: ACME directory + Cloudflare API.
+    # Public DNS (53): the DNS-01 solver's self-check resolves the challenge
+    # TXT record against the zone's authoritative nameservers directly (the
+    # controller has no --dns01-recursive-nameservers-only override), so it
+    # needs UDP/TCP 53 to the public internet — without it, challenges stall
+    # and certificate renewal silently fails.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

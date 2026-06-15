@@ -19,18 +19,6 @@ gitlab_saml_required_groups:
 gitlab_saml_admin_groups:
   - "gitlab-admins"
 
-# Postfix null client configuration (for sending mail via smtp-relay)
-postfix_config:
-  myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
-  myorigin: "/etc/mailname"
-  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
-  relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
-  mynetworks: "127.0.0.0/8"
-  inet_interfaces: "loopback-only"
-  smtp_tls_security_level: "encrypt"
-  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
-  smtp_sasl_auth_enable: "yes"
-  smtp_sasl_security_options: "noanonymous"
-  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
-
-# postfix_sasl_user, postfix_sasl_password, and mail_aliases are defined in all.yml
+# Postfix null client uses the role default postfix_config (relay via
+# smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
+# postfix_sasl_password, and mail_aliases are defined in all.yml.

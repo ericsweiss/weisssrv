@@ -15,6 +15,12 @@
 #
 # Only the main controller, webhook, and certController are pinned this way.
 # crds-operator (if ever enabled) has the same constraint.
+#
+# CRDs: ESO ships CRDs as chart templates gated by values.installCRDs (NOT a
+# crds/ directory), so Flux's install/upgrade crds policy has no effect here —
+# installCRDs below is what manages them. crds.annotations stamps a
+# helm.sh/resource-policy=keep so an uninstall/rollback cannot cascade-delete
+# the CRDs (and every ExternalSecret/ClusterSecretStore with them).
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -32,11 +38,9 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    crds: CreateReplace
     remediation:
       retries: 3
   upgrade:
-    crds: CreateReplace
     remediation:
       retries: 3
       remediateLastFailure: true
@@ -44,6 +48,9 @@ spec:
     serviceMonitor:
       enabled: true
     installCRDs: true
+    crds:
+      annotations:
+        helm.sh/resource-policy: keep
     replicaCount: 2
     nodeSelector:
       esweiss.com/cpu: modern

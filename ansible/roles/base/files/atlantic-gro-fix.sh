@@ -3,7 +3,9 @@
 # Disables GRO on atlantic driver NICs to prevent bridge forwarding hangs
 # See: https://github.com/Aquantia/AQtion/issues/67
 
-FAILURES=0
+# Log-only on per-NIC failure (exit 0) so a transient ethtool error on one
+# interface does not mark the boot oneshot unit failed/degraded — matching the
+# e1000e-tso-fix.sh `|| true` tolerance.
 for iface in /sys/class/net/*; do
     iface=$(basename "$iface")
     [ "$iface" = "lo" ] && continue
@@ -14,8 +16,7 @@ for iface in /sys/class/net/*; do
             echo "Disabled GRO on $iface (atlantic driver)"
         else
             echo "WARNING: Failed to disable GRO on $iface (atlantic driver)" >&2
-            FAILURES=$((FAILURES + 1))
         fi
     fi
 done
-exit $FAILURES
+exit 0

@@ -12,6 +12,11 @@
 # Usage:
 #   bash scripts/maintenance-run-with-verify.sh <command> [args...]
 #
+# The command must be a single program with args — op_rc captures only "$@"'s
+# exit status, so a shell pipeline passed here would mask a mid-pipe failure
+# (pipefail is not in effect). To run a pipeline, wrap it: `bash -c 'set -o
+# pipefail; a | b'`.
+#
 # Resolves the verify script via $CI_PROJECT_DIR if set (CI), else via
 # the directory holding this script (local).
 

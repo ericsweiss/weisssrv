@@ -2,9 +2,7 @@
 # ACME certificate management with acme.sh
 # Only runs on dns-01 (primary) and distributes to other hosts
 # Certificate distribution uses SSH with eric user; the authoritative
-# target list is host_vars/dns-01.yml under cert_distribution_targets
-# (currently dns-02, smtp-relay, gitlab, pve-nas-01, k3s-agt-nas-01,
-# plex, and home).
+# target list is host_vars/dns-01.yml under cert_distribution_targets.
 
 - name: Validate required acme.sh variables (dns-01 only)
   ansible.builtin.assert:

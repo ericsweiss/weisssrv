@@ -16,6 +16,13 @@ spec:
     name: coredns
   minReplicas: 2
   maxReplicas: 2
+  # NOTE: with minReplicas == maxReplicas this HPA is a pure replica pin, not an
+  # autoscaler — the metrics block below can never trigger a scale event. It is
+  # kept only to satisfy the HPA schema (a v2 HPA requires a metric). The VPA in
+  # configs/vpa/platform.yaml (updateMode: Off) records the right-sizing signal.
+  # If CoreDNS load grows, raise maxReplicas to make this actually horizontal
+  # and tune the threshold then; until then the averageUtilization value is
+  # inert and should not be read as an active target.
   metrics:
     - type: Resource
       resource:

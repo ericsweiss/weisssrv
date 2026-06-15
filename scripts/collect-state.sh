@@ -8,8 +8,11 @@ set -euo pipefail
 # Classification invariant: regular mode (OK/PARTIAL/FAILED) and --json
 # mode (healthy/degraded/neither) are the same tri-state classifier fed
 # by the same probes (Proxmox SSH, k3s nodes ALL Ready, Flux not-ready,
-# ZFS degraded, GitLab /-/health via the internal VIP, warning events;
+# ZFS degraded, GitLab /-/health via the internal VIP;
 # probe failures default to 0 / unhealthy-only-degrades).
+# Recent Warning events are collected and reported but are advisory only:
+# they do not gate OK/healthy (transient scheduling/Flux warnings are
+# common and would otherwise make a green run unachievable).
 # Differences, both deliberate:
 #   - the host-coverage floor is regular-only (only regular collects from
 #     auxiliary hosts, and a sparse artifact must not overwrite
@@ -111,10 +114,10 @@ if [ "${1:-}" = "--json" ]; then
     CTX_GIT_SHA="${CTX_GIT_SHA:-unknown}"
 
     # Tri-state (mutually exclusive): healthy = green (strict: full
-    # Proxmox coverage, zero Flux/ZFS/warning-event imperfections);
-    # degraded = yellow (any imperfection with core infra still up —
-    # the gate keeps a fully-down cluster from reading as merely
-    # degraded); neither = red/catastrophic.
+    # Proxmox coverage, zero Flux/ZFS imperfections; Warning events are
+    # advisory and do not gate green); degraded = yellow (any imperfection
+    # with core infra still up — the gate keeps a fully-down cluster from
+    # reading as merely degraded); neither = red/catastrophic.
     jq -n \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson pve_up "$PVE_UP" \
@@ -143,11 +146,9 @@ if [ "${1:-}" = "--json" ]; then
                      and ($k3s_ready == $k3s_total)
                      and ($flux_not_ready == 0)
                      and ($zfs_degraded == 0)
-                     and ($gitlab_ok == 1)
-                     and ($warning_events == 0)),
+                     and ($gitlab_ok == 1)),
             degraded: ((($pve_up < $pve_total)
                        or ($k3s_ready < $k3s_total)
-                       or ($warning_events > 0)
                        or ($flux_not_ready > 0)
                        or ($zfs_degraded > 0)
                        or ($gitlab_ok == 0))
@@ -250,7 +251,20 @@ redact_file() {
     for pattern in "${REDACT_PATTERNS[@]}"; do
         sed_args+=(-e "$pattern")
     done
-    sed -E "${sed_args[@]}" "$infile" > "$outfile"
+    # Defensive multi-line redaction for PEM private-key blocks. No current
+    # collector cats key material, so this is fail-safe insurance: if a future
+    # probe ever emits a `-----BEGIN ... PRIVATE KEY-----` block, the whole
+    # block (which the single-line s/// patterns above can't catch) is collapsed
+    # to a marker. Done as a separate awk pass so the range logic stays portable
+    # across BSD (macOS) and GNU sed/awk (Linux) — `sed` range-change syntax
+    # differs between the two, awk does not.
+    sed -E "${sed_args[@]}" "$infile" \
+        | awk '
+            /-----BEGIN [A-Z ]*PRIVATE KEY-----/ { print "<PRIVATE_KEY_REDACTED>"; inkey=1; next }
+            /-----END [A-Z ]*PRIVATE KEY-----/   { inkey=0; next }
+            inkey { next }
+            { print }
+        ' > "$outfile"
 }
 
 collect_host() {
@@ -1136,12 +1150,14 @@ fi
 #                    reachable but zero nodes Ready, OR coverage below floor;
 #                    CLUSTER_STATUS.txt is NOT overwritten.
 #   OK      (green)  full host coverage, zero Flux not-ready, zero non-ONLINE
-#                    ZFS pools, zero recent Warning events.
+#                    ZFS pools, GitLab healthy. Recent Warning events are
+#                    reported in the header but advisory only — they do not
+#                    block OK (transient warnings are common).
 #   PARTIAL (yellow) anything else with core infra still up — e.g. one host
-#                    unreachable, a Flux release stuck, a Warning event
-#                    spike, OR the local kubectl can't reach the cluster
-#                    while SSH collection succeeded (collector-side problem,
-#                    not catastrophic cluster failure).
+#                    unreachable, a Flux release stuck, OR the local kubectl
+#                    can't reach the cluster while SSH collection succeeded
+#                    (collector-side problem, not catastrophic cluster
+#                    failure).
 # Note: PVE_REACHABLE_REG and K3S_NODES_READY_REG mirror --json's `pve_up`
 # and `k3s_ready` exactly. The K3s catastrophic check is gated on
 # $K3S_API_OK so a missing/misconfigured local kubeconfig produces PARTIAL
@@ -1158,8 +1174,7 @@ elif [ "$HOSTS_OK" -eq "$HOSTS_TOTAL" ] \
      && [ "$K3S_NODES_READY_REG" -eq "$K3S_NODES_TOTAL_REG" ] \
      && [ "$FLUX_NOT_READY_REG" -eq 0 ] \
      && [ "$ZFS_DEGRADED_REG" -eq 0 ] \
-     && [ "$GITLAB_OK_REG" -eq 1 ] \
-     && [ "$WARNING_EVENTS_REG" -eq 0 ]; then
+     && [ "$GITLAB_OK_REG" -eq 1 ]; then
     STATUS="OK"
 else
     STATUS="PARTIAL"
@@ -1211,11 +1226,14 @@ else
     echo "Warning: could not update CLUSTER_STATUS.txt (directory not writable?)"
 fi
 
-# Cleanup old state files (keep last 5)
+# Cleanup old state files (keep newest 5 by mtime)
 # Use find for safe handling under set -euo pipefail, safe for filenames
 # with special characters, and no-match safe. Scoped to output directory
 # (not CWD) to prevent accidental deletion of unrelated files.
-# Portable across macOS (bash 3.2) and Linux (bash 4+).
+# Retention sorts by modification time (`ls -t`), not filename, so it stays
+# correct even if OUTPUT_FILE uses a non-timestamp naming scheme that still
+# matches the cluster-state-*.txt glob. Portable across macOS (bash 3.2,
+# BSD ls) and Linux (bash 4+, GNU ls).
 STATE_DIR="$(cd "$(dirname "$OUTPUT_FILE")" 2>/dev/null && pwd)"
 STATE_DIR="${STATE_DIR:-.}"
 # Resolve current output file to absolute path to prevent accidental self-deletion
@@ -1229,11 +1247,14 @@ while IFS= read -r file; do
     rm -f -- "$file"
     COUNT=$((COUNT + 1))
 done < <(
-    find "$STATE_DIR" -maxdepth 1 -type f -name 'cluster-state-*.txt' 2>/dev/null \
-        | sort -r \
+    # find -> NUL-safe xargs -> `ls -td` (newest-first by mtime) -> drop the
+    # 5 newest. `-d` keeps ls from descending into matches. `|| true` keeps
+    # an empty match (or ls non-zero on no args) from aborting under set -e.
+    find "$STATE_DIR" -maxdepth 1 -type f -name 'cluster-state-*.txt' -print0 2>/dev/null \
+        | xargs -0 ls -td 2>/dev/null \
         | tail -n +6 \
         || true
 )
 if [ "$COUNT" -gt 0 ]; then
-    echo "Cleaned up $COUNT old state files (keeping last 5)"
+    echo "Cleaned up $COUNT old state files (keeping newest 5)"
 fi

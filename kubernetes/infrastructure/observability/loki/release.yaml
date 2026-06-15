@@ -51,6 +51,13 @@ spec:
       limits_config:
         retention_period: 720h
         max_query_length: 720h
+        # Ingestion rate caps so a log storm cannot fill the 75Gi zvol before
+        # the time-based compactor deletion catches up. Single-tenant homelab
+        # volume sits well under these.
+        ingestion_rate_mb: 8
+        ingestion_burst_size_mb: 16
+        per_stream_rate_limit: 4MB
+        per_stream_rate_limit_burst: 8MB
       compactor:
         retention_enabled: true
         delete_request_store: filesystem

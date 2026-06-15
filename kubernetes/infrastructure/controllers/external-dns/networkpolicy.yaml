@@ -1,0 +1,83 @@
+---
+# Default-deny ingress for external-dns. This namespace consumes the Cloudflare
+# API token Secret, so co-tenant pods should have no pod-network path in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: external-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# external-dns exposes only a metrics endpoint; allow it from observability.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-ingress
+  namespace: external-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 7979
+
+---
+# Scoped egress: kube-dns, kube-apiserver (watches Ingress/Service/IngressRoute),
+# and public HTTPS (Cloudflare API).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-external-dns
+  namespace: external-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # kube-apiserver: allowlist the real server IPs on 6443 (kube-proxy DNATs
+    # the in-cluster VIP before NetworkPolicy evaluation).
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    # Public HTTPS: Cloudflare API.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

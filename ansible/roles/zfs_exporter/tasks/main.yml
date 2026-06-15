@@ -26,6 +26,9 @@
     url: "https://github.com/pdf/zfs_exporter/releases/download/v{{ zfs_exporter_version }}/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     dest: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
     mode: "0644"
+    # Pinned in all.yml (zfs_exporter_checksum). The binary runs as root with
+    # /dev/zfs access, so a compromised release or MITM must not silently land.
+    checksum: "{{ zfs_exporter_checksum }}"
   when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
 
 - name: Extract zfs_exporter tarball

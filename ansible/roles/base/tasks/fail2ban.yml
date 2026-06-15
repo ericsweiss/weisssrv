@@ -74,7 +74,11 @@
     group: adm
     modification_time: preserve
     access_time: preserve
-  when: fail2ban_recidive_enabled | default(true)
+  # Match the jail.local template: the recidive jail is only rendered when
+  # NOT a container, so the log file is only needed off-container too.
+  when:
+    - fail2ban_recidive_enabled | default(true)
+    - not (is_container | default(false))
 
 - name: Enable and start fail2ban service
   ansible.builtin.systemd:

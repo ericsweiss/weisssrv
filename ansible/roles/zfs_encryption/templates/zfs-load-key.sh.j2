@@ -25,7 +25,9 @@
 #   2 — Connect unreachable beyond fetch_timeout
 #   3 — vault/item/field not found
 #   4 — `zfs load-key` failed (wrong passphrase, kernel error, etc.)
-#   5 — pool not imported / does not exist
+#   5 — pool not imported, does not exist, or its encryption roots could not
+#       be enumerated (transient ioctl error — not in RestartPreventExitStatus,
+#       so the unit retries)
 #   7 — Connect returned 401/403 (auth failure; no point retrying)
 
 set -euo pipefail
@@ -228,26 +230,55 @@ if [[ -z "$PASSPHRASE" ]]; then
     exit 3
 fi
 
-# Load the key. `-r` (recursive) so this works for both models the
-# docs describe:
-#   1. Pool-level encryption: $POOL itself is an encryption root and
-#      gets the key directly.
-#   2. Dataset-level encryption: $POOL itself is plaintext but selected
-#      children (e.g. tank/share-enc, tank/proxmox-enc) are encryption
-#      roots; `-r` descends and loads all of them with the same
-#      passphrase (the operator's per-pool 1P item).
-# Without `-r`, model 2 would fail with "$POOL is not encrypted".
+# Load the key into every encryption root under $POOL. Each encrypted
+# dataset is its own encryption root (its name equals its encryptionroot),
+# all sharing the per-pool passphrase from 1Password. `zfs load-key -r`
+# can't be used: it reads the passphrase from stdin ONCE, so with more
+# than one root it satisfies the first and fails the rest with
+# "encryption failure". Loading each root individually with the same
+# passphrase is the only correct form; a plaintext pool root simply isn't
+# in the list.
 #
 # Mounting is handled by zfs-mount.service, which this unit is
-# `Before=` / `RequiredBy=`. Calling `zfs mount -a` here would
-# (a) be redundant on top of the already-ordered service, (b) cause
-# instances racing each other on pve-nas-01 (3 parallel pools) to
-# attempt mounts of siblings whose keys aren't loaded yet — on OpenZFS
-# builds that return non-zero for an unavailable-key dataset, that
-# would fail the entire unit, and (c) might fail to propagate mounts
-# outside the unit's PrivateTmp+ProtectSystem=strict namespace anyway.
-if ! printf '%s\n' "$PASSPHRASE" | zfs load-key -r "$POOL"; then
-    log "zfs load-key -r failed for $POOL"
+# `Before=` / `RequiredBy=`. We deliberately do not `zfs mount -a` here
+# (redundant with the ordered service, races sibling keys across the
+# per-pool instances, and wouldn't propagate outside this unit's
+# ProtectSystem=strict namespace anyway).
+# Capture `zfs get`'s own exit status instead of piping straight into awk and
+# inferring from the (empty) output. With `set -o pipefail` a `zfs get` failure
+# does propagate — the pipeline returns its non-zero status and `set -e` aborts
+# — but that abort is generic and log-less. And were pipefail ever removed,
+# awk's exit 0 on empty input would mask the failure entirely, making an
+# early-boot /dev/zfs ioctl race look identical to "no encrypted datasets" and
+# exit 0 with the pool still locked. So check the status explicitly: fail loudly
+# (exit 5, logged) on a command error, and treat only a *successful* empty
+# result as "nothing to unlock".
+if ! roots_raw="$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot "$POOL")"; then
+    log "zfs get encryptionroot failed for $POOL — refusing to report success with the pool possibly locked"
+    exit 5
+fi
+ENC_ROOTS="$(printf '%s\n' "$roots_raw" | awk -F'\t' '$1 == $2 { print $1 }')"
+if [ -z "$ENC_ROOTS" ]; then
+    log "no encryption roots under $POOL — nothing to unlock"
+    exit 0
+fi
+load_rc=0
+n_roots=0
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    n_roots=$((n_roots + 1))
+    # Guard the keystatus read like the pool-root read above: a transient
+    # error must fall through to a load attempt, never be read as "available".
+    status="$(zfs get -H -o value keystatus "$root" 2>/dev/null || echo unknown)"
+    [ "$status" = "available" ] && continue
+    if printf '%s\n' "$PASSPHRASE" | zfs load-key "$root"; then
+        log "key loaded for $root"
+    else
+        log "zfs load-key failed for $root"
+        load_rc=4
+    fi
+done <<< "$ENC_ROOTS"
+if [ "$load_rc" -ne 0 ]; then
     exit 4
 fi
 
@@ -257,4 +288,4 @@ fi
 # scope.
 unset PASSPHRASE
 
-log "key loaded for $POOL"
+log "all encryption roots unlocked for $POOL ($n_roots root(s))"

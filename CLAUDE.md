@@ -96,162 +96,35 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 - GitLab (git.esweiss.com / git.ericsweiss.com, docs/27): EE omnibus VM on pve-nas-01 (.153), repos on 200GB zvol, Container Registry, Pages, Web IDE extension host (CVE-2026-5816 SOP isolation), k3s CI runners (infrastructure + shared), SAML SSO, SSH 22/2222
 - Grafana (grafana.esweiss.com, docs/31): community + custom dashboards via `grafana_dashboard` ConfigMap sidecar, Authentik OIDC, Loki datasource
 
-**Planned**:
+**Planned** (not yet created):
 - Apps: Immich, Nextcloud
-- `weisssrv-project-template` GitLab template project for tenant-side scaffold (tracked in `docs/16-next-steps.md`)
+- `weisssrv-project-template` GitLab template project for tenant-side scaffold — does not exist yet; the multi-repo onboarding flow in `docs/30-multi-repo-onboarding.md` depends on it (tracked in `docs/16-next-steps.md`)
 
 ## Common Development Commands
 
 ### Task Runner
 
-All operations use Taskfile.yml:
+All operations use `Taskfile.yml`. Run `task --list` for the full, current set
+(grouped by namespace: `ansible:*`, `infra:*`, `dns:*`, `storage:*`, `plex:*`,
+`proxmox:*`, `zfs:*`, `luks-archive:*`, `k3s:*`, `flux:*`, `downloads:*`,
+`recipes:*`, `authentik:*`, `observability:*`, `home-assistant:*`, `gitlab:*`,
+`maintenance:*`, `terraform:*`, plus top-level `lint` and `collect-state`). The
+Taskfile is the source of truth — do not maintain a copy of the task list here.
 
-```bash
-# List all tasks
-task --list
+Workflow facts an agent must know (not obvious from `task --list`):
 
-# Ansible operations
-task ansible:install-collections  # Install required collections
-task ansible:ping                 # Test connectivity
-task ansible:lint                 # Lint playbooks
-task ansible:test                 # Run all Molecule unit tests
-task ansible:test-integration     # Run all integration tests (multi-role)
-task ansible:test-integration-dns # DNS stack (unbound + adguard_home + adguard_sync)
-task ansible:test-integration-mail # Mail stack (smtp_relay + postfix_null_client)
-task ansible:test-integration-base # Base stack (base + qol + tailscale)
-task ansible:test-integration-storage # Storage stack (nas_storage + Samba client, NFS server-side only)
-task ansible:test-integration-certs # Certificate distribution (acme_certs multi-host)
-
-# Deployments (base infrastructure)
-task infra:check                  # Dry-run (--check mode)
-task infra:deploy                 # Full base infrastructure deployment (excludes k3s)
-task infra:verify                 # Post-deployment verification
-task infra:base                   # Base packages + SSH only
-task dns:deploy                   # DNS stack
-task storage:deploy               # NAS services
-task plex:deploy                  # Plex Media Server (LXC + Plex install)
-task plex:check                   # Plex dry-run
-
-# Proxmox HA (multi-node high availability)
-task proxmox:ha                   # Configure HA rules, resources, and replication
-task proxmox:ha-check             # Dry-run HA configuration
-task proxmox:ha-status            # Show HA manager, rules, and replication status
-
-# ZFS native encryption (boot-time unlock via 1Password Connect)
-task zfs:encrypt-bootstrap        # One-time: deploy script + token + unit template (no pools encrypted yet)
-task zfs:encrypt                  # Re-apply once a pool is encrypted (set zfs_encryption_pools per host_vars)
-
-# LUKS-on-archive (boot-time unlock via 1Password Connect, ordered before zfs-import)
-task luks-archive:bootstrap       # One-time: deploy script + token + unit template (no devices LUKS-formatted yet)
-task luks-archive:apply           # Re-apply after rolling conversion completes (probes cryptsetup isLuks per device)
-
-# K3s cluster (Ansible - separate lifecycle)
-task k3s:provision-vms            # Provision k3s VMs on Proxmox
-task k3s:deploy                   # Deploy k3s cluster (idempotent, safe to re-run)
-task k3s:kubeconfig               # Fetch kubeconfig from cluster
-task k3s:backup                   # Create etcd snapshot
-task k3s:status                   # Show cluster and workload status
-
-# Flux GitOps (all Kubernetes workloads - edit YAML in kubernetes/ + git push)
-task flux:install-cli             # Install flux CLI (brew, macOS)
-task flux:bootstrap               # One-time: bootstrap Flux into the cluster
-task flux:bootstrap-onepassword   # One-time: create 1P Connect bootstrap secrets in external-secrets ns
-task flux:reconcile               # Force immediate reconciliation of all Flux-managed resources
-task flux:verify                  # Run `flux check` + show status of all managed resources
-task flux:status                  # Concise health summary
-task flux:suspend -- <ns>/<kind>/<name>  # Suspend a Flux resource
-task flux:resume  -- <ns>/<kind>/<name>  # Resume a suspended Flux resource
-task flux:refresh-secret -- <ns>/<name>  # Force an ExternalSecret to re-fetch from 1Password
-task flux:rotate-secret  -- <app>        # Refresh ExternalSecret + restart consuming pods
-task flux:sync-versions           # Regenerate versions-configmap.yaml from all.yml
-task flux:dev-apply -- <path>     # Local iteration: kustomize build + envsubst + kubectl apply (Flux reverts on next reconcile)
-task flux:lint                    # Build + envsubst + kubeconform on every Flux Kustomization path (fails on unknown ${var})
-task flux:webhook-register        # One-time: register GitLab push webhook to Flux Receiver (requires Receiver manifest — planned follow-up)
-
-# Download clients and media stack (workload operations only; deployment via Flux)
-task downloads:status             # Show downloads namespace status
-task downloads:vpn-status         # Check VPN connection and public IP
-task downloads:restart            # Restart all download/media apps
-task downloads:logs               # View app logs
-task downloads:shell              # Shell into app container
-task downloads:delete             # Remove stack (preserves data)
-
-# Recipe management stack (workload operations only; deployment via Flux)
-task recipes:status               # Show recipes namespace status
-task recipes:restart              # Restart all recipe apps
-task recipes:logs                 # View app logs (APP=mealie)
-task recipes:shell                # Shell into app container (APP=mealie)
-task recipes:delete               # Remove stack (preserves data)
-
-# Authentik (workload operations only; deployment via Flux)
-task authentik:status             # Show Authentik status
-task authentik:logs               # View Authentik logs
-task authentik:restart            # Restart Authentik pods
-
-# Observability stack (workload operations only; deployment via Flux)
-task observability:status         # Show observability namespace health (pods, services, PVCs, HelmReleases, ExternalSecrets, ServiceMonitors)
-task observability:logs           # View component logs (COMPONENT=prometheus|loki|alloy|grafana|alertmanager)
-task observability:restart        # Restart all observability workloads
-task observability:silence        # Create Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units)
-
-# Home Assistant (VM on Proxmox; IngressRoute is Flux-managed under apps/vm-ingress/)
-task home-assistant:deploy-config # Deploy HAOS configuration via Ansible with 1Password secrets
-task home-assistant:logs          # View Home Assistant logs
-task home-assistant:restart-after-config # Restart after config deployment
-task home-assistant:status        # Show VM and ingress status
-task home-assistant:vm-start      # Start the Home Assistant VM
-task home-assistant:vm-stop       # Stop the Home Assistant VM
-task home-assistant:vm-restart    # Restart the Home Assistant VM
-task home-assistant:console       # SSH to Home Assistant (requires SSH add-on)
-task home-assistant:snapshot      # Create Proxmox VM snapshot
-
-# GitLab (VM on pve-nas-01 with Traefik ingress)
-# Note: GitLab runners, agent, and ingress routes live under kubernetes/apps/
-# (gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress)
-# and are reconciled by Flux. The VM-side tasks below manage the GitLab server itself.
-task gitlab:deploy                # Deploy GitLab (VM + application)
-task gitlab:deploy-check          # Dry-run deployment
-task gitlab:status                # Show GitLab and runner status
-task gitlab:verify                # Run smoke tests (web UI, registry, pages, SSH)
-task gitlab:backup                # Create GitLab backup
-task gitlab:console               # SSH to GitLab VM
-task gitlab:logs                  # View GitLab logs
-task gitlab:reconfigure           # Reconfigure GitLab after changes
-
-# Version discovery (automated update checking)
-task maintenance:check-versions        # Check all managed services for available updates
-task maintenance:check-versions-json   # JSON output for scripting
-task maintenance:update-version        # Update single service: SERVICE=gluetun
-task maintenance:update-all-versions   # Update all outdated versions in all.yml
-
-# Maintenance (Base Infrastructure)
-task maintenance:update-full           # Full base update (OS + apps, interactive)
-task maintenance:update-full-auto      # Full base update (OS + apps, auto-reboot)
-task maintenance:update-packages       # OS packages only
-task maintenance:update-applications   # Applications only (AdGuard, Tailscale, Plex)
-task maintenance:update-plex           # Plex Media Server only
-
-# Maintenance (K3s Cluster)
-# Helm chart + container image updates are now driven by Flux:
-# edit versions in ansible/inventories/prod/group_vars/all.yml, run `task flux:sync-versions`,
-# then commit + push — Flux reconciles the new versions within ~1 minute.
-task maintenance:update-k3s-nodes      # Rolling k3s node upgrades (drain/cordon)
-task maintenance:update-cluster        # Check all service versions + update all.yml + regenerate versions ConfigMap (commit + push to reconcile via Flux)
-
-# Terraform
-task terraform:init               # Initialize Terraform
-task terraform:plan               # Plan changes
-task terraform:apply              # Apply changes
-task terraform:validate           # Validate syntax
-
-# Linting and validation
-task lint                         # Lint everything (Ansible, Terraform, Flux, Python scripts)
-task kubernetes:lint              # Alias for flux:lint (kept for discoverability)
-task kubernetes:validate-helm     # Alias for flux:lint (kept for discoverability)
-
-# State collection
-task collect-state                # Generate cluster snapshot
-```
+- **Two lifecycles.** Base infra + the k3s layer are deployed by Ansible
+  (`task infra:*`, `task k3s:*`); everything *inside* the cluster (platform
+  controllers + apps) is reconciled by **Flux** from `kubernetes/` on every push
+  to `main`. There is no `kubectl apply` / `helm upgrade` in the normal flow.
+- **All Ansible tasks are idempotent** — safe to re-run.
+- **Cluster Helm/image versions** live in
+  `ansible/inventories/prod/group_vars/all.yml`; after editing, run
+  `task flux:sync-versions`, then commit + push so Flux reconciles them.
+- **Local Flux iteration**: `task flux:dev-apply -- <path>` previews a change
+  in-cluster but is reverted on the next reconcile unless committed.
+- `task lint` runs everything (Ansible, Terraform, `flux:lint`, Python scripts);
+  `task kubernetes:lint` / `kubernetes:validate-helm` are aliases for `flux:lint`.
 
 ### Manual Ansible
 
@@ -324,50 +197,9 @@ kubectl -n external-secrets create secret generic onepassword-connect-token \
 
 ### Required 1Password Items
 
-In vault "Homelab":
-- **Cloudflare DNS Token** - API token (credential) + account ID (username field)
-- **SMTP Relay Gmail** - username + app password
-- **SMTP Relay Auth** - username + password (for null client auth to smtp-relay)
-- **Email Config** - root_alias (ericsweiss1@gmail.com)
-- **AdGuard Home** - admin username + password
-- **Tailscale Auth Key** - auth key
-- **SSH Key** - public + private key
-- **Samba NAS User** - nas user password
-- **DNS-01 SSH Key** - private + public key (for cert distribution)
-- **K3s Cluster Token** - cluster join token (credential)
-- **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
-- **PrivadoVPN Credentials** - openvpn-user, openvpn-password (for Gluetun VPN sidecar)
-- **VPN Unlimited Credentials** - openvpn-user, openvpn-password (alternate VPN provider)
-- **Mealie Secrets** - postgres-password
-- **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
-- **Bar Assistant Secrets** - meilisearch-master-key
-- **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
-- **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
-- **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
-- **Home Assistant API Token** - token (long-lived access token for Prometheus /api/prometheus endpoint)
-- **GitLab** - root-password (initial GitLab root user password)
-- **GitLab API Token** - credential (personal access token for PR-Agent AI code review)
-- **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
-- **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
-- **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
-- **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
-- **GitHub Token** - credential (personal access token for version checker API rate limits)
-- **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
-- **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
-- **Service Account Auth Token weisssrv** - 1Password Service Account token used by CI (`OP_SERVICE_ACCOUNT_TOKEN` in `.gitlab-ci.yml`)
-- **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
-- **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
-- **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
-- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General)
-- **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
-- **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
-- **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
-- **ZFS Encryption Connect Token** - credential (Connect access token used by Proxmox hosts to fetch ZFS pool passphrases at boot; created via `op connect token create weisssrv-zfs --server <id> --vaults Homelab`)
-- **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
-- **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
-- **ZFS Pool nvme Passphrase** - passphrase (zfs-load-key@nvme.service on pve-nas-01)
-- **LUKS Archive Passphrase** - passphrase (random ≥32 chars; shared across all four LUKS containers backing the archive ZFS pool on pve-nas-01; consumed by archive-luks-open@archive-N.service)
-- **Plex Custom Certificate** - password (PFX bundle passphrase used by `/usr/local/sbin/plex-cert-reload.sh` when converting the renewed PEM cert into the PKCS#12 form Plex requires; matching value must be configured under Plex Settings -> Network -> "Custom certificate encryption key")
+The canonical, authoritative inventory of every item the deployment expects in
+the **Homelab** vault lives in **`docs/15-credential-rotation.md`** under
+"Required 1Password Items". Add or update items there, not here.
 
 ### Using 1Password
 
@@ -395,57 +227,37 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 
 ## Network / IP Allocation
 
-### Infrastructure
-- Proxmox hosts: .102-.109
-- DNS: .150, .160
-- SMTP: .151
-- Services: .152-.155
+Quick reference (full host-by-host topology in `docs/01-overview.md`):
 
-### K3s Cluster
-- API VIP: .161
-- Servers: .22X range (.222, .223, .227)
-- Agents: .20X range (.202, .203, .204, .205, .206, .207)
-- MetalLB: .100 (public), .101 (internal)
+- Proxmox hosts `.102-.107`; DNS `.150`/`.160`; SMTP `.151`; services `.152-.155`.
+- K3s: API VIP `.161`; servers `.222`/`.223`/`.227`; agents `.202-.207`;
+  MetalLB VIPs `.100` (public) / `.101` (internal).
 
-### Firewall IP Sets
-- `admin_lan`: 192.168.0.0/24
-- `admin_ts`: 100.64.0.0/10 (Tailscale)
-- `core-cluster`: All infra nodes (.102-.107, .150-.155, .160, .202-.207, .222-.227)
-- `k3s_nodes`: k3s VMs + API VIP
-- `pve_hosts`: Proxmox hosts only
-- `nfs_clients`: Hosts allowed NFS
-- `smb_clients`: Entire LAN
+Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
+`k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`) are documented in
+`docs/11-firewall.md` and rendered from `ansible/roles/proxmox_firewall/`.
 
 ## Ansible Roles
 
-1. **base** - Packages, SSH hardening, fail2ban, users, timezone, DNS configuration
-2. **qol** - zsh + Oh My Zsh (15 plugins), neovim + Vundle, fzf, ripgrep
-3. **postfix_null_client** - Local mail relay to smtp-relay
-4. **tailscale** - VPN setup (manual `tailscale up` required)
-5. **proxmox_firewall** - IPSets, security groups, cluster.fw
-6. **proxmox_vm** - VM provisioning with cloud-init and autostart configuration
-7. **proxmox_lxc** - LXC container provisioning with autostart configuration
-8. **nas_storage** - ZFS properties, NFS exports, Samba, mergerfs, media-mover, archive-backupctl, SMART
-9. **unbound** - DoT recursive resolver (port 5335)
-10. **adguard_home** - DNS filtering + DoT (port 53), running as non-root
-11. **acme_certs** - Let's Encrypt via DNS-01, cert distribution via SSH
-12. **smtp_relay** - Postfix relay to Gmail via SASL + incoming auth
-13. **adguard_sync** - Sync dns-01 → dns-02 via systemd timer (every 5min)
-14. **k3s** - K3s cluster installation and configuration
-15. **plex** - Plex Media Server installation and configuration
-16. **home_assistant** - Home Assistant configuration deployment via SSH/SCP (HAOS cannot be managed traditionally)
-17. **proxmox_ha** - Proxmox HA rules, resources, and ZFS replication management
-18. **gitlab** - GitLab EE (CE features) installation and configuration
-19. **resolv_conf** - Shared /etc/resolv.conf management (used by base, adguard_home)
-20. **zvol_mount** - Shared ZFS zvol mounting with UUID-based fstab (used by k3s, gitlab)
-21. **nic_tuning** - NIC/kernel tuning on Proxmox hosts (codifies AQC113 GRO disable + `net.ipv4.ip_forward` sysctl)
-22. **zfs_exporter** - Prometheus ZFS exporter on pve-nas-01 (pool health, dataset usage, scrub status)
-23. **unbound_exporter** - Prometheus Unbound exporter on DNS hosts (cache hit rate, query counts)
-24. **alloy_host** - Grafana Alloy on non-k8s hosts and k3s VMs for shipping journald logs to Loki via the internal Traefik IngressRoute (`https://loki.esweiss.com`); collects kubelet/containerd/etcd/systemd journals on k3s VMs and Proxmox/LXC/VM systemd units elsewhere. No duplication with the in-cluster DaemonSet, which covers container logs only. NodePort `:31100` is kept as an emergency fallback (override `alloy_host_loki_url` per-host).
-25. **node_exporter_host** - Prometheus node_exporter on bare-metal Proxmox hosts for hardware metrics (thermals, SMART, disk I/O). Port 9101 to avoid conflict with k3s DaemonSet on 9100
-26. **zfs_encryption** - Boot-time ZFS pool key fetch from 1Password Connect via `connect.esweiss.com`. Deploys per-pool `zfs-load-key@<pool>.service` units ordered before `zfs-mount.service`. Operator-fallback path: SSH + manual `zfs load-key` with passphrase from 1P mobile app. See docs/32-zfs-encryption.md.
-27. **nfs_tls** - Installs `ktls-utils` + configures `tlshd` (kernel TLS handshake daemon) for NFSv4 over TLS (`xprtsec=tls`). Opt-in via `nfs_tls_enabled`; reads the cert pair at `/etc/ssl/private/{fullchain,privkey}.pem` (the same pair acme_certs distributes). Combined with per-export `xprtsec: tls` in `nas_storage`, encrypts the NFS wire.
-28. **luks_archive** - Boot-time LUKS-container unlock for the archive ZFS pool on pve-nas-01, fetching the shared passphrase from 1Password Connect. Sibling to `zfs_encryption` (same Connect token + script structure) but ordered BEFORE `zfs-import-cache.service` so the four `/dev/mapper/archive-N` nodes exist before ZFS scans the cache file. Rolling-conversion runbook in docs/32 §LUKS.
+The 28 roles and their one-line purposes are listed in the **Ansible Roles**
+table in `README.md` (source of truth). A few carry editing constraints worth
+knowing up front:
+
+- **alloy_host** ships journald logs to Loki via the internal Traefik
+  IngressRoute (`https://loki.esweiss.com`); it does NOT duplicate the in-cluster
+  DaemonSet (which covers container logs only). NodePort `:31100` is an emergency
+  fallback (`alloy_host_loki_url`).
+- **node_exporter_host** binds port **9101** to avoid colliding with the k3s
+  node-exporter DaemonSet on 9100.
+- **zfs_encryption** / **luks_archive** are siblings (same Connect token + script
+  structure) but ordered differently: `zfs-load-key@<pool>` runs before
+  `zfs-mount.service`, while `archive-luks-open@archive-N` runs before
+  `zfs-import-cache.service` so the `/dev/mapper/archive-N` nodes exist first.
+  Runbooks in `docs/32-zfs-encryption.md`.
+- **nfs_tls** is opt-in (`nfs_tls_enabled`); it pairs with per-export
+  `xprtsec: tls` in `nas_storage` to encrypt the NFS wire.
+- **resolv_conf** / **zvol_mount** are shared helper roles (used by base/adguard
+  and k3s/gitlab respectively).
 
 ## User Management
 
@@ -542,7 +354,7 @@ from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →
 ### NAS Node (pve-nas-01) - Specialized ZFS Pools
 
 **ZFS Pools**:
-- `tank` - 6x 22TB raidz2 (~122TB usable) - Media and bulk storage
+- `tank` - 6x 22TB raidz2 (~88TB usable, 122TB raw) - Media and bulk storage
 - `ssd` - 3x 4TB raidz1 (~10.9TB) - App data, databases, and containers
 - `nvme` - 1x 4TB NVMe (~2.27TB) - Hot downloads and fast scratch
 - `archive` - 4x 6TB raidz1 (~21.8TB) - Cold storage and backups
@@ -573,47 +385,11 @@ atime=off, autotrim=on) for k3s VMs and the HA-managed containers
 
 ## Documentation
 
-See `docs/` for detailed guides:
-
-**Getting Started**:
-- 00-hardware-setup.md - Bare metal to Proxmox ready for Ansible
-- 01-overview.md - Architecture and network topology
-- 02-install.md - Laptop setup through production deployment
-- 03-ssh-users.md - SSH and user management
-
-**Infrastructure Services**:
-- 04-qol.md - Quality of life configs (Oh My Zsh, Neovim, etc.)
-- 05-tailscale.md - VPN setup
-- 06-zfs.md - ZFS configuration with exact pool creation commands
-- 07-fileservices.md - NFS and Samba
-- 08-dns.md - DNS stack (AdGuard Home + Unbound)
-- 09-certs.md - TLS certificates (acme.sh + distribution)
-- 10-mail.md - Mail relay configuration
-- 11-firewall.md - Proxmox firewall (IPSets + Security Groups)
-
-**Operations & Planning**:
-- 12-runbooks.md - Operational procedures
-- 13-ci-cd.md - CI/CD pipelines (GitLab CI)
-- 14-post-base-plan.md - K3s platform roadmap and workload planning
-- 15-credential-rotation.md - Credential rotation procedures
-- 16-next-steps.md - TODO and feature roadmap
-- 17-disaster-recovery.md - Disaster recovery and backup procedures
-- 18-bootstrap-new-systems.md - Bootstrapping new LXC containers and VMs
-- 19-k3s-deployment.md - K3s cluster deployment (complete workflow with all components)
-- 20-plex-deployment.md - Plex Media Server deployment (LXC with bind mounts)
-- 21-download-clients-deployment.md - Download clients and media stack (VPN, *arr apps)
-- 22-recipes-deployment.md - Recipe management stack (Mealie, Bar Assistant)
-- 23-recipes-sso-setup.md - Recipes SSO and OpenAI configuration
-- 24-home-assistant-deployment.md - Home Assistant OS VM with Traefik ingress
-- 25-multi-node-expansion.md - Multi-node expansion and Proxmox HA guide
-- 26-multi-node-implementation.md - Step-by-step implementation for 6-node cluster
-- 27-gitlab-deployment.md - GitLab EE deployment (VM, registry, pages, runners)
-- 28-gitlab-migration.md - GitHub to GitLab migration guide
-- 29-flux-operations.md - Flux day-2 operations: reconcile, suspend/resume, secret rotation, webhook
-- 30-multi-repo-onboarding.md - Adding external tenant repos via `kubernetes/clusters/weisssrv/tenants/`
-- 31-observability.md - Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting)
-- 32-zfs-encryption.md - ZFS native encryption with passphrase-from-Connect boot-time unlock
-- 33-autoscaling.md - VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance
+The full, numbered `docs/00`–`docs/33` index (grouped Getting Started /
+Infrastructure Services / Operations and Planning) lives in the **Documentation**
+section of `README.md`. Browse `docs/` directly or that table — do not maintain a
+second copy of the index here. Per-area pointers already appear inline in the
+relevant sections above.
 
 ## Important Context Files
 

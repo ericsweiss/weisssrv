@@ -12,5 +12,5 @@ proxmox_autostart_enabled: true
 proxmox_startup_order: 10
 proxmox_startup_delay: 10
 
-# Disable AdGuard Home Sync on dns-02 (it's a replica)
-adguardhome_sync_enabled: false
+# AdGuard Home Sync does not run on dns-02 (it's the replica);
+# the adguard_sync role gates on inventory_hostname == 'dns-01'.
