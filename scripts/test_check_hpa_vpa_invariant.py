@@ -127,5 +127,42 @@ spec:
     assert _run(CPU_HPA + "---" + off_vpa, monkeypatch) == 0
 
 
+CONTAINER_RESOURCE_HPA = """
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: foo, namespace: ns}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+  metrics:
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: app
+        target: {type: Utilization, averageUtilization: 80}
+"""
+
+
+def test_container_resource_hpa_with_cpu_vpa_fails(monkeypatch):
+    """A per-container (ContainerResource) CPU HPA still clashes with a cpu VPA."""
+    assert _run(CONTAINER_RESOURCE_HPA + "---" + _vpa("cpu, memory"), monkeypatch) == 1
+
+
+def test_container_policy_off_does_not_clash(monkeypatch):
+    """A per-container Off policy is recommend-only and must not count as mutating."""
+    off_container_vpa = """
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: foo, namespace: ns}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        mode: "Off"
+        controlledResources: [cpu, memory]
+"""
+    assert _run(CPU_HPA + "---" + off_container_vpa, monkeypatch) == 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

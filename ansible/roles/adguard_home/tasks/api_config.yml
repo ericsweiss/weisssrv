@@ -164,9 +164,10 @@
           + (updated_rewrites_deleted.results | default([]))
           + (added_rewrites.results | default([]))
           + ([rules_updated] if rules_updated is not skipped else []))
-         | selectattr('status', 'defined')
-         | rejectattr('status', 'equalto', 200)
-         | map(attribute='status') | list }}
+         | rejectattr('skipped', 'defined')
+         | map(attribute='status', default='missing')
+         | reject('equalto', 200)
+         | list }}
   when: not ansible_check_mode
 
 - name: Assert AdGuard rewrite and filtering API calls succeeded

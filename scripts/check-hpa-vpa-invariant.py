@@ -52,10 +52,16 @@ def _hpa_metrics(spec: dict) -> set[str]:
         return {"cpu"}
     resources: set[str] = set()
     for metric in metrics:
-        if metric.get("type") == "Resource":
+        mtype = metric.get("type")
+        if mtype == "Resource":
             name = (metric.get("resource") or {}).get("name")
-            if name:
-                resources.add(name)
+        elif mtype == "ContainerResource":
+            # Per-container CPU/memory target — still a cpu/memory HPA.
+            name = (metric.get("containerResource") or {}).get("name")
+        else:
+            continue
+        if name:
+            resources.add(str(name).lower())
     return resources
 
 
@@ -67,11 +73,14 @@ def _vpa_resources(spec: dict) -> set[str]:
         # No policy means the VPA controls everything by default.
         return {"cpu", "memory"}
     for p in policies:
+        if (p.get("mode") or "").lower() == "off":
+            # Per-container Off policy is recommend-only — not mutating.
+            continue
         cr = p.get("controlledResources")
         if cr is None:
             controlled |= {"cpu", "memory"}
         else:
-            controlled |= set(cr)
+            controlled |= {str(r).lower() for r in cr}
     return controlled
 
 

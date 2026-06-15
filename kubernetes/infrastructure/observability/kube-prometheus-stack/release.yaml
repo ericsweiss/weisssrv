@@ -462,7 +462,10 @@ spec:
               # its direct mode. 15m comfortably exceeds a Recreate rollout +
               # OpenVPN reconnect (~2-3m), so normal restarts stay quiet.
               - alert: VPNDown
-                expr: gluetun_vpn_status != 1
+                # Scoped to the downloads namespace (the only place the
+                # gluetun-exporter runs) so a future gluetun_vpn_status series
+                # elsewhere can't trigger this download-stack alert.
+                expr: gluetun_vpn_status{namespace="downloads"} != 1
                 for: 15m
                 labels:
                   severity: critical
@@ -477,7 +480,9 @@ spec:
               # gone entirely (metric absent, not just non-1). VPN state is then
               # unknown, which for an always-on VPN client warrants a page.
               - alert: VPNExporterDown
-                expr: absent(gluetun_vpn_status)
+                # Namespace-scoped so a gluetun_vpn_status series in another
+                # namespace can't mask qbittorrent's exporter being gone.
+                expr: absent(gluetun_vpn_status{namespace="downloads"})
                 for: 15m
                 labels:
                   severity: warning
