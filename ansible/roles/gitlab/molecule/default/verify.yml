@@ -407,6 +407,39 @@
         path: /tmp/gitlab-backup-fail
         state: absent
 
+    # Secrets-copy-failure path: gitlab-backup create succeeds and drops a
+    # tarball, but the restore-critical secrets copy fails (source removed).
+    # The wrapper must demote rc so success=0 — an un-restorable backup that
+    # is missing gitlab-secrets.json must NOT report healthy.
+    - name: Remove gitlab-secrets.json to break the secrets copy
+      ansible.builtin.file:
+        path: /etc/gitlab/gitlab-secrets.json
+        state: absent
+
+    - name: Run backup wrapper (create succeeds, secrets copy fails)
+      ansible.builtin.command: /usr/local/sbin/gitlab-backup-run.sh
+      register: gitlab_backup_cpfail_run
+      changed_when: false
+      failed_when: gitlab_backup_cpfail_run.rc == 0  # cp failure must propagate non-zero rc
+
+    - name: Read gitlab_backup.prom after secrets-copy failure
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/gitlab_backup.prom
+      register: gitlab_backup_prom_cpfail
+
+    - name: Assert secrets-copy failure records success=0
+      ansible.builtin.assert:
+        that:
+          - "'gitlab_backup_last_run_success 0' in (gitlab_backup_prom_cpfail.content | b64decode)"
+        fail_msg: "Secrets-copy failure was hidden — wrapper reported success despite an un-restorable backup"
+        success_msg: "Secrets-copy failure correctly records success=0 (un-restorable backup fires the alert)"
+
+    - name: Restore mock gitlab-secrets.json
+      ansible.builtin.file:
+        path: /etc/gitlab/gitlab-secrets.json
+        state: touch
+        mode: "0600"
+
     # ==========================================================================
     # Verify Mock GitLab Status (via mock gitlab-ctl)
     # ==========================================================================

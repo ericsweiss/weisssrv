@@ -55,10 +55,13 @@ rc=$?
 
 # gitlab-backup excludes gitlab-secrets.json and gitlab.rb; without them a
 # restore cannot decrypt CI variables, 2FA, or runner tokens. Copy them
-# alongside the data backup, but only on success (matches the prior
-# create-then-copy && semantics).
+# alongside the data backup, but only when create succeeded. A copy failure
+# (disk full, perms, missing source) demotes rc to 1 so the run records
+# success=0 and GitLabBackupFailed fires — an un-restorable backup must NOT
+# report healthy. This is stricter than a bare `|| true`, which would hide a
+# missing-secrets backup behind a green metric.
 if [ "$rc" -eq 0 ]; then
-  cp -p /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb "${BACKUP_PATH}/" || true
+  cp -p /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb "${BACKUP_PATH}/" || rc=1
 fi
 
 # Newest tarball size (best-effort). gitlab-backup names archives
