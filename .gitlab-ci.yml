@@ -1023,6 +1023,11 @@ molecule-tests:
         SCENARIO: default
       - ROLE: unbound
         SCENARIO: default
+      # prometheus_exporter is the shared install pipeline backing
+      # zfs_exporter + unbound_exporter; its scenario contract-tests both
+      # artifact branches (tarball + deb) on the skip path.
+      - ROLE: prometheus_exporter
+        SCENARIO: default
       - ROLE: zfs_exporter
         SCENARIO: default
       - ROLE: unbound_exporter
@@ -1412,6 +1417,11 @@ deploy-ansible-dns:
         # invoked from dns.yml.
         - ansible/roles/resolv_conf/**/*
         - ansible/roles/unbound_exporter/**/*
+        # unbound_exporter is a thin wrapper over prometheus_exporter (the
+        # shared install pipeline), so a change to the shared role must
+        # redeploy dns too. It also backs zfs_exporter, so the same path is
+        # listed under deploy-ansible-storage.
+        - ansible/roles/prometheus_exporter/**/*
         - ansible/playbooks/dns.yml
         # DNS group/host vars: lxc settings, ssh policy, cert distribution
         # targets — all consumed by the dns playbook, so a vars-only change
@@ -1447,6 +1457,11 @@ deploy-ansible-storage:
         # opt-in NFSv4-over-TLS daemon that runs on the same NAS host
         # plus the k3s NFS clients (cert paths shared with acme_certs).
         - ansible/roles/zfs_exporter/**/*
+        # zfs_exporter is a thin wrapper over prometheus_exporter (the
+        # shared install pipeline), so a change to the shared role must
+        # redeploy storage too. It also backs unbound_exporter, so the
+        # same path is listed under deploy-ansible-dns.
+        - ansible/roles/prometheus_exporter/**/*
         - ansible/roles/nfs_tls/**/*
         - ansible/playbooks/storage.yml
 

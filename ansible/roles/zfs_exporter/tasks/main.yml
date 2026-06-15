@@ -1,60 +1,35 @@
 ---
-# ZFS Exporter — Prometheus metrics for ZFS pools and datasets
-# Downloads binary from GitHub releases and runs as a systemd service
+# ZFS Exporter — Prometheus metrics for ZFS pools and datasets.
+# Thin wrapper over the shared prometheus_exporter role (tarball install).
+# Runs as root because ZFS introspection needs /dev/zfs ioctls.
 
-- name: Check installed zfs_exporter version
-  # zfs_exporter --version writes to stderr (kingpin behavior), and the
-  # output line is `zfs_exporter, version X.Y.Z (branch: ..., revision: ...)`.
-  # Extract just the version token with awk so the equality check below
-  # is exact-equal — substring matching against the whole output would
-  # be fooled by unrelated text containing the desired version (e.g. a
-  # build timestamp or revision hash that happens to contain it).
-  ansible.builtin.shell: |
-    set -o pipefail
-    /usr/local/bin/zfs_exporter --version 2>&1 | awk '/^zfs_exporter, version/ { print $3; exit }'
-  args:
-    executable: /bin/bash
-  register: zfs_exporter_current
-  changed_when: false
-  failed_when: false
-  # Read-only probe; must run under --check or the rc/stdout comparisons
-  # below explode on a skipped-task result.
-  check_mode: false
-
-- name: Download zfs_exporter tarball
-  ansible.builtin.get_url:
-    url: "https://github.com/pdf/zfs_exporter/releases/download/v{{ zfs_exporter_version }}/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
-    dest: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
-    mode: "0644"
+- name: Install zfs_exporter via shared pipeline
+  ansible.builtin.include_role:
+    name: prometheus_exporter
+    tasks_from: install
+  vars:
+    _ze_base: "https://github.com/pdf/zfs_exporter/releases/download"
+    _ze_file: "zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
+    prometheus_exporter_name: zfs_exporter
+    prometheus_exporter_version: "{{ zfs_exporter_version }}"
+    prometheus_exporter_artifact_type: tarball
+    prometheus_exporter_download_url: "{{ _ze_base }}/v{{ zfs_exporter_version }}/{{ _ze_file }}"
     # Pinned in all.yml (zfs_exporter_checksum). The binary runs as root with
     # /dev/zfs access, so a compromised release or MITM must not silently land.
-    checksum: "{{ zfs_exporter_checksum }}"
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
-
-- name: Extract zfs_exporter tarball
-  ansible.builtin.unarchive:
-    src: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
-    dest: /tmp
-    remote_src: true
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
-
-- name: Install zfs_exporter binary
-  ansible.builtin.copy:
-    src: "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64/zfs_exporter"
-    dest: /usr/local/bin/zfs_exporter
-    mode: "0755"
-    remote_src: true
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
-  notify: Restart zfs_exporter
-
-- name: Clean up downloaded files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64.tar.gz"
-    - "/tmp/zfs_exporter-{{ zfs_exporter_version }}.linux-amd64"
-  when: zfs_exporter_current.rc != 0 or zfs_exporter_current.stdout != zfs_exporter_version
+    prometheus_exporter_checksum: "{{ zfs_exporter_checksum }}"
+    prometheus_exporter_binary_path: /usr/local/bin/zfs_exporter
+    prometheus_exporter_archive_member: "zfs_exporter-{{ zfs_exporter_version }}.linux-amd64/zfs_exporter"
+    # zfs_exporter --version writes to stderr (kingpin behavior), and the
+    # output line is `zfs_exporter, version X.Y.Z (branch: ..., revision: ...)`.
+    # Extract just the version token with awk so the equality check is
+    # exact-equal — substring matching against the whole output would be
+    # fooled by unrelated text containing the desired version (e.g. a build
+    # timestamp or revision hash that happens to contain it).
+    prometheus_exporter_version_check_cmd: |
+      set -o pipefail
+      /usr/local/bin/zfs_exporter --version 2>&1 | awk '/^zfs_exporter, version/ { print $3; exit }'
+    prometheus_exporter_service_name: zfs-exporter
+    prometheus_exporter_port: "{{ zfs_exporter_port }}"
 
 - name: Deploy zfs-exporter systemd service
   ansible.builtin.template:
@@ -63,24 +38,13 @@
     owner: root
     group: root
     mode: "0644"
-  notify: Restart zfs_exporter
+  notify: Restart prometheus exporter
 
-- name: Enable and start zfs-exporter service
-  ansible.builtin.systemd:
-    name: zfs-exporter
-    enabled: true
-    state: started
-    daemon_reload: true
-
-- name: Verify zfs_exporter is listening
-  ansible.builtin.uri:
-    url: "http://localhost:{{ zfs_exporter_port }}/metrics"
-    return_content: false
-    status_code: 200
-  register: zfs_exporter_health
-  retries: 5
-  delay: 3
-  until: zfs_exporter_health.status == 200
-  when: not ansible_check_mode
-  tags:
-    - molecule-notest
+- name: Enable and verify zfs_exporter via shared pipeline
+  ansible.builtin.include_role:
+    name: prometheus_exporter
+    tasks_from: service
+  vars:
+    prometheus_exporter_name: zfs_exporter
+    prometheus_exporter_service_name: zfs-exporter
+    prometheus_exporter_port: "{{ zfs_exporter_port }}"

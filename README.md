@@ -263,9 +263,10 @@ weisssrv/
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
 | nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in) |
-| zfs_exporter | Prometheus ZFS exporter (pool health, scrub status) on the NAS |
-| unbound_exporter | Prometheus Unbound exporter on DNS hosts |
-| node_exporter_host | Prometheus node_exporter on bare-metal Proxmox hosts (port 9101) |
+| prometheus_exporter | Shared install pipeline for download-based exporters (tarball/.deb); backs zfs_exporter + unbound_exporter |
+| zfs_exporter | Prometheus ZFS exporter (pool health, scrub status) on the NAS; thin wrapper over prometheus_exporter |
+| unbound_exporter | Prometheus Unbound exporter on DNS hosts; thin wrapper over prometheus_exporter |
+| node_exporter_host | Prometheus node_exporter on bare-metal Proxmox hosts (port 9101); standalone (apt-repo install + drop-in override + textfile collectors) |
 | alloy_host | Grafana Alloy on non-k8s hosts and k3s VMs for journald → Loki |
 | zfs_encryption | Boot-time ZFS pool key fetch from 1Password Connect |
 | nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |

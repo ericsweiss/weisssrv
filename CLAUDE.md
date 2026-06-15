@@ -17,7 +17,7 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                    # Configuration management
 │   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # 28 roles for all services
+│   ├── roles/                  # 29 roles for all services
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
@@ -239,7 +239,7 @@ Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
 
 ## Ansible Roles
 
-The 28 roles and their one-line purposes are listed in the **Ansible Roles**
+The 29 roles and their one-line purposes are listed in the **Ansible Roles**
 table in `README.md` (source of truth). A few carry editing constraints worth
 knowing up front:
 
@@ -247,8 +247,16 @@ knowing up front:
   IngressRoute (`https://loki.esweiss.com`); it does NOT duplicate the in-cluster
   DaemonSet (which covers container logs only). NodePort `:31100` is an emergency
   fallback (`alloy_host_loki_url`).
+- **prometheus_exporter** is the shared download-install pipeline (probe →
+  conditional download → install → enable/start → health) for `tarball` and
+  `deb` artifacts. **zfs_exporter** and **unbound_exporter** are thin wrappers
+  that pass their specifics as `vars` and keep their own `*.service.j2` unit +
+  notify the shared `Restart prometheus exporter` handler. A change to the
+  shared role redeploys both consumers (storage + dns deploy jobs).
 - **node_exporter_host** binds port **9101** to avoid colliding with the k3s
-  node-exporter DaemonSet on 9100.
+  node-exporter DaemonSet on 9100. It is deliberately NOT a prometheus_exporter
+  wrapper — it installs from the apt repo and uses a drop-in override plus
+  bespoke textfile collectors (see that role's README).
 - **zfs_encryption** / **luks_archive** are siblings (same Connect token + script
   structure) but ordered differently: `zfs-load-key@<pool>` runs before
   `zfs-mount.service`, while `archive-luks-open@archive-N` runs before

@@ -112,6 +112,12 @@ The `node_exporter_host` Ansible role installs Prometheus node_exporter on all 6
 
 The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed) when scripts fail or become stale.
 
+### Shared exporter install pipeline
+
+The two download-based exporters — `zfs_exporter` (release tarball, on pve-nas-01) and `unbound_exporter` (release `.deb`, on dns-01/dns-02) — share a single install pipeline in the `prometheus_exporter` Ansible role: probe the installed version, conditionally download + verify + install the artifact, then enable/start the service and health-check it. Each remains a thin wrapper that supplies its own systemd unit (`zfs-exporter.service` runs as root for `/dev/zfs`; `unbound-exporter.service` uses `DynamicUser` + the unbound control socket) and passes its specifics (download URL, checksum, version-check command, port) to the shared role.
+
+`node_exporter_host` is intentionally NOT built on this pipeline: it installs from the Debian apt repo (`prometheus-node-exporter`), ships a systemd drop-in override rather than a full unit, and carries bespoke textfile collectors (corosync + zpool health) and the drivetemp module — none of which generalize. See `ansible/roles/prometheus_exporter/README.md` for the parameter reference and the full exclusion rationale.
+
 ### Secrets
 
 Two ExternalSecrets and one templated ExternalSecret pull credentials from 1Password:

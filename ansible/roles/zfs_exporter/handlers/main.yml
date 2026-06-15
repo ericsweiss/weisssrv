@@ -1,8 +1,0 @@
----
-# Handlers for zfs_exporter role
-
-- name: Restart zfs_exporter
-  ansible.builtin.systemd:
-    name: zfs-exporter
-    state: restarted
-    daemon_reload: true

@@ -1,0 +1,89 @@
+---
+# Converge playbook for the shared prometheus_exporter pipeline.
+#
+# Contract test: invoke the role twice, once per artifact_type, both on the
+# skip path. The version-check command prints the pinned version so the
+# role's "needs_install" gate is false and no real download/install runs
+# (there is no real exporter release reachable from CI, and the wrapper
+# scenarios already cover the real download path). We pre-stage a mock
+# binary + a trivial systemd unit per exporter so the service half has a
+# real unit to enable/start; the health-check uri is tagged molecule-notest.
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    _pe_tarball_version: "9.9.9"
+    _pe_deb_version: "8.8.8"
+  pre_tasks:
+    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
+    - name: Wait for apt locks to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    # Mock binaries + trivial units so the service half has something to run.
+    - name: Create mock exporter binaries
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          while true; do sleep 3600; done
+      loop:
+        - /usr/local/bin/pe-tarball-mock
+        - /usr/local/bin/pe-deb-mock
+
+    - name: Create mock exporter units
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.unit }}.service"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description={{ item.unit }} mock
+          [Service]
+          ExecStart={{ item.bin }}
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+      loop:
+        - { unit: "pe-tarball-mock", bin: "/usr/local/bin/pe-tarball-mock" }
+        - { unit: "pe-deb-mock", bin: "/usr/local/bin/pe-deb-mock" }
+
+  tasks:
+    # Tarball branch — skip path (version-check prints the pinned version).
+    - name: Run shared pipeline (tarball branch)
+      ansible.builtin.include_role:
+        name: prometheus_exporter
+      vars:
+        prometheus_exporter_name: "pe-tarball-mock"
+        prometheus_exporter_version: "{{ _pe_tarball_version }}"
+        prometheus_exporter_artifact_type: "tarball"
+        prometheus_exporter_download_url: "https://example.invalid/pe-tarball-mock-{{ _pe_tarball_version }}.linux-amd64.tar.gz"
+        prometheus_exporter_checksum: ""
+        prometheus_exporter_binary_path: "/usr/local/bin/pe-tarball-mock"
+        prometheus_exporter_archive_member: "pe-tarball-mock-{{ _pe_tarball_version }}.linux-amd64/pe-tarball-mock"
+        prometheus_exporter_version_check_cmd: "echo {{ _pe_tarball_version }}"
+        prometheus_exporter_service_name: "pe-tarball-mock"
+        prometheus_exporter_port: 19999
+
+    # Deb branch — skip path (version-check prints the pinned version).
+    - name: Run shared pipeline (deb branch)
+      ansible.builtin.include_role:
+        name: prometheus_exporter
+      vars:
+        prometheus_exporter_name: "pe-deb-mock"
+        prometheus_exporter_version: "{{ _pe_deb_version }}"
+        prometheus_exporter_artifact_type: "deb"
+        prometheus_exporter_download_url: "https://example.invalid/pe-deb-mock-v{{ _pe_deb_version }}.x86_64.deb"
+        prometheus_exporter_checksum: ""
+        prometheus_exporter_binary_path: "/usr/local/bin/pe-deb-mock"
+        prometheus_exporter_version_check_cmd: "echo {{ _pe_deb_version }}"
+        prometheus_exporter_service_name: "pe-deb-mock"
+        prometheus_exporter_port: 19998

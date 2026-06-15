@@ -1,0 +1,44 @@
+---
+# Verify playbook for the shared prometheus_exporter pipeline.
+# Asserts the skip path left the mock binaries intact and both mock
+# services were enabled + started by the service half.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check mock binaries still exist (skip path did not clobber them)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: pe_binaries
+      failed_when: not pe_binaries.stat.exists
+      loop:
+        - /usr/local/bin/pe-tarball-mock
+        - /usr/local/bin/pe-deb-mock
+
+    - name: Check mock service state
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      register: pe_services
+      loop:
+        - pe-tarball-mock
+        - pe-deb-mock
+
+    - name: Verify mock services are enabled and active
+      ansible.builtin.assert:
+        that:
+          - item.status.UnitFileState == 'enabled'
+          - item.status.ActiveState == 'active'
+        fail_msg: "Service {{ item.item }} is not enabled+active"
+        success_msg: "Service {{ item.item }} is enabled+active"
+      loop: "{{ pe_services.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "prometheus_exporter shared pipeline verified:"
+          - "  - tarball branch skip path: binary intact, service enabled+active"
+          - "  - deb branch skip path: binary intact, service enabled+active"
+          - "(real download/install covered by zfs_exporter + unbound_exporter scenarios)"

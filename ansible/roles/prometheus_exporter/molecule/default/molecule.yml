@@ -1,0 +1,57 @@
+---
+# Molecule configuration for prometheus_exporter (shared install pipeline).
+# Contract test: exercises both artifact branches (tarball + deb) on their
+# skip paths — the version-check command reports the pinned version so the
+# download/install is skipped, exactly as a no-op redeploy on a live host.
+# The real download + checksum/apt install stay covered by the wrapper
+# scenarios (zfs_exporter, unbound_exporter).
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: prometheus-exporter-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy

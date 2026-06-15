@@ -1,0 +1,28 @@
+---
+# Enable + start + health-check half of the shared exporter pipeline. Run
+# after the caller has templated its unit file so a unit change is picked up.
+
+- name: Enable and start service {{ prometheus_exporter_service_name }}
+  ansible.builtin.systemd:
+    name: "{{ prometheus_exporter_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending restarts before health check
+  # Flush so the health probe below sees the freshly restarted binary on a
+  # version/unit change. No-op when nothing notified a restart.
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify metrics endpoint for {{ prometheus_exporter_name }}
+  ansible.builtin.uri:
+    url: "http://localhost:{{ prometheus_exporter_port }}/metrics"
+    return_content: false
+    status_code: 200
+  register: prometheus_exporter_health
+  retries: 5
+  delay: 3
+  until: prometheus_exporter_health.status == 200
+  when: not ansible_check_mode
+  tags:
+    - molecule-notest
