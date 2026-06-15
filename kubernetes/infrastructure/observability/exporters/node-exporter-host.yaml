@@ -1,8 +1,10 @@
 ---
 # Node Exporter (host-level) — remote scrape of prometheus-node-exporter running
-# directly on the bare-metal Proxmox hosts plus the dns-01/dns-02 LXCs.
-# Provides hardware metrics (hwmon thermals, SMART, NIC details, disk I/O) that
-# VMs cannot see; the LXCs contribute filesystem/textfile metrics only.
+# directly on the bare-metal Proxmox hosts, the dns-01/dns-02 LXCs, and the
+# GitLab VM. Provides hardware metrics (hwmon thermals, SMART, NIC details,
+# disk I/O) that VMs cannot see; the LXCs and the GitLab VM contribute
+# filesystem/textfile metrics only (the GitLab VM exposes the
+# gitlab_backup_* backup-freshness metric via its textfile collector).
 # Runs on port 9101 to avoid conflicting with the k3s DaemonSet on 9100.
 
 # ---------------------------------------------------------------------------
@@ -256,6 +258,38 @@ metadata:
 subsets:
   - addresses:
       - ip: 192.168.0.160
+    ports:
+      - name: metrics
+        port: 9101
+
+---
+# ---------------------------------------------------------------------------
+# gitlab (192.168.0.153) — VM on pve-nas-01; textfile backup-freshness metric
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-host-gitlab
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: node-exporter-host
+    app.kubernetes.io/instance: gitlab
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: node-exporter-host-gitlab
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.153
     ports:
       - name: metrics
         port: 9101

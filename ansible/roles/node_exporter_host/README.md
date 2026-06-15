@@ -4,6 +4,11 @@ Installs Prometheus node_exporter on bare-metal Proxmox hosts for hardware
 metrics (thermals, SMART, disk I/O, NIC counters). Listens on **port 9101** to
 avoid conflicting with the k3s in-cluster node-exporter DaemonSet on 9100.
 
+Also runs on the DNS LXCs (dns-01/dns-02) and the GitLab VM (`gitlab_servers`)
+for their textfile collectors (cert renewal on DNS; backup freshness on GitLab).
+The Proxmox-only collectors below are gated on `groups['proxmox']`, so those
+hosts install only the package + 9101 override + textfile collector directory.
+
 ## Textfile collector
 
 Reads `/var/lib/node_exporter/*.prom` files for custom metrics. Currently
@@ -12,6 +17,8 @@ populated by:
 - `nas_storage` role: media-mover and archive-backupctl write run-status metrics
 - `acme_certs` role: cert renewal/distribution writes `cert_renewal_*` metrics
   (consumed by `CertRenewalFailed` PrometheusRule)
+- `gitlab` role: the backup wrapper writes `gitlab_backup_*` metrics on the
+  GitLab VM (consumed by `GitLabBackupFailed`/`GitLabBackupStale` PrometheusRules)
 - This role's own corosync + pmxcfs health collector (see below)
 - This role's own zpool-status collector (see below)
 

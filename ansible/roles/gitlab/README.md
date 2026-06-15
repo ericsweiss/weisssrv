@@ -72,7 +72,20 @@ gitlab_smtp_enabled: true
 
 ## Backup
 
-GitLab backups run daily at 2:00 AM:
+GitLab backups run daily at 2:00 AM. The cron entry calls
+`/usr/local/sbin/gitlab-backup-run.sh` (deployed by this role), which runs
+`gitlab-backup create CRON=1`, copies `gitlab-secrets.json` + `gitlab.rb` into
+the backup path on success, and emits node_exporter textfile metrics
+(`gitlab_backup_last_run_success`, `..._last_run_duration_seconds`,
+`..._last_success_timestamp_seconds` preserved across failures, and
+`..._last_size_bytes`). The `GitLabBackupFailed`/`GitLabBackupStale`
+PrometheusRules consume these.
+
+For the metric to be scraped, `node_exporter_host` must run on the GitLab VM —
+the `gitlab_servers` group is included in the node_exporter play in
+`ansible/playbooks/site.yml`, and the VM is scraped via the
+`node-exporter-host-gitlab` Service/Endpoints in
+`kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`.
 
 ```bash
 # Manual backup

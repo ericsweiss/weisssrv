@@ -108,9 +108,11 @@ Home Assistant (HAOS) does not support Alloy installation — it is a managed ap
 
 ### Host-Level Metrics
 
-The `node_exporter_host` Ansible role installs Prometheus node_exporter on all 6 bare-metal Proxmox hosts and both DNS LXC containers (dns-01, dns-02), listening on port 9101 (port 9100 is reserved for the kube-prometheus-stack DaemonSet on k3s nodes). On Proxmox hosts this provides hardware-level metrics not available from inside VMs: CPU and board thermals, SMART disk health, physical disk I/O, and fan speeds. On DNS containers it provides container-level CPU/memory/disk metrics and enables the textfile collector for cert renewal metrics.
+The `node_exporter_host` Ansible role installs Prometheus node_exporter on all 6 bare-metal Proxmox hosts, both DNS LXC containers (dns-01, dns-02), and the GitLab VM (192.168.0.153), listening on port 9101 (port 9100 is reserved for the kube-prometheus-stack DaemonSet on k3s nodes). On Proxmox hosts this provides hardware-level metrics not available from inside VMs: CPU and board thermals, SMART disk health, physical disk I/O, and fan speeds. On the DNS containers and the GitLab VM it provides container/VM-level CPU/memory/disk metrics and enables the textfile collector for script-freshness metrics (cert renewal on DNS; backup freshness on GitLab).
 
-The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed) when scripts fail or become stale.
+Each bare host is scraped via a headless `Service` + manually pinned `Endpoints` in `kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`, selected by a single `ServiceMonitor` (`jobLabel: app.kubernetes.io/name`). The GitLab VM's 9101 scrape is authorized by the `sg-metrics` security group it already carries.
+
+The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal, the GitLab backup wrapper) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed, GitLabBackupFailed/Stale) when scripts fail or become stale.
 
 ### Shared exporter install pipeline
 
@@ -475,7 +477,7 @@ to the customResourceState config + RBAC when they're first adopted.
 
 #### Custom Script Alerts (`homelab.scripts`)
 
-These alerts use metrics exposed via the node_exporter textfile collector on Proxmox hosts. Custom scripts (archive-backupctl, media-mover, acme.sh) write `.prom` files to the textfile collector directory, which node_exporter serves alongside hardware metrics.
+These alerts use metrics exposed via the node_exporter textfile collector on Proxmox hosts and the GitLab VM. Custom scripts (archive-backupctl, media-mover, acme.sh, the GitLab backup wrapper) write `.prom` files to the textfile collector directory, which node_exporter serves alongside hardware metrics.
 
 | Alert | Condition | Severity | For |
 |-------|-----------|----------|-----|
@@ -484,6 +486,8 @@ These alerts use metrics exposed via the node_exporter textfile collector on Pro
 | MediaMoverFailed | media-mover last run exit code != 0 | warning | 1h |
 | MediaMoverStale | media-mover last success > 2 days ago | warning | 1h |
 | CertRenewalFailed | acme.sh cert renewal exit code != 0 | warning | 1h |
+| GitLabBackupFailed | gitlab-backup-run.sh last run exit code != 0 | warning | 1h |
+| GitLabBackupStale | GitLab backup last success > 2 days ago (or metric absent) | warning | 1h |
 
 ### Built-in Alerts
 

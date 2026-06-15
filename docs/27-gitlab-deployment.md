@@ -325,10 +325,14 @@ task gitlab:reconfigure     # Reconfigure GitLab after changes
 
 ## Backups
 
-GitLab backups run daily at 2:00 AM via cron:
+GitLab backups run daily at 2:00 AM via cron. The cron entry calls
+`/usr/local/sbin/gitlab-backup-run.sh` (deployed by the gitlab role), which
+runs `gitlab-backup create CRON=1`, copies `gitlab-secrets.json` + `gitlab.rb`
+into the backup path on success (a restore needs them to decrypt CI variables,
+2FA, and runner tokens), and emits backup-freshness metrics.
 
 ```bash
-# Manual backup
+# Manual backup (also re-seeds the freshness metric)
 task gitlab:backup
 
 # List backups
@@ -339,6 +343,33 @@ ssh gitlab "sudo gitlab-backup restore BACKUP=<timestamp>"
 ```
 
 Proxmox VM snapshots provide additional disaster recovery capability.
+
+### Backup monitoring
+
+The wrapper writes `/var/lib/node_exporter/gitlab_backup.prom` with:
+
+- `gitlab_backup_last_run_success` (1/0)
+- `gitlab_backup_last_run_duration_seconds`
+- `gitlab_backup_last_success_timestamp_seconds` (preserved across failed runs,
+  so staleness measures time-since-last-success, not time-since-last-attempt)
+- `gitlab_backup_last_size_bytes` (newest tarball; informational, no alert)
+
+`node_exporter_host` runs on the GitLab VM (port 9101) so the textfile metric is
+scraped alongside the host's other metrics. Prometheus discovers the VM via the
+`node-exporter-host-gitlab` Service/Endpoints
+(`kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`,
+pinned to 192.168.0.153). The `sg-metrics` security group already authorizes the
+9101 scrape from the k3s nodes, so no firewall change is needed.
+
+Two alerts (`homelab.scripts` group) fire at 48 hours:
+
+| Alert | Condition |
+|-------|-----------|
+| `GitLabBackupFailed` | `gitlab_backup_last_run_success == 0` for 1h |
+| `GitLabBackupStale` | no successful backup in > 2 days, or the metric is absent, for 1h |
+
+The `absent()` arm of `GitLabBackupStale` fires before the first 02:00 run. After
+a fresh deploy, run `task gitlab:backup` once to seed the metric.
 
 ## Updates
 

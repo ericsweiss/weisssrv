@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Runs the daily GitLab backup and emits node_exporter textfile metrics.
+# Invoked by the root cron entry installed by the gitlab role.
+#
+# NOT `set -e`: the backup's exit code must be captured and the metric
+# written regardless, so GitLabBackupFailed/Stale alerts can fire on a
+# failed run. The wrapper preserves the prior success timestamp on
+# failure so staleness measures time-since-last-success.
+set -uo pipefail
+
+BACKUP_PATH="{{ gitlab_backup_path }}"
+PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+{% raw %}
+PROM_FILE="${PROM_DIR}/gitlab_backup.prom"
+START_TS="$(date +%s)"
+
+write_prom_metrics() {
+  local success="$1" duration="$2" size="$3"
+  local ts tmp prev
+  ts="$(date +%s)"
+  tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP gitlab_backup_last_run_duration_seconds Duration of last backup run"
+    echo "# TYPE gitlab_backup_last_run_duration_seconds gauge"
+    echo "gitlab_backup_last_run_duration_seconds ${duration}"
+    echo "# HELP gitlab_backup_last_run_success Whether the last run succeeded (1=success, 0=failure)"
+    echo "# TYPE gitlab_backup_last_run_success gauge"
+    echo "gitlab_backup_last_run_success ${success}"
+    echo "# HELP gitlab_backup_last_size_bytes Size of the most recent backup tarball in bytes (0 = unknown)"
+    echo "# TYPE gitlab_backup_last_size_bytes gauge"
+    echo "gitlab_backup_last_size_bytes ${size}"
+    if [ "$success" -eq 1 ]; then
+      echo "# HELP gitlab_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+      echo "# TYPE gitlab_backup_last_success_timestamp_seconds gauge"
+      echo "gitlab_backup_last_success_timestamp_seconds ${ts}"
+    else
+      # Preserve the last-known success timestamp so the staleness alert
+      # measures time-since-last-success, not time-since-last-attempt.
+      prev="$(awk '/^gitlab_backup_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+      if [ -n "$prev" ]; then
+        echo "# HELP gitlab_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+        echo "# TYPE gitlab_backup_last_success_timestamp_seconds gauge"
+        echo "gitlab_backup_last_success_timestamp_seconds ${prev}"
+      fi
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+mkdir -p "$PROM_DIR"
+
+/opt/gitlab/bin/gitlab-backup create CRON=1
+rc=$?
+
+# gitlab-backup excludes gitlab-secrets.json and gitlab.rb; without them a
+# restore cannot decrypt CI variables, 2FA, or runner tokens. Copy them
+# alongside the data backup, but only on success (matches the prior
+# create-then-copy && semantics).
+if [ "$rc" -eq 0 ]; then
+  cp -p /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb "${BACKUP_PATH}/" || true
+fi
+
+# Newest tarball size (best-effort). gitlab-backup names archives
+# <epoch>_<date>_<version>_gitlab_backup.tar. Measured after create returns,
+# so the newest match is a complete archive. 0 on any glob/stat failure.
+size=0
+newest="$(ls -1t "${BACKUP_PATH}"/*_gitlab_backup.tar 2>/dev/null | head -1 || true)"
+if [ -n "$newest" ] && [ -f "$newest" ]; then
+  size="$(stat -c %s "$newest" 2>/dev/null || echo 0)"
+fi
+
+end_ts="$(date +%s)"
+duration=$(( end_ts - START_TS ))
+if [ "$rc" -eq 0 ]; then
+  write_prom_metrics 1 "$duration" "$size"
+else
+  write_prom_metrics 0 "$duration" "$size"
+fi
+
+exit "$rc"
+{% endraw %}

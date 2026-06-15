@@ -72,8 +72,8 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
-- name: Deploy host-level metrics (node_exporter on bare metal and DNS hosts)
-  hosts: proxmox:dns
+- name: Deploy host-level metrics (node_exporter on bare metal, DNS, and GitLab hosts)
+  hosts: proxmox:dns:gitlab_servers
   become: true
   roles:
     - role: node_exporter_host

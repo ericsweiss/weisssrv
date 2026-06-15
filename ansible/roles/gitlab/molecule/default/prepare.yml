@@ -116,3 +116,44 @@
         # Verify git user was created
         id git || { echo "ERROR: Failed to create git user"; exit 1; }
       changed_when: false
+
+    # Mock gitlab-backup: drops a fake tarball and honors a fault file so
+    # verify.yml can exercise both the success and failure metric paths of
+    # the backup wrapper. `create` -> exit 0 unless /tmp/gitlab-backup-fail
+    # exists. Installed via copy (not the raw heredoc above) to keep the
+    # script out of raw's Jinja parsing.
+    - name: Install mock gitlab-backup
+      ansible.builtin.copy:
+        dest: /opt/gitlab/bin/gitlab-backup
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "create" ]; then
+            if [ -f /tmp/gitlab-backup-fail ]; then
+              echo "Mock: gitlab-backup create FAILED"
+              exit 1
+            fi
+            touch "/var/opt/gitlab/backups/$(date +%s)_2026_01_01_18.9.1_gitlab_backup.tar"
+            echo "Mock: gitlab-backup create OK"
+            exit 0
+          fi
+          echo "Usage: gitlab-backup create"
+          exit 1
+
+    # The wrapper copies these on a successful backup; create empty mocks.
+    - name: Create mock GitLab secrets/config files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: touch
+        mode: "0600"
+      loop:
+        - /etc/gitlab/gitlab-secrets.json
+        - /etc/gitlab/gitlab.rb
+
+    # node_exporter_host role isn't in this scenario, so create the textfile
+    # collector dir the wrapper writes into.
+    - name: Ensure node_exporter textfile collector dir exists
+      ansible.builtin.file:
+        path: /var/lib/node_exporter
+        state: directory
+        mode: "0755"

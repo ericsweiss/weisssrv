@@ -953,6 +953,29 @@ spec:
                     CertExpiring alerts cover in-cluster certs but not these
                     host-distributed acme.sh certs.
 
+              - alert: GitLabBackupFailed
+                expr: gitlab_backup_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'GitLab backup failed'
+                  description: 'The nightly gitlab-backup run did not complete successfully.'
+
+              - alert: GitLabBackupStale
+                expr: (time() - gitlab_backup_last_success_timestamp_seconds > 86400 * 2) or absent(gitlab_backup_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: 'GitLab backup has not succeeded in over 2 days'
+                  description: >-
+                    No successful GitLab backup has been recorded for more than
+                    48 hours, or the metric is missing (backup wrapper not run,
+                    node_exporter on the GitLab VM unreachable, or VM off
+                    inventory). GitLab data lives on a zvol; Proxmox VM
+                    snapshots are the only other DR path.
+
       # The former homelab-backup group's ZFSPoolDegraded (zfs_exporter,
       # zfs_pool_health, NAS-only) was removed: it double-fired with the
       # textfile-collector ZFSPoolNotOnline above (zfs_pool_status_health_code,

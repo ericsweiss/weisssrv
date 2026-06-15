@@ -407,15 +407,27 @@
     group: git
     mode: '0700'
 
-# gitlab-backup deliberately excludes gitlab-secrets.json and gitlab.rb —
-# without them a restore cannot decrypt CI variables, 2FA, or runner
-# tokens. Copy them alongside the data backup (dir is git-owned 0700).
+# The wrapper runs the backup, copies gitlab-secrets.json + gitlab.rb on
+# success (a restore needs them to decrypt CI variables, 2FA, runner
+# tokens), and emits node_exporter textfile metrics so GitLabBackupFailed /
+# GitLabBackupStale can fire. It owns the create-then-copy semantics the
+# cron line used to carry inline.
+- name: Deploy GitLab backup wrapper (runs backup + emits metric)
+  ansible.builtin.template:
+    src: gitlab-backup-run.sh.j2
+    dest: /usr/local/sbin/gitlab-backup-run.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+# The cron module keys on `name`, so changing `job` rewrites the existing
+# line in place — no duplicate or stale entry from the prior inline command.
 - name: Configure GitLab backup cron job
   ansible.builtin.cron:
     name: "GitLab backup"
     minute: "0"
     hour: "2"
-    job: "/opt/gitlab/bin/gitlab-backup create CRON=1 && cp -p /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb {{ gitlab_backup_path }}/"
+    job: "/usr/local/sbin/gitlab-backup-run.sh"
     user: root
 
 - name: Check if GitLab is installed (for check mode safety)

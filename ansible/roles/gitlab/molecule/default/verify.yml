@@ -320,10 +320,92 @@
     - name: Verify GitLab backup cron job exists
       ansible.builtin.assert:
         that:
-          - root_crontab.stdout is search('gitlab-backup create CRON=1')
+          # The cron line now calls the wrapper; `gitlab-backup create CRON=1`
+          # lives inside the wrapper, not the crontab.
+          - root_crontab.stdout is search('gitlab-backup-run.sh')
           - root_crontab.stdout is search('0 2')
         fail_msg: "GitLab backup cron job not configured"
         success_msg: "GitLab backup cron job configured (daily at 2:00 AM)"
+
+    # ==========================================================================
+    # Verify Backup Wrapper + Textfile Metric
+    # ==========================================================================
+    - name: Stat GitLab backup wrapper
+      ansible.builtin.stat:
+        path: /usr/local/sbin/gitlab-backup-run.sh
+      register: gitlab_backup_wrapper
+
+    - name: Verify backup wrapper is present with correct perms
+      ansible.builtin.assert:
+        that:
+          - gitlab_backup_wrapper.stat.exists
+          - gitlab_backup_wrapper.stat.mode == '0755'
+          - gitlab_backup_wrapper.stat.pw_name == 'root'
+          - gitlab_backup_wrapper.stat.gr_name == 'root'
+        fail_msg: "gitlab-backup-run.sh missing or has wrong perms"
+        success_msg: "gitlab-backup-run.sh present (0755, root:root)"
+
+    # End-to-end success path: run the wrapper (mock gitlab-backup from
+    # prepare.yml succeeds + drops a tarball) and assert all four metrics land.
+    - name: Run backup wrapper (success path)
+      ansible.builtin.command: /usr/local/sbin/gitlab-backup-run.sh
+      changed_when: false
+
+    - name: Read gitlab_backup.prom after success
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/gitlab_backup.prom
+      register: gitlab_backup_prom_ok
+
+    - name: Assert all four metrics are present on success
+      ansible.builtin.assert:
+        that:
+          - "'gitlab_backup_last_run_success 1' in (gitlab_backup_prom_ok.content | b64decode)"
+          - "'gitlab_backup_last_run_duration_seconds ' in (gitlab_backup_prom_ok.content | b64decode)"
+          - "'gitlab_backup_last_success_timestamp_seconds ' in (gitlab_backup_prom_ok.content | b64decode)"
+          - "'gitlab_backup_last_size_bytes ' in (gitlab_backup_prom_ok.content | b64decode)"
+        fail_msg: "gitlab_backup.prom missing expected metrics on success"
+        success_msg: "gitlab_backup.prom emits all four metrics on success"
+
+    - name: Capture the success timestamp value (to assert it is preserved)
+      ansible.builtin.shell: >-
+        awk '/^gitlab_backup_last_success_timestamp_seconds/ {print $2}'
+        /var/lib/node_exporter/gitlab_backup.prom
+      register: gitlab_backup_ts_ok
+      changed_when: false
+
+    # Failure path: flip the mock to fail, re-run, and assert success=0 AND
+    # the prior success timestamp is preserved (the load-bearing contract).
+    - name: Arm the mock gitlab-backup failure
+      ansible.builtin.file:
+        path: /tmp/gitlab-backup-fail
+        state: touch
+        mode: "0644"
+
+    - name: Run backup wrapper (failure path)
+      ansible.builtin.command: /usr/local/sbin/gitlab-backup-run.sh
+      register: gitlab_backup_fail_run
+      changed_when: false
+      failed_when: gitlab_backup_fail_run.rc == 0  # wrapper must propagate the non-zero rc
+
+    - name: Read gitlab_backup.prom after failure
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/gitlab_backup.prom
+      register: gitlab_backup_prom_fail
+
+    - name: Assert failure metric + preserved success timestamp
+      ansible.builtin.assert:
+        that:
+          - "'gitlab_backup_last_run_success 0' in (gitlab_backup_prom_fail.content | b64decode)"
+          - >-
+            'gitlab_backup_last_success_timestamp_seconds ' ~ gitlab_backup_ts_ok.stdout
+            in (gitlab_backup_prom_fail.content | b64decode)
+        fail_msg: "Failure path did not record success=0 or did not preserve the prior timestamp"
+        success_msg: "Failure path records success=0 and preserves the last success timestamp"
+
+    - name: Disarm the mock gitlab-backup failure
+      ansible.builtin.file:
+        path: /tmp/gitlab-backup-fail
+        state: absent
 
     # ==========================================================================
     # Verify Mock GitLab Status (via mock gitlab-ctl)
