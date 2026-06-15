@@ -77,7 +77,7 @@ The qBittorrent pod carries a `gluetun-exporter` sidecar
 (`ghcr.io/thecfu/gluetun-exporter`, pinned by `@sha256` digest) that polls the
 Gluetun control server on `127.0.0.1:8001` and exposes a Prometheus
 `gluetun_vpn_status` gauge on `:8002` (`1` = running, `0` = stopped/unreachable,
-`-1` = error). The killswitch means only an in-pod sidecar can reach the control
+`-1` = error, `-2` = unknown). The killswitch means only an in-pod sidecar can reach the control
 API, so the exporter shares the pod network namespace rather than running in the
 `observability` namespace like the other exporters.
 
@@ -96,6 +96,13 @@ API, so the exporter shares the pod network namespace rather than running in the
   runs `sleep infinity`, control server not listening). Adding the sidecar there
   would report `gluetun_vpn_status=0` forever and false-fire `VPNDown`. If
   NZBGet's VPN is ever enabled, replicate the sidecar + PodMonitor on it.
+- **Toggling qBittorrent's VPN off**: the exporter and PodMonitor are coupled to
+  `vpn_enabled` for the same reason — disabling the VPN stops Gluetun's control
+  server, so `gluetun_vpn_status` reads `0` forever and `VPNDown` pages falsely.
+  Remove the `gluetun-exporter` sidecar **and** the `gluetun-qbittorrent`
+  PodMonitor from `qbittorrent.yaml` in the same edit that sets
+  `vpn_enabled: "false"` (re-add both when re-enabling). See the download-clients
+  README for the step-by-step.
 
 ## Prerequisites
 

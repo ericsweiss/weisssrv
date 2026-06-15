@@ -361,11 +361,13 @@ scraped alongside the host's other metrics. Prometheus discovers the VM via the
 pinned to 192.168.0.153). The `sg-metrics` security group already authorizes the
 9101 scrape from the k3s nodes, so no firewall change is needed.
 
-Two alerts (`homelab.scripts` group) fire at 48 hours:
+Two alerts (`homelab.scripts` group) cover backup health, on different
+timescales — `GitLabBackupFailed` fires ~1h after a single failed run, while
+`GitLabBackupStale` only fires once no run has succeeded for 48 hours:
 
 | Alert | Condition |
 |-------|-----------|
-| `GitLabBackupFailed` | `gitlab_backup_last_run_success == 0` for 1h |
+| `GitLabBackupFailed` | `gitlab_backup_last_run_success == 0` for 1h (a single failed run) |
 | `GitLabBackupStale` | no successful backup in > 2 days, or the metric is absent, for 1h |
 
 The `absent()` arm of `GitLabBackupStale` fires before the first 02:00 run. After

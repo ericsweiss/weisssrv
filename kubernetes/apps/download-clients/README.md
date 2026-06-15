@@ -115,6 +115,16 @@ git push
 task flux:rotate-secret -- downloads
 ```
 
+> **Disabling the VPN on qBittorrent requires one more edit.** qBittorrent
+> carries a `gluetun-exporter` sidecar plus a `gluetun-qbittorrent` PodMonitor
+> that feed the `VPNDown` alert. When `vpn_enabled: "false"`, Gluetun sleeps and
+> its control server stops listening, so the exporter reports
+> `gluetun_vpn_status=0` forever and `VPNDown` pages permanently and falsely. So
+> in the **same** edit that sets `vpn_enabled: "false"`, remove the
+> `gluetun-exporter` container and the `gluetun-qbittorrent` PodMonitor from
+> `qbittorrent.yaml` (and re-add both when re-enabling the VPN). NZBGet ships
+> VPN-off and carries neither, which is why it has no false-fire problem.
+
 ### Check VPN Status
 
 ```bash

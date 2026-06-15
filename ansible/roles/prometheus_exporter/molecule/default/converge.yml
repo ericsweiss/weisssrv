@@ -1,19 +1,28 @@
 ---
 # Converge playbook for the shared prometheus_exporter pipeline.
 #
-# Contract test: invoke the role twice, once per artifact_type, both on the
-# skip path. The version-check command prints the pinned version so the
-# role's "needs_install" gate is false and no real download/install runs
-# (there is no real exporter release reachable from CI, and the wrapper
-# scenarios already cover the real download path). We pre-stage a mock
-# binary + a trivial systemd unit per exporter so the service half has a
-# real unit to enable/start; the health-check uri is tagged molecule-notest.
+# Contract test: three role invocations.
+#   1. tarball SKIP path  — version-check prints the pinned version so
+#      needs_install=false and nothing downloads/installs.
+#   2. deb SKIP path      — same gate, deb branch.
+#   3. tarball INSTALL path — version-check prints a stale version so
+#      needs_install=true; download_url is a file:// URL pointing at a tiny
+#      locally-staged tarball fixture, exercising the real
+#      get_url -> unarchive -> copy -> cleanup chain (the .deb install branch
+#      is covered live by the unbound_exporter deploy; a real .deb fixture is
+#      impractical in-container).
+# We pre-stage a mock binary + a trivial systemd unit per exporter so the
+# service half has a real unit to enable/start; the health-check uri is
+# tagged molecule-notest.
 - name: Converge
   hosts: all
   become: true
   vars:
     _pe_tarball_version: "9.9.9"
     _pe_deb_version: "8.8.8"
+    # Stale version reported by the install-path probe so needs_install=true.
+    _pe_install_version: "10.0.0"
+    _pe_install_tmp: /tmp/pe-install-fixture
   pre_tasks:
     # Wait for apt locks to be released (unattended-upgrades runs on container startup)
     - name: Wait for apt locks to be released
@@ -55,6 +64,38 @@
       loop:
         - { unit: "pe-tarball-mock", bin: "/usr/local/bin/pe-tarball-mock" }
         - { unit: "pe-deb-mock", bin: "/usr/local/bin/pe-deb-mock" }
+        - { unit: "pe-install-mock", bin: "/usr/local/bin/pe-install-mock" }
+
+    # --- Tarball install-path fixture -----------------------------------------
+    # Build a tiny .tar.gz holding a sleep-loop binary at a nested archive
+    # member path, served back to the role over file:// so the real
+    # get_url -> unarchive -> copy -> cleanup chain runs without leaving CI.
+    - name: Stage tarball fixture + scratch dirs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ _pe_install_tmp }}/build/pe-install-mock-{{ _pe_install_version }}.linux-amd64"
+        # get_url dest is a file path; its parent (the role's scratch tmp_dir)
+        # must exist before the install-path invocation downloads into it.
+        - /tmp/pe-install-scratch
+
+    - name: Stage the fixture binary inside the archive member dir
+      ansible.builtin.copy:
+        dest: "{{ _pe_install_tmp }}/build/pe-install-mock-{{ _pe_install_version }}.linux-amd64/pe-install-mock"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          while true; do sleep 3600; done
+
+    - name: Pack the fixture tarball  # noqa: command-instead-of-module
+      # unarchive only extracts; creating the fixture archive needs tar.
+      ansible.builtin.command:
+        cmd: >-
+          tar -czf {{ _pe_install_tmp }}/pe-install-mock-{{ _pe_install_version }}.linux-amd64.tar.gz
+          -C {{ _pe_install_tmp }}/build pe-install-mock-{{ _pe_install_version }}.linux-amd64
+        creates: "{{ _pe_install_tmp }}/pe-install-mock-{{ _pe_install_version }}.linux-amd64.tar.gz"
 
   tasks:
     # Tarball branch — skip path (version-check prints the pinned version).
@@ -87,3 +128,26 @@
         prometheus_exporter_version_check_cmd: "echo {{ _pe_deb_version }}"
         prometheus_exporter_service_name: "pe-deb-mock"
         prometheus_exporter_port: 19998
+
+    # Tarball branch — INSTALL path. version-check prints a stale version so
+    # needs_install=true; download_url is the staged file:// fixture, so the
+    # role actually downloads, extracts the nested member, copies the binary
+    # to binary_path, and cleans up the scratch archive + extracted dir.
+    - name: Run shared pipeline (tarball install path)
+      ansible.builtin.include_role:
+        name: prometheus_exporter
+      vars:
+        prometheus_exporter_name: "pe-install-mock"
+        prometheus_exporter_version: "{{ _pe_install_version }}"
+        prometheus_exporter_artifact_type: "tarball"
+        prometheus_exporter_download_url: "file://{{ _pe_install_tmp }}/pe-install-mock-{{ _pe_install_version }}.linux-amd64.tar.gz"
+        prometheus_exporter_checksum: ""
+        prometheus_exporter_binary_path: "/usr/local/bin/pe-install-mock"
+        prometheus_exporter_archive_member: "pe-install-mock-{{ _pe_install_version }}.linux-amd64/pe-install-mock"
+        # version-check reports the OLD version => needs_install=true.
+        prometheus_exporter_version_check_cmd: "echo 0.0.0"
+        prometheus_exporter_service_name: "pe-install-mock"
+        prometheus_exporter_port: 19997
+        # Extract under a dedicated scratch dir so the role's archive download
+        # + cleanup never touches the staged fixture under _pe_install_tmp.
+        prometheus_exporter_tmp_dir: "/tmp/pe-install-scratch"

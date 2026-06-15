@@ -131,16 +131,13 @@ cert_distribution_targets:
     cert_mode: "0644"
     key_mode: "0600"
     restart_command: *tlshd_reload_if_enabled
-  # The five remaining k3s agents. host_key MUST be captured against the
-  # live host before the next dns:deploy:
-  #     task certs:show-host-keys
-  # and pasted in below, replacing the CAPTURE-VIA-... placeholder. The
-  # placeholder is non-empty (so the acme_certs host_key assert passes for
-  # lint/syntax) but is NOT a real key: with StrictHostKeyChecking=yes the
-  # cert push to that agent fails safe on a host-key mismatch rather than
-  # pushing the wildcard key to an unverified host. Until the real key is
-  # pasted, that agent has no cert, so the nfs_tls assert will (correctly)
-  # block the k3s deploy — do the capture first.
+  # The five remaining k3s agents. Each host_key below is a real key
+  # captured from the live host via `task certs:show-host-keys`. When adding
+  # a NEW target, capture its key the same way before the next dns:deploy:
+  # the acme_certs host_key assert refuses an empty value, and with
+  # StrictHostKeyChecking=yes a wrong/stale key fails the cert push safe on a
+  # host-key mismatch rather than pushing the wildcard key to an unverified
+  # host. Rotate by re-capturing after a host rebuild and pasting the new value.
   - host: k3s-agt-laptop-01
     ip: 192.168.0.203
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEf3UC60qsa4OT5LTT/0xhZpUZE5wx2AWHnRunA69268"

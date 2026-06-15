@@ -1,7 +1,8 @@
 ---
 # Verify playbook for the shared prometheus_exporter pipeline.
-# Asserts the skip path left the mock binaries intact and both mock
-# services were enabled + started by the service half.
+# Asserts the skip path left the mock binaries intact, the tarball install
+# path actually downloaded/extracted/copied the binary and cleaned up its
+# scratch, and every mock service was enabled + started by the service half.
 - name: Verify
   hosts: all
   become: true
@@ -16,6 +17,42 @@
         - /usr/local/bin/pe-tarball-mock
         - /usr/local/bin/pe-deb-mock
 
+    # Install path: this binary was NOT pre-staged — only the install-path
+    # copy step (from the extracted fixture) can have created it, so its
+    # presence + exec bit proves get_url -> unarchive -> copy actually ran.
+    - name: Stat the install-path binary
+      ansible.builtin.stat:
+        path: /usr/local/bin/pe-install-mock
+      register: pe_install_binary
+
+    - name: Verify install path landed the binary
+      ansible.builtin.assert:
+        that:
+          - pe_install_binary.stat.exists
+          - pe_install_binary.stat.executable
+        fail_msg: "Tarball install path did not place /usr/local/bin/pe-install-mock"
+        success_msg: "Tarball install path downloaded, extracted, and installed the binary"
+
+    # Cleanup half of the install path: the downloaded archive and the
+    # extracted member dir under the scratch tmp_dir must both be gone.
+    - name: Stat install-path scratch leftovers
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: pe_scratch
+      loop:
+        - /tmp/pe-install-scratch/pe-install-mock-10.0.0.linux-amd64.tar.gz
+        - /tmp/pe-install-scratch/pe-install-mock-10.0.0.linux-amd64
+
+    - name: Verify install path cleaned up its scratch files
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists
+        fail_msg: "Install path left scratch artifact behind: {{ item.item }}"
+        success_msg: "Install path cleaned up: {{ item.item }}"
+      loop: "{{ pe_scratch.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     - name: Check mock service state
       ansible.builtin.systemd:
         name: "{{ item }}"
@@ -23,6 +60,7 @@
       loop:
         - pe-tarball-mock
         - pe-deb-mock
+        - pe-install-mock
 
     - name: Verify mock services are enabled and active
       ansible.builtin.assert:
@@ -41,4 +79,5 @@
           - "prometheus_exporter shared pipeline verified:"
           - "  - tarball branch skip path: binary intact, service enabled+active"
           - "  - deb branch skip path: binary intact, service enabled+active"
-          - "(real download/install covered by zfs_exporter + unbound_exporter scenarios)"
+          - "  - tarball install path: download/extract/copy ran, binary installed, scratch cleaned"
+          - "(real .deb install path covered by the unbound_exporter live deploy)"

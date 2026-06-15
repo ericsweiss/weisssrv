@@ -51,7 +51,14 @@ spec:
     crds:
       annotations:
         helm.sh/resource-policy: keep
+    # 2 replicas for HA, NOT throughput: ESO does not shard ExternalSecrets
+    # across replicas, so a second active reconciler would only duplicate full
+    # reconciles (and race on status writes). leaderElect makes exactly one
+    # replica reconcile while the other is a warm standby for instant failover.
+    # This is why there is no HPA — horizontal scaling buys nothing for a
+    # non-sharding controller (see docs/33-autoscaling.md).
     replicaCount: 2
+    leaderElect: true
     nodeSelector:
       esweiss.com/cpu: modern
     tolerations:
