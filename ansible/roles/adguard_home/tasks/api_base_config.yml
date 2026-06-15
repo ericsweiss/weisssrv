@@ -81,6 +81,12 @@
   no_log: true
   failed_when: false
   register: dns_config_updated
+  # Retry transient API errors (a POST racing AdGuard's post-restart init is
+  # the likely cause of the deploy-ansible-dns failure in pipeline 395). The
+  # assert below still surfaces a persistent failure with the real status/body.
+  until: (dns_config_updated.status | default(0)) == 200
+  retries: 5
+  delay: 3
 
 - name: Assert AdGuard DNS configuration update succeeded
   ansible.builtin.assert:
@@ -179,6 +185,9 @@
   no_log: true
   failed_when: false
   register: tls_config_updated
+  until: (tls_config_updated.status | default(0)) == 200
+  retries: 5
+  delay: 3
 
 - name: Assert AdGuard TLS configuration update succeeded
   ansible.builtin.assert:
@@ -220,6 +229,9 @@
   no_log: true
   failed_when: false
   register: dhcp_config_updated
+  until: (dhcp_config_updated.status | default(0)) == 200
+  retries: 5
+  delay: 3
 
 - name: Assert AdGuard DHCP configuration update succeeded
   ansible.builtin.assert:
