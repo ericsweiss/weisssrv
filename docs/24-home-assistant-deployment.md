@@ -453,20 +453,20 @@ verifies; see docs/07 Transport Security), but HAOS cannot:
   mount above couldn't complete a TLS handshake. HAOS 17.x's kernel (6.12)
   *does* meet the kTLS bar, but the userspace daemon is the blocker.
 
-The `/export/media` k3s client lines are **permissive** (`xprtsec=none:tls`):
-they advertise TLS but still accept plaintext, and the k3s pods drive the
-encrypted mount via their own `xprtsec=tls`. The `.154` line omits `xprtsec`
-entirely, so HAOS's plaintext mount is accepted on the same export. Do **not**
-add `xprtsec` to the `.154` line in `host_vars/pve-nas-01.yml` — HAOS has no
-`tlshd` and would be locked out of its media mount. Note that even with
-permissive exports, HAOS must keep mounting by hostname
-(`pve-nas-01.esweiss.com`, as the fstab line above does) — it works for HAOS
-because the mount is plaintext, but the hostname is also what a TLS client
-needs (the `*.esweiss.com` cert has no IP SAN). The media is non-sensitive and
-the read-only mount sits behind the LAN-trust boundary, so plaintext is an
-accepted exception (tracked in docs/16). SMB3 (which is encrypted) was
-considered and rejected to avoid adding a second protocol + credential path
-for one browse mount.
+The `/export/media` k3s client lines **require TLS** (`xprtsec=tls`): a
+plaintext mount from those CIDRs is rejected, and the k3s pods mount with their
+own `xprtsec=tls`. `xprtsec` is applied per client line, so the `.154` line —
+which omits `xprtsec` entirely — keeps its plaintext mount on the same export
+and is **not** locked out by the require-TLS k3s lines. Do **not** add
+`xprtsec` to the `.154` line in `host_vars/pve-nas-01.yml` — HAOS has no
+`tlshd` and would lose its media mount. HAOS still mounts by hostname
+(`pve-nas-01.esweiss.com`, as the fstab line above does); the mount itself is
+plaintext, but the hostname is what a TLS client would also need (the
+`*.esweiss.com` cert has no IP SAN). The media is non-sensitive and the
+read-only mount sits behind the LAN-trust boundary, so plaintext is an accepted
+exception (tracked in docs/16). SMB3 (which is encrypted) was considered and
+rejected to avoid adding a second protocol + credential path for one browse
+mount.
 
 ### Backup Configuration
 

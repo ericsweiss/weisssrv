@@ -6,11 +6,10 @@
 #   - client.xprtsec  : per-client override; takes precedence over the
 #                       export-level value, including a falsy value to
 #                       opt one client OUT.
-# Production uses "none:tls" (permissive: advertises TLS, still accepts
-# plaintext) rather than "tls" (reject-plaintext). A client line with no
-# xprtsec leaves the server at its default policy (none:tls:mtls), also
-# permissive. This per-client granularity lets a shared export carry
-# TLS-advertising k3s clients alongside a plaintext-only client (e.g.
+# Production k3s lines use "tls" (require: reject plaintext). A client line
+# with no xprtsec leaves the server at its default policy (none:tls:mtls),
+# which accepts plaintext. This per-client granularity lets a shared export
+# carry require-TLS k3s clients alongside a plaintext-only client (e.g.
 # HAOS .154 on /export/media, which cannot speak xprtsec — see docs/24).
 # The wire is encrypted by clients that MOUNT with xprtsec=tls (by
 # hostname, so the *.esweiss.com cert verifies); requires the nfs_tls role

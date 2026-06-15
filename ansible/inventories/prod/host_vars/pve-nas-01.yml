@@ -162,10 +162,10 @@ mergerfs_mounts:
       - /mnt/tank/media
 
 # NFSv4-over-TLS server: install + start tlshd so the kernel can answer
-# the server-side TLS handshake for exports/client lines that advertise
-# xprtsec (see /export/{appdata,share,media} below — all permissive
-# none:tls). Harmless for the always-plaintext lines (HAOS .154, the
-# fsid=0 root, tank-proxmox) — none:tls accepts non-TLS mounts there too.
+# the server-side TLS handshake for the k3s client lines that require
+# xprtsec=tls (see /export/{appdata,share,media} below). tlshd is live on
+# this server and all six k3s agents. The always-plaintext lines (HAOS .154,
+# the fsid=0 root, tank-proxmox) carry no xprtsec and are unaffected.
 nfs_tls_enabled: true
 
 # NFS exports
@@ -200,20 +200,17 @@ nfs_exports:
   # Two CIDR blocks for k3s nodes:
   #   192.168.0.200/29 (.200-.207) = k3s agents
   #   192.168.0.220/29 (.220-.227) = k3s servers
-  # xprtsec=none:tls: PERMISSIVE — advertises TLS but still accepts plaintext.
-  # The wire is encrypted because the k3s PVs mount with xprtsec=tls by
-  # hostname (pve-nas-01.esweiss.com, so the *.esweiss.com cert verifies);
-  # the permissive export removes the deploy-ordering lockout (a client that
-  # hasn't flipped to TLS yet, or a node missing tlshd, still mounts).
-  # tlshd must be live on the server + every k3s agent for the TLS path to
-  # complete (group_vars/k3s.yml nfs_tls_enabled). Reject-plaintext hardening
-  # (xprtsec: tls) is a documented FUTURE step — see docs/16.
+  # xprtsec=tls: REQUIRE — these k3s client lines reject plaintext mounts.
+  # The k3s PVs mount with xprtsec=tls by hostname (pve-nas-01.esweiss.com,
+  # so the *.esweiss.com cert verifies; an IP mount fails the handshake).
+  # tlshd is live on the server + every k3s agent (group_vars/k3s.yml
+  # nfs_tls_enabled), so the TLS path always completes.
   - path: /export/appdata
     bind_source: /mnt/ssd/appdata
     owner: 1000  # eric
     group: 2000  # media
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
-    xprtsec: "none:tls"
+    xprtsec: "tls"
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
@@ -225,7 +222,7 @@ nfs_exports:
     owner: 1000  # eric
     group: 2000  # media
     mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
-    xprtsec: "none:tls"  # permissive — see /export/appdata note above
+    xprtsec: "tls"  # require TLS — see /export/appdata note above
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
@@ -234,13 +231,14 @@ nfs_exports:
 
   # Unified media export (mergerfs mount - exposes only downloads/ and library/)
   # NFS clients mount this as /media, pods mount it as /media
-  # k3s client lines advertise TLS (per-client xprtsec=none:tls — permissive),
-  # HAOS (.154) stays fully plaintext. HAOS Supervisor hardcodes its NFS mount
-  # options and the appliance ships no tlshd, so it can never request
-  # xprtsec=tls. The k3s pods drive TLS by mounting with xprtsec=tls (by
-  # hostname, so the *.esweiss.com cert verifies); the permissive value keeps
-  # plaintext clients (HAOS, and any k3s client not yet on TLS) working on the
-  # same export. See docs/24 (HAOS NFS) and docs/07 (Transport Security).
+  # k3s client lines require TLS (per-client xprtsec=tls — reject plaintext);
+  # HAOS (.154) stays fully plaintext on its own client line. HAOS Supervisor
+  # hardcodes its NFS mount options and the appliance ships no tlshd, so it can
+  # never request xprtsec=tls — locking it down would break its media mount.
+  # The k3s pods drive TLS by mounting with xprtsec=tls (by hostname, so the
+  # *.esweiss.com cert verifies). xprtsec is per-client, so the require-TLS k3s
+  # lines and the plaintext .154 line coexist on one export. See docs/24 (HAOS
+  # NFS) and docs/07 (Transport Security).
   - path: /export/media
     bind_source: /mnt/media
     owner: 1000  # eric
@@ -249,10 +247,10 @@ nfs_exports:
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
-        xprtsec: "none:tls"
+        xprtsec: "tls"
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
-        xprtsec: "none:tls"
+        xprtsec: "tls"
       - spec: "192.168.0.154/32"  # HAOS — plaintext (no xprtsec; see comment above)
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 

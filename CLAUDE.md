@@ -263,8 +263,8 @@ knowing up front:
   `zfs-import-cache.service` so the `/dev/mapper/archive-N` nodes exist first.
   Runbooks in `docs/32-zfs-encryption.md`.
 - **nfs_tls** (`nfs_tls_enabled`) runs tlshd on `pve-nas-01` + every k3s
-  agent. The `nas_storage` exports are permissive (`xprtsec: none:tls`); the
-  wire is encrypted because the k3s NFS PVs *mount* with `xprtsec=tls` — **by
+  agent. The `nas_storage` k3s export lines require TLS (`xprtsec: tls`,
+  plaintext rejected); the k3s NFS PVs *mount* with `xprtsec=tls` — **by
   hostname** (`server: pve-nas-01.esweiss.com`, since the `*.esweiss.com` cert
   has no IP SAN; an IP mount fails the handshake). HAOS (.154) and the Proxmox
   `tank-proxmox` target are documented plaintext exceptions (docs/24, docs/16).

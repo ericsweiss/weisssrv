@@ -18,27 +18,27 @@ is triggered by:
 
 - **Server**: an `xprtsec` flag added to entries in `/etc/exports`. The
   `nas_storage` role's `exports.j2` template reads the per-export `xprtsec`
-  field on each item in `nfs_exports`. Production uses `none:tls` —
-  **permissive**: it advertises TLS but still accepts plaintext, which
-  removes the deploy-ordering lockout. Example in `host_vars/pve-nas-01.yml`:
+  field on each item in `nfs_exports`. The production k3s exports use `tls` —
+  **require**: a plaintext mount from those client lines is rejected. Example
+  in `host_vars/pve-nas-01.yml`:
 
   ```yaml
   nfs_exports:
     - path: /tank/media
-      xprtsec: "none:tls"   # advertise TLS, still accept plaintext (permissive)
+      xprtsec: "tls"        # require TLS — reject plaintext
       clients:
         - spec: 192.168.0.0/24
           options: rw,sync,no_subtree_check
   ```
 
-  Use `tls` instead of `none:tls` to reject plaintext (a future hardening
-  step — see docs/16). Omit the `xprtsec` key (or set it falsy) to leave the
-  export at the server default (`none:tls:mtls`, also permissive). The
+  Use `none:tls` instead of `tls` for a permissive export (advertise TLS, still
+  accept plaintext). Omit the `xprtsec` key (or set it falsy) to leave the
+  export at the server default (`none:tls:mtls`, which accepts plaintext). The
   template also supports a **per-client** `xprtsec` override (on each
   `clients[]` entry), which takes precedence over the export-level value —
-  this is how `/export/media` advertises TLS to its k3s clients while keeping
-  HAOS (.154) with no `xprtsec` on the same export. See the `nas_storage`
-  README for the field semantics.
+  this is how `/export/media` requires TLS from its k3s clients while keeping
+  HAOS (.154) with no `xprtsec` (plaintext) on the same export. See the
+  `nas_storage` README for the field semantics.
 - **Client**: `-o xprtsec=tls` (or `xprtsec=mtls`) flag added to mount
   options. For k3s NFS PVs this is `spec.mountOptions` in the PV manifest;
   for Proxmox `pve_storage` entries it would be set in `host_vars`. **A TLS
@@ -77,10 +77,11 @@ is triggered by:
 
 ## Rollout procedure (coordinated across server + clients)
 
-> Permissive exports (`none:tls`) make ordering forgiving: the server
-> accepts both plaintext and TLS, and a client without tlshd just mounts
-> plaintext. The only hard requirement is that TLS clients mount by a
-> hostname the `*.esweiss.com` cert covers (never by IP).
+> The k3s exports require TLS (`xprtsec=tls`), so ordering matters: every
+> TLS client must have `tlshd` running and the cert in place, and must mount
+> by a hostname the `*.esweiss.com` cert covers (never by IP), before the
+> export starts requiring TLS — otherwise its mount is rejected. Stage with a
+> permissive value (`none:tls`) first if a client can't be guaranteed ready.
 
 1. Confirm `cert_distribution_targets` in `host_vars/dns-01.yml`
    covers every NFS server + TLS client: `pve-nas-01` (server) and all
@@ -96,11 +97,12 @@ is triggered by:
    includes `nfs_tls`. The role's pre-check asserts the cert files
    exist, so a missing distribution fails the play loud instead of
    silently bringing up a misconfigured tlshd.
-4. Add `xprtsec=none:tls` to the relevant `nfs_exports` entries on
+4. Add `xprtsec=tls` to the relevant `nfs_exports` entries on
    `pve-nas-01` (export-level for k3s-only exports; **per-client** for
    mixed exports like `/export/media` so HAOS keeps a non-xprtsec line).
-   Re-run `nas_storage`; the handler reloads `exportfs`. Permissive, so
-   this is safe to apply before or after the clients flip.
+   Re-run `nas_storage`; the handler reloads `exportfs`. Require-TLS rejects
+   plaintext, so apply this only after the TLS clients are confirmed mounting
+   over TLS by hostname (stage with `none:tls` first if unsure).
 5. Point the k3s NFS PVs at the **hostname** and add `xprtsec=tls` to
    their mount options. `server:` is an immutable PV field, so this is a
    delete+recreate, not an in-place edit:

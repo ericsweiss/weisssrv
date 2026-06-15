@@ -436,18 +436,21 @@ The two remaining items (AdGuard admin, router) are acceptable residual
 LAN-trust hops since they sit behind `lan-tailscale-only` and the
 user-facing edge is HTTPS.
 
-### NFSv4 + RPC-with-TLS — k3s done; two documented plaintext exceptions
+### NFSv4 + RPC-with-TLS — k3s require-TLS DONE; two documented plaintext exceptions
 
-**Status: enabled for k3s clients (permissive exports, validated live).**
-`tlshd` runs on `pve-nas-01` and on **every k3s agent**
+**Status: require-TLS for all k3s clients, cutover complete and validated
+live.** `tlshd` runs on `pve-nas-01` and on **every k3s agent**
 (`nfs_tls_enabled: true` in `group_vars/k3s.yml` + `host_vars/pve-nas-01.yml`).
 The k3s client lines of `/export/{appdata,share,media}` carry
-`xprtsec=none:tls` — **permissive**: they advertise TLS but still accept
-plaintext. The wire is encrypted because the k3s PVs *mount* with
-`xprtsec=tls`. The exports template (`nas_storage/templates/exports.j2`)
-supports **per-client** `xprtsec`, which makes the mixed `/export/media`
-export possible (k3s clients advertise TLS, HAOS plaintext on the same
-export). NFS-over-TLS rides the same TCP/2049 — no firewall change.
+`xprtsec=tls` — **require**: a plaintext mount from those CIDRs is rejected.
+All 11 k3s NFS PVs (downloads ×8, recipes ×2, grafana) were recreated with
+`server: pve-nas-01.esweiss.com` + `xprtsec=tls` and every pod is Running over
+TLS (`exportfs -v` shows `xprtsec=tls` on the k3s lines; `cat /proc/mounts`
+confirms on each agent). The exports template
+(`nas_storage/templates/exports.j2`) supports **per-client** `xprtsec`, which
+makes the mixed `/export/media` export possible (k3s clients require TLS, HAOS
+plaintext on the same export). NFS-over-TLS rides the same TCP/2049 — no
+firewall change.
 
 **CRITICAL — TLS clients mount by hostname, never by IP.** The distributed
 cert is the wildcard `*.esweiss.com` (no IP SAN). Mounting
@@ -458,13 +461,12 @@ wildcard) succeeds ("Handshake with pve-nas-01.esweiss.com was successful").
 Every k3s NFS PV with `xprtsec=tls` therefore sets
 `server: pve-nas-01.esweiss.com`, not the IP.
 
-**Why permissive (`none:tls`) and not reject-plaintext (`tls`):** permissive
-removes the deploy-ordering lockout entirely — a client mid-cutover, a node
-missing `tlshd`, or HAOS all still mount. The encryption is client-driven,
-so the security posture for the k3s clients is unchanged. Hardening the
-exports to reject plaintext (`xprtsec: tls`) is a **documented future step**,
-to be done only after verifying every client is actually on TLS
-(`exportfs -v`, `cat /proc/mounts` on each agent, `journalctl -u tlshd`).
+**Require-TLS (`xprtsec: tls`), not permissive:** the k3s client lines reject
+plaintext. The rollout staged via permissive (`none:tls`) first, then tightened
+to `tls` once every k3s client was confirmed mounting over TLS by hostname
+(`exportfs -v`, `cat /proc/mounts` on each agent, `journalctl -u tlshd`). The
+`.154` HAOS line stays plaintext via its own per-client entry — it is not
+locked out, because `xprtsec` is applied per client.
 
 **Why all six agents, not just `k3s-agt-nas-01`:** the NFS-backed PVs
 (grafana, `*arr`, recipes, downloads data) float across the cluster, so a
@@ -479,21 +481,23 @@ before `task dns:deploy`, then `task k3s:deploy`. The order matters — the
 cert must land on each agent (`/etc/ssl/private/`) before `nfs_tls`'s assert
 runs, or the play fails loud (by design).
 
-**Live cutover (post-merge, deliberate — NOT automatic on Flux reconcile):**
-`server:` is an immutable PV field, so the IP→hostname switch on an
-already-bound PV cannot be applied in place — Flux can't patch it. Per PV
-(downloads-data, the seven downloads-appdata PVs, the two recipes PVs, and
-grafana-data):
+**Live cutover (DONE):** `server:` is an immutable PV field, so the
+IP→hostname switch on an already-bound PV could not be applied in place — Flux
+can't patch it. Each of the 11 PVs (downloads-data, the seven downloads-appdata
+PVs, the two recipes NFS PVs, and grafana-data) was cut over by:
 
-1. `kubectl delete pv <name>` — the Retain reclaim policy detaches the PV
+1. `kubectl delete pv <name>` — the Retain reclaim policy detached the PV
    object without touching the NFS data on the NAS (data safe).
-2. Flux recreates the PV from the manifest (now `server:
-   pve-nas-01.esweiss.com`, `xprtsec=tls`), and the PVC re-binds.
-3. `kubectl rollout restart` the consuming workload so the pod remounts
+2. Flux recreated the PV from the manifest (`server:
+   pve-nas-01.esweiss.com`, `xprtsec=tls`), and the PVC re-bound.
+3. `kubectl rollout restart` on the consuming workload so the pod remounted
    against the new server name over TLS.
 
-Until each pod is restarted it keeps its old (plaintext, IP) mount —
-degraded, not broken, because the export is permissive.
+The 11 PVs now carry the `kustomize.toolkit.fluxcd.io/force: "Enabled"`
+annotation, so a **future** immutable PV-spec change (server, mountOptions) is
+delete+recreated by Flux automatically instead of stalling the Kustomization —
+still data-safe because the reclaim policy is Retain. The manual `kubectl
+delete` dance above is no longer needed for subsequent immutable-field changes.
 
 **Plaintext exceptions (deliberate, not gaps):**
 

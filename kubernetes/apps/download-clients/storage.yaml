@@ -12,6 +12,11 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-data
+  annotations:
+    # Lets Flux delete+recreate this PV when an immutable field (server,
+    # mountOptions) changes, instead of stalling the Kustomization. Retain
+    # reclaim policy keeps the NFS data — data safe.
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: downloads
@@ -35,8 +40,8 @@ spec:
     - rsize=1048576
     - wsize=1048576
     - noatime
-    # k3s mounts /export/media over TLS; the export is permissive (none:tls),
-    # so HAOS (.154) shares it in plaintext via its own client line — see
+    # The /export/media k3s client lines require TLS (xprtsec=tls); HAOS (.154)
+    # shares the export in plaintext via its own client line — see
     # host_vars/pve-nas-01.yml + docs/24.
     - xprtsec=tls
 
@@ -63,6 +68,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-nzbget
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: nzbget
@@ -82,8 +90,8 @@ spec:
     - nfsvers=4.2
     - hard
     - noatime
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -106,6 +114,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-qbittorrent
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: qbittorrent
@@ -125,8 +136,8 @@ spec:
     - nfsvers=4.2
     - hard
     - noatime
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -149,6 +160,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-prowlarr
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: prowlarr
@@ -168,8 +182,8 @@ spec:
     - nfsvers=4.2
     - hard
     - noatime
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -192,6 +206,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-sonarr
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: sonarr
@@ -213,8 +230,8 @@ spec:
     - noatime
     - actimeo=3
     - lookupcache=positive
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -237,6 +254,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-radarr
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: radarr
@@ -258,8 +278,8 @@ spec:
     - noatime
     - actimeo=3
     - lookupcache=positive
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -282,6 +302,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-lidarr
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: lidarr
@@ -303,8 +326,8 @@ spec:
     - noatime
     - actimeo=3
     - lookupcache=positive
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---
@@ -327,6 +350,9 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: downloads-appdata-pulsarr
+  annotations:
+    # Force delete+recreate on an immutable PV-field change (Retain → data safe).
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     type: nfs
     app: pulsarr
@@ -346,8 +372,8 @@ spec:
     - nfsvers=4.2
     - hard
     - noatime
-    # Encrypt the /appdata wire with tlshd (on every agent). The export is
-    # permissive (none:tls), so TLS is client-driven via this option.
+    # Encrypt the /appdata wire with tlshd (on every agent). The /appdata
+    # k3s client lines require TLS (xprtsec=tls) — plaintext is rejected.
     - xprtsec=tls
 
 ---

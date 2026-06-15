@@ -14,6 +14,11 @@ apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: grafana-data
+  annotations:
+    # Lets Flux delete+recreate this PV when an immutable field (server,
+    # mountOptions) changes, instead of stalling the Kustomization. Retain
+    # reclaim policy keeps the NFS data — data safe.
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
   labels:
     app: grafana
 spec:
@@ -37,10 +42,10 @@ spec:
     - hard
     - noatime
     # NFSv4-over-TLS: tlshd runs on every k3s agent (nfs_tls role). The
-    # /appdata export is permissive (none:tls); this option drives the
-    # encrypted mount. Changing server: on a bound PV is immutable — the
-    # live cutover deletes+recreates this PV (Retain → data safe) and
-    # restarts grafana. See docs/16 cutover procedure.
+    # /appdata k3s client lines require TLS (xprtsec=tls); this option
+    # completes the encrypted mount. Changing server: on a bound PV is
+    # immutable — the force annotation above lets Flux delete+recreate this
+    # PV (Retain → data safe) instead of stalling. See docs/16.
     - xprtsec=tls
 ---
 apiVersion: v1

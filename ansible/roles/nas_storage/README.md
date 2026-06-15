@@ -62,34 +62,32 @@ zfs_pools:
 #   - export-level `xprtsec:` — applies to every client line.
 #   - per-client `xprtsec:` — overrides the export-level value for that one
 #     client, INCLUDING a falsy value to opt a single client OUT.
-# The production exports use "none:tls" (PERMISSIVE: advertises TLS but still
-# accepts plaintext) rather than "tls" (reject-plaintext). The wire is still
-# encrypted because the k3s PVs MOUNT with xprtsec=tls — by HOSTNAME
-# (pve-nas-01.esweiss.com, so the *.esweiss.com cert verifies; an IP mount
-# fails the TLS handshake). Permissive avoids a deploy-ordering lockout and
-# lets a TLS-advertising and a plaintext-only client share one export (e.g.
-# /export/media: k3s clients advertise TLS, HAOS .154 has no xprtsec because
-# its Supervisor can't request it — see docs/24). A client line with no
-# xprtsec is left at the server default (none:tls:mtls), also permissive.
+# The production k3s exports use "tls" (REQUIRE: reject plaintext mounts).
+# The wire is encrypted because the k3s PVs MOUNT with xprtsec=tls — by
+# HOSTNAME (pve-nas-01.esweiss.com, so the *.esweiss.com cert verifies; an IP
+# mount fails the TLS handshake). Because xprtsec is per-client, a require-TLS
+# k3s line and a plaintext-only client can share one export (e.g.
+# /export/media: k3s clients require TLS, HAOS .154 has no xprtsec because its
+# Supervisor can't request it — see docs/24). A client line with no xprtsec is
+# left at the server default (none:tls:mtls), which accepts plaintext.
 # Requires nfs_tls active on the server AND on every client that mounts TLS.
-# Reject-plaintext hardening (xprtsec: tls) is a future step — see docs/16.
 nfs_exports:
   - path: /export                     # NFSv4 pseudo-root (left plaintext)
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
 
-  - path: /export/appdata             # k3s-only -> export-level permissive TLS
+  - path: /export/appdata             # k3s-only -> export-level require TLS
     bind_source: /mnt/ssd/appdata
     owner: 1000
     group: 2000
     mode: "02775"
-    xprtsec: "none:tls"               # every client line gets xprtsec=none:tls
+    xprtsec: "tls"                    # every client line gets xprtsec=tls (require)
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
-  - path: /export/media               # mixed: per-client permissive TLS
+  - path: /export/media               # mixed: per-client require TLS
     bind_source: /mnt/media
     owner: 1000
     group: 2000
@@ -97,7 +95,7 @@ nfs_exports:
     clients:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
-        xprtsec: "none:tls"           # k3s client: advertises TLS, accepts plaintext
+        xprtsec: "tls"                # k3s client: require TLS, reject plaintext
       - spec: "192.168.0.154/32"      # HAOS: no xprtsec -> plaintext accepted
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 
