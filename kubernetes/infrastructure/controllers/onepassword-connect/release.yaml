@@ -39,8 +39,21 @@ spec:
       # HA: 2 replicas spread across hosts so a single node drain (or upcoming
       # ZFS-encryption boot dependency on Connect) never takes the secret
       # backend offline. Companion PodDisruptionBudget (pdb.yaml, minAvailable:1)
-      # protects against simultaneous voluntary disruption.
+      # protects against simultaneous voluntary disruption. replicas stays the
+      # HPA floor so the chart's static count never flaps against the HPA.
       replicas: 2
+      # Chart-native HPA: Connect is a stateless API proxy (connect-api +
+      # connect-sync) that fronts every ESO secret fetch and bursts under
+      # fan-out. avgMemoryUtilization: 0 disables the chart's memory metric so
+      # this scales on CPU only — the onepassword-connect VPA
+      # (configs/vpa/platform.yaml) is memory-only and a VPA/HPA pair must not
+      # drive the same resource. max kept at 3 (tight-RAM hosts).
+      hpa:
+        enabled: true
+        minReplicas: 2
+        maxReplicas: 3
+        avgCpuUtilization: 80
+        avgMemoryUtilization: 0
       nodeSelector:
         esweiss.com/cpu: "modern"
       tolerations:

@@ -808,6 +808,11 @@ tasks:
         done <<< "$VARS_OUTPUT"
         ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
 
+        # Accumulate the full rendered corpus so the HPA/VPA invariant check
+        # (below) sees standalone HPAs + VPAs across every namespace at once.
+        RENDER_ALL=$(mktemp)
+        trap 'rm -f "$RENDER_ALL"' EXIT
+
         for ks in kubernetes/clusters/weisssrv/*.yaml; do
           [ -f "$ks" ] || continue
           NAME=$(basename "$ks" .yaml)
@@ -848,6 +853,7 @@ tasks:
             continue
           fi
           RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+          printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
           if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
               -kubernetes-version 1.35.0 \
               -schema-location default \
@@ -856,6 +862,16 @@ tasks:
             FAILED=1
           fi
         done
+
+        # HPA/VPA invariant: no workload may have both an HPA and a VPA driving
+        # the same resource (docs/33-autoscaling.md). Covers standalone HPAs;
+        # chart-native HPAs (Traefik/authentik/Connect) live inside HelmReleases
+        # not expanded by this lint, so their memory-only VPAs are reviewed at
+        # the values level.
+        echo "=== Checking HPA/VPA invariant ==="
+        if ! python3 scripts/check-hpa-vpa-invariant.py < "$RENDER_ALL"; then
+          FAILED=1
+        fi
 
         echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
         if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then

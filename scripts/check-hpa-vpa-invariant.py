@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Assert no workload has both an HPA and a CPU-controlling VPA.
+
+A HorizontalPodAutoscaler and a VerticalPodAutoscaler must never drive the same
+resource on the same workload: the HPA scales replica count on (typically) CPU
+utilization while the VPA updater evicts pods to resize CPU requests — they
+fight, and pods thrash. The rule in this repo (docs/33-autoscaling.md) is that
+any workload that gains an HPA carries a memory-only VPA
+(controlledResources: [memory], no cpu).
+
+This guards that invariant in CI. It reads a stream of rendered Kubernetes
+manifests on stdin (the same render `task flux:lint` produces, so chart-native
+HPAs — which only exist after `helm template` — are covered too), then for every
+HPA finds the VPA targeting the same (namespace, kind, name) and fails if that
+VPA controls a resource the HPA also scales.
+
+Usage (wired into flux:lint):
+  kustomize build <path> | envsubst | python3 scripts/check-hpa-vpa-invariant.py
+"""
+from __future__ import annotations
+
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("PyYAML required: pip install pyyaml")
+
+HPA_KIND = "HorizontalPodAutoscaler"
+VPA_KIND = "VerticalPodAutoscaler"
+
+
+def _target_key(ns: str, ref: dict) -> tuple[str, str, str]:
+    """(namespace, target-kind, target-name) — the join key between HPA and VPA."""
+    return (ns or "default", ref.get("kind", ""), ref.get("name", ""))
+
+
+def _hpa_metrics(spec: dict) -> set[str]:
+    """Resource names an HPA scales on (cpu/memory). Non-resource metrics ignored."""
+    resources: set[str] = set()
+    for metric in spec.get("metrics", []) or []:
+        if metric.get("type") == "Resource":
+            name = (metric.get("resource") or {}).get("name")
+            if name:
+                resources.add(name)
+    return resources
+
+
+def _vpa_resources(spec: dict) -> set[str]:
+    """Resources a VPA controls. Default (no controlledResources) is cpu+memory."""
+    controlled: set[str] = set()
+    policies = (spec.get("resourcePolicy") or {}).get("containerPolicies", []) or []
+    if not policies:
+        # No policy means the VPA controls everything by default.
+        return {"cpu", "memory"}
+    for p in policies:
+        cr = p.get("controlledResources")
+        if cr is None:
+            controlled |= {"cpu", "memory"}
+        else:
+            controlled |= set(cr)
+    return controlled
+
+
+def main() -> int:
+    docs = [d for d in yaml.safe_load_all(sys.stdin) if isinstance(d, dict)]
+
+    hpas: dict[tuple[str, str, str], set[str]] = {}
+    vpas: dict[tuple[str, str, str], tuple[str, set[str]]] = {}
+
+    for d in docs:
+        kind = d.get("kind")
+        meta = d.get("metadata") or {}
+        ns = meta.get("namespace", "")
+        spec = d.get("spec") or {}
+        if kind == HPA_KIND:
+            ref = spec.get("scaleTargetRef") or {}
+            hpas[_target_key(ns, ref)] = _hpa_metrics(spec)
+        elif kind == VPA_KIND:
+            # updateMode "Off" is recommend-only: it never mutates pods, so it
+            # cannot fight an HPA (this is how coredns pairs a min==max HPA pin
+            # with a right-sizing VPA). Only mutating modes can conflict.
+            mode = (spec.get("updatePolicy") or {}).get("updateMode", "Auto")
+            if mode == "Off":
+                continue
+            ref = spec.get("targetRef") or {}
+            vpas[_target_key(ns, ref)] = (meta.get("name", "?"), _vpa_resources(spec))
+
+    violations: list[str] = []
+    for key, hpa_res in hpas.items():
+        if key not in vpas:
+            continue
+        vpa_name, vpa_res = vpas[key]
+        # An HPA with no resource metrics (object/external only) can't clash.
+        clash = (hpa_res or {"cpu"}) & vpa_res
+        if clash:
+            ns, tkind, tname = key
+            violations.append(
+                f"  {ns}/{tkind}/{tname}: HPA scales {sorted(hpa_res) or ['cpu']} "
+                f"but VPA {vpa_name!r} also controls {sorted(clash)} "
+                f"(set the VPA to controlledResources excluding {sorted(clash)})"
+            )
+
+    if violations:
+        print("HPA/VPA invariant violated — same resource driven by both:", file=sys.stderr)
+        print("\n".join(violations), file=sys.stderr)
+        return 1
+
+    print(f"HPA/VPA invariant OK ({len(hpas)} HPAs, {len(vpas)} VPAs checked)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

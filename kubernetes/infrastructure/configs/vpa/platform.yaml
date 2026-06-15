@@ -157,12 +157,15 @@ spec:
     name: external-secrets
   updatePolicy:
     updateMode: Auto
+  # Memory-only: CPU is owned by the external-secrets HPA
+  # (controllers/external-secrets/hpa.yaml). A VPA and an HPA driving the same
+  # resource conflict.
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 500m, memory: 512Mi}
-        controlledResources: [cpu, memory]
+        minAllowed: {memory: 32Mi}
+        maxAllowed: {memory: 512Mi}
+        controlledResources: [memory]
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -214,12 +217,15 @@ spec:
     name: onepassword-connect
   updatePolicy:
     updateMode: Auto
+  # Memory-only: CPU is owned by the Connect chart-native HPA
+  # (connect.hpa in controllers/onepassword-connect/release.yaml). A VPA and an
+  # HPA driving the same resource conflict.
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 500m, memory: 512Mi}
-        controlledResources: [cpu, memory]
+        minAllowed: {memory: 32Mi}
+        maxAllowed: {memory: 512Mi}
+        controlledResources: [memory]
 ---
 # CoreDNS is HPA-pinned (configs/coredns/hpa.yaml, min==max==2), so this VPA is
 # recommend-only (updateMode: Off) — it never mutates pods (which would conflict

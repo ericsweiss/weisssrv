@@ -1,0 +1,40 @@
+---
+# salt-rim is a stateless nginx frontend (configMap mount only, no PVC, no
+# session affinity, DNS-only egress). Standalone HPA because salt-rim is a raw
+# Deployment, not a Helm chart, so there is no autoscaling toggle to flip. The
+# Deployment drops its static .spec.replicas so Flux's server-side apply does
+# not contend with the HPA. salt-rim's VPA (vpa.yaml) is memory-only so CPU is
+# owned solely by this HPA. CPU threshold kept high (80%) because the pod idles
+# near zero; min=2 is the HA floor, scaling above it is the burst headroom.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: salt-rim
+  namespace: recipes
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: salt-rim
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+# Keep at least one salt-rim replica during voluntary disruption (node drains,
+# rolling upgrades) so the Bar Assistant UI stays reachable.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: salt-rim
+  namespace: recipes
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: salt-rim

@@ -78,9 +78,11 @@ metadata:
 spec:
   targetRef: {apiVersion: apps/v1, kind: Deployment, name: salt-rim}
   updatePolicy: {updateMode: Initial}
+  # Memory-only: CPU is owned by the salt-rim HPA (hpa.yaml). A VPA and an HPA
+  # driving the same resource conflict.
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 32Mi}
-        maxAllowed: {cpu: 200m, memory: 256Mi}
-        controlledResources: [cpu, memory]
+        minAllowed: {memory: 32Mi}
+        maxAllowed: {memory: 256Mi}
+        controlledResources: [memory]

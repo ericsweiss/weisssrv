@@ -423,7 +423,8 @@ metadata:
     app.kubernetes.io/component: frontend
     app.kubernetes.io/part-of: bar-assistant
 spec:
-  replicas: 1
+  # No static replicas: the salt-rim HPA (hpa.yaml) owns the count. Setting it
+  # here would make Flux server-side apply fight the HPA on every reconcile.
   selector:
     matchLabels:
       app.kubernetes.io/name: salt-rim
@@ -435,8 +436,8 @@ spec:
         app.kubernetes.io/name: salt-rim
         app.kubernetes.io/component: frontend
     spec:
-      # General workloads - prefer non-NAS nodes
       affinity:
+        # Prefer non-NAS nodes for general workloads.
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
@@ -444,6 +445,16 @@ spec:
                 matchExpressions:
                   - key: esweiss.com/nas
                     operator: DoesNotExist
+        # Spread the HPA-driven replicas across hosts so a single-node drain
+        # doesn't take the UI offline.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: salt-rim
+                topologyKey: kubernetes.io/hostname
       nodeSelector:
         esweiss.com/general: "true"
       containers:

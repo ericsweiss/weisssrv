@@ -1,0 +1,41 @@
+---
+# The ESO controller is leader-elected (--concurrent=1) and stateless: only the
+# leader reconciles, the standby gives instant failover and absorbs fan-out
+# reconcile bursts (e.g. cluster-wide ExternalSecret refresh after a Connect
+# restart). Standalone HPA because the pinned ESO chart (external-secrets
+# 2.6.0) exposes only replicaCount — no native autoscaling block. The
+# HelmRelease keeps replicaCount: 2 to match this HPA's minReplicas so the
+# chart's static count never flaps against the HPA floor. The external-secrets
+# VPA (configs/vpa/platform.yaml) is memory-only so CPU is owned by this HPA.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+---
+# Keep at least one ESO controller replica during voluntary disruption so the
+# secrets reconcile path is never fully offline during node drains/upgrades.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets

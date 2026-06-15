@@ -14,3 +14,4 @@ resources:
   - certificate.yaml
   - networkpolicy.yaml
   - vpa.yaml
+  - hpa.yaml

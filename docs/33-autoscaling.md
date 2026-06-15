@@ -20,14 +20,62 @@ stays manual — see the last section for why.
 - **CoreDNS HPA pin** (`kubernetes/infrastructure/configs/coredns/hpa.yaml`):
   min=max=2. k3s manages CoreDNS as a wrangler AddOn and resets replicas on
   server restarts; the HPA scales it back within seconds.
-- **Horizontal autoscaling for the stateless, HA-fronting tiers**, via each
-  chart's own `autoscaling.enabled` rather than a standalone HPA — so the chart
-  omits static `.spec.replicas` and nothing re-asserts a replica count against
-  the HPA on a helm upgrade:
+- **Horizontal autoscaling for the stateless, HA-fronting tiers.** Prefer each
+  chart's own autoscaling toggle over a standalone HPA — so the chart omits
+  static `.spec.replicas` and nothing re-asserts a replica count against the HPA
+  on a helm upgrade. For raw manifests and charts without a native HPA, use a
+  standalone HPA and pin the chart/manifest replica count to the HPA's
+  `minReplicas` (the static count equals the HPA floor, so it never flaps).
+  Every workload below carries a **memory-only VPA** so CPU is owned solely by
+  the HPA (the two must never drive the same resource — see the lint invariant
+  in Operations).
+
+  Chart-native HPA:
   - Traefik (`controllers/traefik/release.yaml`): min 2 / max 4 @ ~70% CPU.
   - authentik-server (`apps/authentik/release.yaml`): min 2 / max 4 @ ~75% CPU;
-    the worker stays single-replica. Both carry memory-only VPAs so CPU is
-    owned solely by the HPA.
+    the worker stays single-replica.
+  - onepassword-connect (`controllers/onepassword-connect/release.yaml`,
+    `connect.hpa`): min 2 / max 3 @ 80% CPU. The chart's HPA emits a memory
+    metric by default; `avgMemoryUtilization: 0` disables it so it scales on CPU
+    only (the Connect VPA owns memory). Stateless API proxy on the secrets
+    fan-out path; max held at 3 for the tight-RAM hosts.
+
+  Standalone HPA (chart/manifest lacks a native toggle; replica count pinned to
+  the HPA floor):
+  - external-secrets controller (`controllers/external-secrets/hpa.yaml`): min 2
+    / max 4 @ 75% CPU. Leader-elected (`--concurrent=1`); the standby gives
+    instant failover and absorbs fan-out reconcile bursts. The ESO chart (2.6.0)
+    exposes only `replicaCount`, kept at 2 to match the HPA floor. A PDB
+    (`minAvailable: 1`) keeps the reconcile path up during drains.
+  - salt-rim (`apps/recipes/hpa.yaml`): min 2 / max 4 @ 80% CPU. Static nginx
+    frontend, configMap mount only, no PVC, DNS-only egress. Raw Deployment with
+    no chart, so its `.spec.replicas` is dropped and a PDB (`minAvailable: 1`)
+    plus soft pod anti-affinity were added so the replicas spread across hosts.
+
+### HPA candidate classification
+
+Workloads evaluated for an HPA and the verdict — so the analysis isn't
+re-litigated. Rejections are about correctness (single-writer state, per-pod
+sidecars, leader-elected singletons), not effort.
+
+| Workload | NS | Verdict | Reason |
+|---|---|---|---|
+| traefik | traefik | HPA (chart) | stateless ingress, already done |
+| authentik-server | authentik | HPA (chart) | stateless web tier, already done |
+| onepassword-connect | external-secrets | **HPA (chart)** | stateless API proxy, fan-out bursts |
+| external-secrets controller | external-secrets | **HPA (standalone)** | leader-elected, stateless, failover + bursts |
+| salt-rim | recipes | **HPA (standalone)** | stateless nginx, configMap only, no PVC |
+| mealie / bar-assistant | recipes | reject | RWO PVC + single-writer DB (NFS app-data / SQLite) |
+| meilisearch / bar-redis / postgres | recipes | reject | stateful (RWO data / cache) |
+| *arr stack, nzbget, qbittorrent | downloads | reject | RWO config + per-pod gluetun VPN killswitch sidecar |
+| authentik-worker | authentik | reject | Celery-style task worker, deliberately single-replica |
+| gitlab-runner(-privileged) | gitlab-runner | reject | runner *manager*; concurrency is spawned job pods |
+| gitlab-agent | gitlab-agent | reject | idle KAS long-poll, already 2 replicas, no CPU pressure |
+| cert-manager / external-dns / metallb-controller | various | reject | leader-elected singletons, no concurrency gain |
+| ESO webhook / cert-controller | external-secrets | reject | admission/cert paths, already 2 replicas, no benefit |
+| exporters / kube-state-metrics | observability | reject | 1:1 scrape mapping; a second replica breaks dedup |
+| Prometheus / Loki / Alertmanager / Postgres | various | reject | stateful (StatefulSet / zvol) |
+| coredns | kube-system | n/a | min==max==2 HPA pin (replica anchor, not an autoscaler) |
 
 ## Update-mode tiers
 
@@ -47,13 +95,33 @@ lives in the VPA policy files under `kubernetes/infrastructure/configs/vpa/`
 Every policy carries `minAllowed`/`maxAllowed` caps so a recommendation
 can't starve or balloon a workload.
 
+The update mode above is independent of which resources a policy controls. Any
+workload that also has an HPA carries a **memory-only** VPA
+(`controlledResources: [memory]`) regardless of its update-mode tier — Traefik
+and authentik-server (`Initial`), ESO and Connect (`Auto`), and salt-rim
+(`Initial`) all follow this. The lint invariant below enforces it.
+
 ## Operations
 
 ```bash
 kubectl get vpa -A                          # recommendations + targets
 kubectl describe vpa <name> -n <ns>         # full recommendation detail
 kubectl -n vpa-system logs deploy/vpa-updater | grep -i evict
+kubectl get hpa -A                          # HPA min/max + current target/replicas
 ```
+
+Under normal load every HPA should sit at its `minReplicas` (matches how
+traefik/authentik idle at 2). If a new HPA pins to max at idle, its CPU request
+is too small relative to the threshold — raise the request, not the threshold
+(the authentik fix pattern), so utilization tracks real load instead of noise.
+
+`task flux:lint` runs `scripts/check-hpa-vpa-invariant.py` over the full
+rendered manifest set: it fails if any workload has an HPA and a (mutating) VPA
+controlling the same resource. This guards the central failure mode — a VPA
+evicting pods to resize CPU while an HPA scales on CPU thrashes. It sees
+standalone HPAs (salt-rim, external-secrets, the coredns pin); chart-native HPAs
+(Traefik, authentik, Connect) live inside HelmReleases the lint doesn't expand,
+so their memory-only VPAs are reviewed at the values level instead.
 
 Apply an `Off`-tier recommendation by editing the workload's resources in
 git (the recommendation is the data, the HelmRelease stays the source of
