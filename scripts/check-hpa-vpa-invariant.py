@@ -120,7 +120,8 @@ def main() -> int:
             vpa_names.setdefault(key, []).append(meta.get("name", "?"))
 
     violations: list[str] = []
-    for key, hpa_res in hpas.items():
+    for key in sorted(hpas):
+        hpa_res = hpas[key]
         if key not in vpas:
             continue
         vpa_res = vpas[key]
