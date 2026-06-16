@@ -90,6 +90,27 @@ spec:
               target:
                 type: Utilization
                 averageUtilization: 75
+        # Damp HPA flap: authentik-server idles ~35m CPU (≈18% of the 200m
+        # request), but sub-minute login/SSO and background task-reconcile
+        # spikes briefly cross the 75% (≈150m) trip point. Without a
+        # stabilization window the HPA jumped 2→4 on those bursts (~24×/day),
+        # parking at max long enough to flap KubeHpaMaxedOut into Pending.
+        # Require ~2 min of sustained pressure before adding a pod, one pod at a
+        # time; keep the default 5-min downscale damping. Genuine sustained load
+        # still scales to max=4.
+        behavior:
+          scaleUp:
+            stabilizationWindowSeconds: 120
+            policies:
+              - type: Pods
+                value: 1
+                periodSeconds: 60
+          scaleDown:
+            stabilizationWindowSeconds: 300
+            policies:
+              - type: Pods
+                value: 1
+                periodSeconds: 120
 
       pdb:
         enabled: true
