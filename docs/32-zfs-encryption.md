@@ -75,8 +75,20 @@ reference, and NFS export path — are unchanged by encryption.
 - `tank/pve` — ephemeral Proxmox VM/LXC images. (`tank/proxmox` is in
   the encrypted list above because it holds VM backup tarballs that
   contain persistent app state.)
-- `archive` pool — separate LUKS effort tracked alongside the failing
-  archive-pool drive replacement. See `docs/06-zfs.md`.
+- `archive` pool — the pool itself is plaintext, but the six replicated
+  datasets (`archive/{share,backups,nextcloud-data,proxmox,appdata,databases}`)
+  now arrive as **raw** `zfs send -w` streams from their encrypted tank/ssd
+  sources (`archive-backupctl`), so that backup data is encrypted at rest under
+  the source's own key — archive never loads a key, and a restore needs
+  `zfs load-key`. (Sending the now-encrypted sources non-raw is impossible with
+  `-R`: ZFS rejects sending an encrypted dataset with properties unless raw.)
+  This gives the replicated data native at-rest encryption, which largely
+  supersedes the separately-tracked archive-pool LUKS effort (`docs/06-zfs.md`);
+  only archive data outside those six datasets stays plaintext. **Never
+  `zfs load-key` + mount an `archive/<dataset>` in place** — it dirties the raw
+  incremental chain and forces a full re-seed; to read a backup, restore it to a
+  `*-restore-*` clone (`archive-backupctl restore <target>`) and load the key
+  there.
 - **Compute nodes' `local-ssd` pools (5×)** — host the k3s VM disks
   (servers + agents) and HA-managed LXC subvols. Encrypting these
   would create an unrecoverable cold-boot deadlock: Connect runs in

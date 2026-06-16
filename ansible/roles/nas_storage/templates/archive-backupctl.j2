@@ -269,6 +269,18 @@ replicate_one() {
 
   dataset_present "$src" || { log "SKIP: missing source $src"; return 0; }
 
+  # Encrypted sources must be sent raw (-w): ZFS refuses to send an encrypted
+  # dataset with properties (-R) unless raw. A raw stream carries the wrapped
+  # key, so the archive holds encrypted-at-rest blobs and the backup runs with
+  # no key loaded. Detect encryption RECURSIVELY: -R aborts the whole send if
+  # any descendant is encrypted and -w is absent, so a single encrypted child
+  # under a plaintext parent must still force raw. All-plaintext trees send
+  # non-raw.
+  local raw_flags=()
+  if zfs get -H -o value -r encryption "$src" 2>/dev/null | grep -qv '^off$'; then
+    raw_flags=(-w)
+  fi
+
   # Resume partial receives first (if any)
   if dataset_present "$dst"; then
     maybe_resume_receive "$dst"
@@ -277,9 +289,39 @@ replicate_one() {
   log "Snapshot: ${src}@${snap_now}"
   zfs snapshot -r "${src}@${snap_now}"
 
+  # A raw stream cannot continue a base that was received non-raw. When a source
+  # has been newly encrypted but its archive copy was seeded non-raw
+  # (encryption=off), do a one-time raw re-seed. To never leave the dataset
+  # without a backup, build the replacement in a temp sibling and swap only
+  # after a COMPLETE receive: the old copy survives a failed/interrupted re-seed
+  # because set -e/pipefail aborts before the swap on any send error. Fires once
+  # per dataset (the next run sees an encrypted dst and resumes incrementals).
+  # Only an exact encryption=off triggers it, so a transient `zfs get` blip
+  # cannot destroy a good encrypted backup.
+  if [[ ${#raw_flags[@]} -gt 0 ]] && dataset_present "$dst" \
+     && [[ "$(zfs get -H -o value encryption "$dst" 2>/dev/null)" == "off" ]]; then
+    local reseed_tmp="${dst}-reseed"
+    log "Re-seed: ${src} is encrypted but ${dst} is non-raw; building raw copy in ${reseed_tmp} (old copy kept until the swap)"
+    if dataset_present "$reseed_tmp"; then
+      unlock_for_receive "$reseed_tmp"
+      zfs destroy -r "$reseed_tmp"
+    fi
+    zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
+      | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$reseed_tmp"
+    # Receive completed (a send/receive failure would have aborted above) ->
+    # swap the verified raw copy into place: drop the old, rename temp.
+    unlock_for_receive "$dst"
+    zfs destroy -r "$dst"
+    zfs rename "$reseed_tmp" "$dst"
+    lock_backup_tree "$dst"
+    prune_snaps_tree "$src" || true
+    prune_snaps_tree "$dst" || true
+    return 0
+  fi
+
   if ! dataset_present "$dst"; then
-    log "Initial replicate -> ${dst}"
-    zfs send -R "${src}@${snap_now}" \
+    log "Initial replicate -> ${dst} (raw=${raw_flags[*]:-no})"
+    zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
       | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "${dst}"
     lock_backup_tree "$dst"
   else
@@ -289,12 +331,12 @@ replicate_one() {
     prev="$(latest_common_snapshot "$src" "$dst")"
 
     if [[ -z "$prev" ]]; then
-      log "No common ${SNAP_PREFIX}-* snapshots; full replicate to ${dst} (receive -F)"
-      zfs send -R "${src}@${snap_now}" \
+      log "No common ${SNAP_PREFIX}-* snapshots; full replicate to ${dst} (receive -F, raw=${raw_flags[*]:-no})"
+      zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
         | zfs receive -s -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
     else
-      log "Incremental: ${src}@${prev} -> ${src}@${snap_now} into ${dst} (receive -F)"
-      zfs send -R -i "${src}@${prev}" "${src}@${snap_now}" \
+      log "Incremental: ${src}@${prev} -> ${src}@${snap_now} into ${dst} (receive -F, raw=${raw_flags[*]:-no})"
+      zfs send -R "${raw_flags[@]}" -i "${src}@${prev}" "${src}@${snap_now}" \
         | zfs receive -s -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
     fi
 
@@ -424,7 +466,16 @@ _restore_mount_tree() {
   done < <(zfs list -H -o name -r "$restore_root" | tail -n +2)
 
   zfs mount -r "$restore_root" >/dev/null 2>&1 || true
-  log "Mounted restore tree at: $mp"
+  # A restored encrypted dataset is raw and key-less (keystatus=unavailable), so
+  # the mount above is a silent no-op. Don't claim it mounted — tell the operator
+  # how to unlock it instead, so a real restore isn't trusted as readable when
+  # the directory is empty.
+  if [[ "$(zfs get -H -o value keystatus "$restore_root" 2>/dev/null)" == "unavailable" ]]; then
+    log "Restore tree ${restore_root} is encrypted and key-less — NOT mounted."
+    log "  Unlock + mount: zfs load-key -L prompt ${restore_root} && zfs mount -r ${restore_root}  (mounts under ${mp})"
+  else
+    log "Mounted restore tree at: $mp"
+  fi
 }
 
 _restore_one() {
@@ -439,13 +490,24 @@ _restore_one() {
   snap_full="$(latest_backup_snapshot_fullname "$bdst")"
   [[ -n "$snap_full" ]] || { log "SKIP restore: no ${SNAP_PREFIX}- snapshots on $bdst"; return 0; }
 
+  # Encrypted backups can only be sent raw (the archive never has keys loaded),
+  # so the restored dataset is itself encrypted and needs `zfs load-key` (with
+  # the original source's key) before it can be mounted.
+  local raw_flags=()
+  local bdst_enc
+  bdst_enc="$(zfs get -H -o value encryption "$bdst" 2>/dev/null || echo off)"
+  if [[ "$bdst_enc" != "off" && "$bdst_enc" != "-" ]]; then
+    raw_flags=(-w)
+    log "Note: ${bdst} is encrypted; restoring raw (run 'zfs load-key' on the restored dataset before mounting)"
+  fi
+
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
 
   if [[ "$mode" == "safe" ]]; then
     local restore_dst="${dst}-restore-${ts}"
     log "SAFE restore: ${snap_full} -> ${restore_dst} (non-destructive)"
-    zfs send -R "${snap_full}" | zfs receive -u "${restore_dst}"
+    zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${restore_dst}"
     mkdir -p "${RESTORE_BASE}"
     _restore_mount_tree "${restore_dst}" "${label}" "${ts}"
     return 0
@@ -453,13 +515,13 @@ _restore_one() {
 
   if ! dataset_present "$dst"; then
     log "FORCE restore target missing; creating: ${snap_full} -> ${dst}"
-    zfs send -R "${snap_full}" | zfs receive -u "${dst}"
+    zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${dst}"
     zfs mount -a 2>/dev/null || true
     return 0
   fi
 
   log "FORCE restore (destructive): ${snap_full} -> ${dst} (receive -F)"
-  zfs send -R "${snap_full}" | zfs receive -u -F "${dst}"
+  zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u -F "${dst}"
   zfs mount -a 2>/dev/null || true
 }
 
