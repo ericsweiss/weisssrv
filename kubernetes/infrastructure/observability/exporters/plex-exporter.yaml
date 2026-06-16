@@ -24,6 +24,14 @@ spec:
         app.kubernetes.io/name: plex-exporter
     spec:
       containers:
+        # Known upstream bug: the exporter's websocket listener panics
+        # ("close of closed channel", listener.go:66) whenever Plex resets the
+        # event websocket (~hourly idle/keepalive reset), exiting with code 2.
+        # The Deployment restarts it and metrics resume — self-healing, with at
+        # most a single missed 60s scrape. No fix exists upstream (last release
+        # 2024-08, issue open) and there is no flag to disable the listener, so
+        # the restarts are expected, not a failure. The restart cadence stays
+        # well under CrashLoopBackOff, so no KubePodCrashLooping alert fires.
         - name: plex-exporter
           image: ghcr.io/jsclayton/prometheus-plex-exporter:latest@sha256:18ef1b2197efbcb75bd7276380955760995f10a9fbe55106809a6fcff91c2940
           imagePullPolicy: IfNotPresent
@@ -38,18 +46,25 @@ spec:
           ports:
             - name: metrics
               containerPort: 9000
+          # timeoutSeconds widened from the 1s default so a slow (but alive)
+          # /metrics scrape isn't counted as a probe failure on top of the
+          # upstream panic-restarts; the panic itself (exit 2) is what drives
+          # the restarts, not these probes.
           livenessProbe:
             httpGet:
               path: /metrics
               port: metrics
             initialDelaySeconds: 10
             periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /metrics
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 15
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 10m
