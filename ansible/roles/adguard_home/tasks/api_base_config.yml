@@ -39,30 +39,40 @@
     password: "{{ adguard_admin_password }}"
     force_basic_auth: true
     body_format: json
+    # jinja2_native is off (ansible-core default), so a *filtered* quoted
+    # template like "{{ x | int }}" renders to a JSON string ("20"), which
+    # AdGuard rejects with HTTP 400 ("cannot unmarshal string into ... uint32").
+    # Bare variable references preserve the source type (these vars are typed
+    # int/bool/list in group_vars), so the body serializes as native JSON
+    # numbers/booleans. Do NOT re-add | int / | bool filters here.
     body:
-      protection_enabled: "{{ adguard_protection_enabled | bool }}"
+      protection_enabled: "{{ adguard_protection_enabled }}"
       upstream_dns: "{{ adguard_upstream_dns }}"
       upstream_mode: "{{ adguard_upstream_mode }}"
       fallback_dns: "{{ adguard_fallback_dns }}"
-      dnssec_enabled: "{{ adguard_enable_dnssec | bool }}"
-      resolve_clients: "{{ adguard_resolve_clients | bool }}"
-      use_private_ptr_resolvers: "{{ adguard_use_private_ptr_resolvers | bool }}"
-      disable_ipv6: "{{ adguard_disable_ipv6 | bool }}"
-      ratelimit: "{{ adguard_ratelimit | int }}"
+      dnssec_enabled: "{{ adguard_enable_dnssec }}"
+      resolve_clients: "{{ adguard_resolve_clients }}"
+      use_private_ptr_resolvers: "{{ adguard_use_private_ptr_resolvers }}"
+      disable_ipv6: "{{ adguard_disable_ipv6 }}"
+      ratelimit: "{{ adguard_ratelimit }}"
       ratelimit_whitelist: "{{ adguard_ratelimit_whitelist }}"
-      cache_enabled: "{{ adguard_cache_enabled | bool }}"
-      cache_size: "{{ adguard_cache_size | int }}"
-      cache_ttl_min: "{{ adguard_cache_ttl_min | int }}"
-      cache_ttl_max: "{{ adguard_cache_ttl_max | int }}"
-      cache_optimistic: "{{ adguard_cache_optimistic | bool }}"
+      cache_enabled: "{{ adguard_cache_enabled }}"
+      cache_size: "{{ adguard_cache_size }}"
+      cache_ttl_min: "{{ adguard_cache_ttl_min }}"
+      cache_ttl_max: "{{ adguard_cache_ttl_max }}"
+      cache_optimistic: "{{ adguard_cache_optimistic }}"
     status_code: 200
   when:
     - not ansible_check_mode
-    # Check ALL fields that are being sent to detect any drift
+    # Check ALL fields that are being sent to detect any drift. AdGuard
+    # serializes the default load-balance mode back as "" (a deprecated alias)
+    # on GET, so an empty live upstream_mode is treated as load_balance to stay
+    # idempotent rather than POSTing on every run. (No "#" comments inside the
+    # folded ">" scalar below — they would be folded into the expression.)
     - >
       (current_dns_config.json.protection_enabled | default(true) != adguard_protection_enabled) or
       (current_dns_config.json.upstream_dns | default([]) != adguard_upstream_dns) or
-      (current_dns_config.json.upstream_mode | default('') != adguard_upstream_mode) or
+      (((current_dns_config.json.upstream_mode | default('')) or 'load_balance') != adguard_upstream_mode) or
       (current_dns_config.json.fallback_dns | default([]) != adguard_fallback_dns) or
       (current_dns_config.json.dnssec_enabled | default(false) != adguard_enable_dnssec) or
       (current_dns_config.json.resolve_clients | default(true) != adguard_resolve_clients) or
@@ -81,12 +91,13 @@
   no_log: true
   failed_when: false
   register: dns_config_updated
-  # Retry transient API errors (a POST racing AdGuard's post-restart init is
-  # the likely cause of the deploy-ansible-dns failure in pipeline 395). The
-  # assert below still surfaces a persistent failure with the real status/body.
+  # The native-typed body above is what makes this succeed; retries are only
+  # cheap insurance against a genuinely transient hiccup right after an AdGuard
+  # restart. The assert below still surfaces a persistent non-200 with the real
+  # status/body (a type error would never become 200, so it fails fast there).
   until: (dns_config_updated.status | default(0)) == 200
-  retries: 5
-  delay: 3
+  retries: 3
+  delay: 2
 
 - name: Assert AdGuard DNS configuration update succeeded
   ansible.builtin.assert:
@@ -153,13 +164,16 @@
     password: "{{ adguard_admin_password }}"
     force_basic_auth: true
     body_format: json
+    # Bare refs preserve native int/bool types (see dns_config body above):
+    # a filtered "{{ x | int }}" would serialize as a string and AdGuard would
+    # reject it with HTTP 400. Do NOT re-add | int / | bool filters here.
     body:
-      enabled: "{{ adguard_tls_enabled | bool }}"
+      enabled: "{{ adguard_tls_enabled }}"
       server_name: "{{ adguard_tls_server_name }}"
       force_https: false
-      port_https: "{{ adguard_https_port | int }}"
-      port_dns_over_tls: "{{ adguard_dot_port | int }}"
-      port_dns_over_quic: "{{ adguard_doq_port | int }}"
+      port_https: "{{ adguard_https_port }}"
+      port_dns_over_tls: "{{ adguard_dot_port }}"
+      port_dns_over_quic: "{{ adguard_doq_port }}"
       # Use certificate_path/private_key_path (file paths) instead of
       # certificate_chain/private_key (which expect actual PEM content)
       certificate_path: "{{ adguard_cert_path }}/fullchain.pem"
@@ -186,8 +200,8 @@
   failed_when: false
   register: tls_config_updated
   until: (tls_config_updated.status | default(0)) == 200
-  retries: 5
-  delay: 3
+  retries: 3
+  delay: 2
 
 - name: Assert AdGuard TLS configuration update succeeded
   ansible.builtin.assert:
@@ -230,8 +244,8 @@
   failed_when: false
   register: dhcp_config_updated
   until: (dhcp_config_updated.status | default(0)) == 200
-  retries: 5
-  delay: 3
+  retries: 3
+  delay: 2
 
 - name: Assert AdGuard DHCP configuration update succeeded
   ansible.builtin.assert:

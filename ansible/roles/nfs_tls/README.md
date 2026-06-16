@@ -125,3 +125,53 @@ Retain reclaim policy detaches the object without touching the NFS data;
 Flux recreates it from the manifest and the pod remounts on restart.
 This is a deliberate post-merge operational step, not automatic on Flux
 reconcile. Until the pod restarts it keeps its old (plaintext/IP) mount.
+
+## One transport security per client, per server (cutover gotcha)
+
+The NFSv4 client keys its transport and client state **per server IP**, and
+multiplexes every mount to that server over it. A node therefore cannot hold a
+plaintext *and* a `xprtsec=tls` mount to the same server at once: once a
+plaintext session to `pve-nas-01` exists, a new TLS mount to it is refused with
+`mount.nfs: Operation not permitted` (EPERM), and vice-versa. This is the most
+likely cause of a post-cutover EPERM even though `tlshd` is up and handshakes
+succeed — the handshake completing in `journalctl -u tlshd` is a red herring;
+the rejection is at the NFS layer, not TLS.
+
+This bites during the flip because long-running pods (e.g. `bar-assistant`,
+`mealie`) keep their **original plaintext** mount alive after the PV spec
+changes to TLS, and a force-deleted pod can leave an **orphaned** mount the
+kubelet never unmounts. Either one pins the node's session to plaintext and
+blocks every new TLS mount on that node — so a freshly scheduled pod hangs in
+`ContainerCreating`/`Init`.
+
+Cut a node over atomically — recycle **all** of its NAS-mounting pods together,
+not just the one PV being changed:
+
+1. Scale every Deployment on the node that mounts `pve-nas-01` to 0
+   (downloads + recipes apps are NAS-pinned). `Recreate` strategy avoids a
+   new pod racing the old one for an RWO mount.
+2. Confirm no plaintext sessions linger, force-unmounting any orphans the
+   kubelet left behind (safe — those pods are gone):
+   ```sh
+   mount -t nfs4 | grep -E 'pve-nas|192.168.0.102' | grep -v xprtsec=tls \
+     | awk '{print $3}' | xargs -rn1 sudo umount -f -l
+   ```
+3. Scale the Deployments back up. With the node clean, the first mount
+   establishes a TLS session and the rest reuse it; verify with
+   `mount -t nfs4 | grep -c xprtsec=tls` (should equal the pod's mount count,
+   with zero plaintext to the NAS).
+
+Sweep the whole fleet after a cutover — any agent with a surviving plaintext
+mount to the NAS is a latent failure that surfaces on the next reschedule:
+
+```sh
+for ip in 202 203 204 205 206 207; do
+  echo ".$ip plaintext=$(ssh eric@192.168.0.$ip \
+    "mount -t nfs4 | grep -E 'pve-nas|192.168.0.102' | grep -vc xprtsec=tls")"
+done   # every node must report plaintext=0
+```
+
+HAOS (.154) is exempt: it mounts `/export/media` read-only over **plaintext**
+from its own client line, and never opens a TLS session to the NAS, so it never
+mixes transports on one client. The rule is per-client — each client must be
+internally consistent, not identical to the others.
