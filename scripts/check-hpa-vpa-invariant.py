@@ -85,7 +85,21 @@ def _vpa_resources(spec: dict) -> set[str]:
 
 
 def main() -> int:
-    docs = [d for d in yaml.safe_load_all(sys.stdin) if isinstance(d, dict)]
+    # safe_load_all is lazy, so parse errors surface during iteration — wrap the
+    # loop (not just the generator) so a malformed stream exits cleanly. Also
+    # flatten `kind: List` and top-level YAML lists so wrapped resources count.
+    docs: list[dict] = []
+    try:
+        for raw in yaml.safe_load_all(sys.stdin):
+            if isinstance(raw, dict):
+                if raw.get("kind") == "List" and isinstance(raw.get("items"), list):
+                    docs.extend(i for i in raw["items"] if isinstance(i, dict))
+                else:
+                    docs.append(raw)
+            elif isinstance(raw, list):
+                docs.extend(i for i in raw if isinstance(i, dict))
+    except yaml.YAMLError as exc:
+        sys.exit(f"Failed to parse YAML input: {exc}")
 
     # Multiple HPAs or VPAs can target one workload, so aggregate per key rather
     # than last-wins: union the resource sets so a memory-only VPA can never mask

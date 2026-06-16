@@ -164,5 +164,40 @@ spec:
     assert _run(CPU_HPA + "---" + off_container_vpa, monkeypatch) == 0
 
 
+LIST_DOC = """
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata: {name: foo, namespace: ns}
+    spec:
+      scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+      metrics:
+        - type: Resource
+          resource: {name: cpu, target: {type: Utilization, averageUtilization: 80}}
+  - apiVersion: autoscaling.k8s.io/v1
+    kind: VerticalPodAutoscaler
+    metadata: {name: foo, namespace: ns}
+    spec:
+      targetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+      resourcePolicy:
+        containerPolicies:
+          - containerName: "*"
+            controlledResources: [cpu, memory]
+"""
+
+
+def test_list_wrapped_resources_are_expanded(monkeypatch):
+    """An HPA + clashing VPA inside a kind: List must still be detected."""
+    assert _run(LIST_DOC, monkeypatch) == 1
+
+
+def test_malformed_yaml_exits_cleanly(monkeypatch):
+    """Bad YAML exits with a message instead of an uncaught traceback."""
+    with pytest.raises(SystemExit):
+        _run("foo: [unterminated\n", monkeypatch)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
