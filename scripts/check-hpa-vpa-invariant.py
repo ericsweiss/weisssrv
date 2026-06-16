@@ -101,6 +101,8 @@ def main() -> int:
         spec = d.get("spec") or {}
         if kind == HPA_KIND:
             ref = spec.get("scaleTargetRef") or {}
+            if not ref.get("name"):
+                continue
             key = _target_key(ns, ref)
             hpas[key] = hpas.get(key, set()) | _hpa_metrics(spec)
         elif kind == VPA_KIND:
@@ -108,9 +110,11 @@ def main() -> int:
             # cannot fight an HPA (this is how coredns pairs a min==max HPA pin
             # with a right-sizing VPA). Only mutating modes can conflict.
             mode = (spec.get("updatePolicy") or {}).get("updateMode", "Auto")
-            if mode == "Off":
+            if str(mode).lower() == "off":
                 continue
             ref = spec.get("targetRef") or {}
+            if not ref.get("name"):
+                continue
             key = _target_key(ns, ref)
             vpas[key] = vpas.get(key, set()) | _vpa_resources(spec)
             vpa_names.setdefault(key, []).append(meta.get("name", "?"))
