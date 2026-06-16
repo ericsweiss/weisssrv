@@ -290,10 +290,21 @@ replicate_one() {
   # receive and must be discarded, never promoted over a good dst. Anything not
   # promotable (partial token, or empty) is discarded so the re-seed rebuilds it.
   if dataset_present "$reseed_tmp"; then
-    local reseed_tok
-    reseed_tok="$(zfs get -H -o value receive_resume_token "$reseed_tmp" 2>/dev/null || echo "")"
-    if [[ "$reseed_tok" == "-" ]] \
-       && zfs list -H -t snapshot -o name -r "$reseed_tmp" 2>/dev/null | grep -q "@${SNAP_PREFIX}-"; then
+    # Promote only a verifiably-complete temp tree, and FAIL CLOSED: capture the
+    # marker + token list explicitly so a failed `zfs get` can't be negated into
+    # a false "complete". Complete = the post-loop completion marker is set AND
+    # no dataset in the tree still carries a resume token (the marker is written
+    # only after every dataset is received, so a token-less-but-incomplete tree —
+    # a crash between two receives leaving later children missing — is not
+    # complete). Anything else is discarded + rebuilt, never promoted over a good
+    # dst.
+    local reseed_marker reseed_tokens reseed_snaps
+    reseed_marker="$(zfs get -H -o value "${SNAP_PREFIX}:reseed_complete" "$reseed_tmp" 2>/dev/null || echo "?")"
+    if reseed_tokens="$(zfs get -H -o value -r receive_resume_token "$reseed_tmp" 2>/dev/null)" \
+       && reseed_snaps="$(zfs list -H -t snapshot -o name -r "$reseed_tmp" 2>/dev/null)" \
+       && [[ "$reseed_marker" == "1" ]] \
+       && [[ -n "$reseed_snaps" ]] \
+       && ! printf '%s\n' "$reseed_tokens" | grep -qv '^-$'; then
       log "Finishing interrupted re-seed: promoting ${reseed_tmp} -> ${dst}"
       if dataset_present "$dst"; then
         unlock_for_receive "$dst"
@@ -305,7 +316,7 @@ replicate_one() {
       prune_snaps_tree "$dst" || true
       return 0
     fi
-    log "Discarding incomplete re-seed temp ${reseed_tmp} (token='${reseed_tok}', no usable snapshot)"
+    log "Discarding incomplete re-seed temp ${reseed_tmp}"
     unlock_for_receive "$reseed_tmp"
     zfs destroy -r "$reseed_tmp"
   fi
@@ -330,11 +341,45 @@ replicate_one() {
   # `zfs get` blip cannot destroy a good encrypted backup.
   if [[ ${#raw_flags[@]} -gt 0 ]] && dataset_present "$dst" \
      && [[ "$(zfs get -H -o value encryption "$dst" 2>/dev/null)" == "off" ]]; then
-    log "Re-seed: ${src} is encrypted but ${dst} is non-raw; building raw copy in ${reseed_tmp} (old copy kept until the swap)"
-    # The recovery block above has already promoted or discarded any prior temp,
-    # so reseed_tmp does not exist here — receive a fresh full raw stream.
-    zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
-      | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$reseed_tmp"
+    log "Re-seed: ${src} is encrypted but ${dst} is non-raw; building raw copy in ${reseed_tmp} (current snapshot only)"
+    # Send ONLY the current snapshot of each dataset in the tree (no -R). -R
+    # would replicate the source's entire snapshot history — including the
+    # zfs-auto-snap churn the archive does not retain — which can dwarf the live
+    # data (e.g. proxmox carries 46 source snapshots vs the ~9 archsync the
+    # archive keeps, ~7.8T vs ~3.1T) and overflow the pool. Incrementals rebuild
+    # the archsync history forward from here. Enumerate parent-before-children so
+    # each nested encryptionroot ships raw with its own wrapped key. The recovery
+    # block above already cleared any prior temp.
+    # Drive the loop from the @snap_now snapshots (not the live dataset tree) so
+    # only datasets that actually carry the snapshot are sent — a dataset created
+    # after the recursive snapshot can't enter the loop and abort it. zfs lists
+    # snapshots parent-dataset-first, so parents are received before children.
+    # Enumerate the @snap_now snapshots up front and abort if that fails or comes
+    # back empty — otherwise a failed enumeration inside a process substitution
+    # would run a partial loop and then still set the completion marker. Sort the
+    # list shallowest-dataset-first (by '/' depth) so every dataset's parent is
+    # received before it, EXPLICITLY rather than relying on zfs list's grouping:
+    # snapshot names can't be lexically sorted for this (a child's '/' sorts
+    # before a parent's '@'), so an explicit depth sort is the safe ordering.
+    local snap ds sub snap_list
+    if ! snap_list="$(zfs list -H -o name -t snapshot -r "$src" \
+        | awk -F@ -v s="$snap_now" '$2 == s { d = $1; print gsub(/\//, "/", d) "\t" $0 }' \
+        | sort -k1,1n -k2,2 | cut -f2-)"; then
+      log "Re-seed aborted: failed to enumerate ${snap_now} snapshots under ${src}"
+      return 1
+    fi
+    [[ -n "$snap_list" ]] || { log "Re-seed aborted: no ${snap_now} snapshots under ${src}"; return 1; }
+    while IFS= read -r snap; do
+      ds="${snap%@${snap_now}}"
+      sub="${reseed_tmp}${ds#"${src}"}"
+      zfs send "${raw_flags[@]}" "${snap}" \
+        | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$sub" \
+        || { log "Re-seed failed sending ${snap} -> ${sub}"; return 1; }
+    done <<< "$snap_list"
+    # Mark the temp tree complete ONLY after every dataset received. The recovery
+    # block requires this marker before promoting, so a crash mid-loop (no
+    # marker) or a partial child (resume token) is never promoted over a good dst.
+    zfs set "${SNAP_PREFIX}:reseed_complete=1" "$reseed_tmp"
     # Receive completed (a send/receive failure would have aborted above) ->
     # swap the verified raw copy into place: drop the old, rename temp in.
     unlock_for_receive "$dst"

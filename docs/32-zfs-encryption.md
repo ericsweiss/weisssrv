@@ -84,11 +84,18 @@ reference, and NFS export path — are unchanged by encryption.
   `-R`: ZFS rejects sending an encrypted dataset with properties unless raw.)
   This gives the replicated data native at-rest encryption, which largely
   supersedes the separately-tracked archive-pool LUKS effort (`docs/06-zfs.md`);
-  only archive data outside those six datasets stays plaintext. **Never
-  `zfs load-key` + mount an `archive/<dataset>` in place** — it dirties the raw
-  incremental chain and forces a full re-seed; to read a backup, restore it to a
-  `*-restore-*` clone (`archive-backupctl restore <target>`) and load the key
-  there.
+  only archive data outside those six datasets stays plaintext. Raw replication
+  preserves the source's compression (ZFS compresses before it encrypts), so the
+  encrypted archive copies are the same size as the sources — not larger. The
+  one-time raw re-seed copies only each dataset's **current snapshot**, not its
+  full history: `zfs send -R` would replicate the source's entire snapshot set
+  (incl. zfs-auto-snap churn the archive doesn't keep — e.g. `tank/proxmox`
+  carries ~46 snapshots vs the ~9 `archsync` the archive retains, ~7.8T vs
+  ~3.1T) and overflow the pool. The `archsync` history rebuilds forward from the
+  re-seed via the normal incrementals. **Never `zfs load-key` + mount an
+  `archive/<dataset>` in place** — it dirties the raw incremental chain and
+  forces a full re-seed; to read a backup, restore it to a `*-restore-*` clone
+  (`archive-backupctl restore <target>`) and load the key there.
 - **Compute nodes' `local-ssd` pools (5×)** — host the k3s VM disks
   (servers + agents) and HA-managed LXC subvols. Encrypting these
   would create an unrecoverable cold-boot deadlock: Connect runs in
