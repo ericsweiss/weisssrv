@@ -40,7 +40,7 @@ data:
   prowlarr_version: 2.4.0.5397
   proxmox_exporter_version: 3.9.0
   pulsarr_version: 0.16.0
-  qbittorrent_version: 5.2.1
+  qbittorrent_version: 5.2.2
   radarr_version: 6.2.1.10461
   redis_exporter_version: v1.86.0
   redis_version: 8.8.0-alpine
