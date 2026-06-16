@@ -283,22 +283,31 @@ replicate_one() {
   fi
 
   # Recovery: a re-seed interrupted after its replacement was fully received but
-  # before the swap finished leaves a COMPLETE (token-less) temp sibling.
-  # Promote it instead of re-sending, so a crash mid-swap never loses the backup
-  # or forces a multi-TB re-send. A PARTIAL temp still carries a resume token and
-  # is rebuilt by the re-seed path below.
-  if dataset_present "$reseed_tmp" \
-     && [[ "$(zfs get -H -o value receive_resume_token "$reseed_tmp" 2>/dev/null)" == "-" ]]; then
-    log "Finishing interrupted re-seed: promoting ${reseed_tmp} -> ${dst}"
-    if dataset_present "$dst"; then
-      unlock_for_receive "$dst"
-      zfs destroy -r "$dst"
+  # before the swap finished leaves a COMPLETE temp sibling. Promote it instead
+  # of re-sending, so a crash mid-swap never loses the backup or forces a
+  # multi-TB re-send. "Complete" requires BOTH no resume token AND at least one
+  # backup snapshot — a token-less temp with no snapshot is a failed/empty
+  # receive and must be discarded, never promoted over a good dst. Anything not
+  # promotable (partial token, or empty) is discarded so the re-seed rebuilds it.
+  if dataset_present "$reseed_tmp"; then
+    local reseed_tok
+    reseed_tok="$(zfs get -H -o value receive_resume_token "$reseed_tmp" 2>/dev/null || echo "")"
+    if [[ "$reseed_tok" == "-" ]] \
+       && zfs list -H -t snapshot -o name -r "$reseed_tmp" 2>/dev/null | grep -q "@${SNAP_PREFIX}-"; then
+      log "Finishing interrupted re-seed: promoting ${reseed_tmp} -> ${dst}"
+      if dataset_present "$dst"; then
+        unlock_for_receive "$dst"
+        zfs destroy -r "$dst"
+      fi
+      zfs rename "$reseed_tmp" "$dst"
+      lock_backup_tree "$dst"
+      prune_snaps_tree "$src" || true
+      prune_snaps_tree "$dst" || true
+      return 0
     fi
-    zfs rename "$reseed_tmp" "$dst"
-    lock_backup_tree "$dst"
-    prune_snaps_tree "$src" || true
-    prune_snaps_tree "$dst" || true
-    return 0
+    log "Discarding incomplete re-seed temp ${reseed_tmp} (token='${reseed_tok}', no usable snapshot)"
+    unlock_for_receive "$reseed_tmp"
+    zfs destroy -r "$reseed_tmp"
   fi
 
   # Resume partial receives first (if any)
@@ -322,10 +331,8 @@ replicate_one() {
   if [[ ${#raw_flags[@]} -gt 0 ]] && dataset_present "$dst" \
      && [[ "$(zfs get -H -o value encryption "$dst" 2>/dev/null)" == "off" ]]; then
     log "Re-seed: ${src} is encrypted but ${dst} is non-raw; building raw copy in ${reseed_tmp} (old copy kept until the swap)"
-    if dataset_present "$reseed_tmp"; then
-      unlock_for_receive "$reseed_tmp"
-      zfs destroy -r "$reseed_tmp"
-    fi
+    # The recovery block above has already promoted or discarded any prior temp,
+    # so reseed_tmp does not exist here — receive a fresh full raw stream.
     zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
       | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$reseed_tmp"
     # Receive completed (a send/receive failure would have aborted above) ->
@@ -490,9 +497,9 @@ _restore_mount_tree() {
   # the mount above is a silent no-op. Don't claim it mounted — tell the operator
   # how to unlock it instead, so a real restore isn't trusted as readable when
   # the directory is empty.
-  if [[ "$(zfs get -H -o value keystatus "$restore_root" 2>/dev/null)" == "unavailable" ]]; then
-    log "Restore tree ${restore_root} is encrypted and key-less — NOT mounted."
-    log "  Unlock + mount: zfs load-key -L prompt ${restore_root} && zfs mount -r ${restore_root}  (mounts under ${mp})"
+  if zfs get -H -o value -r keystatus "$restore_root" 2>/dev/null | grep -q '^unavailable$'; then
+    log "Restore tree ${restore_root} contains encrypted key-less datasets — mount is incomplete."
+    log "  Unlock + mount: zfs load-key -r -L prompt ${restore_root} && zfs mount -r ${restore_root}  (mounts under ${mp})"
   else
     log "Mounted restore tree at: $mp"
   fi
