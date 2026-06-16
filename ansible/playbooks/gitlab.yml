@@ -47,5 +47,13 @@
   roles:
     - base
     - postfix_null_client
+    # node_exporter_host runs node_exporter with the textfile collector pointed
+    # at /var/lib/node_exporter, which is what exposes the gitlab backup
+    # wrapper's gitlab_backup.prom to Prometheus (the wrapper creates the dir +
+    # file itself). site.yml deploys node_exporter_host to gitlab_servers, but a
+    # standalone `task gitlab:deploy` never did, so on this VM the metric was
+    # written but no exporter exposed it (GitLabBackupStale via absent()).
+    # Ordered before gitlab so the exporter is in place when the wrapper lands.
+    - node_exporter_host
     - gitlab
     - proxmox_firewall
