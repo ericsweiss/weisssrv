@@ -327,20 +327,37 @@ shellcheck:
     - |
       # Lint shell-script Jinja templates (*.sh.j2) shipped in roles —
       # including the boot-time crypto-unlock units. We can't render real
-      # values in CI, so neutralize Jinja to shellcheck-parseable placeholders:
-      # drop {# #} comment blocks and {% %} statements, turn the {{"{"}} /
-      # {{"}"}} literal-brace emitters into braces, and replace remaining
-      # {{ ... }} expressions with a placeholder shell word. This catches shell
-      # logic/quoting bugs in the template body, not Jinja correctness.
+      # values in CI, so neutralize Jinja first. The {% %} strip + the {{ }} and
+      # literal-brace substitutions are safe everywhere; the {# #} comment-RANGE
+      # delete is NOT — it eats bash ${#arr[@]} (array length) and corrupts the
+      # body. So for {% raw %}-wrapped scripts (whose body is literal bash) drop
+      # the comment-RANGE rule and instead delete only FULL-LINE {# ... #} Jinja
+      # comments (anchored ^...$, so it can't touch a mid-line ${#...}), while
+      # still neutralizing any {{ }} that sits OUTSIDE the raw block (e.g. quoted
+      # header vars). Plain templates keep the full neutralizer. Either way this
+      # catches shell logic/quoting bugs in the body, not Jinja correctness.
+      # CONSTRAINT: a MULTI-LINE or inline {# #} Jinja comment in the out-of-raw
+      # header of a {% raw %}-wrapped *.sh.j2 is still not stripped (only full-line
+      # ones are); keep header comments to single full lines. (Out-of-raw {{ }}
+      # expressions are fine in any quantity — still neutralized to JINJA.)
       rendered=$(mktemp)
       find ansible/roles -name '*.sh.j2' -type f | while read -r tmpl; do
         echo "Checking: $tmpl"
-        sed -E \
-          -e '/\{#/,/#\}/d' \
-          -e '/\{%.*%\}/d' \
-          -e 's/\{\{"\{"\}\}/{/g' \
-          -e 's/\{\{"\}"\}\}/}/g' \
-          -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+        if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
+          sed -E \
+            -e '/^[[:space:]]*\{#.*#\}[[:space:]]*$/d' \
+            -e '/\{%.*%\}/d' \
+            -e 's/\{\{"\{"\}\}/{/g' \
+            -e 's/\{\{"\}"\}\}/}/g' \
+            -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+        else
+          sed -E \
+            -e '/\{#/,/#\}/d' \
+            -e '/\{%.*%\}/d' \
+            -e 's/\{\{"\{"\}\}/{/g' \
+            -e 's/\{\{"\}"\}\}/}/g' \
+            -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+        fi
         shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered"
       done
       rm -f "$rendered"

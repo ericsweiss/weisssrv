@@ -84,13 +84,12 @@ spec:
           - name: lan-tailscale-only
             namespace: traefik
 
-    # Logging
-    logs:
-      general:
-        level: INFO
-      access:
-        enabled: true
-        format: json
+    # Logging (chart 41.x renamed logs.general -> log, logs.access -> accessLog)
+    log:
+      level: INFO
+    accessLog:
+      enabled: true
+      format: json
 
     # Metrics
     metrics:

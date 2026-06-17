@@ -239,16 +239,16 @@ helm_chart_versions:
   # images per upstream. Re-evaluate when the fix lands.
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
-  traefik: "40.3.0"  # App version v3.6.7
+  traefik: "41.0.0"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
   kube_prometheus_stack: "86.2.3"
-  loki: "17.4.3"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  loki: "17.4.5"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.12.0"
   onepassword_connect: "2.4.1"
-  vpa: "4.12.1"
+  vpa: "4.12.2"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

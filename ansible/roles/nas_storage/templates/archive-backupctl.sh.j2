@@ -13,12 +13,22 @@ SNAP_PREFIX="archsync"
 KEEP_RECENT=3
 KEEP_MONTHLY=6
 
-# Datasets to replicate (recursive: includes children)
+# Datasets to replicate (recursive: includes children). tank/immich-data is the
+# (currently empty) store for the planned Immich; it is encrypted at source.
+# ssd/pve (the GitLab VM disks) is intentionally NOT here — those disks are
+# already captured by the nightly vzdump of every VM into tank/proxmox, which
+# this script also replicates, so a direct ssd/pve copy would just double-store
+# them.
+# INVARIANT: each SRC_LIST ROOT must be a filesystem (zvols are fine as CHILDREN,
+# where -R never targets them with -o mountpoint/canmount). A top-level zvol here
+# would be rejected by the RECV_SAFE_OPTS receive in the -R/resume paths, not just
+# the re-seed loop (which type-splits per dataset and would handle it).
 SRC_LIST=(
   "tank/share"
   "tank/backups"
   "tank/nextcloud-data"
   "tank/proxmox"
+  "tank/immich-data"
   "ssd/appdata"
   "ssd/databases"
 )
@@ -28,6 +38,7 @@ declare -A MAP=(
   ["tank/backups"]="${POOL_DST}/backups"
   ["tank/nextcloud-data"]="${POOL_DST}/nextcloud-data"
   ["tank/proxmox"]="${POOL_DST}/proxmox"
+  ["tank/immich-data"]="${POOL_DST}/immich-data"
   ["ssd/appdata"]="${POOL_DST}/appdata"
   ["ssd/databases"]="${POOL_DST}/databases"
 )
@@ -37,6 +48,7 @@ declare -A RMAP=(
   ["${POOL_DST}/backups"]="tank/backups"
   ["${POOL_DST}/nextcloud-data"]="tank/nextcloud-data"
   ["${POOL_DST}/proxmox"]="tank/proxmox"
+  ["${POOL_DST}/immich-data"]="tank/immich-data"
   ["${POOL_DST}/appdata"]="ssd/appdata"
   ["${POOL_DST}/databases"]="ssd/databases"
 )
@@ -265,7 +277,10 @@ set_pool_root_props() {
 
 replicate_one() {
   local src="$1" dst="$2"
-  local snap_now="${SNAP_PREFIX}-$(date +%Y%m%d-%H%M%S)"
+  # Declare + assign separately so the $(date) exit status isn't masked by
+  # `local` (shellcheck SC2155); this script is linted in CI as a *.sh.j2.
+  local snap_now
+  snap_now="${SNAP_PREFIX}-$(date +%Y%m%d-%H%M%S)"
   local reseed_tmp="${dst}-reseed"
 
   dataset_present "$src" || { log "SKIP: missing source $src"; return 0; }
@@ -361,7 +376,7 @@ replicate_one() {
     # received before it, EXPLICITLY rather than relying on zfs list's grouping:
     # snapshot names can't be lexically sorted for this (a child's '/' sorts
     # before a parent's '@'), so an explicit depth sort is the safe ordering.
-    local snap ds sub snap_list
+    local snap ds sub recv_opts dtype snap_list
     if ! snap_list="$(zfs list -H -o name -t snapshot -r "$src" \
         | awk -F@ -v s="$snap_now" '$2 == s { d = $1; print gsub(/\//, "/", d) "\t" $0 }' \
         | sort -k1,1n -k2,2 | cut -f2-)"; then
@@ -372,8 +387,34 @@ replicate_one() {
     while IFS= read -r snap; do
       ds="${snap%@${snap_now}}"
       sub="${reseed_tmp}${ds#"${src}"}"
+      # A PER-DATASET '-o mountpoint=/canmount' override on a zvol receive is
+      # rejected by zfs, so volumes receive read-only only; filesystems get the
+      # full non-mountable set. (The -R initial/incremental paths below send the
+      # same mixed tree with RECV_SAFE_OPTS and are fine: -o applies ONLY to the
+      # stream's top-level dataset — a filesystem (see the SRC_LIST invariant) —
+      # so the zvol descendants are never targeted by the rejected override; they
+      # do not "inherit" mountpoint/canmount (volumes can't hold those at all).
+      # Only this per-dataset, non-R loop applies -o to each dataset, so only it
+      # needs the type split. Detection is
+      # generic: ANY source tree may hold zvol children (today only ssd/appdata's
+      # app DB/data volumes do), and each is type-detected on its own.) $ds was just
+      # enumerated from the snapshot list so it exists; '|| true' lets a
+      # transient/racy get error fall through (empty dtype) to the else, so an
+      # errored OR unexpected type aborts LOUDLY with a $ds-specific log — rather
+      # than set -e killing the bare assignment with a generic message, or
+      # silently routing a zvol through the filesystem branch (the very
+      # "property 'mountpoint' does not apply" rejection this guards against).
+      dtype="$(zfs get -H -o value type "$ds" 2>/dev/null || true)"
+      if [[ "$dtype" == "volume" ]]; then
+        recv_opts=( -o readonly=on )
+      elif [[ "$dtype" == "filesystem" ]]; then
+        recv_opts=( "${RECV_SAFE_OPTS[@]}" )
+      else
+        log "Re-seed aborted: cannot determine type of ${ds} (got '${dtype}')"
+        return 1
+      fi
       zfs send "${raw_flags[@]}" "${snap}" \
-        | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$sub" \
+        | zfs receive -s -u "${recv_opts[@]}" "$sub" \
         || { log "Re-seed failed sending ${snap} -> ${sub}"; return 1; }
     done <<< "$snap_list"
     # Mark the temp tree complete ONLY after every dataset received. The recovery
@@ -490,6 +531,7 @@ _lock_existing_backup_datasets() {
     "${POOL_DST}/backups" \
     "${POOL_DST}/nextcloud-data" \
     "${POOL_DST}/proxmox" \
+    "${POOL_DST}/immich-data" \
     "${POOL_DST}/appdata" \
     "${POOL_DST}/databases"
   do
@@ -600,7 +642,7 @@ cmd_restore() {
   pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
 
   local what="${1:-}"
-  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore <share|backups|nextcloud-data|proxmox|appdata|databases|all>" >&2; exit 2; }
+  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore <share|backups|nextcloud-data|proxmox|immich-data|appdata|databases|all>" >&2; exit 2; }
 
   case "$what" in
     all)
@@ -608,6 +650,7 @@ cmd_restore() {
       _restore_one "${POOL_DST}/backups" safe
       _restore_one "${POOL_DST}/nextcloud-data" safe
       _restore_one "${POOL_DST}/proxmox" safe
+      _restore_one "${POOL_DST}/immich-data" safe
       _restore_one "${POOL_DST}/appdata" safe
       _restore_one "${POOL_DST}/databases" safe
       ;;
@@ -615,6 +658,7 @@ cmd_restore() {
     backups) _restore_one "${POOL_DST}/backups" safe ;;
     nextcloud-data) _restore_one "${POOL_DST}/nextcloud-data" safe ;;
     proxmox) _restore_one "${POOL_DST}/proxmox" safe ;;
+    immich-data) _restore_one "${POOL_DST}/immich-data" safe ;;
     appdata) _restore_one "${POOL_DST}/appdata" safe ;;
     databases) _restore_one "${POOL_DST}/databases" safe ;;
     *) echo "Unknown restore target: $what" >&2; exit 2 ;;
@@ -627,7 +671,7 @@ cmd_restore_force() {
   pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
 
   local what="${1:-}"
-  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore-force <share|backups|nextcloud-data|proxmox|appdata|databases|all>" >&2; exit 2; }
+  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore-force <share|backups|nextcloud-data|proxmox|immich-data|appdata|databases|all>" >&2; exit 2; }
 
   case "$what" in
     all)
@@ -635,6 +679,7 @@ cmd_restore_force() {
       _restore_one "${POOL_DST}/backups" force
       _restore_one "${POOL_DST}/nextcloud-data" force
       _restore_one "${POOL_DST}/proxmox" force
+      _restore_one "${POOL_DST}/immich-data" force
       _restore_one "${POOL_DST}/appdata" force
       _restore_one "${POOL_DST}/databases" force
       ;;
@@ -642,6 +687,7 @@ cmd_restore_force() {
     backups) _restore_one "${POOL_DST}/backups" force ;;
     nextcloud-data) _restore_one "${POOL_DST}/nextcloud-data" force ;;
     proxmox) _restore_one "${POOL_DST}/proxmox" force ;;
+    immich-data) _restore_one "${POOL_DST}/immich-data" force ;;
     appdata) _restore_one "${POOL_DST}/appdata" force ;;
     databases) _restore_one "${POOL_DST}/databases" force ;;
     *) echo "Unknown restore target: $what" >&2; exit 2 ;;
@@ -666,7 +712,7 @@ Commands:
   restore <target>        SAFE restore into new *-restore-YYYYMMDD-HHMMSS datasets,
                           mounted under /mnt/restore/<target>/<timestamp>/
   restore-force <target>  DESTRUCTIVE restore in place (zfs receive -F)
-                          targets: share|backups|nextcloud-data|proxmox|appdata|databases|all
+                          targets: share|backups|nextcloud-data|proxmox|immich-data|appdata|databases|all
 USAGE
 }
 

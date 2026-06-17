@@ -298,18 +298,30 @@
       set -o pipefail
       EXPECTED_PATH="/dev/zvol/{{ item.zvol }}"
       SCSI_SLOT="scsi{{ loop_index + 1 }}"
+      # vzdump_backup: false sets backup=0 so the nightly vzdump skips this
+      # passthrough disk. Use it for app-data zvols already backed up by direct
+      # ZFS replication (ssd/appdata -> archive); without it vzdump double-stores
+      # them in the VM image backup (tank/proxmox).
+      WANT_NOBACKUP="{{ 1 if not (item.vzdump_backup | default(true) | bool) else 0 }}"
+      if [ "$WANT_NOBACKUP" = 1 ]; then DISK_SPEC="${EXPECTED_PATH},backup=0"; else DISK_SPEC="$EXPECTED_PATH"; fi
       CURRENT_CONFIG=$(qm config {{ vm_id }} | grep "^${SCSI_SLOT}:" || true)
+      # Drive value without the "scsiN: " prefix; the path is its first
+      # comma-separated token. Compare the path EXACTLY — a substring grep would
+      # treat .../data-old as a match for .../data and skip a needed correction.
+      CURRENT_VALUE="${CURRENT_CONFIG#*: }"
+      CURRENT_PATH="${CURRENT_VALUE%%,*}"
+      HAS_NOBACKUP=0
+      echo "$CURRENT_VALUE" | grep -qE '(^|,)backup=0(,|$)' && HAS_NOBACKUP=1
 
+      # Idempotent on BOTH the zvol path and the backup= state: re-set if the disk
+      # is absent, on the wrong path, or its backup flag differs from desired.
       if [ -z "$CURRENT_CONFIG" ]; then
-        # Disk not attached, attach it
-        qm set {{ vm_id }} --${SCSI_SLOT} "$EXPECTED_PATH"
+        qm set {{ vm_id }} --${SCSI_SLOT} "$DISK_SPEC"
         echo "CHANGED:attached"
-      elif echo "$CURRENT_CONFIG" | grep -q "$EXPECTED_PATH"; then
-        # Disk attached and matches expected path
+      elif [ "$CURRENT_PATH" = "$EXPECTED_PATH" ] && [ "$HAS_NOBACKUP" = "$WANT_NOBACKUP" ]; then
         echo "OK:exists"
       else
-        # Disk attached but wrong path - update it
-        qm set {{ vm_id }} --${SCSI_SLOT} "$EXPECTED_PATH"
+        qm set {{ vm_id }} --${SCSI_SLOT} "$DISK_SPEC"
         echo "CHANGED:updated"
       fi
     executable: /bin/bash

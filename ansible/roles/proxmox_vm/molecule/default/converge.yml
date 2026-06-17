@@ -246,3 +246,209 @@
            "repair_calls": {{ (qm_fwzero_lines.stdout | from_json).repair_calls }},
            "stale_key_in_set": {{ (qm_fwzero_lines.stdout | from_json).stale_key_in_set }},
            "reconcile_changed": {{ vm_net0_firewall.changed | to_json }}}
+
+    # 8. Additional-disk vzdump_backup idempotency. The attach task (loop slot
+    # scsi1) must set backup=0 exactly when a vzdump_backup:false disk's current
+    # state lacks it, be a no-op when it already matches, and never add backup=0
+    # to a default disk. EXPECTED_PATH is /dev/zvol/ssd/appdata/test/data.
+    # 8a. Not attached + vzdump_backup:false -> one `qm set --scsi1 ...,backup=0`.
+    - name: Remove scsi1 override (slot not attached)
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/vm_scsi1_override
+        state: absent
+
+    - name: Reset qm.log for disk-attach (absent) case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role — attach absent vzdump_backup:false disk
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+            vzdump_backup: false
+
+    - name: Count attach-absent qm scsi calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --scsi1 /dev/zvol/ssd/appdata/test/data,backup=0$' /tmp/molecule-stub-state/qm.log || true)
+        anyset=$(grep -c '^qm set 999 --scsi1' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"applied_backup0\": ${applied}, \"any_scsi1_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: disk_absent
+      changed_when: false
+
+    # 8b. Attached WITHOUT backup=0 + vzdump_backup:false -> one re-set adding it.
+    - name: Stub scsi1 attached without backup=0
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_scsi1_override
+        content: "/dev/zvol/ssd/appdata/test/data,size=10G"
+        mode: "0644"
+
+    - name: Reset qm.log for disk-attach (missing-flag) case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role — re-set disk missing backup=0
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+            vzdump_backup: false
+
+    - name: Count missing-flag qm scsi calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --scsi1 /dev/zvol/ssd/appdata/test/data,backup=0$' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"applied_backup0\": ${applied}}"
+      args:
+        executable: /bin/bash
+      register: disk_missing
+      changed_when: false
+
+    # 8c. Attached WITH backup=0 + vzdump_backup:false -> no-op (the key
+    # no-churn case: must NOT re-set the slot on every deploy).
+    - name: Stub scsi1 attached with backup=0
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_scsi1_override
+        content: "/dev/zvol/ssd/appdata/test/data,backup=0,size=10G"
+        mode: "0644"
+
+    - name: Reset qm.log for disk-attach (idempotent) case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role — already backup=0 (idempotent)
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+            vzdump_backup: false
+
+    - name: Count idempotent qm scsi calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        anyset=$(grep -c '^qm set 999 --scsi1' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"any_scsi1_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: disk_idempotent
+      changed_when: false
+
+    # 8d. Default disk (vzdump_backup unset) attached at correct path -> no-op,
+    # and never adds backup=0 to a disk that should stay in vzdump.
+    - name: Reset qm.log for disk-attach (default) case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Stub scsi1 attached without backup=0 (for default-disk case)
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_scsi1_override
+        content: "/dev/zvol/ssd/appdata/test/data,size=10G"
+        mode: "0644"
+
+    - name: Run role — default disk (no vzdump_backup)
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+
+    - name: Count default-disk qm scsi calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        anyset=$(grep -c '^qm set 999 --scsi1' /tmp/molecule-stub-state/qm.log || true)
+        backup0=$(grep -c '^qm set 999 --scsi1 .*backup=0' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"any_scsi1_set\": ${anyset}, \"set_with_backup0\": ${backup0}}"
+      args:
+        executable: /bin/bash
+      register: disk_default
+      changed_when: false
+
+    # 8e. Attached to a PREFIX path (.../data-old) for a disk whose EXPECTED_PATH
+    # is .../data -> must re-set to the correct path (exact-match guard; a
+    # substring grep would falsely treat data-old as a match and skip the fix).
+    - name: Stub scsi1 attached to a prefix-mismatched path
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_scsi1_override
+        content: "/dev/zvol/ssd/appdata/test/data-old,size=10G"
+        mode: "0644"
+
+    - name: Reset qm.log for disk-attach (prefix-path) case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role — disk on a prefix-mismatched path
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+            vzdump_backup: false
+
+    - name: Count prefix-path qm scsi calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        reset_correct=$(grep -c '^qm set 999 --scsi1 /dev/zvol/ssd/appdata/test/data,backup=0$' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"reset_to_correct_path\": ${reset_correct}}"
+      args:
+        executable: /bin/bash
+      register: disk_prefix
+      changed_when: false
+
+    - name: Clean up scsi1 override
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/vm_scsi1_override
+        state: absent
+
+    - name: Capture disk-attach vzdump_backup result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/08-disk-vzdump-backup.json
+        mode: "0644"
+        content: |
+          {"absent_applied_backup0": {{ (disk_absent.stdout | from_json).applied_backup0 }},
+           "absent_any_set": {{ (disk_absent.stdout | from_json).any_scsi1_set }},
+           "missing_flag_applied_backup0": {{ (disk_missing.stdout | from_json).applied_backup0 }},
+           "idempotent_any_set": {{ (disk_idempotent.stdout | from_json).any_scsi1_set }},
+           "default_any_set": {{ (disk_default.stdout | from_json).any_scsi1_set }},
+           "default_set_with_backup0": {{ (disk_default.stdout | from_json).set_with_backup0 }},
+           "prefix_reset_to_correct_path": {{ (disk_prefix.stdout | from_json).reset_to_correct_path }}}

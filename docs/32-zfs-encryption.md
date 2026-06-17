@@ -75,16 +75,21 @@ reference, and NFS export path — are unchanged by encryption.
 - `tank/pve` — ephemeral Proxmox VM/LXC images. (`tank/proxmox` is in
   the encrypted list above because it holds VM backup tarballs that
   contain persistent app state.)
-- `archive` pool — the pool itself is plaintext, but the six replicated
-  datasets (`archive/{share,backups,nextcloud-data,proxmox,appdata,databases}`)
-  now arrive as **raw** `zfs send -w` streams from their encrypted tank/ssd
-  sources (`archive-backupctl`), so that backup data is encrypted at rest under
-  the source's own key — archive never loads a key, and a restore needs
-  `zfs load-key`. (Sending the now-encrypted sources non-raw is impossible with
+- `archive` pool — the pool itself is plaintext, but the seven replicated
+  datasets (`archive/{share,backups,nextcloud-data,proxmox,immich-data,appdata,
+  databases}`) now arrive as **raw** `zfs send -w` streams from their
+  encrypted tank/ssd sources (`archive-backupctl`), so that backup data is
+  encrypted at rest under the source's own key — archive never loads a key, and
+  a restore needs `zfs load-key`. (`ssd/appdata` holds zvol children — the app
+  DB/data volumes — so the per-dataset re-seed receive uses `-o readonly=on` for
+  volumes, since a per-dataset `-o mountpoint`/`canmount` override on a zvol
+  receive is rejected; the `-R` initial/incremental paths avoid this because
+  `zfs receive -o` applies the override only to the stream's top-level (filesystem)
+  dataset, never to the zvol descendants.) (Sending the now-encrypted sources non-raw is impossible with
   `-R`: ZFS rejects sending an encrypted dataset with properties unless raw.)
   This gives the replicated data native at-rest encryption, which largely
   supersedes the separately-tracked archive-pool LUKS effort (`docs/06-zfs.md`);
-  only archive data outside those six datasets stays plaintext. Raw replication
+  only archive data outside those seven datasets stays plaintext. Raw replication
   preserves the source's compression (ZFS compresses before it encrypts), so the
   encrypted archive copies are the same size as the sources — not larger. The
   one-time raw re-seed copies only each dataset's **current snapshot**, not its

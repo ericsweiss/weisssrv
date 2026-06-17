@@ -102,6 +102,20 @@
       register: smb_service
       failed_when: smb_service.status.LoadState != 'loaded'
 
+    # archive-backupctl contract. The script threads each replicated dataset
+    # through six parallel lists (SRC_LIST/MAP/RMAP, the lock list, and both
+    # restore case statements) plus a zvol-vs-filesystem receive branch. The
+    # assertions live in files/archive-contract-assert.sh (a real *.sh: shellcheck
+    # lints it, and its embedded quotes don't trip Ansible's arg splitter the way
+    # an inline `shell:` block would). It pins the lists with NO runtime self-
+    # protection — SRC_LIST, both restore paths (per-target + all), and the lock
+    # list (a dataset missing there is silently left writable); MAP/RMAP need no
+    # static check (a missing key fails loudly under set -u). It also bash -n's the
+    # REAL render and pins the type->arm coupling so an inversion is caught.
+    - name: Assert the archive-backupctl contract (restorable, lock-listed, type-coupled)
+      ansible.builtin.script: files/archive-contract-assert.sh
+      changed_when: false
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
@@ -113,3 +127,4 @@
           - "✓ smb.conf contains expected shares"
           - "✓ NFS service loaded"
           - "✓ Samba service loaded"
+          - "✓ archive-backupctl contract (restorable + lock-listed + type-coupled)"

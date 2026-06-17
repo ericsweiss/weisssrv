@@ -15,6 +15,7 @@
         - 05-existence-guard.json
         - 06-firewall-reconcile.json
         - 07-firewall-zero.json
+        - 08-disk-vzdump-backup.json
       register: artifacts
 
     - name: Decode artifacts
@@ -26,6 +27,7 @@
         existence: "{{ artifacts.results[4].content | b64decode | from_json }}"
         fw_reconcile: "{{ artifacts.results[5].content | b64decode | from_json }}"
         fw_zero: "{{ artifacts.results[6].content | b64decode | from_json }}"
+        disk_backup: "{{ artifacts.results[7].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -79,3 +81,24 @@
           # argument (would mean append-instead-of-replace).
           - fw_zero.stale_key_in_set == 0
           - fw_zero.reconcile_changed
+
+    # vzdump_backup idempotency on additional (passthrough) disks. The contract:
+    # set backup=0 exactly when a vzdump_backup:false disk's state lacks it,
+    # no-op when it already matches (critical — no churn on every deploy), and
+    # never add backup=0 to a default disk that should stay in vzdump.
+    - name: Additional-disk backup=0 is applied + idempotent + scoped to vzdump_backup:false
+      ansible.builtin.assert:
+        that:
+          # 8a: absent disk + vzdump_backup:false -> exactly one backup=0 attach
+          - disk_backup.absent_applied_backup0 == 1
+          - disk_backup.absent_any_set == 1
+          # 8b: attached without backup=0 -> exactly one re-set adding it
+          - disk_backup.missing_flag_applied_backup0 == 1
+          # 8c: already backup=0 -> NO qm set (the no-churn idempotency case)
+          - disk_backup.idempotent_any_set == 0
+          # 8d: default disk -> no qm set, and never backup=0
+          - disk_backup.default_any_set == 0
+          - disk_backup.default_set_with_backup0 == 0
+          # 8e: prefix-mismatched path (.../data-old) -> exactly one re-set to the
+          # correct path (exact-match guard, not a substring false-positive)
+          - disk_backup.prefix_reset_to_correct_path == 1

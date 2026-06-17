@@ -3,7 +3,7 @@
 
 - name: Deploy archive-backupctl script
   ansible.builtin.template:
-    src: archive-backupctl.j2
+    src: archive-backupctl.sh.j2
     dest: /usr/local/sbin/archive-backupctl
     owner: root
     group: root

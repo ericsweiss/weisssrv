@@ -22,12 +22,12 @@ data:
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.6.0
   helm_chart_versions_kube_prometheus_stack: 86.2.3
-  helm_chart_versions_loki: 17.4.3
+  helm_chart_versions_loki: 17.4.5
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.12.0
-  helm_chart_versions_traefik: 40.3.0
-  helm_chart_versions_vpa: 4.12.1
+  helm_chart_versions_traefik: 41.0.0
+  helm_chart_versions_vpa: 4.12.2
   k3s_version: v1.36.1+k3s1
   kube_vip_version: v1.2.0
   lidarr_version: 3.1.0.4875

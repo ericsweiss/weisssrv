@@ -77,6 +77,31 @@ backups, not by replication-grade HA. Recovery is restore-from-backup
 with the RTO that implies. Revisit if a second storage-capable node ever
 joins.
 
+## Backup Dedup: vzdump Exclusion of App-Data Zvols
+
+The app-data zvols (Authentik/Mealie PostgreSQL, Prometheus, Loki, GitLab
+repos, Plex `/config`) are backed up by `archive-backupctl` (`ssd/appdata` →
+`archive`, raw ZFS). They are attached to their host VM/CT as passthrough
+disks, so they were *also* captured by the nightly vzdump into `tank/proxmox`
+— double-storing ~2 TB. They now carry `backup=0` (`vzdump_backup: false` in
+`hosts.yml`; `backup=0` in the Plex LXC mount options), so vzdump skips them
+and **`archive-backupctl` is their sole backup path.** OS disks stay in vzdump
+— only the app-data passthroughs are excluded.
+
+**Cutover prerequisite — order matters.** Apply `backup=0` only *after* the
+`ssd/appdata` raw re-seed is deployed and verified green; setting it while that
+re-seed is broken would leave these zvols with no working backup path. The
+`proxmox_vm` attach task re-applies on the next `task k3s:deploy` / GitLab
+deploy. The existing Plex CT needs a one-time manual step (the LXC role sets
+mounts only at container creation):
+
+```bash
+pct set 152 --mp0 /mnt/ssd/appdata/plex,mp=/config,backup=0
+```
+
+Reclaiming the already-accumulated oversized vzdump tarballs is a separate
+one-time manual prune (or let `tank-proxmox` retention age them out).
+
 ## etcd Snapshots
 
 k3s's built-in scheduled snapshots are active on every server node

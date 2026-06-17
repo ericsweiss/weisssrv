@@ -92,6 +92,13 @@
             else
               echo "net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1"
             fi
+            # The additional-disk attach task parses `qm config` for its scsiN
+            # line. The override file, when present, supplies the scsi1 value
+            # verbatim so converge can simulate a passthrough disk already
+            # attached with or without backup=0 (absent => slot not attached).
+            if [ -f /tmp/molecule-stub-state/vm_scsi1_override ]; then
+              echo "scsi1: $(cat /tmp/molecule-stub-state/vm_scsi1_override)"
+            fi
           fi
           exit 0
       become: true

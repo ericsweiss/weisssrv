@@ -42,10 +42,12 @@ proxmox_startup_delay: 10
 # LXC bind mounts — applied by the proxmox_lxc role via `pct set --mpN`
 # at container-creation time
 lxc_bind_mounts:
-  # Plex configuration/database
+  # Plex configuration/database. Already backed up via ssd/appdata -> archive
+  # (raw ZFS), so backup=0 excludes it from vzdump to avoid double-storing it
+  # in tank/proxmox (/transcode and /media are already backup=0).
   - host_path: /mnt/ssd/appdata/plex
     container_path: /config
-    options: "mp=/config,backup=1"
+    options: "mp=/config,backup=0"
   # Transcoding workspace (NVMe for speed)
   - host_path: /mnt/nvme/fast/plex-transcode
     container_path: /transcode
