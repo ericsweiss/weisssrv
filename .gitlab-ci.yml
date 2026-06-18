@@ -124,6 +124,13 @@ workflow:
       - runner_system_failure
   variables:
     ANSIBLE_ROLES_PATH: ${CI_PROJECT_DIR}/ansible/roles
+    # alloy_host renders loki.write basic_auth from these and asserts they are
+    # non-empty (pipeline 355 silently clobbered the fleet's alloy configs when
+    # they were missing). Defined on the shared base so EVERY deploy job that
+    # may run alloy_host (e.g. deploy-ansible-mail via site.yml --limit) has
+    # them, not just deploy-ansible-base.
+    LOKI_PUSH_USER: "op://Homelab/Loki Push Auth/username"
+    LOKI_PUSH_PASSWORD: "op://Homelab/Loki Push Auth/password"
   before_script:
     - !reference [.install-1password, before_script]
     - pip install --quiet ansible==11.6.0
@@ -1368,13 +1375,8 @@ deploy-ansible-base:
   variables:
     ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
-    # alloy_host renders loki.write basic_auth from these; without them
-    # the role renders a credential-less config and every host's journal
-    # shipping 401s against the loki-push-auth middleware (pipeline 355
-    # silently clobbered the fleet's alloy configs exactly this way).
-    # The role now asserts these are non-empty.
-    LOKI_PUSH_USER: "op://Homelab/Loki Push Auth/username"
-    LOKI_PUSH_PASSWORD: "op://Homelab/Loki Push Auth/password"
+    # LOKI_PUSH_USER/PASSWORD now come from the shared .deploy-base (alloy_host
+    # needs them on any site.yml-based deploy, not just this job).
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/base.yml

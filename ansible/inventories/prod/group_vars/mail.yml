@@ -18,7 +18,12 @@ smtp_relay_config:
   myorigin: "/etc/mailname"
   mydestination: "$myhostname, localhost.$mydomain, localhost"
   relayhost: "[smtp.gmail.com]:587"
-  mynetworks: "127.0.0.0/8,192.168.0.0/24,10.42.0.0/16"
+  # Loopback + host LAN only. The k3s pod CIDR (10.42.0.0/16) was removed: it
+  # never matched anyway (pods reaching the external smtp-relay LXC are SNAT'd to
+  # their node IP, which is in 192.168.0.0/24), and every in-cluster sender
+  # (Alertmanager, Mealie, Bar Assistant, Authentik) relays via SASL on 587
+  # (permit_sasl_authenticated), not permit_mynetworks on 25.
+  mynetworks: "127.0.0.0/8,192.168.0.0/24"
   inet_interfaces: "all"
   inet_protocols: "ipv4"
   # "secure" = encrypt AND verify Gmail's certificate against CAfile.
