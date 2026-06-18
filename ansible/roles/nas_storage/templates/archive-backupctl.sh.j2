@@ -639,6 +639,16 @@ _restore_one() {
 }
 
 cmd_restore() {
+  # A restore mutates the archive datasets (safe mode creates *-restore-* trees;
+  # force receives in place). It must never interleave with the nightly
+  # replication, so take the SAME single-instance lock cmd_run uses. Fail fast
+  # rather than block: a held lock means replication is mid-send.
+  exec 9>/run/archive-backup.lock
+  if ! flock -n 9; then
+    log "replication in progress (lock held); retry after the nightly window"
+    exit 1
+  fi
+
   pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
 
   local what="${1:-}"
@@ -668,6 +678,16 @@ cmd_restore() {
 }
 
 cmd_restore_force() {
+  # A restore mutates the archive datasets (safe mode creates *-restore-* trees;
+  # force receives in place). It must never interleave with the nightly
+  # replication, so take the SAME single-instance lock cmd_run uses. Fail fast
+  # rather than block: a held lock means replication is mid-send.
+  exec 9>/run/archive-backup.lock
+  if ! flock -n 9; then
+    log "replication in progress (lock held); retry after the nightly window"
+    exit 1
+  fi
+
   pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
 
   local what="${1:-}"

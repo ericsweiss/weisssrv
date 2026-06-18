@@ -42,4 +42,7 @@ spec:
   dnsNames:
     - "*.esweiss.com"
     - esweiss.com
-  renewBefore: 720h   # 30 days
+  # STAGGERED renewBefore across the three identical *.esweiss.com wildcards
+  # (default 720h / external-secrets 600h / downloads 480h) so they don't all
+  # renew in the same window and burn the LE 5/week duplicate-cert limit at once.
+  renewBefore: 720h   # 30 days (stagger anchor)

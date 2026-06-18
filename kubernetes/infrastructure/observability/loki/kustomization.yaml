@@ -4,4 +4,9 @@ kind: Kustomization
 resources:
   - storage.yaml
   - release.yaml
-  - nodeport.yaml
+  # nodeport.yaml is intentionally NOT reconciled: an always-on NodePort exposes
+  # an unauthenticated Loki push/read path on every node IP, bypassing both the
+  # basic-auth IngressRoute and the allow-loki-ingress NetworkPolicy. It is kept
+  # in this directory as an apply-on-demand emergency fallback only
+  # (kubectl apply -f loki/nodeport.yaml); host Alloy ships via the authenticated
+  # https://loki.esweiss.com ingress by default.

@@ -1,12 +1,13 @@
 ---
-# Smoke verify: the role completed without errors against happy-path stubs.
-# (Drift-detection branches need real Proxmox state to assert end-to-end.)
+# Contract verify: assert the role issued exactly the right Proxmox CLI
+# mutations for absent / already-correct / drifted HA resources and for an
+# absent ZFS replication job, using the logged stub invocations from converge.
 - name: Verify
   hosts: all
   become: true
   gather_facts: false
   tasks:
-    - name: Pvecm stub was called (proves the role queried cluster status)
+    - name: Sanity — the role still queries cluster status (quorate gate)
       ansible.builtin.command: pvecm status
       register: pvecm_check
       changed_when: false
@@ -16,14 +17,47 @@
         that:
           - "'Quorate:          Yes' in pvecm_check.stdout"
 
-    - name: Ha-manager stub is in PATH
-      ansible.builtin.command: which ha-manager
-      register: ha_check
-      changed_when: false
-      failed_when: ha_check.rc != 0
+    - name: Load HA contract artifact
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/ha-contract.json
+      register: ha_artifact
 
-    - name: Pvesr stub is in PATH
-      ansible.builtin.command: which pvesr
-      register: pvesr_check
-      changed_when: false
-      failed_when: pvesr_check.rc != 0
+    - name: Decode HA contract artifact
+      ansible.builtin.set_fact:
+        ha: "{{ ha_artifact.content | b64decode | from_json }}"
+
+    # (a) An absent resource must be created via `ha-manager add` and must NOT
+    #     be `set` (nothing exists to update yet).
+    - name: A — absent resource triggers exactly one `ha-manager add` and no `set`
+      ansible.builtin.assert:
+        that:
+          - ha.a_add == 1
+          - ha.a_set == 0
+        fail_msg: "Expected add=1/set=0 for absent resource, got add={{ ha.a_add }}/set={{ ha.a_set }}"
+
+    # (b) An already-correct resource is the idempotency contract: NO `set`
+    #     (and no `add`, since it already exists). This is the no-churn case.
+    - name: B — already-correct resource triggers NO `ha-manager set` (idempotent)
+      ansible.builtin.assert:
+        that:
+          - ha.b_set == 0
+          - ha.b_add == 0
+        fail_msg: "Expected add=0/set=0 for matching resource, got add={{ ha.b_add }}/set={{ ha.b_set }}"
+
+    # (c) A drifted resource (state started -> stopped) must be corrected with
+    #     exactly one `ha-manager set` and no `add`.
+    - name: C — drifted resource triggers exactly one `ha-manager set` and no `add`
+      ansible.builtin.assert:
+        that:
+          - ha.c_set == 1
+          - ha.c_add == 0
+        fail_msg: "Expected add=0/set=1 for drifted resource, got add={{ ha.c_add }}/set={{ ha.c_set }}"
+
+    # (d) An absent replication job whose source VM resides locally must be
+    #     created via `pvesr create-local-job` (and not `update`).
+    - name: D — absent replication job is created via `pvesr create-local-job`
+      ansible.builtin.assert:
+        that:
+          - ha.d_create == 1
+          - ha.d_update == 0
+        fail_msg: "Expected create=1/update=0 for absent job, got create={{ ha.d_create }}/update={{ ha.d_update }}"

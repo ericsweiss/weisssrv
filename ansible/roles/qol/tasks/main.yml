@@ -7,21 +7,14 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-- name: Check current shell for admin user
-  ansible.builtin.getent:
-    database: passwd
-    key: "{{ admin_user }}"
-  register: admin_user_info
-
-- name: Set shell fact
-  ansible.builtin.set_fact:
-    current_user_shell: "{{ admin_user_info.ansible_facts.getent_passwd[admin_user][5] }}"
-
+# The user module is idempotent (reports changed only when the shell actually
+# changes), so set it unconditionally rather than guarding on a getent lookup —
+# the prior `== '/bin/zsh'` guard never matched when zsh resolved to
+# /usr/bin/zsh and re-ran the task every play.
 - name: Set zsh as default shell for admin user
   ansible.builtin.user:
     name: "{{ admin_user }}"
     shell: /bin/zsh
-  when: current_user_shell != '/bin/zsh'
 
 - name: Check if Oh My Zsh is installed
   ansible.builtin.stat:

@@ -116,6 +116,16 @@ spec:
         enabled: true
         minAvailable: 1
 
+      # Pod hardening: run the server under the runtime's default seccomp
+      # profile (chart-exposed pod-level securityContext). NOTE: automount of
+      # the SA token is intentionally left enabled — authentik uses the
+      # Kubernetes API for its integration/outpost controller (serviceAccount.create
+      # is true), so disabling the token mount would break that. seccompProfile
+      # is the only universally-safe value the chart cleanly exposes here.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
       image:
         tag: "${authentik_version}"
 
@@ -175,6 +185,14 @@ spec:
 
     worker:
       replicas: 1
+
+      # Pod hardening: run the worker under the runtime's default seccomp
+      # profile (chart-exposed pod-level securityContext). SA token automount is
+      # left enabled here too — the worker drives the Kubernetes integration /
+      # embedded outpost reconciliation and needs API access.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
 
       image:
         tag: "${authentik_version}"

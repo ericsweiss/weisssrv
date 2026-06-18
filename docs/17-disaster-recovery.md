@@ -240,11 +240,60 @@ App-data zvols recovered this way are the **stale pre-dedup copies** — prefer 
 
 k3s's built-in scheduled snapshots are active on every server node
 (12-hour cadence, retention 5, `/var/lib/rancher/k3s/server/db/snapshots/`),
-plus `task k3s:backup` for on-demand ones. Gap (tracked in
-docs/16): snapshots currently live only on the server nodes — no offsite
-copy. Restore procedure: `k3s server --cluster-reset
---cluster-reset-restore-path=<snapshot>` on one server, then rejoin the
-others.
+plus `task k3s:backup` for on-demand ones. Restore procedure: `k3s server
+--cluster-reset --cluster-reset-restore-path=<snapshot>` on one server, then
+rejoin the others.
+
+**Offsite copy — gap + planned implementation.** Snapshots currently live only
+on the server-node disks; losing all three servers (or the Proxmox hosts under
+them) loses etcd. This is the only backup class without an off-node copy
+(archive ZFS replication + the GitLab wrapper both copy off-host with a
+freshness metric + `*BackupStale` alert). It is **not yet implemented** because
+none of the clean transport paths exist today (verified 2026-06): the k3s
+server VMs have no NFS mount from `pve-nas-01`, no SSH host-key trust to it, and
+no host-side `node_exporter_host` textfile collector. Closing it therefore
+requires first establishing **one** transport, then a copy + metric + alert
+mirroring the archive/GitLab pattern:
+
+- *Preferred — server-side push to a dedicated NFS export:* add a small
+  `tank/k3s-etcd` (or `archive/...`) export on `pve-nas-01`, mount it (via
+  `nfs_tls`, `xprtsec=tls`, by hostname) on the three server nodes only, and run
+  a `systemd` timer that copies the newest snapshot there after each k3s
+  snapshot, writing an `etcd_snapshot_last_copy_timestamp_seconds` textfile
+  metric. Then deploy `node_exporter_host` (or wire the in-cluster
+  node-exporter textfile collector) on the servers and add an
+  `EtcdSnapshotStale` PrometheusRule (fires if the newest off-node snapshot is
+  older than ~26h) alongside the existing `ArchiveBackupStale`/`GitLabBackupStale`
+  rules.
+- *Alternative — `k3s --etcd-s3`:* point k3s at an S3-compatible target
+  (a future in-cluster MinIO or an external bucket) via `--etcd-s3`,
+  `--etcd-s3-endpoint`, and an `--etcd-s3-*` credential set sourced from
+  1Password; k3s then uploads each snapshot natively.
+
+**Interim manual mitigation:** periodically copy the newest
+`/var/lib/rancher/k3s/server/db/snapshots/` file off one server to the archive
+pool by hand (or via the collector host, which already has SSH to the servers).
+Tracked as the open item in docs/16.
+
+## Observability plane is a single-NAS SPOF
+
+Prometheus (150Gi zvol), Loki (75Gi zvol, RF=1, single binary), and Grafana
+(NFS-backed PVC) are all pinned to `pve-nas-01` via `esweiss.com/nas`
+nodeSelectors — a deliberate storage-locality tradeoff (local ZFS vs replicated
+storage). The consequence for DR: **a NAS-node outage takes the entire
+observability plane down**, and because Prometheus itself is then gone, the
+NAS-dependent alerts (ZFS/temperature, Loki, blackbox) cannot fire — the
+monitoring blind spot coincides exactly with the most likely incident. There is
+currently no out-of-band detection of a silent observability outage.
+
+Mitigation (recommended, not yet wired): the kube-prometheus-stack chart already
+ships the always-firing `Watchdog` alert. Route it through Alertmanager to an
+**external dead-man's-switch** (e.g. healthchecks.io / Dead Man's Snitch /
+PagerDuty heartbeat) whose URL is injected via an `ExternalSecret`; the external
+service then alarms when the heartbeat *stops* — i.e. when Prometheus/Alertmanager
+(and thus the NAS) are down. Optionally `remote_write` a thin critical-alerts
+shard to an off-NAS target. Pick a DMS provider, then wire the Watchdog route +
+secret. Until then, this SPOF is an accepted, documented tradeoff.
 
 ---
 

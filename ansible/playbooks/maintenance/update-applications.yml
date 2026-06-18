@@ -55,6 +55,17 @@
             remote_src: true
             mode: "0644"
 
+        # The adguard_home role makes /etc/resolv.conf immutable (chattr +i) in
+        # steady state, so the bare copies below would EPERM-fail on a normally
+        # deployed DNS host. Clear the flag for the upgrade window; it is
+        # re-asserted after the final restore (and in rescue). failed_when:false
+        # because the file may not be immutable / the FS may not support attrs.
+        - name: Clear immutable flag on resolv.conf for upgrade
+          ansible.builtin.command:
+            cmd: chattr -i /etc/resolv.conf
+          changed_when: false
+          failed_when: false
+
         - name: Configure temporary DNS to use dns-02 (dns-01 only)
           ansible.builtin.copy:
             content: |
@@ -129,6 +140,13 @@
             remote_src: true
             mode: "0644"
 
+        # Re-assert the immutable flag the adguard_home role keeps in steady state.
+        - name: Re-set immutable flag on resolv.conf
+          ansible.builtin.command:
+            cmd: chattr +i /etc/resolv.conf
+          changed_when: false
+          failed_when: false
+
         - name: Remove resolv.conf backup
           ansible.builtin.file:
             path: /etc/resolv.conf.backup-upgrade
@@ -153,12 +171,24 @@
             state: started
           failed_when: false  # Best effort recovery
 
+        - name: Clear immutable flag on resolv.conf for failure restore
+          ansible.builtin.command:
+            cmd: chattr -i /etc/resolv.conf
+          changed_when: false
+          failed_when: false  # Best effort recovery
+
         - name: Restore original resolv.conf after failure
           ansible.builtin.copy:
             src: /etc/resolv.conf.backup-upgrade
             dest: /etc/resolv.conf
             remote_src: true
             mode: "0644"
+          failed_when: false  # Best effort recovery
+
+        - name: Re-set immutable flag on resolv.conf after failure
+          ansible.builtin.command:
+            cmd: chattr +i /etc/resolv.conf
+          changed_when: false
           failed_when: false  # Best effort recovery
 
         - name: Remove resolv.conf backup after failure

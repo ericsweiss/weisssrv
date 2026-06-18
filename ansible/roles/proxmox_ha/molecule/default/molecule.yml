@@ -1,10 +1,13 @@
 ---
-# Molecule scenario for proxmox_ha (smoke test).
-# Runs the role end-to-end against stub Proxmox CLIs that emit minimal valid
-# output for the happy path (cluster quorate, no rules drift, no replication
-# drift). Verifies the role completes without errors and computes the expected
-# inventory-derived facts. Drift-detection branches require real Proxmox state
-# to validate end-to-end and are exercised in production runs only.
+# Molecule scenario for proxmox_ha (contract test).
+# Models proxmox_vm/molecule/default: the Proxmox CLIs (ha-manager, pvesr, qm,
+# pct, pvecm) are stubbed in /usr/local/bin during prepare. Mutating stub
+# subcommands LOG their invocations to /tmp/molecule-stub-state/*.log; read-only
+# subcommands answer from configurable state files there. Converge drives the
+# role across absent / already-correct / drifted HA resources and an absent
+# replication job by flipping that state, then captures the logged calls; verify
+# asserts the role issued exactly the right ha-manager / pvesr mutations.
+# No real Proxmox is required.
 dependency:
   name: galaxy
   options:
@@ -49,9 +52,9 @@ provisioner:
   inventory:
     group_vars:
       all:
-        # No HA rules + no replication jobs in the happy-path test — the
-        # included rules.yml / replication.yml / resources.yml / groups.yml
-        # task files all gate work behind `... | length > 0`.
+        # Empty defaults so the role's `... | length > 0` gates are off until
+        # converge activates each task file by passing real fixtures via
+        # `include_role: vars:` (which override these per-include).
         ha_rules: []
         storage_replication_jobs: []
         ha_resources: []
@@ -59,6 +62,9 @@ provisioner:
 verifier:
   name: ansible
 scenario:
+  # No `idempotence`: like proxmox_vm, converge runs the role repeatedly with
+  # different stub state to exercise add/set/create paths, so a re-run is
+  # expected to report changes (the contract is verified explicitly instead).
   test_sequence:
     - dependency
     - cleanup
@@ -67,7 +73,6 @@ scenario:
     - create
     - prepare
     - converge
-    - idempotence
     - verify
     - cleanup
     - destroy

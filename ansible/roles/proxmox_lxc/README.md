@@ -48,6 +48,8 @@ plex:
   proxmox_autostart_enabled: true
 ```
 
+> **Note:** Bind mounts (`lxc_bind_mounts`), UID/GID idmap, and GPU passthrough are applied **only at container creation**. Changing them in inventory does **not** reconcile onto an existing container — recreate the container, or edit `/etc/pve/lxc/<id>.conf` and `pct restart <id>` manually.
+
 ## Deployment
 
 ```bash

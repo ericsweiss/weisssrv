@@ -846,12 +846,12 @@ tasks:
         done
 
         # HPA/VPA invariant: no workload may have both an HPA and a VPA driving
-        # the same resource (docs/33-autoscaling.md). Covers standalone HPAs;
-        # chart-native HPAs (Traefik/authentik/Connect) live inside HelmReleases
-        # not expanded by this lint, so their memory-only VPAs are reviewed at
-        # the values level.
+        # the same resource (docs/33-autoscaling.md). Covers standalone HPAs in
+        # the corpus; --require-chart-native-vpas also statically asserts the
+        # chart-native-HPA workloads (Traefik/authentik/Connect, whose HPA lives
+        # inside a HelmRelease) each have a memory-only VPA in the rendered corpus.
         echo "=== Checking HPA/VPA invariant ==="
-        if ! python3 scripts/check-hpa-vpa-invariant.py < "$RENDER_ALL"; then
+        if ! python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < "$RENDER_ALL"; then
           FAILED=1
         fi
 

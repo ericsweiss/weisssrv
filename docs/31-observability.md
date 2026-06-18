@@ -501,7 +501,7 @@ The kube-prometheus-stack chart ships built-in alerts for Kubernetes components 
 
 **Resolved issues:**
 - **PrometheusOperatorSyncFailed** -- resolved by converting the alertmanager-config Secret to an ExternalSecret template that injects `webhook_url` directly instead of using `webhook_url_file` (the Alertmanager pod could not read files from the mounted Secret)
-- **CPUThrottlingHigh** -- resolved by raising CPU limits on throttled exporters: node-exporter (300m), proxmox-exporter (200m), adguard-exporter (150m), redis-exporter (100m), blackbox-exporter (150m)
+- **CPUThrottlingHigh** -- resolved by *removing* the CPU limit (request-only, memory limit kept) on the bursty scrape exporters, since CFS throttling on a poll/scrape control loop is an anti-pattern that fires this alert without indicating real CPU starvation. This applies to the in-tree exporters (proxmox / adguard / redis / blackbox), the kube-prometheus-stack `node-exporter` DaemonSet, and the GitLab runner managers. The general rule: drop the CPU limit on bursty controllers/exporters, keep the memory limit (OOM is a real failure mode). Per-exporter VPAs still right-size the *requests*. (Do not re-add per-exporter CPU-limit numbers here — they drift; the HelmReleases/manifests are the source of truth.)
 
 ### Flux Metrics
 

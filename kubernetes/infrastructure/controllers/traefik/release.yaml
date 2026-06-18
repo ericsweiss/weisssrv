@@ -103,6 +103,14 @@ spec:
     providers:
       kubernetesCRD:
         enabled: true
+        # ACCEPTED RISK (single-operator today) — REVIEW BEFORE MULTI-TENANT:
+        # cluster-wide cross-namespace refs let any IngressRoute reference
+        # middlewares/services in OTHER namespaces (e.g. a tenant route pulling
+        # platform middlewares like lan-tailscale-only or another namespace's
+        # Service). Fine while every IngressRoute is operator-authored. Before
+        # multi-repo tenant onboarding (docs/30) goes live, guard this — scope
+        # the provider per-tenant or add a validating policy that pins each
+        # tenant's @namespace refs — otherwise revert to allowCrossNamespace:false.
         allowCrossNamespace: true
       kubernetesIngress:
         enabled: true

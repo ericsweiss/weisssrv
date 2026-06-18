@@ -63,13 +63,22 @@ spec:
         - key: esweiss.com/compute
           operator: Exists
           effect: PreferNoSchedule
+      # Anti-affinity is PREFERRED, not required: there are exactly 3
+      # esweiss.com/cpu=modern nodes, so under a hard one-per-host rule the HPA
+      # could never place its 3rd replica (maxReplicas:3), and during a node
+      # drain even a 2nd replica could stay Pending. Preferred keeps replicas on
+      # distinct hosts in steady state but lets them co-locate when a host is
+      # down — trading a momentary loss of spread for schedulability during
+      # maintenance (PDB minAvailable:1 still guards voluntary disruption).
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app: onepassword-connect
-              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: onepassword-connect
+                topologyKey: kubernetes.io/hostname
       api:
         resources:
           requests:

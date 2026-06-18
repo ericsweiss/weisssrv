@@ -91,8 +91,11 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
-# Clean up empty directories left behind (keep SRC root)
-find "$SRC" -mindepth 1 -type d -empty -print -delete
+# Clean up empty directories left behind (keep SRC root). Scope the prune to
+# directories older than MIN_AGE so a freshly-created, still-empty download
+# target dir (a client may mkdir the destination before the file lands) is
+# never deleted out from under an in-progress download on the hot tier.
+find "$SRC" -mindepth 1 -type d -empty -mmin +"$AGE_MINUTES" -print -delete
 
 # Write Prometheus textfile metrics on success
 _MM_END_TS="$(date +%s)"

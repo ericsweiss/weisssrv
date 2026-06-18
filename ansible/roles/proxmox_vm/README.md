@@ -44,6 +44,10 @@ k3s-agt-nas-01:
       zvol: ssd/appdata/authentik/postgres
       mount_point: /mnt/postgres-data
       fstype: ext4
+      scsi_slot: 1          # REQUIRED, unique. Pins the zvol to a stable SCSI
+                            # slot; the role refuses to remap a slot already
+                            # holding a different live zvol. NEVER reuse/reorder
+                            # a slot (set allow_remap: true to override on purpose).
   proxmox_autostart_enabled: true
   proxmox_startup_order: 40
   proxmox_startup_delay: 10

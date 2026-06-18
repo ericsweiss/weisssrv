@@ -33,6 +33,14 @@ spec:
                     operator: DoesNotExist
       nodeSelector:
         esweiss.com/general: "true"
+      # Pod hardening: Sonarr does not talk to the kube-API. Only the universally-
+      # safe subset is applied — this is a LinuxServer.io image (s6 + PUID/PGID)
+      # that MUST start as root to drop privileges, so runAsNonRoot / drop-ALL /
+      # aPE:false are deliberately NOT set (they would break the s6 privilege drop).
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       dnsConfig:
         options:
           - name: ndots

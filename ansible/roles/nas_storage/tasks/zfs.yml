@@ -14,6 +14,11 @@
 # Reads each property's current value and only `zfs set`s on a mismatch,
 # so the task reports changed only when it actually changed something.
 # Datasets in a pool that is not imported are skipped (not failed).
+# NOTE: property values in zfs_pools[].properties MUST be in the canonical form
+# `zfs get -H -o value <prop>` returns — ZFS normalizes several inputs (e.g.
+# compression 'on' -> active algorithm, recordsize '1M' -> '1048576', quota
+# '1T' -> a byte count). A human-form value here would never compare equal, so
+# the task would `zfs set` and report changed on every run (masking real drift).
 - name: Verify ZFS datasets exist and set properties
   ansible.builtin.shell: |
     if ! zfs list {{ item.1.name }} >/dev/null 2>&1; then

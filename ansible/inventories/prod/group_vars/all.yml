@@ -133,6 +133,14 @@ adguardhome_sync_version: "0.9.0"
 tailscale_version: "1.98.4"
 debian_version: "13"
 k3s_version: "v1.36.1+k3s1"
+# Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
+# root-run installer script before exec (host-side ansible, NOT a Flux version —
+# do not add to the versions ConfigMap). Compute on bump:
+#   curl -sfL https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version>/install.sh | sha256sum
+# then set e.g.  k3s_install_script_checksum: "sha256:<hex>"
+# Left empty here so get_url omits the checksum (install.sh still verifies the
+# k3s binary's own sha256 against the GitHub release).
+k3s_install_script_checksum: ""
 kube_vip_version: "v1.2.0"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
@@ -162,7 +170,7 @@ mealie_postgresql_version: "18.4-alpine"
 # busybox: init container utility image used by VPN sidecar pre-checks
 busybox_version: "1.38"
 gluetun_version: "v3.41.1"
-nzbget_version: "26.1"
+nzbget_version: "26.2"
 qbittorrent_version: "5.2.2"
 prowlarr_version: "2.4.0.5397"
 sonarr_version: "4.0.17.2952"
@@ -187,15 +195,15 @@ plex_version: "1.43.2.10687-563d026ea"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "19.0.2-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
+gitlab_version: "19.1.0-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.89.1"
+gitlab_runner_helm_version: "0.90.0"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.27.0"
+gitlab_agent_helm_version: "2.28.0"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.
@@ -246,7 +254,7 @@ helm_chart_versions:
   kube_prometheus_stack: "86.2.3"
   loki: "17.4.6"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.10.0"
-  prometheus_blackbox_exporter: "11.12.0"
+  prometheus_blackbox_exporter: "11.13.0"
   onepassword_connect: "2.4.1"
   vpa: "4.12.2"
 

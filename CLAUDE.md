@@ -24,10 +24,10 @@ weisssrv/
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order; together with apps/ they form a five-stage Flux Kustomization chain (sources -> controllers -> configs -> observability -> apps)
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
-│   │   ├── controllers/        # external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns, vpa (HelmReleases; dependsOn sources)
-│   │   ├── configs/            # cluster-secret-store, cluster-issuer, metallb-ip-pools, wildcard-certificates, coredns/, cloudflare-ddns/, shared-cloudflare-secrets/ (CRs that require the controllers' CRDs; dependsOn controllers)
-│   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, service-monitors, dashboards, ingress (dependsOn configs)
-│   └── apps/                   # authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability)
+│   │   ├── controllers/        # platform HelmReleases (dependsOn sources) — see the dir for the current set
+│   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
+│   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
+│   └── apps/                   # one dir per app (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability) — see the dir for the current set
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
 ├── docker/                     # Molecule test/CI container images
@@ -391,7 +391,7 @@ atime=off, autotrim=on) for k3s VMs and the HA-managed containers
 
 ### Resource Pools and Storage Management
 
-**Resource Pools**: infra-core (dns, smtp), apps-public (plex), platform (k3s VMs)
+**Resource Pools** (`proxmox_resource_pools` in `all.yml`): infra-core (dns, smtp), apps-public (plex), apps-private (gitlab + internal apps), platform (k3s VMs)
 
 **NEVER create/destroy ZFS pools via Ansible** - pools are created manually (too critical to automate). Ansible only sets properties and mounts. Zvols for persistent storage are managed via `vm_additional_disks` but the parent pools are never touched.
 

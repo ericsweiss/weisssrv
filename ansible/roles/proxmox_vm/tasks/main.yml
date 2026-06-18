@@ -272,6 +272,25 @@
   changed_when: true
 
 # Additional persistent disks (ZFS zvols)
+# Each disk pins an explicit, unique scsi_slot. Attaching by list position would
+# remap a live data-bearing zvol onto the wrong device if the list is ever
+# reordered or an entry removed, so the slot is required and validated here.
+- name: Assert every additional disk pins a unique, explicit scsi_slot
+  ansible.builtin.assert:
+    that:
+      - (vm_additional_disks | selectattr('scsi_slot', 'defined') | list | length) == (vm_additional_disks | length)
+      - (vm_additional_disks | selectattr('scsi_slot', 'defined') | map(attribute='scsi_slot') | unique | list | length) == (vm_additional_disks | length)
+      - (vm_additional_disks | selectattr('scsi_slot', 'defined') | map(attribute='scsi_slot') | map('int') | select('lt', 1) | list | length) == 0
+    fail_msg: >-
+      Every vm_additional_disks entry must set a unique 'scsi_slot' >= 1 (scsi0 is
+      reserved for the VM boot disk). Slots pin a zvol to a stable SCSI device;
+      assigning by list position would remap a live data-bearing zvol if the list
+      is reordered or an entry removed.
+    success_msg: "All {{ vm_additional_disks | length }} additional disk(s) have unique scsi_slots."
+  when:
+    - vm_additional_disks is defined
+    - vm_additional_disks | length > 0
+
 # With loops + register, changed_when is evaluated per-iteration using the current result
 - name: Create ZFS zvol for additional disks
   delegate_to: "{{ proxmox_host }}"
@@ -297,7 +316,8 @@
     cmd: |
       set -o pipefail
       EXPECTED_PATH="/dev/zvol/{{ item.zvol }}"
-      SCSI_SLOT="scsi{{ loop_index + 1 }}"
+      SCSI_SLOT="scsi{{ item.scsi_slot }}"
+      ALLOW_REMAP="{{ 1 if (item.allow_remap | default(false) | bool) else 0 }}"
       # vzdump_backup: false sets backup=0 so the nightly vzdump skips this
       # passthrough disk. Use it for app-data zvols already backed up by direct
       # ZFS replication (ssd/appdata -> archive); without it vzdump double-stores
@@ -321,13 +341,22 @@
       elif [ "$CURRENT_PATH" = "$EXPECTED_PATH" ] && [ "$HAS_NOBACKUP" = "$WANT_NOBACKUP" ]; then
         echo "OK:exists"
       else
+        # The slot is occupied by a DIFFERENT, non-empty drive spec. Refuse to
+        # remap ANY occupied slot (not just /dev/zvol paths — an LVM/raw/other
+        # backing disk is just as destructive to rebind): a reorder/removal or a
+        # slot typo must never silently overwrite a slot pointing elsewhere. A
+        # path == EXPECTED here is only a backup= flag change and is allowed.
+        if [ "$CURRENT_PATH" != "$EXPECTED_PATH" ] && [ -n "$CURRENT_PATH" ] && [ "$CURRENT_PATH" != "none" ] && [ "$ALLOW_REMAP" != 1 ]; then
+          echo "ERROR: ${SCSI_SLOT} maps $CURRENT_PATH, expected $EXPECTED_PATH." >&2
+          echo "Refusing to remap an occupied slot; set allow_remap: true to override intentionally." >&2
+          exit 1
+        fi
         qm set {{ vm_id }} --${SCSI_SLOT} "$DISK_SPEC"
         echo "CHANGED:updated"
       fi
     executable: /bin/bash
   loop: "{{ vm_additional_disks | default([]) }}"
   loop_control:
-    index_var: loop_index
     label: "{{ item.name }}"
   register: disk_attach_result
   changed_when: "'CHANGED:' in (disk_attach_result.stdout | default(''))"

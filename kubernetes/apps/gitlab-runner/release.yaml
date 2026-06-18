@@ -166,10 +166,13 @@ spec:
     # Pod resources for the runner manager
     resources:
       requests:
-        cpu: 100m
+        cpu: 150m
         memory: 128Mi
       limits:
-        cpu: "1"
+        # No CPU limit: the runner manager is a trusted control-loop poller that
+        # bursts when spawning/reaping CI job pods; CFS throttling at 1 core was a
+        # chronic CPUThrottlingHigh source. The CPU request still grants a
+        # scheduling share; memory limit kept (OOM is a real failure mode).
         memory: 512Mi
 
     # Node affinity - prefer non-NAS nodes for runner pods

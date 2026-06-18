@@ -36,6 +36,12 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 ### System Configuration
 - Timezone (America/Los_Angeles by default)
 - VM guest agent enablement (qemu-guest-agent service)
+- Intel e1000e NIC workaround (disables TSO/GSO/GRO via a oneshot unit on
+  bare-metal hosts with an affected I219/I218/I217 NIC, to prevent driver hangs)
+
+> NIC offload workarounds for the Aquantia/Marvell AQC113 (and any future
+> per-host offload tuning) are owned by the **`nic_tuning`** role, not this one.
+> The base role only carries the auto-detected e1000e fix.
 
 ## Configuration
 

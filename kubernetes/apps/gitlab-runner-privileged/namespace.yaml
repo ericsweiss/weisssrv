@@ -1,0 +1,18 @@
+---
+# Dedicated namespace for the privileged (infrastructure) GitLab Runner. Keeping
+# it separate from the shared `gitlab-runner` namespace is the isolation boundary:
+# the shared runner's namespace-scoped ServiceAccount RBAC can no longer read this
+# runner's token Secret (which previously co-resided and was readable by untrusted
+# shared job pods). PSS enforce stays `privileged` here because the DinD job pods
+# this runner spawns legitimately require it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitlab-runner-privileged
+  labels:
+    app.kubernetes.io/name: gitlab-runner-privileged
+    app.kubernetes.io/part-of: gitlab
+    app.kubernetes.io/managed-by: flux
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged

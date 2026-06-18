@@ -1,10 +1,52 @@
 ---
-- name: Converge
+- name: Converge — exercise HA resource + replication contracts
   hosts: all
   become: true
   # See proxmox_vm/molecule/default/converge.yml for the rationale on
   # deferring gather_facts behind a raw mkdir.
   gather_facts: false
+  vars:
+    # Fixtures exercised across the cases below. The role gates each task
+    # file behind `<var> | length > 0`, so non-empty lists activate them.
+    # ha_groups / ha_rules are present (representative) and, with the
+    # stubs' empty current-state, drive the group/rule "add" paths too.
+    test_ha_groups:
+      - name: infra-core-grp
+        nodes: [pve-opt-01, pve-opt-02]
+    test_ha_rules:
+      - name: dns-affinity
+        type: node-affinity
+        resources: [vm:150]
+        nodes: [pve-opt-01, pve-opt-02]
+        strict: false
+    test_ha_resources:
+      - type: vm
+        vmid: 150
+        state: started
+        max_restart: 3
+        max_relocate: 3
+    test_replication_jobs:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        enabled: true
+    # Per-resource detail that exactly matches test_ha_resources[0] — used
+    # for the idempotency case (no `ha-manager set` expected). Indentation is
+    # spaces, not Proxmox's tabs: the role matches with `\s+`/substring checks,
+    # so spaces are equivalent and sidestep YAML tab-in-block ambiguity.
+    ha_detail_match: |
+      vm:150
+        state started
+        max_restart 3
+        max_relocate 3
+    # Per-resource detail with a drifted state (started -> stopped) — used
+    # for the drift case (one `ha-manager set` expected).
+    ha_detail_drift: |
+      vm:150
+        state stopped
+        max_restart 3
+        max_relocate 3
   pre_tasks:
     - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
       ansible.builtin.raw: |
@@ -27,5 +69,166 @@
         executable: /bin/bash
       changed_when: false
       when: ansible_os_family == "Debian"
-  roles:
-    - role: proxmox_ha
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+  tasks:
+    # =====================================================================
+    # CASE A — absent HA resource triggers `ha-manager add`.
+    # Stub state: resource list empty (resource not present in HA).
+    # =====================================================================
+    - name: A — reset stub logs and set "resource absent"
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_config_list, content: ""}
+        - {name: ha_resource_detail, content: ""}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: A — run role with resource absent
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_groups: "{{ test_ha_groups }}"
+        ha_rules: "{{ test_ha_rules }}"
+        ha_resources: "{{ test_ha_resources }}"
+
+    - name: A — count ha-manager calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        add=$(grep -c '^ha-manager add vm:150 ' "$log" || true)
+        set_calls=$(grep -c '^ha-manager set vm:150 ' "$log" || true)
+        echo "{\"add_calls\": ${add}, \"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_a
+      changed_when: false
+
+    # =====================================================================
+    # CASE B — already-correct HA resource triggers NO `ha-manager set`.
+    # Stub state: resource listed + detail matches desired exactly.
+    # =====================================================================
+    - name: B — reset log, list resource, supply matching detail
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_config_list, content: "vm:150\n"}
+        - {name: ha_resource_detail, content: "{{ ha_detail_match }}"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: B — run role with resource already correct
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_resources: "{{ test_ha_resources }}"
+
+    - name: B — count ha-manager calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        add=$(grep -c '^ha-manager add vm:150 ' "$log" || true)
+        set_calls=$(grep -c '^ha-manager set vm:150 ' "$log" || true)
+        echo "{\"add_calls\": ${add}, \"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_b
+      changed_when: false
+
+    # =====================================================================
+    # CASE C — drifted HA resource triggers exactly one `ha-manager set`.
+    # Stub state: resource listed + detail has wrong state (stopped).
+    # =====================================================================
+    - name: C — reset log, list resource, supply drifted detail
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_config_list, content: "vm:150\n"}
+        - {name: ha_resource_detail, content: "{{ ha_detail_drift }}"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: C — run role with drifted resource
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_resources: "{{ test_ha_resources }}"
+
+    - name: C — count ha-manager calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        add=$(grep -c '^ha-manager add vm:150 ' "$log" || true)
+        set_calls=$(grep -c '^ha-manager set vm:150 ' "$log" || true)
+        echo "{\"add_calls\": ${add}, \"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_c
+      changed_when: false
+
+    # =====================================================================
+    # CASE D — replication job absent triggers `pvesr create-local-job`.
+    # Stub state: pvesr list empty + VMID 150 resides locally (qm).
+    # Replication tasks are not in main.yml; include them directly, exactly
+    # as playbooks/proxmox-ha.yml does (tasks_from: replication).
+    # =====================================================================
+    - name: D — reset log, empty replication list, VMID local
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: pvesr_list, content: "[]\n"}
+        - {name: qm_vmids, content: "150\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: D — run replication tasks with job absent
+      ansible.builtin.include_role:
+        name: proxmox_ha
+        tasks_from: replication
+      vars:
+        storage_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: D — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        create=$(grep -c '^pvesr create-local-job 150-0 pve-opt-02 ' "$log" || true)
+        update=$(grep -c '^pvesr update 150-0 ' "$log" || true)
+        echo "{\"create_calls\": ${create}, \"update_calls\": ${update}}"
+      args:
+        executable: /bin/bash
+      register: case_d
+      changed_when: false
+
+    # ---------------------------------------------------------------------
+    - name: Capture HA contract results
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/ha-contract.json
+        mode: "0644"
+        content: |
+          {"a_add": {{ (case_a.stdout | from_json).add_calls }},
+           "a_set": {{ (case_a.stdout | from_json).set_calls }},
+           "b_add": {{ (case_b.stdout | from_json).add_calls }},
+           "b_set": {{ (case_b.stdout | from_json).set_calls }},
+           "c_add": {{ (case_c.stdout | from_json).add_calls }},
+           "c_set": {{ (case_c.stdout | from_json).set_calls }},
+           "d_create": {{ (case_d.stdout | from_json).create_calls }},
+           "d_update": {{ (case_d.stdout | from_json).update_calls }}}

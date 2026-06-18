@@ -3,6 +3,10 @@
 
 cluster-cidr: "{{ k3s_cluster_cidr }}"
 service-cidr: "{{ k3s_service_cidr }}"
+# The apiserver listens on ALL interfaces (incl. any mgmt/Tailscale iface).
+# Access to 6443 is gated solely by the Proxmox firewall, which restricts it to
+# the k3s_nodes/admin IP sets (see docs/11-firewall.md). A firewall relaxation
+# or an unexpected new interface silently widens API exposure.
 bind-address: "0.0.0.0"
 
 {% if k3s_disable | length > 0 %}

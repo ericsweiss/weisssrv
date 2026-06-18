@@ -426,6 +426,36 @@ deploy-coverage-check:
       when: manual
       allow_failure: true
 
+# Fails if a molecule scenario (ansible/roles/*/molecule/*/) or an integration
+# test (ansible/integration-tests/*/) exists on disk with no corresponding
+# entry in the molecule-tests / integration-tests parallel:matrix. Prevents a
+# new role's tests from silently never running in CI. See
+# scripts/check-molecule-matrix-coverage.sh.
+molecule-matrix-coverage-check:
+  needs: []
+  stage: lint
+  image: python:3.11-slim
+  before_script:
+    - pip install --no-cache-dir --quiet PyYAML
+  script:
+    - bash scripts/check-molecule-matrix-coverage.sh
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/roles/**/molecule/**/*
+        - ansible/integration-tests/**/*
+        - scripts/check-molecule-matrix-coverage.sh
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - ansible/roles/**/molecule/**/*
+        - ansible/integration-tests/**/*
+        - scripts/check-molecule-matrix-coverage.sh
+        - .gitlab-ci.yml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
 # deploy-verify hardcodes FLUX_VERSION + tarball sha256 as a pin pair
 # (supply-chain), with a runtime guard against versions-configmap. But
 # deploy-verify only runs on main, so a flux_version bump that forgets
@@ -614,6 +644,11 @@ pr-agent-review:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
+    # OPERATIONAL INVARIANT: the && $OP_SERVICE_ACCOUNT_TOKEN guard means this
+    # job is never CREATED when the token is unset (e.g. fork MRs). An absent
+    # AI review is therefore expected, not a failure — a missing pr-agent-review
+    # on such an MR is not a regression. validation-gate does NOT need this job
+    # (AI review is advisory), so its absence never blocks deploys.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
   allow_failure: true  # Don't block MRs on AI review
   timeout: 30m
@@ -685,6 +720,11 @@ terraform-plan:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
+    # OPERATIONAL INVARIANT: the && $OP_SERVICE_ACCOUNT_TOKEN guard means a
+    # terraform/ change on a tokenless pipeline (e.g. fork MR) produces NO plan
+    # — the MR widget will simply lack a Terraform report. That's an expected
+    # skip, not a clean plan. validation-gate needs this job optionally, so a
+    # token-gated skip can't silently mask drift on a real (token-bearing) run.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - terraform/**/*
@@ -742,6 +782,9 @@ python-tests:
   needs: []  # run in parallel with lint stage
   image: python:3.11-slim
   before_script:
+    # git is required by test_check_deploy_coverage.py (it builds throwaway git
+    # repos to exercise check-deploy-coverage.sh); the slim image omits it.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
     - pip install --quiet pytest pyyaml
   script:
     - pytest scripts/ -v --junitxml=report.xml
@@ -872,12 +915,13 @@ flux-lint:
       done
 
       # HPA/VPA invariant: no workload may have both an HPA and a VPA driving
-      # the same resource (docs/33-autoscaling.md). Covers standalone HPAs in the
-      # kustomize-build corpus; chart-native HPAs (Traefik/authentik/Connect)
-      # live inside HelmReleases not expanded here and are reviewed at the
-      # values level.
+      # the same resource (docs/33-autoscaling.md). --require-chart-native-vpas
+      # also statically asserts the chart-native-HPA workloads
+      # (Traefik/authentik/Connect) each have a memory-only VPA in the rendered
+      # corpus. MUST match the Taskfile flux:lint invocation — without the flag
+      # the gate would silently skip the chart-native assertion.
       echo "=== Checking HPA/VPA invariant ==="
-      if ! python3 scripts/check-hpa-vpa-invariant.py < "$RENDER_ALL"; then
+      if ! python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < "$RENDER_ALL"; then
         FAILED=1
       fi
 
@@ -1177,6 +1221,11 @@ secret_detection:
     # those paths won't be caught here) is documented in `.gitleaks.toml`
     # header.
     # Require modern CPU (gitleaks binary uses POPCNT/SSE4.2 - OptiPlex Core 2 Quads crash with SIGILL)
+    # OPERATIONAL INVARIANT: this job is pinned to esweiss.com/cpu=modern nodes.
+    # If no modern-CPU node is schedulable the job sits Pending and is NOT a
+    # passed scan — a skipped/pending secret_detection must be investigated, not
+    # treated as green. validation-gate needs it non-optionally so this can't be
+    # silently lost on a main pipeline.
     KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -1222,6 +1271,8 @@ validation-gate:
       optional: true
     - job: flux-lint
       optional: true
+    - job: flux-version-pin-check
+      optional: true
     - job: python-tests
       optional: true
     - job: molecule-tests
@@ -1229,6 +1280,8 @@ validation-gate:
     - job: integration-tests
       optional: true
     - job: deploy-coverage-check
+      optional: true
+    - job: molecule-matrix-coverage-check
       optional: true
     # -- Always-run jobs (no path filter, always present on main pushes) --
     - job: secret_detection
@@ -2480,8 +2533,36 @@ maintenance-verify:
 version-check:
   stage: lint
   image: python:3.11
+  before_script:
+    # Install the 1Password CLI only when OP_SERVICE_ACCOUNT_TOKEN is present
+    # (forks / outside MRs don't get the masked variable). The CLI is only
+    # needed for the MR auto-comment path; without the token the job still
+    # runs and still emits the version-report.json artifact. We inline the
+    # apt install here (rather than `extends`/`!reference` .install-1password)
+    # so it can be conditional — a YAML `!reference` can't live inside a shell
+    # `if`, and unconditionally installing it on every schedule/MR/main run
+    # would add a useless apt round-trip when no token is available.
+    - |
+      if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+        apt-get update -qq
+        apt-get install -y -qq curl gnupg
+        curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
+          gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
+          > /etc/apt/sources.list.d/1password.list
+        apt-get update -qq && apt-get install -y -qq 1password-cli
+        op --version
+      fi
   script:
     - pip install --quiet pyyaml==6.0.2 requests==2.32.3
+    # GITLAB_API_TOKEN drives version-check-ci.py's post_mr_comment(). Without
+    # it the script gracefully skips the comment and only writes the
+    # version-report.json artifact (graceful-skip lives in version-check-ci.py).
+    # Gate the op read on the token so non-token pipelines still run cleanly.
+    - |
+      if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+        export GITLAB_API_TOKEN=$(op read "op://Homelab/GitLab API Token/credential")
+      fi
     - python3 ./scripts/version-check-ci.py
   artifacts:
     paths:

@@ -39,4 +39,16 @@ loki.write "default" {
     }
 {% endif %}
   }
+{% if alloy_host_wal_enabled %}
+
+  // On-disk WAL — resilience against the host->Loki circular dependency.
+  // Loki lives in the k3s cluster this host helps observe; during a Loki /
+  // Traefik / cluster outage the WAL buffers journald entries to disk and
+  // replays them when Loki recovers, instead of dropping them once the
+  // in-memory queue fills. max_segment_age bounds replay lag and disk use.
+  wal {
+    enabled         = true
+    max_segment_age = {{ alloy_host_wal_max_segment_age | to_json }}
+  }
+{% endif %}
 }

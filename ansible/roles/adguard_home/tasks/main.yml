@@ -75,12 +75,35 @@
     path: "{{ adguard_install_path }}/AdGuardHome"
   register: adguard_binary
 
+# Version-aware install: detect the running binary's version so bumps to
+# adguard_home_version actually upgrade a host already running an older build.
+# Without this, the install block below only fired on first install and silently
+# skipped every subsequent version bump. AdGuardHome --version prints
+# "AdGuard Home, version vX.Y.Z"; pull the bare semver to compare against the pin.
+- name: Check installed AdGuard Home version
+  ansible.builtin.command: "{{ adguard_install_path }}/AdGuardHome --version"
+  register: adguard_version_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: adguard_binary.stat.exists
+
+- name: Determine AdGuard Home install need
+  ansible.builtin.set_fact:
+    # Reinstall when the binary is missing, the probe failed, or the parsed
+    # version differs from the pin (no-op when they match -> idempotent).
+    adguard_needs_install: >-
+      {{ not adguard_binary.stat.exists
+         or adguard_version_check.rc | default(1) != 0
+         or (adguard_version_check.stdout | default('')
+             | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default('')) != adguard_home_version }}
+
 - name: Set AdGuard Home architecture
   ansible.builtin.set_fact:
     adguard_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
 - name: Download and install AdGuard Home
-  when: not adguard_binary.stat.exists
+  when: adguard_needs_install
   block:
     - name: Download AdGuard Home
       ansible.builtin.get_url:
@@ -95,6 +118,18 @@
         src: "/tmp/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
         dest: /tmp
         remote_src: true
+
+    # On an upgrade the service is already running; stop it before swapping the
+    # binary on disk so the replacement is clean (avoids text-file-busy and a
+    # stale process serving the old build). The "Ensure AdGuard Home is enabled
+    # and running" task below brings it back up on the new binary. Skipped on a
+    # fresh install where the unit does not exist yet.
+    - name: Stop AdGuard Home for binary upgrade
+      ansible.builtin.service:
+        name: AdGuardHome
+        state: stopped
+      when: adguard_service.stat.exists
+      changed_when: false  # Service stop/start is deployment process, not config drift
 
     - name: Install AdGuard Home binary
       ansible.builtin.copy:

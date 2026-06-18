@@ -1,0 +1,48 @@
+---
+# Default-deny ingress for external-secrets. This namespace holds the 1Password
+# Connect bootstrap credentials (op-credentials, onepassword-connect-token) and
+# every ESO-synced Secret, so a compromised co-tenant pod should face a
+# pod-network barrier, not an open path. Parity with cert-manager/external-dns,
+# which guard the Cloudflare API token the same way.
+#
+# The onepassword-connect ingress allow (8080/8081) lives in
+# onepassword-connect/networkpolicy.yaml; NetworkPolicies are additive, so the
+# default-deny here does not override it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: external-secrets
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Allow ingress to the ESO webhook (validating/conversion webhook called by the
+# kube-apiserver, which arrives post-DNAT from a server node IP) and metrics
+# scrapes from observability. The apiserver source is not pinned by IP because
+# the webhook call originates from whichever server is active; allow the webhook
+# port from anywhere and rely on ESO's own TLS/authz for the webhook.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-webhook-and-metrics-ingress
+  namespace: external-secrets
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Webhook (external-secrets-webhook listens on 10250)
+    - ports:
+        - protocol: TCP
+          port: 10250
+    # Prometheus metrics scrape (controller/webhook/certController :8080)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 8080

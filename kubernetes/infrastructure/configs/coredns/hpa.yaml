@@ -3,7 +3,19 @@
 # Deployment as a wrangler AddOn (NOT a HelmChart), so it resets replicas on
 # every server restart/upgrade; this HPA scales it back within seconds. The
 # previous HelmChartConfig was a silent no-op for the same reason.
-# Topology spread is left to the default scheduler (PDB still guards drains).
+#
+# TOPOLOGY SPREAD (no hard guarantee — accepted limitation): the AddOn owns the
+# Deployment pod template, so injecting topologySpreadConstraints/podAntiAffinity
+# via a Flux overlay or SSA patch would be reverted on the next AddOn reconcile
+# (same mechanism that resets replicas above — that is WHY this is an HPA and not
+# a replicas patch). Spread therefore relies on the k3s default scheduler's soft
+# DefaultPodTopologySpread (kubernetes.io/hostname, ScheduleAnyway), which permits
+# co-location under pressure. PDB minAvailable:1 (pdb.yaml) guards voluntary
+# drains but cannot prevent loss of all cluster DNS if both replicas happen to
+# share a host and that node dies. To make spread durable, disable the bundled
+# coredns AddOn (add `coredns` to k3s_disable in group_vars/k3s.yml) and ship a
+# custom CoreDNS manifest with the spread constraints via the k3s server-side
+# manifests dir — an Ansible change, out of scope for this in-cluster overlay.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

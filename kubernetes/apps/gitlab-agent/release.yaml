@@ -26,10 +26,15 @@ spec:
   values:
     image:
       tag: ""  # Use chart appVersion default
+    # ACCEPTED RISK (single-operator today) — REVIEW BEFORE MULTI-TENANT:
     # rbac.create (chart default true) grants the agent cluster-admin via
     # gitlab-agent:weisssrv-k3s-gitlab-agent-cluster-admin. Deliberate: this
-    # agent is the CI deploy path for the whole kubernetes/ tree. Revisit if
-    # tenant repos ever deploy through it.
+    # agent is the CI deploy path for the whole kubernetes/ tree, so it needs
+    # broad apply rights today. Before tenant repos deploy through it (docs/30),
+    # scope this RBAC below cluster-admin (namespaced Roles per tenant, or an
+    # impersonation/least-privilege ClusterRole limited to the resource kinds
+    # the platform actually applies) so a compromised agentk can't touch the
+    # whole cluster.
     config:
       # Internal hostname (git.esweiss.com → Traefik VIP 192.168.0.101) keeps
       # the agent's KAS long-poll inside the LAN: no WAN roundtrip, no

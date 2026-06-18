@@ -274,6 +274,7 @@
             zvol: ssd/appdata/test/data
             mount_point: /mnt/test
             fstype: ext4
+            scsi_slot: 1
             vzdump_backup: false
 
     - name: Count attach-absent qm scsi calls
@@ -311,6 +312,7 @@
             zvol: ssd/appdata/test/data
             mount_point: /mnt/test
             fstype: ext4
+            scsi_slot: 1
             vzdump_backup: false
 
     - name: Count missing-flag qm scsi calls
@@ -348,6 +350,7 @@
             zvol: ssd/appdata/test/data
             mount_point: /mnt/test
             fstype: ext4
+            scsi_slot: 1
             vzdump_backup: false
 
     - name: Count idempotent qm scsi calls
@@ -385,6 +388,7 @@
             zvol: ssd/appdata/test/data
             mount_point: /mnt/test
             fstype: ext4
+            scsi_slot: 1
 
     - name: Count default-disk qm scsi calls
       ansible.builtin.shell: |
@@ -397,22 +401,64 @@
       register: disk_default
       changed_when: false
 
-    # 8e. Attached to a PREFIX path (.../data-old) for a disk whose EXPECTED_PATH
-    # is .../data -> must re-set to the correct path (exact-match guard; a
-    # substring grep would falsely treat data-old as a match and skip the fix).
-    - name: Stub scsi1 attached to a prefix-mismatched path
+    # 8e. Slot occupied by a DIFFERENT live zvol (.../data-old vs expected
+    # .../data) -> the role must REFUSE to remap without allow_remap (the
+    # data-loss guard) and issue NO qm set. Also exercises exact-path detection:
+    # data-old must register as different, not a substring match for data.
+    - name: Stub scsi1 attached to a different live zvol
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/vm_scsi1_override
         content: "/dev/zvol/ssd/appdata/test/data-old,size=10G"
         mode: "0644"
 
-    - name: Reset qm.log for disk-attach (prefix-path) case
+    - name: Reset qm.log for disk-attach (remap-refusal) case
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/qm.log
         content: ""
         mode: "0644"
 
-    - name: Run role — disk on a prefix-mismatched path
+    - name: Run role — remap without allow_remap must be refused
+      block:
+        - name: Include proxmox_vm (expected to fail on the remap guard)
+          ansible.builtin.include_role:
+            name: proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            vm_additional_disks:
+              - name: test-data
+                size: 10G
+                zvol: ssd/appdata/test/data
+                mount_point: /mnt/test
+                fstype: ext4
+                scsi_slot: 1
+                vzdump_backup: false
+        - name: Remap guard failed to trigger
+          ansible.builtin.set_fact:
+            remap_refused: false
+      rescue:
+        - name: Remap guard correctly refused
+          ansible.builtin.set_fact:
+            remap_refused: true
+
+    - name: Count remap-refusal qm scsi calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        anyset=$(grep -c '^qm set 999 --scsi1' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"any_scsi1_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: disk_remap
+      changed_when: false
+
+    # 8f. Same different-zvol slot, but allow_remap: true -> the role DOES re-set
+    # scsi1 to the correct EXACT path (proves data-old is not substring-matched).
+    - name: Reset qm.log for disk-attach (allow_remap) case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role — remap WITH allow_remap re-sets to the correct path
       ansible.builtin.include_role:
         name: proxmox_vm
       vars:
@@ -423,22 +469,88 @@
             zvol: ssd/appdata/test/data
             mount_point: /mnt/test
             fstype: ext4
+            scsi_slot: 1
+            allow_remap: true
             vzdump_backup: false
 
-    - name: Count prefix-path qm scsi calls
+    - name: Count allow_remap qm scsi calls
       ansible.builtin.shell: |
         set -o pipefail
         reset_correct=$(grep -c '^qm set 999 --scsi1 /dev/zvol/ssd/appdata/test/data,backup=0$' /tmp/molecule-stub-state/qm.log || true)
         echo "{\"reset_to_correct_path\": ${reset_correct}}"
       args:
         executable: /bin/bash
-      register: disk_prefix
+      register: disk_allow_remap
       changed_when: false
 
     - name: Clean up scsi1 override
       ansible.builtin.file:
         path: /tmp/molecule-stub-state/vm_scsi1_override
         state: absent
+
+    # 8g/8h. The scsi_slot assert is the precondition for the data-loss guard:
+    # it must REJECT duplicate slots and missing slots. Both run the role
+    # expecting the assert to fail (caught via rescue).
+    - name: Run role — duplicate scsi_slot must be rejected
+      block:
+        - name: Include proxmox_vm with duplicate scsi_slots (expected to fail)
+          ansible.builtin.include_role:
+            name: proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            vm_additional_disks:
+              - {name: a, size: 1G, zvol: ssd/appdata/test/a, mount_point: /mnt/a, fstype: ext4, scsi_slot: 1}
+              - {name: b, size: 1G, zvol: ssd/appdata/test/b, mount_point: /mnt/b, fstype: ext4, scsi_slot: 1}
+        - name: Duplicate-slot assert did not trigger
+          ansible.builtin.set_fact:
+            slot_dup_rejected: false
+      rescue:
+        - name: Duplicate-slot assert correctly rejected
+          ansible.builtin.set_fact:
+            slot_dup_rejected: true
+
+    - name: Run role — missing scsi_slot must be rejected
+      block:
+        - name: Include proxmox_vm with a missing scsi_slot (expected to fail)
+          ansible.builtin.include_role:
+            name: proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            vm_additional_disks:
+              - {name: a, size: 1G, zvol: ssd/appdata/test/a, mount_point: /mnt/a, fstype: ext4}
+        - name: Missing-slot assert did not trigger
+          ansible.builtin.set_fact:
+            slot_missing_rejected: false
+      rescue:
+        - name: Missing-slot assert correctly rejected
+          ansible.builtin.set_fact:
+            slot_missing_rejected: true
+
+    - name: Run role — scsi_slot 0 (boot-disk slot) must be rejected
+      block:
+        - name: Include proxmox_vm with scsi_slot 0 (expected to fail)
+          ansible.builtin.include_role:
+            name: proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            vm_additional_disks:
+              - {name: a, size: 1G, zvol: ssd/appdata/test/a, mount_point: /mnt/a, fstype: ext4, scsi_slot: 0}
+        - name: Slot-zero assert did not trigger
+          ansible.builtin.set_fact:
+            slot_zero_rejected: false
+      rescue:
+        - name: Slot-zero assert correctly rejected
+          ansible.builtin.set_fact:
+            slot_zero_rejected: true
+
+    - name: Capture scsi_slot assert result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/09-disk-slot-assert.json
+        mode: "0644"
+        content: |
+          {"dup_rejected": {{ slot_dup_rejected | ternary('true', 'false') }},
+           "missing_rejected": {{ slot_missing_rejected | ternary('true', 'false') }},
+           "zero_rejected": {{ slot_zero_rejected | ternary('true', 'false') }}}
 
     - name: Capture disk-attach vzdump_backup result
       ansible.builtin.copy:
@@ -451,4 +563,6 @@
            "idempotent_any_set": {{ (disk_idempotent.stdout | from_json).any_scsi1_set }},
            "default_any_set": {{ (disk_default.stdout | from_json).any_scsi1_set }},
            "default_set_with_backup0": {{ (disk_default.stdout | from_json).set_with_backup0 }},
-           "prefix_reset_to_correct_path": {{ (disk_prefix.stdout | from_json).reset_to_correct_path }}}
+           "remap_refused": {{ remap_refused | ternary('true', 'false') }},
+           "remap_any_set": {{ (disk_remap.stdout | from_json).any_scsi1_set }},
+           "allow_remap_reset_to_correct": {{ (disk_allow_remap.stdout | from_json).reset_to_correct_path }}}

@@ -1,17 +1,18 @@
 ---
-# Infrastructure (privileged) GitLab Runner HelmRelease — adopts the existing
-# Helm release `gitlab-runner-privileged` in the gitlab-runner namespace
-# (matching releaseName + targetNamespace). Both runners share the
-# `gitlab-runner` namespace; isolation is via separate ServiceAccount
-# (gitlab-runner-privileged), separate Secret, and the `infrastructure` job
-# tag. Chart version substituted from cluster-versions ConfigMap. Runner token
-# sourced via ExternalSecret (externalsecret.yaml); the chart reads it from
-# the Secret named `gitlab-runner-privileged-token` via runners.secret.
+# Infrastructure (privileged) GitLab Runner HelmRelease, deployed in its own
+# dedicated `gitlab-runner-privileged` namespace. The namespace separation is
+# the isolation boundary from the untrusted shared runner: the shared runner's
+# namespace-scoped RBAC can no longer read this runner's token Secret. Isolation
+# is also reinforced by a separate ServiceAccount (gitlab-runner-privileged) and
+# the `infrastructure` job tag. Chart version substituted from cluster-versions
+# ConfigMap. Runner token sourced via ExternalSecret (externalsecret.yaml); the
+# chart reads it from the Secret `gitlab-runner-privileged-token` via
+# runners.secret.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: gitlab-runner-privileged
-  namespace: gitlab-runner
+  namespace: gitlab-runner-privileged
 spec:
   interval: 30m
   releaseName: gitlab-runner-privileged
@@ -90,7 +91,7 @@ spec:
         # had been stalled behind the observability block until !83).
         [[runners]]
           [runners.kubernetes]
-            namespace = "gitlab-runner"
+            namespace = "gitlab-runner-privileged"
             image = "python:3.11"
             privileged = true
 
@@ -125,13 +126,13 @@ spec:
 
             # NetworkPolicy selector: infrastructure job pods keep
             # unrestricted egress (ansible/SSH to the whole LAN) — see
-            # ../gitlab-runner/networkpolicy.yaml. Keep this sub-table
+            # ./networkpolicy.yaml. Keep this sub-table
             # LAST (see TOML positionality note above).
             [runners.kubernetes.pod_labels]
               "esweiss.com/runner-class" = "infrastructure"
 
     # RBAC configuration
-    # Restricted to gitlab-runner namespace (principle of least privilege)
+    # Restricted to the gitlab-runner-privileged namespace (least privilege)
     rbac:
       create: true
       clusterWideAccess: false
@@ -151,10 +152,13 @@ spec:
     # Pod resources for the runner manager (not the job pods)
     resources:
       requests:
-        cpu: 100m
+        cpu: 150m
         memory: 128Mi
       limits:
-        cpu: "1"
+        # No CPU limit: the runner manager is a trusted control-loop poller that
+        # bursts when spawning/reaping CI job pods; CFS throttling at 1 core was a
+        # chronic CPUThrottlingHigh source. The CPU request still grants a
+        # scheduling share; memory limit kept (OOM is a real failure mode).
         memory: 512Mi
 
     # Node affinity - prefer non-NAS nodes for runner pods

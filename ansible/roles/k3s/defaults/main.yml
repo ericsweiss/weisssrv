@@ -6,9 +6,16 @@
 # This is a fallback default
 k3s_version: "v1.35.3+k3s1"
 # Pin to a specific k3s release tag instead of the mutable get.k3s.io redirect.
-# This makes the installer script content deterministic per version and reduces
-# supply-chain risk from unexpected changes to the install flow.
+# This fixes the installer URL path (not the bytes) per version. The script is
+# downloaded to a local file and executed separately (no `curl | sh`), so its
+# integrity can optionally be pinned via k3s_install_script_checksum below.
 k3s_install_script_url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
+# Optional sha256 pin for the install.sh fetched above. Empty by default => the
+# get_url checksum: param is omitted. Set in all.yml alongside k3s_version
+# (e.g. "sha256:<hex>") to verify the root-run installer script before exec,
+# mirroring zfs_exporter_checksum. install.sh itself already verifies the k3s
+# binary's sha256 against the GitHub release; this closes the gap on the script.
+k3s_install_script_checksum: ""
 
 # Role configuration
 k3s_role: agent  # or 'server'
@@ -35,6 +42,8 @@ k3s_labels: {}
 k3s_taints: []
 
 # kube-vip configuration
-# Note: Version should be set in group_vars/k3s.yml or all.yml
-kube_vip_version: "v1.1.2"
+# Note: Version should be set in group_vars/k3s.yml or all.yml (all.yml pins the
+# live value). Keep this default aligned with all.yml's kube_vip_version so a
+# standalone run or a dropped group_var does not silently regress the API VIP.
+kube_vip_version: "v1.2.0"
 kube_vip_interface: "eth0"

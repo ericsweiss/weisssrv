@@ -28,6 +28,7 @@ Internet
     +-- Application VMs
     |   +-- gitlab        (192.168.0.153) - GitLab EE (git.esweiss.com)
     |   +-- home-assistant(192.168.0.154) - Home Assistant OS (HA-managed)
+    |   +-- windows       (192.168.0.155) - Windows guest (manually managed; firewall-only IaC, ansible_connection: local)
     |
     +-- K3s Cluster VMs (9 nodes: 3 servers + 6 agents)
     |   +-- Servers (.22X range - control plane + etcd)

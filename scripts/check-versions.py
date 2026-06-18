@@ -29,6 +29,7 @@ import gzip
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -52,6 +53,15 @@ GITHUB_TOKEN = os.environ.get("GH_API_TOKEN", "") or os.environ.get("GITHUB_TOKE
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = 15
+
+# Bounded retry for transient network failures. The checker does dozens of
+# sequential external fetches (GitHub, Docker Hub, LSIO, Helm, apt); without a
+# retry a single flaky endpoint (DNS blip, connection reset, upstream 5xx) makes
+# the whole CI version check fail intermittently. We retry only on transient
+# failures (URLError, socket.timeout, HTTP 5xx) — never on 4xx (including a 403
+# rate-limit, which is surfaced as-is so it isn't masked as a transient blip).
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF = 0.5  # seconds; multiplied by attempt number for linear backoff
 
 
 @dataclass
@@ -485,6 +495,32 @@ SERVICE_REGISTRY: list[dict] = [
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
+    """urlopen with a bounded retry on transient failures; return the body.
+
+    Retries on URLError, socket.timeout, and HTTP 5xx (transient upstream
+    errors). HTTP 4xx — including a 403 rate-limit — is re-raised immediately
+    so callers can surface it as-is rather than masking it as a transient blip.
+    After RETRY_ATTEMPTS, the last exception is re-raised unchanged, so callers
+    behave identically to the no-retry version once retries are exhausted.
+    """
+    last_exc: Exception
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            # 4xx (incl. 403 rate-limit) is not transient — don't retry.
+            if e.code < 500:
+                raise
+            last_exc = e
+        except (urllib.error.URLError, socket.timeout) as e:
+            last_exc = e
+        if attempt < RETRY_ATTEMPTS:
+            time.sleep(RETRY_BACKOFF * attempt)
+    raise last_exc
+
+
 def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str:
     """Make an HTTP GET request and return parsed JSON or raw text."""
     req_headers = {"User-Agent": "weisssrv-version-checker/1.0"}
@@ -493,12 +529,11 @@ def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str
 
     req = urllib.request.Request(url, headers=req_headers)
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            data = resp.read().decode("utf-8")
-            try:
-                return json.loads(data)
-            except json.JSONDecodeError:
-                return data
+        data = _urlopen_with_retry(req, timeout=REQUEST_TIMEOUT).decode("utf-8")
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            return data
     except urllib.error.HTTPError as e:
         if e.code == 403:
             # Check for rate limiting
@@ -903,8 +938,8 @@ def fetch_apt_repo_version(svc: dict) -> str:
     url = svc["apt_index_url"]
     pkg = svc["apt_package"]
     req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-version-check/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read()
+    # Bounded retry on transient failures (see _urlopen_with_retry).
+    raw = _urlopen_with_retry(req, timeout=30)
     # gzip magic bytes are 0x1f 0x8b. Sniff the payload rather than the
     # URL extension so an apt-mirror redirect that drops `.gz` from the
     # path (or one that serves un-gzipped content over a `.gz` URL)

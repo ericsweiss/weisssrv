@@ -39,10 +39,9 @@
   when: admin_user != 'root'
 
 - name: Install Vundle plugins
-  ansible.builtin.shell: |
-    nvim --headless +PluginInstall +qall
+  ansible.builtin.command:
+    cmd: nvim --headless +PluginInstall +qall
+    creates: "/home/{{ admin_user }}/.vim/bundle/vim-fugitive"
   become: true
   become_user: "{{ admin_user }}"
-  args:
-    creates: "/home/{{ admin_user }}/.vim/bundle/vim-fugitive"
   when: admin_user != 'root'

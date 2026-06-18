@@ -72,6 +72,16 @@ spec:
           value: "true"
           effect: PreferNoSchedule
 
+      # Pod hardening: no container here talks to the kube-API. Only the
+      # universally-safe subset is applied at pod level — the gluetun sidecar
+      # needs NET_ADMIN (preserved below) and nzbget is a LinuxServer.io image
+      # (s6 + PUID/PGID) that starts as root to drop privileges, so per-container
+      # runAsNonRoot / drop-ALL / aPE:false are deliberately NOT set.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
       # Pod-level DNS fallback: primary + secondary internal resolvers.
       # VPN sidecar is disabled by default for NZBGet — the pod uses these
       # nameservers directly. If VPN is enabled for NZBGet, Gluetun's

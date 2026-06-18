@@ -1,25 +1,19 @@
 ---
+# DISABLED — canonical CI is .gitlab-ci.yml
 name: Kubernetes (DISABLED - See GitLab CI)
 
 # =============================================================================
 # DISABLED: CI/CD has moved to self-hosted GitLab
 # Canonical source: https://git.ericsweiss.com/eric/weisssrv
-# This workflow is retained for reference only.
+# This workflow is retained for reference only — no triggers, fully inert.
+# NOTE: the helm-template logic below no longer matches the Flux-managed
+# layout (kubernetes/bootstrap was removed; charts are HelmReleases now), so
+# it must never run. It is kept for historical reference only.
 # =============================================================================
 
-on:
-  workflow_dispatch:  # Manual trigger only (disabled for normal operations)
-  # Previously triggered on push/PR - now handled by GitLab CI
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'kubernetes/**'
-  #     - '.github/workflows/kubernetes.yml'
-  # pull_request:
-  #   branches: [main]
-  #   paths:
-  #     - 'kubernetes/**'
-  #     - '.github/workflows/kubernetes.yml'
+# No triggers. GitHub requires `on:` to be present; an empty mapping means the
+# workflow is never triggered (and can't be manually dispatched).
+on: {}
 
 env:
   KUBECONFORM_VERSION: '0.6.7'

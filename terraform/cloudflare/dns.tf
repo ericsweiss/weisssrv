@@ -46,6 +46,61 @@ resource "cloudflare_record" "caa_issuewild" {
   comment = "Restrict wildcard cert issuance to Let's Encrypt"
 }
 
+# Cloudflare Universal SSL edge certs may be issued by a partner CA (Google Trust
+# Services / SSL.com), not just Let's Encrypt. Without these the CAA records above
+# would block edge-cert renewal. Add issue + issuewild for each partner CA.
+resource "cloudflare_record" "caa_issue_pki_goog" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "issue"
+    value = "pki.goog"
+  }
+  comment = "Allow Cloudflare Universal SSL partner CA (Google Trust Services)"
+}
+
+resource "cloudflare_record" "caa_issuewild_pki_goog" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "issuewild"
+    value = "pki.goog"
+  }
+  comment = "Allow Cloudflare Universal SSL partner CA wildcard (Google Trust Services)"
+}
+
+resource "cloudflare_record" "caa_issue_ssl_com" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "issue"
+    value = "ssl.com"
+  }
+  comment = "Allow Cloudflare Universal SSL partner CA (SSL.com)"
+}
+
+resource "cloudflare_record" "caa_issuewild_ssl_com" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "@"
+  type    = "CAA"
+  ttl     = 1
+  data {
+    flags = 0
+    tag   = "issuewild"
+    value = "ssl.com"
+  }
+  comment = "Allow Cloudflare Universal SSL partner CA wildcard (SSL.com)"
+}
+
 resource "cloudflare_record" "caa_iodef" {
   zone_id = data.cloudflare_zone.external.id
   name    = "@"

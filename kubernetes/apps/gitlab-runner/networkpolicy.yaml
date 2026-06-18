@@ -1,12 +1,10 @@
 ---
-# NetworkPolicies for the gitlab-runner namespace (both runners + their job
-# pods). Job pods are classed by the esweiss.com/runner-class pod label set
-# in each runner's executor config:
-#   shared         — other projects' untagged jobs: internet-only egress
-#                    (RFC1918 blocked) + DNS + kube-API
-#   infrastructure — weisssrv deploy/test jobs: unrestricted egress
-#                    (ansible/SSH to hosts, kubectl, op)
-# Nothing in this namespace serves traffic, so ingress is denied outright.
+# NetworkPolicies for the gitlab-runner namespace (the shared, non-privileged
+# runner + its job pods). The privileged/infrastructure runner now lives in the
+# gitlab-runner-privileged namespace with its own policies. Shared job pods are
+# classed esweiss.com/runner-class=shared and get internet-only egress (RFC1918
+# blocked) + DNS + kube-API + the internal Traefik VIP. Nothing here serves
+# traffic, so ingress is denied outright.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -17,8 +15,8 @@ spec:
   policyTypes:
     - Ingress
 ---
-# Runner managers long-poll GitLab (git.ericsweiss.com via Cloudflare, so
-# the 443 target set is not enumerable) and talk to the kube-API to spawn
+# The shared runner manager long-polls GitLab (git.ericsweiss.com via Cloudflare,
+# so the 443 target set is not enumerable) and talks to the kube-API to spawn
 # job pods.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -27,10 +25,8 @@ metadata:
   namespace: gitlab-runner
 spec:
   podSelector:
-    matchExpressions:
-      - key: app
-        operator: In
-        values: [gitlab-runner, gitlab-runner-privileged]
+    matchLabels:
+      app: gitlab-runner
   policyTypes:
     - Egress
   egress:
@@ -134,19 +130,3 @@ spec:
               - 192.168.0.0/16
               - 100.64.0.0/10
               - 169.254.0.0/16
----
-# Infrastructure job pods deploy the homelab itself — ansible over SSH,
-# kubectl, 1Password — and keep unrestricted egress by design.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: infrastructure-jobs-egress
-  namespace: gitlab-runner
-spec:
-  podSelector:
-    matchLabels:
-      esweiss.com/runner-class: infrastructure
-  policyTypes:
-    - Egress
-  egress:
-    - {}

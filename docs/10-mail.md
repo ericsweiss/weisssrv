@@ -30,7 +30,7 @@ The relay server accepts mail from the internal network and forwards to Gmail.
 
 ```ini
 myhostname = smtp-relay.esweiss.com
-mynetworks = 127.0.0.0/8,192.168.0.0/24,10.42.0.0/16   # 10.42/16 = k3s pod CIDR (Alertmanager relays from in-cluster)
+mynetworks = 127.0.0.0/8,192.168.0.0/24                # loopback + host LAN only; all in-cluster senders SASL-auth on 587
 relayhost = [smtp.gmail.com]:587
 smtp_sasl_auth_enable = yes
 smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd

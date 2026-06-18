@@ -82,6 +82,17 @@ spec:
       # corrupted resume data on slow NFS. 60s gives a clean exit margin.
       terminationGracePeriodSeconds: 60
 
+      # Pod hardening: no container here talks to the kube-API. Only the
+      # universally-safe subset is applied at pod level — the gluetun sidecar
+      # needs NET_ADMIN (preserved below), the gluetun-exporter keeps its own
+      # tighter securityContext, and qbittorrent is a LinuxServer.io image
+      # (s6 + PUID/PGID) that starts as root to drop privileges, so per-container
+      # runAsNonRoot / drop-ALL / aPE:false are deliberately NOT set on it.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
       # Pod-level DNS fallback: primary + secondary internal resolvers.
       # When Gluetun is enabled, Gluetun's own DNS_ADDRESS (set below in the
       # gluetun sidecar) takes precedence inside the tunnel, but if the
@@ -355,7 +366,6 @@ spec:
             capabilities:
               drop: ["ALL"]
 
-        # qBittorrent - main application container
         # Version managed in ansible/inventories/prod/group_vars/all.yml
         # Note: qBittorrent uses bare version tags (not version- prefixed like other LinuxServer images)
         - name: qbittorrent

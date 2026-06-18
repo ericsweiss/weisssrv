@@ -13,12 +13,21 @@ manifests on stdin (the corpus `task flux:lint` builds with
 `kustomize build | envsubst` — no `helm template`), then for every HPA finds the
 VPAs targeting the same (namespace, kind, name) and fails if any of them controls
 a resource the HPA also scales. Because the corpus is kustomize-only, this covers
-STANDALONE HPAs/VPAs in the kustomize-build stream; chart-native HPAs that live
-inside HelmReleases (Traefik, authentik, onepassword-connect) are not expanded
-here and are reviewed at the HelmRelease values level instead.
+STANDALONE HPAs/VPAs in the kustomize-build stream.
 
-Usage (wired into flux:lint):
-  kustomize build <path> | envsubst | python3 scripts/check-hpa-vpa-invariant.py
+Chart-native HPAs live inside HelmReleases (Traefik, authentik, onepassword-
+connect) and are NOT expanded into the kustomize corpus, so the generic join
+above cannot see them. Their paired VPAs ARE in the corpus, though, so with
+--require-chart-native-vpas (passed by flux:lint, which renders the *full*
+corpus) this also statically asserts each CHART_NATIVE_HPA_TARGETS workload has a
+mutating (Auto/Initial) VPA that excludes cpu — an Off/recommend-only VPA does
+not count, since it never actually right-sizes. Keep that list in sync with the HelmReleases that set
+autoscaling/HPA. The flag is off by default so unit tests can exercise the
+generic join on minimal streams.
+
+Usage (wired into flux:lint, on the accumulated full corpus):
+  kustomize build <path> | envsubst >> corpus
+  python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < corpus
 """
 from __future__ import annotations
 
@@ -31,6 +40,18 @@ except ImportError:
 
 HPA_KIND = "HorizontalPodAutoscaler"
 VPA_KIND = "VerticalPodAutoscaler"
+
+# Workloads whose HPA is chart-native (inside a HelmRelease) and therefore absent
+# from the kustomize corpus. Each scales on CPU via its chart's HPA, so its VPA
+# (which IS in the corpus) must exist and must NOT control cpu. Keep in sync with:
+#   controllers/traefik/release.yaml          (autoscaling.enabled)
+#   apps/authentik/release.yaml               (autoscaling)
+#   controllers/onepassword-connect/release.yaml (connect.hpa)
+CHART_NATIVE_HPA_TARGETS: dict[tuple[str, str, str], str] = {
+    ("traefik", "Deployment", "traefik"): "traefik chart autoscaling.enabled",
+    ("authentik", "Deployment", "authentik-server"): "authentik chart autoscaling",
+    ("external-secrets", "Deployment", "onepassword-connect"): "connect.hpa",
+}
 
 
 def _target_key(ns: str, ref: dict) -> tuple[str, str, str]:
@@ -105,7 +126,7 @@ def main() -> int:
     # than last-wins: union the resource sets so a memory-only VPA can never mask
     # a cpu-controlling one on the same target.
     hpas: dict[tuple[str, str, str], set[str]] = {}
-    vpas: dict[tuple[str, str, str], set[str]] = {}
+    vpas: dict[tuple[str, str, str], set[str]] = {}  # mutating VPAs only (Off skipped)
     vpa_names: dict[tuple[str, str, str], list[str]] = {}
 
     for d in docs:
@@ -120,16 +141,16 @@ def main() -> int:
             key = _target_key(ns, ref)
             hpas[key] = hpas.get(key, set()) | _hpa_metrics(spec)
         elif kind == VPA_KIND:
+            ref = spec.get("targetRef") or {}
+            if not ref.get("name"):
+                continue
+            key = _target_key(ns, ref)
             # updateMode "Off" is recommend-only: it never mutates pods, so it
             # cannot fight an HPA (this is how coredns pairs a min==max HPA pin
             # with a right-sizing VPA). Only mutating modes can conflict.
             mode = (spec.get("updatePolicy") or {}).get("updateMode", "Auto")
             if str(mode).lower() == "off":
                 continue
-            ref = spec.get("targetRef") or {}
-            if not ref.get("name"):
-                continue
-            key = _target_key(ns, ref)
             vpas[key] = vpas.get(key, set()) | _vpa_resources(spec)
             vpa_names.setdefault(key, []).append(meta.get("name", "?"))
 
@@ -152,12 +173,41 @@ def main() -> int:
                 f"(set the VPA to controlledResources excluding {sorted(clash)})"
             )
 
+    # Static check for chart-native HPAs (their HPA isn't in the corpus, but their
+    # VPA is). Opt-in: only meaningful on the full rendered corpus flux:lint builds.
+    if "--require-chart-native-vpas" in sys.argv:
+        for key, source in sorted(CHART_NATIVE_HPA_TARGETS.items()):
+            ns, tkind, tname = key
+            # `not vpas.get(key)` (vs `key not in vpas`) also catches a mutating
+            # VPA whose every containerPolicy is mode:Off — it registers with an
+            # empty controlled set but right-sizes nothing, so it must not count.
+            if not vpas.get(key):
+                violations.append(
+                    f"  {ns}/{tkind}/{tname}: chart-native HPA ({source}) has no "
+                    f"mutating (Auto/Initial) VPA in the rendered corpus — add a "
+                    f"memory-only VPA (controlledResources: [memory]) so CPU stays "
+                    f"HPA-owned and memory is actually right-sized (an Off VPA "
+                    f"recommends but never resizes, so it does not satisfy this)"
+                )
+            elif "cpu" in vpas.get(key, set()):
+                names = ", ".join(repr(n) for n in sorted(vpa_names.get(key, [])))
+                violations.append(
+                    f"  {ns}/{tkind}/{tname}: chart-native HPA ({source}) scales cpu "
+                    f"but mutating VPA(s) {names} also control cpu — set "
+                    f"controlledResources to exclude cpu (memory-only)"
+                )
+
     if violations:
         print("HPA/VPA invariant violated — same resource driven by both:", file=sys.stderr)
         print("\n".join(violations), file=sys.stderr)
         return 1
 
-    print(f"HPA/VPA invariant OK ({len(hpas)} HPAs, {len(vpas)} VPAs checked)")
+    print(
+        f"HPA/VPA invariant OK ({len(hpas)} HPAs, {len(vpas)} VPAs checked"
+        + (f", {len(CHART_NATIVE_HPA_TARGETS)} chart-native targets asserted"
+           if "--require-chart-native-vpas" in sys.argv else "")
+        + ")"
+    )
     return 0
 
 

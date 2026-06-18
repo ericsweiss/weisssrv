@@ -121,13 +121,16 @@ traefik/authentik idle at 2). If a new HPA pins to max at idle, its CPU request
 is too small relative to the threshold — raise the request, not the threshold
 (the authentik fix pattern), so utilization tracks real load instead of noise.
 
-`task flux:lint` runs `scripts/check-hpa-vpa-invariant.py` over the full
-rendered manifest set: it fails if any workload has an HPA and a (mutating) VPA
-controlling the same resource. This guards the central failure mode — a VPA
-evicting pods to resize CPU while an HPA scales on CPU thrashes. It sees
-standalone HPAs (salt-rim, the coredns pin); chart-native HPAs
-(Traefik, authentik, Connect) live inside HelmReleases the lint doesn't expand,
-so their memory-only VPAs are reviewed at the values level instead.
+`task flux:lint` runs `scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas`
+over the full rendered manifest set: it fails if any workload has an HPA and a
+(mutating) VPA controlling the same resource. This guards the central failure
+mode — a VPA evicting pods to resize CPU while an HPA scales on CPU thrashes. The
+generic join sees standalone HPAs (salt-rim, the coredns pin) directly. The
+chart-native HPAs (Traefik, authentik-server, Connect) live inside HelmReleases
+the lint doesn't expand, but their paired VPAs *are* in the corpus, so
+`--require-chart-native-vpas` statically asserts each of those workloads has a
+VPA that excludes cpu (its `CHART_NATIVE_HPA_TARGETS` list is kept in sync with
+the HelmReleases that enable chart-native HPAs).
 
 Apply an `Off`-tier recommendation by editing the workload's resources in
 git (the recommendation is the data, the HelmRelease stays the source of

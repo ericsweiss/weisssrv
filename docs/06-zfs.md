@@ -616,7 +616,8 @@ the posture is explicit rather than assumed.
 | ZFS pool `nvme` | No | Media domain (hot-tier media, transcode scratch, ephemeral images) — non-sensitive, plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `archive` | Dataset-level (raw) | Plaintext pool; the seven replicated backup datasets arrive as raw `zfs send -w` streams encrypted under their source keys (`archive-backupctl`). See `docs/32-zfs-encryption.md`. |
 | Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
-| App PVCs (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki, Grafana) | Yes | All zvol-backed under `ssd/appdata/*` → inherit the encrypted parent. |
+| App PVCs — zvol-backed (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki) | Yes | Each is a zvol under `ssd/appdata/*` → inherits the encrypted parent. |
+| App PVCs — NFS-backed (Grafana) | Yes | Grafana SQLite DB on an NFS PV (`pve-nas-01.esweiss.com:/appdata/grafana`, i.e. `ssd/appdata/grafana`) — not a zvol, but the export lives on the encrypted `ssd/appdata` dataset. |
 | Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted; VM root disks on `local-ssd`, `tank/pve`, and the `ssd` pool root are not. |
 | K3s Secrets in etcd | Yes | `secrets-encryption: true` (`reencrypt_finished` confirmed). |
 | 1Password Connect on-disk cache | Yes | Connect server's encrypted SQLite (AES via bootstrap creds). |

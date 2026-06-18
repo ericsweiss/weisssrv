@@ -28,6 +28,18 @@ spec:
         app.kubernetes.io/name: mealie-postgres
         app.kubernetes.io/component: database
     spec:
+      # Pod hardening: this DB does not talk to the kube-API, so drop the SA
+      # token mount and run under the runtime's default seccomp profile.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # NOTE: runAsNonRoot / runAsUser / fsGroup deliberately NOT pinned. The
+        # running image starts as root and drops to the postgres user itself
+        # (live PGDATA is owned by uid 70, not 999), and the entrypoint needs
+        # CAP_CHOWN/CAP_SETUID to do so — forcing a non-root UID or dropping caps
+        # breaks startup on the populated PVC. Deeper hardening needs per-image
+        # testing in a throwaway namespace first.
       # Pin to NAS agent for local storage performance
       affinity:
         nodeAffinity:
@@ -49,6 +61,10 @@ spec:
           # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: postgres:${mealie_postgresql_version}
           imagePullPolicy: IfNotPresent
+          # No drop:[ALL]/allowPrivilegeEscalation:false: the image starts as root
+          # and uses gosu to drop to postgres, which needs CAP_SETUID/CAP_CHOWN;
+          # dropping caps breaks startup. Pod-level seccomp + automount:false above
+          # are the safe hardening.
           env:
             - name: POSTGRES_USER
               value: mealie
@@ -155,6 +171,14 @@ spec:
       nodeSelector:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"
+      # Pod hardening: Mealie does not use the kube-API. Only the universally-safe
+      # subset is applied — the image starts as root under s6 and drops to
+      # PUID/PGID itself, so runAsNonRoot / drop-ALL / aPE:false are deliberately
+      # NOT set here (they would break s6 init / the privilege drop).
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       dnsConfig:
         options:
           - name: ndots

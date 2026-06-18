@@ -1,6 +1,15 @@
 ---
 # MergerFS configuration for tiered storage
 #
+# TECH DEBT (known): the safe-remount path below is a long inline-shell state
+# machine (unexport NFS -> unmount binds -> remount MergerFS -> re-export). It is
+# fragile and effectively untestable in molecule (needs live NFS). Future work:
+# extract the sequence into one shellcheck-linted helper script invoked by a
+# single task (as done for archive-backupctl), and scope the NFS unexport to the
+# affected media export rather than the blanket `exportfs -u -a`. Deferred here
+# deliberately — an in-place rewrite manipulates live NFS exports and can't be
+# validated without molecule + a real NFS server.
+#
 # IMPORTANT NOTES ON MERGERFS OPTIONS:
 # 1. MergerFS options are NOT fully visible in `mount` output or /proc/mounts
 #    FUSE only shows generic options (rw, relatime, user_id, etc.)

@@ -1,18 +1,16 @@
+# DISABLED — canonical CI is .gitlab-ci.yml
 name: Lint (DISABLED - See GitLab CI)
 
 # =============================================================================
 # DISABLED: CI/CD has moved to self-hosted GitLab
 # Canonical source: https://git.ericsweiss.com/eric/weisssrv
-# This workflow is retained for reference only.
+# This workflow is retained for reference only — no triggers, fully inert.
+# (No `on:` triggers: it cannot run on push/PR/schedule or be dispatched.)
 # =============================================================================
 
-on:
-  workflow_dispatch:  # Manual trigger only (disabled for normal operations)
-  # Previously triggered on push/PR - now handled by GitLab CI
-  # push:
-  #   branches: [main]
-  # pull_request:
-  #   branches: [main]
+# No triggers. GitHub requires `on:` to be present; an empty mapping means the
+# workflow is never triggered (and can't be manually dispatched).
+on: {}
 
 jobs:
   shellcheck:

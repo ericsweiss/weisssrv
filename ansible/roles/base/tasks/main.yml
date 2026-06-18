@@ -239,6 +239,7 @@
   when:
     - not is_virtual_machine | default(false)
     - has_intel_e1000e.stdout | default('no') == 'yes'
+  notify: Restart e1000e TSO fix service
   tags: [networking, base]
 
 - name: Create e1000e TSO fix service
@@ -246,9 +247,9 @@
     dest: /etc/systemd/system/e1000e-tso-fix.service
     content: |
       # Managed by Ansible - Intel e1000e Hardware Unit Hang workaround
-      # Disables TSO/GSO on Intel I219/I218/I217 NICs to prevent driver hangs
+      # Disables TSO/GSO/GRO on Intel I219/I218/I217 NICs to prevent driver hangs
       [Unit]
-      Description=Disable TSO/GSO on Intel e1000e NICs
+      Description=Disable TSO/GSO/GRO on Intel e1000e NICs
       After=network-pre.target
       Before=network.target
 
@@ -279,82 +280,37 @@
     - has_intel_e1000e.stdout | default('no') == 'yes'
   tags: [networking, base]
 
-# ============================================================================
-# Aquantia/Marvell AQC113 NIC workaround
-# The atlantic driver has known issues with GRO causing bridge forwarding
-# hangs on Proxmox hosts. Disabling GRO prevents these hangs.
-# See: https://github.com/Aquantia/AQtion/issues/67
-# ============================================================================
-
-- name: Check for Aquantia/Marvell atlantic NIC
-  ansible.builtin.shell: |
-    set -o pipefail
-    lspci | grep -i ethernet | grep -qiE 'Aquantia|AQC|Marvell.*AQtion' && echo 'yes' || echo 'no'
-  args:
-    executable: /bin/bash
-  register: has_atlantic_nic
-  changed_when: false
-  failed_when: false
-  when: not is_virtual_machine | default(false)
+# NOTE: The Aquantia/Marvell AQC113 GRO workaround lives in the `nic_tuning`
+# role, which owns all NIC offload workarounds (declarative per-host
+# `nic_tuning_overrides` + inline ethtool apply). pve-nas-01 disables GRO there.
+#
+# One-time cleanup: hosts deployed from the previous base role still carry the
+# orphaned atlantic-gro-fix oneshot unit + script (nic_tuning uses a different
+# mechanism, so they would otherwise linger as unmanaged config). Remove them.
+# Safe to drop from this role once all AQC113 hosts have converged.
+- name: Check for orphaned atlantic-gro-fix unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/atlantic-gro-fix.service
+  register: atlantic_gro_orphan
   tags: [networking, base]
 
-- name: Install ethtool for atlantic NIC configuration
-  ansible.builtin.apt:
-    name: ethtool
-    state: present
-  when:
-    - not is_virtual_machine | default(false)
-    - has_atlantic_nic.stdout | default('no') == 'yes'
-  tags: [networking, base]
-
-- name: Install atlantic GRO fix script
-  ansible.builtin.copy:
-    src: atlantic-gro-fix.sh
-    dest: /usr/local/sbin/atlantic-gro-fix.sh
-    mode: "0755"
-    owner: root
-    group: root
-  when:
-    - not is_virtual_machine | default(false)
-    - has_atlantic_nic.stdout | default('no') == 'yes'
-  tags: [networking, base]
-
-- name: Create atlantic GRO fix service
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/atlantic-gro-fix.service
-    content: |
-      # Managed by Ansible - Aquantia/Marvell AQC113 GRO workaround
-      # Disables GRO on atlantic driver NICs to prevent bridge forwarding hangs
-      [Unit]
-      Description=Disable GRO on Aquantia/Marvell atlantic NICs
-      After=network-pre.target
-      Before=network.target
-
-      [Service]
-      Type=oneshot
-      RemainAfterExit=yes
-      ExecStart=/usr/local/sbin/atlantic-gro-fix.sh
-
-      [Install]
-      WantedBy=multi-user.target
-    mode: "0644"
-    owner: root
-    group: root
-  when:
-    - not is_virtual_machine | default(false)
-    - has_atlantic_nic.stdout | default('no') == 'yes'
-  notify: Reload systemd
-  tags: [networking, base]
-
-- name: Enable and start atlantic GRO fix service
+- name: Disable orphaned atlantic-gro-fix service
   ansible.builtin.systemd:
-    name: atlantic-gro-fix
-    enabled: true
-    state: started
-    daemon_reload: true
-  when:
-    - not is_virtual_machine | default(false)
-    - has_atlantic_nic.stdout | default('no') == 'yes'
+    name: atlantic-gro-fix.service
+    enabled: false
+    state: stopped
+  when: atlantic_gro_orphan.stat.exists
+  tags: [networking, base]
+
+- name: Remove orphaned atlantic-gro-fix unit and script
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/atlantic-gro-fix.service
+    - /usr/local/sbin/atlantic-gro-fix.sh
+  when: atlantic_gro_orphan.stat.exists
+  notify: Reload systemd
   tags: [networking, base]
 
 # ============================================================================

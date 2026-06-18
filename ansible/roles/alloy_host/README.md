@@ -4,10 +4,12 @@ Installs Grafana Alloy as a host-side journald log shipper. Used on every
 non-k8s host (Proxmox hosts, DNS LXCs, smtp-relay, GitLab VM, Plex LXC) and on
 k3s VMs to ship kubelet/containerd/etcd/systemd journals to Loki at
 `https://loki.esweiss.com/loki/api/v1/push` (Traefik IngressRoute, gated by
-lan-tailscale-only). The plain-HTTP NodePort at
-`http://192.168.0.161:31100` defined in
-`kubernetes/infrastructure/observability/loki/nodeport.yaml` remains as a
-fallback for emergencies; override `alloy_host_loki_url` per-host to use it.
+lan-tailscale-only). A plain-HTTP NodePort
+(`http://<k3s-node>:31100`, `kubernetes/infrastructure/observability/loki/nodeport.yaml`)
+exists as an emergency fallback but is **apply-on-demand** — it is deliberately
+not reconciled by Flux (an always-on unauthenticated push path is a security
+hole). To use it when Traefik is down: `kubectl apply -f` the nodeport manifest,
+override `alloy_host_loki_url` per-host, then delete it once ingress recovers.
 
 ## Why a host-side Alloy DaemonSet
 
@@ -30,10 +32,11 @@ system CA bundle on every host):
 alloy_host_loki_url: "https://loki.esweiss.com/loki/api/v1/push"
 ```
 
-Override per-host in `host_vars/<host>.yml` (e.g., to use the plain
-NodePort `http://192.168.0.161:31100/loki/api/v1/push` as a fallback
-when Traefik is down). See `defaults/main.yml` for the canonical list
-of tunables; `group_vars/all.yml` does not pin this value.
+Override per-host in `host_vars/<host>.yml` (e.g., to use the
+apply-on-demand NodePort `http://<k3s-node>:31100/loki/api/v1/push` as a
+fallback when Traefik is down — see note above). See `defaults/main.yml`
+for the canonical list of tunables; `group_vars/all.yml` does not pin this
+value.
 
 ## Deployment
 

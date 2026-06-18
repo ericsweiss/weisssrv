@@ -26,6 +26,7 @@ common_packages:
   - ca-certificates
   - gnupg
   - lsb-release
+  - sudo  # required by the sudoers task's visudo validate (and admin user sudo)
 
 # VM-specific packages (only installed on VMs, not LXC or bare metal)
 vm_packages:

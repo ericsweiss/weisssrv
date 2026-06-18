@@ -18,3 +18,15 @@ alloy_host_loki_url: "https://loki.esweiss.com/loki/api/v1/push"
 # The NodePort fallback bypasses Traefik and ignores these.
 alloy_host_loki_user: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_USER') | default('', true) }}"
 alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD') | default('', true) }}"
+
+# On-disk write-ahead log for the loki.write client. This host-side Alloy is
+# circularly dependent on the very Loki it observes: Loki runs *inside* the k3s
+# cluster, so a cluster/Loki/Traefik outage is exactly when we most want host
+# journald (kubelet/etcd/containerd unit logs) preserved — yet without a WAL
+# those logs are dropped after the in-memory queue fills. Enabling the WAL
+# buffers entries to disk (under Alloy's storage path) and backfills them once
+# Loki returns, so an outage degrades to delayed delivery instead of loss.
+# max_segment_age bounds how long a segment is held before being cut/flushed,
+# capping disk use and replay lag. Override per-host if a node is space-constrained.
+alloy_host_wal_enabled: true
+alloy_host_wal_max_segment_age: "1h"

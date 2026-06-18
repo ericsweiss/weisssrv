@@ -1,7 +1,13 @@
 ---
-# Emergency-fallback NodePort for the Loki push API. Hosts running Alloy
-# normally ship journald logs via https://loki.esweiss.com (Traefik); set
-# alloy_host_loki_url per-host to use http://<any-k3s-node>:31100 instead.
+# Emergency-fallback NodePort for the Loki push API. APPLY-ON-DEMAND ONLY — this
+# is deliberately NOT listed in loki/kustomization.yaml, because an always-on
+# NodePort is an unauthenticated push/read path on every node IP that bypasses
+# the basic-auth IngressRoute and the allow-loki-ingress NetworkPolicy. Hosts
+# running Alloy normally ship journald logs via https://loki.esweiss.com
+# (Traefik). In an emergency (ingress down) apply this manually:
+#   kubectl apply -f kubernetes/infrastructure/observability/loki/nodeport.yaml
+# set alloy_host_loki_url per-host to http://<any-k3s-node>:31100, then
+# `kubectl delete -f` it once the ingress path is restored.
 apiVersion: v1
 kind: Service
 metadata:

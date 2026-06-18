@@ -31,6 +31,11 @@
 # report ok.
 # smbclient reads PASSWD from the environment — the secret never appears
 # in argv/process listings.
+# NOTE: this check fails-OPEN on transport errors — any non-zero rc (smbd
+# mid-restart, loopback socket refused, etc.), not just an auth failure,
+# triggers the password reset below. Blast radius is small (re-sets the same
+# secret), but a transport blip during a deploy will report a spurious
+# 'changed' and could reset the stored password if the env secret has drifted.
 - name: Check whether the current Samba password already works
   ansible.builtin.command:
     cmd: smbclient -L localhost -U nas

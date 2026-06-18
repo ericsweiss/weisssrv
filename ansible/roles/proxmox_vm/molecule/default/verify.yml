@@ -16,6 +16,7 @@
         - 06-firewall-reconcile.json
         - 07-firewall-zero.json
         - 08-disk-vzdump-backup.json
+        - 09-disk-slot-assert.json
       register: artifacts
 
     - name: Decode artifacts
@@ -28,6 +29,7 @@
         fw_reconcile: "{{ artifacts.results[5].content | b64decode | from_json }}"
         fw_zero: "{{ artifacts.results[6].content | b64decode | from_json }}"
         disk_backup: "{{ artifacts.results[7].content | b64decode | from_json }}"
+        slot_assert: "{{ artifacts.results[8].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -99,6 +101,20 @@
           # 8d: default disk -> no qm set, and never backup=0
           - disk_backup.default_any_set == 0
           - disk_backup.default_set_with_backup0 == 0
-          # 8e: prefix-mismatched path (.../data-old) -> exactly one re-set to the
-          # correct path (exact-match guard, not a substring false-positive)
-          - disk_backup.prefix_reset_to_correct_path == 1
+          # 8e: slot on a different live zvol (.../data-old) -> role refuses to
+          # remap without allow_remap and issues NO qm set (data-loss guard)
+          - disk_backup.remap_refused
+          - disk_backup.remap_any_set == 0
+          # 8f: same slot WITH allow_remap -> exactly one re-set to the correct
+          # EXACT path (proves data-old is not substring-matched for data)
+          - disk_backup.allow_remap_reset_to_correct == 1
+
+    - name: Assert scsi_slot rejects duplicate and missing slots
+      ansible.builtin.assert:
+        that:
+          # 8g: two disks sharing scsi_slot:1 -> assert fails (uniqueness)
+          - slot_assert.dup_rejected
+          # 8h: a disk with no scsi_slot -> assert fails (presence)
+          - slot_assert.missing_rejected
+          # 8i: scsi_slot 0 (reserved boot disk) -> assert fails (>=1 floor)
+          - slot_assert.zero_rejected

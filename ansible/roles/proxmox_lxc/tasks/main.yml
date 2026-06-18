@@ -259,6 +259,16 @@
   changed_when: "'CHANGED' in (lxc_net0_firewall.stdout | default(''))"
   when: not ansible_check_mode
 
+# NOTE: create-time only. Everything from here through "Configure GPU
+# passthrough" below — bind mounts (mp* lines), the lxc.idmap UID/GID maps,
+# and the GPU /dev/dri passthrough — is guarded on `container_exists.rc != 0`
+# and therefore applies ONLY when the container is first created. Changing any
+# of these in inventory for an EXISTING container is a silent no-op here: the
+# role does not reconcile them onto a running container (live idmap/mount
+# changes are risky and deliberately out of scope). To apply such a change,
+# either recreate the container (destroy + re-run this role), or edit
+# /etc/pve/lxc/<id>.conf on the Proxmox host by hand and `pct restart <id>`.
+
 # Configure bind mounts for containers that need host storage access
 # This must be done before starting the container
 - name: Configure bind mounts

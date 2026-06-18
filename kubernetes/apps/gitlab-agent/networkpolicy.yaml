@@ -28,3 +28,13 @@ spec:
 # compromised agentk has cluster-admin-equivalent kube creds anyway, so a
 # /16 egress allowlist is not a meaningful additional control. Dropping
 # the policy is the simplest path to keeping the chart on latest.
+#
+# ACCEPTED RISK (single-operator today) — REVIEW BEFORE MULTI-TENANT:
+# this pairs with the cluster-admin RBAC note in release.yaml. Once the
+# agent RBAC is scoped below cluster-admin for tenant onboarding (docs/30),
+# the "compromised agentk already has full kube creds" justification no
+# longer holds, so restore a scoped egress allowlist then. Re-add it only
+# after confirming the agentk startup race above is fixed (e.g. an agentk
+# version that retries the initial /api GET instead of bailing fatally, or
+# a readiness gate that defers the GET until the kube-router egress chain
+# is installed) so re-adding the policy doesn't crashloop fresh pods again.

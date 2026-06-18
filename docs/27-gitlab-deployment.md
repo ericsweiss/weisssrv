@@ -290,6 +290,13 @@ The weisssrv `.gitlab-ci.yml` sets `default: tags: [infrastructure]` so all its 
 > merge requests. If collaborators are added to the GitLab instance, switch to
 > `protected = true` so the privileged runner only executes jobs on protected branches (e.g.,
 > `main`). This prevents untrusted MR code from running with elevated privileges.
+>
+> The privileged runner lives in its **own** `gitlab-runner-privileged` namespace
+> (PSS `enforce: privileged`), separate from the shared, untrusted runner in
+> `gitlab-runner` (PSS `enforce: baseline`). This namespace boundary is the
+> isolation control: the shared runner's namespace-scoped RBAC cannot read the
+> privileged runner's token Secret, and PSS admission blocks untrusted shared
+> job pods from escalating to privileged/root.
 
 ### Step 9: GitLab Runners (Flux-managed)
 
@@ -302,6 +309,19 @@ and push. Flux reconciles the HelmRelease within ~1 minute.
 
 See `docs/29-flux-operations.md` for the full workflow (rotating runner
 tokens, bumping chart versions, troubleshooting stuck releases).
+
+> **One-time migration note (privileged runner namespace move):** when the
+> change that relocates the privileged runner from the `gitlab-runner` namespace
+> to its own `gitlab-runner-privileged` namespace first reconciles, Flux prunes
+> the old HelmRelease and installs the new one — i.e. helm-controller uninstalls
+> the old manager (Deployment, RBAC, token Secret) and the new one re-registers
+> from its freshly-synced ESO token. There is a brief teardown/recreate window
+> in which an in-flight `infrastructure`-tagged CI job could be interrupted. Do
+> the cutover in a CI-quiet window (or `kubectl -n gitlab-runner-privileged scale
+> deploy --replicas=0` first), then verify: `kubectl -n gitlab-runner-privileged
+> get pods` is Running, the runner shows online in GitLab, and nothing privileged
+> remains in the old namespace (`kubectl get deploy,sa,secret -n gitlab-runner |
+> grep privileged` returns nothing).
 
 ## Task Commands
 
@@ -640,7 +660,7 @@ Pages are available at:
 
 ## Web IDE Extension Host
 
-GitLab's Web IDE serves the VS Code editor and per-extension iframes from a separate "extension host" subdomain so the browser's same-origin policy isolates extension JavaScript from the GitLab session cookie. CVE-2026-5816 (CVSS 8.0, fixed in 18.11.1) showed that when the configured extension host is unreachable, GitLab falls back to serving those assets from the GitLab origin itself — at which point a malicious extension can hit `/api/v4/...` with the user's session cookie.
+GitLab's Web IDE serves the VS Code editor and per-extension iframes from a separate "extension host" subdomain so the browser's same-origin policy isolates extension JavaScript from the GitLab session cookie. CVE-2026-5816 (CVSS 8.0, first fixed upstream in 18.11.1; the release pinned here is well past that — see `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`) showed that when the configured extension host is unreachable, GitLab falls back to serving those assets from the GitLab origin itself — at which point a malicious extension can hit `/api/v4/...` with the user's session cookie.
 
 ### Architecture
 
@@ -654,7 +674,7 @@ GitLab's Web IDE serves the VS Code editor and per-extension iframes from a sepa
 
 ### GitLab settings (Application Settings API)
 
-Set by the `Web IDE | …` block in `ansible/roles/gitlab/tasks/main.yml`. These have no Omnibus `gitlab.rb` key on 18.11; they live only in the `application_settings` table.
+Set by the `Web IDE | …` block in `ansible/roles/gitlab/tasks/main.yml`. These have no Omnibus `gitlab.rb` key on the pinned release (see `gitlab_version` in `ansible/inventories/prod/group_vars/all.yml`); they live only in the `application_settings` table.
 
 | Field | Value |
 |---|---|

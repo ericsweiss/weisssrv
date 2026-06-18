@@ -199,5 +199,93 @@ def test_malformed_yaml_exits_cleanly(monkeypatch):
         _run("foo: [unterminated\n", monkeypatch)
 
 
+# --- chart-native HPA static assertion (--require-chart-native-vpas) -----------
+
+def _chart_native_vpa(controlled: str = "memory") -> str:
+    """A VPA for every CHART_NATIVE_HPA_TARGETS workload (memory-only by default)."""
+    out = []
+    for (ns, _kind, name), _src in mod.CHART_NATIVE_HPA_TARGETS.items():
+        out.append(f"""
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {{name: {name}, namespace: {ns}}}
+spec:
+  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: {name}}}
+  updatePolicy: {{updateMode: Auto}}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        controlledResources: [{controlled}]
+""")
+    return "\n---\n".join(out)
+
+
+def _run_flag(stdin_text: str, monkeypatch) -> int:
+    monkeypatch.setattr("sys.argv", ["check", "--require-chart-native-vpas"])
+    return _run(stdin_text, monkeypatch)
+
+
+def test_chart_native_all_memory_only_passes(monkeypatch):
+    """All chart-native workloads have a memory-only VPA -> OK."""
+    assert _run_flag(_chart_native_vpa("memory"), monkeypatch) == 0
+
+
+def test_chart_native_cpu_vpa_fails(monkeypatch):
+    """A chart-native workload whose VPA also controls cpu conflicts with its HPA."""
+    assert _run_flag(_chart_native_vpa("cpu, memory"), monkeypatch) == 1
+
+
+def test_chart_native_missing_vpa_fails(monkeypatch):
+    """A chart-native workload with no VPA in the corpus is flagged when required."""
+    assert _run_flag("", monkeypatch) == 1
+
+
+def test_chart_native_off_mode_vpa_does_not_satisfy(monkeypatch):
+    """An Off (recommend-only) VPA never right-sizes, so it must NOT satisfy the
+    chart-native requirement — the gate should still fail."""
+    off = []
+    for (ns, _kind, name), _src in mod.CHART_NATIVE_HPA_TARGETS.items():
+        off.append(f"""
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {{name: {name}, namespace: {ns}}}
+spec:
+  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: {name}}}
+  updatePolicy: {{updateMode: "Off"}}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        controlledResources: [memory]
+""")
+    assert _run_flag("\n---\n".join(off), monkeypatch) == 1
+
+
+def test_chart_native_per_container_off_vpa_does_not_satisfy(monkeypatch):
+    """A mutating (Auto) VPA whose every containerPolicy is mode:Off right-sizes
+    nothing (empty controlled set) and must NOT satisfy the chart-native gate."""
+    off = []
+    for (ns, _kind, name), _src in mod.CHART_NATIVE_HPA_TARGETS.items():
+        off.append(f"""
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {{name: {name}, namespace: {ns}}}
+spec:
+  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: {name}}}
+  updatePolicy: {{updateMode: Auto}}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        mode: "Off"
+        controlledResources: [memory]
+""")
+    assert _run_flag("\n---\n".join(off), monkeypatch) == 1
+
+
+def test_chart_native_check_is_opt_in(monkeypatch):
+    """Without the flag, missing chart-native VPAs do not fail (generic-join only)."""
+    monkeypatch.setattr("sys.argv", ["check"])
+    assert _run("", monkeypatch) == 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

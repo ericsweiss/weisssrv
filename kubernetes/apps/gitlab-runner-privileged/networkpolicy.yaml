@@ -1,0 +1,82 @@
+---
+# NetworkPolicies for the gitlab-runner-privileged namespace (the privileged
+# runner manager + its infrastructure job pods). Infrastructure job pods deploy
+# the homelab itself (ansible/SSH, kubectl, 1Password) and keep unrestricted
+# egress by design. Nothing here serves traffic, so ingress is denied outright.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: gitlab-runner-privileged
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# The runner manager long-polls GitLab (git.ericsweiss.com via Cloudflare, so
+# the 443 target set is not enumerable) and talks to the kube-API to spawn job
+# pods. kube-proxy DNATs the in-cluster VIP (10.43.0.1:443) to the real
+# endpoints BEFORE NetworkPolicy evaluation, so the policy allowlists the server
+# node IPs on 6443 (a 10.43.0.1/32 rule never matches the post-DNAT packet).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: managers-egress
+  namespace: gitlab-runner-privileged
+spec:
+  podSelector:
+    matchLabels:
+      app: gitlab-runner-privileged
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Infrastructure job pods deploy the homelab itself — ansible over SSH,
+# kubectl, 1Password — and keep unrestricted egress by design.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: infrastructure-jobs-egress
+  namespace: gitlab-runner-privileged
+spec:
+  podSelector:
+    matchLabels:
+      esweiss.com/runner-class: infrastructure
+  policyTypes:
+    - Egress
+  egress:
+    - {}

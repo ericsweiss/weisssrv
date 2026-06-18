@@ -38,6 +38,14 @@ spec:
         app.kubernetes.io/name: bar-assistant-redis
         app.kubernetes.io/component: cache
     spec:
+      # Pod hardening: redis cache does not talk to the kube-API. NOTE:
+      # runAsNonRoot/runAsUser NOT pinned — the running image starts as root and
+      # drops to redis itself (verified live: uid 0), so forcing a non-root UID
+      # risks startup. Pod-level seccomp + automount:false are the safe subset.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # Pin to NAS agent for storage locality
       affinity:
         nodeAffinity:
@@ -57,6 +65,9 @@ spec:
         - name: redis
           image: redis:${redis_version}
           imagePullPolicy: IfNotPresent
+          # No drop:[ALL]/aPE:false: image starts as root and gosu-drops to redis
+          # (needs CAP_SETUID). Pod-level seccomp + automount:false are the safe
+          # hardening; deeper container hardening needs per-image testing first.
           env:
             # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes.
             # Accepted tradeoff: this cache is unauthenticated but the
@@ -139,6 +150,15 @@ spec:
         app.kubernetes.io/name: bar-assistant-meilisearch
         app.kubernetes.io/component: search
     spec:
+      # Pod hardening: meilisearch does not talk to the kube-API. The image runs
+      # as root by default and may chown /meili_data on start, so ONLY the
+      # universally-safe subset (seccomp + automount:false) is applied — no
+      # runAsNonRoot and no container drop-ALL/aPE:false (those would break the
+      # root start / data-dir setup), matching the postgres/redis decision.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # Pin to NAS agent for storage locality
       affinity:
         nodeAffinity:
@@ -158,6 +178,9 @@ spec:
         - name: meilisearch
           image: getmeili/meilisearch:${meilisearch_version}
           imagePullPolicy: IfNotPresent
+          # No drop:[ALL]/aPE:false: image runs as root (verified live) and may
+          # chown its data dir on start (needs caps). Pod-level seccomp +
+          # automount:false are the safe hardening for this root-start image.
           env:
             - name: MEILI_ENV
               value: production
@@ -249,6 +272,15 @@ spec:
         app.kubernetes.io/name: bar-assistant
         app.kubernetes.io/component: api
     spec:
+      # Pod hardening: bar-assistant does not talk to the kube-API. The image runs
+      # unprivileged as www-data (UID 33), but its SQLite + uploads live on an
+      # existing PVC that may not yet be 33-owned, so runAsNonRoot/fsGroup are NOT
+      # forced here (would risk migration write failures on first rollout). Only
+      # the universally-safe subset + container aPE:false / drop-ALL are applied.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # Pin to NAS agent for storage locality (same as redis/meilisearch)
       affinity:
         nodeAffinity:
@@ -269,6 +301,10 @@ spec:
           # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: barassistant/server:${bar_assistant_version}
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             # Application URL - matches official docker-compose APP_URL=$API_URL
             - name: APP_URL
@@ -457,11 +493,24 @@ spec:
                 topologyKey: kubernetes.io/hostname
       nodeSelector:
         esweiss.com/general: "true"
+      # Pod hardening: salt-rim is a static nginx frontend that does not talk to
+      # the kube-API. It already runs non-root as www-data (uid 33, verified live)
+      # and listens on :8080 (no privileged port), so drop-ALL caps + aPE:false
+      # are safe. runAsNonRoot/runAsUser are not pinned (the image sets uid 33
+      # itself; pinning a wrong UID against any future PVC would risk writes).
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: salt-rim
           # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: barassistant/salt-rim:${salt_rim_version}
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: API_URL
               value: ""

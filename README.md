@@ -44,6 +44,7 @@ Internet
     |   +-- plex          (.152) - Plex Media Server
     |   +-- gitlab        (.153) - GitLab EE
     |   +-- home-assistant (.154) - Home Assistant OS
+    |   +-- windows        (.155) - Windows guest (manual; firewall-only IaC)
     |
     +-- K3s Cluster (9 nodes)
         +-- k3s-srv-nas-01    (.222) - Server + etcd
@@ -227,12 +228,11 @@ weisssrv/
 │   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
 │   │                         #   that form the first four stages of the five-stage Flux Kustomization chain:
 │   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap)
-│   │                         #     infrastructure-controllers   (HelmReleases for ESO, Connect, MetalLB, cert-manager, Traefik, external-dns, VPA)
-│   │                         #     infrastructure-configs       (ClusterSecretStore, ClusterIssuer, Traefik middlewares, wildcard certs, CoreDNS, DDNS, Connect IngressRoute)
+│   │                         #     infrastructure-controllers   (platform HelmReleases — see the dir for the current set)
+│   │                         #     infrastructure-configs       (CRs requiring controller CRDs — see the dir for the current set)
 │   │                         #     infrastructure-observability (kube-prometheus-stack, Loki, Alloy, exporters, dashboards)
 │   └── apps/                 # Sibling top-level Kustomization (fifth stage; dependsOn infrastructure-observability):
-│                             #   authentik, download-clients, recipes, gitlab-runner,
-│                             #   gitlab-runner-privileged, gitlab-agent, vm-ingress
+│                             #   one dir per app — see kubernetes/apps/ for the current set
 ├── scripts/                  # Utility scripts (version checker, versions-configmap generator, etc.)
 ├── docs/                     # Documentation
 └── Taskfile.yml              # Task runner commands (including flux:*)
@@ -354,7 +354,9 @@ Mealie and Bar Assistant for food and cocktail recipe management:
 | Mealie | Recipe management and meal planning | food.esweiss.com |
 | Bar Assistant | Cocktail recipe management | bar.esweiss.com |
 
-Both services use Authentik SSO for authentication.
+Both services use Authentik SSO for authentication. Bar Assistant additionally
+runs its Salt Rim web UI, Meilisearch, and Redis — see docs/22 for the full
+component list.
 
 - **Documentation**: [docs/22-recipes-deployment.md](docs/22-recipes-deployment.md)
 

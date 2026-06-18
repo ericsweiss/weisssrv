@@ -4,6 +4,11 @@
 # All drives explicitly listed below — no DEVICESCAN.
 # DEVICESCAN with -n standby was interfering with long self-tests
 # (extended tests aborted at 90% when drives entered standby).
+#
+# TRADE-OFF: because the disk list is static, a drive added or replaced in a
+# pool is UNMONITORED until it is also added to the matching smartd_*_disks
+# inventory list (host_vars). Nothing detects the gap. Update smartd_*_disks on
+# every drive replacement (drive swaps are a recurring op on the archive pool).
 
 # Long self-tests are staggered per pool (8th/9th/10th/11th at 3am) so 14
 # drives don't thrash simultaneously — the archive bay already runs hot.

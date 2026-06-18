@@ -15,5 +15,7 @@ spec:
   dnsNames:
     - "*.esweiss.com"
     - esweiss.com
-  # Renew 30 days before expiration
-  renewBefore: 720h
+  # Staggered renewBefore across the three identical *.esweiss.com certs
+  # (default 720h / external-secrets 600h / downloads 480h) so they don't all
+  # renew in the same window and trip the Let's Encrypt 5-per-week duplicate limit.
+  renewBefore: 480h

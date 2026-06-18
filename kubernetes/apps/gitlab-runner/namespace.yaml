@@ -7,8 +7,11 @@ metadata:
     app.kubernetes.io/name: gitlab-runner
     app.kubernetes.io/part-of: gitlab
     app.kubernetes.io/managed-by: flux
-    # enforce: privileged is required for the gitlab-runner-privileged DinD
-    # job pods; warn/audit stay at baseline to surface other privileged use.
-    pod-security.kubernetes.io/enforce: privileged
-    pod-security.kubernetes.io/warn: baseline
-    pod-security.kubernetes.io/audit: baseline
+    # enforce: baseline blocks the untrusted shared runner's job pods from
+    # escalating to privileged/host* — admission now enforces the trust boundary
+    # at the namespace level (the privileged DinD runner lives in its own
+    # gitlab-runner-privileged namespace). warn/audit at restricted surface
+    # further tightening opportunities without breaking other projects' jobs.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

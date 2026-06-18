@@ -15,7 +15,9 @@ Note: pytest is preferred for better output formatting and fixtures, but
 unittest fallback is provided for environments where pytest is not installed.
 """
 
+import socket
 import unittest
+import urllib.error
 from unittest.mock import patch, MagicMock
 import importlib.util
 import sys
@@ -720,6 +722,126 @@ class TestHeldUpdateGuard(unittest.TestCase):
                 check_versions.main()
         muf.assert_not_called()                  # held => never written
         self.assertEqual(cm.exception.code, 0)   # a held hold is a clean exit
+
+
+class TestMakeRequestRetry(unittest.TestCase):
+    """_make_request retries on transient failures but never on 4xx.
+
+    The checker does dozens of sequential external fetches; without a bounded
+    retry a single flaky endpoint (DNS blip, connection reset, upstream 5xx)
+    fails the whole CI version check. These tests pin the retry semantics:
+    retry on URLError/socket.timeout/HTTP 5xx, never on 4xx (incl. 403
+    rate-limit), and re-raise the last exception after exhausting attempts.
+    """
+
+    def _ok_response(self, body: bytes):
+        """A urlopen-style success response usable as a context manager."""
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def _http_error(self, code: int):
+        return urllib.error.HTTPError(
+            "https://example.com", code, "boom", {}, None
+        )
+
+    def test_retries_then_succeeds_on_urlerror(self):
+        """Two transient URLErrors then success → returns the success body."""
+        calls = [0]
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            if calls[0] <= 2:
+                raise urllib.error.URLError("temporary failure in name resolution")
+            return self._ok_response(b'{"tag_name": "v1.2.3"}')
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):  # don't actually back off
+            result = check_versions._make_request("https://example.com/api")
+
+        assert result == {"tag_name": "v1.2.3"}
+        assert calls[0] == 3, "should have retried twice before succeeding"
+
+    def test_retries_on_socket_timeout_then_succeeds(self):
+        """socket.timeout is transient and is retried."""
+        calls = [0]
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise socket.timeout("timed out")
+            return self._ok_response(b"plain text body")
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            result = check_versions._make_request("https://example.com/Packages")
+
+        assert result == "plain text body"
+        assert calls[0] == 2
+
+    def test_4xx_does_not_retry(self):
+        """HTTP 4xx (here 404) raises immediately with no retry."""
+        calls = [0]
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            raise self._http_error(404)
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep") as mock_sleep:
+            with self.assertRaises(RuntimeError):  # _make_request wraps HTTPError
+                check_versions._make_request("https://example.com/missing")
+
+        assert calls[0] == 1, "4xx must not be retried"
+        mock_sleep.assert_not_called()
+
+    def test_403_rate_limit_does_not_retry(self):
+        """A 403 rate-limit is surfaced as-is, not retried as a transient blip."""
+        calls = [0]
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            raise self._http_error(403)
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            with self.assertRaises(RuntimeError) as ctx:
+                check_versions._make_request("https://api.github.com/rate")
+
+        assert calls[0] == 1, "403 must not be retried"
+        # _make_request maps 403 to its rate-limit message
+        self.assertIn("403", str(ctx.exception))
+
+    def test_persistent_5xx_exhausts_retries(self):
+        """Persistent HTTP 5xx retries RETRY_ATTEMPTS times, then raises."""
+        calls = [0]
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            raise self._http_error(503)
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            with self.assertRaises(RuntimeError):  # last HTTPError wrapped by _make_request
+                check_versions._make_request("https://example.com/flaky")
+
+        assert calls[0] == check_versions.RETRY_ATTEMPTS, (
+            f"should attempt exactly RETRY_ATTEMPTS={check_versions.RETRY_ATTEMPTS} times"
+        )
+
+    def test_helper_reraises_last_exception_after_exhaustion(self):
+        """_urlopen_with_retry re-raises the original exception type unchanged
+        so existing callers behave identically after retries are exhausted."""
+        def side_effect(req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            req = check_versions.urllib.request.Request("https://example.com")
+            with self.assertRaises(urllib.error.URLError):
+                check_versions._urlopen_with_retry(req)
 
 
 if __name__ == "__main__":

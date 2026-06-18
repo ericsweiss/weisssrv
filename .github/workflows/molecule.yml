@@ -1,25 +1,18 @@
 ---
+# DISABLED — canonical CI is .gitlab-ci.yml
 name: Molecule Tests (DISABLED - See GitLab CI)
 
 # =============================================================================
 # DISABLED: CI/CD has moved to self-hosted GitLab
 # Canonical source: https://git.ericsweiss.com/eric/weisssrv
-# This workflow is retained for reference only.
+# This workflow is retained for reference only — no triggers, fully inert.
+# NOTE: the role matrix below is stale (it predates most roles); the live
+# molecule matrix is the parallel:matrix in .gitlab-ci.yml's molecule-tests.
 # =============================================================================
 
-on:
-  workflow_dispatch:  # Manual trigger only (disabled for normal operations)
-  # Previously triggered on push/PR - now handled by GitLab CI
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'ansible/roles/**'
-  #     - '.github/workflows/molecule.yml'
-  # pull_request:
-  #   branches: [main]
-  #   paths:
-  #     - 'ansible/roles/**'
-  #     - '.github/workflows/molecule.yml'
+# No triggers. GitHub requires `on:` to be present; an empty mapping means the
+# workflow is never triggered (and can't be manually dispatched).
+on: {}
 
 env:
   ANSIBLE_FORCE_COLOR: '1'
