@@ -17,7 +17,7 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                    # Configuration management
 │   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # 29 roles for all services
+│   ├── roles/                  # 28 roles for all services
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/cloudflare/       # External DNS management
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
@@ -106,7 +106,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically 
 
 All operations use `Taskfile.yml`. Run `task --list` for the full, current set
 (grouped by namespace: `ansible:*`, `infra:*`, `dns:*`, `storage:*`, `plex:*`,
-`proxmox:*`, `zfs:*`, `luks-archive:*`, `k3s:*`, `flux:*`, `downloads:*`,
+`proxmox:*`, `zfs:*`, `k3s:*`, `flux:*`, `downloads:*`,
 `recipes:*`, `authentik:*`, `observability:*`, `home-assistant:*`, `gitlab:*`,
 `maintenance:*`, `terraform:*`, plus top-level `lint` and `collect-state`). The
 Taskfile is the source of truth — do not maintain a copy of the task list here.
@@ -239,7 +239,7 @@ Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
 
 ## Ansible Roles
 
-The 29 roles and their one-line purposes are listed in the **Ansible Roles**
+The 28 roles and their one-line purposes are listed in the **Ansible Roles**
 table in `README.md` (source of truth). A few carry editing constraints worth
 knowing up front:
 
@@ -257,10 +257,10 @@ knowing up front:
   node-exporter DaemonSet on 9100. It is deliberately NOT a prometheus_exporter
   wrapper — it installs from the apt repo and uses a drop-in override plus
   bespoke textfile collectors (see that role's README).
-- **zfs_encryption** / **luks_archive** are siblings (same Connect token + script
-  structure) but ordered differently: `zfs-load-key@<pool>` runs before
-  `zfs-mount.service`, while `archive-luks-open@archive-N` runs before
-  `zfs-import-cache.service` so the `/dev/mapper/archive-N` nodes exist first.
+- **zfs_encryption** fetches each pool's passphrase from 1Password Connect at
+  boot via `zfs-load-key@<pool>` ordered before `zfs-mount.service`. It is the
+  sole consumer of the shared Connect token at `/etc/onepassword-connect/token`,
+  gated on `zfs_encryption_pools` (no token on compute hosts with empty lists).
   Runbooks in `docs/32-zfs-encryption.md`.
 - **nfs_tls** (`nfs_tls_enabled`) runs tlshd on `pve-nas-01` + every k3s
   agent. The `nas_storage` k3s export lines require TLS (`xprtsec: tls`,

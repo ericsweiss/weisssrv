@@ -373,9 +373,6 @@ echo ""
 echo "--- ZFS Encryption Keystatus ---"
 zfs get -H -o name,value keystatus 2>/dev/null | awk '$2 == "available" || $2 == "unavailable"' | head -20
 echo ""
-echo "--- LUKS Archive Mappers ---"
-ls -l /dev/mapper/archive-* 2>/dev/null || echo "No archive mappers on this host"
-echo ""
 echo "--- SMART Status ---"
 sudo systemctl is-active smartd 2>/dev/null || echo "smartd not active"
 echo ""
@@ -386,9 +383,9 @@ for d in /dev/sd?; do
     [ -n "$v" ] && echo "  $d: $v"
 done
 echo ""
-echo "--- Boot-time Unlock Units (ZFS native / LUKS archive) ---"
-systemctl list-units --all --no-legend 'zfs-load-key@*' 'archive-luks-open@*' 2>/dev/null | awk '{print "  " $1, $3, $4}'
-[ -z "$(systemctl list-units --all --no-legend 'zfs-load-key@*' 'archive-luks-open@*' 2>/dev/null)" ] && echo "  none configured on this host"
+echo "--- Boot-time Unlock Units (ZFS native key-load) ---"
+systemctl list-units --all --no-legend 'zfs-load-key@*' 2>/dev/null | awk '{print "  " $1, $3, $4}'
+[ -z "$(systemctl list-units --all --no-legend 'zfs-load-key@*' 2>/dev/null)" ] && echo "  none configured on this host"
 echo ""
 echo "--- NFS Exports ---"
 sudo cat /etc/exports 2>/dev/null || echo "No exports"

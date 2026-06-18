@@ -270,7 +270,6 @@ weisssrv/
 | alloy_host | Grafana Alloy on non-k8s hosts and k3s VMs for journald → Loki |
 | zfs_encryption | Boot-time ZFS pool key fetch from 1Password Connect |
 | nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |
-| luks_archive | Boot-time LUKS unlock for the archive pool via 1Password Connect |
 
 ## Secrets Management
 

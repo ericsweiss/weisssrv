@@ -135,7 +135,7 @@
         fail_msg: >-
           Per-vmid files don't carry the matching inventory_hostname
           comment line — most likely the molecule platform reused a
-          vmid already in luks_archive_devices and the renders
+          vmid from another platform entry and the renders
           collided. 100.fw should mention proxmox-firewall-test;
           150.fw should mention dns-01.
 

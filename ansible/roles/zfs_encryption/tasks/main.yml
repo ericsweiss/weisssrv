@@ -66,22 +66,15 @@
 
 # Cleanup on hosts that previously had the token deployed but no longer
 # should (e.g. host removed from zfs_encryption_pools). Fail-closed:
-# absent on hosts with empty pool lists.
-#
-# The Connect token is SHARED with luks_archive (single file at
-# /etc/onepassword-connect/token, deployed by whichever of the two roles
-# runs first; see luks_archive/tasks/main.yml). The cleanup must check
-# BOTH lists are empty — otherwise on a host with zfs_encryption_pools=[]
-# and luks_archive_devices=[<entries>], this task would delete the token
-# luks_archive needs at next boot. luks_archive's analogous cleanup
-# already gates on both lists; this gate makes it symmetric.
+# the token is removed on any host whose zfs_encryption_pools is empty,
+# since zfs_encryption is now the sole deployer/consumer of
+# /etc/onepassword-connect/token.
 - name: Remove stale Connect token on non-encryption hosts
   ansible.builtin.file:
     path: /etc/onepassword-connect/token
     state: absent
   when:
     - zfs_encryption_pools | default([]) | length == 0
-    - luks_archive_devices | default([]) | length == 0
 
 - name: Ensure /etc/zfs/encryption/pools directory exists
   ansible.builtin.file:

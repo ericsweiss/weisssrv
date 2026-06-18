@@ -9,8 +9,9 @@
 # ephemeral VM images). Media is non-sensitive, the only path to encrypt the
 # 14.5T tier is a send/recv that has destabilized this host, and AES would
 # tax the streaming/transcode hot path — see docs/32 "What is encrypted,
-# what isn't". archive is LUKS (separate effort tied to the
-# failing-drive replacement, tracked in docs/06-zfs.md). local-ssd on the
+# what isn't". archive is a plaintext raidz1 pool; its sensitive
+# replicated datasets are encrypted at rest via raw `zfs send -w` streams
+# from the encrypted tank/ssd sources (docs/32). local-ssd on the
 # compute hosts is intentionally NOT encrypted — see docs/32 "What is
 # encrypted, what isn't" for the chicken-and-egg rationale (k3s VMs live on
 # local-ssd; Connect runs in k3s; encrypting it deadlocks cold boot). The
@@ -28,31 +29,6 @@ zfs_encryption_pools:
   - name: ssd
     item: "ZFS Pool ssd Passphrase"
     field: passphrase
-
-# LUKS containers backing the archive ZFS pool. Same END-STATE-intent
-# convention as zfs_encryption_pools above: list reflects the post-rolling-
-# conversion target — the actual on-disk state moves toward this target
-# one drive at a time. Until each underlying device is luksFormat'd,
-# keep luks_archive_bootstrap_only: true below so the unit-enable step
-# is skipped — enabling a unit against a plaintext device would fail at
-# next boot and block archive import via RequiredBy=zfs-import-cache.service.
-#
-# Drive-mapping history (which physical drive maps to archive-N) lives
-# in docs/06-zfs.md so this inventory doesn't drift each time a drive
-# is replaced. The conversion order in docs/32 §LUKS converts
-# archive-{2,3,4} first (one drive at a time, ~6h resilver each) and
-# finishes with archive-1 — that order avoids a second resilver cycle
-# on whichever drive most recently came in.
-luks_archive_bootstrap_only: true
-luks_archive_devices:
-  - name: archive-1
-    device: /dev/disk/by-id/ata-SEAGATE_ST6000NM0024_Z4D2BDD2
-  - name: archive-2
-    device: /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JCL6
-  - name: archive-3
-    device: /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1RQSM
-  - name: archive-4
-    device: /dev/disk/by-id/ata-ST6000NM0024-1HT17Z_Z4D1JQBA
 
 # ZFS pool configuration
 zfs_pools:

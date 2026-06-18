@@ -65,7 +65,6 @@ this list (not those files) when an item is added or its fields change.
 - **ZFS Encryption Connect Token** - credential (Connect access token used by Proxmox hosts to fetch ZFS pool passphrases at boot; created via `op connect token create weisssrv-zfs --server <id> --vaults Homelab`)
 - **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
 - **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
-- **LUKS Archive Passphrase** - passphrase (random ≥32 chars; shared across all four LUKS containers backing the archive ZFS pool on pve-nas-01; consumed by archive-luks-open@archive-N.service)
 - **Plex Custom Certificate** - password (PFX bundle passphrase used by `/usr/local/sbin/plex-cert-reload.sh` when converting the renewed PEM cert into the PKCS#12 form Plex requires; matching value must be configured under Plex Settings -> Network -> "Custom certificate encryption key")
 
 ## Kubernetes workloads (External Secrets Operator)
@@ -511,7 +510,7 @@ turn a worst-case "stolen disk" exposure into a zero-data-loss event.
 | Situation | Procedure |
 |---|---|
 | Drive was a member of an **encrypted** ZFS pool, and the pool's passphrase has not been rotated since | (a) Rotate the pool passphrase first, then (b) follow either Quick or Full procedure below |
-| Drive was a member of an **unencrypted** pool (e.g. `tank/media`, `archive` pre-LUKS) | Full procedure required — data is plaintext on the drive |
+| Drive was a member of an **unencrypted** pool (e.g. `tank/media`, or `archive` whose pool metadata is plaintext) | Full procedure required — wipe regardless of dataset-level raw encryption |
 | Drive holds no live data (cold spare, never had data) | None — verify with `zdb -l <device>` and SMART; ship as is |
 
 ### Quick procedure (encrypted pool, working drive)

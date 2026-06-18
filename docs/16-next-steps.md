@@ -299,7 +299,7 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
 - Re-deploy roles touched by the review after merge: smtp_relay,
   nas_storage (smartd, scripts, samba), plex, gitlab (registry/pages TLS —
   coordinate with the merged vm-ingress 8443 routes),
-  zfs_encryption/luks_archive (unit ordering), exporters, tailscale, base
+  zfs_encryption (unit ordering), exporters, tailscale, base
   (fail2ban)
 - Offsite copies of the k3s etcd snapshots (built-in 12h schedule works;
   3-2-1 needs them shipped off the server nodes — e.g. an archive-backupctl
@@ -308,7 +308,7 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
   if FreeDiskSpaceFailed events persist outside churn windows, lower the
   kubelet image-gc thresholds in group_vars/k3s.yml
 - Optional governance hardening for multi-author/AI velocity: CODEOWNERS on
-  ansible/roles/{proxmox_*,zfs_*,luks_archive}/ + kubernetes/infrastructure/,
+  ansible/roles/{proxmox_*,zfs_*}/ + kubernetes/infrastructure/,
   and a policy check (conftest) for risky manifest classes
 - Dedicated CI deploy SSH keypair, separate from the operator key: the
   shared key's `from=` now includes the k3s pod CIDR (runner-pod hairpin,

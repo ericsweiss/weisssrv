@@ -1090,14 +1090,6 @@ molecule-tests:
       # to end with mocked inputs.
       - ROLE: zfs_encryption
         SCENARIO: default
-      # luks_archive: sibling to zfs_encryption — same deploy-contract
-      # coverage (token file, per-device env files, unlock script, systemd
-      # template + per-device enable). Skips the cryptsetup install + the
-      # `cryptsetup isLuks` pre-enable probe via luks_archive_install_cryptsetup=false
-      # since the molecule image doesn't carry cryptsetup and there's no
-      # real LUKS-formatted device to probe.
-      - ROLE: luks_archive
-        SCENARIO: default
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never

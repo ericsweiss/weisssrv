@@ -74,16 +74,12 @@ set -euo pipefail
 #                    `task proxmox:ha`.
 #   zfs_encryption — ZFS-native passphrase activation; sensitive cold-boot
 #                    operation. Manual via `task zfs:encrypt`.
-#   luks_archive   — boot-time LUKS-mapper unlock for the archive pool;
-#                    sensitive cold-boot operation. Manual via
-#                    `task luks-archive:bootstrap` / `task luks-archive:apply`.
 INTENTIONALLY_UNMAPPED_ROLES=(
     k3s
     proxmox_vm
     proxmox_lxc
     proxmox_ha
     zfs_encryption
-    luks_archive
 )
 
 # Playbooks deliberately not mapped to a CI deploy job. Identified by
@@ -103,10 +99,6 @@ INTENTIONALLY_UNMAPPED_ROLES=(
 #   zfs-encryption.yml           — Sensitive cold-boot ZFS passphrase
 #                                  activation. Manual via
 #                                  `task zfs:encrypt`.
-#   luks-archive.yml             — Sensitive cold-boot LUKS-mapper
-#                                  activation for archive pool. Manual
-#                                  via `task luks-archive:bootstrap` /
-#                                  `task luks-archive:apply`.
 #   proxmox-ha.yml               — HA rules / replication; manual via
 #                                  `task proxmox:ha`.
 #   proxmox-enable-autostart.yml — One-shot autostart enablement after
@@ -134,7 +126,6 @@ INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
     k3s.yml
     k3s-provision-vms.yml
     zfs-encryption.yml
-    luks-archive.yml
     proxmox-ha.yml
     proxmox-enable-autostart.yml
     postflight.yml
@@ -235,7 +226,13 @@ fi
 # legitimate "nothing changed in this category" case (grep exits 1 on
 # no matches, which under `set -e + pipefail` would otherwise abort).
 # Real git diff failures already short-circuited at the rev-parse check.
-DIFF_FILES=$(git diff --name-only "$BASE_REF"...HEAD)
+#
+# --diff-filter=d EXCLUDES deletions: a removed role/playbook/inventory file
+# has no deploy-coverage obligation (there's nothing left to roll out), so it
+# must not be flagged as "changed but unmapped" — that would force the operator
+# to re-add a just-deleted asset to an INTENTIONALLY_UNMAPPED_* list. Renames
+# still surface via their added (non-deleted) path.
+DIFF_FILES=$(git diff --name-only --diff-filter=d "$BASE_REF"...HEAD)
 
 # Extract changed roles (path component after ansible/roles/).
 CHANGED_ROLES=$(

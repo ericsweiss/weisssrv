@@ -174,10 +174,10 @@ zpool list -v archive
 **Capacity**: With raidz1, usable capacity is approximately 18TB (6TB × 3 data drives)
 
 **Drive mapping** (source of truth for which physical drive backs each
-`archive-N` LUKS container in `host_vars/pve-nas-01.yml`; after the LUKS
-rolling conversion the pool members are `/dev/mapper/archive-{1..4}`):
+`archive-N` raidz1 member; the pool is built directly on the by-id devices,
+feeds `smartd_archive_disks`, and guides resilver ops):
 
-| LUKS container | Physical drive (by-id) | Notes |
+| Archive member | Physical drive (by-id) | Notes |
 |----------------|------------------------|-------|
 | archive-1 | ata-SEAGATE_ST6000NM0024_Z4D2BDD2 | Replaced Z4D1NC3Z 2026-06-06 |
 | archive-2 | ata-ST6000NM0024-1HT17Z_Z4D1JCL6 | |
@@ -603,9 +603,10 @@ the posture is explicit rather than assumed.
 > [`docs/32-zfs-encryption.md`](32-zfs-encryption.md)). Pool roots stay plaintext;
 > the encryption roots are the sensitive child datasets. `nvme` is plaintext by
 > design — it is the media domain (hot-tier media, transcode scratch, ephemeral
-> images), non-sensitive like `tank/media`. `archive` moves to LUKS
-> via the rolling conversion in docs/32 §LUKS (role bootstrapped; conversion
-> follows the 2026-06-06 drive swap). Compute-node `local-ssd` pools stay
+> images), non-sensitive like `tank/media`. `archive` is a plaintext raidz1
+> pool; its sensitive replicated datasets are encrypted at rest via raw
+> `zfs send -w` streams from the encrypted tank/ssd sources (see docs/32).
+> Compute-node `local-ssd` pools stay
 > plaintext on purpose (avoids a chicken-and-egg dependency on the Connect VIP
 > at boot).
 
@@ -613,14 +614,14 @@ the posture is explicit rather than assumed.
 |---|---|---|
 | ZFS pools `tank`, `ssd` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/backups`, `tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `ssd/appdata` (+ children), `ssd/databases`, `ssd/pve`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `nvme` | No | Media domain (hot-tier media, transcode scratch, ephemeral images) — non-sensitive, plaintext by design. See `docs/32-zfs-encryption.md`. |
-| ZFS pool `archive` | Pending | LUKS rolling conversion per `docs/32-zfs-encryption.md` §LUKS; `luks_archive` role deployed in bootstrap mode until all four drives are converted. |
+| ZFS pool `archive` | Dataset-level (raw) | Plaintext pool; the seven replicated backup datasets arrive as raw `zfs send -w` streams encrypted under their source keys (`archive-backupctl`). See `docs/32-zfs-encryption.md`. |
 | Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
 | App PVCs (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki, Grafana) | Yes | All zvol-backed under `ssd/appdata/*` → inherit the encrypted parent. |
 | Proxmox VM disks | Mixed | App-data zvols under `ssd/appdata/*` are encrypted; VM root disks on `local-ssd`, `tank/pve`, and the `ssd` pool root are not. |
 | K3s Secrets in etcd | Yes | `secrets-encryption: true` (`reencrypt_finished` confirmed). |
 | 1Password Connect on-disk cache | Yes | Connect server's encrypted SQLite (AES via bootstrap creds). |
 | 1Password vault (cloud + Connect sync source) | Yes | Vendor end-to-end (SRP + secret key). |
-| Backups (NAS archive pool, ZFS snapshots, GitLab backups) | Partial | `tank/proxmox` (VM backup target) is encrypted; `archive` is pending the LUKS conversion. |
+| Backups (NAS archive pool, ZFS snapshots, GitLab backups) | Yes (dataset-level) | `tank/proxmox` (VM backup target) is encrypted; `archive`'s backup datasets arrive as raw-encrypted `zfs send -w` streams under their source keys. |
 | Proxmox host root filesystems | No | Standard install, no LUKS. |
 
 ### In Transit
@@ -666,29 +667,15 @@ in `docs/32-zfs-encryption.md`. Scope (post-rollout):
   (`nvme/media` hot tier, `nvme/fast` transcode scratch, `nvme/pve` ephemeral
   images) — one logical media domain, LAN-trust acceptable and encryption
   complicates `zfs send` to off-pool replicas,
-  `tank/pve` (ephemeral VM/LXC images), `archive` pool
-  (separate LUKS effort, see #1 below), every compute node's
+  `tank/pve` (ephemeral VM/LXC images), the `archive` pool root
+  (plaintext; its seven replicated backup datasets are raw-encrypted at rest
+  under their source keys — see `docs/32-zfs-encryption.md`), every compute node's
   `local-ssd` pool (encrypting it deadlocks cold-boot — k3s VMs live
   on `local-ssd`, Connect runs in k3s, Connect would need to be up
   before pve-nas-01 could fetch its own passphrase, which would need
   k3s up, which would need `local-ssd` up; threat coverage moves to
   the drive-wipe SOP in `docs/15-credential-rotation.md` plus k3s
   `secrets-encryption` for etcd at rest).
-
-**Open follow-up:**
-
-1. **LUKS on the `archive` pool.** It's cold-tier, no perf concern, and
-   decommissioned drives are most likely to leave the building. LUKS rather
-   than ZFS-native because the encryption layer sits below ZFS, keeping
-   per-dataset `zfs send -w` semantics clean. Implemented by the
-   `luks_archive` role: the rolling-conversion runbook (one drive at a
-   time, no pool destroy) and the operator unlock procedure live in
-   [`docs/32-zfs-encryption.md`](32-zfs-encryption.md) §"LUKS rolling
-   conversion (archive pool)". 1Password item: **LUKS Archive Passphrase**;
-   the mapper names `archive-1..4` and their physical-drive mapping are
-   defined in `host_vars/pve-nas-01.yml` (`luks_archive_devices`) and in
-   the drive-mapping table under [Archive Pool Creation](#archive-pool-creation)
-   above.
 
 **Shipped (active in current configuration):**
 

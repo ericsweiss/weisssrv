@@ -278,24 +278,6 @@ tasks:
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/zfs-encryption.yml {{.CLI_ARGS}}
 
-  luks-archive:bootstrap:
-    desc: Bootstrap LUKS-archive host-side mechanism (no-op until devices are LUKS-formatted)
-    dir: "{{.ANSIBLE_DIR}}"
-    env:
-      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
-      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
-    cmds:
-      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/luks-archive.yml -e luks_archive_bootstrap_only=true {{.CLI_ARGS}}
-
-  luks-archive:apply:
-    desc: Activate LUKS-archive boot units (after rolling conversion; probes cryptsetup isLuks on each device)
-    dir: "{{.ANSIBLE_DIR}}"
-    env:
-      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
-      ZFS_ENCRYPTION_CONNECT_TOKEN: op://Homelab/ZFS Encryption Connect Token/credential
-    cmds:
-      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/luks-archive.yml {{.CLI_ARGS}}
-
   # === K3s Deployment Tasks ===
   k3s:provision-vms:
     desc: Provision k3s VMs on Proxmox (creates VMs only)

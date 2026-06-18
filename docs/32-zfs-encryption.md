@@ -87,9 +87,10 @@ reference, and NFS export path — are unchanged by encryption.
   `zfs receive -o` applies the override only to the stream's top-level (filesystem)
   dataset, never to the zvol descendants.) (Sending the now-encrypted sources non-raw is impossible with
   `-R`: ZFS rejects sending an encrypted dataset with properties unless raw.)
-  This gives the replicated data native at-rest encryption, which largely
-  supersedes the separately-tracked archive-pool LUKS effort (`docs/06-zfs.md`);
-  only archive data outside those seven datasets stays plaintext. Raw replication
+  This gives the replicated data native at-rest encryption — raw `zfs send -w`
+  replication IS the at-rest protection for those seven archive datasets (the
+  archive pool itself loads no key); only archive data outside those seven
+  datasets stays plaintext. Raw replication
   preserves the source's compression (ZFS compresses before it encrypts), so the
   encrypted archive copies are the same size as the sources — not larger. The
   one-time raw re-seed copies only each dataset's **current snapshot**, not its
@@ -437,161 +438,11 @@ sudo systemctl status "zfs-load-key@<pool>.service"  # active (exited) expected
 
 Repeat for each pool you unlocked manually on that host.
 
-## LUKS rolling conversion (archive pool)
-
-The `archive` pool predates the encryption hardening work — four
-ST6000NM0024 drives with ~3 years of power-on hours and a thermal history
-that disqualifies them from "create a new ZFS-native encrypted pool
-from scratch." The rolling-conversion path lets us encrypt the existing
-pool one drive at a time without destroying it, layering LUKS underneath
-each vdev. Implementation lives in `ansible/roles/luks_archive` — sibling
-to `zfs_encryption`, same Connect plumbing, different unlock primitive.
-
-### Prerequisites
-
-- All four archive vdevs in `ONLINE` state with no pending resilver and
-  no `errors:` in `zpool status -v archive`.
-- 1Password item "LUKS Archive Passphrase" created and populated with a
-  random ≥32-character passphrase. Same passphrase is used for all four
-  LUKS containers (threat model: drives stolen as a group).
-- `task luks-archive:bootstrap` has been run at least once. Confirms the
-  script + Connect token + unit template are deployed:
-  ```
-  ssh pve-nas-01 ls /usr/local/sbin/luks-archive-open.sh \
-                     /etc/systemd/system/archive-luks-open@.service \
-                     /etc/onepassword-connect/token
-  ```
-- Recent off-NAS backup of anything irreplaceable. Each per-drive
-  resilver in the loop below briefly drops the pool to "no redundancy"
-  (raidz1 minus one drive); a second drive coughing during that window
-  ends the pool.
-
-### Conversion order
-
-`luks_archive_devices` in `host_vars/pve-nas-01.yml` lists `archive-{1..4}`.
-Convert `archive-{2,3,4}` (the surviving original drives) first, finishing
-with `archive-1` (the recently-resilvered replacement). That order avoids
-burning an extra resilver cycle on the new drive — if we did `archive-1`
-first, we'd resilver it once into the LUKS layer NOW and again later
-when the other three flip over.
-
-### Per-drive procedure
-
-Repeat the block below four times, replacing `archive-N` and the by-id
-on each pass. Stay on a single drive until its resilver completes —
-parallelizing kills the pool.
-
-```bash
-# EDIT BOTH lines on every iteration — N is used only for the mapper
-# name; BYID is used for every disk-side operation. Forgetting to
-# update BYID will luksFormat the WRONG drive (the previous iteration's
-# survivor that's already been converted, undoing the prior work).
-# Pairs to use, in order:
-#   N=2 / BYID=ata-ST6000NM0024-1HT17Z_Z4D1JCL6   (sde, archive-2)
-#   N=3 / BYID=ata-ST6000NM0024-1HT17Z_Z4D1RQSM   (sdf, archive-3)
-#   N=4 / BYID=ata-ST6000NM0024-1HT17Z_Z4D1JQBA   (sdg, archive-4)
-#   N=1 / BYID=ata-SEAGATE_ST6000NM0024_Z4D2BDD2  (sdd, archive-1, last)
-N=2
-BYID=ata-ST6000NM0024-1HT17Z_Z4D1JCL6
-
-# 1. Offline the chosen survivor. Pool drops to "no parity" — confirm
-#    no other drive is showing read/CKSUM errors before proceeding.
-sudo zpool status archive
-sudo zpool offline archive "$BYID"
-
-# 2. Wipe ZFS labels so they don't survive luksFormat. Without this,
-#    if the host reboots between luksFormat and `zpool replace`, the
-#    next `zpool import -d /dev/disk/by-id` could re-attach the
-#    now-LUKS-headed drive to the pool via its still-readable ZFS
-#    label, causing a pool-side checksum storm and complicating
-#    recovery. wipefs makes the label disappear before we layer on
-#    the LUKS header.
-sudo wipefs -a "/dev/disk/by-id/$BYID"
-
-# 3. Format the device. luks2 + aes-xts-plain64 + 256-bit data key
-#    + argon2id KDF (with sha256 as its internal hash) — same parameters
-#    cryptsetup picks by default on bookworm/trixie but pinned here so
-#    the runbook stays reproducible across cryptsetup versions and
-#    matches the README's short summary. Paste the passphrase from 1P
-#    "LUKS Archive Passphrase" twice.
-sudo cryptsetup luksFormat \
-    --type luks2 \
-    --cipher aes-xts-plain64 \
-    --key-size 256 \
-    --hash sha256 \
-    --pbkdf argon2id \
-    "/dev/disk/by-id/$BYID"
-
-# 4. Open the container. Paste passphrase once more.
-sudo cryptsetup open "/dev/disk/by-id/$BYID" "archive-${N}"
-ls -l "/dev/mapper/archive-${N}"   # confirm the mapper exists
-
-# 5. Replace the offline vdev with the LUKS-backed mapper.
-sudo zpool replace archive "$BYID" "/dev/mapper/archive-${N}"
-
-# 6. Wait for resilver. ~6-9h per drive at full pool size. Cluster
-#    has passwordless sudo for eric so `watch -n 60 sudo` doesn't
-#    re-prompt; substitute a polling loop if running elsewhere.
-watch -n 60 sudo zpool status archive
-
-# 7. After resilver completes: verify the new vdev is ONLINE and the
-#    pool is clean before moving to the next drive.
-sudo zpool status -v archive       # all four vdevs ONLINE, no errors
-```
-
-### After all four are LUKS-backed
-
-```bash
-# 1. Flip the host_vars from bootstrap mode to active mode and activate
-#    the four archive-luks-open@<name>.service instances. The role
-#    probes `cryptsetup isLuks` on each listed device — if any device
-#    is still plaintext (e.g. you stopped after three drives), the
-#    play fails loudly rather than enabling a unit that would block
-#    next boot.
-task luks-archive:apply
-
-# 2. Verify the units are enabled and ordered correctly:
-ssh pve-nas-01 'systemctl list-dependencies zfs-import-cache.service \
-                | grep archive-luks-open'
-
-# 3. Reboot pve-nas-01 to validate the cold-boot path end-to-end. Pool
-#    should import automatically with no manual intervention.
-sudo reboot
-# After reboot:
-sudo zpool status archive          # ONLINE, all four /dev/mapper/archive-N
-sudo systemctl status 'archive-luks-open@archive-*.service'
-                                   # all four: active (exited)
-```
-
-### Rollback (any step before step #7 of a given drive)
-
-If something goes sideways mid-conversion on a single drive, the safe
-recovery is to re-attach the original plaintext drive:
-
-```bash
-# If you reached step 5 and the resilver is in-flight, abort it first.
-# `zpool replace` adds a transient `replacing-N` mirror vdev; detaching
-# the replacement while resilver is mid-stream returns "no such device"
-# unless we wait for ZFS to settle the vdev state. ~10-30s typical.
-sudo zpool status archive | grep -A2 replacing- || true
-sleep 30   # let the replace transaction quiesce
-
-sudo cryptsetup close archive-${N}                    # if you opened it
-sudo zpool detach archive /dev/mapper/archive-${N}    # if you got to replace
-sudo wipefs -a "/dev/disk/by-id/$BYID"                # clear LUKS header
-sudo zpool online archive "$BYID"                     # rejoin as plaintext
-sudo zpool clear archive
-```
-
-The other three drives still hold the data via raidz1 parity — losing
-the offline drive's plaintext content is recoverable as long as no
-SECOND drive faults during the resilver back.
-
 ## Threat model recap
 
 | Threat | Protected? |
 |--------|-----------|
-| Stolen offline drive (RMA, disposal, theft from rack) | Yes [^archive-rollout] |
+| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s seven replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
 | Stolen offline drive bundled with stolen Proxmox host (no LAN) | Yes (Connect token unusable without LAN reach to `connect.esweiss.com`) |
 | Stolen running NAS still on the same LAN | No (running root extracts both token and key) |
 | Compromised root via remote exploit on running host | No (same as above) |
@@ -600,15 +451,6 @@ SECOND drive faults during the resilver back.
 For the running-system threat, a TPM-sealed Proxmox root with measured
 boot would be the next step. Tracked in `docs/16-next-steps.md` as a
 follow-up project.
-
-[^archive-rollout]: For the **archive** pool specifically, this row is
-    "Yes" only AFTER all four drives have completed the LUKS rolling
-    conversion above. During the in-progress window — typically ~24-32
-    hours between starting drive 1 and finishing drive 4 — drives that
-    haven't been converted yet are still plaintext. `tank` and `ssd` are
-    encrypted at the ZFS layer (their sensitive datasets), so this caveat
-    doesn't apply to them; `nvme` and `tank/media` are plaintext by design
-    (see "Not encrypted").
 
 ## References
 
