@@ -252,7 +252,7 @@ helm_chart_versions:
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
   kube_prometheus_stack: "86.2.3"
-  loki: "17.4.6"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  loki: "17.4.7"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.13.0"
   onepassword_connect: "2.4.1"
