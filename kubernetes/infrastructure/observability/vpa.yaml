@@ -196,7 +196,12 @@ spec:
   updatePolicy: {updateMode: Auto}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly: right-size requests but NEVER set limits. With the
+      # default RequestsAndLimits the VPA scales the limit proportionally and
+      # re-imposes a CPU limit (~110m) even after it's removed from the chart
+      # values, which is what kept CPUThrottlingHigh firing on node-exporter.
       - containerName: "*"
+        controlledValues: RequestsOnly
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 200m, memory: 128Mi}
         controlledResources: [cpu, memory]

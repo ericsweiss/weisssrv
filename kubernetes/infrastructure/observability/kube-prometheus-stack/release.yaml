@@ -215,8 +215,13 @@ spec:
           cpu: 50m
           memory: 32Mi
         limits:
-          cpu: 500m
-          memory: 64Mi
+          # No CPU limit: node-exporter bursts during scrape collection and CFS
+          # throttling at 500m was the dominant CPUThrottlingHigh source. Matches
+          # the request-only pattern used for the proxmox/adguard/redis exporters.
+          # Memory limit kept (OOM is a real failure mode); raised to 128Mi to
+          # match the node-exporter VPA maxAllowed. The node-exporter VPA is set
+          # to controlledValues: RequestsOnly so it cannot re-impose a CPU limit.
+          memory: 128Mi
 
     # -------------------------------------------------------------------------
     # kube-state-metrics
