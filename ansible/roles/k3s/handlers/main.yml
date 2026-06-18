@@ -1,14 +1,38 @@
 ---
+# Restart, then gate on the API actually coming back. On a busy node (the NAS
+# server) k3s can exit once during startup (etcd rejoin) and be recovered by
+# Restart=always seconds later; a plain restart reports failure on that first
+# exit even though it recovers, which spuriously failed a maintenance-run-all on
+# k3s-srv-nas-01. failed_when:false tolerates that transient, and the config
+# tasks notify "Wait for k3s API healthy" alongside this so the health poll runs
+# regardless — it is the real gate (a genuinely-stuck k3s fails there).
 - name: Restart k3s
   ansible.builtin.systemd:
     name: k3s
     state: restarted
     daemon_reload: true
+  failed_when: false
   when: not (skip_k3s_install | default(false))
 
+- name: Wait for k3s API healthy
+  # /readyz (stricter than /healthz) gates on the apiserver being fully ready to
+  # serve, not merely up — reduces flaky follow-up ops right after a restart.
+  # kubectl --raw returns rc 0 only on HTTP 200 (readyz "ok"), non-zero otherwise.
+  ansible.builtin.command: k3s kubectl get --raw=/readyz
+  register: k3s_api_readyz
+  changed_when: false
+  until: k3s_api_readyz.rc == 0
+  retries: 30
+  delay: 10
+  when: not (skip_k3s_install | default(false))
+
+# Agents are lighter (no etcd/API) and rarely flake on restart; failed_when:false
+# tolerates a transient exit, and the post-maintenance node-Ready check catches a
+# genuinely-dead agent.
 - name: Restart k3s-agent
   ansible.builtin.systemd:
     name: k3s-agent
     state: restarted
     daemon_reload: true
+  failed_when: false
   when: not (skip_k3s_install | default(false))

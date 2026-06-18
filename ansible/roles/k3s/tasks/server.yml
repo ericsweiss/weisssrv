@@ -32,7 +32,9 @@
     src: k3s-server-config.yaml.j2
     dest: /etc/rancher/k3s/config.yaml
     mode: "0600"
-  notify: Restart k3s
+  notify:
+    - Restart k3s
+    - Wait for k3s API healthy
 
 - name: Verify config file was created
   ansible.builtin.stat:
@@ -112,7 +114,9 @@
   when:
     - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
     - not (skip_k3s_install | default(false))
-  notify: Restart k3s
+  notify:
+    - Restart k3s
+    - Wait for k3s API healthy
   changed_when: true
   no_log: true
 

@@ -38,23 +38,41 @@ fi
 
 echo ""
 echo "Checking for unhealthy pods..."
-# Guard the kubectl pipelines so a transient API failure (combined with
-# `set -o pipefail`) doesn't abort verify before subsequent checks run.
-UNHEALTHY=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null | wc -l) || {
-  echo "ERROR: failed to query non-running pods"
-  ERRORS=$((ERRORS + 1))
-  UNHEALTHY=0
+# Report genuinely-unhealthy pods only. A single snapshot false-alarms on
+# transient pods — a just-spawned CronJob pod (ContainerCreating/Pending) or a
+# Completed batch pod — which is what failed a maintenance verify once (a 0s
+# cloudflare-ddns CronJob pod). Exclude Completed/Succeeded, then re-check after
+# a grace window so only pods STILL unhealthy afterwards are flagged.
+# `set -o pipefail` is active: a kubectl failure surfaces as a non-zero return
+# that the `|| {...}` guard turns into a counted error instead of aborting verify.
+# One awk catches both non-running ($4 != Running) and Running-but-not-ready
+# (READY a/b with a != b).
+list_unhealthy() {
+  kubectl get pods -A --no-headers 2>/dev/null | awk '
+    $4 == "Completed" || $4 == "Succeeded" { next }
+    { split($3, a, "/"); if ($4 != "Running" || a[1] != a[2]) print }'
 }
-# $3 is READY column (e.g. "1/1"); split on "/" and compare numerator vs denominator
-DEGRADED=$(kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Completed" && $4 != "Succeeded" {split($3, a, "/"); if (a[1] != a[2]) print}' | wc -l) || {
-  echo "ERROR: failed to query degraded pods"
+BAD=$(list_unhealthy) || {
+  echo "ERROR: failed to query pods"
   ERRORS=$((ERRORS + 1))
-  DEGRADED=0
+  BAD=""
 }
-if [ "$UNHEALTHY" -gt 0 ] || [ "$DEGRADED" -gt 0 ]; then
-  echo "ERROR: $UNHEALTHY non-running + $DEGRADED degraded pod(s):"
-  kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null || true
-  kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Completed" && $4 != "Succeeded" {split($3, a, "/"); if (a[1] != a[2]) print}' || true
+if [ -n "$BAD" ]; then
+  # Grace: let transient startup / CronJob pods settle, then re-check.
+  sleep 25
+  # Fail safe: if the re-query itself fails (transient API outage), keep the
+  # pre-grace unhealthy snapshot and count an error rather than clearing BAD,
+  # so a query failure can't mask real problems as "All pods healthy".
+  if RECHECK=$(list_unhealthy); then
+    BAD="$RECHECK"
+  else
+    echo "ERROR: failed to re-query pods after grace (keeping pre-grace result)"
+    ERRORS=$((ERRORS + 1))
+  fi
+fi
+if [ -n "$BAD" ]; then
+  echo "ERROR: pod(s) still unhealthy after grace:"
+  echo "$BAD"
   ERRORS=$((ERRORS + 1))
 else
   echo "All pods healthy"
