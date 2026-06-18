@@ -102,6 +102,140 @@ pct set 152 --mp0 /mnt/ssd/appdata/plex,mp=/config,backup=0
 Reclaiming the already-accumulated oversized vzdump tarballs is a separate
 one-time manual prune (or let `tank-proxmox` retention age them out).
 
+## Restore Procedures
+
+Two paths feed the `archive` pool (see "Backup Dedup" above): the nightly
+`vzdump` of every VM/CT into `tank/proxmox`, and `archive-backupctl`'s direct
+raw/encrypted replication of `tank/{share,backups,nextcloud-data,proxmox,
+immich-data}` + `ssd/{appdata,databases}`. **Everything in `archive` is raw
+(`zfs send -w`) and encrypted under its source's key** — `archive` never holds a
+loaded key, so any restored dataset needs `zfs load-key` before it can be read
+(passphrase in 1Password; see `docs/32-zfs-encryption.md` and
+`docs/15-credential-rotation.md`).
+
+### From the archive (`archive-backupctl`)
+
+`archive-backupctl` is the restore tool for every directly-replicated dataset.
+Import the pool first if it is detached (`archive-backupctl plug`), then:
+
+```bash
+# SAFE (default): restore the latest snapshot into a NEW dataset
+#   <source>-restore-<timestamp>, mounted under /mnt/restore/<target>/<ts>/.
+# Non-destructive — the live dataset is untouched.
+sudo archive-backupctl restore <target>   # share|backups|nextcloud-data|proxmox|
+                                          # immich-data|appdata|databases|all
+
+# The restored clone is raw + encrypted (key-less). These pools use multiple
+# SIBLING encryption roots that share one passphrase (Model B, docs/32) — NOT one
+# nested root: a bare `zfs load-key -r` reads the passphrase once, unlocks the
+# first root, and fails the rest. `-L prompt` re-prompts per root (this is exactly
+# what the tool prints; the per-root loop in docs/32 is the scriptable form):
+sudo zfs load-key -r -L prompt <pool>/<target>-restore-<timestamp>   # e.g.
+                                                          # ssd/appdata-restore-<ts>
+sudo zfs mount -r <pool>/<target>-restore-<timestamp>     # scoped to the restore
+                     # tree (under /mnt/restore/<target>/<ts>/). Mounts the restored
+                     # *filesystem* children only — the app-DB ZVOLS (authentik/
+                     # postgres, prometheus/data, loki/data, gitlab/repos) are block
+                     # devices: after load-key they appear under /dev/zvol/<pool>/
+                     # ...-restore-<ts>/..., restore them per "App-data zvols" below.
+
+# VERIFY before trusting the restore — a key-less `zfs mount` silently mounts
+# nothing. No row may read `unavailable` (snapshots/unencrypted read `-`):
+sudo zfs get -H -o value -r keystatus <pool>/<target>-restore-<timestamp> \
+  | grep -qx unavailable && echo "STILL LOCKED — load-key per root before reading"
+
+# DESTRUCTIVE in-place restore (`zfs receive -u -F` over the LIVE dataset). The
+# tool does NOT stop consumers, and `receive -F` cannot roll back a dataset whose
+# zvol children are held open by a running guest — it fails "dataset is busy", or
+# corrupts the live volume if forced through. QUIESCE EVERY WRITER FIRST:
+#   1. Stop the guest(s) holding the dataset. For ssd/appdata that is the
+#      k3s-agt-nas-01 VM (vmid 202: authentik/mealie postgres, prometheus, loki)
+#      AND the GitLab VM (gitlab/repos) — `qm stop <vmid>` releases the passthrough
+#      zvol; scaling the k8s pod to 0 does NOT (the VM, not the pod, holds it).
+#      For tank/{share,proxmox}: stop/unexport the NFS consumers.
+#   2. Confirm nothing holds the zvol nodes (zfs holds lists snapshot holds, not
+#      open devices): sudo fuser -v /dev/zvol/ssd/appdata/*/*   # expect no holders
+#   3. sudo archive-backupctl restore-force <target>
+#   4. Load the key + confirm the data reads (DB starts, files present) BEFORE
+#      restarting consumers (`qm start`/`pct start`, re-enable exports).
+sudo archive-backupctl restore-force <target>
+```
+
+Never `zfs load-key` + mount an `archive/<dataset>` in place — it dirties the raw
+incremental chain and forces a full re-seed (docs/32). Always restore to a clone.
+
+### App-data zvols (Postgres, Prometheus, Loki, GitLab repos)
+
+These live on `ssd/appdata` and — since the vzdump dedup (`backup=0`) — are **no
+longer in the VM/CT vzdumps**; `archive/appdata` is now their sole backup. Restore
+them from the archive, not from a VM image:
+
+```bash
+sudo archive-backupctl restore appdata                  # -> ssd/appdata-restore-<ts>
+sudo zfs load-key -r -L prompt ssd/appdata-restore-<ts> # per-root prompt (Model B)
+# The zvol you need is e.g. ssd/appdata-restore-<ts>/prometheus/data. These zvols
+# are PASSTHROUGH block devices on the k3s-agt-nas-01 VM (vmid 202) — the in-guest
+# pod is NOT the holder, the VM is. Stop the VM to release the device (this also
+# takes authentik/mealie postgres + loki offline); then send the snapshot back:
+sudo qm stop 202                                        # on pve-nas-01
+sudo fuser -v /dev/zvol/ssd/appdata/prometheus/data     # confirm free (host side)
+sudo zfs send ssd/appdata-restore-<ts>/prometheus/data@<snap> \
+  | sudo zfs receive -F ssd/appdata/prometheus/data
+sudo qm start 202                                       # bring the node back, verify
+# (`restore-force appdata` does the same `receive -F` recursively over EVERY zvol
+#  held by vmid 202 — identical stop-202-first requirement.)
+```
+
+The zvol re-attaches to its VM via the `proxmox_vm` role's `vm_additional_disks`
+on the next deploy (it carries `vzdump_backup: false`, so it stays out of vzdump).
+
+### VM/CT images (from vzdump)
+
+Every VM/CT OS disk is in the nightly `vzdump` on `tank/proxmox` (live, decrypted
+on pve-nas-01) and replicated to `archive/proxmox` (raw/encrypted).
+
+```bash
+# Normal case — from the live tank/proxmox copy (Proxmox UI, or):
+# NOTE: if <vmid>/<ctid> still exists, qmrestore/pct restore REFUSE unless you add
+#   --force (or pick a fresh, unused id). --force first DESTROYS the existing guest
+#   config + its OS/root volume, then restores. The app-data passthrough zvols (raw
+#   /dev/zvol paths, backup=0) and Plex's bind mount are NOT Proxmox-managed, so
+#   --force only drops their config reference (re-attached on next deploy) — the
+#   underlying data is untouched. Prefer a fresh id to avoid touching the live guest.
+sudo qmrestore /mnt/tank/proxmox/dump/vzdump-qemu-<vmid>-<ts>.vma.zst <vmid> --storage <pool>
+sudo pct restore <ctid> /mnt/tank/proxmox/dump/vzdump-lxc-<ctid>-<ts>.tar.zst --storage <pool>
+
+# If only the archive copy survives, restore it, load the key + mount, then
+# restore the guest from the dump dir on the restored dataset:
+sudo archive-backupctl restore proxmox           # -> tank/proxmox-restore-<ts>,
+                                                 #    mounted at /mnt/restore/proxmox/<ts>/
+sudo zfs load-key -r -L prompt tank/proxmox-restore-<ts>
+sudo zfs mount -r tank/proxmox-restore-<ts>
+sudo qmrestore  /mnt/restore/proxmox/<ts>/dump/vzdump-qemu-<vmid>-<bts>.vma.zst <vmid> --storage <pool>
+sudo pct restore <ctid> /mnt/restore/proxmox/<ts>/dump/vzdump-lxc-<ctid>-<bts>.tar.zst --storage <pool>
+```
+
+App-data zvols recovered this way are the **stale pre-dedup copies** — prefer the
+`archive/appdata` path above for current app data.
+
+### Other backup types
+
+- **GitLab** — app-consistent nightly tarball (`/var/opt/gitlab/backups`, on the
+  VM OS disk → vzdump). Restore with `gitlab-backup restore`
+  (`docs/27-gitlab-deployment.md`).
+- **Grafana** — the SQLite DB (`grafana.db`) lives on the NFS export
+  `/appdata/grafana`, a bind of `ssd/appdata`, so it rides the `ssd/appdata →
+  archive/appdata` replication (it is a *file*, not a zvol — the send-back above
+  doesn't apply). Restore file-wise: `archive-backupctl restore appdata`, then
+  `zfs load-key -r -L prompt ssd/appdata-restore-<ts>` + `zfs mount -r
+  ssd/appdata-restore-<ts>`, scale Grafana to 0, copy `grafana.db` from
+  `/mnt/restore/appdata/<ts>/grafana/` into `/mnt/ssd/appdata/grafana/` (owner
+  `1000:2000`), scale back up. Most Grafana state is reproducible from git
+  (dashboards via ConfigMap, datasources via config); only service accounts and
+  user prefs are unique (`docs/31-observability.md`).
+- **k3s etcd** — see "etcd Snapshots" below + "k3s cluster recovery".
+- **Home Assistant** — HAOS built-in backups (`docs/24-home-assistant-deployment.md`).
+
 ## etcd Snapshots
 
 k3s's built-in scheduled snapshots are active on every server node

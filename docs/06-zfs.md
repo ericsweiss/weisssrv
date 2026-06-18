@@ -496,28 +496,27 @@ sudo zpool iostat -v tank 5
 
 ## Backup Strategy
 
-### ZFS Send/Receive
+### Archive Replication
 
-Replicate datasets to `archive` pool:
+`archive-backupctl` (on pve-nas-01, nightly timer) replicates the source datasets
+to the `archive` pool as **raw, encrypted** `zfs send -w` streams, so the archive
+copies are encrypted at rest under each source's own key — the archive never
+loads a key. Replicated datasets: `tank/{share,backups,nextcloud-data,proxmox,
+immich-data}` and `ssd/{appdata,databases}`. Retention: the newest few `archsync`
+snapshots plus a grandfather monthly.
 
-```bash
-# Initial send
-sudo zfs snapshot ssd/appdata@backup-$(date +%Y%m%d)
-sudo zfs send ssd/appdata@backup-$(date +%Y%m%d) | \
-  sudo zfs receive archive/backups/appdata
-
-# Incremental send (incremental source = the previous snapshot)
-PREV=$(zfs list -t snapshot -o name -s creation ssd/appdata | tail -1)
-sudo zfs snapshot ssd/appdata@backup-$(date +%Y%m%d)
-sudo zfs send -i "$PREV" ssd/appdata@backup-$(date +%Y%m%d) | \
-  sudo zfs receive archive/backups/appdata
-```
+Do **not** run manual `zfs send | zfs receive` into `archive/*` — it breaks the
+raw incremental chain `archive-backupctl` maintains and forces a full re-seed.
+Restore + key handling: `docs/17-disaster-recovery.md` (Restore Procedures) and
+`docs/32-zfs-encryption.md`.
 
 ### Proxmox Backup
 
-Proxmox VMs/LXCs backup to:
-- `tank/proxmox` (primary)
-- `archive/proxmox` (long-term retention)
+Proxmox VMs/LXCs back up nightly (`vzdump`, `all`) to:
+- `tank/proxmox` (primary; itself replicated raw/encrypted to `archive/proxmox`)
+- App-data passthrough zvols carry `backup=0`, so vzdump skips them — they are
+  backed up via `ssd/appdata` → archive instead, not double-stored in the VM
+  image (see `docs/17-disaster-recovery.md` "Backup Dedup").
 
 ## Ansible Management
 
