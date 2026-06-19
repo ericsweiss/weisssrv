@@ -77,7 +77,11 @@ workflow:
       export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
       install -m 600 ansible/ansible.cfg "$ANSIBLE_CONFIG"
       trap "rm -f '$ANSIBLE_CONFIG'" EXIT
-    - pip install --quiet ansible==11.6.0 ansible-lint==25.12.2
+    # black<26.5.0: ansible-lint's jinja rule imports black, and the black 26.5.x
+    # wheels ship a broken mypyc extension (ImportError: undefined symbol
+    # CPyMndule_black___resources) that makes ansible-lint fail to load. Pin below
+    # it (ansible-lint only needs black>=24.3.0); lift once 26.5.x is fixed.
+    - pip install --quiet ansible==11.6.0 ansible-lint==25.12.2 'black<26.5.0'
     - ansible-galaxy collection install -r ansible/requirements.yml
 
 .install-1password:

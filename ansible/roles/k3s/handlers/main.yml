@@ -18,7 +18,9 @@
   # /readyz (stricter than /healthz) gates on the apiserver being fully ready to
   # serve, not merely up — reduces flaky follow-up ops right after a restart.
   # kubectl --raw returns rc 0 only on HTTP 200 (readyz "ok"), non-zero otherwise.
-  ansible.builtin.command: k3s kubectl get --raw=/readyz
+  # --request-timeout bounds each probe so a hung API call fails fast and the
+  # retry budget (30 x 10s) stays predictable instead of stalling on one call.
+  ansible.builtin.command: k3s kubectl --request-timeout=5s get --raw=/readyz
   register: k3s_api_readyz
   changed_when: false
   until: k3s_api_readyz.rc == 0
