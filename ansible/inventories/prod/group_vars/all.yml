@@ -251,7 +251,7 @@ helm_chart_versions:
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "86.2.3"
+  kube_prometheus_stack: "86.3.1"
   loki: "17.4.7"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.13.0"
@@ -276,23 +276,89 @@ firewall_ipset_special_entries:
 # HA rules (Proxmox 9+) define node affinity for resources
 # node-affinity rules restrict which nodes can run specific resources
 # All critical services excluded from pve-nas-01 to avoid I/O contention with NAS workloads
+#
+# Each critical service gets a per-service rule that (a) lists ONLY the five
+# local-ssd compute nodes, so it never lands on pve-nas-01 unless every compute
+# node is down (strict=false), and (b) gives its HOME node priority 2 vs 1 for the
+# rest, so after an HA failover the service fails BACK to its home when that node
+# returns instead of stranding on the failover node — the placement drift the
+# storage_replication_jobs source-node warnings flag. Replaces the old flat
+# critical-services-no-nas rule (kept off nas but had no per-service home
+# preference). Homes match the storage_replication_jobs primary layout above.
 ha_rules:
+  - name: affinity-dns-01
+    type: node-affinity
+    resources:
+      - ct:150  # dns-01 (AdGuard Home primary)
+    nodes:
+      - "pve-laptop-01:2"  # home
+      - "pve-opt-01:1"
+      - "pve-opt-02:1"
+      - "pve-opt-03:1"
+      - "pve-prec-01:1"
+    strict: false
+    comment: "dns-01 home pve-laptop-01 (fails back when available); never pve-nas-01"
+    enabled: true
+
+  - name: affinity-smtp-relay
+    type: node-affinity
+    resources:
+      - ct:151  # smtp-relay (Postfix relay)
+    nodes:
+      - "pve-opt-01:2"  # home
+      - "pve-laptop-01:1"
+      - "pve-opt-02:1"
+      - "pve-opt-03:1"
+      - "pve-prec-01:1"
+    strict: false
+    comment: "smtp-relay home pve-opt-01 (fails back when available); never pve-nas-01"
+    enabled: true
+
+  - name: affinity-dns-02
+    type: node-affinity
+    resources:
+      - ct:160  # dns-02 (AdGuard Home secondary)
+    nodes:
+      - "pve-opt-03:2"  # home
+      - "pve-laptop-01:1"
+      - "pve-opt-01:1"
+      - "pve-opt-02:1"
+      - "pve-prec-01:1"
+    strict: false
+    comment: "dns-02 home pve-opt-03 (fails back when available); never pve-nas-01"
+    enabled: true
+
+  - name: affinity-home-assistant
+    type: node-affinity
+    resources:
+      - vm:154  # home-assistant (HAOS VM)
+    nodes:
+      - "pve-prec-01:2"  # home
+      - "pve-laptop-01:1"
+      - "pve-opt-01:1"
+      - "pve-opt-02:1"
+      - "pve-opt-03:1"
+    strict: false
+    comment: "home-assistant home pve-prec-01 (fails back when available); never pve-nas-01"
+    enabled: true
+
+  # Superseded by the per-service affinity rules above. Kept (disabled) for one
+  # deploy so the role's remove step deletes the live rule; safe to drop afterward.
   - name: critical-services-no-nas
     type: node-affinity
     resources:
-      - ct:150  # dns-01
-      - ct:160  # dns-02
-      - ct:151  # smtp-relay
-      - vm:154  # home-assistant
+      - ct:150
+      - ct:151
+      - ct:160
+      - vm:154
     nodes:
       - pve-laptop-01
       - pve-opt-01
       - pve-opt-02
       - pve-opt-03
       - pve-prec-01
-    strict: false  # Allow running on pve-nas-01 only if all other nodes are unavailable
-    comment: "Prevent critical services from running on pve-nas-01 (avoid I/O contention with NAS workloads)"
-    enabled: true
+    strict: false
+    enabled: false
 
 # HA resources define which VMs/containers are managed by HA
 # These will automatically restart/relocate on node failure

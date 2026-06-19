@@ -111,29 +111,78 @@ fi
 
 echo ""
 echo "Checking cluster DNS (internal service resolution)..."
-# Retry: the probe schedules a one-off pod, which can fail to start within the
-# timeout on a node mid-restart during maintenance — a transient that does NOT
-# mean DNS is broken. Pass on the first DNS_PASS; only fail after all attempts.
+# Spawn a one-off busybox pod that resolves an in-cluster name (a fresh pod always
+# gets ClusterFirst DNS, so this exercises CoreDNS regardless of the runner pod's
+# own dnsPolicy). IMPORTANT: do NOT use `kubectl run --attach --rm` — attach races
+# a fast-completing pod and loses its stdout, so DNS_PASS/DNS_FAIL was never
+# captured and verify failed every run even though DNS was healthy. Instead create
+# the pod, poll for it to finish, then read its output with `kubectl logs` (always
+# reliable), and delete it. Retry guards a genuinely transient CoreDNS/scheduling
+# blip right after maintenance.
+# Every kubectl call is bounded with --request-timeout so API/network degradation
+# can't hang verify (the old --attach flow had a 40s timeout we must not lose).
+kctl_timeout="--request-timeout=15s"
 dns_ok=false
 dns_saw_fail=false
 dns_last_output=""
 for dns_attempt in 1 2 3 4 5; do
-  DNS_OUTPUT=$(kubectl run "dns-verify-${CI_JOB_ID:-$$}-${dns_attempt}" --attach --rm --restart=Never --timeout=40s \
-      --image=busybox:1.37 --command -- sh -c \
-      "nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" 2>&1 || true)
-  dns_last_output="$DNS_OUTPUT"
+  dns_pod="dns-verify-${CI_JOB_ID:-$$}-${dns_attempt}"
+  # Clear any leftover pod of the same name (e.g. from an interrupted run) so we
+  # cannot read a stale pod's logs and return a wrong verdict.
+  kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  # Don't swallow a creation failure: without the pod, a later `kubectl logs` could
+  # read a same-named stale pod. On failure, record it and move to the next attempt.
+  if ! kubectl run "$dns_pod" "$kctl_timeout" --restart=Never --image=busybox:1.37 --command -- \
+      sh -c "nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" \
+      >/dev/null 2>&1; then
+    dns_last_output="failed to create DNS probe pod $dns_pod"
+    # A client-side timeout can report failure even though the pod was created on
+    # the API server — best-effort delete so we don't leak an orphan probe pod.
+    kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    sleep 5
+    continue
+  fi
+  # Poll for a terminal phase (the probe always exits 0 -> Succeeded); ~40s budget
+  # covers image pull. Avoids `kubectl wait --for=jsonpath` version dependencies.
+  dns_phase=""
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    dns_phase=$(kubectl get pod "$dns_pod" "$kctl_timeout" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    case "$dns_phase" in Succeeded | Failed) break ;; esac
+    sleep 2
+  done
+  if [ "$dns_phase" != "Succeeded" ] && [ "$dns_phase" != "Failed" ]; then
+    # Never finished -> scheduling/runtime delay, not a DNS verdict. Don't read
+    # logs (would be empty and masquerade as a result); clean up and retry.
+    dns_last_output="DNS probe pod did not finish (last phase: ${dns_phase:-unknown})"
+    kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    sleep 5
+    continue
+  fi
+  # Read the verdict; retry briefly since log publication can lag pod completion.
+  DNS_OUTPUT=""
+  for _ in 1 2 3 4 5; do
+    DNS_OUTPUT=$(kubectl logs "$dns_pod" "$kctl_timeout" 2>&1 || true)
+    if echo "$DNS_OUTPUT" | grep -qE "DNS_PASS|DNS_FAIL"; then break; fi
+    sleep 1
+  done
+  kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  # Distinguish three outcomes so the error below attributes the failure honestly
+  # instead of always blaming DNS:
+  #   DNS_PASS         -> resolution succeeded
+  #   DNS_FAIL         -> a real resolution failure
+  #   neither (no mark)-> the pod finished but logs never yielded a verdict
+  #                       (scheduling/API/log-publication issue), recorded clearly.
   if echo "$DNS_OUTPUT" | grep -q "DNS_PASS"; then
     dns_ok=true
+    dns_last_output="$DNS_OUTPUT"
     break
-  fi
-  # Record whether the probe actually ran and resolution failed (DNS_FAIL marker)
-  # vs. the probe never producing a verdict (scheduling/API/image/attach failure),
-  # so the error below can attribute the failure honestly instead of always
-  # blaming DNS.
-  if echo "$DNS_OUTPUT" | grep -q "DNS_FAIL"; then
+  elif echo "$DNS_OUTPUT" | grep -q "DNS_FAIL"; then
     dns_saw_fail=true
+    dns_last_output="$DNS_OUTPUT"
+  else
+    dns_last_output="DNS probe produced no verdict (phase: ${dns_phase:-unknown}; logs: ${DNS_OUTPUT:-<empty>})"
   fi
-  sleep 10
+  sleep 5
 done
 if [ "$dns_ok" = true ]; then
   echo "Cluster DNS: OK (kubernetes.default.svc.cluster.local resolves)"

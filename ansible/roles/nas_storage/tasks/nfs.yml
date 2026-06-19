@@ -51,7 +51,25 @@
     path: "{{ item.path }}"
     src: "{{ item.bind_source }}"
     fstype: none
-    opts: bind
+    # Order ZFS-backed export binds after the ZFS mounts. Without this the fstab
+    # bind units race zfs-mount.service at boot — both run before local-fs.target
+    # with no ordering between them — so a bind can capture the still-empty
+    # mountpoint on the root fs instead of the ZFS dataset. That stacks a stale
+    # ext4 layer under the real bind and makes the NFS export serve an empty/stale
+    # directory, which surfaced as backups failing with "could not activate storage
+    # 'tank-proxmox': directory '/mnt/pve/tank-proxmox' does not exist or is
+    # unreachable". `nofail` keeps a not-yet-mounted source from blocking boot.
+    # zfs-mount-generator is not enabled here (no /etc/zfs/zfs-list.cache), so we
+    # order against the bulk zfs-mount.service explicitly rather than rely on
+    # per-dataset units. Non-ZFS sources (mergerfs /mnt/media, lifecycle-managed by
+    # mergerfs.yml and not affected) keep a plain bind.
+    opts: >-
+      {{
+        'bind,nofail,x-systemd.requires=zfs-mount.service,'
+        ~ 'x-systemd.after=zfs-mount.service,x-systemd.requires-mounts-for=' ~ item.bind_source
+        if item.bind_source is match('^/mnt/(tank|ssd|nvme)/')
+        else 'bind'
+      }}
     state: mounted
   loop: "{{ nfs_exports }}"
   loop_control:
