@@ -111,13 +111,39 @@ fi
 
 echo ""
 echo "Checking cluster DNS (internal service resolution)..."
-DNS_OUTPUT=$(kubectl run "dns-verify-${CI_JOB_ID:-$$}" --attach --rm --restart=Never --timeout=30s \
-    --image=busybox:1.37 --command -- sh -c \
-    "nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" 2>&1 || true)
-if echo "$DNS_OUTPUT" | grep -q "DNS_PASS"; then
+# Retry: the probe schedules a one-off pod, which can fail to start within the
+# timeout on a node mid-restart during maintenance — a transient that does NOT
+# mean DNS is broken. Pass on the first DNS_PASS; only fail after all attempts.
+dns_ok=false
+dns_saw_fail=false
+dns_last_output=""
+for dns_attempt in 1 2 3 4 5; do
+  DNS_OUTPUT=$(kubectl run "dns-verify-${CI_JOB_ID:-$$}-${dns_attempt}" --attach --rm --restart=Never --timeout=40s \
+      --image=busybox:1.37 --command -- sh -c \
+      "nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" 2>&1 || true)
+  dns_last_output="$DNS_OUTPUT"
+  if echo "$DNS_OUTPUT" | grep -q "DNS_PASS"; then
+    dns_ok=true
+    break
+  fi
+  # Record whether the probe actually ran and resolution failed (DNS_FAIL marker)
+  # vs. the probe never producing a verdict (scheduling/API/image/attach failure),
+  # so the error below can attribute the failure honestly instead of always
+  # blaming DNS.
+  if echo "$DNS_OUTPUT" | grep -q "DNS_FAIL"; then
+    dns_saw_fail=true
+  fi
+  sleep 10
+done
+if [ "$dns_ok" = true ]; then
   echo "Cluster DNS: OK (kubernetes.default.svc.cluster.local resolves)"
-else
+elif [ "$dns_saw_fail" = true ]; then
   echo "ERROR: Cluster DNS cannot resolve kubernetes.default.svc.cluster.local"
+  echo "$dns_last_output"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "ERROR: cluster DNS probe could not run after retries (pod scheduling/API/image issue — not necessarily DNS itself):"
+  echo "$dns_last_output"
   ERRORS=$((ERRORS + 1))
 fi
 
