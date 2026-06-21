@@ -49,12 +49,16 @@ spec:
     replicas: 1
 
     # Concurrent jobs, capped to what the namespace ResourceQuota admits. A full
-    # DinD job pod sums to ~13Gi memory limits (build 8Gi + dind 4Gi + helper 1Gi)
-    # and the manager (~256Mi) also counts, so 48Gi admits floor((48-0.25)/13)=3.
-    # A higher value would let the runner submit job pods the quota rejects (403,
-    # no retry => spurious CI failures); at 3, excess jobs queue at the runner slot
-    # instead. Raise with the quota.
-    concurrent: 3
+    # DinD job pod sums to ~8Gi memory limits (build 3Gi + dind 4Gi + helper 1Gi).
+    # The build container runs the pre-built molecule-ci image (molecule + ansible
+    # control) and peaks well under 1Gi in practice (live kubectl top: ~250Mi), so
+    # the former 8Gi build limit was ~30x over and capped concurrency at 3 under
+    # the old 48Gi quota. With build right-sized to 3Gi and the quota raised to
+    # 90Gi limits / 28Gi requests, the quota admits 10 (restores pre-!103
+    # throughput — 15 ran fine before this quota existed). A higher value would
+    # let the runner submit job pods the quota rejects (403, no retry => spurious
+    # CI failures); excess jobs queue at the runner slot instead. Move with quota.
+    concurrent: 10
 
     # Check interval (seconds)
     checkInterval: 30
@@ -109,10 +113,14 @@ spec:
             privileged = true
 
             # CPU/Memory limits for job pods
-            # Higher limits for DinD test jobs; lint/deploy jobs use less
+            # Higher limits for DinD test jobs; lint/deploy jobs use less.
+            # build memory_limit was 8Gi, but molecule jobs run the pre-built
+            # molecule-ci image (ansible control + molecule) and peak ~250Mi live
+            # — 3Gi is ~12x headroom and lets the quota admit concurrent:10. The
+            # heavy work runs in the dind service container (kept at 4Gi below).
             cpu_limit = "4"
             cpu_request = "500m"
-            memory_limit = "8Gi"
+            memory_limit = "3Gi"
             memory_request = "1Gi"
 
             # Service container resource limits (docker:dind sidecar for test jobs)
