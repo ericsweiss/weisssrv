@@ -83,19 +83,36 @@
 
 - name: Update existing node-affinity HA rules
   vars:
-    # Get current rule state for comparison
+    # Current rule from the parsed JSON lookup.
     _current: "{{ current_ha_rules_lookup.get(item.name, {}) }}"
-    # Normalize desired values for comparison (Proxmox stores as comma-separated strings)
-    _desired_nodes: "{{ item.nodes | sort | join(',') }}"
+    # PVE9 `ha-manager rules list --output-format=json` returns `nodes` and
+    # `resources` as HASHES, not comma strings:
+    #   nodes:     {"pve-opt-01": {"priority": 1}, ...}
+    #   resources: {"ct:150": {}, "vm:101": {}}
+    # The old code split() these dicts as strings, so the comparison never matched
+    # and the rule was re-`set` on every run. Normalize BOTH sides to a canonical
+    # sorted string (node priority defaults to 0 on each side). The `is mapping`
+    # guards keep this exception-safe if a future PVE returns the older string form
+    # (it then falls back to the previous split() behaviour).
+    _desired_nodes: "{{ item.nodes | map('regex_replace', '^([^:]+)$', '\\1:0') | sort | join(',') }}"
     _desired_resources: "{{ item.resources | sort | join(',') }}"
     _desired_strict: "{{ '1' if item.strict | default(false) else '0' }}"
     _desired_comment: "{{ item.comment | default('') }}"
-    # Normalize current values (split, sort, rejoin for consistent comparison)
-    _current_nodes: "{{ (_current.nodes | default('') | split(',') | sort | join(',')) if _current else '' }}"
-    _current_resources: "{{ (_current.resources | default('') | split(',') | sort | join(',')) if _current else '' }}"
+    _current_nodes: >-
+      {{ (_current.nodes | dict2items
+            | map(attribute='key')
+            | zip(_current.nodes | dict2items
+                  | map(attribute='value.priority', default=0) | map('string'))
+            | map('join', ':') | sort | join(','))
+         if (_current.nodes is defined and _current.nodes is mapping)
+         else (_current.nodes | default('') | string | split(',')
+               | map('regex_replace', '^([^:]+)$', '\\1:0') | sort | join(',')) }}
+    _current_resources: >-
+      {{ (_current.resources | dict2items | map(attribute='key') | sort | join(','))
+         if (_current.resources is defined and _current.resources is mapping)
+         else (_current.resources | default('') | string | split(',') | sort | join(',')) }}
     _current_strict: "{{ _current.strict | default('0') | string }}"
     _current_comment: "{{ _current.comment | default('') }}"
-    # Detect drift
     _has_drift: >-
       {{ _desired_nodes != _current_nodes or
          _desired_resources != _current_resources or

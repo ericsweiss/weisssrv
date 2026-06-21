@@ -44,9 +44,13 @@ spec:
     # deployment silently at 0 like it did on 2026-06-08.
     replicas: 1
 
-    # Concurrent jobs — high enough for parallel:matrix test jobs to run
-    # simultaneously. Each job pod is resource-limited; k8s handles bin-packing.
-    concurrent: 15
+    # Concurrent jobs, capped to what the namespace ResourceQuota admits. A job
+    # pod sums to ~5Gi memory limits (build 4Gi + helper 1Gi) and the manager
+    # (~256Mi) also counts, so 40Gi admits floor((40-0.25)/5)=7. A higher value
+    # would let the runner submit job pods the quota rejects (403, no retry =>
+    # spurious CI failures); at 7, excess jobs queue at the runner slot instead.
+    # Raise with the quota.
+    concurrent: 7
 
     # Check interval (seconds)
     checkInterval: 30
@@ -68,9 +72,14 @@ spec:
       # weisssrv jobs use tags: [infrastructure] and go to the privileged runner instead.
       runUntagged: true
 
-      # Protected branches only
-      # NOTE: Disabled for homelab convenience - allows running jobs on any branch
-      # In production/team environments, set protected: true to restrict to protected branches
+      # Protected branches only.
+      # ACCEPTED RISK (homelab): protected:false lets the shared runner accept
+      # untagged jobs from any project on any (unprotected) branch. This runner
+      # is non-privileged (run_as_non_root, no DinD) and its job pods are
+      # egress-contained (default-deny-egress + internet-only shared-jobs-egress,
+      # RFC1918 blocked — see networkpolicy.yaml), so untrusted branch code is
+      # boxed in. In production/team environments, set protected:true to restrict
+      # to protected branches.
       protected: false
 
       # Executor type

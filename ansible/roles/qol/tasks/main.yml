@@ -10,11 +10,16 @@
 # The user module is idempotent (reports changed only when the shell actually
 # changes), so set it unconditionally rather than guarding on a getent lookup —
 # the prior `== '/bin/zsh'` guard never matched when zsh resolved to
-# /usr/bin/zsh and re-ran the task every play.
+# /usr/bin/zsh and re-ran the task every play. Skip when admin_user is root:
+# the rest of the role's user-scoped tasks already guard on this, and the
+# oh-my-zsh/.zshrc/init.vim config that makes the zsh shell useful is only
+# deployed for non-root, so flipping root's login shell to zsh would leave it
+# unconfigured.
 - name: Set zsh as default shell for admin user
   ansible.builtin.user:
     name: "{{ admin_user }}"
     shell: /bin/zsh
+  when: admin_user != 'root'
 
 - name: Check if Oh My Zsh is installed
   ansible.builtin.stat:

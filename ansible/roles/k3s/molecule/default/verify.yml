@@ -58,6 +58,24 @@
         fail_msg: "kube-vip manifest missing expected settings"
         success_msg: "kube-vip manifest contains expected settings"
 
+    # Negative test recorded by converge: re-running the role with a NIC that
+    # doesn't exist must fail at the kube-vip interface assert (else kube-vip
+    # would silently never announce the API VIP).
+    - name: Read kube-vip interface negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/kube-vip-iface-assert.json
+      register: kube_vip_iface_assert
+
+    - name: Assert a missing kube-vip interface fails the role
+      ansible.builtin.assert:
+        that:
+          - (kube_vip_iface_assert.content | b64decode | from_json).failed
+          - "'nonexistent999' in (kube_vip_iface_assert.content | b64decode | from_json).msg"
+        fail_msg: >-
+          The kube-vip interface assert did not reject a nonexistent NIC —
+          a bad kube_vip_interface would deploy silently and never announce
+          the API VIP. Check the assert in tasks/server.yml.
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
@@ -65,4 +83,5 @@
           - "k3s config file exists with correct permissions (0600)"
           - "k3s config contains tls-san, API VIP, cluster-cidr, and service-cidr"
           - "kube-vip manifest deployed with correct VIP"
+          - "kube-vip interface assert rejects a nonexistent NIC"
           - "(k3s binary install skipped in container testing)"

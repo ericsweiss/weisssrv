@@ -42,6 +42,32 @@ version_greater = check_versions.version_greater
 fetch_plex_version = check_versions.fetch_plex_version
 fetch_gitlab_version = check_versions.fetch_gitlab_version
 fetch_apt_packages = check_versions.fetch_apt_packages
+read_ci_image_versions = check_versions.read_ci_image_versions
+update_version_in_file = check_versions.update_version_in_file
+SERVICE_REGISTRY = check_versions.SERVICE_REGISTRY
+
+
+class TestCiImageVersionTracking(unittest.TestCase):
+    """pr-agent (and other CI-pinned images) tracked from .gitlab-ci.yml."""
+
+    def test_pr_agent_in_registry(self):
+        entry = next(
+            (s for s in SERVICE_REGISTRY if s.get("var_name") == "pr_agent_version"),
+            None,
+        )
+        self.assertIsNotNone(entry, "pr-agent must be in SERVICE_REGISTRY")
+        self.assertEqual(entry["version_file"], "ci")
+        self.assertEqual(entry["docker_image"], "codiumai/pr-agent")
+
+    def test_reads_pr_agent_tag_from_gitlab_ci(self):
+        # Reads the real .gitlab-ci.yml pin so check-versions can flag staleness.
+        versions = read_ci_image_versions()
+        self.assertIn("pr_agent_version", versions)
+        self.assertRegex(versions["pr_agent_version"], r"^\d+\.\d+")
+
+    def test_ci_image_update_is_manual(self):
+        # A digest-pinned CI image is flagged for manual update, never written.
+        self.assertFalse(update_version_in_file("pr_agent_version", "9.9.9"))
 
 
 class TestVersionParsing(unittest.TestCase):
@@ -842,6 +868,208 @@ class TestMakeRequestRetry(unittest.TestCase):
             req = check_versions.urllib.request.Request("https://example.com")
             with self.assertRaises(urllib.error.URLError):
                 check_versions._urlopen_with_retry(req)
+
+
+class TestFetchGithubReleaseLatest(unittest.TestCase):
+    """The latest-release (no tag_filter) path must fail loud on a missing
+    tag_name, matching the tag_filter branch — otherwise the service silently
+    reports up-to-date with a blank Latest column."""
+
+    def test_missing_tag_name_raises(self):
+        svc = {"github_repo": "owner/repo"}  # no tag_filter -> latest endpoint
+        with patch.object(check_versions, "github_api", return_value={}):
+            with self.assertRaises(RuntimeError) as ctx:
+                check_versions.fetch_github_release(svc)
+        self.assertIn("no tag_name", str(ctx.exception))
+
+    def test_empty_tag_name_raises(self):
+        svc = {"github_repo": "owner/repo"}
+        with patch.object(check_versions, "github_api", return_value={"tag_name": ""}):
+            with self.assertRaises(RuntimeError):
+                check_versions.fetch_github_release(svc)
+
+    def test_present_tag_name_returned(self):
+        svc = {"github_repo": "owner/repo"}
+        with patch.object(check_versions, "github_api",
+                          return_value={"tag_name": "v2.3.4"}):
+            self.assertEqual(check_versions.fetch_github_release(svc), "v2.3.4")
+
+    def test_present_tag_name_strip_prefix(self):
+        svc = {"github_repo": "owner/repo", "version_prefix": "v", "strip_prefix": True}
+        with patch.object(check_versions, "github_api",
+                          return_value={"tag_name": "v2.3.4"}):
+            self.assertEqual(check_versions.fetch_github_release(svc), "2.3.4")
+
+
+class TestFetchAptPackagesRetry(unittest.TestCase):
+    """fetch_apt_packages now routes through the bounded retry helper (Plex /
+    GitLab fetch via it), so a transient 5xx on the uncompressed URL retries
+    instead of immediately falling back / failing."""
+
+    def _ok_response(self, body: bytes, content_type: str = "text/plain"):
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.headers = {"Content-Type": content_type}
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_transient_5xx_then_success_on_uncompressed(self):
+        calls = [0]
+        body = b"Package: test\nVersion: 1.0.0\n"
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise urllib.error.HTTPError(
+                    "https://example.com/Packages", 503, "boom", {}, None
+                )
+            return self._ok_response(body)
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            result = check_versions.fetch_apt_packages("https://example.com/Packages")
+
+        self.assertEqual(result, body.decode("utf-8"))
+        self.assertEqual(calls[0], 2, "a 5xx on the uncompressed URL must be retried")
+
+
+class TestMakeRequestErrorTagging(unittest.TestCase):
+    """_make_request's catch-all must include the exception TYPE in the message
+    so check_service (which catches RuntimeError before its typed fallback)
+    still surfaces the diagnostic type tag."""
+
+    def test_unexpected_error_includes_type_name(self):
+        # A non-network error inside the request path (e.g. a decode bug)
+        # should be wrapped with its type name, not a bare "Request failed".
+        def side_effect(req, timeout=None):
+            raise ValueError("surprise")
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            with self.assertRaises(RuntimeError) as ctx:
+                check_versions._make_request("https://example.com/api")
+        self.assertIn("ValueError", str(ctx.exception))
+
+
+class TestUpdateVersionInFileUnquoted(unittest.TestCase):
+    """The unquoted-value write branch (uses_quotes=False) was untested."""
+
+    def _write_tmp(self, content):
+        import tempfile
+        tf = tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False)
+        tf.write(content)
+        tf.close()
+        return Path(tf.name)
+
+    def test_unquoted_value_stays_unquoted(self):
+        import os
+        path = self._write_tmp("foo_version: 1.2.3\nbar_version: 4.5.6\n")
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                self.assertTrue(
+                    check_versions.update_version_in_file("foo_version", "1.2.4")
+                )
+            out = path.read_text()
+            self.assertIn("foo_version: 1.2.4", out)
+            self.assertNotIn('foo_version: "1.2.4"', out)  # must stay unquoted
+            self.assertIn("bar_version: 4.5.6", out)  # untouched
+        finally:
+            os.unlink(path)
+
+    def test_prefix_collision_not_matched(self):
+        """`redis_version` must not match `redis_exporter_version` (the trailing
+        ':' in the startswith guard prevents the prefix collision)."""
+        import os
+        path = self._write_tmp(
+            'redis_version: "1.0"\nredis_exporter_version: "2.0"\n'
+        )
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                self.assertTrue(
+                    check_versions.update_version_in_file("redis_version", "1.1")
+                )
+            out = path.read_text()
+            self.assertIn('redis_version: "1.1"', out)
+            self.assertIn('redis_exporter_version: "2.0"', out)  # untouched
+        finally:
+            os.unlink(path)
+
+
+class TestReadCurrentVersions(unittest.TestCase):
+    """read_current_versions parses all.yml by hand (no PyYAML); feed it a
+    representative snippet — mix of quoted/unquoted top-level *_version keys,
+    inline comments, and a helm_chart_versions block."""
+
+    def _write_tmp(self, content):
+        import tempfile
+        tf = tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False)
+        tf.write(content)
+        tf.close()
+        return Path(tf.name)
+
+    SNIPPET = (
+        "# header comment\n"
+        '\n'
+        'authentik_version: "2026.2.2"  # Currently deployed\n'
+        "debian_version: 13\n"
+        "plex_version: 1.43.1.5266  # inline note\n"
+        "unrelated_key: ignored\n"
+        "helm_chart_versions:\n"
+        '  traefik: "40.0.0"  # comment\n'
+        "  cert_manager: v1.20.2\n"
+        "some_other_top: value\n"
+    )
+
+    def test_parses_mixed_snippet(self):
+        import os
+        path = self._write_tmp(self.SNIPPET)
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                versions = check_versions.read_current_versions()
+        finally:
+            os.unlink(path)
+        self.assertEqual(versions.get("authentik_version"), "2026.2.2")
+        self.assertEqual(versions.get("debian_version"), "13")
+        self.assertEqual(versions.get("plex_version"), "1.43.1.5266")
+        self.assertEqual(versions.get("helm_chart_versions.traefik"), "40.0.0")
+        self.assertEqual(versions.get("helm_chart_versions.cert_manager"), "v1.20.2")
+        # Keys whose name has no '_version' substring are not collected.
+        self.assertNotIn("unrelated_key", versions)
+        self.assertNotIn("some_other_top", versions)
+
+    def test_substring_heuristic_collects_non_pin_keys(self):
+        """Documents the known fragility (finding scripts-python read_current_versions):
+        the `'_version' in key` substring test collects ANY key containing the
+        substring, e.g. a hypothetical `min_version_note` — not just true
+        `*_version` pins. Locked in so a future regex-anchor fix updates this
+        test deliberately."""
+        import os
+        path = self._write_tmp("min_version_note: hello\n")
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                versions = check_versions.read_current_versions()
+        finally:
+            os.unlink(path)
+        # Current behavior: substring match collects it.
+        self.assertIn("min_version_note", versions)
+
+    def test_top_level_after_helm_block_still_parsed(self):
+        """A *_version key appearing AFTER the helm block (block exited) is
+        still collected — guards the in_helm fall-through."""
+        import os
+        path = self._write_tmp(
+            "helm_chart_versions:\n"
+            '  traefik: "40.0.0"\n'
+            'gitlab_version: "17.0.0"\n'
+        )
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                versions = check_versions.read_current_versions()
+        finally:
+            os.unlink(path)
+        self.assertEqual(versions.get("helm_chart_versions.traefik"), "40.0.0")
+        self.assertEqual(versions.get("gitlab_version"), "17.0.0")
 
 
 if __name__ == "__main__":

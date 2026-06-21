@@ -40,6 +40,21 @@ def post_mr_comment(body: str) -> None:
         print(f"Warning: could not post MR comment: {e}")
 
 
+def _services(data: dict) -> list:
+    """Return only well-formed (dict) service entries from a parsed payload.
+
+    `data` is validated to be a dict, but its `services` value comes from an
+    external subprocess and isn't otherwise checked: a forged/skewed producer
+    could emit `null` (TypeError on iteration) or non-dict entries (AttributeError
+    on `svc.get`). Neither is caught by main()'s parse `except`, so an unguarded
+    loop would crash the wrapper and bypass the stub-artifact contract.
+    """
+    services = data.get("services")
+    if not isinstance(services, list):
+        return []
+    return [svc for svc in services if isinstance(svc, dict)]
+
+
 def main():
     # Run version check once with --json
     try:
@@ -64,10 +79,23 @@ def main():
     data = {}
     try:
         data = json.loads(result.stdout)
+        # A valid-but-non-dict payload (list/number/string/bool/null) would
+        # otherwise hit `data.get(...)` below with an uncaught AttributeError,
+        # bypassing the stub-artifact contract. Reject it as a parse failure so
+        # the ValueError branch writes the self-describing stub and exits 2.
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"version-check output is not a JSON object (got {type(data).__name__})"
+            )
         # Persist the validated JSON as the artifact.
         with open("version-report.json", "w") as f:
             f.write(result.stdout)
-        summary = data.get("summary", {})
+        summary = data.get("summary")
+        if not isinstance(summary, dict):
+            # A null/non-dict summary from a skewed producer would otherwise
+            # raise AttributeError on the .get() calls below (uncaught by the
+            # parse except). Treat it as empty; the .get(..., 0) defaults apply.
+            summary = {}
         total = summary.get("total", 0)
         up_to_date = summary.get("up_to_date", 0)
         updates = summary.get("updates_available", 0)
@@ -81,13 +109,13 @@ def main():
         # the already-written valid artifact with an error stub.
         if updates > 0:
             print("\nUpdates available:")
-            for svc in data.get("services", []):
+            for svc in _services(data):
                 if svc.get("update_available") and not svc.get("held"):
                     print(f"  {svc.get('name', '?')}: {svc.get('current_version', '?')} -> {svc.get('latest_version', '?')}")
 
         if errors > 0:
             print("\nErrors:")
-            for svc in data.get("services", []):
+            for svc in _services(data):
                 if svc.get("error"):
                     print(f"  {svc.get('name', '?')}: {svc.get('error')}")
 
@@ -102,6 +130,11 @@ def main():
         print("Warning: could not parse version check output")
         print(result.stdout)
         rc = 2
+        # A wrong-shape (non-dict) payload would have left `data` holding the
+        # parsed list/scalar; reset it so the MR-comment block treats this as a
+        # parse failure (the `rc == 2 and not data` branch) rather than trying
+        # to itemize services from a non-dict.
+        data = {}
         # Write a self-describing stub so the artifact isn't a 0-byte or
         # raw-text file that reads like a successful empty report.
         with open("version-report.json", "w") as f:
@@ -120,31 +153,34 @@ def main():
     # suppress the actionable update table (or vice versa).
     if os.environ.get("CI_MERGE_REQUEST_IID"):
         sections = []
-        if updates > 0:
-            update_lines = []
-            for svc in data.get("services", []):
-                # Held updates are documented non-actionable holds; they'd
-                # otherwise re-post the same comment on every pipeline.
-                if svc.get("update_available") and not svc.get("held"):
-                    # Registry notes carry intent (e.g. "intentionally held
-                    # back: open upstream regression").
-                    notes = svc.get("notes", "")
-                    update_lines.append(
-                        f"| {svc.get('name', '?')} | {svc.get('current_version', '?')} | "
-                        f"{svc.get('latest_version', '?')} | {notes} |"
-                    )
+        # Build the row lists first, then gate each section header on the list
+        # being non-empty (NOT on the summary counters) so a future
+        # producer/consumer skew can't emit a header with zero rows.
+        update_lines = []
+        for svc in _services(data):
+            # Held updates are documented non-actionable holds; they'd
+            # otherwise re-post the same comment on every pipeline.
+            if svc.get("update_available") and not svc.get("held"):
+                # Registry notes carry intent (e.g. "intentionally held
+                # back: open upstream regression").
+                notes = svc.get("notes", "")
+                update_lines.append(
+                    f"| {svc.get('name', '?')} | {svc.get('current_version', '?')} | "
+                    f"{svc.get('latest_version', '?')} | {notes} |"
+                )
+        if update_lines:
             sections.append(
                 "### Updates available\n\n"
                 "| Service | Current | Latest | Notes |\n"
                 "|---------|---------|--------|-------|\n"
                 + "\n".join(update_lines)
             )
-        if errors > 0 and data:
-            err_lines = [
-                f"- {svc.get('name', '?')}: {svc.get('error', 'unknown error')}"
-                for svc in data.get("services", [])
-                if svc.get("error")
-            ]
+        err_lines = [
+            f"- {svc.get('name', '?')}: {svc.get('error', 'unknown error')}"
+            for svc in _services(data)
+            if svc.get("error")
+        ]
+        if err_lines:
             sections.append("### Errors\n\n" + "\n".join(err_lines))
         elif rc == 2 and not data:
             # Parse failure — no structured services to itemize.

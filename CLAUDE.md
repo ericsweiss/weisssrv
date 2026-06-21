@@ -27,7 +27,7 @@ weisssrv/
 │   │   ├── controllers/        # platform HelmReleases (dependsOn sources) — see the dir for the current set
 │   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
-│   └── apps/                   # one dir per app (each with release.yaml + externalsecret.yaml; dependsOn infrastructure-observability) — see the dir for the current set
+│   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-observability) — see the dir for the current set
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
 ├── docker/                     # Molecule test/CI container images
@@ -121,6 +121,13 @@ Workflow facts an agent must know (not obvious from `task --list`):
 - **Cluster Helm/image versions** live in
   `ansible/inventories/prod/group_vars/all.yml`; after editing, run
   `task flux:sync-versions`, then commit + push so Flux reconciles them.
+  Manifests reference versions as `${name}` placeholders (e.g.
+  `version-${sonarr_version}`) resolved at reconcile time by Flux
+  `postBuild.substituteFrom` from the `cluster-versions` ConfigMap
+  (`kubernetes/infrastructure/sources/versions-configmap.yaml`, generated from
+  all.yml by `task flux:sync-versions`; wired in the Flux Kustomizations, e.g.
+  `kubernetes/clusters/weisssrv/apps.yaml`). See docs/29-flux-operations.md
+  (Version pinning / Substitution Not Applied) for details.
 - **Local Flux iteration**: `task flux:dev-apply -- <path>` previews a change
   in-cluster but is reverted on the next reconcile unless committed.
 - `task lint` runs everything (Ansible, Terraform, `flux:lint`, Python scripts);
@@ -369,7 +376,7 @@ from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →
 - `tank` - 6x 22TB raidz2 (~88TB usable, 122TB raw) - Media and bulk storage
 - `ssd` - 3x 4TB raidz1 (~10.9TB) - App data, databases, and containers
 - `nvme` - 1x 4TB NVMe (~2.27TB) - Hot downloads and fast scratch
-- `archive` - 4x 6TB raidz1 (~21.8TB) - Cold storage and backups
+- `archive` - 4x 6TB raidz1 (~18TB usable, 3x 6TB data) - Cold storage and backups
 
 **Key Datasets**: tank/media, tank/share, ssd/appdata, nvme/media, nvme/fast
 

@@ -151,8 +151,9 @@ unlock_for_receive() {
 }
 
 # --- ATOMIC RECEIVE SAFETY ---------------------------------------------------
-# This is the ONLY change we're making vs the last "pruning+lockdown" script.
-# It prevents a received dataset from ever temporarily inheriting a dangerous mountpoint.
+# Forces every received dataset to land with a safe mountpoint so it can never
+# temporarily inherit a dangerous one (e.g. capturing a live path) during the
+# receive.
 RECV_SAFE_OPTS=( -o mountpoint=none -o canmount=off -o readonly=on )
 
 maybe_resume_receive() {

@@ -69,7 +69,11 @@ spec:
       annotations:
         # Use MetalLB public pool for external Traefik traffic
         metallb.io/loadBalancerIPs: "192.168.0.100"
-      # Preserve source IP for IP allowlist middleware to work correctly
+      # Preserve source IP for IP allowlist middleware to work correctly.
+      # MetalLB L2 + externalTrafficPolicy:Local is endpoint-aware: the speaker
+      # only announces the VIP from a node with a Ready Traefik endpoint, so the
+      # single-IP public pool cannot blackhole while at least one Traefik pod is
+      # Ready (it runs on every esweiss.com/ingress node, spread by anti-affinity).
       spec:
         externalTrafficPolicy: Local
 
@@ -157,5 +161,4 @@ spec:
         cpu: 100m
         memory: 128Mi
       limits:
-        cpu: 500m
         memory: 512Mi

@@ -55,7 +55,6 @@ nginx['proxy_set_headers'] = {
 # Let's Encrypt (Disabled - Traefik handles TLS)
 # =============================================================================
 
-# Completely disable Let's Encrypt since TLS is terminated at Traefik
 letsencrypt['enable'] = false
 letsencrypt['auto_renew'] = false
 
@@ -196,4 +195,7 @@ prometheus_monitoring['enable'] = true
 # Monitoring Endpoint (for health checks)
 # =============================================================================
 
-gitlab_rails['monitoring_whitelist'] = ['127.0.0.1', '192.168.0.0/24']
+# Sourced from gitlab_monitoring_whitelist (defaults/main.yml) — the LAN /24,
+# firewall-gated. See that var for why it is not narrowed to node IPs (GitLab
+# real_ip matching would 404 Traefik-proxied /-/readiness probes).
+gitlab_rails['monitoring_whitelist'] = {{ gitlab_monitoring_whitelist | to_json }}

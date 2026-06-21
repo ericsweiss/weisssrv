@@ -84,6 +84,10 @@ fail2ban_pveproxy_findtime: 10m
 
 # Email notifications (optional - uses local SMTP relay)
 fail2ban_email_enabled: false
-fail2ban_email_dest: "{{ admin_email | default('root@localhost') }}"
+# admin_email is set in group_vars/all.yml to an `undef(hint=...)` sentinel when
+# ROOT_EMAIL_ALIAS is unset (rather than to a plain empty string), so the
+# fallback must trigger on both undefined AND empty/falsy values — hence the
+# second `true` arg to default(). This path is dormant unless email is enabled.
+fail2ban_email_dest: "{{ admin_email | default('root@localhost', true) }}"
 fail2ban_email_sender: "fail2ban@{{ inventory_hostname }}"
 fail2ban_email_action: "%(action_mwl)s"  # Ban with email + whois + log lines

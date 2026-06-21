@@ -251,8 +251,8 @@ helm_chart_versions:
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "86.3.1"
-  loki: "17.4.7"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  kube_prometheus_stack: "86.3.2"
+  loki: "17.4.9"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.13.0"
   onepassword_connect: "2.4.1"
@@ -284,20 +284,29 @@ firewall_ipset_special_entries:
 # returns instead of stranding on the failover node — the placement drift the
 # storage_replication_jobs source-node warnings flag. Replaces the old flat
 # critical-services-no-nas rule (kept off nas but had no per-service home
-# preference). Homes match the storage_replication_jobs primary layout above.
+# preference). Homes match the storage_replication_jobs primary layout above,
+# EXCEPT dns-01 (ct:150): its home is temporarily pve-opt-01 (not pve-laptop-01)
+# because pve-laptop-01 has bad RAM — restore to pve-laptop-01 after the DIMM is
+# replaced + re-tested (see the laptop-ssd-watch memory).
 ha_rules:
   - name: affinity-dns-01
     type: node-affinity
     resources:
       - ct:150  # dns-01 (AdGuard Home primary)
     nodes:
-      - "pve-laptop-01:2"  # home
-      - "pve-opt-01:1"
+      # Home moved OFF pve-laptop-01: that host has confirmed bad RAM (one dead
+      # cell masked via GRUB_BADRAM, DIMM pending replacement — see the
+      # laptop-ssd-watch memory). pve-laptop-01 must never be a HOME (priority>=2)
+      # for any service; it stays at :1 so dns-01 can run there only as a last-
+      # resort fallback and always migrates back off it. Restore home=pve-laptop-01
+      # once the RAM is replaced and re-tested.
+      - "pve-opt-01:2"  # home (where dns-01 currently runs)
       - "pve-opt-02:1"
       - "pve-opt-03:1"
       - "pve-prec-01:1"
+      - "pve-laptop-01:1"  # fallback only — bad RAM, never a home
     strict: false
-    comment: "dns-01 home pve-laptop-01 (fails back when available); never pve-nas-01"
+    comment: "dns-01 home pve-opt-01 (fails back when available); pve-laptop-01 fallback-only (bad RAM); never pve-nas-01"
     enabled: true
 
   - name: affinity-smtp-relay

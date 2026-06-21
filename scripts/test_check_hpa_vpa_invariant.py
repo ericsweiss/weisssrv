@@ -287,5 +287,117 @@ def test_chart_native_check_is_opt_in(monkeypatch):
     assert _run("", monkeypatch) == 0
 
 
+# --- "no CPU limits" policy (--require-chart-native-vpas) ----------------------
+
+import yaml as _yaml  # noqa: E402
+
+
+def _docs(text: str) -> list:
+    return [d for d in _yaml.safe_load_all(text) if isinstance(d, dict)]
+
+
+DEPLOY_WITH_CPU_LIMIT = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: app, namespace: ns}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+"""
+
+DEPLOY_NO_CPU_LIMIT = DEPLOY_WITH_CPU_LIMIT.replace("cpu: 500m, ", "")
+
+HR_WITH_CPU_LIMIT = """
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: thing, namespace: ns}
+spec:
+  values:
+    controller:
+      resources:
+        requests: {cpu: 10m}
+        limits: {cpu: 200m, memory: 64Mi}
+"""
+
+HR_NO_CPU_LIMIT = HR_WITH_CPU_LIMIT.replace("cpu: 200m, ", "")
+
+# `cpu: null` clears a chart default rather than setting a limit — not a violation.
+DEPLOY_NULL_CPU_LIMIT = DEPLOY_WITH_CPU_LIMIT.replace("cpu: 500m, ", "cpu: null, ")
+HR_NULL_CPU_LIMIT = HR_WITH_CPU_LIMIT.replace("cpu: 200m, ", "cpu: null, ")
+
+CRONJOB_WITH_CPU_LIMIT = """
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: job, namespace: ns}
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: c
+              resources:
+                limits: {cpu: 250m, memory: 64Mi}
+"""
+
+
+def test_cpu_limit_pod_spec_flagged():
+    assert mod._cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT))
+
+
+def test_cpu_limit_pod_spec_memory_only_ok():
+    assert mod._cpu_limit_violations(_docs(DEPLOY_NO_CPU_LIMIT)) == []
+
+
+def test_cpu_limit_helmrelease_flagged():
+    assert mod._cpu_limit_violations(_docs(HR_WITH_CPU_LIMIT))
+
+
+def test_cpu_limit_helmrelease_memory_only_ok():
+    assert mod._cpu_limit_violations(_docs(HR_NO_CPU_LIMIT)) == []
+
+
+def test_cpu_limit_pod_spec_null_ok():
+    """limits.cpu: null clears the default — not an effective CPU limit."""
+    assert mod._cpu_limit_violations(_docs(DEPLOY_NULL_CPU_LIMIT)) == []
+
+
+def test_cpu_limit_helmrelease_null_ok():
+    """A HelmRelease clearing limits.cpu with null must not be flagged."""
+    assert mod._cpu_limit_violations(_docs(HR_NULL_CPU_LIMIT)) == []
+
+
+def test_cpu_limit_cronjob_flagged():
+    assert mod._cpu_limit_violations(_docs(CRONJOB_WITH_CPU_LIMIT))
+
+
+def test_cpu_limit_allowlist_exempts(monkeypatch):
+    monkeypatch.setattr(mod, "CPU_LIMIT_ALLOWLIST", {"ns/Deployment/app"})
+    assert mod._cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT)) == []
+
+
+def test_cpu_limit_integrated_fails_with_flag(monkeypatch):
+    """Full-corpus mode (flag set) fails when a workload sets a CPU limit."""
+    stream = _chart_native_vpa("memory") + "\n---\n" + DEPLOY_WITH_CPU_LIMIT
+    assert _run_flag(stream, monkeypatch) == 1
+
+
+def test_cpu_limit_integrated_passes_with_flag(monkeypatch):
+    """Full-corpus mode passes when CPU limits are absent (memory-only limits)."""
+    stream = _chart_native_vpa("memory") + "\n---\n" + DEPLOY_NO_CPU_LIMIT
+    assert _run_flag(stream, monkeypatch) == 0
+
+
+def test_cpu_limit_not_checked_without_flag(monkeypatch):
+    """The generic join (no flag) does not enforce the CPU-limit policy."""
+    monkeypatch.setattr("sys.argv", ["check"])
+    assert _run(DEPLOY_WITH_CPU_LIMIT, monkeypatch) == 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

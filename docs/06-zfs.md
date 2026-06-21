@@ -11,7 +11,7 @@ The NAS has four ZFS pools with different performance characteristics:
 | `tank` | raidz2 (6x 22TB) + special device + cache | ~88TB usable (122TB raw) | Bulk media storage |
 | `ssd` | raidz1 (3x 4TB SSD) | 10.9TB | App data, databases |
 | `nvme` | Single NVMe 4TB | 2.27TB | Hot downloads, fast scratch |
-| `archive` | raidz1 (4x 6TB) | 21.8TB | Cold backups |
+| `archive` | raidz1 (4x 6TB) | ~18TB usable (3x 6TB data) | Cold backups |
 
 ## Pool Details
 

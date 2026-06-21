@@ -48,10 +48,13 @@ spec:
     # deployment silently at 0 like it did on 2026-06-08.
     replicas: 1
 
-    # Concurrent jobs — high enough for parallel:matrix test jobs to run
-    # simultaneously. Each job pod has DinD sidecar resource limits;
-    # k8s handles bin-packing.
-    concurrent: 15
+    # Concurrent jobs, capped to what the namespace ResourceQuota admits. A full
+    # DinD job pod sums to ~13Gi memory limits (build 8Gi + dind 4Gi + helper 1Gi)
+    # and the manager (~256Mi) also counts, so 48Gi admits floor((48-0.25)/13)=3.
+    # A higher value would let the runner submit job pods the quota rejects (403,
+    # no retry => spurious CI failures); at 3, excess jobs queue at the runner slot
+    # instead. Raise with the quota.
+    concurrent: 3
 
     # Check interval (seconds)
     checkInterval: 30
@@ -72,8 +75,18 @@ spec:
       # Other projects' untagged jobs go to the shared non-privileged runner
       runUntagged: false
 
-      # Protected branches only
-      # NOTE: Disabled for homelab convenience - allows test jobs on any branch
+      # Protected branches only.
+      # ACCEPTED RISK (homelab): protected:false lets this privileged (root +
+      # DinD) runner execute the weisssrv MR pipeline on UNPROTECTED feature
+      # branches. This is deliberate: .gitlab-ci.yml runs every job with
+      # tags:[infrastructure] and triggers on merge_request_event, so the whole
+      # branch+MR CI workflow (lint/validate/test) depends on this runner
+      # accepting unprotected branches. Setting protected:true would silently
+      # break MR CI (no runner would pick up MR jobs) because feature branches
+      # are not protected. Mitigations in place: the runner only accepts the
+      # 'infrastructure' tag (runUntagged:false), which only the trusted
+      # weisssrv project uses; other projects' jobs land on the non-privileged
+      # shared runner. Revisit if a second project ever gets this tag.
       protected: false
 
       # Executor type

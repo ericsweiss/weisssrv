@@ -92,6 +92,28 @@
             else
               echo "net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1"
             fi
+            # Emit agent/onboot/startup. Defaults match the role defaults so the
+            # reconcile tasks see NO drift and stay no-op (existence-guard's
+            # zero-mutation invariant). Override files let converge inject drift.
+            # NOTE the default startup is "order=100" (NO up=0): mirrors Proxmox
+            # dropping the up=0 default from the stored string, so the startup
+            # reconcile's normalize-both-sides must treat it as equal to the
+            # desired "order=100,up=0" — else it churns every run.
+            if [ -f /tmp/molecule-stub-state/vm_agent_override ]; then
+              echo "agent: $(cat /tmp/molecule-stub-state/vm_agent_override)"
+            else
+              echo "agent: enabled=1"
+            fi
+            if [ -f /tmp/molecule-stub-state/vm_onboot_override ]; then
+              echo "onboot: $(cat /tmp/molecule-stub-state/vm_onboot_override)"
+            else
+              echo "onboot: 1"
+            fi
+            if [ -f /tmp/molecule-stub-state/vm_startup_override ]; then
+              echo "startup: $(cat /tmp/molecule-stub-state/vm_startup_override)"
+            else
+              echo "startup: order=100"
+            fi
             # The additional-disk attach task parses `qm config` for its scsiN
             # line. The override file, when present, supplies the scsi1 value
             # verbatim so converge can simulate a passthrough disk already

@@ -189,8 +189,21 @@ spec:
 # - kube-dns
 # - intra-ns Postgres / Redis / Meilisearch
 # - smtp-relay (192.168.0.151:587) for password reset / notification emails
-# - Public HTTPS for OpenAI API (mealie), OIDC discovery (Authentik base URL),
-#   Authentik resolves to MetalLB internal VIP 192.168.0.101.
+# - Public HTTPS for OpenAI API (mealie) and server-side OIDC discovery.
+#
+# OIDC discovery note: both apps point their OIDC issuer/base URL at the
+# EXTERNAL host auth.ericsweiss.com (mealie OIDC_CONFIGURATION_URL,
+# bar-assistant AUTHENTIK_BASE_URL). That host has no AdGuard rewrite, so it
+# resolves to the PUBLIC IP and the server-side discovery fetch egresses via
+# the broad 0.0.0.0/0 (except RFC1918) :443 rule below (hairpin back through
+# the public Traefik VIP). The external host is intentional: Authentik derives
+# the OIDC `iss` claim from the request host, and the browser completes the
+# flow at auth.ericsweiss.com (global.domain in authentik/release.yaml), so the
+# server-side issuer MUST match that host or token validation fails. The
+# 192.168.0.101/32 (internal Traefik VIP) allow below is therefore NOT on the
+# OIDC path for these apps; it is retained only so a future move to the
+# internal host (auth.esweiss.com -> .101, which would also require a fixed
+# Authentik issuer) works without another egress edit.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -240,8 +253,10 @@ spec:
           port: 25
     - to:
         - ipBlock:
-            # MetalLB internal VIP — Authentik OIDC discovery resolves here
-            # via Cloudflare DNS-only path that points at internal IPs.
+            # MetalLB internal Traefik VIP. Reserved for internal-host access
+            # (*.esweiss.com -> .101 via AdGuard rewrite). NOT on the OIDC path
+            # today: these apps use auth.ericsweiss.com (public IP) per the
+            # block comment above. Retained for future internal-host moves.
             cidr: 192.168.0.101/32
       ports:
         - protocol: TCP

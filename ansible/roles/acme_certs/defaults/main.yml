@@ -9,6 +9,9 @@ acme_sh_version: "3.1.2"
 
 internal_domain: esweiss.com
 local_cert_dir: /opt/AdGuardHome/certs
+# Group that owns the locally-installed certs on dns-01 (AdGuard reads them).
+# Mirrors the per-target `group` field in cert_distribution_targets.
+acme_local_cert_group: "{{ adguard_group | default('adguard') }}"
 
 acme_domains:
   - "*.{{ internal_domain }}"

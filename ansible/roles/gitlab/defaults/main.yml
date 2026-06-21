@@ -113,6 +113,18 @@ gitlab_nginx_real_ip_trusted_addresses:
   - 10.42.0.0/16
   - 10.43.0.0/16
 
+# Sources allowed to reach GitLab's unauthenticated monitoring endpoints
+# (/-/metrics, /-/readiness, /-/liveness; /-/health is unrestricted). Kept at the
+# LAN /24 — already firewall-gated to the admin/cluster IP sets. GitLab sets
+# real_ip from X-Forwarded-For, so a Traefik-proxied probe (e.g. the maintenance
+# /-/readiness check via git.ericsweiss.com) is matched on its REAL client IP,
+# which is not necessarily a k3s node IP; narrowing to node IPs would 404 those
+# probes for marginal benefit. Override in host_vars to tighten if every monitor
+# source is known.
+gitlab_monitoring_whitelist:
+  - 127.0.0.1
+  - 192.168.0.0/24
+
 # Backup configuration (local path, Proxmox VM snapshots for DR)
 gitlab_backup_path: "/var/opt/gitlab/backups"
 gitlab_backup_keep_time: 604800  # 7 days in seconds

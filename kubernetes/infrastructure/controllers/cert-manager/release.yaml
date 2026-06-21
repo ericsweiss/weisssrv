@@ -51,7 +51,6 @@ spec:
         cpu: 50m
         memory: 64Mi
       limits:
-        cpu: 200m
         memory: 128Mi
     webhook:
       resources:
@@ -59,7 +58,6 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          cpu: 100m
           memory: 128Mi
     cainjector:
       resources:
@@ -67,7 +65,6 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          cpu: 100m
           memory: 128Mi
     global:
       leaderElection:

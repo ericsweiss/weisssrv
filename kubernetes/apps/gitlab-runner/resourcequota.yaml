@@ -1,0 +1,40 @@
+---
+# Aggregate resource bounds for the shared-runner namespace. concurrent:7 job
+# pods (cpu_request 500m / memory_request 1Gi, memory_limit 4Gi each — see
+# release.yaml) plus the manager could otherwise schedule ~7.5 CPU + 15Gi of
+# requests and burst to ~60Gi of memory limits, enough to evict resident
+# workloads on a tight node (opt nodes idle with only a few GB free).
+#
+# Deliberately NO cpu / limits.cpu quota dimension: a CPU-limit quota would
+# force EVERY pod in the namespace to declare a CPU limit, which would reject
+# the runner manager (it intentionally runs with no CPU limit to avoid CFS
+# throttling). We bound CPU only via requests.cpu, and memory via both.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: gitlab-runner-quota
+  namespace: gitlab-runner
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.memory: 40Gi
+    pods: "20"
+---
+# Default requests/limits so any pod created in this namespace without explicit
+# resources (e.g. an auxiliary pod a CI job spawns via its pods:create RBAC)
+# still counts against the quota above instead of slipping in unbounded.
+# Only memory carries a default limit — never a CPU limit (see quota note).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: gitlab-runner-limits
+  namespace: gitlab-runner
+spec:
+  limits:
+    - type: Container
+      default:
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi

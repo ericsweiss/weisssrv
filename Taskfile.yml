@@ -296,6 +296,10 @@ tasks:
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+      # k3s.yml runs alloy_host on the k3s nodes, which asserts the Loki push
+      # creds are present (https endpoint). Inject them like infra:deploy does.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/k3s.yml {{.CLI_ARGS}}
 
@@ -760,6 +764,8 @@ tasks:
         msg: "kubeconform not installed. brew install kubeconform or see https://github.com/yannh/kubeconform"
       - sh: command -v envsubst
         msg: "envsubst not installed. brew install gettext"
+      - sh: command -v helm
+        msg: "helm not installed. brew install helm (used to schema-validate value-heavy HelmReleases)"
       - sh: python3 -c "import yaml" 2>/dev/null
         msg: "Python PyYAML not installed. pip install pyyaml"
     cmds:
@@ -858,6 +864,17 @@ tasks:
         echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
         if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
           echo "ERROR: cluster root kustomization failed to build"
+          FAILED=1
+        fi
+
+        # Schema-validate the value-heavy HelmReleases' .spec.values via
+        # `helm template` (kustomize build emits HelmReleases verbatim, so a
+        # typo in a chart values key would otherwise slip past kubeconform —
+        # the HelmRelease CRD treats .spec.values as a free-form object).
+        # Needs network (helm repo add/update). Covers traefik (whose
+        # values.schema.json catches key typos), kube-prometheus-stack, authentik.
+        echo "=== Schema-validating HelmRelease values blocks (helm template) ==="
+        if ! python3 scripts/validate-helm-values.py --kubeconform; then
           FAILED=1
         fi
 

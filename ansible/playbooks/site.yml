@@ -26,32 +26,52 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
-- name: Deploy NAS storage configuration
-  hosts: pve-nas-01
-  become: true
-  roles:
-    - role: nas_storage
-      tags: [nas_storage]
-
 - name: Deploy DNS server configuration
   hosts: dns
   become: true
+  serial: 1  # one resolver at a time — never restart unbound/AdGuard on both at once
   roles:
     - role: postfix_null_client
       tags: [postfix_null_client]
     - role: unbound
       tags: [unbound]
+    - role: unbound_exporter
+      tags: [unbound_exporter]
     - role: adguard_home
       tags: [adguard_home]
 
 - name: Deploy certificate management and sync
   hosts: dns
   become: true
+  serial: 1  # acme reload restarts AdGuardHome — keep the other resolver up
   roles:
     - role: acme_certs
       tags: [acme_certs]
     - role: adguard_sync
       tags: [adguard_sync]
+
+# NAS storage runs AFTER certificate management: nfs_tls's preflight fails loud
+# if the wildcard cert/key aren't present on pve-nas-01, and those are
+# distributed by the acme_certs play above (cert_distribution_targets). Running
+# the NAS play earlier would fail a fresh `site.yml` bootstrap before the cert
+# exists. (storage.yml is the standalone NAS playbook for re-runs once the cert
+# is already distributed.) Nothing in the DNS/cert plays above depends on NAS
+# storage, and the proxmox play still precedes this one.
+- name: Deploy NAS storage configuration
+  hosts: pve-nas-01
+  become: true
+  roles:
+    # Opt-in NFSv4-over-TLS daemon; tasks self-guard on nfs_tls_enabled, so this
+    # is a no-op unless set in host_vars/pve-nas-01 (matches storage.yml). Runs
+    # BEFORE nas_storage so tlshd is installed + verified before nas_storage
+    # (re)publishes any xprtsec=tls export — otherwise a TLS-required export
+    # could be live without a working handshake daemon if nfs_tls later fails.
+    - role: nfs_tls
+      tags: [nfs_tls]
+    - role: nas_storage
+      tags: [nas_storage]
+    - role: zfs_exporter
+      tags: [zfs_exporter]
 
 - name: Deploy DNS guest firewall rules
   hosts: dns
@@ -72,8 +92,8 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
-- name: Deploy host-level metrics (node_exporter on bare metal, DNS, and GitLab hosts)
-  hosts: proxmox:dns:gitlab_servers
+- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, and GitLab hosts)
+  hosts: proxmox:dns:mail:gitlab_servers
   become: true
   roles:
     - role: node_exporter_host

@@ -62,7 +62,6 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          cpu: 300m
           memory: 256Mi
       frr:
         resources:
@@ -70,7 +69,6 @@ spec:
             cpu: 25m
             memory: 64Mi
           limits:
-            cpu: 200m
             memory: 256Mi
     controller:
       # Controller can run anywhere (doesn't handle traffic directly).
@@ -81,5 +79,4 @@ spec:
           cpu: 25m
           memory: 64Mi
         limits:
-          cpu: 200m
           memory: 256Mi

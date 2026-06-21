@@ -329,7 +329,7 @@ This:
 After bootstrap, Flux reconciles five Kustomizations in `dependsOn` order:
 
 1. `infrastructure-sources` — HelmRepository CRs + `cluster-versions` ConfigMap (no deps).
-2. `infrastructure-controllers` — HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns (dependsOn sources; CRDs installed here).
+2. `infrastructure-controllers` — HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA (dependsOn sources; CRDs installed here).
 3. `infrastructure-configs` — ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS HelmChartConfig, DDNS CronJob, shared-cloudflare-secrets (dependsOn controllers; uses CRDs installed above).
 4. `infrastructure-observability` — kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress (dependsOn configs).
 5. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (dependsOn infrastructure-observability).

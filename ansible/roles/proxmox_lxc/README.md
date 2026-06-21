@@ -48,7 +48,14 @@ plex:
   proxmox_autostart_enabled: true
 ```
 
-> **Note:** Bind mounts (`lxc_bind_mounts`), UID/GID idmap, and GPU passthrough are applied **only at container creation**. Changing them in inventory does **not** reconcile onto an existing container — recreate the container, or edit `/etc/pve/lxc/<id>.conf` and `pct restart <id>` manually.
+## Reconciliation vs. create-time-only
+
+| Setting | Behaviour |
+|---------|-----------|
+| `onboot` / `startup` (order, delay) | **Reconciled** on existing containers — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `pct set` (metadata-only, next-boot). |
+| `eric` SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently (atomic temp-file swap, only rewrites on content change). No longer a one-shot create-time `>` overwrite. |
+| NIC `firewall=1` flag | **Reconciled** on existing containers. |
+| Bind mounts (`lxc_bind_mounts`), UID/GID `lxc.idmap`, GPU `/dev/dri` passthrough | **Create-time only.** Changing them in inventory does **not** reconcile onto an existing container — live idmap/mount changes are risky and out of scope. Recreate the container, or edit `/etc/pve/lxc/<id>.conf` and `pct restart <id>` manually. |
 
 ## Deployment
 

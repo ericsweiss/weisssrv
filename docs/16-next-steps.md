@@ -359,8 +359,9 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
   vm_additional_disks positional-slot lifecycle; nic_tuning per-NIC
   persistence via if-up.d + stale drop-in cleanup when list empties
 - proxmox_ha: groups.yml legacy path; rule-comment removal never converges;
-  cluster.fw: confirm 9345 (RKE2 supervisor, not k3s) can drop; decide fate
-  of unreferenced sg-xmrig group
+  cluster.fw: confirm 9345 (RKE2 supervisor, not k3s) can drop. (sg-xmrig was
+  never an actual security group — the only reference was a phantom row in
+  docs/11, now removed.)
 - base: ssh hardening should account for /etc/ssh/sshd_config.d overrides;
   requirements.yml >= floors vs pinning philosophy; alloy apt package unpinned
 - node_exporter_host: smartmontools installed but no SMART textfile collector
@@ -575,6 +576,31 @@ obvious.
   Network Boundaries). Still uncovered: observability and several controller/ingress
   namespaces (cert-manager, external-dns, traefik, metallb-system, vpa-system).
 - [x] External Secrets Operator with 1Password Connect provider (deployed -- see docs/29-flux-operations.md)
+
+### GitOps / Flux bootstrap robustness
+
+- [ ] Make a fresh-cluster bootstrap self-sufficient for the prometheus-operator
+  CRDs. Today Traefik's `serviceMonitor.enabled` emits a `ServiceMonitor` with no
+  `.Capabilities` guard, so a first boot needs the CRDs pre-applied (documented
+  in docs/29 § "Fresh bootstrap / disaster recovery"). Durable fix: a CRDs-only
+  resource in `infrastructure-sources` + `kube-prometheus-stack` `crds.enabled:
+  false`. Deferred because migrating CRD Helm-ownership on the live cluster is
+  risky and must be done as its own carefully-staged change.
+- [ ] CoreDNS pod topology spread. The HPA pin (`configs/coredns/hpa.yaml`,
+  min==max==2) guarantees two replicas but not that they land on different nodes,
+  so a single node loss can take out both. k3s owns the CoreDNS Deployment (a
+  bundled AddOn) and resets it, so a durable `topologySpreadConstraints` needs
+  `coredns` in `k3s_disable` (group_vars/k3s.yml) plus a self-managed CoreDNS
+  manifest in the k3s server manifests dir. Deferred: self-managing CoreDNS is a
+  live cluster-DNS migration (outage risk + ongoing version-sync with k3s
+  upgrades) and should be its own closely-watched change, not part of this MR.
+- [x] nfs_tls least-privilege (done in !103): the six k3s agents are no longer in
+  `cert_distribution_targets` (host_vars/dns-01.yml). Under `xprtsec=tls` they are
+  TLS clients that validate the server via the system CA truststore and present no
+  client cert, so they need neither `fullchain.pem` nor `privkey.pem`; verified no
+  other on-agent service (alloy_host, postfix_null_client, k3s) consumes them. The
+  nfs_tls role now also scrubs any stale `/etc/ssl/private/{fullchain,privkey}.pem`
+  on client-only hosts. Re-add a target only for an `xprtsec=mtls` migration.
 
 ### Storage Enhancements
 

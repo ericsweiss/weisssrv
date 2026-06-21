@@ -60,6 +60,46 @@
         fail_msg: "tlshd.conf does not reference the expected cert/key/truststore paths"
         success_msg: "tlshd.conf renders cert + key + truststore for both server and client roles"
 
+    # Least-privilege client render: with nfs_tls_client_cert: false (the
+    # default, correct for xprtsec=tls), the [authenticate.client] block must
+    # NOT carry the private key — only the truststore. On this server host
+    # (nfs_tls_is_server: true) the private key appears exactly once, in the
+    # [authenticate.server] block. A second occurrence means the client block
+    # is leaking the wildcard key it doesn't need under server-only TLS.
+    - name: Verify the private key is referenced exactly once (server block only)
+      ansible.builtin.assert:
+        that:
+          - "(tlshd_conf_body.content | b64decode).count('x509.private_key') == 1"
+        fail_msg: >-
+          x509.private_key appears
+          {{ (tlshd_conf_body.content | b64decode).count('x509.private_key') }}
+          times — under xprtsec=tls the client block must omit the private key.
+        success_msg: "private key is referenced once (server identity only); client block is key-free"
+
+    # The least-privilege cleanup task removes the wildcard cert + key only on
+    # CLIENT-only hosts (not nfs_tls_is_server, not nfs_tls_client_cert). This
+    # is the SERVER scenario (nfs_tls_is_server: true), so the gating MUST spare
+    # them — a regression that dropped the is_server guard would delete
+    # pve-nas-01's own NFS-TLS identity. prepare.yml staged both PEMs; assert
+    # they survive converge.
+    - name: Stat the wildcard cert + key after converge
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/ssl/private/fullchain.pem
+        - /etc/ssl/private/privkey.pem
+      register: server_pem_stat
+
+    - name: Assert the cleanup spared the server's cert + key
+      ansible.builtin.assert:
+        that:
+          - server_pem_stat.results | map(attribute='stat.exists') | list == [true, true]
+        fail_msg: >-
+          The least-privilege cleanup removed the wildcard cert/key on a SERVER
+          host — the nfs_tls_is_server gating regressed; pve-nas-01 would lose
+          its own NFS-TLS identity.
+        success_msg: "cleanup spared the server's cert + key (is_server gating holds)"
+
     # ========================================================================
     # 3. tlshd.service unit recognized by systemd
     # ========================================================================

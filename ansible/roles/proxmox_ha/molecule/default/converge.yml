@@ -19,6 +19,16 @@
         resources: [vm:150]
         nodes: [pve-opt-01, pve-opt-02]
         strict: false
+    # Real-inventory shape: nodes carry EXPLICIT priorities and the rule sets a
+    # comment + strict. Exercises the priority-preservation path (the role only
+    # appends ":0" to bare nodes, so "pve-opt-01:2" must round-trip unchanged).
+    test_ha_rules_prio:
+      - name: dns-affinity
+        type: node-affinity
+        resources: [vm:150]
+        nodes: ["pve-opt-01:2", "pve-opt-02:1"]
+        strict: true
+        comment: "keep dns off nas"
     test_ha_resources:
       - type: vm
         vmid: 150
@@ -218,6 +228,252 @@
       register: case_d
       changed_when: false
 
+    # =====================================================================
+    # CASE E — already-correct node-affinity RULE triggers NO `rules set`.
+    # PVE9 `ha-manager rules list --output-format=json` returns nodes/resources
+    # as HASHES; the stub serves a rule matching test_ha_rules[0] exactly (node
+    # priority 0 == the desired unprioritised nodes), so drift must be false.
+    # Guards the rule idempotency the string-split comparison used to break.
+    # =====================================================================
+    - name: E — reset log, pre-seed a matching node-affinity rule (PVE9 hash form)
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 0}, "pve-opt-02": {"priority": 0}},
+               "resources": {"vm:150": {}}, "strict": 0}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: E — run role with rule already correct
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_rules: "{{ test_ha_rules }}"
+
+    - name: E — count rules add/set calls for dns-affinity
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        add_calls=$(grep -c '^ha-manager rules add node-affinity dns-affinity ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}, \"add_calls\": ${add_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_e
+      changed_when: false
+
+    # =====================================================================
+    # CASE F — drifted node-affinity RULE (a node removed) triggers exactly
+    # one `rules set`.
+    # =====================================================================
+    - name: F — reset log, pre-seed a drifted node-affinity rule
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 0}},
+               "resources": {"vm:150": {}}, "strict": 0}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: F — run role with rule drifted
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_rules: "{{ test_ha_rules }}"
+
+    - name: F — count rules set calls for dns-affinity
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_f
+      changed_when: false
+
+    # =====================================================================
+    # CASE E2 — already-correct rule whose nodes carry EXPLICIT priorities
+    # (the real inventory shape) triggers NO `rules set`. Pre-seeded PVE9 hash
+    # matches the priorities/strict/comment exactly. Locks in the priority-
+    # preservation contract production rules depend on.
+    # =====================================================================
+    - name: E2 — reset log, pre-seed a matching prioritised rule (PVE9 hash form)
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 2}, "pve-opt-02": {"priority": 1}},
+               "resources": {"vm:150": {}}, "strict": 1,
+               "comment": "keep dns off nas"}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: E2 — run role with prioritised rule already correct
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_rules: "{{ test_ha_rules_prio }}"
+
+    - name: E2 — count rules add/set calls for dns-affinity
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        add_calls=$(grep -c '^ha-manager rules add node-affinity dns-affinity ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}, \"add_calls\": ${add_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_e2
+      changed_when: false
+
+    # =====================================================================
+    # CASE G — strict drift (current strict=0, desired strict=1) triggers
+    # exactly one `rules set`. Nodes/resources match so strict is the sole driver.
+    # =====================================================================
+    - name: G — reset log, pre-seed a rule that differs only in strict
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 2}, "pve-opt-02": {"priority": 1}},
+               "resources": {"vm:150": {}}, "strict": 0,
+               "comment": "keep dns off nas"}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: G — run role with strict drift
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_rules: "{{ test_ha_rules_prio }}"
+
+    - name: G — count rules set calls for dns-affinity
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_g
+      changed_when: false
+
+    # =====================================================================
+    # CASE H — comment drift (current comment differs) triggers exactly one
+    # `rules set`. Nodes/resources/strict match so the comment is the sole driver.
+    # =====================================================================
+    - name: H — reset log, pre-seed a rule that differs only in comment
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 2}, "pve-opt-02": {"priority": 1}},
+               "resources": {"vm:150": {}}, "strict": 1,
+               "comment": "stale comment"}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: H — run role with comment drift
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_rules: "{{ test_ha_rules_prio }}"
+
+    - name: H — count rules set calls for dns-affinity
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_h
+      changed_when: false
+
+    # =====================================================================
+    # CASE I — resource drift (current carries an extra resource) triggers
+    # exactly one `rules set`. Nodes/strict/comment match so resources alone drive.
+    # =====================================================================
+    - name: I — reset log, pre-seed a rule that differs only in resources
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 2}, "pve-opt-02": {"priority": 1}},
+               "resources": {"vm:150": {}, "vm:151": {}}, "strict": 1,
+               "comment": "keep dns off nas"}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: I — run role with resource drift
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_rules: "{{ test_ha_rules_prio }}"
+
+    - name: I — count rules set calls for dns-affinity
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_i
+      changed_when: false
+
+    # NOTE on the string-form fallback branch (tasks/rules.yml `else` arms of
+    # _current_nodes/_current_resources): it only fires if a future PVE returns
+    # nodes/resources as comma-STRINGS instead of hashes. PVE9 always emits
+    # hashes and the stub mirrors that, so that branch isn't reachable from
+    # molecule without seeding a non-PVE9 JSON shape the role would never see in
+    # prod. Left untested deliberately — it's a defensive fallback, not a path.
+
     # ---------------------------------------------------------------------
     - name: Capture HA contract results
       ansible.builtin.copy:
@@ -231,4 +487,12 @@
            "c_add": {{ (case_c.stdout | from_json).add_calls }},
            "c_set": {{ (case_c.stdout | from_json).set_calls }},
            "d_create": {{ (case_d.stdout | from_json).create_calls }},
-           "d_update": {{ (case_d.stdout | from_json).update_calls }}}
+           "d_update": {{ (case_d.stdout | from_json).update_calls }},
+           "e_set": {{ (case_e.stdout | from_json).set_calls }},
+           "e_add": {{ (case_e.stdout | from_json).add_calls }},
+           "f_set": {{ (case_f.stdout | from_json).set_calls }},
+           "e2_set": {{ (case_e2.stdout | from_json).set_calls }},
+           "e2_add": {{ (case_e2.stdout | from_json).add_calls }},
+           "g_set": {{ (case_g.stdout | from_json).set_calls }},
+           "h_set": {{ (case_h.stdout | from_json).set_calls }},
+           "i_set": {{ (case_i.stdout | from_json).set_calls }}}

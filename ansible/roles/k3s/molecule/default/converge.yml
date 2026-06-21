@@ -34,3 +34,28 @@
 
   roles:
     - role: k3s
+
+  post_tasks:
+    # Negative test for the kube-vip interface assert (server.yml): with a NIC
+    # name that doesn't exist on the host, the role MUST fail loudly rather than
+    # let kube-vip start and silently fail to announce the API VIP. The positive
+    # path is covered by the main role run above (kube_vip_interface: eth0).
+    - name: Re-run k3s with a nonexistent kube-vip interface (expect failure)
+      block:
+        - name: Include k3s with a bogus interface
+          ansible.builtin.include_role:
+            name: k3s
+          vars:
+            kube_vip_interface: nonexistent999
+        - name: Interface assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/kube-vip-iface-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Interface assert correctly rejected a missing NIC
+          ansible.builtin.copy:
+            dest: /tmp/kube-vip-iface-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}

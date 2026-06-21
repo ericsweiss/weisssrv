@@ -1,0 +1,54 @@
+---
+# Lidarr - Music management (URL: music.esweiss.com)
+# Per-app overlay over the shared _arr component: only the name/labels, image,
+# port (8686), and config claimName differ from the skeleton.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: downloads
+components:
+  - ../_arr
+patches:
+  - target:
+      kind: Deployment
+      name: arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: lidarr
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: lidarr
+      - op: replace
+        path: /spec/selector/matchLabels/app.kubernetes.io~1name
+        value: lidarr
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1name
+        value: lidarr
+      - op: replace
+        path: /spec/template/spec/containers/0/name
+        value: lidarr
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: lscr.io/linuxserver/lidarr:version-${lidarr_version}
+      - op: replace
+        path: /spec/template/spec/containers/0/ports/0/containerPort
+        value: 8686
+      - op: replace
+        path: /spec/template/spec/volumes/0/persistentVolumeClaim/claimName
+        value: lidarr-config
+  - target:
+      kind: Service
+      name: arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: lidarr
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: lidarr
+      - op: replace
+        path: /spec/selector/app.kubernetes.io~1name
+        value: lidarr
+      - op: replace
+        path: /spec/ports/0/port
+        value: 8686

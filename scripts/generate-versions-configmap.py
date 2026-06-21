@@ -13,6 +13,12 @@ Keys are flattened:
   - Nested keys under helm_chart_versions.* become helm_chart_versions_<name>
     (e.g., helm_chart_versions.traefik -> helm_chart_versions_traefik)
 
+Every *_version key is included, host-only pins (tailscale_version, plex_version)
+among them. That is intentional: the ConfigMap is a harmless superset — a key no
+manifest references is simply never substituted. Filtering by which manifests use
+a key would risk dropping a needed substitution (a silent broken deploy), so the
+simpler superset wins.
+
 Produced keys MUST match the Flux postBuild identifier grammar
   [A-Za-z_][A-Za-z0-9_]*
 or kustomize-controller skips the substitution (older releases failed

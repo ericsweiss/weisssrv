@@ -25,6 +25,11 @@ not count, since it never actually right-sizes. Keep that list in sync with the 
 autoscaling/HPA. The flag is off by default so unit tests can exercise the
 generic join on minimal streams.
 
+With --require-chart-native-vpas it ALSO asserts the repo-wide "no CPU limits"
+policy (docs/33-autoscaling.md): CPU is compressible, so a CPU limit only adds
+CFS throttling that hurts latency and inflates the CPU% a CPU-based HPA reads.
+The check covers both rendered pod specs and HelmRelease `.spec.values`.
+
 Usage (wired into flux:lint, on the accumulated full corpus):
   kustomize build <path> | envsubst >> corpus
   python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < corpus
@@ -103,6 +108,80 @@ def _vpa_resources(spec: dict) -> set[str]:
         else:
             controlled |= {str(r).lower() for r in cr}
     return controlled
+
+
+# --- "no CPU limits" policy (docs/33-autoscaling.md) --------------------------
+POD_SPEC_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod"}
+
+# Workloads intentionally permitted a CPU limit despite the repo-wide policy.
+# Empty by design; add a "namespace/Kind/name" string here only with a reason.
+# SHARED: validate-helm-values.py imports this set (and _cpu_limit_violations)
+# so the kustomize-side and helm-rendered-side checks honor one allowlist.
+CPU_LIMIT_ALLOWLIST: set[str] = set()
+
+
+def _containers_of(doc: dict) -> list[dict]:
+    """All containers (init + regular + ephemeral) of a pod-spec workload, else []."""
+    kind = doc.get("kind")
+    spec = doc.get("spec") or {}
+    if kind == "Pod":
+        pod = spec
+    elif kind == "CronJob":
+        pod = ((((spec.get("jobTemplate") or {}).get("spec") or {})
+                .get("template") or {}).get("spec") or {})
+    elif kind in POD_SPEC_KINDS:
+        pod = (spec.get("template") or {}).get("spec") or {}
+    else:
+        return []
+    out: list[dict] = []
+    for key in ("initContainers", "containers", "ephemeralContainers"):
+        v = pod.get(key)
+        if isinstance(v, list):
+            out.extend(c for c in v if isinstance(c, dict))
+    return out
+
+
+def _find_values_cpu_limits(node, path: str = "") -> list[str]:
+    """Recursively find `limits.cpu` inside a HelmRelease `.spec.values` tree."""
+    hits: list[str] = []
+    if isinstance(node, dict):
+        lim = node.get("limits")
+        # `cpu: null`/`""` clears a chart default rather than setting a limit
+        # (k8s treats it as "no CPU limit"), so don't flag a merely-present key.
+        if isinstance(lim, dict) and lim.get("cpu") not in (None, ""):
+            key = f"{path}.limits.cpu" if path else "limits.cpu"
+            hits.append(f"{key}={lim.get('cpu')}")
+        for k, v in node.items():
+            if k != "limits":
+                hits.extend(_find_values_cpu_limits(v, f"{path}.{k}" if path else k))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            hits.extend(_find_values_cpu_limits(v, f"{path}[{i}]"))
+    return hits
+
+
+def _cpu_limit_violations(docs: list[dict]) -> list[str]:
+    """Flag any pod-spec container or HelmRelease values that set a CPU limit."""
+    out: list[str] = []
+    for d in docs:
+        kind = d.get("kind")
+        meta = d.get("metadata") or {}
+        wlkey = f"{meta.get('namespace', '')}/{kind}/{meta.get('name', '?')}"
+        if wlkey in CPU_LIMIT_ALLOWLIST:
+            continue
+        if kind == "HelmRelease":
+            values = (d.get("spec") or {}).get("values") or {}
+            for hit in _find_values_cpu_limits(values, "values"):
+                out.append(f"  {wlkey}: HelmRelease sets a CPU limit ({hit})")
+        else:
+            for c in _containers_of(d):
+                lim = (c.get("resources") or {}).get("limits") or {}
+                if lim.get("cpu") not in (None, ""):
+                    out.append(
+                        f"  {wlkey}: container {c.get('name', '?')!r} sets "
+                        f"limits.cpu={lim.get('cpu')}"
+                    )
+    return out
 
 
 def main() -> int:
@@ -197,14 +276,32 @@ def main() -> int:
                     f"controlledResources to exclude cpu (memory-only)"
                 )
 
+    cpu_violations = (
+        _cpu_limit_violations(docs)
+        if "--require-chart-native-vpas" in sys.argv else []
+    )
+
+    failed = False
     if violations:
         print("HPA/VPA invariant violated — same resource driven by both:", file=sys.stderr)
         print("\n".join(violations), file=sys.stderr)
+        failed = True
+    if cpu_violations:
+        print(
+            "CPU-limit policy violated — pods/HelmReleases must not set a CPU limit "
+            "(compressible resource; CFS throttling hurts latency and distorts "
+            "CPU-based HPAs — see docs/33-autoscaling.md). Offenders:",
+            file=sys.stderr,
+        )
+        print("\n".join(cpu_violations), file=sys.stderr)
+        failed = True
+    if failed:
         return 1
 
     print(
         f"HPA/VPA invariant OK ({len(hpas)} HPAs, {len(vpas)} VPAs checked"
         + (f", {len(CHART_NATIVE_HPA_TARGETS)} chart-native targets asserted"
+           ", CPU-limit policy OK"
            if "--require-chart-native-vpas" in sys.argv else "")
         + ")"
     )

@@ -217,49 +217,78 @@
     - vm_exists.rc != 0
     - not (proxmox_vm_skip_create | default(false))
 
-- name: Deploy SSH public key for cloud-init
+# Private temp file (mode 0600, random suffix) instead of a guessable
+# /tmp/ssh_key_<vmid>.pub — on a shared Proxmox host a predictable path is a
+# race/clobber target. Registered so the path flows to qm set and cleanup.
+# Stage the key, consume it via `qm set --sshkeys`, then remove it in `always`
+# so a failure between staging and consuming never leaves the (public) key file
+# behind on the shared Proxmox host. delegate_to/when propagate to all of the
+# block's tasks, including the always cleanup.
+- name: Stage and consume the cloud-init SSH public key
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.copy:
-    content: "{{ ssh_public_key }}"
-    dest: "/tmp/ssh_key_{{ vm_id }}.pub"
-    mode: "0600"
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
-  vars:
-    ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
+  block:
+    - name: Create private temp file for cloud-init SSH key
+      ansible.builtin.tempfile:
+        state: file
+        prefix: "ssh_key_{{ vm_id }}_"
+        suffix: ".pub"
+      register: _ci_ssh_key_tmp
 
-- name: Configure cloud-init settings
+    - name: Deploy SSH public key for cloud-init
+      ansible.builtin.copy:
+        content: "{{ ssh_public_key }}"
+        dest: "{{ _ci_ssh_key_tmp.path }}"
+        mode: "0600"
+      vars:
+        ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
+
+    - name: Configure cloud-init settings
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} \
+          --ciuser {{ cloudinit_user }} \
+          --sshkeys {{ _ci_ssh_key_tmp.path | quote }} \
+          --ipconfig0 ip={{ proxmox_vm_target_ip }}/24,gw={{ cloudinit_gateway }} \
+          --nameserver "{{ cloudinit_dns | join(' ') }}"
+      # Honor skip_create alongside the other create-path tasks (molecule stub).
+      when: not (proxmox_vm_skip_create | default(false))
+      changed_when: true
+  always:
+    - name: Clean up the cloud-init SSH key temp file (even on failure)
+      ansible.builtin.file:
+        path: "{{ _ci_ssh_key_tmp.path }}"
+        state: absent
+      when:
+        - _ci_ssh_key_tmp is defined
+        - _ci_ssh_key_tmp.path is defined
+
+# Reconcile the QEMU guest-agent flag on existing VMs too (it's metadata-only —
+# controls host-side polling, never touches the running guest). Idempotent:
+# re-sets only when live `qm config` differs from the desired flag.
+- name: Ensure VM QEMU agent flag matches inventory
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    qm set {{ vm_id }} \
-      --ciuser {{ cloudinit_user }} \
-      --sshkeys /tmp/ssh_key_{{ vm_id }}.pub \
-      --ipconfig0 ip={{ proxmox_vm_target_ip }}/24,gw={{ cloudinit_gateway }} \
-      --nameserver "{{ cloudinit_dns | join(' ') }}"
+    set -euo pipefail
+    want="{{ vm_agent_enabled | default(true) | ternary(1, 0) }}"
+    # `agent:` may be "1", "0", or "enabled=1,..." — extract the leading enabled bit.
+    cur=$(qm config {{ vm_id }} | sed -n 's/^agent: //p' | sed -E 's/^enabled=//; s/,.*$//')
+    cur=${cur:-0}
+    if [ "$cur" != "$want" ]; then
+      qm set {{ vm_id }} --agent "$want"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: vm_agent_reconcile
+  changed_when: "'CHANGED' in (vm_agent_reconcile.stdout | default(''))"
   when:
     - not ansible_check_mode
-    - vm_exists.rc != 0
-    # Honor skip_create alongside the other create-path tasks so molecule
-    # scenarios with stub `qm` aren't asked to set cloud-init IP on a VM
-    # that was never created. Matches the gate pattern used by `Create
-    # VM`, `Import cloud image disk`, etc.
-    - not (proxmox_vm_skip_create | default(false))
-  changed_when: true
+    # Drift reconcile for existing VMs only — new VMs get --agent at create time
+    # (qm create above). Matches the onboot/startup reconcile's guard below.
+    - vm_exists.rc == 0
 
-- name: Configure VM for QEMU agent
-  delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    qm set {{ vm_id }} --agent 1
-  when:
-    - not ansible_check_mode
-    - vm_exists.rc != 0
-  changed_when: true
-
-# NOTE: onboot/startup (and the agent flag above) are only applied at VM
-# creation. Changing proxmox_startup_order/proxmox_startup_delay/onboot in
-# inventory does NOT reconcile onto an existing VM — recreate the VM (or run
-# `qm set <vmid> --onboot/--startup …` manually) to apply startup changes.
 - name: Configure VM autostart and boot order
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -269,7 +298,52 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    # Honor skip_create alongside the sibling create-path tasks (Create VM,
+    # cloud-init qm set) — don't mutate/fail during a skip-create/stub run.
+    - not (proxmox_vm_skip_create | default(false))
   changed_when: true
+
+# Reconcile onboot/startup on existing VMs too (metadata-only, applied at next
+# boot — never disrupts a running guest). Idempotent: re-sets only on real drift.
+# startup is normalized to a canonical order=/up=/down= form on BOTH sides before
+# comparing, because Proxmox drops default fields (e.g. up=0) from the stored
+# string — a raw string compare would see false drift and re-`qm set` every run.
+- name: Reconcile VM autostart and boot order on existing VM
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want_onboot="{{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}"
+    # Canonicalize a Proxmox startup property-string to "order=O,up=U,down=D"
+    # with absent fields defaulting to 0, so desired and stored compare equal
+    # regardless of which default fields Proxmox omits.
+    norm_startup() {
+      local s="$1" order=0 up=0 down=0 kv k v
+      local IFS=','
+      for kv in $s; do
+        k=${kv%%=*}; v=${kv#*=}
+        case "$k" in order) order=$v ;; up) up=$v ;; down) down=$v ;; esac
+      done
+      echo "order=${order},up=${up},down=${down}"
+    }
+    want_startup=$(norm_startup "order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}")
+    cfg=$(qm config {{ vm_id }})
+    # Default onboot when the key is absent from qm config is 0 (Proxmox default).
+    cur_onboot=$(printf '%s\n' "$cfg" | sed -n 's/^onboot: //p'); cur_onboot=${cur_onboot:-0}
+    cur_startup=$(norm_startup "$(printf '%s\n' "$cfg" | sed -n 's/^startup: //p')")
+    changed=0
+    [ "$cur_onboot" != "$want_onboot" ] && changed=1
+    [ "$cur_startup" != "$want_startup" ] && changed=1
+    if [ "$changed" = 1 ]; then
+      qm set {{ vm_id }} --onboot "$want_onboot" --startup "order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: vm_startup_reconcile
+  changed_when: "'CHANGED' in (vm_startup_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc == 0
 
 # Additional persistent disks (ZFS zvols)
 # Each disk pins an explicit, unique scsi_slot. Attaching by list position would
@@ -341,11 +415,10 @@
       elif [ "$CURRENT_PATH" = "$EXPECTED_PATH" ] && [ "$HAS_NOBACKUP" = "$WANT_NOBACKUP" ]; then
         echo "OK:exists"
       else
-        # The slot is occupied by a DIFFERENT, non-empty drive spec. Refuse to
-        # remap ANY occupied slot (not just /dev/zvol paths — an LVM/raw/other
-        # backing disk is just as destructive to rebind): a reorder/removal or a
-        # slot typo must never silently overwrite a slot pointing elsewhere. A
-        # path == EXPECTED here is only a backup= flag change and is allowed.
+        # Slot occupied by a DIFFERENT drive spec: refuse to remap ANY occupied
+        # slot (not just zvols — an LVM/raw disk is just as destructive to
+        # rebind) so a reorder/removal/typo can't silently overwrite it. A
+        # matching path here is only a backup= flag change and is allowed.
         if [ "$CURRENT_PATH" != "$EXPECTED_PATH" ] && [ -n "$CURRENT_PATH" ] && [ "$CURRENT_PATH" != "none" ] && [ "$ALLOW_REMAP" != 1 ]; then
           echo "ERROR: ${SCSI_SLOT} maps $CURRENT_PATH, expected $EXPECTED_PATH." >&2
           echo "Refusing to remap an occupied slot; set allow_remap: true to override intentionally." >&2
@@ -375,15 +448,9 @@
     - item.stdout is defined
   changed_when: false
 
-# Remove the temporary public key unconditionally so a partial/failed create
-# run does not leave the file behind on the shared Proxmox host (state: absent
-# is idempotent and a no-op when nothing was written).
-- name: Clean up temporary SSH key
-  delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.file:
-    path: "/tmp/ssh_key_{{ vm_id }}.pub"
-    state: absent
-  when: not ansible_check_mode
+# (The cloud-init SSH key temp file is now removed in the `always` of the
+# "Stage and consume the cloud-init SSH public key" block above, so it is
+# cleaned up even when a create-path task between staging and consuming fails.)
 
 - name: Start VM
   delegate_to: "{{ proxmox_host }}"

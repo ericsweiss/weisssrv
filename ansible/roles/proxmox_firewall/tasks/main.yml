@@ -9,20 +9,14 @@
     owner: root
     group: www-data
     mode: "0755"
+    # /etc/pve is the pmxcfs FUSE filesystem: unsafe_writes is required because it
+    # doesn't support Ansible's atomic .tmp + cross-directory rename. Required on
+    # every /etc/pve task below; a no-op once the dir exists (create/repair only).
+    unsafe_writes: true
   when: inventory_hostname in groups['proxmox'] | default([])
 
-# Proxmox auto-creates /etc/pve/nodes/<hostname> on cluster join (it's
-# pmxcfs-managed with root:www-data 0755), but ensuring it exists here
-# makes the role robust against fresh-node edge cases and lets the
-# molecule scenario render host.fw without each per-host dir being set
-# up in prepare.yml.
-#
-# unsafe_writes is required for any task that mutates /etc/pve — pmxcfs
-# is a FUSE filesystem and Ansible's default "write to .tmp + atomic
-# rename" path fails because pmxcfs doesn't support cross-directory
-# rename(2). This task is normally a no-op on production hosts where
-# the directory already exists with the expected owner/mode; the
-# unsafe_writes flag only matters on the create / repair path.
+# Proxmox auto-creates this on cluster join, but ensuring it exists makes the
+# role robust on fresh nodes and lets the molecule scenario render host.fw.
 - name: Ensure per-node firewall directory exists
   ansible.builtin.file:
     path: "{{ pve_firewall_node_dir }}/{{ inventory_hostname }}"
@@ -33,6 +27,11 @@
     unsafe_writes: true
   when: inventory_hostname in groups['proxmox'] | default([])
 
+# Cross-play guard: this role is included by many plays (proxmox, dns, mail,
+# services …), but cluster.fw and the pveum user/ACL/token below are cluster-wide
+# and need to run ONCE per invocation. run_once alone fires once PER PLAY, so
+# completion is recorded as a delegate_facts fact on groups['proxmox'][0] (a
+# global, evaluable on every host) and later plays skip via hostvars[...].
 - name: Deploy cluster firewall configuration
   ansible.builtin.template:
     src: cluster.fw.j2
@@ -46,6 +45,17 @@
   # where inventory_hostname may not be in groups['proxmox'].
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
+  when:
+    - pve_firewall_enabled | default(true)
+    - (groups['proxmox'] | default([]) | length) > 0
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_cluster_done'] | default(false))
+
+- name: Mark cluster firewall configuration as deployed for this run
+  ansible.builtin.set_fact:
+    _pve_fw_cluster_done: true
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  delegate_facts: true
+  run_once: true
   when:
     - pve_firewall_enabled | default(true)
     - (groups['proxmox'] | default([]) | length) > 0
@@ -85,8 +95,10 @@
 
 # Proxmox monitoring user and API token for Prometheus exporters.
 # PVE user management is cluster-wide — run_once + delegate_to ensures
-# these tasks execute exactly once on a single Proxmox node regardless
-# of which play or host group invokes this role.
+# these tasks execute exactly once on a single Proxmox node. The
+# _pve_fw_pveum_done guard (set on the delegate host below) additionally
+# stops the `pveum … list` probes from re-running once PER PLAY when the
+# role is pulled in by the guest-only dns/mail/services plays.
 - name: Check if monitoring@pve user exists
   ansible.builtin.command: pveum user list --output-format json
   register: pve_users
@@ -97,6 +109,7 @@
   when:
     - groups.get('proxmox', []) | length > 0
     - not (pve_firewall_skip_pveum | default(false))
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_pveum_done'] | default(false))
 
 - name: Create monitoring@pve user
   ansible.builtin.command: >
@@ -111,6 +124,7 @@
     # pve_users.stdout from cache (making `.stdout is defined` true) can't
     # accidentally fire pveum against a container without the binary.
     - not (pve_firewall_skip_pveum | default(false))
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_pveum_done'] | default(false))
     - pve_users.stdout is defined
     - >-
       pve_users.stdout | from_json | default([]) |
@@ -127,6 +141,7 @@
   when:
     - groups.get('proxmox', []) | length > 0
     - not (pve_firewall_skip_pveum | default(false))
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_pveum_done'] | default(false))
 
 - name: Assign PVEAuditor role to monitoring@pve
   ansible.builtin.command: >
@@ -137,6 +152,7 @@
   when:
     - groups.get('proxmox', []) | length > 0
     - not (pve_firewall_skip_pveum | default(false))
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_pveum_done'] | default(false))
     - pve_acls.stdout is defined
     - >-
       pve_acls.stdout | from_json | default([]) |
@@ -155,6 +171,7 @@
   when:
     - groups.get('proxmox', []) | length > 0
     - not (pve_firewall_skip_pveum | default(false))
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_pveum_done'] | default(false))
 
 - name: Create exporter API token for monitoring@pve
   ansible.builtin.command: >
@@ -167,6 +184,7 @@
   when:
     - groups.get('proxmox', []) | length > 0
     - not (pve_firewall_skip_pveum | default(false))
+    - not (hostvars[groups['proxmox'][0]]['_pve_fw_pveum_done'] | default(false))
     - pve_tokens.stdout is defined
     - >-
       (pve_tokens.stdout | from_json | default([]) |
@@ -184,3 +202,17 @@
   when:
     - pve_token_created is defined
     - pve_token_created is changed
+
+# Mark the pveum reconcile as complete for this run so later plays that include
+# proxmox_firewall (dns/mail/services) skip the `pveum … list` probes entirely.
+# Set on the delegate host (delegate_facts) so it is visible cross-play via
+# hostvars[groups['proxmox'][0]].
+- name: Mark pveum monitoring user/token reconcile as done for this run
+  ansible.builtin.set_fact:
+    _pve_fw_pveum_done: true
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  delegate_facts: true
+  run_once: true
+  when:
+    - groups.get('proxmox', []) | length > 0
+    - not (pve_firewall_skip_pveum | default(false))

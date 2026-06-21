@@ -138,9 +138,17 @@ IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
 
 [group sg-plex]
 
+# DLNA/GDM discovery + companion ports stay LAN-only (no remote use case).
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 32469 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 32410:32414 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog
+# Plex media port 32400 - INTENTIONALLY open to WAN for direct remote streaming.
+# Accepted risk: the router forwards 32400/tcp -> 192.168.0.152 (docs/20 §4) so
+# remote clients stream directly instead of via the bandwidth-limited plex.tv
+# relay. Plex authenticates every remote session against plex.tv before serving
+# media, so this is an authenticated endpoint, not an open share. Restricting the
+# source here would force all remote playback through the relay (degraded quality)
+# or require a per-client VPN. Revisit if direct remote access is dropped.
 IN ACCEPT -p tcp -dport 32400 -log nolog
 
 [group sg-metrics]
@@ -159,9 +167,14 @@ IN ACCEPT -source +dc/core-cluster -p tcp -dport 31100 -log nolog  # loki push (
 
 [group sg-pve-cluster]
 
+# Proxmox auto-permits intra-cluster traffic via a built-in macro, so this
+# group is belt-and-suspenders.
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 8006 -log nolog
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 60000:60050 -log nolog
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 22 -log nolog
+# corosync totem ring UDP ports: 5405 = ring0 (single-ring default), 5406 =
+# ring1 (reserved for a future second knet link). If the knet ring layout
+# changes (confirm with `corosync-cmapctl | grep mcastport`), update to match.
 IN ACCEPT -source +dc/pve_hosts -p udp -dport 5406 -log nolog
 IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog
 

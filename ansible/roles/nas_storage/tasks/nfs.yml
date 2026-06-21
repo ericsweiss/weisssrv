@@ -34,6 +34,36 @@
   loop_control:
     label: "{{ item.path }}"
 
+# Guard against capturing the still-empty mountpoint of an unmounted ZFS
+# dataset. If the pool is exported or its encryption key is unloaded, the
+# mountpoint is a bare directory on the root fs; the file task below would
+# mkdir/chown it there, and "Configure bind mounts in fstab" (state: mounted)
+# could then bind that empty root-fs dir, which "Deploy NFS exports" serves —
+# exactly the empty-mountpoint capture the bind fstab comment and the
+# zfs_encryption RequiredBy=zfs-mount ordering guard against. Only the
+# tank/ssd/nvme-backed sources are ZFS datasets (same regex the fstab task
+# uses to scope its boot-ordering opts); mergerfs sources like /mnt/media are
+# not single datasets and are checked separately by mergerfs.yml.
+- name: Verify ZFS-backed bind sources are mounted datasets
+  ansible.builtin.command: "mountpoint -q {{ item.bind_source }}"
+  loop: "{{ nfs_exports }}"
+  loop_control:
+    label: "{{ item.bind_source | default('N/A') }}"
+  register: nfs_bind_source_mounted
+  changed_when: false
+  check_mode: false
+  # Fail closed on an unmounted ZFS source in production. The bypass is gated on
+  # skip_zfs_operations — set ONLY in the molecule container (no real ZFS mounts)
+  # — NOT skip_nfs_reload: skipping the NFS reload must never silently disable
+  # this safety check (otherwise the tasks below would mkdir/chown + bind an
+  # empty root-fs dir that "Deploy NFS exports" would then serve).
+  failed_when:
+    - nfs_bind_source_mounted.rc != 0
+    - not (skip_zfs_operations | default(false))
+  when:
+    - item.bind_source is defined
+    - item.bind_source is match('^/mnt/(tank|ssd|nvme)/')
+
 - name: Set ownership on bind source directories
   ansible.builtin.file:
     path: "{{ item.bind_source }}"

@@ -57,6 +57,21 @@
     mode: "0755"
   when: k3s_is_first_server | default(false)
 
+# Runs on every server (kube-vip announces the API VIP from each control-plane
+# node): a NIC-name mismatch would otherwise let kube-vip start but silently fail
+# to bring up the VIP. Fail loudly at deploy time instead.
+- name: Assert the kube-vip interface exists on this server
+  ansible.builtin.assert:
+    that:
+      - kube_vip_interface in (ansible_facts.interfaces | default([]))
+    fail_msg: >-
+      kube_vip_interface '{{ kube_vip_interface }}' is not a NIC on
+      {{ inventory_hostname }} (have:
+      {{ ansible_facts.interfaces | default([]) | join(', ') }}). The API VIP
+      ({{ k3s_api_vip | default('?') }}) would silently fail to announce. Set
+      kube_vip_interface in group_vars/k3s.yml or host_vars to the right interface.
+    success_msg: "kube-vip interface {{ kube_vip_interface }} present"
+
 - name: Deploy kube-vip manifest (first server only)
   ansible.builtin.template:
     src: kube-vip-manifest.yaml.j2

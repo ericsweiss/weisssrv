@@ -41,7 +41,31 @@
 - name: Install Vundle plugins
   ansible.builtin.command:
     cmd: nvim --headless +PluginInstall +qall
-    creates: "/home/{{ admin_user }}/.vim/bundle/vim-fugitive"
+    # Sentinel keyed to the plugin LIST (sha1), not a fixed filename: a static
+    # marker meant adding a plugin to nvim_plugins silently no-op'd (the marker
+    # already existed), and a different first plugin would never re-trigger it.
+    # A per-list-hash marker re-runs PluginInstall whenever the list changes,
+    # while still avoiding the old "first plugin in the list" coupling.
+    # (join(',') not '\n' — YAML would turn \n into a real newline here.)
+    creates: "/home/{{ admin_user }}/.vim/bundle/.vundle-installed-{{ (nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
   become: true
   become_user: "{{ admin_user }}"
+  register: vundle_install
   when: admin_user != 'root'
+
+# Write the list-hash sentinel only when PluginInstall actually ran, so the
+# command's `creates:` guard skips it on subsequent plays until the plugin list
+# changes (which yields a new hash → new marker → re-run).
+- name: Mark Vundle plugins as installed (marker keyed to the plugin-list hash)
+  ansible.builtin.copy:
+    content: >-
+      Vundle plugins installed by the qol role for plugin-list hash
+      {{ (nvim_plugins | default([]) | join(',')) | hash('sha1') }}.
+      Delete this marker to force a reinstall.
+    dest: "/home/{{ admin_user }}/.vim/bundle/.vundle-installed-{{ (nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0644"
+  when:
+    - admin_user != 'root'
+    - vundle_install is changed

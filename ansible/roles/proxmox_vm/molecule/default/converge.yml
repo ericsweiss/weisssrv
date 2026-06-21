@@ -115,8 +115,9 @@
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
 
     # 5. Existence guard — when the VM exists and its NIC already has
-    # firewall=1, the only qm activity allowed is the read-only
-    # `qm config` probe from the firewall reconcile. No mutations.
+    # firewall=1 (and agent/onboot/startup already match inventory), the only
+    # qm activity allowed is read-only `qm config` probes from the firewall,
+    # agent, and startup reconciles. No mutations.
     - name: Reset qm.log
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/qm.log
@@ -246,6 +247,95 @@
            "repair_calls": {{ (qm_fwzero_lines.stdout | from_json).repair_calls }},
            "stale_key_in_set": {{ (qm_fwzero_lines.stdout | from_json).stale_key_in_set }},
            "reconcile_changed": {{ vm_net0_firewall.changed | to_json }}}
+
+    # 7b. Agent flag drift — existing VM whose `qm config` reports agent
+    # enabled=0 must get exactly one `qm set 999 --agent 1` reconcile call.
+    - name: Stub agent disabled (enabled=0)
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_agent_override
+        content: "enabled=0"
+        mode: "0644"
+
+    - name: Reset qm.log for agent-drift case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role against agent-disabled VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Remove agent override
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/vm_agent_override
+        state: absent
+
+    - name: Count agent-drift qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --agent 1$' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"agent_set\": ${applied}}"
+      args:
+        executable: /bin/bash
+      register: agent_drift
+      changed_when: false
+
+    # 7c. onboot + startup drift — existing VM reporting onboot:0 and a stale
+    # startup string must get exactly one `qm set 999 --onboot 1 --startup ...`.
+    - name: Stub onboot disabled
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_onboot_override
+        content: "0"
+        mode: "0644"
+
+    - name: Stub stale startup order
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_startup_override
+        content: "order=50,up=30"
+        mode: "0644"
+
+    - name: Reset qm.log for startup-drift case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role against onboot/startup-drift VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Remove onboot/startup overrides
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/molecule-stub-state/vm_onboot_override
+        - /tmp/molecule-stub-state/vm_startup_override
+
+    - name: Count startup-drift qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --onboot 1 --startup order=100,up=0$' /tmp/molecule-stub-state/qm.log || true)
+        anyset=$(grep -c '^qm set 999 --onboot' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"startup_set\": ${applied}, \"any_onboot_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: startup_drift
+      changed_when: false
+
+    - name: Capture agent/onboot/startup drift result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/10-meta-drift.json
+        mode: "0644"
+        content: |
+          {"agent_set": {{ (agent_drift.stdout | from_json).agent_set }},
+           "startup_set": {{ (startup_drift.stdout | from_json).startup_set }},
+           "any_onboot_set": {{ (startup_drift.stdout | from_json).any_onboot_set }}}
 
     # 8. Additional-disk vzdump_backup idempotency. The attach task (loop slot
     # scsi1) must set backup=0 exactly when a vzdump_backup:false disk's current

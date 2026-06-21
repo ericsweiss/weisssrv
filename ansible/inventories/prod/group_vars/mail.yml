@@ -33,7 +33,10 @@ smtp_relay_config:
   smtp_sasl_security_options: "noanonymous"
   smtp_sasl_tls_security_options: "noanonymous"
   smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
-  smtpd_relay_restrictions: "permit_mynetworks,reject_unauth_destination"
+  # permit_sasl_authenticated is required for the SASL path on submission/587
+  # to actually grant relay (otherwise a SASL-authenticated sender outside
+  # mynetworks is rejected by reject_unauth_destination and SASL is decorative).
+  smtpd_relay_restrictions: "permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination"
   smtpd_tls_cert_file: "/etc/postfix/tls/fullchain.pem"
   smtpd_tls_key_file: "/etc/postfix/tls/privkey.pem"
   smtpd_tls_security_level: "may"

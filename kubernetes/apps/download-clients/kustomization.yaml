@@ -14,10 +14,14 @@ resources:
   - nzbget.yaml
   - qbittorrent.yaml
   # Media management apps (*arr stack)
+  # sonarr/radarr/lidarr are near-identical; their shared Deployment+Service
+  # skeleton lives in the _arr Kustomize component and each app is a thin
+  # per-app overlay (name/labels, image, port, claimName). Prowlarr differs
+  # (probe timings, resources, no /media mount) and stays a standalone manifest.
   - prowlarr.yaml
-  - sonarr.yaml
-  - radarr.yaml
-  - lidarr.yaml
+  - sonarr
+  - radarr
+  - lidarr
   - pulsarr.yaml
   # Ingress routes
   - ingress-routes.yaml

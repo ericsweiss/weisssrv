@@ -3,12 +3,21 @@
 # `maintenance-run-all` wrapper) to validate that nothing got knocked over.
 #
 # Used by the maintenance-* CI jobs in .gitlab-ci.yml AND by the standalone
-# manual `maintenance-verify` job. Keep self-contained — no project-internal
-# helpers — so the same script works from any CI image with kubectl + curl.
+# manual `maintenance-verify` job. The only project-internal dependency is the
+# sibling scripts/maintenance-lib.sh (always cloned alongside this script in
+# CI), which holds the pure parsing helpers so they can be unit-tested without
+# a live cluster. Everything else needs only kubectl + curl, so the same
+# script works from any CI image.
 #
 # Exits 0 if cluster is healthy, 1 if any critical check fails.
 
 set -eo pipefail
+
+# Resolve to an absolute dir so sourcing works regardless of CWD / PATH
+# invocation (matches maintenance-ha-restart.sh).
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/maintenance-lib.sh
+. "$_SCRIPT_DIR/maintenance-lib.sh"
 
 echo "=== Post-Maintenance Verification ==="
 ERRORS=0
@@ -25,9 +34,9 @@ elif [ -z "$NODE_OUTPUT" ]; then
   echo "ERROR: kubectl returned no nodes"
   ERRORS=$((ERRORS + 1))
 else
-  # `$2 !~ /^Ready/` accepts both "Ready" and "Ready,SchedulingDisabled"
+  # count_not_ready_nodes accepts both "Ready" and "Ready,SchedulingDisabled"
   # (cordoned-but-healthy node, e.g., during a k3s rolling upgrade).
-  NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 !~ /^Ready/ {count++} END {print count+0}')
+  NOT_READY=$(echo "$NODE_OUTPUT" | count_not_ready_nodes)
   if [ "$NOT_READY" -gt 0 ]; then
     echo "ERROR: $NOT_READY node(s) not Ready"
     ERRORS=$((ERRORS + 1))
@@ -48,9 +57,7 @@ echo "Checking for unhealthy pods..."
 # One awk catches both non-running ($4 != Running) and Running-but-not-ready
 # (READY a/b with a != b).
 list_unhealthy() {
-  kubectl get pods -A --no-headers 2>/dev/null | awk '
-    $4 == "Completed" || $4 == "Succeeded" { next }
-    { split($3, a, "/"); if ($4 != "Running" || a[1] != a[2]) print }'
+  kubectl get pods -A --no-headers 2>/dev/null | list_unhealthy_pods
 }
 BAD=$(list_unhealthy) || {
   echo "ERROR: failed to query pods"
@@ -88,7 +95,7 @@ for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb
   if DEP_REPLICAS=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.status.availableReplicas} {.spec.replicas}' 2>/dev/null); then
     AVAIL="${DEP_REPLICAS%% *}"
     DESIRED="${DEP_REPLICAS##* }"
-    if [ "${AVAIL:-0}" -ge "${DESIRED:-1}" ] 2>/dev/null; then
+    if deployment_replicas_ok "$AVAIL" "$DESIRED"; then
       echo "  $name ($ns): ${AVAIL:-0}/${DESIRED:-1} available"
     else
       echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"

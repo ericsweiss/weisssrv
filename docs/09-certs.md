@@ -138,7 +138,7 @@ Certificates have specific ownership/permissions for security:
 
 ### AdGuard Home (dns-01, dns-02)
 
-DoT (DNS-over-TLS) on port 853 and HTTPS admin on port 443:
+DoT (DNS-over-TLS) on port 853 and AdGuard's own HTTPS/DoH listener on port 443. (The admin UI is on port 3000 and is reached over HTTPS via the Traefik IngressRoute at `dns-01.esweiss.com`/`dns-02.esweiss.com`, not AdGuard's :443 — hence `force_https: false` below.)
 
 ```yaml
 tls:
@@ -218,7 +218,7 @@ echo | openssl s_client -connect 192.168.0.150:853 2>/dev/null | \
 sudo tail -f /root/.acme.sh/acme.sh.log
 
 # Check distribution script logs
-sudo journalctl -u adguardhome -f
+sudo journalctl -u AdGuardHome -f
 sudo journalctl -u postfix -f
 ```
 
@@ -278,8 +278,8 @@ sudo journalctl -u postfix -f
 
 2. **Restart service**:
    ```bash
-   # AdGuard Home
-   sudo systemctl restart adguardhome
+   # AdGuard Home (systemd unit name is case-sensitive: AdGuardHome)
+   sudo systemctl restart AdGuardHome
 
    # Postfix
    sudo systemctl restart postfix
@@ -287,7 +287,7 @@ sudo journalctl -u postfix -f
 
 3. **Check service logs**:
    ```bash
-   sudo journalctl -u adguardhome -n 50
+   sudo journalctl -u AdGuardHome -n 50
    sudo journalctl -u postfix -n 50
    ```
 

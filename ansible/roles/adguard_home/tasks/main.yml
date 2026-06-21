@@ -241,10 +241,15 @@
     path: "{{ adguard_install_path }}/AdGuardHome.yaml"
   register: adguard_config
 
+# tail -1 (not head -1) so this read targets the SAME password line the
+# "Update admin password" lineinfile rewrites below: lineinfile with a bare
+# regexp (no backrefs/firstmatch) replaces the LAST matching line, so a second
+# indented password key elsewhere in the config would otherwise split verify
+# (first match) from write (last match).
 - name: Read existing password hash from config
   ansible.builtin.shell: |
     set -o pipefail
-    grep -E '^\s+password:' "{{ adguard_install_path }}/AdGuardHome.yaml" | head -1 | sed 's/.*password:\s*//'
+    grep -E '^\s+password:' "{{ adguard_install_path }}/AdGuardHome.yaml" | tail -1 | sed 's/.*password:\s*//'
   args:
     executable: /bin/bash
   register: existing_hash_result

@@ -82,6 +82,9 @@ spec:
 ---
 # Egress for authentik server + worker:
 # - kube-dns
+# - kube-apiserver (the worker drives the Kubernetes integration / embedded
+#   outpost reconciliation and needs API access — its SA token is mounted on
+#   purpose, see release.yaml worker.securityContext note)
 # - intra-ns to Postgres
 # - smtp-relay (192.168.0.151) for password reset / notification emails
 # - Public HTTPS (image pulls happen at kubelet, but the worker fetches
@@ -113,6 +116,21 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # kube-apiserver access. kube-proxy DNATs the in-cluster VIP
+    # (10.43.0.1:443) to the real endpoints BEFORE NetworkPolicy evaluation,
+    # so the policy must allowlist the server node IPs on 6443 — a 10.43.0.1/32
+    # rule never matches the post-DNAT packet (same pattern as gitlab-runner).
+    # The worker uses this for the Kubernetes integration/outpost controller.
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
+      ports:
+        - protocol: TCP
+          port: 6443
     - to:
         - podSelector:
             matchLabels:

@@ -70,11 +70,19 @@ spec:
           # hardening; deeper container hardening needs per-image testing first.
           env:
             # Match official docker-compose: ALLOW_EMPTY_PASSWORD=yes.
-            # Accepted tradeoff: this cache is unauthenticated but the
-            # recipes namespace runs default-deny + the allow-bar-assistant-redis
-            # ingress only admits the bar-assistant pod, so exposure is
-            # in-namespace only. If more pods ever land in recipes, set a
-            # password from recipes-secrets instead.
+            # Accepted tradeoff: this cache is unauthenticated (and stores
+            # sessions, since bar-assistant sets SESSION_DRIVER=redis below), but
+            # it is network-contained:
+            #   - recipes namespace is default-deny ingress AND egress
+            #   - allow-bar-assistant-redis ingress on 6379 admits ONLY the
+            #     bar-assistant pod (plus the observability redis-exporter for
+            #     read-only metric scraping) — see networkpolicy.yaml
+            #   - allow-egress-recipes-data-plane limits this pod's egress to
+            #     kube-dns only (no inbound/outbound LAN reach)
+            # So exposure is bar-assistant-only, in-namespace. If any other
+            # workload ever lands in recipes, switch to a REDIS_PASSWORD sourced
+            # from recipes-secrets (ExternalSecret) before relying on the policy
+            # alone.
             - name: ALLOW_EMPTY_PASSWORD
               value: "yes"
           ports:
@@ -104,7 +112,6 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
-              cpu: 250m
               memory: 256Mi
 
 ---
@@ -218,7 +225,6 @@ spec:
               cpu: 50m
               memory: 128Mi
             limits:
-              cpu: 500m
               memory: 512Mi
           volumeMounts:
             - name: data
@@ -400,7 +406,6 @@ spec:
               cpu: 200m
               memory: 512Mi
             limits:
-              cpu: 1000m
               memory: 1Gi
           volumeMounts:
             # Mount the entire bar-assistant directory for SQLite database + uploads
@@ -541,7 +546,6 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
-              cpu: 200m
               memory: 128Mi
           volumeMounts:
             - name: config

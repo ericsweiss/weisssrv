@@ -28,7 +28,7 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
 4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes)
 5. **Use snake_case** - For all Ansible variables
 6. **Deploy Kubernetes changes via `git push`** - Flux reconciles within ~1 minute. Use `task flux:reconcile` to force.
-7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise.
+7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise. Manifests use `${name}` placeholders (e.g. `version-${sonarr_version}`) resolved at reconcile time by Flux `postBuild.substituteFrom` the `cluster-versions` ConfigMap; see CLAUDE.md and `docs/29-flux-operations.md` (Version pinning / Substitution Not Applied).
 
 ## Code Conventions
 

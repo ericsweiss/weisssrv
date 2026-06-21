@@ -6,7 +6,7 @@ Manages AdGuard Home DNS filtering and ad-blocking server.
 
 ### Via API (Idempotent, Safe)
 
-**Base Configuration** (`api_base_config.yml` - dns-01 only):
+**Base Configuration** (`api_base_config.yml` - all DNS hosts; dns-02 needs its own upstream/TLS, so this MUST run everywhere):
 - DNS filtering/ad-blocking protection
 - Upstream DNS servers → Unbound (127.0.0.1:5335)
 - Upstream mode (load balancing, parallel, or fastest)

@@ -1,0 +1,40 @@
+---
+# Aggregate resource bounds for the privileged-runner namespace. concurrent:3
+# build pods (cpu_request 500m / memory_request 1Gi, memory_limit 8Gi) each with
+# a docker:dind service container (cpu_request 500m / memory_request 1Gi,
+# memory_limit 4Gi) plus the manager could otherwise schedule far more than the
+# cluster's spare capacity and burst to ~180Gi of memory limits. These caps keep
+# a parallel:matrix DinD burst from wedging a node or evicting resident workloads.
+#
+# Deliberately NO cpu / limits.cpu quota dimension: a CPU-limit quota would force
+# EVERY pod in the namespace to declare a CPU limit, which would reject the
+# runner manager (it intentionally runs with no CPU limit to avoid CFS
+# throttling). CPU is bounded via requests.cpu, memory via both.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: gitlab-runner-privileged-quota
+  namespace: gitlab-runner-privileged
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 20Gi
+    limits.memory: 48Gi
+    pods: "20"
+---
+# Default requests/limits so any pod created in this namespace without explicit
+# resources still counts against the quota above. Only memory carries a default
+# limit — never a CPU limit (see quota note).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: gitlab-runner-privileged-limits
+  namespace: gitlab-runner-privileged
+spec:
+  limits:
+    - type: Container
+      default:
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi

@@ -164,7 +164,6 @@
     /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
   args:
     executable: /bin/bash
-  register: acme_default_ca_set
   changed_when: false
   when:
     - inventory_hostname == 'dns-01'
@@ -277,7 +276,7 @@
   ansible.builtin.file:
     path: "{{ local_cert_dir }}/{{ item.name }}"
     owner: root
-    group: "{{ adguard_group | default('adguard') }}"
+    group: "{{ acme_local_cert_group }}"
     mode: "{{ item.mode }}"
   loop:
     - { name: "fullchain.pem", mode: "0644" }
@@ -339,6 +338,10 @@
     - cert_distribution_targets | length > 0
     - not ansible_check_mode
     - not (skip_cert_distribution | default(false))
+    # On a fresh issue the "Install certificates to local directory" task above
+    # already ran the same distribution script via --reloadcmd, so skip the
+    # explicit second run to avoid distributing twice in one play.
+    - not (cert_install_result.changed | default(false))
   register: cert_distribution_result
   changed_when: cert_distribution_result.rc == 0
   # The script tries every target before exiting and uses distinct exit

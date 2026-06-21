@@ -68,8 +68,12 @@ spec:
               volumeName: prometheus-data
 
         # Retention
+        # retentionSize bounds only persisted block storage; the WAL, the
+        # in-memory head being flushed, and compaction scratch consume more
+        # on-disk space on top of it. Held to 120GB (vs the 150Gi/~161GB PV)
+        # to leave ~40GB headroom for those non-block on-disk costs.
         retention: 365d
-        retentionSize: 140GB
+        retentionSize: 120GB
 
         # Discover ServiceMonitors, PodMonitors, and PrometheusRules in ALL namespaces
         serviceMonitorSelectorNilUsesHelmValues: false
@@ -86,7 +90,6 @@ spec:
             cpu: 200m
             memory: 2Gi
           limits:
-            cpu: 2000m
             memory: 4Gi
 
     # -------------------------------------------------------------------------
@@ -100,7 +103,6 @@ spec:
             cpu: 50m
             memory: 64Mi
           limits:
-            cpu: 200m
             memory: 128Mi
 
     # -------------------------------------------------------------------------
@@ -197,7 +199,6 @@ spec:
           cpu: 100m
           memory: 512Mi
         limits:
-          cpu: 500m
           memory: 1Gi
 
     # -------------------------------------------------------------------------
@@ -232,7 +233,6 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          cpu: 200m
           memory: 128Mi
       # Flux controllers stopped exporting per-resource readiness
       # (gotk_reconcile_condition) — readiness now comes from kube-state-metrics
@@ -360,6 +360,10 @@ spec:
     # -------------------------------------------------------------------------
     # Custom alert rules
     # -------------------------------------------------------------------------
+    # Every custom alert below carries a runbook_url annotation pointing at the
+    # canonical runbook doc (docs/12-runbooks.md) — a section anchor where one
+    # maps cleanly, otherwise the doc root. Upstream chart-shipped rules are
+    # intentionally not annotated here.
     additionalPrometheusRulesMap:
       homelab-storage:
         groups:
@@ -378,6 +382,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Disk usage above 80% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
                   description: >-
                     Disk usage is {{ $value | printf "%.1f" }}%
@@ -393,6 +398,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Disk usage above 90% on {{ $labels.instance }}:{{ $labels.mountpoint }}'
                   description: >-
                     Disk usage is {{ $value | printf "%.1f" }}%
@@ -405,6 +411,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 80%'
                   description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
@@ -414,6 +421,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 90%'
                   description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
@@ -432,6 +440,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Inodes below 10% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
                   description: >-
                     Only {{ $value | printf "%.1f" }}% of inodes are free
@@ -447,6 +456,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Inodes below 5% free on {{ $labels.instance }}:{{ $labels.mountpoint }}'
                   description: >-
                     Only {{ $value | printf "%.1f" }}% of inodes are free
@@ -475,15 +485,17 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Gluetun VPN unhealthy on {{ $labels.pod }}'
                   description: >-
                     gluetun_vpn_status is {{ $value }} (1 = running) on
                     {{ $labels.pod }} for 15m. The download client is
                     killswitched — no egress until the VPN reconnects.
 
-              # Catches the case where the qbittorrent pod or its exporter is
-              # gone entirely (metric absent, not just non-1). VPN state is then
-              # unknown, which for an always-on VPN client warrants a page.
+              # Exporter/pod gone entirely (metric absent, not non-1) -> VPN
+              # state unknown. Warning not critical: the killswitch blocks egress
+              # while the tunnel is down, so this is "blind" not "leaking"
+              # (VPNDown covers a confirmed-unhealthy tunnel).
               - alert: VPNExporterDown
                 # Namespace-scoped so a gluetun_vpn_status series in another
                 # namespace can't mask qbittorrent's exporter being gone.
@@ -492,11 +504,13 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Gluetun VPN-health metric missing for qbittorrent'
                   description: >-
                     No gluetun_vpn_status series for 15m — the qbittorrent pod
                     or its gluetun-exporter sidecar may be down. VPN state is
-                    unknown.
+                    unknown, but the killswitch still blocks egress while the
+                    tunnel is down; investigate when convenient.
 
               # Loki is a single-replica RF=1 SPOF pinned to the NAS (accepted
               # homelab tradeoff); senders do not buffer, so silent ingestion
@@ -514,6 +528,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Loki is returning 5xx on more than 5% of requests'
                   description: >-
                     Loki is serving HTTP 5xx on
@@ -521,12 +536,35 @@ spec:
                     5 minutes (push/query). Log ingestion may be silently
                     failing — senders do not buffer.
 
+              # 429 rate-limit drops (sender exceeds loki limits_config caps) take
+              # a 2xx/4xx path, so LokiRequestFailures (5xx) misses them. Senders
+              # don't buffer (RF=1), so dropped samples are lost — alert on a
+              # sustained discard rate.
+              - alert: LokiIngestionRateLimited
+                expr: >-
+                  sum by (reason) (rate(loki_discarded_samples_total{job="observability/loki"}[5m])) > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Loki is discarding samples ({{ $labels.reason }})'
+                  description: >-
+                    Loki has been discarding incoming samples at
+                    {{ $value | printf "%.1f" }}/s for 15 minutes
+                    (reason: {{ $labels.reason }}) — typically a 429
+                    ingestion / per-stream rate-limit. Those log lines are
+                    lost (RF=1, senders do not buffer). Raise the
+                    limits_config caps in loki/release.yaml or find the
+                    runaway log source.
+
               - alert: FluxReconciliationFailure
                 expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{job="observability/flux-system"}[5m])) > 0
                 for: 15m
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Flux controller {{ $labels.controller }} has reconciliation errors'
                   description: >-
                     Flux controller {{ $labels.controller }}
@@ -547,6 +585,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     Flux resource {{ $labels.customresource_kind }}/{{ $labels.exported_namespace }}/{{ $labels.name }}
                     not Ready
@@ -566,6 +605,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: '1Password Connect has no available replicas'
                   description: >-
                     1Password Connect deployment in external-secrets namespace
@@ -580,6 +620,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'ExternalSecret {{ $labels.name }} sync failing'
                   description: 'ExternalSecret {{ $labels.name }} in {{ $labels.namespace }} has not synced for 15 minutes.'
 
@@ -598,6 +639,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#updating-dns-records'
                   summary: 'Cloudflare DDNS has not had a successful run in over 1 hour'
                   description: >-
                     The cloudflare-ddns CronJob (every 5m) has had no successful
@@ -611,6 +653,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
                   summary: 'Certificate {{ $labels.name }} expiring in less than 14 days'
                   description: >-
                     Certificate {{ $labels.name }}
@@ -623,6 +666,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
                   summary: 'Certificate {{ $labels.name }} expiring in less than 3 days'
                   description: >-
                     Certificate {{ $labels.name }}
@@ -640,6 +684,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Traefik 5xx error rate above 5%'
                   description: 'Traefik is returning 5xx errors at {{ $value | printf "%.1f" }}% over the last 5 minutes.'
 
@@ -655,6 +700,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Proxmox host {{ $labels.id }} is down'
                   description: >-
                     Proxmox host {{ $labels.id }} has been unreachable for 5 minutes.
@@ -673,6 +719,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'corosync stuck at high CPU on {{ $labels.instance }}'
                   description: >-
                     corosync on {{ $labels.instance }}
@@ -709,6 +756,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'pmxcfs on {{ $labels.instance }} appears stale (split-brain)'
                   description: >-
                     /etc/pve/ha/manager_status on {{ $labels.instance }}
@@ -738,6 +786,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'corosync-health-collector textfile script is degraded on {{ $labels.instance }}'
                   description: >-
                     proxmox_corosync_health_collector_last_success_seconds
@@ -764,6 +813,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has device errors'
                   description: >-
                     zpool status reports {{ $value | printf "%.0f" }}
@@ -780,6 +830,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has permanent data errors'
                   description: >-
                     zpool status -v lists {{ $value | printf "%.0f" }}
@@ -794,6 +845,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is not ONLINE'
                   description: >-
                     Pool {{ $labels.pool }} on {{ $labels.instance }}
@@ -816,6 +868,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} has no recent completed scrub'
                   description: >-
                     Pool {{ $labels.pool }} on {{ $labels.instance }}
@@ -841,6 +894,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'zpool-status-collector is degraded or missing on {{ $labels.instance }}'
                   description: >-
                     zfs_pool_status_collector_last_success_seconds on
@@ -861,6 +915,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'ZFS pool {{ $labels.pool }} above 80% capacity'
                   description: 'ZFS pool {{ $labels.pool }} is at {{ $value | printf "%.1f" }}% capacity.'
 
@@ -870,6 +925,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
                   summary: 'ZFS pool {{ $labels.pool }} above 90% capacity'
                   description: 'ZFS pool {{ $labels.pool }} is at {{ $value | printf "%.1f" }}% capacity.'
 
@@ -879,6 +935,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
                   summary: 'Endpoint {{ $labels.instance }} is down'
                   description: 'Blackbox probe for {{ $labels.instance }} has failed for 5 minutes.'
 
@@ -888,6 +945,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
                   summary: 'Blackbox exporter is down'
                   description: 'All endpoint monitoring is blind — blackbox exporter has been down for 5 minutes.'
 
@@ -897,6 +955,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Node {{ $labels.node }} is under memory pressure'
                   description: 'Kubelet on {{ $labels.node }} has been reporting memory pressure for 5 minutes. Pods may be evicted.'
 
@@ -910,6 +969,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
                   summary: 'Archive backup failed'
                   description: 'The nightly archive backup has not completed successfully.'
 
@@ -919,6 +979,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
                   summary: 'Archive backup has not run in over 2 days'
                   description: 'No successful archive backup has been recorded for more than 48 hours, or the metric is missing.'
 
@@ -928,6 +989,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Media mover failed'
                   description: 'The media mover script has not completed successfully.'
 
@@ -937,6 +999,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Media mover has not run in over 2 days'
                   description: 'No successful media mover run has been recorded for more than 48 hours, or the metric is missing.'
 
@@ -946,6 +1009,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
                   summary: 'Certificate renewal failed'
                   description: 'The certificate renewal and distribution script has not completed successfully.'
 
@@ -955,6 +1019,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
                   summary: 'Certificate renewal has not succeeded in over 2 days'
                   description: >-
                     No successful acme.sh certificate renewal/distribution has
@@ -969,6 +1034,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
                   summary: 'GitLab backup failed'
                   description: 'The nightly gitlab-backup run did not complete successfully.'
 
@@ -978,6 +1044,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
                   summary: 'GitLab backup has not succeeded in over 2 days'
                   description: >-
                     No successful GitLab backup has been recorded for more than
@@ -1023,6 +1090,7 @@ spec:
                   severity: warning
                   component: storage
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     SATA drive on {{ $labels.instance }}
                     ({{ $labels.chip }}) at
@@ -1044,6 +1112,7 @@ spec:
                   severity: critical
                   component: storage
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     SATA drive on {{ $labels.instance }}
                     ({{ $labels.chip }}) at
@@ -1069,6 +1138,7 @@ spec:
                   severity: warning
                   component: storage
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     NVMe drive on {{ $labels.instance }}
                     ({{ $labels.chip }}) at
@@ -1091,6 +1161,7 @@ spec:
                   severity: critical
                   component: storage
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     NVMe drive on {{ $labels.instance }}
                     ({{ $labels.chip }}) at
@@ -1115,6 +1186,7 @@ spec:
                   severity: warning
                   component: cpu
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'CPU on {{ $labels.instance }} sustained {{ $value | printf "%.0f" }}C'
                   description: >-
                     CPU on {{ $labels.instance }} has been at or above
@@ -1132,6 +1204,7 @@ spec:
                   severity: critical
                   component: cpu
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'CPU on {{ $labels.instance }} at {{ $value | printf "%.0f" }}C'
                   description: >-
                     CPU on {{ $labels.instance }} hit
@@ -1153,6 +1226,7 @@ spec:
                   severity: warning
                   component: gpu
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     GPU ({{ $labels.chip_name }}) on
                     {{ $labels.instance }} at
@@ -1173,6 +1247,7 @@ spec:
                   severity: critical
                   component: gpu
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: >-
                     GPU ({{ $labels.chip_name }}) on
                     {{ $labels.instance }} at
@@ -1196,6 +1271,7 @@ spec:
                   severity: warning
                   component: network
                 annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'NIC on {{ $labels.instance }} at {{ $value | printf "%.0f" }}C'
                   description: >-
                     NIC {{ $labels.chip_name }} on {{ $labels.instance }}

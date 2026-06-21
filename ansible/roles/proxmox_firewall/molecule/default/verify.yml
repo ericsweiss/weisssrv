@@ -156,3 +156,24 @@
           hosts ({{ ansible_play_hosts_all | join(', ') }}); should be
           just 'proxmox-firewall-test'. The local-connection placeholder
           hosts can't see files written via docker-exec to the container.
+
+    # Cross-play run-once guard: the second converge play recorded the value of
+    # _pve_fw_cluster_done as seen BEFORE it re-included the role. It must already
+    # be true — set by the first play on groups['proxmox'][0] via delegate_facts —
+    # proving later plays read the fact from hostvars and skip re-deploying
+    # cluster.fw. (The _pve_fw_pveum_done twin can't be tested here: it's only set
+    # when pve_firewall_skip_pveum is false, and molecule forces it true.)
+    - name: Read cross-play guard capture
+      ansible.builtin.slurp:
+        src: /tmp/pve-firewall-test/cross-play-guard.json
+      register: cross_play_guard
+
+    - name: Assert run-once fact was already set when the second play started
+      ansible.builtin.assert:
+        that:
+          - (cross_play_guard.content | b64decode | from_json).cluster_done_before_second_include
+        fail_msg: >-
+          _pve_fw_cluster_done was not visible to the second play —
+          the cross-play run-once guard would re-deploy cluster.fw on
+          every including play. Check the delegate_facts set_fact on
+          groups['proxmox'][0] in tasks/main.yml.

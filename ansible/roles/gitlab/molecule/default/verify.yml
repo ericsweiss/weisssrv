@@ -589,7 +589,7 @@
           - "Performance:"
           - "  - Puma workers: 2"
           - "  - Sidekiq concurrency: 10"
-          - "  - Prometheus monitoring: disabled"
+          - "  - Prometheus monitoring: enabled"
           - ""
           - "Fail2ban (GitLab SSH Protection):"
           - "  - Package: installed"

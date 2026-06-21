@@ -2,6 +2,10 @@
 # Note: Service CNAME records (auth, bar, food, plex, home) are managed by external-dns in k3s
 
 # Root domain A record - IP managed by DDNS, config managed by Terraform
+# name = var.external_domain (FQDN apex form). The CAA records below use the
+# "@" apex shorthand; both resolve to the zone apex in the v4 provider. The
+# FQDN form is kept here because it doubles as inline documentation of which
+# zone this record lives in.
 resource "cloudflare_record" "root" {
   zone_id = data.cloudflare_zone.external.id
   name    = var.external_domain # ericsweiss.com
@@ -12,7 +16,13 @@ resource "cloudflare_record" "root" {
   comment = "Managed by Terraform - IP updated by cloudflare-ddns CronJob in k3s"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it
+    # Allow DDNS to update the IP without Terraform reverting it.
+    # Only `content` (the IP) is DDNS-owned; `proxied`/`ttl` stay Terraform-owned.
+    # NOTE: the cloudflare-ddns CronJob PUTs a full body including `proxied` on
+    # every update (kubernetes/.../cloudflare-ddns/cronjob.yaml), so the literal
+    # proxied value there MUST stay in sync with the value above (root=true) or
+    # Terraform and DDNS will fight. DDNS preserves the existing ttl, so ttl is
+    # not a divergence risk.
     ignore_changes = [content]
   }
 }
@@ -141,7 +151,9 @@ resource "cloudflare_record" "git" {
   comment = "GitLab Web + SSH - DNS only, TLS via Traefik, IP updated by DDNS"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it
+    # Allow DDNS to update the IP without Terraform reverting it.
+    # cloudflare-ddns co-owns `proxied` via its full-body PUT (git=false); keep
+    # the literal in the CronJob in sync with proxied below.
     ignore_changes = [content]
   }
 }
@@ -194,7 +206,9 @@ resource "cloudflare_record" "direct" {
   comment = "Direct access (no proxy) - IP updated by DDNS"
 
   lifecycle {
-    # Allow DDNS to update the IP without Terraform reverting it
+    # Allow DDNS to update the IP without Terraform reverting it.
+    # cloudflare-ddns co-owns `proxied` via its full-body PUT (direct=false);
+    # keep the literal in the CronJob in sync with proxied below.
     ignore_changes = [content]
   }
 }

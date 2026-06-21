@@ -23,6 +23,14 @@ spec:
       labels:
         app.kubernetes.io/name: plex-exporter
     spec:
+      # Image ships no USER (runs as root by default); it is a static CGO-off
+      # Go binary with no owned/writable paths, so override to a non-zero UID.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         # Known upstream bug: the exporter's websocket listener panics
         # ("close of closed channel", listener.go:66) whenever Plex resets the
@@ -35,6 +43,11 @@ spec:
         - name: plex-exporter
           image: ghcr.io/jsclayton/prometheus-plex-exporter:latest@sha256:18ef1b2197efbcb75bd7276380955760995f10a9fbe55106809a6fcff91c2940
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           env:
             - name: PLEX_SERVER
               value: "http://192.168.0.152:32400"
@@ -70,7 +83,6 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 100m
               memory: 64Mi
 ---
 apiVersion: v1

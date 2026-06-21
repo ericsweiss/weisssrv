@@ -44,6 +44,9 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 VARS_FILE = Path(__file__).resolve().parent.parent / "ansible" / "inventories" / "prod" / "group_vars" / "all.yml"
+# CI-pinned container images (e.g. the pr-agent reviewer) live in .gitlab-ci.yml
+# as digest-locked `image:` pins, not as vars in all.yml.
+CI_FILE = Path(__file__).resolve().parent.parent / ".gitlab-ci.yml"
 CACHE_DIR = Path(__file__).resolve().parent.parent / ".version-cache"
 CACHE_TTL = 3600  # 1 hour cache
 
@@ -488,6 +491,21 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "plex",
         "source_url": "https://www.plex.tv/media-server-downloads/",
     },
+    # --- CI tooling images (pinned in .gitlab-ci.yml, not all.yml) ---
+    {
+        # The pr-agent AI reviewer image, pinned by tag+digest in the
+        # pr-agent-review job. Tracked here so `check-versions` flags a stale
+        # reviewer (the kind of version/model drift that prompted adding this).
+        # Its update is a guided manual step — see update_version_in_file: the
+        # @sha256 supply-chain pin is not auto-rewritten.
+        "name": "pr-agent (CI reviewer)",
+        "var_name": "pr_agent_version",
+        "category": "dockerhub",
+        "docker_image": "codiumai/pr-agent",
+        "tag_regex": r"^(\d+\.\d+(?:\.\d+)?)$",
+        "version_file": "ci",
+        "source_url": "https://github.com/qodo-ai/pr-agent/releases",
+    },
 ]
 
 
@@ -495,20 +513,25 @@ SERVICE_REGISTRY: list[dict] = [
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
-    """urlopen with a bounded retry on transient failures; return the body.
+def _urlopen_with_retry_full(req, timeout: int = REQUEST_TIMEOUT) -> tuple[str, bytes]:
+    """urlopen with a bounded retry on transient failures; return (content_type, body).
 
     Retries on URLError, socket.timeout, and HTTP 5xx (transient upstream
     errors). HTTP 4xx — including a 403 rate-limit — is re-raised immediately
     so callers can surface it as-is rather than masking it as a transient blip.
     After RETRY_ATTEMPTS, the last exception is re-raised unchanged, so callers
     behave identically to the no-retry version once retries are exhausted.
+
+    The Content-Type header is returned alongside the body so callers that
+    must distinguish a real payload from an HTML error page (fetch_apt_packages)
+    keep that sniffing logic while still going through the retry helper.
     """
     last_exc: Exception
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
+                content_type = resp.headers.get("Content-Type", "")
+                return content_type, resp.read()
         except urllib.error.HTTPError as e:
             # 4xx (incl. 403 rate-limit) is not transient — don't retry.
             if e.code < 500:
@@ -519,6 +542,16 @@ def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
         if attempt < RETRY_ATTEMPTS:
             time.sleep(RETRY_BACKOFF * attempt)
     raise last_exc
+
+
+def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
+    """urlopen with a bounded retry on transient failures; return the body.
+
+    Thin wrapper over _urlopen_with_retry_full for callers that only need the
+    response body. See that function for retry semantics.
+    """
+    _content_type, body = _urlopen_with_retry_full(req, timeout=timeout)
+    return body
 
 
 def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str:
@@ -546,7 +579,9 @@ def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str
     except urllib.error.URLError as e:
         raise RuntimeError(f"Connection error: {e.reason}") from e
     except Exception as e:
-        raise RuntimeError(f"Request failed: {e}") from e
+        # check_service catches RuntimeError before its typed fallback, so the
+        # type tag must be in the message here or it's lost from the diagnostic.
+        raise RuntimeError(f"Request failed ({type(e).__name__}): {e}") from e
 
 
 def github_api(path: str) -> dict | list:
@@ -574,9 +609,8 @@ def fetch_apt_packages(base_url: str) -> str:
     """
     req_headers = {"User-Agent": "weisssrv-version-checker/1.0"}
 
-    def _is_valid_packages_response(resp, content: str) -> bool:
+    def _is_valid_packages_response(content_type: str, content: str) -> bool:
         """Check if response is a valid Packages file (not an HTML error page)."""
-        content_type = resp.headers.get("Content-Type", "")
         # Packages files are text/plain or have no Content-Type
         # HTML error pages will have text/html
         if "text/html" in content_type.lower():
@@ -589,14 +623,17 @@ def fetch_apt_packages(base_url: str) -> str:
             return False
         return True
 
-    # Try uncompressed first
+    # Try uncompressed first. Route through the bounded retry helper so a
+    # transient 5xx/timeout retries (same protection Tailscale's fetcher gets);
+    # the helper returns the Content-Type so the HTML-vs-payload sniff below is
+    # preserved.
     try:
         req = urllib.request.Request(base_url, headers=req_headers)
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            content = resp.read().decode("utf-8")
-            if content.strip() and _is_valid_packages_response(resp, content):
-                return content
-    except (urllib.error.HTTPError, urllib.error.URLError, UnicodeDecodeError):
+        content_type, raw = _urlopen_with_retry_full(req, timeout=REQUEST_TIMEOUT)
+        content = raw.decode("utf-8")
+        if content.strip() and _is_valid_packages_response(content_type, content):
+            return content
+    except (urllib.error.HTTPError, urllib.error.URLError, socket.timeout, UnicodeDecodeError):
         pass
 
     # Fall back to .gz compressed version
@@ -604,23 +641,23 @@ def fetch_apt_packages(base_url: str) -> str:
     req = urllib.request.Request(gz_url, headers=req_headers)
 
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            # Check Content-Type before attempting decompression
-            content_type = resp.headers.get("Content-Type", "")
-            if "text/html" in content_type.lower():
-                raise RuntimeError(f"Received HTML error page instead of Packages.gz from {gz_url}")
+        content_type, compressed_data = _urlopen_with_retry_full(req, timeout=REQUEST_TIMEOUT)
+        # Check Content-Type before attempting decompression
+        if "text/html" in content_type.lower():
+            raise RuntimeError(f"Received HTML error page instead of Packages.gz from {gz_url}")
 
-            compressed_data = resp.read()
-            with gzip.GzipFile(fileobj=BytesIO(compressed_data)) as gz:
-                content = gz.read().decode("utf-8")
-                # Validate the decompressed content
-                if not content.strip() or "Package:" not in content:
-                    raise RuntimeError(f"Invalid or empty Packages file from {gz_url}")
-                return content
+        with gzip.GzipFile(fileobj=BytesIO(compressed_data)) as gz:
+            content = gz.read().decode("utf-8")
+            # Validate the decompressed content
+            if not content.strip() or "Package:" not in content:
+                raise RuntimeError(f"Invalid or empty Packages file from {gz_url}")
+            return content
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Failed to fetch {base_url} or {gz_url}: HTTP {e.code}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Connection error fetching apt Packages: {e.reason}") from e
+    except socket.timeout as e:
+        raise RuntimeError(f"Timeout fetching apt Packages from {gz_url}") from e
     except gzip.BadGzipFile as e:
         raise RuntimeError(f"Invalid gzip data from {gz_url}") from e
 
@@ -1028,6 +1065,11 @@ def fetch_github_release(svc: dict) -> str:
         # Use latest release endpoint
         release = github_api(f"/repos/{repo}/releases/latest")
         version = release.get("tag_name", "")
+        # Fail loud on a missing tag_name, matching the tag_filter branch above.
+        # Returning "" here would have the service silently report up-to-date
+        # with a blank Latest column (version_greater("", current) is False).
+        if not version:
+            raise RuntimeError(f"latest release for {repo} has no tag_name")
         if strip_prefix and prefix and version.startswith(prefix):
             version = version[len(prefix):]
         return version
@@ -1394,6 +1436,32 @@ def fetch_gitlab_version(svc: dict) -> str:
 # all.yml parser (simple YAML extraction without PyYAML)
 # ---------------------------------------------------------------------------
 
+def read_ci_image_versions() -> dict[str, str]:
+    """Current tags of CI-pinned images (pr-agent) read from .gitlab-ci.yml.
+
+    Entries with version_file == "ci" are digest-locked `image:` pins in
+    .gitlab-ci.yml rather than vars in all.yml. Extract the tag (between ':' and
+    the '@sha256:' digest) for each so check-versions can flag a stale image.
+    """
+    versions: dict[str, str] = {}
+    try:
+        content = CI_FILE.read_text()
+    except OSError:
+        return versions
+    for svc in SERVICE_REGISTRY:
+        if svc.get("version_file") != "ci":
+            continue
+        image = svc.get("docker_image", "")
+        m = re.search(
+            rf"^\s*image:\s*{re.escape(image)}:([\w.+-]+?)(?:@sha256:[0-9a-f]+)?\s*$",
+            content,
+            re.MULTILINE,
+        )
+        if m:
+            versions[svc["var_name"]] = m.group(1)
+    return versions
+
+
 def read_current_versions() -> dict[str, str]:
     """Read current versions from all.yml without a YAML parser.
 
@@ -1440,6 +1508,8 @@ def read_current_versions() -> dict[str, str]:
                 val = val[:val.index("#")].strip().strip('"').strip("'")
             versions[key] = val
 
+    # CI-pinned images (pr-agent) live in .gitlab-ci.yml, not all.yml.
+    versions.update(read_ci_image_versions())
     return versions
 
 
@@ -1448,6 +1518,22 @@ def update_version_in_file(var_name: str, new_version: str) -> bool:
 
     Returns True if the file was modified.
     """
+    # CI-pinned images (pr-agent) are digest-locked in .gitlab-ci.yml. Flag the
+    # update but don't auto-rewrite the @sha256 pin — bumping a supply-chain
+    # pinned reviewer image should be a reviewed manual step.
+    ci_svc = next(
+        (s for s in SERVICE_REGISTRY
+         if s.get("var_name") == var_name and s.get("version_file") == "ci"),
+        None,
+    )
+    if ci_svc:
+        print(
+            f"  ↳ {ci_svc['name']} is digest-pinned in .gitlab-ci.yml — update "
+            f"manually: bump the tag to {new_version} and re-pin its @sha256 "
+            f"digest (supply-chain pin, not auto-rewritten)."
+        )
+        return False
+
     content = VARS_FILE.read_text()
     lines = content.split("\n")
     modified = False
@@ -1840,6 +1926,17 @@ def get_deploy_command(result: ServiceVersion) -> str:
     """Get the deployment command for a service."""
     var_name = result.var_name
     category = result.category
+
+    # CI-pinned images (pr-agent): no deploy task — bump the tag + re-pin the
+    # @sha256 digest in .gitlab-ci.yml, commit + push (applies on next pipeline).
+    if any(
+        s.get("var_name") == var_name and s.get("version_file") == "ci"
+        for s in SERVICE_REGISTRY
+    ):
+        return (
+            "edit the image: tag + @sha256 digest in .gitlab-ci.yml, "
+            "commit + push (applies on the next pipeline)"
+        )
 
     # Flux-managed workloads: all Helm charts and app container images reach
     # the cluster via the cluster-versions ConfigMap + git push + Flux.

@@ -17,6 +17,7 @@
         - 07-firewall-zero.json
         - 08-disk-vzdump-backup.json
         - 09-disk-slot-assert.json
+        - 10-meta-drift.json
       register: artifacts
 
     - name: Decode artifacts
@@ -30,6 +31,7 @@
         fw_zero: "{{ artifacts.results[6].content | b64decode | from_json }}"
         disk_backup: "{{ artifacts.results[7].content | b64decode | from_json }}"
         slot_assert: "{{ artifacts.results[8].content | b64decode | from_json }}"
+        meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -54,10 +56,10 @@
           - pool_list.failed
           - "'not-a-real-pool' in pool_list.msg"
 
-    # The firewall reconcile is deliberately ungated by the existence
-    # check, so one read-only `qm config` probe is expected. The guard
-    # contract is: no MUTATING qm calls when the VM exists and its NIC
-    # already carries firewall=1.
+    # The firewall, agent, and startup reconciles are deliberately ungated by
+    # the existence check, so read-only `qm config` probes are expected. The
+    # guard contract is: no MUTATING qm calls when the VM exists and its NIC
+    # already carries firewall=1 and agent/onboot/startup already match.
     - name: Existence guard prevents mutating qm calls when VM already exists
       ansible.builtin.assert:
         that:
@@ -118,3 +120,17 @@
           - slot_assert.missing_rejected
           # 8i: scsi_slot 0 (reserved boot disk) -> assert fails (>=1 floor)
           - slot_assert.zero_rejected
+
+    # The agent/onboot/startup reconciles must MUTATE on real drift (existence
+    # case 5 already proves the no-op path, incl. the up=0 normalization since the
+    # default stub reports `startup: order=100`). Each drift case expects exactly
+    # one targeted `qm set`.
+    - name: Agent/onboot/startup drift each triggers exactly one qm set
+      ansible.builtin.assert:
+        that:
+          # 7b: agent enabled=0 -> exactly one `qm set --agent 1`
+          - meta_drift.agent_set == 1
+          # 7c: onboot:0 + stale startup -> exactly one combined onboot/startup set
+          #     written with the canonical desired `order=100,up=0` string
+          - meta_drift.startup_set == 1
+          - meta_drift.any_onboot_set == 1

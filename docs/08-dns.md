@@ -5,10 +5,10 @@ The homelab uses a two-tier DNS architecture with AdGuard Home for ad blocking a
 ## Architecture
 
 ```
-LAN Clients (192.168.0.150, 192.168.0.160)
+LAN Clients
               |
               v
-        AdGuard Home
+        AdGuard Home (listens on 192.168.0.150 / 192.168.0.160)
         - Port 53 (DNS)
         - Port 853 (DoT)
         - Port 443 (HTTPS/DoH)
@@ -105,6 +105,24 @@ The codified list covers (see dns.yml for the authoritative entries):
 - `vip-public.ericsweiss.com` → .100; `vip-internal.esweiss.com` → .101
 - ~25 app/service hostnames (`auth`, `git`, `grafana`, `loki`, `connect`,
   `traefik`, `plex`, `home`, `food`, `bar`, the *arr stack, etc.) → .101
+
+### External zone ownership (ericsweiss.com)
+
+The public `ericsweiss.com` Cloudflare zone has **three** record owners — they
+coexist safely because their record sets are disjoint and external-dns scopes
+itself with a TXT registry:
+
+- **Terraform** (`terraform/cloudflare/`) — static records (apex, `git`,
+  `direct`, etc.).
+- **external-dns** (`controllers/external-dns`, `policy: sync`) — records derived
+  from k3s Ingresses/Services/IngressRoutes, each stamped with
+  `txtOwnerId: k3s-external-dns`. Sync only deletes records carrying that owner
+  TXT, so it never touches Terraform/DDNS records.
+- **cloudflare-ddns CronJob** (`configs/cloudflare-ddns`) — keeps the apex public
+  IP current and co-owns the `proxied` flag on those records.
+
+Keep hostnames disjoint across the three owners; a collision would let two
+tools fight over one record.
 
 #### Reverse DNS (PTR Records)
 

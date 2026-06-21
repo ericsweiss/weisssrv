@@ -143,6 +143,13 @@ mergerfs_mounts:
 # this server and all six k3s agents. The always-plaintext lines (HAOS .154,
 # the fsid=0 root, tank-proxmox) carry no xprtsec and are unaffected.
 nfs_tls_enabled: true
+# This host is the NFS server, so tlshd needs the [authenticate.server]
+# block (cert + private key) to answer the server-side TLS handshake. The
+# k3s agents are clients only (nfs_tls_is_server defaults false) and, under
+# xprtsec=tls, present no client cert — so they never load the wildcard
+# private key. See nfs_tls role defaults for nfs_tls_is_server /
+# nfs_tls_client_cert semantics.
+nfs_tls_is_server: true
 
 # NFS exports
 nfs_exports:

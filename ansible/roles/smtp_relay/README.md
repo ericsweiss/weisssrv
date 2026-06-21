@@ -40,10 +40,14 @@ smtp_relay_config:
   smtp_tls_security_level: "encrypt"
   smtpd_tls_security_level: "may"
 
-# TLS certificates
-smtp_tls_cert_dir: "/etc/postfix/certs"
-smtp_tls_cert_file: "{{ smtp_tls_cert_dir }}/fullchain.pem"
-smtp_tls_key_file: "{{ smtp_tls_cert_dir }}/privkey.pem"
+# TLS certificates (smtp_tls_cert_dir defaults to /etc/postfix/tls; the
+# acme_certs cert-reload script deploys fullchain.pem + privkey.pem there).
+# The Postfix parameter names are smtpd_tls_cert_file / smtpd_tls_key_file
+# (note the trailing 'd') and live inside the smtp_relay_config dict.
+smtp_tls_cert_dir: "/etc/postfix/tls"
+smtp_relay_config:
+  smtpd_tls_cert_file: "{{ smtp_tls_cert_dir }}/fullchain.pem"
+  smtpd_tls_key_file: "{{ smtp_tls_cert_dir }}/privkey.pem"
 ```
 
 ### 1Password Secrets

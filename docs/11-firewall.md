@@ -359,7 +359,6 @@ k3s_agents:
 | `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
 | `sg-windows` | Windows RDP | Windows VMs |
 | `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes (9100/9101/9134/9167/8123/32400/3000/7472/7473) + Loki NodePort 31100 from core-cluster | **All hosts and guests** |
-| `sg-xmrig` | Mining pool egress | Hosts running xmrig |
 
 **Deployment:**
 

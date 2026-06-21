@@ -18,9 +18,21 @@ spec:
       labels:
         app.kubernetes.io/name: redis-exporter
     spec:
+      # Static binary (USER 59000, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 59000
+        runAsGroup: 59000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis-exporter
           image: oliver006/redis_exporter:${redis_exporter_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           env:
             - name: REDIS_ADDR
               value: "redis://bar-assistant-redis.recipes.svc.cluster.local:6379"

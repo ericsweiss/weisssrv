@@ -34,15 +34,53 @@
   ansible.builtin.assert:
     that: item.stat.exists
     fail_msg: >-
-      {{ item.item }} missing — for the cert/key pair, run acme_certs
-      distribution first (`task dns:deploy`) so the wildcard cert reaches
-      this host. For the truststore, verify nfs_tls_truststore points at
-      a real CA bundle (default /etc/ssl/certs/ca-certificates.crt is
-      provided by the `ca-certificates` package).
+      {{ item.item }} missing — for the cert (and the key, on a server or
+      mTLS client), run acme_certs distribution first (`task dns:deploy`) so
+      the wildcard cert/key reaches this host. For the truststore, verify
+      nfs_tls_truststore points at a real CA bundle (default
+      /etc/ssl/certs/ca-certificates.crt is from the `ca-certificates` package).
   loop: "{{ nfs_tls_files.results | default([]) }}"
   loop_control:
     label: "{{ item.item }}"
-  when: nfs_tls_enabled | default(false)
+  when:
+    - nfs_tls_enabled | default(false)
+    # xprtsec=tls clients present no cert, so they need only the truststore.
+    # The cert AND key (which tlshd.conf.j2 emits together) are required only on
+    # an NFS server or an mTLS client — otherwise a least-privilege client where
+    # neither is distributed would fail this preflight.
+    - >-
+      item.item == nfs_tls_truststore
+      or (item.item in [nfs_tls_cert_path, nfs_tls_key_path]
+          and ((nfs_tls_is_server | default(false)) or (nfs_tls_client_cert | default(false))))
+
+# acme_certs is supposed to distribute the private key as root:0600, but tlshd
+# loads a loose-permission key silently, so verify and fail loud here (the
+# wildcard key is high-value — see README "Private-key least privilege").
+# stat.mode is the octal perms (no file-type bits), e.g. "0600". Require the key
+# to be owner-readable (4 or 6) with NO execute bit and NO group/other access —
+# i.e. 0600 (rw) or 0400 (r). This rejects group/other-readable modes AND
+# unreadable owner modes like 0000/0200 that would silently break tlshd's key
+# load while a bare "no group/other" check passed. Leading 0 optional.
+- name: Assert private key is owner-readable + not group/other-readable (0600/0400)
+  ansible.builtin.assert:
+    that:
+      - item.stat.mode is match('^0?[46]00$')
+    fail_msg: >-
+      {{ item.item }} has mode {{ item.stat.mode }} — the *.esweiss.com
+      private key must be 0600 (no group/other access). Tighten with
+      `chmod 600 {{ item.item }}` and check acme_certs's distribution
+      key_mode for this host.
+    quiet: true
+  loop: "{{ nfs_tls_files.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - nfs_tls_enabled | default(false)
+    # Same gating as the existence check: the key only lives on a server or
+    # mTLS client, so only there is its mode our concern.
+    - (nfs_tls_is_server | default(false)) or (nfs_tls_client_cert | default(false))
+    - item.item == nfs_tls_key_path
+    - item.stat.exists
 
 - name: Ensure /etc/tlshd.conf exists with our config
   ansible.builtin.template:
@@ -61,3 +99,26 @@
     state: started
     daemon_reload: true
   when: nfs_tls_enabled | default(false)
+
+# Least-privilege cleanup: on a client-only host the wildcard *.esweiss.com
+# cert/key are NOT needed. Under xprtsec=tls the client presents no cert and
+# validates the server purely via the system truststore (tlshd.conf.j2 emits
+# only x509.truststore in [authenticate.client] when nfs_tls_client_cert is
+# false) — so the rendered config above references neither PEM on a client, and
+# removing them after tlshd starts is safe. The wildcard private key can
+# impersonate every internal *.esweiss.com service, so it must not linger here.
+# This enforces the cert_distribution_targets trim in host_vars/dns-01.yml even
+# if an earlier rollout already pushed a copy. Idempotent (state: absent). Runs
+# on NEITHER the NFS server (pve-nas-01, nfs_tls_is_server) NOR an mTLS client
+# (nfs_tls_client_cert) — both legitimately keep the cert/key.
+- name: Remove wildcard cert + key on client-only hosts (least privilege)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ nfs_tls_cert_path }}"
+    - "{{ nfs_tls_key_path }}"
+  when:
+    - nfs_tls_enabled | default(false)
+    - not (nfs_tls_is_server | default(false))
+    - not (nfs_tls_client_cert | default(false))

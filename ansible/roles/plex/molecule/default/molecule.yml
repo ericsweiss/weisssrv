@@ -43,9 +43,6 @@ provisioner:
         # Plex configuration
         plex_version: "latest"
         plex_user: plex
-        plex_group: plex
-        plex_uid: 997
-        plex_gid: 997
         media_group: media
         media_gid: 2000
         plex_claim: ""
@@ -55,7 +52,6 @@ provisioner:
         plex_media_dir: /tmp/plex-media
         plex_service_after:
           - network-online.target
-        plex_hardware_transcoding: false
         # Skip GPU driver installation in containers
         skip_gpu_drivers: true
         # PFX passphrase mock — `task plex:deploy` injects this from 1Password

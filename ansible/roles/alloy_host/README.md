@@ -46,9 +46,10 @@ ansible-playbook ansible/playbooks/site.yml --tags alloy_host
 
 ## Files
 
-- `tasks/main.yml` — install + systemd unit + Loki client config
+- `tasks/main.yml` — installs Alloy via apt and manages `CUSTOM_ARGS` in
+  `/etc/default/alloy` plus the config file; relies on the packaged systemd
+  unit (the role does not template a `.service` unit)
 - `templates/config.alloy.j2` — Alloy River config (journald → Loki)
-- `templates/alloy.service.j2` — systemd unit
 - `defaults/main.yml` — tunables
 
 ## See also

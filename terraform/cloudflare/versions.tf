@@ -13,6 +13,18 @@ terraform {
       source = "cloudflare/cloudflare"
       # Patch-floating pin: minor bumps are deliberate (v4 minors have shipped
       # schema/deprecation changes). v5 is a breaking rewrite — migrate explicitly.
+      #
+      # KNOWN MIGRATION DEBT (v4 -> v5): the v5 provider removed/renamed the
+      # resources this config relies on:
+      #   - cloudflare_zone_settings_override (main.tf) -> per-setting
+      #     cloudflare_zone_setting resources
+      #   - cloudflare_record (dns.tf, all records) -> cloudflare_dns_record
+      #     (different argument schema; `data {}` blocks for CAA become a
+      #     typed `data` object)
+      # Migrating means rewriting every resource above AND `terraform state mv`
+      # for each, so the ~> 4.52 pin defers it deliberately. Do NOT bump to v5
+      # incidentally — schedule it as its own change. Tracked in
+      # docs/16-next-steps.md.
       version = "~> 4.52"
     }
   }

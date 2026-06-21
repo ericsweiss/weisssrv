@@ -124,6 +124,39 @@
     - disk_uuids is defined
     - not ansible_check_mode  # Skip validation in check mode (disks may not be formatted)
 
+# Guard against duplicate ext4 UUIDs. The wrong-location findmnt check and
+# the final mount both key on the blkid UUID, which is NOT unique across a
+# zvol cloned or `zfs send | receive`d from a snapshot (the documented
+# restore / re-provision pattern — a fresh zvol from a snapshot of a
+# formatted disk inherits the source's filesystem UUID). Two attached disks
+# sharing a UUID make `UUID=<x>` an ambiguous mount source: findmnt could
+# report the wrong target and the mount could bind the wrong device. Fail
+# loud here rather than silently mounting the wrong filesystem. Fix on the
+# Proxmox host with `tune2fs -U random <dev>` (ext4) after a clone/restore.
+- name: Assert additional-disk filesystem UUIDs are unique
+  vars:
+    _zvol_uuids: >-
+      {{ disk_uuids.results
+         | map(attribute='stdout')
+         | map('default', '')
+         | map('trim')
+         | reject('equalto', '')
+         | list }}
+  ansible.builtin.assert:
+    that:
+      - _zvol_uuids | length == (_zvol_uuids | unique | length)
+    fail_msg: >-
+      Duplicate ext4 filesystem UUID across attached zvols: {{ _zvol_uuids }}.
+      Mounting by UUID is ambiguous when two disks share one (common after a
+      zvol clone or `zfs send|receive` from a formatted snapshot). Regenerate
+      the duplicate with `tune2fs -U random <dev>` on the Proxmox host before
+      re-running.
+    quiet: true
+  when:
+    - zvol_mount_disk_devices is defined
+    - disk_uuids is defined
+    - not ansible_check_mode  # UUIDs may be absent in check mode (unformatted)
+
 - name: Create mount points for additional disks
   ansible.builtin.file:
     path: "{{ item.mount_point }}"

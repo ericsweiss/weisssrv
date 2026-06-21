@@ -61,7 +61,13 @@ spec:
     txtOwnerId: "k3s-external-dns"
     txtPrefix: "_external-dns."
 
-    policy: sync  # Sync mode - create and delete records
+    # Shared zone: ericsweiss.com is also managed by terraform/cloudflare (static
+    # records) and the cloudflare-ddns CronJob (apex public IP). This is safe
+    # because the txt registry below stamps every external-dns-owned record with
+    # txtOwnerId, so `policy: sync` only deletes records external-dns created —
+    # terraform/DDNS records (no matching owner TXT) are never touched. Keep
+    # record names disjoint across the three owners. See docs/08-dns.md.
+    policy: sync  # create + delete records this owner created (txt-registry scoped)
 
     registry: txt
 
@@ -93,5 +99,4 @@ spec:
         cpu: 50m
         memory: 64Mi
       limits:
-        cpu: 200m
         memory: 128Mi

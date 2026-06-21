@@ -130,9 +130,9 @@
           # Restart budget for cold-cluster boot grace
           - (unit_content.content | b64decode) is search('StartLimitBurst=60')
           - (unit_content.content | b64decode) is search('StartLimitIntervalSec=3600s')
-          # RestartPreventExitStatus = 1 3 7 surfaces config-level errors
-          # (token/item missing, auth failure) as `failed` instead of
-          # retrying for hours.
+          # RestartPreventExitStatus = 1 3 4 7 surfaces config-level errors
+          # (token/item missing, auth failure, zfs load-key failed/rotated
+          # passphrase = exit 4) as `failed` instead of retrying for hours.
           - (unit_content.content | b64decode) is search('RestartPreventExitStatus=1 3 4 7')
 
     # We deliberately use `command: systemctl ...` here (not the

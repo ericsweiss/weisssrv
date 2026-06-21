@@ -161,6 +161,9 @@ Create the following items in the "Homelab" vault (if they do not already exist)
 - Field: `lidarr-api-key` -- from Lidarr Settings > General > API Key
 - Field: `prowlarr-api-key` -- from Prowlarr Settings > General > API Key
 
+**Loki Push Auth** (new item):
+- Field: `htpasswd` -- bcrypt users file for the Loki push IngressRoute basic-auth middleware (consumed by host-side `alloy_host` shippers; see Log Collection above)
+
 All *arr API keys are configured and their exportarr Deployments are active (replicas: 1). If you need to rotate API keys, update the values in the "Download Client API Keys" 1Password item and run `task flux:rotate-secret -- observability/observability-exporter-secrets`.
 
 All ExternalSecret manifests reference 1Password items by title. If you rename items, update the titles in:
@@ -360,8 +363,9 @@ pve_cpu_usage_ratio
 # cert-manager certificates expiring soon
 certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 14
 
-# VPN tunnel status (Gluetun — not yet available, requires exporter)
-# gluetun_vpn_status
+# VPN tunnel status (Gluetun exporter on the qbittorrent pod)
+# 1 = running, 0 = stopped/unreachable, -1 = error, -2 = unknown
+gluetun_vpn_status{namespace="downloads"}
 ```
 
 ### LogQL Tips
@@ -460,7 +464,8 @@ to the customResourceState config + RBAC when they're first adopted.
 
 | Alert | Condition | Severity | For |
 |-------|-----------|----------|-----|
-| ~~VPNDown~~ | ~~Gluetun VPN status == 0~~ | ~~warning~~ | ~~5m~~ (disabled -- requires Gluetun exporter) |
+| VPNDown | Gluetun VPN status != 1 (downloads ns) | critical | 15m |
+| VPNExporterDown | gluetun_vpn_status series absent (downloads ns) | warning | 15m |
 | FluxReconciliationFailure | Flux controller reconcile error rate > 0 | warning | 15m |
 | OnePasswordConnectDown | Connect deployment has 0 available replicas | warning | 5m |
 | ExternalSecretSyncFailure | ExternalSecret Ready=False | warning | 15m |

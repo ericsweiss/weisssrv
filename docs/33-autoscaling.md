@@ -81,6 +81,32 @@ sidecars, leader-elected singletons), not effort.
 | Prometheus / Loki / Alertmanager / Postgres | various | reject | stateful (StatefulSet / zvol) |
 | coredns | kube-system | n/a | min==max==2 HPA pin (replica anchor, not an autoscaler) |
 
+## CPU limits (intentionally unset)
+
+Workloads set CPU **requests** and **memory** limits but no **CPU limit**. CPU is
+compressible — under contention the scheduler shares it by request weight, so a
+limit adds nothing but CFS throttling, which hurts tail latency and, worse,
+inflates the CPU% a CPU-based HPA reads (it was firing `CPUThrottlingHigh`
+cluster-wide and pushing the Traefik HPA toward `maxReplicas` on load that wasn't
+real). Memory stays limited because it is incompressible — its failure mode is
+OOM, not throttling.
+
+VPAs keep their default `controlledValues: RequestsAndLimits`. A VPA scales an
+*existing* limit to preserve its request:limit ratio but never *adds* a limit a
+manifest omits (verified on the runner managers: no CPU limit declared, none
+imposed live), so memory limits keep tracking the recommendation while CPU stays
+limit-free. `RequestsOnly` is deliberately **not** used as a blanket setting — on
+a `[cpu,memory]` VPA it would freeze the memory limit too (an OOM risk).
+
+Removing the CPU limit moves these pods from Guaranteed to Burstable QoS; with
+memory requests sized to the working set they remain eviction candidates only
+when exceeding that request, which the sizing avoids.
+
+`scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas` (run by
+`task flux:lint` and CI) fails if any pod spec or HelmRelease values block sets a
+CPU limit, so the policy can't regress. Intentional exceptions go in that
+script's `CPU_LIMIT_ALLOWLIST` (currently empty).
+
 ## Update-mode tiers
 
 | Mode | Used for | Behavior |

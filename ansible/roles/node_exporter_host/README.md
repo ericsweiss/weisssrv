@@ -1,8 +1,11 @@
 # Role: node_exporter_host
 
 Installs Prometheus node_exporter on bare-metal Proxmox hosts for hardware
-metrics (thermals, SMART, disk I/O, NIC counters). Listens on **port 9101** to
-avoid conflicting with the k3s in-cluster node-exporter DaemonSet on 9100.
+metrics (thermals via hwmon/thermal_zone, disk I/O, NIC counters). Listens on
+**port 9101** to avoid conflicting with the k3s in-cluster node-exporter
+DaemonSet on 9100. SMART health is **not** exported here — `smartmontools` is
+installed only for the `smartctl` binary used out-of-band (smartd /
+`nas_storage`); SATA temperatures surface via the drivetemp/hwmon path.
 
 Also runs on the DNS LXCs (dns-01/dns-02) and the GitLab VM (`gitlab_servers`)
 for their textfile collectors (cert renewal on DNS; backup freshness on GitLab).

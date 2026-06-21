@@ -18,6 +18,17 @@
 
 nfs_tls_enabled: false
 
+# Is this host an NFS *server* (terminates the server-side TLS handshake)?
+# When true, tlshd.conf gets an [authenticate.server] block with the host's
+# cert + key. Only pve-nas-01 serves NFS; client-only hosts leave it false.
+nfs_tls_is_server: false
+
+# Does the CLIENT need to present a certificate? Only required for xprtsec=mtls.
+# Production uses xprtsec=tls (server-only auth) so this stays false and the
+# client block omits the private key. See README "Private-key least privilege".
+# Set true only when migrating an export to xprtsec=mtls.
+nfs_tls_client_cert: false
+
 # Cert + key paths. Defaults match the filenames that acme_certs's
 # homelab-cert-reload.sh distributes (fullchain.pem + privkey.pem),
 # placed in /etc/ssl/private/ by the cert_distribution_targets entries

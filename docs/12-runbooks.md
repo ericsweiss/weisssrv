@@ -307,8 +307,8 @@ Certificate expired or not renewing automatically.
 
 6. **Restart Services**:
    ```bash
-   # On dns-01, dns-02
-   sudo systemctl restart adguardhome
+   # On dns-01, dns-02 (systemd unit name is case-sensitive: AdGuardHome)
+   sudo systemctl restart AdGuardHome
 
    # On smtp-relay
    sudo systemctl restart postfix

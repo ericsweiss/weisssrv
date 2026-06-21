@@ -48,6 +48,9 @@ provisioner:
         k3s_token: "test-token-for-molecule-testing"
         k3s_role: server
         k3s_is_first_server: true
+        # Pin to eth0 so the kube-vip interface assert's positive path is
+        # deterministic (Docker containers carry eth0) rather than incidental.
+        kube_vip_interface: eth0
         k3s_labels:
           test: "true"
         k3s_taints: []

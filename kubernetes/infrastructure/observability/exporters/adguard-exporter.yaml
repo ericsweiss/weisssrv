@@ -23,9 +23,21 @@ spec:
         app.kubernetes.io/name: adguard-exporter
         app.kubernetes.io/instance: dns-01
     spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: adguard-exporter
           image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           env:
             - name: ADGUARD_SERVERS
               value: "http://192.168.0.150:3000"
@@ -102,9 +114,21 @@ spec:
         app.kubernetes.io/name: adguard-exporter
         app.kubernetes.io/instance: dns-02
     spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: adguard-exporter
           image: ghcr.io/henrywhitaker3/adguard-exporter:${adguard_exporter_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           env:
             - name: ADGUARD_SERVERS
               value: "http://192.168.0.160:3000"

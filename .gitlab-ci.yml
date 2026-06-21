@@ -189,6 +189,11 @@ workflow:
 # + kubeconfig setup that .k3s-deploy-base does.
 .maintenance-base:
   extends: .deploy-base
+  # Maintenance ops are manual, ad-hoc buttons in the last (maintenance) stage.
+  # They consume NO artifacts from earlier jobs (all inputs come from 1Password
+  # at runtime), so an empty needs lets an operator play them immediately
+  # without waiting on the entire build/test/deploy graph to complete first.
+  needs: []
   before_script:
     - !reference [.deploy-base, before_script]
     - apt-get install -y -qq jq
@@ -273,15 +278,16 @@ build-molecule-images:
     # molecule-ci: the GitLab CI runner image (docker-cli + pip deps + collections)
     - docker build -t "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" -f docker/molecule-ci/Dockerfile .
     - docker push "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}"
-    # Capture the immutable digest for both images and emit them as
-    # dotenv variables. Downstream jobs that `needs:` this build use
-    # the digest reference (`<image>@sha256:...`) instead of `:latest`,
-    # so a same-pipeline rebuild can't be raced by anyone retagging
-    # `:latest` mid-flight.
-    - MOLECULE_TEST_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}")
+    # Capture the immutable digest of the CI runner image and emit it as a
+    # dotenv var. The .molecule-base `image:` reference consumes MOLECULE_CI_IMAGE
+    # so a same-pipeline rebuild can't be raced by anyone retagging :latest
+    # mid-flight. The molecule-TEST image needs no digest dotenv: the molecule
+    # jobs pull it by its immutable `:${CI_COMMIT_SHORT_SHA}` tag (see
+    # .molecule-base before_script), which already pins the test target per
+    # pipeline. (A MOLECULE_TEST_IMAGE digest var used to be emitted here but was
+    # never consumed by any job — dead config, removed.)
     - MOLECULE_CI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}")
-    - echo "MOLECULE_TEST_IMAGE=${MOLECULE_TEST_DIGEST}" > molecule-images.env
-    - echo "MOLECULE_CI_IMAGE=${MOLECULE_CI_DIGEST}" >> molecule-images.env
+    - echo "MOLECULE_CI_IMAGE=${MOLECULE_CI_DIGEST}" > molecule-images.env
     - cat molecule-images.env
     # Only push :latest on main — MR pipelines use SHA tags to avoid
     # overwriting :latest with unmerged branch images. The digest pin
@@ -330,11 +336,13 @@ shellcheck:
     - echo "Running ShellCheck..."
     - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
     - |
-      # Also lint shell scripts shipped in Ansible roles
-      find ansible/roles -name '*.sh' -type f | while read -r script; do
-        echo "Checking: $script"
-        shellcheck --severity=warning --exclude=SC1091,SC2034 "$script"
-      done
+      # Also lint shell scripts shipped in Ansible roles.
+      # `find ... | while ...` would mask failures: the pipeline's exit code is
+      # the while loop's, i.e. the rc of its LAST iteration — a shellcheck
+      # failure on any earlier file goes green. `-exec ... {} +` returns
+      # non-zero if shellcheck fails on ANY file, so the job fails correctly.
+      find ansible/roles -name '*.sh' -type f \
+        -exec shellcheck --severity=warning --exclude=SC1091,SC2034 {} +
     - |
       # Lint shell-script Jinja templates (*.sh.j2) shipped in roles —
       # including the boot-time crypto-unlock units. We can't render real
@@ -351,8 +359,19 @@ shellcheck:
       # header of a {% raw %}-wrapped *.sh.j2 is still not stripped (only full-line
       # ones are); keep header comments to single full lines. (Out-of-raw {{ }}
       # expressions are fine in any quantity — still neutralized to JINJA.)
+      #
+      # Accumulate an rc instead of `find | while`: the latter masks failures
+      # because the pipeline's exit status is the while loop's (rc of its last
+      # iteration), so a shellcheck failure on any earlier-rendered template
+      # would go green. We redirect find output to a list file (NOT a pipe, and
+      # NOT bash process substitution — this job runs in shellcheck-alpine whose
+      # default shell is ash/sh) so the while loop runs in the current shell and
+      # rc survives. `rc=1` on any failure + the final `exit $rc` fails the job.
       rendered=$(mktemp)
-      find ansible/roles -name '*.sh.j2' -type f | while read -r tmpl; do
+      tmpl_list=$(mktemp)
+      rc=0
+      find ansible/roles -name '*.sh.j2' -type f > "$tmpl_list"
+      while read -r tmpl; do
         echo "Checking: $tmpl"
         if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
           sed -E \
@@ -369,9 +388,10 @@ shellcheck:
             -e 's/\{\{"\}"\}\}/}/g' \
             -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
         fi
-        shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered"
-      done
-      rm -f "$rendered"
+        shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered" || rc=1
+      done < "$tmpl_list"
+      rm -f "$rendered" "$tmpl_list"
+      [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
     - echo "ShellCheck passed"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -621,12 +641,32 @@ pr-agent-review:
   variables:
     CONFIG__GIT_PROVIDER: "gitlab"
     GITLAB__URL: "https://git.ericsweiss.com"
-    # CONFIG__MODEL pinned to gpt-5.3-codex (code-review-tuned).
+    # CONFIG__MODEL: gpt-5.5 — OpenAI's latest. There is no gpt-5.5-codex (the
+    # codex line tops out at gpt-5.3-codex); gpt-5.5 supports xhigh reasoning.
     # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
-    CONFIG__MODEL: "gpt-5.3-codex"
-    # Maximize review depth: use full context window and maximum effort
-    CONFIG__MAX_MODEL_TOKENS: "128000"
+    CONFIG__MODEL: "gpt-5.5"
+    # Use (most of) gpt-5.5's ~1M context for deep review. Its window is 1.05M
+    # total = ~922k input + 128k output; get_max_tokens() returns TOTAL context
+    # and does NOT reserve output, so cap usage at 900k to stay under the input
+    # limit (with headroom for the system prompt). This is the operational cap
+    # that get_max_tokens min()s against.
+    CONFIG__MAX_MODEL_TOKENS: "900000"
+    # gpt-5.5 shipped after pr-agent 0.34, so it is absent from pr-agent's
+    # MAX_TOKENS table — declare the model's context window explicitly or
+    # get_max_tokens() errors out ("Model gpt-5.5 is not defined in MAX_TOKENS").
+    # Set to the full ~1.05M window; MAX_MODEL_TOKENS above is the real cap.
+    # (Reasoning + temperature-omission still apply via the gpt-5* prefix check.)
+    CONFIG__CUSTOM_MODEL_MAX_TOKENS: "1050000"
+    # 'high', not 'xhigh': the litellm bundled in pr-agent 0.34 only allows
+    # reasoning_effort='xhigh' for gpt-5.1-codex-max and gpt-5.2 — for gpt-5.5 it
+    # raises UnsupportedParamsError, which makes pr-agent fall back to o4-mini.
+    # 'high' is litellm's max for gpt-5.5; revisit if pr-agent ships a newer
+    # litellm that knows gpt-5.5 supports xhigh.
     CONFIG__REASONING_EFFORT: "high"
+    # Per-LLM-call timeout (litellm). The 120s default timed out on large diffs
+    # with xhigh reasoning (litellm.Timeout in the logs); 600s gives reasoning
+    # calls headroom. allow_failure + the 45m job timeout bound the worst case.
+    CONFIG__AI_TIMEOUT: "600"
     PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
     PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
     PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
@@ -639,7 +679,7 @@ pr-agent-review:
       export OPENAI__KEY=$(op read "op://Homelab/OpenAI API Key/api-key")
 
       echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
-      echo "Model: gpt-5.3-codex"
+      echo "Model: gpt-5.5 (high reasoning, 900k context, 600s call timeout)"
 
       # Run full review
       python -m pr_agent.cli \
@@ -662,7 +702,9 @@ pr-agent-review:
     # (AI review is advisory), so its absence never blocks deploys.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
   allow_failure: true  # Don't block MRs on AI review
-  timeout: 30m
+  # 45m (> the 30m default): xhigh reasoning + the 600s per-call timeout across
+  # the review + improve passes can run long; allow_failure means it never blocks.
+  timeout: 45m
 
 # ============================================================================
 # VALIDATE STAGE - Schema and configuration validation
@@ -727,7 +769,9 @@ terraform-plan:
       - terraform/cloudflare/tfplan
     reports:
       terraform: terraform/cloudflare/tfplan.json
-    expire_in: 1 hour
+    # 1 day (not 1 hour): deploy-terraform consumes this tfplan in a later stage;
+    # a slow/retried pipeline could otherwise have the plan GC'd before apply.
+    expire_in: 1 day
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -806,14 +850,27 @@ python-tests:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
+    # The pytest suite validates real tree files beyond scripts/: test_adguard_api_body.py
+    # asserts on ansible/roles/adguard_home/tasks/api_base_config.yml, and
+    # test_check_molecule_matrix_coverage.py smoke-tests the live .gitlab-ci.yml matrix +
+    # molecule/integration dirs. Those paths must be in `changes:` or an MR that edits
+    # only them would skip the tests that guard them.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - scripts/**/*
         - ansible/inventories/prod/group_vars/all.yml
+        - ansible/roles/adguard_home/tasks/api_base_config.yml
+        - ansible/roles/**/molecule/**/*
+        - ansible/integration-tests/**/*
+        - .gitlab-ci.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - scripts/**/*
         - ansible/inventories/prod/group_vars/all.yml
+        - ansible/roles/adguard_home/tasks/api_base_config.yml
+        - ansible/roles/**/molecule/**/*
+        - ansible/integration-tests/**/*
+        - .gitlab-ci.yml
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 flux-lint:
@@ -821,8 +878,9 @@ flux-lint:
   # Renders every top-level Flux Kustomization, substitutes postBuild vars
   # from kubernetes/infrastructure/sources/versions-configmap.yaml, verifies
   # zero unsubstituted ${var} placeholders remain, then validates with
-  # kubeconform. Replaces the old per-chart helm template + find-based
-  # kubeconform jobs.
+  # kubeconform. Also schema-validates the value-heavy HelmReleases'
+  # .spec.values via `helm template` (kustomize build emits HelmReleases
+  # verbatim, so a chart values-key typo would otherwise be unchecked).
   stage: lint
   image: python:3.11-slim
   before_script:
@@ -837,7 +895,13 @@ flux-lint:
       curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
       echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  /tmp/kustomize.tar.gz" | sha256sum -c -
       tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
-      kubeconform -v && kustomize version && envsubst --version | head -1
+      # helm: schema-validates HelmRelease .spec.values (scripts/validate-helm-values.py).
+      # Tarball unpacks to linux-amd64/helm (unlike kubeconform/kustomize bare binaries).
+      HELM_SHA256="f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
+      curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.18.4-linux-amd64.tar.gz
+      echo "${HELM_SHA256}  /tmp/helm.tar.gz" | sha256sum -c -
+      tar xzf /tmp/helm.tar.gz -C /usr/local/bin --strip-components=1 linux-amd64/helm
+      kubeconform -v && kustomize version && helm version --short && envsubst --version | head -1
   script:
     - |
       set -eo pipefail
@@ -916,6 +980,11 @@ flux-lint:
         fi
         RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
         printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
+        # KNOWN GAP: -ignore-missing-schemas silently SKIPS any CR whose schema
+        # is absent from (or unreachable in) the datreeio CRDs-catalog. Most CRDs
+        # we use (IngressRoute, VPA, ExternalSecret, ServiceMonitor, Certificate)
+        # are in the catalog, but a CR for a kind not in the catalog is unchecked.
+        # Tracked as a follow-up (vendor CRD JSON schemas + a second strict pass).
         if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.35.0 \
             -schema-location default \
@@ -941,6 +1010,17 @@ flux-lint:
       echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
       if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
         echo "ERROR: cluster root kustomization failed to build"
+        FAILED=1
+      fi
+
+      # Schema-validate the value-heavy HelmReleases' .spec.values via
+      # `helm template` — kustomize build above emits HelmReleases verbatim, so
+      # a typo in a chart values key (.spec.values is a free-form object in the
+      # HelmRelease CRD) would otherwise be unchecked. Needs network (helm repo
+      # add/update). Covers traefik (values.schema.json catches key typos),
+      # kube-prometheus-stack, authentik. MUST match the Taskfile flux:lint call.
+      echo "=== Schema-validating HelmRelease values blocks (helm template) ==="
+      if ! python3 scripts/validate-helm-values.py --kubeconform; then
         FAILED=1
       fi
 

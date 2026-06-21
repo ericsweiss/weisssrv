@@ -108,6 +108,7 @@ Create these items in your **Homelab** vault:
 | **GitLab SSO** | Password | `saml-cert-fingerprint` |
 | **GitLab Runner** | Password | `runner-token` (runner authentication token, `glrt-*` format) |
 | **GitLab Runner Privileged** | Password | `runner-token` (runner authentication token, `glrt-*` format, tags: `infrastructure`) |
+| **GitLab API Token** | Password | `credential` (personal access token for the Rollback step below and PR-Agent AI code review; see docs/15) |
 | **SMTP Relay Auth** | Login | `username`, `password` (for GitLab email notifications) |
 | **Email Config** | Login | `root_alias` (admin email address, e.g., `admin@example.com`) |
 | **SSH Key** | SSH Key | `public key` (for VM access via cloud-init) |

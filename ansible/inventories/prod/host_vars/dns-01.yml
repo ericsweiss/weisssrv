@@ -92,21 +92,26 @@ cert_distribution_targets:
     cert_mode: "0644"
     key_mode: "0600"
     restart_command: "sudo gitlab-ctl hup nginx"
-  # NFS+TLS endpoints: the NFS server (pve-nas-01) plus EVERY k3s agent.
-  # All six agents get the cert because the NFS-backed PVs (grafana, *arr,
-  # recipes, downloads data) float across the cluster — a pod can schedule
-  # to any agent, so any agent may become the tlshd NFS client. k3s SERVER
-  # nodes (.222/.223/.227) do NOT mount NFS, so they are intentionally
-  # absent. HAOS (.154) is NOT here as a TLS endpoint: it keeps a plaintext
-  # NFS media mount (Supervisor can't request xprtsec; see docs/24) — its
-  # existing HAOS cert entry below is for the HTTPS frontend, not tlshd.
+  # NFS+TLS endpoint: ONLY the NFS server (pve-nas-01) gets the wildcard cert +
+  # key here. The six k3s agents are pure NFSv4 xprtsec=tls CLIENTS — they
+  # validate pve-nas-01's server cert against the system CA truststore
+  # (/etc/ssl/certs/ca-certificates.crt, which already trusts the Let's Encrypt
+  # chain acme_certs issues from) and present NO client cert, so tlshd
+  # references neither fullchain.pem nor privkey.pem on an agent
+  # (nfs_tls_client_cert stays false; mTLS is not in use). The wildcard
+  # *.esweiss.com key can impersonate every internal service, so for least
+  # privilege the agents are deliberately NOT distribution targets — and the
+  # nfs_tls role scrubs any stale /etc/ssl/private/{fullchain,privkey}.pem a
+  # prior rollout left on a client. k3s SERVER nodes (.222/.223/.227) never
+  # mount NFS, so they were never targets. HAOS (.154) keeps a plaintext NFS
+  # media mount (its `home` entry below is for the HTTPS frontend, not tlshd).
+  # NOTE: if an export is ever migrated to xprtsec=mtls and an agent gets
+  # nfs_tls_client_cert=true, that agent must be re-added as a target here.
   #
-  # restart_command is shared via a YAML anchor: `systemctl restart
-  # tlshd` only fires when the unit exists and is enabled; before
-  # nfs_tls is rolled out the unit is absent and the conditional skips
-  # it cleanly with a stderr log line so an operator scanning journald
-  # sees the skip. Once tlshd IS enabled, a real restart failure
-  # surfaces (no blanket `|| true`).
+  # restart_command reloads tlshd only when the unit exists and is enabled;
+  # before nfs_tls is rolled out it skips cleanly with a stderr line (no blanket
+  # `|| true`). The former &tlshd_reload anchor is gone now that pve-nas-01 is
+  # the sole NFS-TLS endpoint.
   - host: pve-nas-01
     ip: 192.168.0.102
     host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxyeQZee3W3aQ0EpeY5sLONaZB1Zy4eKoMAeSLnbRCr"
@@ -115,74 +120,13 @@ cert_distribution_targets:
     group: root
     cert_mode: "0644"
     key_mode: "0600"
-    restart_command: &tlshd_reload_if_enabled >-
+    restart_command: >-
       if sudo systemctl list-unit-files tlshd.service >/dev/null 2>&1
       && sudo systemctl is-enabled --quiet tlshd.service; then
       sudo systemctl restart tlshd;
       else
       echo 'tlshd not yet enabled; skipping reload' >&2;
       fi
-  - host: k3s-agt-nas-01
-    ip: 192.168.0.202
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj+KnY1GNhTydCQiX0jb7rONeK1IoWG9aKtkuPb2HFB"
-    cert_dir: /etc/ssl/private
-    owner: root
-    group: root
-    cert_mode: "0644"
-    key_mode: "0600"
-    restart_command: *tlshd_reload_if_enabled
-  # The five remaining k3s agents. Each host_key below is a real key
-  # captured from the live host via `task certs:show-host-keys`. When adding
-  # a NEW target, capture its key the same way before the next dns:deploy:
-  # the acme_certs host_key assert refuses an empty value, and with
-  # StrictHostKeyChecking=yes a wrong/stale key fails the cert push safe on a
-  # host-key mismatch rather than pushing the wildcard key to an unverified
-  # host. Rotate by re-capturing after a host rebuild and pasting the new value.
-  - host: k3s-agt-laptop-01
-    ip: 192.168.0.203
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEf3UC60qsa4OT5LTT/0xhZpUZE5wx2AWHnRunA69268"
-    cert_dir: /etc/ssl/private
-    owner: root
-    group: root
-    cert_mode: "0644"
-    key_mode: "0600"
-    restart_command: *tlshd_reload_if_enabled
-  - host: k3s-agt-opt-01
-    ip: 192.168.0.204
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtDQgT9F7S8pF5Md2OqU2Q6NKvS88jLTQ8sMQ1NQtGI"
-    cert_dir: /etc/ssl/private
-    owner: root
-    group: root
-    cert_mode: "0644"
-    key_mode: "0600"
-    restart_command: *tlshd_reload_if_enabled
-  - host: k3s-agt-opt-02
-    ip: 192.168.0.205
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsfGxqZJINMEJoWibUCcBySbpU7W9d3LCjvesjRg/Jd"
-    cert_dir: /etc/ssl/private
-    owner: root
-    group: root
-    cert_mode: "0644"
-    key_mode: "0600"
-    restart_command: *tlshd_reload_if_enabled
-  - host: k3s-agt-opt-03
-    ip: 192.168.0.206
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPgktfPF6unrbua/8tAipNH1QvJNuxAAtX3n0BO9wYsS"
-    cert_dir: /etc/ssl/private
-    owner: root
-    group: root
-    cert_mode: "0644"
-    key_mode: "0600"
-    restart_command: *tlshd_reload_if_enabled
-  - host: k3s-agt-prec-01
-    ip: 192.168.0.207
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINh53na7EhfKpTOo7LFPyYYf0PM9a4OiliOS4clVaicp"
-    cert_dir: /etc/ssl/private
-    owner: root
-    group: root
-    cert_mode: "0644"
-    key_mode: "0600"
-    restart_command: *tlshd_reload_if_enabled
   # Plex: the plex role's cert-reload hook builds a PKCS#12 bundle from
   # the renewed PEM pair, atomically swaps it into place, and restarts
   # plexmediaserver. See ansible/roles/plex/templates/plex-cert-reload.sh.j2.

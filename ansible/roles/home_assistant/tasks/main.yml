@@ -136,6 +136,24 @@
       no_log: true  # secrets.yaml content visible in command stdout on error
       when: not (home_assistant_render_only | default(false))
 
+    - name: Back up current HA config before install (rollback source on check failure)
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=yes
+          root@{{ home_assistant_host }}
+          'set -e;
+           for f in configuration secrets; do
+             if [ -f {{ home_assistant_config_path }}/$f.yaml ]; then
+               cp -a {{ home_assistant_config_path }}/$f.yaml {{ home_assistant_config_path }}/$f.yaml.bak;
+             else
+               rm -f {{ home_assistant_config_path }}/$f.yaml.bak;
+             fi;
+           done'
+      register: ha_config_backup
+      changed_when: false
+      when: not (home_assistant_render_only | default(false))
+
     - name: Atomically install HA configuration files
       # Install secrets.yaml first so configuration.yaml's `!secret`
       # references always resolve against an up-to-date secrets file.
@@ -170,6 +188,84 @@
       ansible.builtin.debug:
         var: ha_config_check.stdout_lines
       when: not (home_assistant_render_only | default(false))
+
+    - name: Remove config backups after a successful `ha core check`
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=yes
+          root@{{ home_assistant_host }}
+          'rm -f {{ home_assistant_config_path }}/configuration.yaml.bak
+                 {{ home_assistant_config_path }}/secrets.yaml.bak'
+      register: ha_backup_cleanup
+      changed_when: false
+      # Best-effort: the deploy already passed `ha core check`, so a cleanup
+      # hiccup must NOT enter the rescue block and roll back a good config.
+      failed_when: false
+      when: not (home_assistant_render_only | default(false))
+
+    - name: Warn if HA backup cleanup failed (deploy still succeeded)
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: HA config deployed and passed `ha core check`, but removing
+          the .bak files failed (rc={{ ha_backup_cleanup.rc | default('n/a') }});
+          stale backups will be overwritten on the next deploy.
+      when:
+        - not (home_assistant_render_only | default(false))
+        - ha_backup_cleanup.rc | default(0) != 0
+
+  rescue:
+    # The install or `ha core check` failed. Restore the pre-deploy /config so a
+    # bad config is never left live (HAOS would break on its next restart). A
+    # .bak exists iff the file existed before THIS deploy (the backup task clears
+    # a stale .bak otherwise), so per file: a .bak present -> restore it; no .bak
+    # but the file now present -> it was newly created by this deploy, so remove
+    # the bad new file. (This SSH-to-HAOS path is not exercised by molecule,
+    # which runs render_only=true.)
+    - name: Roll back HA config to the pre-deploy state
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }}
+          -o StrictHostKeyChecking=yes
+          root@{{ home_assistant_host }}
+          'set -e;
+           rolled_back=0;
+           for f in configuration secrets; do
+             if [ -f {{ home_assistant_config_path }}/$f.yaml.bak ]; then
+               mv {{ home_assistant_config_path }}/$f.yaml.bak {{ home_assistant_config_path }}/$f.yaml;
+               rolled_back=1;
+             elif [ -f {{ home_assistant_config_path }}/$f.yaml ]; then
+               rm -f {{ home_assistant_config_path }}/$f.yaml;
+               rolled_back=1;
+             fi;
+           done;
+           echo "rolled_back=$rolled_back"'
+      register: ha_rollback
+      changed_when: "'rolled_back=1' in (ha_rollback.stdout | default(''))"
+      # Only roll back once the backup task has actually run and succeeded.
+      # If the rescue fires earlier (e.g. a failed scp before backup), no
+      # reliable .bak exists and the remove-new-file branch could otherwise
+      # delete the LIVE config — so skip rollback entirely in that case.
+      when:
+        - not (home_assistant_render_only | default(false))
+        - ha_config_backup is defined
+        - ha_config_backup is succeeded
+
+    - name: Re-raise the failure with the rollback outcome
+      ansible.builtin.fail:
+        # Each string literal is kept on ONE line: in this `>-` scalar the
+        # if/else keywords are more-indented (newlines preserved), and a literal
+        # split across lines would embed those newlines+indent in the rendered
+        # message. (Block-style {% if %} would be cleaner but trips ansible-lint
+        # jinja[spacing], so the single-expression ternary stays.)
+        msg: >-
+          Home Assistant deploy failed.
+          {{ 'Render-only: no remote change was made.'
+             if (home_assistant_render_only | default(false))
+             else ('/config rolled back to its pre-deploy state (backups restored / new files removed); fix the template or secrets and re-run.'
+                   if ('rolled_back=1' in (ha_rollback.stdout | default('')))
+                   else 'Nothing to roll back (the deploy failed before the install), so /config was not modified.') }}
+          Review the check/SSH output above.
 
   always:
     - name: Clean up local temporary files

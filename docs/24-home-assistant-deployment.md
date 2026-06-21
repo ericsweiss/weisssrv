@@ -41,7 +41,7 @@ Traefik Internal VIP (192.168.0.101)          |
 | **Hostname** | home |
 | **IP Address** | 192.168.0.154 |
 | **Proxmox Host** | pve-prec-01 |
-| **Storage** | local-lvm |
+| **Storage** | local-ssd (ZFS) |
 | **CPU Cores** | 4 |
 | **RAM** | 8 GB |
 | **Disk** | 64 GB |
@@ -109,14 +109,14 @@ qm create 154 \
   --agent enabled=1 \
   --bios ovmf \
   --machine q35 \
-  --efidisk0 local-lvm:1,format=raw,efitype=4m,pre-enrolled-keys=1 \
+  --efidisk0 local-ssd:1,format=raw,efitype=4m,pre-enrolled-keys=1 \
   --scsihw virtio-scsi-pci
 
 # Import the HAOS disk
-qm importdisk 154 /var/lib/vz/template/iso/haos_ova-17.0.qcow2 local-lvm
+qm importdisk 154 /var/lib/vz/template/iso/haos_ova-17.0.qcow2 local-ssd
 
 # Attach the disk
-qm set 154 --scsi0 local-lvm:vm-154-disk-1
+qm set 154 --scsi0 local-ssd:vm-154-disk-1
 
 # Resize disk to 64GB
 qm resize 154 scsi0 64G
@@ -130,6 +130,8 @@ qm set 154 --onboot 1 --startup order=50,up=10
 # Add to resource pool (optional)
 pvesh set /pools/apps-public -vms 154
 ```
+
+> **Storage must be `local-ssd` (ZFS), not `local-lvm`.** vmid 154 participates in the configured `storage_replication_jobs` (154-0..154-3 in `group_vars/all.yml`) and Proxmox HA failover, both of which require a ZFS-backed disk. `local-lvm` (LVM-thin) cannot be ZFS-replicated, so a VM created on it would silently break ZFS-to-ZFS replication and HA failover. This matches `host_vars/home.yml` (`vm_storage: local-ssd`).
 
 ### Step 2: Start the VM
 

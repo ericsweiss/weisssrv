@@ -1,0 +1,18 @@
+---
+# Shared skeleton Service for the *arr media-manager apps. name/labels/port are
+# overridden by each per-app overlay's patch.
+apiVersion: v1
+kind: Service
+metadata:
+  name: arr
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: arr
+spec:
+  selector:
+    app.kubernetes.io/name: arr
+  ports:
+    - name: http
+      port: 8989
+      targetPort: http
+  type: ClusterIP

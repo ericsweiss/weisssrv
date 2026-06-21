@@ -7,4 +7,5 @@ resources:
   - externalsecret.yaml
   - release.yaml
   - networkpolicy.yaml
+  - resourcequota.yaml
   - vpa.yaml

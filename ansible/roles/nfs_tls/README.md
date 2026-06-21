@@ -54,11 +54,16 @@ is triggered by:
 
 - Kernel ≥ 6.5 (Proxmox VE 9.x ships kernel 6.17 ✓).
 - `nfs-utils` ≥ 2.6.3 (Debian 13 / trixie ships 2.8.x ✓).
-- A TLS cert + key at `nfs_tls_cert_path` / `nfs_tls_key_path`, owned
-  by root and mode 0600 on the key. `acme_certs`'s
-  `homelab-cert-reload.sh` distributes `fullchain.pem` + `privkey.pem`
-  to `/etc/ssl/private/` on `pve-nas-01` (NFS server) and on **all six
-  k3s agents** (.202–.207) per `host_vars/dns-01.yml`; the role's
+- The NFS **server** (`pve-nas-01`, `nfs_tls_is_server: true`) needs the
+  TLS cert + key at `nfs_tls_cert_path` / `nfs_tls_key_path`, owned by root
+  and **mode 0600** on the key (the role asserts this and fails loud if the
+  key is group/other-readable). NFS **clients** under `xprtsec=tls` need only
+  the **truststore** (`nfs_tls_truststore`, the system CA bundle) — they
+  present no client cert, so they do not need the private key (see
+  "Private-key least privilege" below).
+- `acme_certs`'s `homelab-cert-reload.sh` distributes `fullchain.pem` +
+  `privkey.pem` to `/etc/ssl/private/` on `pve-nas-01` (NFS server) and on
+  **all six k3s agents** (.202–.207) per `host_vars/dns-01.yml`; the role's
   defaults point at those paths so no extra config is needed for the
   standard NFS topology. All agents are covered because the NFS-backed
   PVs float across the cluster, so any agent can become the tlshd
@@ -71,9 +76,37 @@ is triggered by:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `nfs_tls_enabled` | `false` | Opt-in toggle. Set per-host or per-group. |
-| `nfs_tls_cert_path` | `/etc/ssl/private/fullchain.pem` | Server + client cert (matches what acme_certs distributes) |
-| `nfs_tls_key_path` | `/etc/ssl/private/privkey.pem` | Matching private key (mode 0600 enforced by acme_certs) |
+| `nfs_tls_is_server` | `false` | This host serves NFS over TLS — emit the `[authenticate.server]` block (cert + private key). Set `true` only on `pve-nas-01`. |
+| `nfs_tls_client_cert` | `false` | Client presents a cert (only needed for `xprtsec=mtls`). Under `xprtsec=tls` (production) the client presents none, so the `[authenticate.client]` block omits the private key. |
+| `nfs_tls_cert_path` | `/etc/ssl/private/fullchain.pem` | Server cert (matches what acme_certs distributes) |
+| `nfs_tls_key_path` | `/etc/ssl/private/privkey.pem` | Matching private key. The role asserts mode `0600` (no group/other access) and fails loud otherwise. |
 | `nfs_tls_truststore` | `/etc/ssl/certs/ca-certificates.crt` | CA bundle for cert validation |
+
+### Private-key least privilege (xprtsec=tls)
+
+Production exports use `xprtsec=tls` — **server-only** auth: the client
+validates the NFS server's cert against the truststore and presents **no**
+client certificate. So an NFS *client* (every k3s agent) needs only the CA
+truststore, never the wildcard `*.esweiss.com` private key. The role reflects
+this: the `[authenticate.client]` block ships the private key only when
+`nfs_tls_client_cert: true`, which is required solely for `xprtsec=mtls`
+(mutual auth, not in use). Default (`false`) keeps the wildcard key — which can
+impersonate every internal `*.esweiss.com` service — off the agents' tlshd
+config.
+
+> **Distribution least privilege — done:** the six k3s agents are intentionally
+> **not** in `cert_distribution_targets` (`host_vars/dns-01.yml`). As
+> `xprtsec=tls` clients they validate the server against the system CA
+> truststore (`/etc/ssl/certs/ca-certificates.crt`, which already trusts the
+> Let's Encrypt chain acme_certs issues from) and present no client cert, so
+> they need **neither** `fullchain.pem` **nor** `privkey.pem`. This role also
+> removes any stale `/etc/ssl/private/{fullchain,privkey}.pem` a prior rollout
+> left on a client-only host (task "Remove wildcard cert + key on client-only
+> hosts", gated `not is_server and not client_cert`). The wildcard private key —
+> which can impersonate every internal `*.esweiss.com` service — therefore lives
+> only on hosts that terminate TLS server-side (pve-nas-01 here). Re-stage it on
+> an agent only if migrating an export to `xprtsec=mtls` (set
+> `nfs_tls_client_cert: true` and re-add the agent as a distribution target).
 
 ## Rollout procedure (coordinated across server + clients)
 

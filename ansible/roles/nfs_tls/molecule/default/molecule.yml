@@ -53,6 +53,12 @@ provisioner:
         # to fire — without this, every task is a no-op and we'd be testing
         # nothing.
         nfs_tls_enabled: true
+        # Exercise the NFS-server render (matches pve-nas-01): server block
+        # with cert + private key. nfs_tls_client_cert is left at its default
+        # (false) so the [authenticate.client] block omits the private key —
+        # verify.yml asserts privkey appears exactly once (server only),
+        # proving the least-privilege client render under xprtsec=tls.
+        nfs_tls_is_server: true
 verifier:
   name: ansible
 scenario:

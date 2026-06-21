@@ -9,18 +9,23 @@
 libdebug=0
 nlevel=0
 
-# Server-side TLS: tlshd loads our cert/key when the kernel asks for a
-# server identity. Required when this host runs nfs-server with
-# xprtsec=tls/mtls in /etc/exports.
+# Server-side TLS: tlshd loads our cert/key when the kernel asks for a server
+# identity. Emitted only on NFS server hosts (nfs_tls_is_server); a client-only
+# host has no server identity to present.
+{% if nfs_tls_is_server | default(false) %}
 [authenticate.server]
 x509.certificate={{ nfs_tls_cert_path }}
 x509.private_key={{ nfs_tls_key_path }}
 x509.truststore={{ nfs_tls_truststore }}
 
-# Client-side TLS: same files used when the kernel mounts an NFS share
-# with xprtsec=tls/mtls. For mtls the client must present a cert; with
-# xprtsec=tls the truststore is consulted for server cert validation.
+{% endif %}
+# Client-side TLS: used when the kernel mounts an NFS share. Under xprtsec=tls
+# (production) the client presents no cert, so the certificate/private_key lines
+# are omitted by default and emitted only when nfs_tls_client_cert is set (needed
+# solely for xprtsec=mtls, not in use). See README "Private-key least privilege".
 [authenticate.client]
+{% if nfs_tls_client_cert | default(false) %}
 x509.certificate={{ nfs_tls_cert_path }}
 x509.private_key={{ nfs_tls_key_path }}
+{% endif %}
 x509.truststore={{ nfs_tls_truststore }}

@@ -1,7 +1,13 @@
 # {{ ansible_managed }}
 # Override the Debian-packaged prometheus-node-exporter service to:
-# - Listen on port {{ node_exporter_host_port }} (avoids k3s DaemonSet on 9100)
-# - Enable hwmon, thermal_zone, and textfile collectors
+# - Listen on port {{ node_exporter_host_port }} (avoids the k3s DaemonSet on 9100)
+# - Point the textfile collector at our .prom dir (zpool/corosync metrics).
+# The two behaviour-changing flags are --web.listen-address and
+# --collector.textfile.directory. hwmon, thermal_zone and textfile are all
+# enabled by default, so the bare --collector.hwmon/thermal_zone/textfile flags
+# are explicit-intent no-ops kept for readability. We do NOT pass
+# --collector.disable-defaults, so the default collectors
+# (diskstats/filesystem/netdev/cpu/meminfo/…) stay on without being listed here.
 
 [Service]
 ExecStart=
@@ -9,11 +15,5 @@ ExecStart=/usr/bin/prometheus-node-exporter \
   --web.listen-address=:{{ node_exporter_host_port }} \
   --collector.hwmon \
   --collector.thermal_zone \
-  --collector.diskstats \
-  --collector.filesystem \
-  --collector.netdev \
-  --collector.cpu \
-  --collector.meminfo \
-  --collector.loadavg \
   --collector.textfile \
   --collector.textfile.directory={{ node_exporter_host_textfile_dir }}

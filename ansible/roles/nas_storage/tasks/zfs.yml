@@ -21,15 +21,15 @@
 # the task would `zfs set` and report changed on every run (masking real drift).
 - name: Verify ZFS datasets exist and set properties
   ansible.builtin.shell: |
-    if ! zfs list {{ item.1.name }} >/dev/null 2>&1; then
+    if ! zfs list {{ item.1.name | quote }} >/dev/null 2>&1; then
       echo "DATASET_MISSING"
       exit 0
     fi
     changed=0
     {% for prop, value in item.1.properties.items() %}
-    current=$(zfs get -H -o value {{ prop }} {{ item.1.name }} 2>/dev/null)
-    if [ "$current" != "{{ value }}" ]; then
-      zfs set {{ prop }}={{ value }} {{ item.1.name }}
+    current=$(zfs get -H -o value {{ prop | quote }} {{ item.1.name | quote }} 2>/dev/null)
+    if [ "$current" != {{ value | quote }} ]; then
+      zfs set {{ prop | quote }}={{ value | quote }} {{ item.1.name | quote }}
       changed=1
     fi
     {% endfor %}
@@ -45,6 +45,15 @@
   failed_when: "'DATASET_MISSING' in zfs_result.stdout"
   when: item.0.name in zfs_imported_pools.stdout_lines
 
+# The zfs-scrub-<schedule>@.timer template units are shipped by
+# zfsutils-linux and exist for any imported pool, so enabling/starting them
+# is expected to succeed. We deliberately do NOT blanket-swallow with
+# failed_when: false — that masked a misspelled zfs_scrub_schedule (which
+# builds a non-existent unit name) and let scrubs silently never run on the
+# multi-TB raidz pools. The imported-pool when: gate already covers the
+# exported/absent-pool steady state; any remaining failure here (e.g. a bad
+# schedule -> "Unit ... not found") is a real misconfiguration and must
+# surface.
 - name: Enable ZFS scrub timer
   ansible.builtin.systemd:
     name: "zfs-scrub-{{ zfs_scrub_schedule | default('monthly') }}@{{ item.name }}.timer"
@@ -56,7 +65,6 @@
   when:
     - zfs_scrub_enabled | default(true)
     - item.name in zfs_imported_pools.stdout_lines
-  failed_when: false
 
 - name: Ensure zfs-auto-snapshot is installed
   ansible.builtin.apt:

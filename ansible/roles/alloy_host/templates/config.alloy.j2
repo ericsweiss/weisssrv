@@ -46,6 +46,9 @@ loki.write "default" {
   // Traefik / cluster outage the WAL buffers journald entries to disk and
   // replays them when Loki recovers, instead of dropping them once the
   // in-memory queue fills. max_segment_age bounds replay lag and disk use.
+  // The WAL is written under Alloy's --storage.path (packaged-unit default
+  // /var/lib/alloy/data — this role does not override it in CUSTOM_ARGS); a
+  // future package change to that default would relocate the WAL.
   wal {
     enabled         = true
     max_segment_age = {{ alloy_host_wal_max_segment_age | to_json }}

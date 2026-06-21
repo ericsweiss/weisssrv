@@ -15,6 +15,24 @@ spec:
   policyTypes:
     - Ingress
 ---
+# Namespace-wide default-deny EGRESS. The label-scoped allow rules below
+# (managers-egress for app=gitlab-runner, shared-jobs-egress for
+# esweiss.com/runner-class=shared) are additive; this policy makes any pod that
+# does NOT carry one of those labels fail closed. Without it, a CI job could use
+# its namespace-scoped RBAC (pods:create) to spawn an auxiliary pod WITHOUT the
+# runner-class label and that pod would get unrestricted egress (RFC1918/LAN
+# included), defeating the documented internet-only containment of shared job
+# pods. Egress is denied by default; only the labelled selectors below open it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: gitlab-runner
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+---
 # The shared runner manager long-polls GitLab (git.ericsweiss.com via Cloudflare,
 # so the 443 target set is not enumerable) and talks to the kube-API to spawn
 # job pods.

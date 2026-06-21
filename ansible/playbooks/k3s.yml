@@ -9,6 +9,10 @@
     - base
     - qol
     - postfix_null_client
+    # Host-side journald -> Loki shipping. site.yml deploys this to k3s nodes in
+    # a dedicated play; include it here so a standalone `task k3s:deploy` does not
+    # leave the k3s VMs without host log shipping.
+    - alloy_host
 
 - name: Deploy k3s server(s)
   hosts: k3s_servers

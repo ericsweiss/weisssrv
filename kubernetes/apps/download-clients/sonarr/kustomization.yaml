@@ -1,0 +1,48 @@
+---
+# Sonarr - TV show management (URL: tv.esweiss.com)
+# Per-app overlay over the shared _arr component: only the name/labels, image,
+# port (8989), and config claimName differ from the skeleton.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: downloads
+components:
+  - ../_arr
+patches:
+  - target:
+      kind: Deployment
+      name: arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: sonarr
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: sonarr
+      - op: replace
+        path: /spec/selector/matchLabels/app.kubernetes.io~1name
+        value: sonarr
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1name
+        value: sonarr
+      - op: replace
+        path: /spec/template/spec/containers/0/name
+        value: sonarr
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: lscr.io/linuxserver/sonarr:version-${sonarr_version}
+      - op: replace
+        path: /spec/template/spec/volumes/0/persistentVolumeClaim/claimName
+        value: sonarr-config
+  - target:
+      kind: Service
+      name: arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: sonarr
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: sonarr
+      - op: replace
+        path: /spec/selector/app.kubernetes.io~1name
+        value: sonarr

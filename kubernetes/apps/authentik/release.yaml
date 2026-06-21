@@ -160,7 +160,6 @@ spec:
           cpu: 200m
           memory: 1Gi
         limits:
-          cpu: 1000m
           memory: 1Gi
 
       # Spread replicas across nodes
@@ -259,7 +258,6 @@ spec:
           cpu: 100m
           memory: 768Mi
         limits:
-          cpu: 1000m
           memory: 1536Mi
 
     # Bundled PostgreSQL - consider external for HA
@@ -285,7 +283,6 @@ spec:
             cpu: 100m
             memory: 256Mi
           limits:
-            cpu: 500m
             memory: 512Mi
         # Pin to NAS agent for local storage
         affinity:

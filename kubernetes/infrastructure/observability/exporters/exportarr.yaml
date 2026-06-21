@@ -25,9 +25,21 @@ spec:
       labels:
         app.kubernetes.io/name: exportarr-sonarr
     spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: exportarr
           image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           args: ["sonarr"]
           env:
             - name: PORT
@@ -109,9 +121,21 @@ spec:
       labels:
         app.kubernetes.io/name: exportarr-radarr
     spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: exportarr
           image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           args: ["radarr"]
           env:
             - name: PORT
@@ -193,9 +217,21 @@ spec:
       labels:
         app.kubernetes.io/name: exportarr-lidarr
     spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: exportarr
           image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           args: ["lidarr"]
           env:
             - name: PORT
@@ -277,9 +313,21 @@ spec:
       labels:
         app.kubernetes.io/name: exportarr-prowlarr
     spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: exportarr
           image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           args: ["prowlarr"]
           env:
             - name: PORT

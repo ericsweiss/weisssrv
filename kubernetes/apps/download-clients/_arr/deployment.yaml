@@ -1,26 +1,27 @@
 ---
-# Radarr - Movie management
-# URL: movies.esweiss.com
+# Shared skeleton Deployment for the *arr media-manager apps. The placeholder
+# name/labels ("arr"), image, and port (8989) are overridden by each per-app
+# overlay's patch (../sonarr, ../radarr, ../lidarr).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: radarr
+  name: arr
   namespace: downloads
   labels:
-    app.kubernetes.io/name: radarr
+    app.kubernetes.io/name: arr
     app.kubernetes.io/component: media-manager
     app.kubernetes.io/part-of: media-stack
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: radarr
+      app.kubernetes.io/name: arr
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: radarr
+        app.kubernetes.io/name: arr
         app.kubernetes.io/component: media-manager
     spec:
       affinity:
@@ -33,10 +34,11 @@ spec:
                     operator: DoesNotExist
       nodeSelector:
         esweiss.com/general: "true"
-      # Pod hardening: Radarr does not talk to the kube-API. Only the universally-
-      # safe subset is applied — this is a LinuxServer.io image (s6 + PUID/PGID)
-      # that MUST start as root to drop privileges, so runAsNonRoot / drop-ALL /
-      # aPE:false are deliberately NOT set (they would break the s6 privilege drop).
+      # Pod hardening: these *arr apps do not talk to the kube-API. Only the
+      # universally-safe subset is applied — this is a LinuxServer.io image
+      # (s6 + PUID/PGID) that MUST start as root to drop privileges, so
+      # runAsNonRoot / drop-ALL / aPE:false are deliberately NOT set (they
+      # would break the s6 privilege drop).
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -48,8 +50,8 @@ spec:
           - name: single-request-reopen
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml
-        - name: radarr
-          image: lscr.io/linuxserver/radarr:version-${radarr_version}
+        - name: arr
+          image: lscr.io/linuxserver/arr:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID
@@ -62,7 +64,7 @@ spec:
               value: "002"
           ports:
             - name: http
-              containerPort: 7878
+              containerPort: 8989
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -85,7 +87,6 @@ spec:
               cpu: 100m
               memory: 512Mi
             limits:
-              cpu: 2000m
               memory: 1Gi
           volumeMounts:
             - name: config
@@ -95,24 +96,7 @@ spec:
       volumes:
         - name: config
           persistentVolumeClaim:
-            claimName: radarr-config
+            claimName: arr-config
         - name: data
           persistentVolumeClaim:
             claimName: data
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: radarr
-  namespace: downloads
-  labels:
-    app.kubernetes.io/name: radarr
-spec:
-  selector:
-    app.kubernetes.io/name: radarr
-  ports:
-    - name: http
-      port: 7878
-      targetPort: http
-  type: ClusterIP

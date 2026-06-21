@@ -49,6 +49,30 @@ The four-way infrastructure split ensures CRDs are installed before CRD-dependen
 
 Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml` and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
 
+### Fresh bootstrap / disaster recovery
+
+On a running cluster the prometheus-operator CRDs (`servicemonitors`,
+`podmonitors`, `prometheusrules` in `monitoring.coreos.com`) already exist, so
+the chain reconciles cleanly. On a **fresh** cluster (or full DR rebuild) there
+is one ordering caveat: several controller HelmReleases in
+`infrastructure-controllers` set `serviceMonitor.enabled: true`. cert-manager
+guards that with a `.Capabilities` check and skips silently when the CRD is
+absent, but **Traefik does not** — it always emits a `ServiceMonitor` whose apply
+fails until the CRD exists. The CRDs are installed two stages later
+(`infrastructure-observability`), so a first-boot controllers stage would block.
+
+Pre-apply the CRDs once, before the first reconcile, then let Flux take over:
+
+```bash
+helm pull prometheus-community/kube-prometheus-stack --version <pinned> --untar
+kubectl apply --server-side -f kube-prometheus-stack/charts/crds/crds/
+```
+
+The durable fix — a CRDs-only resource in `infrastructure-sources` plus
+`kube-prometheus-stack` `crds.enabled: false` — is tracked in `docs/16` and
+deliberately deferred: migrating CRD Helm-ownership on a live cluster risks the
+observability stack, so it should be done as its own change, not in-band.
+
 ### Reconciliation Cadence
 
 - **GitRepository poll**: 1 minute (source-controller checks GitLab for new commits).

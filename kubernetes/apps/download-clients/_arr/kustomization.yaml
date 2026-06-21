@@ -1,0 +1,16 @@
+---
+# Shared *arr (Servarr) skeleton — a Kustomize Component carrying the common
+# Deployment + Service for the LinuxServer.io media-manager apps that are
+# byte-for-byte identical apart from name/labels, image, port, and config
+# claimName: sonarr, radarr, lidarr. Each per-app overlay (../sonarr, ../radarr,
+# ../lidarr) lists this component and applies a tiny patch with only the
+# per-app differences.
+#
+# The skeleton uses the placeholder name "arr" on port 8989; the overlays
+# rename/repoint everything via patches + namePrefix. Prowlarr deliberately does
+# NOT use this component (different probe timings/resources and no /media mount).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - deployment.yaml
+  - service.yaml

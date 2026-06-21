@@ -1,11 +1,9 @@
 ---
 # Plex Media Server defaults
 
-# Plex user and group
+# Plex user (created by the plexmediaserver apt package; the package also
+# creates a matching `plex` group, which configure.yml references via plex_user).
 plex_user: plex
-plex_group: plex
-plex_uid: 997
-plex_gid: 997
 
 # Media group (matches NAS storage configuration)
 media_group: media
@@ -35,6 +33,3 @@ plex_media_dir: /media
 # Plex should start after mergerfs is mounted
 plex_service_after:
   - network-online.target
-
-# Plex hardware transcoding
-plex_hardware_transcoding: false

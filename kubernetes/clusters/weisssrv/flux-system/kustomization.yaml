@@ -21,3 +21,13 @@ patches:
     - op: replace
       path: /spec/template/spec/containers/0/resources/requests/memory
       value: 128Mi
+# Drop the controllers' CPU limit (bootstrap default 1000m). CPU is compressible
+# — a limit only adds CFS throttling that hurts reconcile latency; the memory
+# limit stays. Repo-wide policy enforced by check-hpa-vpa-invariant.py; see
+# docs/33-autoscaling.md.
+- target:
+    kind: Deployment
+    name: (source-controller|kustomize-controller|helm-controller|notification-controller)
+  patch: |
+    - op: remove
+      path: /spec/template/spec/containers/0/resources/limits/cpu

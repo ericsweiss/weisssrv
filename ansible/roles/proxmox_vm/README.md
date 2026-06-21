@@ -73,8 +73,23 @@ ansible-playbook ansible/playbooks/k3s-provision-vms.yml --limit k3s-srv-nas-01
 - Proxmox host must be accessible
 - Cloud-init template must be downloadable
 
+## Reconciliation vs. create-time-only
+
+The role distinguishes settings it converges on **every** run from settings
+applied **only at VM creation**:
+
+| Setting | Behaviour |
+|---------|-----------|
+| `onboot` / `startup` (order, delay) | **Reconciled** on existing VMs — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `qm set`. These are metadata-only (next-boot), so converging a live VM is safe. |
+| QEMU guest-agent flag (`vm_agent_enabled`) | **Reconciled** on existing VMs (metadata-only `qm set --agent`). |
+| NIC `firewall=1` flag | **Reconciled** on existing VMs (one-time repair of legacy NICs). |
+| CPU/memory/cores, disk size, cloud-init (user, SSH key, IP), boot disk | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
+
 ## Notes
 
 - Cloud-init user: eric (with SSH key)
 - Network: DHCP by default, then set static via cloud-init
 - Persistent zvols survive VM recreation
+- The cloud-init SSH public key is staged on the Proxmox host in a private
+  `tempfile` (mode 0600, random name) and removed after `qm set`, never a
+  predictable `/tmp` path.

@@ -259,6 +259,51 @@
   changed_when: "'CHANGED' in (lxc_net0_firewall.stdout | default(''))"
   when: not ansible_check_mode
 
+# Reconcile onboot/startup on EXISTING containers too. Like the VM role, these
+# are metadata-only knobs (applied by Proxmox at the next boot, never disrupting
+# a running container), so converging inventory drift here is safe. startup is
+# normalized to a canonical order=/up=/down= form on BOTH sides before comparing,
+# because Proxmox drops default fields (e.g. up=0) from the stored string — a raw
+# compare would see false drift and re-`pct set` every run. (idmap, bind mounts,
+# and GPU passthrough below stay create-time only — see the NOTE there.)
+- name: Reconcile LXC autostart and boot order on existing container
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want_onboot="{{ proxmox_autostart_enabled | default(lxc_onboot) | ternary(1, 0) }}"
+    # Canonicalize a Proxmox startup property-string to "order=O,up=U,down=D"
+    # with absent fields defaulting to 0, so desired and stored compare equal
+    # regardless of which default fields Proxmox omits.
+    norm_startup() {
+      local s="$1" order=0 up=0 down=0 kv k v
+      local IFS=','
+      for kv in $s; do
+        k=${kv%%=*}; v=${kv#*=}
+        case "$k" in order) order=$v ;; up) up=$v ;; down) down=$v ;; esac
+      done
+      echo "order=${order},up=${up},down=${down}"
+    }
+    desired_startup="order={{ proxmox_startup_order | default(lxc_startup_order) }},up={{ proxmox_startup_delay | default(lxc_startup_delay) }}"
+    want_startup=$(norm_startup "$desired_startup")
+    cfg=$(pct config {{ container_id }})
+    # Default onboot when the key is absent from pct config is 0 (Proxmox default).
+    cur_onboot=$(printf '%s\n' "$cfg" | sed -n 's/^onboot: //p'); cur_onboot=${cur_onboot:-0}
+    cur_startup=$(norm_startup "$(printf '%s\n' "$cfg" | sed -n 's/^startup: //p')")
+    changed=0
+    [ "$cur_onboot" != "$want_onboot" ] && changed=1
+    [ "$cur_startup" != "$want_startup" ] && changed=1
+    if [ "$changed" = 1 ]; then
+      pct set {{ container_id }} --onboot "$want_onboot" --startup "$desired_startup"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: lxc_startup_reconcile
+  changed_when: "'CHANGED' in (lxc_startup_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - container_exists.rc == 0
+
 # NOTE: create-time only. Everything from here through "Configure GPU
 # passthrough" below — bind mounts (mp* lines), the lxc.idmap UID/GID maps,
 # and the GPU /dev/dri passthrough — is guarded on `container_exists.rc != 0`
@@ -268,6 +313,7 @@
 # changes are risky and deliberately out of scope). To apply such a change,
 # either recreate the container (destroy + re-run this role), or edit
 # /etc/pve/lxc/<id>.conf on the Proxmox host by hand and `pct restart <id>`.
+# (onboot/startup ARE reconciled above; only idmap/mounts/GPU are create-only.)
 
 # Configure bind mounts for containers that need host storage access
 # This must be done before starting the container
@@ -498,22 +544,52 @@
     - container_exists.rc != 0
   changed_when: true
 
-# NOTE: create-time only. The authorized_keys file is written once (with `>`,
-# overwriting any template/cloud-init keys) when the container is first
-# created. Rotating or adding keys on an existing container is NOT reconciled
-# here — recreate the container, or update the file in-place via
-# `pct exec <id> -- vi /home/<user>/.ssh/authorized_keys`.
-- name: Deploy SSH authorized keys for eric user
+# Reconcile the eric authorized_keys on EVERY run (not just create) so a rotated
+# SSH key propagates as part of routine config management. The key is delivered
+# atomically: written to a temp file inside the container, compared against the
+# live authorized_keys, and moved into place only on difference (so the task is
+# idempotent and reports changed exactly when the key set actually changes). The
+# key material is base64-encoded before templating into the inner `pct exec`
+# script: base64 output is shell-safe (only [A-Za-z0-9+/=]), so it cannot break
+# the command line, and it is decoded back to the original key bytes inside the
+# container. `pct exec` does not forward host env vars, so the value is embedded.
+- name: Reconcile SSH authorized keys for eric user
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    pct exec {{ container_id }} -- bash -c 'echo "{{ lxc_ssh_public_keys }}" > /home/{{ lxc_admin_user }}/.ssh/authorized_keys'
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      pct exec {{ container_id }} -- bash -c '
+        set -euo pipefail
+        auth_dir="/home/{{ lxc_admin_user }}/.ssh"
+        auth_file="${auth_dir}/authorized_keys"
+        desired="$(printf "%s" "{{ lxc_ssh_public_keys | b64encode }}" | base64 -d)"
+        install -d -m 700 -o {{ lxc_admin_user }} -g {{ lxc_admin_user }} "$auth_dir"
+        tmp="$(mktemp "${auth_file}.XXXXXX")"
+        printf "%s\n" "$desired" > "$tmp"
+        chmod 600 "$tmp"
+        # mktemp creates root-owned; sshd rejects authorized_keys not owned by the
+        # user, so always chown before the move (whether or not content changed).
+        chown {{ lxc_admin_user }}:{{ lxc_admin_user }} "$tmp"
+        if [ -f "$auth_file" ] && cmp -s "$tmp" "$auth_file"; then
+          rm -f "$tmp"
+        else
+          mv "$tmp" "$auth_file"
+          echo CHANGED
+        fi
+      '
+  args:
+    executable: /bin/bash
+  register: lxc_authkeys_reconcile
+  changed_when: "'CHANGED' in (lxc_authkeys_reconcile.stdout | default(''))"
   when:
     - not ansible_check_mode
-    - container_exists.rc != 0
     - lxc_ssh_public_keys | length > 0
-  changed_when: true
+    # Reconcile existing containers (rc == 0) and freshly-created ones (creation
+    # not skipped). If creation is intentionally skipped and the CT is absent,
+    # don't pct exec a non-existent container (skip-create / molecule-stub runs).
+    - container_exists.rc == 0 or not (proxmox_lxc_skip_create | default(false))
 
-- name: Set permissions on authorized_keys and home directory
+- name: Set ownership on authorized_keys and home directory
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ container_id }} -- bash -c '

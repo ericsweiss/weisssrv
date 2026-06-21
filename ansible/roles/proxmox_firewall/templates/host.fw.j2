@@ -18,7 +18,10 @@ GROUP sg-pve-cluster
 GROUP sg-host-admin
 GROUP sg-metrics
 
-{% if 'nas' in proxmox_role | default('') %}
+{# Exact match (not substring): only proxmox_role == 'nas' inherits the NFS/SMB
+   server groups, so a future role string that merely contains 'nas' (e.g.
+   'nas-backup') does not erroneously expose those server ports. #}
+{% if (proxmox_role | default('')) == 'nas' %}
 # NAS-specific rules
 GROUP sg-nfs-server
 GROUP sg-smb-server

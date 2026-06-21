@@ -78,8 +78,12 @@ fi
 # GNU-grep extension to ERE — fine on Debian/PVE today, but the
 # explicit `( |\t|$)` is portable across BSD grep / busybox in case
 # this script ever gets reused outside the Proxmox cluster.
+# `sed -n ...p` only prints lines where the substitution actually matched.
+# Without `-n` (and the trailing `p`), a line that grep matched but whose
+# `(node,...)` shape sed can't parse would be echoed VERBATIM, putting the
+# whole status line into $NODE instead of falling through to steps 3/4.
 NODE=$(ssh_quick "$REACHABLE" "sudo ha-manager status 2>/dev/null | grep -E 'service vm:${VMID}([[:space:]]|\$)'" 2>/dev/null \
-    | sed 's/.*(\([^,]*\),.*/\1/' || true)
+    | sed -n 's/.*(\([^,]*\),.*/\1/p' || true)
 
 # Step 3: cluster resources (covers non-HA VMs known to the cluster)
 if [ -z "$NODE" ]; then

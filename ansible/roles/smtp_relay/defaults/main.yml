@@ -18,9 +18,13 @@ smtp_relay_config:
   relayhost: "[smtp.gmail.com]:587"
   smtpd_relay_restrictions: "permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 
-  # TLS for incoming connections (from null clients)
-  smtpd_tls_cert_file: "{{ smtp_tls_cert_dir }}/smtp-relay.esweiss.com_ecc/fullchain.cer"
-  smtpd_tls_key_file: "{{ smtp_tls_cert_dir }}/smtp-relay.esweiss.com_ecc/smtp-relay.esweiss.com.key"
+  # TLS for incoming connections (from null clients). The acme_certs
+  # cert-reload script deploys fullchain.pem + privkey.pem into smtp_tls_cert_dir
+  # (default /etc/postfix/tls), so the defaults must point at those names to be
+  # usable standalone — a partial smtp_relay_config override should not be
+  # required just to get working TLS paths.
+  smtpd_tls_cert_file: "{{ smtp_tls_cert_dir }}/fullchain.pem"
+  smtpd_tls_key_file: "{{ smtp_tls_cert_dir }}/privkey.pem"
   smtpd_tls_security_level: "may"
   smtpd_tls_loglevel: 1
   smtpd_tls_received_header: "yes"

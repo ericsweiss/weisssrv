@@ -113,8 +113,12 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: cert-manager-webhook
+  # Initial (not Auto): the webhook is single-replica and sits on the synchronous
+  # admission path — a VPA updater eviction would briefly fail-closed validating
+  # cert-manager CRs. A PDB can't help a single replica (minAvailable:1 would
+  # block node drains entirely), so apply recommendations on natural restart.
   updatePolicy:
-    updateMode: Auto
+    updateMode: Initial
   resourcePolicy:
     containerPolicies:
       - containerName: "*"

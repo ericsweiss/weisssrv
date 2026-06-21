@@ -174,6 +174,29 @@ class TestParseFailureStub(unittest.TestCase):
         self.assertEqual(artifact["stdout"], "this is not json")
         self.assertEqual(artifact["stderr"], "traceback here")
 
+    def test_wrong_shape_json_writes_stub_and_exits_two(self):
+        """Valid JSON that is not an object (list/null/number/string/bool) must
+        be treated as a parse failure: exit 2 + self-describing stub. Without
+        the isinstance(data, dict) guard, `data.get(...)` raises an uncaught
+        AttributeError and the valid empty artifact would be left in place."""
+        for shape in ("[]", "[1,2,3]", "null", "123", '"str"', "true"):
+            with self.subTest(shape=shape):
+                code, fake_open, _ = _run_main(shape, env={}, returncode=0)
+                self.assertEqual(code, 2, f"{shape} should exit 2")
+                artifact = json.loads(fake_open.contents("version-report.json"))
+                self.assertIn("error", artifact)
+                self.assertIn("not parseable", artifact["error"])
+                self.assertEqual(artifact["stdout"], shape)
+
+    def test_wrong_shape_json_posts_failure_section_in_mr(self):
+        """In an MR pipeline, a non-dict payload posts the 'failed' section
+        rather than an empty Updates/Errors table."""
+        _, _, posted = _run_main(
+            "[]", env={"CI_MERGE_REQUEST_IID": "42"}, stderr="boom", returncode=0
+        )
+        self.assertEqual(len(posted), 1)
+        self.assertIn("### Version check failed", posted[0])
+
     def test_valid_output_persists_raw_json_artifact(self):
         payload = _payload([
             {"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
@@ -249,6 +272,23 @@ class TestMrComment(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(posted, [], "held-only run posts nothing")
 
+    def test_no_empty_update_table_when_summary_diverges(self):
+        """Defensive: a forged payload whose summary.updates_available > 0 but
+        whose only update is held must NOT emit an Updates header with zero
+        rows (the section is gated on the built row list, not the counter)."""
+        payload = _payload(
+            [
+                {"name": "MetalLB", "current_version": "0.15.3",
+                 "latest_version": "0.16.0", "update_available": True,
+                 "held": True, "notes": "held"},
+            ],
+            # Hand-forge a divergent counter the real producer could never emit.
+            summary_overrides={"updates_available": 1},
+        )
+        _, _, posted = _run_main(payload, env=self.MR_ENV, returncode=1)
+        # No actionable (non-held) update and no error -> nothing to post.
+        self.assertEqual(posted, [], "must not post an empty Updates table")
+
     def test_parse_failure_posts_failure_section_in_mr(self):
         """In an MR pipeline, an unparseable output posts a 'failed' section
         (no structured services to itemize)."""
@@ -310,6 +350,25 @@ class TestPostMrComment(unittest.TestCase):
         # The note is posted to the MR notes endpoint with the token header.
         self.assertIn("/merge_requests/42/notes", req.full_url)
         self.assertEqual(req.headers.get("Private-token"), "tok")
+
+
+class TestServicesGuard(unittest.TestCase):
+    """_services() normalizes the external `services` payload so a malformed
+    shape (null, non-list, or non-dict entries) can't crash the iterations that
+    build the log output and MR comment, bypassing the stub-artifact contract."""
+
+    def test_absent_or_null_services_returns_empty(self):
+        self.assertEqual(version_check_ci._services({}), [])
+        self.assertEqual(version_check_ci._services({"services": None}), [])
+
+    def test_non_list_services_returns_empty(self):
+        self.assertEqual(version_check_ci._services({"services": {"a": 1}}), [])
+
+    def test_filters_non_dict_entries(self):
+        data = {"services": [{"name": "a"}, "x", 3, None, {"name": "b"}]}
+        self.assertEqual(
+            version_check_ci._services(data), [{"name": "a"}, {"name": "b"}]
+        )
 
 
 if __name__ == "__main__":

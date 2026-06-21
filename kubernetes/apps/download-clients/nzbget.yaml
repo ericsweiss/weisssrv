@@ -239,7 +239,6 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
-              cpu: 500m
               memory: 512Mi
           volumeMounts:
             - name: tun
@@ -282,7 +281,6 @@ spec:
               cpu: 100m
               memory: 512Mi
             limits:
-              cpu: 2000m
               memory: 4Gi
           volumeMounts:
             - name: config

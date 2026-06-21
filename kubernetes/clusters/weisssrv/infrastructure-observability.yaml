@@ -8,9 +8,12 @@
 #   3. A failed observability deploy does NOT block the core infrastructure
 #      chain (cert-manager, traefik, MetalLB) but DOES block all apps
 #      (apps.yaml dependsOn infrastructure-observability).
-#   4. Controller HelmReleases enable serviceMonitor.enabled — these charts
-#      use .Capabilities checks and silently skip ServiceMonitor creation
-#      when the CRD is absent during bootstrap.
+#   4. Controller HelmReleases enable serviceMonitor.enabled. cert-manager guards
+#      this with a .Capabilities check (silently skips if the CRD is absent), but
+#      Traefik does NOT — it always emits the ServiceMonitor. So on a FRESH
+#      bootstrap the monitoring.coreos.com CRDs (ServiceMonitor/PodMonitor/
+#      PrometheusRule) must exist before the controllers stage; see docs/29
+#      "Fresh bootstrap / disaster recovery" for the one-time CRD pre-apply.
 #
 # optional: false — same rationale as other stages: the ConfigMap is guaranteed
 # to exist at this point. A missing ConfigMap here means a real bug.

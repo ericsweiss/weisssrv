@@ -103,13 +103,17 @@ echo "Checking for existing user 'eric'..."
 if ! command -v sudo &>/dev/null; then
     echo "Installing sudo package..."
 
-    # Track which repos we disable so we only re-enable those (not pre-existing .disabled files)
-    DISABLED_BY_US=""
+    # Track which repos we disable so we only re-enable those (not pre-existing
+    # .disabled files). Use an array so paths are iterated element-by-element
+    # rather than re-split on whitespace.
+    DISABLED_BY_US=()
 
     # Cleanup function to restore disabled repos on exit (success or failure)
     # This ensures the host is never left with repos disabled if something fails
     restore_repos() {
-        for disabled_file in \$DISABLED_BY_US; do
+        # DISABLED_BY_US is always declared above, so "\${arr[@]}" expands to
+        # nothing when empty under set -u (bash >= 4.4; PVE hosts run bash 5.x).
+        for disabled_file in "\${DISABLED_BY_US[@]}"; do
             if [ -f "\$disabled_file" ]; then
                 original_name="\${disabled_file%.disabled}"
                 mv "\$disabled_file" "\$original_name" 2>/dev/null || true
@@ -122,20 +126,35 @@ if ! command -v sudo &>/dev/null; then
 
     # Disable enterprise repos temporarily (they require subscription)
     # Handle both legacy .list format and modern .sources format (Proxmox 9+ / Debian Trixie)
+    #
+    # Move a repo file to .disabled, but REFUSE to clobber a pre-existing
+    # .disabled (a repo someone disabled before us) — overwriting it would
+    # corrupt its content and make restore_repos later restore the wrong file.
+    # Only record what we actually moved so restore_repos re-enables exactly ours.
+    disable_repo_file() {
+        local repo_file="\$1"
+        local disabled_file="\$repo_file.disabled"
+        if [ -e "\$disabled_file" ]; then
+            echo "ERROR: refusing to overwrite existing \$disabled_file while disabling \$repo_file" >&2
+            exit 1
+        fi
+        if mv "\$repo_file" "\$disabled_file" 2>/dev/null; then
+            DISABLED_BY_US+=("\$disabled_file")
+        fi
+    }
+
     for repo_file in /etc/apt/sources.list.d/pve-enterprise.list \\
                      /etc/apt/sources.list.d/ceph.list \\
                      /etc/apt/sources.list.d/pve-no-subscription.list; do
         if [ -f "\$repo_file" ]; then
-            mv "\$repo_file" "\$repo_file.disabled" 2>/dev/null || true
-            DISABLED_BY_US="\$DISABLED_BY_US \$repo_file.disabled"
+            disable_repo_file "\$repo_file"
         fi
     done
 
     # Also check for any .sources files (new Debian format)
     for sources_file in /etc/apt/sources.list.d/*.sources; do
         if [ -f "\$sources_file" ] && grep -q "enterprise.proxmox.com" "\$sources_file" 2>/dev/null; then
-            mv "\$sources_file" "\$sources_file.disabled" 2>/dev/null || true
-            DISABLED_BY_US="\$DISABLED_BY_US \$sources_file.disabled"
+            disable_repo_file "\$sources_file"
         fi
     done
 

@@ -34,7 +34,7 @@ ssh_pubkey_authentication: true
 - Root login disabled via SSH (with exception below)
 - User `eric` has passwordless sudo
 - SSH keys stored in 1Password and deployed via Ansible
-- Restricted by source IP (from="192.168.0.0/24,100.64.0.0/10")
+- Restricted by source IP (`from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16"` — LAN, Tailscale, and the k3s pod CIDR; see `group_vars/all.yml` for the authoritative ranges and why the pod CIDR is required for in-cluster CI deploy jobs)
 
 **Proxmox Host Exception**: Root SSH with key authentication is enabled on Proxmox cluster hosts (`ssh_permit_root_login: "prohibit-password"` in `group_vars/proxmox.yml`). This is required for:
 - **Live VM/CT migrations** between cluster nodes
