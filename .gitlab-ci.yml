@@ -1673,12 +1673,23 @@ deploy-ansible-certs:
       optional: true
     - job: deploy-ansible-mail
       optional: true
-  variables:
-    DNS01_SSH_PRIVATE_KEY: "op://Homelab/DNS-01 SSH Key/private key"
-    DNS01_SSH_PUBLIC_KEY: "op://Homelab/DNS-01 SSH Key/public key"
   script:
     - cd ansible
-    # Certificate roles are deployed via site.yml with host targeting
+    # `op run` does NOT inject an SSH-KEY item's private/public key fields into
+    # the environment for a service-account token (it resolves them to empty),
+    # so acme_certs saw DNS01_SSH_* unset. `op read` DOES resolve them — the same
+    # call .deploy-base uses to fetch the SSH connection key — so read them
+    # explicitly here, then run ansible. (Not in `variables:` as op:// refs,
+    # because that path goes through op run's broken SSH-key injection.)
+    - |
+      DNS01_SSH_PRIVATE_KEY="$(op read 'op://Homelab/DNS-01 SSH Key/private key')"
+      DNS01_SSH_PUBLIC_KEY="$(op read 'op://Homelab/DNS-01 SSH Key/public key')"
+      if [ -z "$DNS01_SSH_PRIVATE_KEY" ] || [ -z "$DNS01_SSH_PUBLIC_KEY" ]; then
+        echo "ERROR: op read returned empty DNS-01 SSH Key material (check the service account's vault access to 'DNS-01 SSH Key')." >&2
+        exit 1
+      fi
+      export DNS01_SSH_PRIVATE_KEY DNS01_SSH_PUBLIC_KEY
+    # Certificate roles via site.yml; op run resolves the remaining op:// vars.
     - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit dns --tags acme_certs
   environment:
     name: production/ansible-certs
