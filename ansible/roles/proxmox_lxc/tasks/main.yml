@@ -47,6 +47,41 @@
   failed_when: container_exists.rc not in [0, 1]
   check_mode: false
 
+# An existing container may have HA-migrated off the inventory proxmox_host, so
+# reconcile tasks (pct config/set/exec against a live container) must run on its
+# ACTUAL node. Look it up cluster-wide; a not-yet-created container falls back to
+# proxmox_host, where the create path below places it.
+- name: Look up the existing container's current node
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command:
+    cmd: pvesh get /cluster/resources --type vm --output-format json
+  register: lxc_cluster_resources
+  changed_when: false
+  check_mode: false
+  when: container_exists.rc == 0
+
+- name: Resolve the node to delegate container reconcile tasks to
+  ansible.builtin.set_fact:
+    # For an existing container, resolve its CURRENT node with NO proxmox_host
+    # fallback: silently defaulting to proxmox_host could reconcile against the
+    # wrong node if the lookup ever returned nothing. The assert below fails loud
+    # instead. A not-yet-created container uses proxmox_host (create path).
+    lxc_reconcile_host: >-
+      {{ (lxc_cluster_resources.stdout | from_json
+          | selectattr('vmid', 'equalto', container_id | int)
+          | map(attribute='node') | first | default(''))
+         if container_exists.rc == 0 else proxmox_host }}
+
+- name: Fail loud if an existing container's current node could not be resolved
+  ansible.builtin.assert:
+    that:
+      - lxc_reconcile_host | length > 0
+    fail_msg: >-
+      Could not resolve the current node for existing container {{ container_id }}
+      from /cluster/resources; refusing to fall back to the inventory proxmox_host
+      ({{ proxmox_host }}), which may not hold the container.
+  when: container_exists.rc == 0
+
 # Verify storage pool exists on target host before proceeding
 # Only check when creating a new container - existing containers may be on different storage during migrations
 - name: Get available storage pools on target host
@@ -242,7 +277,7 @@
 # Per-guest .fw rules are only enforced when the NIC carries firewall=1;
 # reconcile containers created before the flag was added to pct create.
 - name: Ensure LXC NIC has the guest firewall flag
-  delegate_to: "{{ proxmox_host }}"
+  delegate_to: "{{ lxc_reconcile_host }}"
   ansible.builtin.shell: |
     set -euo pipefail
     current=$(pct config {{ container_id }} | sed -n 's/^net0: //p')
@@ -267,7 +302,7 @@
 # compare would see false drift and re-`pct set` every run. (idmap, bind mounts,
 # and GPU passthrough below stay create-time only — see the NOTE there.)
 - name: Reconcile LXC autostart and boot order on existing container
-  delegate_to: "{{ proxmox_host }}"
+  delegate_to: "{{ lxc_reconcile_host }}"
   ansible.builtin.shell: |
     set -euo pipefail
     want_onboot="{{ proxmox_autostart_enabled | default(lxc_onboot) | ternary(1, 0) }}"
@@ -554,7 +589,7 @@
 # the command line, and it is decoded back to the original key bytes inside the
 # container. `pct exec` does not forward host env vars, so the value is embedded.
 - name: Reconcile SSH authorized keys for eric user
-  delegate_to: "{{ proxmox_host }}"
+  delegate_to: "{{ lxc_reconcile_host }}"
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail

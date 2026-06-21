@@ -53,7 +53,9 @@
           #!/bin/bash
           if [[ "$1 $2" == "get /cluster/resources" ]]; then
             if grep -q "^exists$" /tmp/molecule-stub-state/ct_exists_state 2>/dev/null; then
-              echo '[{"vmid": 199, "type": "lxc"}]'
+              # node = this molecule host so the role's reconcile tasks delegate
+              # back here (where pct is stubbed), exercising the HA-aware lookup.
+              echo '[{"vmid": 199, "type": "lxc", "node": "{{ inventory_hostname }}"}]'
             else
               echo '[]'
             fi

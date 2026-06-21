@@ -128,6 +128,21 @@
       vars:
         lxc_storage: local-ssd
 
+    # HA-aware reconcile: the existence check returns the container's CURRENT
+    # node (the stub places it on this molecule host), so reconcile tasks must
+    # delegate there rather than the inventory proxmox_host. A regression that
+    # assumed proxmox_host would break deploys for any HA-migrated container.
+    - name: Assert reconcile host resolved to the container's actual node
+      ansible.builtin.assert:
+        that:
+          - lxc_reconcile_host == inventory_hostname
+        fail_msg: >-
+          lxc_reconcile_host resolved to
+          '{{ lxc_reconcile_host | default("<undefined>") }}' but the container
+          is on '{{ inventory_hostname }}' — the existence check must capture the
+          actual node so reconcile tasks delegate there.
+        success_msg: "reconcile host = container's actual node ({{ inventory_hostname }})"
+
     - name: Count pct create lines
       ansible.builtin.shell: grep -c '^pct create' /tmp/molecule-stub-state/pct.log || true
       register: pct_create_lines
