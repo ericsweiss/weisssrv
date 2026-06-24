@@ -15,14 +15,14 @@ data:
   flux_version: 2.8.8
   gitlab_agent_helm_version: 2.28.0
   gitlab_runner_helm_version: 0.90.0
-  gitlab_version: 19.1.0-ee.0
+  gitlab_version: 19.1.1-ee.0
   gluetun_version: v3.41.1
   helm_chart_versions_alloy: 1.10.0
   helm_chart_versions_cert_manager: v1.20.2
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.6.0
-  helm_chart_versions_kube_prometheus_stack: 86.3.2
-  helm_chart_versions_loki: 17.4.9
+  helm_chart_versions_kube_prometheus_stack: 87.1.0
+  helm_chart_versions_loki: 18.1.0
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.13.0
@@ -47,7 +47,7 @@ data:
   salt_rim_version: 4.15.0
   sonarr_version: 4.0.17.2952
   tailscale_version: 1.98.4
-  unbound_exporter_version: 0.4.6
+  unbound_exporter_version: 0.6.0
   zfs_exporter_version: 2.3.12
 kind: ConfigMap
 metadata:

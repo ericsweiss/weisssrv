@@ -111,6 +111,7 @@ INTENTIONALLY_UNMAPPED_ROLES=(
 #   bootstrap/storage-bootstrap.yml — One-shot ZFS pool bootstrap on
 #                                  pve-nas-01. Pool creation is too
 #                                  destructive to automate via CI.
+#   maintenance/_ensure-nfs-server-healthy.yml,
 #   maintenance/_reboot-if-needed.yml,
 #   maintenance/update-applications.yml,
 #   maintenance/update-full.yml,
@@ -131,6 +132,7 @@ INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
     postflight.yml
     show-cert-host-keys.yml
     bootstrap/storage-bootstrap.yml
+    maintenance/_ensure-nfs-server-healthy.yml
     maintenance/_reboot-if-needed.yml
     maintenance/update-applications.yml
     maintenance/update-full.yml

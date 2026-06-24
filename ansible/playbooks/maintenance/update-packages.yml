@@ -48,6 +48,9 @@
         state: started
       when: reboot_required | bool
 
+    - name: Ensure the NFS server is healthy after the upgrade (recover nfsd stop-hang)
+      ansible.builtin.include_tasks: _ensure-nfs-server-healthy.yml
+
 - name: Update OS packages on k3s nodes (rolling with drain)
   hosts: k3s
   become: true

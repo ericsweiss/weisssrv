@@ -40,6 +40,15 @@ zfs_encryption_connect_token: ""
 # encrypted, or that are intentionally plaintext (compute).
 zfs_encryption_pools: []
 
+# Proxmox guests (on THIS host) whose disks live on an encrypted pool and
+# must start only AFTER zfs-mount-encrypted.service has unlocked + mounted
+# it. Consumed by pve-start-encrypted-guests.service. Empty on hosts with no
+# such guests (the start unit is then a no-op and is not enabled). VM 222
+# (etcd) is deliberately OMITTED — it has no encrypted disk and must start
+# early on its normal onboot path so cluster quorum never waits on this NAS.
+zfs_encryption_guest_vmids: []
+zfs_encryption_guest_ctids: []
+
 # How long the boot-time fetch retries before giving up. The unit will
 # also be retried by systemd on Restart=on-failure, so total wait can
 # exceed this; this controls how long ONE invocation tries before

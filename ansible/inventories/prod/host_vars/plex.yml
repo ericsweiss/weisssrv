@@ -20,7 +20,13 @@ lxc_nesting: true
 
 # Container startup configuration
 # Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50)
-proxmox_autostart_enabled: true
+#
+# onboot=0: mp0 /config binds /mnt/ssd/appdata/plex on the ENCRYPTED ssd pool,
+# so pct start fails until ssd unlocks. This CT is started by
+# pve-start-encrypted-guests.service AFTER zfs-mount-encrypted.service unlocks
+# ssd — NOT by pve-guests at boot. See the zfs_encryption role and
+# docs/32-zfs-encryption.md.
+proxmox_autostart_enabled: false
 proxmox_startup_order: 50
 proxmox_startup_delay: 10
 

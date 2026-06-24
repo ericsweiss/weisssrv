@@ -30,6 +30,32 @@ zfs_encryption_pools:
     item: "ZFS Pool ssd Passphrase"
     field: passphrase
 
+# Proxmox guests on this host whose disks live on the encrypted ssd pool.
+# pve-start-encrypted-guests.service starts these AFTER zfs-mount-encrypted
+# unlocks+mounts ssd (they're onboot=0 in hosts.yml/plex.yml). VM 222
+# (srv-nas-01, etcd) is deliberately ABSENT — it has no encrypted disk and
+# starts early on its normal onboot path so cluster quorum never waits on
+# this NAS's unlock.
+#   202 = k3s-agt-nas-01 (4 data zvols scsi1-4 on ssd: authentik/mealie pg,
+#         prometheus, loki)
+#   153 = gitlab (scsi0 + repos zvol on ssd)
+#   152 = plex LXC (mp0 /config on ssd)
+# Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
+# gitlab app (153, order 50); pve-start-encrypted-guests.sh starts VMs in this
+# list order, then CTs.
+zfs_encryption_guest_vmids: [202, 153]
+zfs_encryption_guest_ctids: [152]
+
+# NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
+# /export/* fstab binds (and the nfs-server drop-in) on the late
+# zfs-mount-encrypted.service rather than the early zfs-mount.service, so the
+# binds capture the real (unlocked) datasets, never an empty mountpoint. Both
+# current ZFS-backed exports are encrypted; /mnt/media (mergerfs, plaintext)
+# is not ZFS-backed and keeps a plain bind.
+nas_encrypted_bind_sources:
+  - /mnt/ssd/appdata
+  - /mnt/tank/share
+
 # ZFS pool configuration
 zfs_pools:
   - name: tank

@@ -13,8 +13,9 @@
     prometheus_exporter_version: "{{ unbound_exporter_version }}"
     prometheus_exporter_artifact_type: deb
     prometheus_exporter_download_url: "{{ _ue_base }}/v{{ unbound_exporter_version }}/{{ _ue_file }}"
-    # No checksum published for the .deb upstream; empty => get_url skips it.
-    prometheus_exporter_checksum: ""
+    # Upstream publishes no checksum file, so we pin our own sha256 of the
+    # release .deb (unbound_exporter_checksum in all.yml) and get_url verifies it.
+    prometheus_exporter_checksum: "{{ unbound_exporter_checksum }}"
     prometheus_exporter_binary_path: /usr/bin/unbound_exporter
     # The unbound_exporter binary has no --version flag (its --help exits
     # rc=1 with no version string), so query dpkg instead — the role

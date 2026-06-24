@@ -115,28 +115,35 @@ reference, and NFS export path — are unchanged by encryption.
 
 ## Architecture
 
+Key-load is OFF the early-boot critical path (reworked 2026-06). The box
+always boots to ssh/Tailscale on plaintext alone; encrypted data, nfsd's
+encrypted exports, and encrypted-storage guests converge LATE and async.
+
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ pve-nas-01    (boot)                                              │
-│   systemd: zfs-import.target                                      │
+│ pve-nas-01 (boot)                                                 │
+│   zfs-import.target ─> zfs-mount.service (EARLY): `zfs mount -a`  │
+│       mounts PLAINTEXT datasets, SKIPS still-locked ones, exit 0  │
+│       ─> local-fs.target ─> multi-user.target  ✓ ssh + Tailscale  │
+│          UP (sshd/tailscaled on unencrypted root — never gated)   │
+│                                                                    │
+│   network-online.target                                            │
 │      |                                                            │
 │      v                                                            │
-│   zfs-load-key@tank.service ─┐  Each unit runs:                   │
-│   zfs-load-key@ssd.service   ├─ zfs-load-key.sh <pool>            │
-│                              │     - read /etc/onepassword-connect/token │
-│                              │     - HTTPS GET connect.esweiss.com/v1/...│
-│                              │     - parse passphrase from response      │
-│                              │     - load it into each encryption root   │
-│                              │       under <pool> (mount via zfs-mount)   │
+│   zfs-load-key@{tank,ssd}.service  (After=network-online; retries)│
+│      - read /etc/onepassword-connect/token                        │
+│      - HTTPS GET connect.esweiss.com/v1/... ; parse passphrase    │
+│      - zfs load-key into each encryption root  (NO mount here)    │
 │      |                                                            │
 │      v                                                            │
-│   zfs-mount.service                                               │
-│      |                                                            │
-│      v                                                            │
-│   zfs.target (pools available)                                    │
-│      |                                                            │
-│      v                                                            │
-│   pve.service / qemu / lxc / k3s VMs ...                          │
+│   zfs-mount-encrypted.service  (LATE anchor; WantedBy=multi-user, │
+│      retries forever until all keystatus=available, then          │
+│      `zfs mount -a`)  ── never Before any boot target             │
+│      |                         |                                  │
+│      v                         v                                  │
+│   nfs-server (drop-in:    pve-start-encrypted-guests.service:     │
+│   After=+RequiresMountsFor   qm/pct start 153,202,152 (gated)     │
+│   encrypted exports)         (VM 222/etcd is NOT gated — early)   │
 └──────────────────────────────────────────────────────────────────┘
                                         │ HTTPS, TLS 1.3, lan-only
                                         v
@@ -373,9 +380,14 @@ The chain is:
    indefinitely rather than reaching a clean `failed` state. See
    the "Cold-cluster recovery" section below for the operator
    path if Connect itself never comes up.)
-5. Pools unlock → `zfs-mount.service` succeeds → Proxmox / k3s
-   workloads on pve-nas-01 (gitlab, k3s-srv-nas-01, k3s-agt-nas-01,
-   plex LXC) come up.
+5. Keys load → `zfs-mount-encrypted.service` (the late anchor) mounts the
+   encrypted datasets on its next retry → nfsd (drop-in, ordered after it)
+   serves the real datasets, and `pve-start-encrypted-guests.service` starts
+   the encrypted-storage guests (gitlab 153, k3s-agt-nas-01 202, plex 152).
+   `k3s-srv-nas-01` (VM 222, etcd) is NOT gated — it has no encrypted disk
+   and starts early on its normal onboot path, so cluster quorum never waits
+   on this NAS's unlock. **Boot itself never waits on any of this** — the box
+   reached multi-user (ssh + Tailscale) back at step 4's plaintext mount.
 
 Recovery is only needed if Connect itself can't come up — e.g. all
 three k3s server VMs are offline, or external-secrets namespace is
@@ -397,8 +409,10 @@ for pool in tank ssd; do
     printf '%s\n' "$POOL_PASS" | sudo zfs load-key "$root"
   done
 done
-sudo zfs mount -a
 ```
+
+(No `zfs mount -a` needed — `zfs-mount-encrypted.service` mounts on its next
+30s retry once the keys are present.)
 
 Or scripted from a workstation with `op signin` active (the passphrase is piped
 over stdin, so it never lands in a remote process's argv):
@@ -410,33 +424,35 @@ for pool in tank ssd; do
   op read "op://Homelab/ZFS Pool ${pool} Passphrase/passphrase" \
     | ssh pve-nas-01 "pass=\$(cat); for root in \$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot ${pool} | awk -F'\t' '\$1==\$2{print \$1}'); do printf '%s\n' \"\$pass\" | sudo zfs load-key \"\$root\"; done"
 done
-ssh pve-nas-01 "sudo zfs mount -a"
 ```
 
-(Once Connect is back up, the per-pool systemd units will resume
-auto-unlock on subsequent reboots — no further operator action needed.)
-
-### Clearing residual failed state after manual unlock
-
-`zfs-load-key@<pool>.service` is `RequiredBy=zfs-mount.service`, so a
-sequence of failed key-load attempts before manual recovery also
-leaves `zfs-mount.service` in `failed`. (The unit retries
-indefinitely under `Restart=on-failure` rather than tripping
-`StartLimitBurst`, but each individual transition through `failed`
-is recorded.) After the manual unlock above, the unit's
-`RemainAfterExit=yes` means it stays in `active`, but the prior
-failed state must be cleared explicitly so a later
-`systemctl daemon-reload` or service restart doesn't re-trip on the
-residual:
+After the keys load, the late retrying units converge on their own —
+`zfs-mount-encrypted.service` mounts the datasets, then nfsd and
+`pve-start-encrypted-guests.service` follow. To avoid waiting for the 30s
+retry cadence, nudge them once:
 
 ```bash
-ssh <host>
-sudo systemctl reset-failed "zfs-load-key@<pool>.service" zfs-mount.service
-sudo systemctl start zfs-mount.service       # idempotent if already mounted
-sudo systemctl status "zfs-load-key@<pool>.service"  # active (exited) expected
+ssh pve-nas-01 "sudo systemctl start zfs-mount-encrypted.service pve-start-encrypted-guests.service"
 ```
 
-Repeat for each pool you unlocked manually on that host.
+(Once Connect is back up, the units resume auto-unlock on subsequent reboots —
+no operator action needed.)
+
+### No residual failed state to clear
+
+Unlike the old `RequiredBy=zfs-mount.service` design, a locked boot no longer
+puts `zfs-mount.service` into `failed` (the early mount just skips the locked
+datasets and exits 0). After a manual `zfs load-key`, nothing needs a
+`reset-failed`: the next `zfs-mount-encrypted.service` retry sees
+`keystatus=available` and mounts. If you want to confirm convergence:
+
+```bash
+ssh pve-nas-01
+systemctl is-active zfs-mount-encrypted.service     # active once mounted
+zfs get -H -o value mounted ssd/appdata tank/share  # yes
+ss -ltn 'sport = :2049'                              # nfsd listening
+qm status 153; qm status 202; pct status 152         # running
+```
 
 ## Threat model recap
 

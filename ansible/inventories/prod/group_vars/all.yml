@@ -195,7 +195,7 @@ plex_version: "1.43.2.10687-563d026ea"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "19.1.0-ee.0"  # CVE-2026-5816 patch (Web IDE single-origin fallback)
+gitlab_version: "19.1.1-ee.0"  # 19.1.x line (incl. CVE-2026-5816 Web IDE single-origin fix); 19.1.1 = latest patch. Applied via apt on the gitlab VM by maintenance-run-all (omnibus reconfigure).
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
@@ -223,8 +223,12 @@ zfs_exporter_version: "2.3.12"
 # root with /dev/zfs access) fails the download. Update on every version bump.
 zfs_exporter_checksum: "sha256:7f2c953967bfcbd5ddd4931fb9d74122c45fa36df72be78d1025ab2371514a2d"
 adguard_exporter_version: "v1.2.1"
-# v0.4.6 is the latest version with binary releases (v0.5.0 is source-only)
-unbound_exporter_version: "0.4.6"
+# 0.6.0 publishes an x86_64 .deb again (0.5.0 was source-only); the role
+# installs via .deb (prometheus_exporter_artifact_type: deb). Upstream ships no
+# checksum file, so we pin our own sha256 of the release asset for supply-chain
+# integrity. On bump: shasum -a 256 the downloaded .deb and update both lines.
+unbound_exporter_version: "0.6.0"
+unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
 redis_exporter_version: "v1.86.0"
 
 # Helm chart versions for k3s platform workloads
@@ -251,8 +255,8 @@ helm_chart_versions:
   cert_manager: "v1.20.2"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "86.3.2"
-  loki: "17.4.9"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0)
+  kube_prometheus_stack: "87.1.0"  # 87.0.0 = prometheus-operator v0.92.0 (additive CRD fields; crds: CreateReplace)
+  loki: "18.1.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.13.0"
   onepassword_connect: "2.4.1"

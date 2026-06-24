@@ -5,14 +5,17 @@
 #
 # Fetches a ZFS pool encryption passphrase from 1Password Connect and
 # loads it into the kernel via `zfs load-key`. Invoked by
-# zfs-load-key@<pool>.service before zfs-mount.service so encrypted
-# datasets are unlocked at boot.
+# zfs-load-key@<pool>.service after network-online.target. Mounting is NOT
+# done here — the late, retrying zfs-mount-encrypted.service runs `zfs mount
+# -a` once every encryption root reports keystatus=available.
 #
 # Cold-cluster recovery: if Connect is unreachable for the entire
 # fetch_timeout window, the script exits non-zero and the systemd unit
-# fails. Operator path:
+# fails (retrying on its schedule). Operator path:
 #     sudo zfs load-key <pool>     # paste passphrase from 1P mobile app
-#     sudo zfs mount -a
+# After the key loads, zfs-mount-encrypted.service mounts the datasets on
+# its next retry and the dependent nfsd + guest-start units converge — no
+# manual `zfs mount -a` / service restarts needed.
 #
 # Authorization: bearer token at /etc/onepassword-connect/token (mode
 # 0400, root). The token is passed to curl via stdin (`-H @-`), never
@@ -239,11 +242,11 @@ fi
 # passphrase is the only correct form; a plaintext pool root simply isn't
 # in the list.
 #
-# Mounting is handled by zfs-mount.service, which this unit is
-# `Before=` / `RequiredBy=`. We deliberately do not `zfs mount -a` here
-# (redundant with the ordered service, races sibling keys across the
-# per-pool instances, and wouldn't propagate outside this unit's
-# ProtectSystem=strict namespace anyway).
+# Mounting is handled by the late zfs-mount-encrypted.service (this unit is
+# WantedBy= it), which runs `zfs mount -a` once all encryption roots are
+# unlocked. We deliberately do not `zfs mount -a` here (it would race
+# sibling keys across the per-pool instances, and wouldn't propagate
+# outside this unit's ProtectSystem=strict namespace anyway).
 # Capture `zfs get`'s own exit status instead of piping straight into awk and
 # inferring from the (empty) output. With `set -o pipefail` a `zfs get` failure
 # does propagate — the pipeline returns its non-zero status and `set -e` aborts

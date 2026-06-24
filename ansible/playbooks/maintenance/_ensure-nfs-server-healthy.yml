@@ -1,0 +1,86 @@
+---
+# Recover the NFS server (nfsd) if a package upgrade left it down.
+#
+# `apt upgrade` of nfs-kernel-server (or a dependency) restarts nfs-server, and
+# nfsd's *stop* can HANG, leaving the unit inactive/failed with port 2049 dead.
+# nfsd is the backing store for every NFS-over-TLS client in the cluster
+# (downloads, recipes, grafana, ...), so a maintenance run that silently leaves
+# it down wedges those pods in ContainerCreating with "Connection timed out" —
+# observed 2026-06-21 after maintenance-run-all bounced nfsd on pve-nas-01.
+#
+# Health is measured by the TCP listener on port 2049, NOT by the systemd unit
+# state. nfs-server.service is Type=oneshot (RemainAfterExit=yes): when healthy
+# it sits in "active (exited)", whose SubState is `exited`. ansible's
+# service_facts keys its `state` off that SubState column, so it reports
+# state: "stopped" for a perfectly healthy nfsd — asserting state == "running"
+# would fail on every run, and triggering recovery on state != "running" would
+# restart nfsd needlessly every time (re-risking the very stop-hang we guard
+# against). Probing 2049 sidesteps that entirely and is also the real signal:
+# it's exactly what an NFS client needs to connect.
+#
+# This gate detects the NAS (the only host that runs nfs-server) by the unit
+# being present AND enabled, recovers nfsd with reset-failed + a bounded START
+# (not restart — restart re-enters the stop path that hangs) + re-export, and
+# fails loud if 2049 still isn't serving. It is a no-op on every host that does
+# not run an enabled nfs-server. Include it AFTER the safe upgrade + reboot
+# check so it also catches a post-reboot stop-hang.
+
+- name: Gather service facts (to detect whether this host runs nfs-server)
+  ansible.builtin.service_facts:
+
+- name: Ensure the NFS server is serving after the package upgrade
+  # Gate on the nfsd unit being ENABLED (not merely present, and NOT `static` —
+  # static means "no [Install]", i.e. not something the operator enabled, so we
+  # must not start it on a host where NFS serving was intentionally left off).
+  # Accept either the canonical `nfs-server.service` (what service_facts reports
+  # on this NAS) or its `nfs-kernel-server.service` alias, for portability.
+  # We deliberately do NOT gate on `.state` — see the oneshot note above.
+  when:
+    - >-
+      ('nfs-server.service' in ansible_facts.services
+       and ansible_facts.services['nfs-server.service'].status == 'enabled')
+      or ('nfs-kernel-server.service' in ansible_facts.services
+          and ansible_facts.services['nfs-kernel-server.service'].status == 'enabled')
+  block:
+    - name: Probe nfsd, recovering it if TCP 2049 is not serving
+      block:
+        - name: Wait briefly for the NFS TCP listener (127.0.0.1:2049)
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: 2049
+            state: started
+            timeout: 5
+          changed_when: false
+
+      rescue:
+        # We land here only when the probe above actually timed out — nfsd is
+        # not serving on 2049, the upgrade stop-hang signature.
+        - name: Reset failed state (a hung nfsd stop leaves the unit failed)
+          ansible.builtin.command: systemctl reset-failed nfs-server nfs-mountd
+          changed_when: true
+          failed_when: false
+
+        - name: Start nfs-server (started, not restarted, to avoid the stop-hang)
+          ansible.builtin.systemd:
+            name: nfs-server.service
+            state: started
+          # Bound the start so a wedged nfsd makes maintenance fail loudly
+          # instead of hanging this task indefinitely.
+          async: 90
+          poll: 5
+
+        - name: Re-export all filesystems
+          ansible.builtin.command: exportfs -ra
+          changed_when: true
+
+    - name: Fail loud if nfsd is still not serving on TCP 2049 after recovery
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 2049
+        state: started
+        timeout: 20
+      changed_when: false
+      # On timeout this fails the play with a clear "Timeout waiting for
+      # 127.0.0.1:2049" — every NFS-over-TLS client (downloads, recipes,
+      # grafana, ...) would fail to mount. Investigate:
+      #   systemctl status nfs-server ; journalctl -u nfs-server ; exportfs -v

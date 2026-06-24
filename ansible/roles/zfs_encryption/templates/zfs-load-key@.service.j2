@@ -5,21 +5,35 @@
 # 1Password item title is looked up from
 # /etc/zfs/encryption/pools/<pool>.conf.
 #
-# Ordering:
-#   DefaultDependencies=no   : REQUIRED. This unit is Before=zfs-mount,
-#                              which is before local-fs.target/basic.target;
-#                              default service deps add After=basic.target
-#                              and would close an ordering cycle. For the
-#                              same reason there is deliberately NO
-#                              After=network-online.target — network
-#                              readiness is handled by the script's own
-#                              retry loop (Connect lives in k8s and comes
-#                              up much later than this unit anyway).
+# Ordering (reworked 2026-06 — key-load is now OFF the early-boot critical
+# path; full narrative in docs/32-zfs-encryption.md "Boot sequence"):
+#   DefaultDependencies=no   : kept, but now harmless — the unit is no longer
+#                              Before=zfs-mount/local-fs, so it just means
+#                              systemd adds no implicit After=basic.target; the
+#                              explicit After= lines below cover all this needs.
 #   After=zfs-import.target  : pool must be imported first
-#   Before=zfs-mount.service : encrypted datasets need a key before mount
-#   RequiredBy=zfs-mount.service : if key load fails, mount fails too
-#                                  (otherwise services start against an
-#                                  empty mountpoint, which is worse)
+#   After=network-online.target (+ Wants=) : Connect (connect.esweiss.com) lives
+#                              in k8s and is only reachable once the network is
+#                              up. This edge is now LEGAL because the unit no
+#                              longer sits Before=zfs-mount (which is
+#                              Before=local-fs, itself After=network-online — the
+#                              old combination closed an ordering cycle). The
+#                              script still retries internally for the
+#                              cold-cluster case where Connect comes up later.
+#   NO Before=zfs-mount.service / NO RequiredBy=zfs-mount.service :
+#                              deleting these two edges is what dissolves the
+#                              cycle and takes a slow/failing unlock OUT of the
+#                              boot-blocking path. Stock zfs-mount.service still
+#                              runs early; `zfs mount -a` simply SKIPS the
+#                              still-locked datasets (mounts plaintext only) and
+#                              returns — boot reaches multi-user (ssh + Tailscale)
+#                              with zero dependency on this unlock.
+#   WantedBy=zfs-mount-encrypted.service :
+#                              encrypted datasets are mounted by the late,
+#                              retrying zfs-mount-encrypted.service AFTER keys
+#                              load. A failed pool unlock is contained to itself
+#                              (Wants, not Requires): it never fails the anchor
+#                              for the other pool, nor any boot target.
 #
 # Restart policy: the script itself loops internally for fetch_timeout
 # (default 120s) per Connect call with jitter — and with the C1 vault
@@ -41,8 +55,9 @@
 Description=Load ZFS encryption key for %i from 1Password Connect
 DefaultDependencies=no
 Conflicts=shutdown.target
-After=zfs-import.target
-Before=zfs-mount.service zfs-share.service zfs.target shutdown.target
+Wants=network-online.target
+After=zfs-import.target network-online.target
+Before=shutdown.target
 ConditionPathExists=/etc/zfs/encryption/pools/%i.conf
 # StartLimit* belong in [Unit] (not [Service]) since systemd 230 — placing
 # them in [Service] silently drops them. With the values below the unit
@@ -92,17 +107,18 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
 
 [Install]
-# RequiredBy: zfs-mount.service treats this unit's failure as fatal
-# (versus WantedBy where mount continues even if key load fails and
-# encrypted datasets silently miss their mountpoints — leading to
-# downstream services writing to root-fs paths that look empty).
+# WantedBy (not RequiredBy): a failed key-load must NOT fail its consumer.
+# zfs-mount-encrypted.service is the late, retrying unit that mounts the
+# encrypted datasets once keys are loaded; it gates on keystatus itself and
+# retries, so pulling each per-pool key-load in as a Wants (best-effort) is
+# correct — one pool failing to unlock must not block the other pool's mount
+# or any boot target.
 #
 # `systemctl enable` on this unit creates a symlink at
-# /etc/systemd/system/zfs-mount.service.requires/<unit>.service. That
-# directory is operator-managed (under /etc, not /lib), so a
-# zfsutils-linux package upgrade leaves it intact. A drop-in
-# /etc/systemd/system/zfs-mount.service.d/<pool>.conf with
-# `Requires=` would be functionally equivalent but would require the
-# zfs_encryption role to template per-host pool lists; the
-# RequiredBy= form keeps the unit self-contained.
-RequiredBy=zfs-mount.service
+# /etc/systemd/system/zfs-mount-encrypted.service.wants/<unit>.service. That
+# directory is operator-managed (under /etc, not /lib), so a zfsutils-linux
+# package upgrade leaves it intact. NOTE: the role unconditionally sweeps the
+# OLD /etc/systemd/system/zfs-mount.service.requires/zfs-load-key@*.service
+# symlinks left by the previous RequiredBy= form — `systemctl disable` after
+# this [Install] change only removes the NEW link, not the stale fatal one.
+WantedBy=zfs-mount-encrypted.service

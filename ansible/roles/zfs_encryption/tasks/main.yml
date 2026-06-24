@@ -117,6 +117,47 @@
     mode: "0644"
   notify: Reload systemd
 
+# Late, retrying pass that mounts the encrypted datasets once their keys are
+# loaded — the single anchor nfsd + encrypted-storage guests order After=.
+# (See the template header for why this is separate from the early stock
+# zfs-mount.service.)
+- name: Deploy zfs-mount-encrypted mount script
+  ansible.builtin.template:
+    src: zfs-mount-encrypted.sh.j2
+    dest: /usr/local/sbin/zfs-mount-encrypted.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy zfs-mount-encrypted.service systemd unit
+  ansible.builtin.template:
+    src: zfs-mount-encrypted.service.j2
+    dest: /etc/systemd/system/zfs-mount-encrypted.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+# Starts the encrypted-storage guest cohort after the mount anchor is active.
+# Script + unit are deployed on every Proxmox host (no-op when the guest
+# lists are empty); the unit is only ENABLED below where a cohort exists.
+- name: Deploy encrypted-storage guest-start script
+  ansible.builtin.template:
+    src: zfs-start-encrypted-guests.sh.j2
+    dest: /usr/local/sbin/zfs-start-encrypted-guests.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy pve-start-encrypted-guests.service systemd unit
+  ansible.builtin.template:
+    src: pve-start-encrypted-guests.service.j2
+    dest: /etc/systemd/system/pve-start-encrypted-guests.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
 - name: Apply pending systemd reloads
   ansible.builtin.meta: flush_handlers
 
@@ -186,19 +227,74 @@
       (recursive `zfs get encryption` returns only 'off' / '-';
       zfs get rc={{ item.rc | default('unknown') }}). Activating
       zfs-load-key@{{ item.item.name }}.service on a fully plaintext
-      pool would fail at next boot ('Key must be loaded') and drag
-      zfs-mount.service down with it. Encrypt at least one dataset
-      per docs/32-zfs-encryption.md §2a first, OR leave
-      zfs_encryption_pools empty for {{ inventory_hostname }} until the
-      pool is encrypted (deploys the mechanism without activating
-      units), OR remove {{ item.item.name }} from zfs_encryption_pools
-      in host_vars/{{ inventory_hostname }}.yml.
+      pool would fail forever at boot ('Key must be loaded'), so
+      zfs-mount-encrypted.service would never reach active and the
+      encrypted-storage guests/nfsd ordered after it would never start
+      (boot itself is unaffected — these are off the critical path).
+      Encrypt at least one dataset per docs/32-zfs-encryption.md §2a
+      first, OR leave zfs_encryption_pools empty for
+      {{ inventory_hostname }} until the pool is encrypted (deploys the
+      mechanism without activating units), OR remove
+      {{ item.item.name }} from zfs_encryption_pools in
+      host_vars/{{ inventory_hostname }}.yml.
   loop: "{{ zfs_encryption_pool_states.results | default([]) }}"
   loop_control:
     label: "{{ item.item.name }}"
   when:
     - zfs_encryption_pools | length > 0
     - zfs_encryption_install_zfsutils | default(true)
+
+# MIGRATION (every host, every run, unconditional): remove the OLD
+# /etc/systemd/system/zfs-mount.service.requires/zfs-load-key@*.service
+# symlinks left by the previous RequiredBy=zfs-mount.service [Install]. The
+# unit now uses WantedBy=zfs-mount-encrypted.service, so `systemctl disable`
+# only removes the NEW link — the old fatal one would otherwise linger and,
+# at next boot, fail zfs-mount.service (Before=local-fs.target) and hang the
+# very boot path this rework exists to free. This sweep is the single most
+# important reboot-safety step; it must NOT be gated on zfs_encryption_pools.
+#
+# It MUST run BEFORE the per-pool enable below: while the old requires-symlink
+# still exists, `systemctl is-enabled zfs-load-key@<pool>` reports "enabled",
+# so the enable task no-ops and never creates the new .wants symlink. Sweep
+# first so the enable actually re-links into zfs-mount-encrypted.service.wants.
+- name: Find stale zfs-load-key symlinks in the old zfs-mount.service.requires dir
+  ansible.builtin.find:
+    paths: /etc/systemd/system/zfs-mount.service.requires
+    patterns: "zfs-load-key@*.service"
+    file_type: link
+  register: zfs_encryption_old_required_links
+  changed_when: false
+  failed_when: false   # directory absent on a clean/new host — fine
+
+- name: Remove stale zfs-load-key RequiredBy symlinks (old early-boot fatal edge)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ zfs_encryption_old_required_links.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Reload systemd after sweeping stale requires-symlinks
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# Enable the late mount anchor first: zfs-load-key@<pool> is now
+# WantedBy=zfs-mount-encrypted.service, so the anchor must exist + be enabled
+# (WantedBy=multi-user.target) for the per-pool .wants symlinks to be pulled
+# into the boot transaction.
+- name: Enable zfs-mount-encrypted.service (late encrypted-dataset mount anchor)
+  ansible.builtin.systemd:
+    name: zfs-mount-encrypted.service
+    enabled: true
+    daemon_reload: true
+  when: zfs_encryption_pools | length > 0
+
+- name: Disable zfs-mount-encrypted.service on hosts with no encrypted pools
+  ansible.builtin.systemd:
+    name: zfs-mount-encrypted.service
+    enabled: false
+  failed_when: false
+  when: zfs_encryption_pools | length == 0
 
 - name: Enable per-pool zfs-load-key services
   ansible.builtin.systemd:
@@ -210,13 +306,30 @@
     label: "{{ item.name }}"
   when: zfs_encryption_pools | length > 0
 
+- name: Enable pve-start-encrypted-guests.service (host has encrypted-storage guests)
+  ansible.builtin.systemd:
+    name: pve-start-encrypted-guests.service
+    enabled: true
+    daemon_reload: true
+  when: (zfs_encryption_guest_vmids | length > 0) or (zfs_encryption_guest_ctids | length > 0)
+
+- name: Disable pve-start-encrypted-guests.service where no such guests exist
+  ansible.builtin.systemd:
+    name: pve-start-encrypted-guests.service
+    enabled: false
+  failed_when: false
+  when:
+    - zfs_encryption_guest_vmids | length == 0
+    - zfs_encryption_guest_ctids | length == 0
+
 # Reconcile stale unit instances + env files. If the operator removes a
 # pool from zfs_encryption_pools (or renames it), the previously-deployed
 # /etc/zfs/encryption/pools/<old>.conf and the
-# /etc/systemd/system/zfs-mount.service.requires/zfs-load-key@<old>.service
-# symlink would otherwise linger — at next boot the orphan unit would try
-# to fetch a passphrase for a pool no longer in the inventory, fail, and
-# drag zfs-mount.service down with it.
+# /etc/systemd/system/zfs-mount-encrypted.service.wants/zfs-load-key@<old>.service
+# symlink would otherwise linger — at next boot the orphan unit would try to
+# fetch a passphrase for a pool no longer in the inventory and fail. Because
+# the unit is now WantedBy (best-effort), that failure is contained (it no
+# longer drags a mount down), but we still clean it up for hygiene.
 #
 # We list both directories and remove anything not in the desired set.
 # Idempotent: when the desired set matches what's on disk this is a no-op.
@@ -240,7 +353,7 @@
 
 - name: Enumerate enabled per-pool unit symlinks
   ansible.builtin.find:
-    paths: /etc/systemd/system/zfs-mount.service.requires
+    paths: /etc/systemd/system/zfs-mount-encrypted.service.wants
     patterns: "zfs-load-key@*.service"
     file_type: link
   register: zfs_encryption_unit_links_present

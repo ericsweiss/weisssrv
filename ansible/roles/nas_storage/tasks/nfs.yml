@@ -82,21 +82,26 @@
     src: "{{ item.bind_source }}"
     fstype: none
     # Order ZFS-backed export binds after the ZFS mounts. Without this the fstab
-    # bind units race zfs-mount.service at boot — both run before local-fs.target
-    # with no ordering between them — so a bind can capture the still-empty
-    # mountpoint on the root fs instead of the ZFS dataset. That stacks a stale
-    # ext4 layer under the real bind and makes the NFS export serve an empty/stale
-    # directory, which surfaced as backups failing with "could not activate storage
-    # 'tank-proxmox': directory '/mnt/pve/tank-proxmox' does not exist or is
-    # unreachable". `nofail` keeps a not-yet-mounted source from blocking boot.
-    # zfs-mount-generator is not enabled here (no /etc/zfs/zfs-list.cache), so we
-    # order against the bulk zfs-mount.service explicitly rather than rely on
-    # per-dataset units. Non-ZFS sources (mergerfs /mnt/media, lifecycle-managed by
-    # mergerfs.yml and not affected) keep a plain bind.
+    # bind units race the mount at boot — a bind can capture the still-empty
+    # mountpoint on the root fs instead of the ZFS dataset, stacking a stale
+    # layer under the real bind and making the NFS export serve an empty/stale
+    # directory (surfaced as backups failing with "could not activate storage
+    # 'tank-proxmox' ... unreachable"). `nofail` keeps a not-yet-mounted source
+    # from blocking boot. zfs-mount-generator is not enabled here (no
+    # /etc/zfs/zfs-list.cache), so we order against the bulk mount unit
+    # explicitly.
+    #
+    # ANCHOR CHOICE (see _zfs_anchor below): ENCRYPTED bind sources order on the
+    # LATE zfs-mount-encrypted.service — the early stock zfs-mount.service runs
+    # before keys are loaded and SKIPS the locked datasets, so an encrypted bind
+    # ordered on it would capture the empty mountpoint. Plaintext ZFS sources
+    # keep ordering on the early zfs-mount.service. Non-ZFS sources (mergerfs
+    # /mnt/media, lifecycle-managed by mergerfs.yml) keep a plain bind.
     opts: >-
       {{
-        'bind,nofail,x-systemd.requires=zfs-mount.service,'
-        ~ 'x-systemd.after=zfs-mount.service,x-systemd.requires-mounts-for=' ~ item.bind_source
+        'bind,nofail,x-systemd.requires=' ~ _zfs_anchor
+        ~ ',x-systemd.after=' ~ _zfs_anchor
+        ~ ',x-systemd.requires-mounts-for=' ~ item.bind_source
         if item.bind_source is match('^/mnt/(tank|ssd|nvme)/')
         else 'bind'
       }}
@@ -104,6 +109,11 @@
   loop: "{{ nfs_exports }}"
   loop_control:
     label: "{{ item.path }}"
+  vars:
+    _zfs_anchor: >-
+      {{ 'zfs-mount-encrypted.service'
+         if item.bind_source in (nas_encrypted_bind_sources | default([]))
+         else 'zfs-mount.service' }}
   when: item.bind_source is defined
 
 - name: Deploy NFS exports configuration
@@ -115,9 +125,53 @@
     mode: "0644"
   notify: Reload NFS exports
 
+# nfsd must not begin exporting the encrypted datasets until they are unlocked
+# and mounted — otherwise it serves the empty/locked mountpoint and the
+# NFS-over-TLS data path wedges for NEW client mounts (observed 2026-06-21,
+# when nfsd was force-started ahead of the mounts via --job-mode). Order nfsd
+# after the late mount anchor + require the encrypted export bind mounts.
+- name: Ensure nfs-server drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/nfs-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy nfs-server ordering drop-in (gate nfsd on encrypted-dataset mounts)
+  ansible.builtin.template:
+    src: nfs-server-zfs.conf.j2
+    dest: /etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nfs-server for ordering
+
+# Flush now — BEFORE starting/probing nfsd — so the drop-in's daemon-reload and
+# the "Restart nfs-server for ordering" handler run first. Otherwise a stopped
+# nfsd is started once with the OLD unit config (the drop-in isn't loaded until
+# the handler's daemon_reload), and the readiness probe could check the
+# pre-restart listener. (meta: flush_handlers ignores `when`; the handlers
+# themselves are guarded by skip_nfs_reload, so this is a no-op under molecule.)
+- name: Flush pending NFS handlers before starting/probing NFS
+  ansible.builtin.meta: flush_handlers
+
 - name: Ensure NFS server is enabled and running
   ansible.builtin.service:
     name: nfs-kernel-server
     state: started
     enabled: true
+  when: not (skip_nfs_reload | default(false))
+
+# Real client-facing readiness signal. nfs-server.service is Type=oneshot
+# (active/exited) so its unit state does not prove nfsd is serving; the TCP
+# listener on 2049 does. Fails the play loudly if nfsd isn't accepting
+# connections (every NFS-over-TLS client would fail to mount).
+- name: Verify nfsd is serving on TCP 2049
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 2049
+    state: started
+    timeout: 30
+  changed_when: false
   when: not (skip_nfs_reload | default(false))

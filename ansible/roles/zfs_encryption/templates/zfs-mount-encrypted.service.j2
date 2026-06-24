@@ -1,0 +1,74 @@
+# {{ ansible_managed }}
+#
+# Late, retrying pass that mounts the ZFS-native-encrypted datasets once
+# their per-pool keys have been loaded by zfs-load-key@<pool>.service. This
+# is the single anchor that downstream units order After=:
+#   - nfs-server.service (via a drop-in) — so nfsd exports the real datasets,
+#     never an empty/locked mountpoint (which breaks NFS-over-TLS new mounts);
+#   - pve-start-encrypted-guests.service — so guests whose disks live on the
+#     encrypted pools start only after that data is mounted.
+#
+# Why a separate late unit instead of the stock zfs-mount.service:
+#   stock zfs-mount.service runs EARLY (Before=local-fs.target) and must
+#   return promptly so boot reaches multi-user; `zfs mount -a` there mounts
+#   the plaintext datasets and SKIPS the still-locked ones (verified: it
+#   exits 0 with locked datasets present). It cannot wait on a
+#   network-dependent, k8s-hosted Connect. THIS unit runs LATE
+#   (WantedBy=multi-user.target, never Before any boot target), After the
+#   network + per-pool key-loads, and RETRIES until every encryption root is
+#   unlocked, then runs `zfs mount -a`. It can delay encrypted-data
+#   availability but can NEVER hang boot or block login.
+#
+# NOTE: deliberately NO ProtectSystem=/PrivateTmp/ProtectHome — those put the
+# service in a private mount namespace, so `zfs mount` would mount inside it
+# and the host would never see the mounts. The stock zfs-mount.service is
+# unsandboxed for the same reason; we keep only namespace-safe hardening.
+
+[Unit]
+Description=Mount ZFS encrypted datasets after their keys are loaded
+Wants=network-online.target
+After=zfs-mount.service network-online.target
+# Pull the per-pool key-loads in with Wants= only — deliberately NOT After=.
+# An After= would keep this unit queued while a zfs-load-key@<pool> is still
+# activating/restarting (Connect down), preventing our own gate-then-mount
+# retry loop from running and mounting the pools whose keys ARE already loaded.
+# The script checks keystatus itself and retries, so Wants= (pull, no ordering)
+# is sufficient and converges faster.
+{% for pool in zfs_encryption_pools %}
+Wants=zfs-load-key@{{ pool.name }}.service
+{% endfor %}
+# Retry forever until all keys are present (the cold-cluster case where
+# Connect, in k8s, comes up minutes after this NAS). The gate script exits
+# fast when keys aren't ready yet, so a finite StartLimitBurst would trip
+# within minutes — StartLimitIntervalSec=0 disables the burst limit so the
+# unit keeps retrying until an operator hand-unlock (or Connect) closes it.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Keep the start job PENDING (unit stays "activating") until the mount actually
+# succeeds. With a plain oneshot + Restart=on-failure, the FIRST failed attempt
+# (keys not loaded yet) COMPLETES the start job — which releases units ordered
+# After= this one (nfs-server, pve-start-encrypted-guests) and cascades
+# Requires= failures to the export .mount units; none of those retry, so a
+# degraded cold boot (Connect down at first attempt) could leave nfsd/guests
+# down until manual recovery. The until-loop holds this unit "activating"
+# (never "failed") until the script exits 0, so After= dependents stay QUEUED
+# until storage is truly ready. It is still never Before= any boot target, so
+# multi-user (ssh + Tailscale) is reached regardless. TimeoutStartSec=0 lets the
+# loop run as long as needed (operator hand-unlock may take a while);
+# Restart=on-failure is only a backstop for the bash wrapper itself dying.
+ExecStart=/bin/bash -c 'until /usr/local/sbin/zfs-mount-encrypted.sh {{ zfs_encryption_pools | map(attribute='name') | join(' ') }}; do sleep 30; done'
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=30s
+
+# Namespace-safe hardening only (see header note re: mount propagation).
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

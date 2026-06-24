@@ -10,6 +10,23 @@
   changed_when: true
   when: not (skip_nfs_reload | default(false))
 
+# Fired when the nfs-server ordering drop-in changes. daemon_reload picks up
+# the new drop-in; a clean restart re-establishes nfsd ordered after the
+# encrypted-dataset mounts (also repairs a prior --job-mode-hacked start that
+# left the NFS-over-TLS data path wedged for new mounts). At deploy time the
+# datasets are already mounted, so this is a clean, ordered restart.
+- name: Restart nfs-server for ordering
+  ansible.builtin.systemd:
+    name: nfs-server.service
+    state: restarted
+    daemon_reload: true
+  # Bound the restart: `restarted` re-enters nfsd's stop path, which can hang
+  # (the very failure this PR mitigates). async/poll makes a wedged stop fail
+  # the deploy loudly instead of blocking the Ansible run indefinitely.
+  async: 90
+  poll: 5
+  when: not (skip_nfs_reload | default(false))
+
 - name: Restart smbd
   ansible.builtin.service:
     name: smbd
