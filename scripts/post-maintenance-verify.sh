@@ -344,7 +344,16 @@ while IFS= read -r jk; do
     # precisely fixable (no pod = no node); backstopped by the next run's re-verify
     # and the independent KubeJobFailed Prometheus alert (fires on any failed Job).
     job_warn="${job_warn} $jk(pods gone; kured active)"
-  elif ! printf '%s\n' "$JOB_NODES" | grep -v '^$' | grep -vxFf <(printf '%s\n' "$KURED_NOW") | grep -q .; then
+  # Capture-and-test, NOT `... | grep -q .`: under `set -o pipefail`, grep -q
+  # closes the pipe on its first match, SIGPIPE-killing the upstream grep so the
+  # pipeline returns non-zero EVEN on a match — `!` would then WRONGLY take the
+  # excuse branch and mask a real failure on a healthy node. Capturing the filtered
+  # list reads it fully (no early pipe close); it is empty iff every job pod is
+  # unscheduled (blank) or on a kured-rebooting node. (Capture in a [ -z ] test is
+  # set -e-safe — the inner pipeline's exit is not checked.) NB: SC2143 will
+  # suggest `! grep -q` here — that is precisely the SIGPIPE bug being fixed, so
+  # the capture form is intentional (SC2143 is style-level, below CI's --severity).
+  elif [ -z "$(printf '%s\n' "$JOB_NODES" | grep -v '^$' | grep -vxFf <(printf '%s\n' "$KURED_NOW"))" ]; then
     # Excuse ONLY if EVERY pod of the Job is unscheduled (blank) or on a
     # kured-rebooting node. If even one attempt pod failed on a HEALTHY node, that
     # is a real failure — don't let one evicted attempt mask it.

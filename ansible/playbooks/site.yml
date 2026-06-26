@@ -115,3 +115,16 @@
   roles:
     - role: proxmox_firewall
       tags: [proxmox_firewall]
+
+# k3s guest .fw files (VMIDs 202-207, 222-227) are otherwise written only by
+# playbooks/k3s.yml (hosts: k3s), which has no CI deploy job. Run them here under
+# --tags proxmox_firewall so an inventory-only guest_security_groups edit in
+# hosts.yml deploys via deploy-ansible-firewall. The role self-gates on
+# vmid + guest_security_groups, so it is a safe no-op for any k3s host without
+# security groups; cluster.fw is run_once-guarded, so this only writes guest .fw.
+- name: Deploy k3s guest firewall rules
+  hosts: k3s
+  gather_facts: false
+  roles:
+    - role: proxmox_firewall
+      tags: [proxmox_firewall]

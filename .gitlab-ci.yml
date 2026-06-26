@@ -1560,6 +1560,16 @@ deploy-ansible-firewall:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/proxmox_firewall/**/*
+        # Per-guest firewall assignments (guest_security_groups / firewall_ipsets)
+        # live ONLY in hosts.yml, not the role — without this an inventory-only
+        # firewall edit silently never deploys. site.yml now has a `hosts: k3s`
+        # firewall play so --tags proxmox_firewall also reaches k3s guest .fw.
+        - ansible/inventories/prod/hosts.yml
+        # The proxmox_firewall plays (proxmox/dns/mail/services/k3s — which host
+        # groups + tags they target) live in site.yml, which this job RUNS as
+        # `site.yml --tags proxmox_firewall`. A change to those plays must also
+        # redeploy; without this a future firewall-play edit would merge unrun.
+        - ansible/playbooks/site.yml
 
 deploy-ansible-dns:
   stage: deploy

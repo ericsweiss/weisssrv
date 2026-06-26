@@ -160,7 +160,14 @@ INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
 #                              changes the operator should review
 #                              host-by-host. Operator decides which
 #                              deploy-* jobs to re-run manually after
-#                              a hosts.yml change.
+#                              a hosts.yml change. EXCEPTION: per-guest
+#                              firewall assignments (guest_security_groups /
+#                              firewall_ipsets) live ONLY in hosts.yml, so
+#                              deploy-ansible-firewall explicitly watches
+#                              ansible/inventories/prod/hosts.yml in its
+#                              rules.changes (.gitlab-ci.yml). Do NOT remove
+#                              that path — it is the only trigger for an
+#                              inventory-only firewall edit.
 #   group_vars/k3s.yml       — k3s cluster vars; deploy is manual via
 #                              `task k3s:deploy`.
 #   host_vars/plex.yml       — Plex LXC vars consumed by the plex.yml
