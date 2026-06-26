@@ -173,7 +173,7 @@ gluetun_version: "v3.41.1"
 nzbget_version: "26.2"
 qbittorrent_version: "5.2.2"
 prowlarr_version: "2.4.0.5397"
-sonarr_version: "4.0.18.2971"
+sonarr_version: "4.0.19.2979"
 radarr_version: "6.2.1.10461"
 lidarr_version: "3.1.0.4875"
 pulsarr_version: "0.16.0"
@@ -254,7 +254,7 @@ helm_chart_versions:
   traefik: "41.0.0"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.20.3"
   external_dns: "1.21.1"  # App version 0.20.0
-  external_secrets: "2.6.0"  # ESO with 1Password Connect provider
+  external_secrets: "2.7.0"  # ESO with 1Password Connect provider
   kube_prometheus_stack: "87.2.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
   loki: "18.1.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.0"

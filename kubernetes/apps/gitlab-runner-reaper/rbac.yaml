@@ -1,0 +1,68 @@
+---
+# RBAC for the leaked-pod reaper. Least-privilege, cross-namespace shape:
+#   - one ServiceAccount in the reaper's own namespace
+#   - one ClusterRole granting ONLY pods list/delete (NOT get — the script lists
+#     the collection and deletes by name; it never reads a single pod; no
+#     create/update/patch, no secrets/configmaps) — deliberately a far smaller
+#     verb set than the runner SAs' full pods+secrets get/list/watch/create/
+#     update/delete/patch. NOTE: `list pods` still returns full pod specs (incl.
+#     job env) — k8s has no list-without-spec for objects that also need status,
+#     so this is inherent; mitigated by the digest-pinned image + fixed no-input
+#     script + namespace scope + this dedicated, single-purpose SA.
+#   - two NAMESPACED RoleBindings (one per runner namespace), each binding the SA
+#     to the ClusterRole. A RoleBinding referencing a ClusterRole scopes those
+#     verbs to ONLY the binding's namespace — so pod-delete is confined to exactly
+#     the two runner namespaces. This is NOT a ClusterRoleBinding: there is no
+#     cluster-wide pod-delete anywhere.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-runner-reaper
+  namespace: gitlab-runner-reaper
+  labels:
+    app.kubernetes.io/managed-by: flux
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitlab-runner-reaper
+  labels:
+    app.kubernetes.io/managed-by: flux
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]
+---
+# Scopes the ClusterRole's pods:get/list/delete to ONLY gitlab-runner-privileged.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-runner-reaper
+  namespace: gitlab-runner-privileged
+  labels:
+    app.kubernetes.io/managed-by: flux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitlab-runner-reaper
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-runner-reaper
+    namespace: gitlab-runner-reaper
+---
+# Scopes the same ClusterRole to ONLY the shared gitlab-runner namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-runner-reaper
+  namespace: gitlab-runner
+  labels:
+    app.kubernetes.io/managed-by: flux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitlab-runner-reaper
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-runner-reaper
+    namespace: gitlab-runner-reaper

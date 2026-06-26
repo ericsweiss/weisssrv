@@ -1,0 +1,14 @@
+---
+# NOTE: deliberately NO top-level `namespace:` directive. kustomize's namespace
+# transformer OVERRIDES each resource's explicit metadata.namespace, which would
+# force the two RoleBindings out of the runner namespaces into
+# gitlab-runner-reaper and silently break the cross-namespace grant. Each
+# resource here carries its own explicit namespace (ServiceAccount + CronJob ->
+# gitlab-runner-reaper; the two RoleBindings -> gitlab-runner-privileged /
+# gitlab-runner; the ClusterRole + Namespace are cluster-scoped).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - cronjob.yaml

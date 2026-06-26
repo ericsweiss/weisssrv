@@ -10,5 +10,6 @@ resources:
   - recipes
   - gitlab-runner
   - gitlab-runner-privileged
+  - gitlab-runner-reaper
   - gitlab-agent
   - vm-ingress

@@ -20,7 +20,7 @@ data:
   helm_chart_versions_alloy: 1.10.0
   helm_chart_versions_cert_manager: v1.20.3
   helm_chart_versions_external_dns: 1.21.1
-  helm_chart_versions_external_secrets: 2.6.0
+  helm_chart_versions_external_secrets: 2.7.0
   helm_chart_versions_kube_prometheus_stack: 87.2.1
   helm_chart_versions_kured: 6.0.0
   helm_chart_versions_loki: 18.1.1
@@ -46,7 +46,7 @@ data:
   redis_exporter_version: v1.86.0
   redis_version: 8.8.0-alpine
   salt_rim_version: 4.15.0
-  sonarr_version: 4.0.18.2971
+  sonarr_version: 4.0.19.2979
   tailscale_version: 1.98.4
   unbound_exporter_version: 0.6.0
   zfs_exporter_version: 2.3.12
