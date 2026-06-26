@@ -11,20 +11,37 @@
 
 # --- post-maintenance-verify.sh parsers -----------------------------------
 
-# count_not_ready_nodes: read `kubectl get nodes --no-headers` on stdin, print
-# the number of nodes whose STATUS ($2) does not begin with "Ready". Accepts
-# both "Ready" and "Ready,SchedulingDisabled" (cordoned-but-healthy) as ready.
-count_not_ready_nodes() {
-  awk '$2 !~ /^Ready/ {count++} END {print count+0}'
+# not_ready_node_names: read `kubectl get nodes --no-headers` on stdin, print the
+# NAME ($1) of each node whose STATUS ($2) does not begin with "Ready" (so
+# "Ready,SchedulingDisabled" — cordoned-but-healthy — is treated as ready and NOT
+# listed). The verify then classifies each printed node (kured-rebooting -> warn,
+# anything else -> error).
+not_ready_node_names() {
+  awk '$2 !~ /^Ready/ {print $1}'
 }
 
 # list_unhealthy_pods: read `kubectl get pods -A --no-headers` on stdin, print
-# the rows for pods that are genuinely unhealthy. Completed/Succeeded batch
-# pods are skipped; a pod is unhealthy if its STATUS ($4) is not "Running" OR
-# its READY column ($3, "a/b") has a != b.
+# the rows for pods that are genuinely unhealthy. Terminal BATCH outcomes are
+# skipped — Completed/Succeeded, AND Error/Failed: those statuses only occur for
+# Job/CronJob pods (restartPolicy Never/OnFailure) that exited; a flaky CronJob
+# leaving failed-attempt pods (e.g. cloudflare-ddns retrying a transient egress
+# blip before the run succeeds) is not a maintenance regression and must not
+# false-alarm the verify. A PERSISTENTLY-broken CronJob (e.g. cloudflare-ddns with
+# an expired token) is intentionally NOT this check's job — the DDNSStale
+# Prometheus alert (no successful run in >1h) is its backstop, independent of the
+# maintenance verify. Caveat: a restartPolicy:Always pod CAN momentarily
+# render as STATUS=Error (the last-terminated container reason) before the
+# kubelet flips it to CrashLoopBackOff, so this filter is not a complete health
+# view on its own — but a genuinely-broken app is still caught by the verify's
+# 25s grace re-check (it reads as CrashLoopBackOff/Pending by then, which ARE
+# flagged) and by the critical-Deployment replica check. The skip assumes bare
+# Error/Failed only originate from Job/CronJob-managed pods (true for this
+# cluster); the verify's failed-Job check backstops one-shot Jobs, but a future
+# naked restartPolicy:Never Pod that exits non-zero would not be re-flagged here.
+# A pod is unhealthy if its STATUS ($4) is not "Running" OR READY ($3, "a/b") a != b.
 list_unhealthy_pods() {
   awk '
-    $4 == "Completed" || $4 == "Succeeded" { next }
+    $4 == "Completed" || $4 == "Succeeded" || $4 == "Error" || $4 == "Failed" { next }
     { split($3, a, "/"); if ($4 != "Running" || a[1] != a[2]) print }'
 }
 
@@ -35,6 +52,20 @@ list_unhealthy_pods() {
 deployment_replicas_ok() {
   local avail="${1:-0}" desired="${2:-1}"
   [ "${avail:-0}" -ge "${desired:-1}" ] 2>/dev/null
+}
+
+# deployment_pod_nodes <deployment-name>: read `name<TAB>nodeName` lines on stdin
+# (jsonpath output) and, for each pod belonging to <deployment>, print its
+# nodeName — or the literal "<unscheduled>" when nodeName is empty (an evicted /
+# not-yet-scheduled pod), so a caller can distinguish "pod on node X" from
+# "deployment has an unscheduled pod" from "deployment has no pods" (no output).
+# A deployment's pods are <name>-<pod-template-hash>-<suffix>; the hash is k8s
+# SafeEncode (consonants + digits 2-9, NEVER vowels), so anchoring the segment
+# after the name to that charset excludes a vowel-bearing sibling deployment in
+# the same namespace (cert-manager-webhook for cert-manager, coredns-autoscaler
+# for coredns) whose pods would otherwise match a plain name-prefix.
+deployment_pod_nodes() {
+  awk -F'\t' -v d="$1" '$1 ~ "^"d"-[b-df-hj-np-tv-z2-9]+-" {print ($2 == "" ? "<unscheduled>" : $2)}'
 }
 
 # --- maintenance-ha-restart.sh parsers -------------------------------------

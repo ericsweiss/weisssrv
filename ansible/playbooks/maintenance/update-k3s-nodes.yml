@@ -72,110 +72,31 @@
     # any task fails mid-sequence (e.g., upgrade failure, restart timeout).
     - name: Upgrade k3s server with guaranteed uncordon
       block:
-        # Drain/cordon delegate to a server OTHER than the one being upgraded;
-        # falls back to k3s_servers[0] when it is the only server (a
-        # single-server cluster drains itself).
+        # etcd-quorum: restarting this server's k3s briefly drops its etcd member.
+        # Do NOT do that while kured is mid-reboot of ANOTHER server — two of three
+        # down loses quorum. Check before the cordon+upgrade, and RE-ASSERT right
+        # before the restart to shrink the check->act window (residual sub-second
+        # TOCTOU is covered by single-fault etcd tolerance + kured's concurrency:1).
+        - name: Serialize against kured before cordoning/upgrading this server (etcd quorum)
+          ansible.builtin.include_tasks: _wait-no-kured-server-reboot.yml
+          vars:
+            kured_clear_reason: "before upgrading {{ inventory_hostname }}"
+            kured_clear_delegate: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+
+        # Cordon delegates to a server OTHER than the one being upgraded; falls
+        # back to k3s_servers[0] when it is the only server. NO drain: a k3s
+        # service restart keeps running pods (containerd persists the
+        # containers across a kubelet restart), and draining the executor's own
+        # node would deadlock the CI job. Cordon just blocks new scheduling for
+        # the ~1-2 min the binary upgrade takes.
+        # Note: when this node is the one running the CI executor pod, the
+        # runner-manager's kubelet exec/log stream to that pod may blip for the
+        # seconds the node's kubelet restarts. The container (and the job process)
+        # survives — observed OK — so the brief stream gap is tolerated.
         - name: Cordon node before upgrade
           ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
           changed_when: true
           delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-
-        # CI Runner safety: prevent self-termination during k3s upgrade.
-        # The gitlab-runner-privileged pod may run the CI job executing this playbook.
-        # If we drain the runner's node without moving it first, the job dies.
-        # After cordoning, we delete the pod so k8s reschedules it to another node.
-        - name: Check if gitlab-runner-privileged pod runs on this node
-          ansible.builtin.command: >
-            k3s kubectl get pods -n gitlab-runner
-            -l release=gitlab-runner-privileged
-            --field-selector spec.nodeName={{ inventory_hostname }}
-            -o name
-          register: runner_pod_on_node
-          changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          # rc=0 with empty stdout = no runner on this node (expected)
-          # rc!=0 = kubectl error (should not silently skip safety check)
-
-        - name: Evict runner pod to trigger reschedule (node is cordoned)
-          ansible.builtin.command: >
-            k3s kubectl delete pods -n gitlab-runner
-            -l release=gitlab-runner-privileged
-            --field-selector spec.nodeName={{ inventory_hostname }}
-            --grace-period=30
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          when: runner_pod_on_node.stdout | default('') | length > 0
-
-        - name: Wait for runner pod to be Running on a different node
-          ansible.builtin.shell: |
-            set -o pipefail
-            k3s kubectl get pods -n gitlab-runner \
-              -l release=gitlab-runner-privileged \
-              --field-selector status.phase=Running \
-              -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | \
-              grep -v '{{ inventory_hostname }}' | head -1
-          args:
-            executable: /bin/bash
-          register: runner_new_node
-          retries: 24
-          delay: 5
-          until: runner_new_node.stdout | default('') | length > 0
-          changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          when: runner_pod_on_node.stdout | default('') | length > 0
-          failed_when: false
-
-        - name: Display runner relocation status
-          ansible.builtin.debug:
-            msg: >-
-              {% if runner_pod_on_node.stdout | default('') | length == 0 %}
-              No CI runner pod on this node - proceeding with drain
-              {% elif runner_new_node.stdout | default('') | length > 0 %}
-              CI runner pod moved to {{ runner_new_node.stdout }} - safe to drain
-              {% else %}
-              WARNING: CI runner could not reschedule (all nodes may be full).
-              {% endif %}
-
-        - name: Abort if runner could not be relocated (override with -e force_drain=true)
-          ansible.builtin.fail:
-            msg: >-
-              CI runner pod could not be relocated from {{ inventory_hostname }}.
-              Draining will kill the CI job. Override with: -e force_drain=true
-          when:
-            - runner_pod_on_node.stdout | default('') | length > 0
-            - runner_new_node.stdout | default('') | length == 0
-            - not (force_drain | default(false) | bool)
-
-        - name: Drain node (evict pods)
-          ansible.builtin.command: >
-            k3s kubectl drain {{ inventory_hostname }}
-            --ignore-daemonsets
-            --delete-emptydir-data
-            --timeout=5m
-            --grace-period=30
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          register: drain_result
-          failed_when: false
-
-        - name: Display drain result
-          ansible.builtin.debug:
-            msg: "{{ drain_result.stdout_lines }}"
-
-        - name: Uncordon node if drain failed (restore scheduling)
-          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          when: drain_result.rc != 0
-
-        - name: Abort upgrade if drain failed
-          ansible.builtin.fail:
-            msg: >-
-              Node drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
-              Pods may be protected by PodDisruptionBudgets or stuck terminating.
-              The node has been uncordoned. Investigate and retry.
-              stderr: {{ drain_result.stderr | default('') }}
-          when: drain_result.rc != 0
 
         - name: Upgrade k3s server binary
           ansible.builtin.shell: |
@@ -187,6 +108,12 @@
           args:
             executable: /bin/bash
           changed_when: true
+
+        - name: Re-assert kured is not rebooting any server right before the k3s restart
+          ansible.builtin.include_tasks: _wait-no-kured-server-reboot.yml
+          vars:
+            kured_clear_reason: "before restarting k3s on {{ inventory_hostname }}"
+            kured_clear_delegate: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
         - name: Restart k3s service
           ansible.builtin.systemd:
@@ -297,103 +224,6 @@
           changed_when: true
           delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
 
-        # CI Runner safety: prevent self-termination during k3s upgrade.
-        # The gitlab-runner-privileged pod may run the CI job executing this playbook.
-        # If we drain the runner's node without moving it first, the job dies.
-        # After cordoning, we delete the pod so k8s reschedules it to another node.
-        - name: Check if gitlab-runner-privileged pod runs on this node
-          ansible.builtin.command: >
-            k3s kubectl get pods -n gitlab-runner
-            -l release=gitlab-runner-privileged
-            --field-selector spec.nodeName={{ inventory_hostname }}
-            -o name
-          register: runner_pod_on_node
-          changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          # rc=0 with empty stdout = no runner on this node (expected)
-          # rc!=0 = kubectl error (should not silently skip safety check)
-
-        - name: Evict runner pod to trigger reschedule (node is cordoned)
-          ansible.builtin.command: >
-            k3s kubectl delete pods -n gitlab-runner
-            -l release=gitlab-runner-privileged
-            --field-selector spec.nodeName={{ inventory_hostname }}
-            --grace-period=30
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          when: runner_pod_on_node.stdout | default('') | length > 0
-
-        - name: Wait for runner pod to be Running on a different node
-          ansible.builtin.shell: |
-            set -o pipefail
-            k3s kubectl get pods -n gitlab-runner \
-              -l release=gitlab-runner-privileged \
-              --field-selector status.phase=Running \
-              -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | \
-              grep -v '{{ inventory_hostname }}' | head -1
-          args:
-            executable: /bin/bash
-          register: runner_new_node
-          retries: 24
-          delay: 5
-          until: runner_new_node.stdout | default('') | length > 0
-          changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          when: runner_pod_on_node.stdout | default('') | length > 0
-          failed_when: false
-
-        - name: Display runner relocation status
-          ansible.builtin.debug:
-            msg: >-
-              {% if runner_pod_on_node.stdout | default('') | length == 0 %}
-              No CI runner pod on this node - proceeding with drain
-              {% elif runner_new_node.stdout | default('') | length > 0 %}
-              CI runner pod moved to {{ runner_new_node.stdout }} - safe to drain
-              {% else %}
-              WARNING: CI runner could not reschedule (all nodes may be full).
-              {% endif %}
-
-        - name: Abort if runner could not be relocated (override with -e force_drain=true)
-          ansible.builtin.fail:
-            msg: >-
-              CI runner pod could not be relocated from {{ inventory_hostname }}.
-              Draining will kill the CI job. Override with: -e force_drain=true
-          when:
-            - runner_pod_on_node.stdout | default('') | length > 0
-            - runner_new_node.stdout | default('') | length == 0
-            - not (force_drain | default(false) | bool)
-
-        - name: Drain node (evict pods)
-          ansible.builtin.command: >
-            k3s kubectl drain {{ inventory_hostname }}
-            --ignore-daemonsets
-            --delete-emptydir-data
-            --timeout=5m
-            --grace-period=30
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          register: drain_result
-          failed_when: false
-
-        - name: Display drain result
-          ansible.builtin.debug:
-            msg: "{{ drain_result.stdout_lines }}"
-
-        - name: Uncordon node if drain failed (restore scheduling)
-          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          when: drain_result.rc != 0
-
-        - name: Abort upgrade if drain failed
-          ansible.builtin.fail:
-            msg: >-
-              Node drain failed for {{ inventory_hostname }} (rc={{ drain_result.rc }}).
-              Pods may be protected by PodDisruptionBudgets or stuck terminating.
-              The node has been uncordoned. Investigate and retry.
-              stderr: {{ drain_result.stderr | default('') }}
-          when: drain_result.rc != 0
-
         # CRITICAL: Must pass "agent" argument to install script, otherwise it installs
         # as server mode and creates k3s.service instead of k3s-agent.service.
         # The agent also needs K3S_URL and K3S_TOKEN to know which cluster to join.
@@ -431,6 +261,13 @@
           when: k3s_server_service.stat.exists
           failed_when: false  # Don't fail if service doesn't exist in systemd
 
+        # No drain: this agent is cordoned, not drained. Per the constraints the CI
+        # executor pod is ALWAYS on an agent, so this is the path most likely to run
+        # under the executor's OWN node — and a kubelet (k3s-agent) restart is safe
+        # for it: containerd keeps the container and the running job process alive
+        # across the restart; only exec/log streaming blips for a few seconds. A
+        # drain here would evict the executor and re-introduce the very self-deadlock
+        # this rework removes — do NOT add one.
         - name: Restart k3s-agent service
           ansible.builtin.systemd:
             name: k3s-agent

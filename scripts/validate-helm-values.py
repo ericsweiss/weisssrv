@@ -98,6 +98,13 @@ RELEASES = [
         "repo_name": "authentik",
         "repo_url": "https://charts.goauthentik.io",
     },
+    {
+        "name": "kured",
+        "manifest": "kubernetes/infrastructure/controllers/kured/release.yaml",
+        "chart": "kured",
+        "repo_name": "kured",
+        "repo_url": "https://kubereboot.github.io/charts",
+    },
 ]
 
 VERSIONS_CONFIGMAP = "kubernetes/infrastructure/sources/versions-configmap.yaml"

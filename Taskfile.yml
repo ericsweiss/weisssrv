@@ -976,7 +976,7 @@ tasks:
 
   # --- K3s Cluster ---
   maintenance:update-k3s-nodes:
-    desc: Rolling k3s node upgrades (drain/cordon/upgrade/uncordon)
+    desc: Rolling k3s binary upgrades (cordon/upgrade/restart/uncordon; kernel reboots via kured)
     dir: "{{.ANSIBLE_DIR}}"
     env:
       K3S_TOKEN: op://Homelab/K3s Cluster Token/credential

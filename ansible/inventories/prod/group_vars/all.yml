@@ -129,10 +129,10 @@ tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should adv
 
 # Application version pins
 adguard_home_version: "0.107.77"
-adguardhome_sync_version: "0.9.0"
+adguardhome_sync_version: "0.9.2"
 tailscale_version: "1.98.4"
 debian_version: "13"
-k3s_version: "v1.36.1+k3s1"
+k3s_version: "v1.36.2+k3s1"
 # Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
 # root-run installer script before exec (host-side ansible, NOT a Flux version —
 # do not add to the versions ConfigMap). Compute on bump:
@@ -141,7 +141,7 @@ k3s_version: "v1.36.1+k3s1"
 # Left empty here so get_url omits the checksum (install.sh still verifies the
 # k3s binary's own sha256 against the GitHub release).
 k3s_install_script_checksum: ""
-kube_vip_version: "v1.2.0"
+kube_vip_version: "v1.2.1"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
 flux_version: "2.8.8"
@@ -173,7 +173,7 @@ gluetun_version: "v3.41.1"
 nzbget_version: "26.2"
 qbittorrent_version: "5.2.2"
 prowlarr_version: "2.4.0.5397"
-sonarr_version: "4.0.17.2952"
+sonarr_version: "4.0.18.2971"
 radarr_version: "6.2.1.10461"
 lidarr_version: "3.1.0.4875"
 pulsarr_version: "0.16.0"
@@ -184,7 +184,7 @@ pulsarr_version: "0.16.0"
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
-mealie_version: "v3.19.2"
+mealie_version: "v3.20.0"
 bar_assistant_version: "5.15.2"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
@@ -199,7 +199,7 @@ gitlab_version: "19.1.1-ee.0"  # 19.1.x line (incl. CVE-2026-5816 Web IDE single
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.90.0"
+gitlab_runner_helm_version: "0.90.1"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
@@ -252,15 +252,16 @@ helm_chart_versions:
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
   traefik: "41.0.0"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
-  cert_manager: "v1.20.2"
+  cert_manager: "v1.20.3"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.6.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.1.0"  # 87.0.0 = prometheus-operator v0.92.0 (additive CRD fields; crds: CreateReplace)
-  loki: "18.1.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  kube_prometheus_stack: "87.2.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  loki: "18.1.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.13.0"
   onepassword_connect: "2.4.1"
   vpa: "4.12.2"
+  kured: "6.0.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

@@ -29,7 +29,9 @@ spec:
       backoffLimit: 2
       template:
         spec:
-          # No hostNetwork — only outbound egress to api.ipify.org / api.cloudflare.com
+          # No hostNetwork — outbound egress only to public 443 (IP-detection
+          # providers ipify/icanhazip/checkip + api.cloudflare.com); the egress
+          # NetworkPolicy denies RFC1918.
           restartPolicy: Never
           automountServiceAccountToken: false
           securityContext:
@@ -48,9 +50,11 @@ spec:
             - python3
             - -c
             - |
+              import ipaddress
               import json
               import os
               import sys
+              import time
               import urllib.request
               import urllib.error
 
@@ -87,13 +91,54 @@ spec:
                       return None
 
               def get_public_ip():
-                  """Get current public IP address."""
-                  try:
-                      with urllib.request.urlopen('https://api.ipify.org', timeout=10) as resp:
-                          return resp.read().decode().strip()
-                  except Exception as e:
-                      print(f"ERROR: Failed to get public IP: {e}")
-                      return None
+                  """Get current public IP, retrying across providers to ride out
+                  both a transient egress blip (e.g. 'No route to host' while a
+                  node/network reconverges during maintenance) AND a single
+                  provider being down, so the pod doesn't fail and leave an Error
+                  pod behind. The egress NetworkPolicy allows public 443 to any
+                  non-RFC1918 host, so the fallbacks are permitted."""
+                  # IPv4-preferred endpoints: we update an A record. Only
+                  # ipv4.icanhazip.com is strictly v4; ipify/amazonaws can be
+                  # dual-stack and could return AAAA over a v6-capable egress — the
+                  # per-reply ipaddress.IPv4Address check below rejects any non-v4
+                  # and falls through to the next provider.
+                  services = (
+                      'https://api.ipify.org',
+                      'https://ipv4.icanhazip.com',
+                      'https://checkip.amazonaws.com',
+                  )
+                  last_err = None
+                  for attempt in range(1, 4):
+                      for url in services:
+                          try:
+                              with urllib.request.urlopen(url, timeout=10) as resp:
+                                  ip = resp.read().decode().strip()
+                                  # Only accept a valid PUBLIC IPv4 — we update an A
+                                  # record, and a dual-stack provider (e.g. ipify)
+                                  # could return an AAAA address over a v6-capable
+                                  # egress path. ipaddress.IPv4Address rejects v6,
+                                  # leading-zero octets, and Unicode digits in one
+                                  # call; .is_global then rejects a private/loopback/
+                                  # link-local/CGNAT/reserved reply (a captive portal
+                                  # or misbehaving provider) that would otherwise
+                                  # publish an unreachable A record -> try the next.
+                                  try:
+                                      if ipaddress.IPv4Address(ip).is_global:
+                                          return ip
+                                      print(f"WARN: {url} returned non-public IPv4 {ip!r}, trying next", file=sys.stderr)
+                                  except ValueError:
+                                      if ip:
+                                          print(f"WARN: {url} returned non-IPv4 {ip!r}, trying next", file=sys.stderr)
+                          except Exception as e:
+                              last_err = e
+                              print(f"WARN: get public IP via {url} (attempt {attempt}) failed: {e}", file=sys.stderr)
+                      if attempt < 3:
+                          time.sleep(5)
+                  # last_err is None if every reply was reachable but non-IPv4/empty
+                  # (no exception raised), so give a meaningful message either way.
+                  print(f"ERROR: Failed to get a valid IPv4 after retries: "
+                        f"{last_err or 'all providers returned non-IPv4 or empty responses'}")
+                  return None
 
               def update_record(zone_id, record_name, current_ip, proxied):
                   """Update or create a DNS A record."""
@@ -154,9 +199,10 @@ spec:
               current_ip = get_public_ip()
               if not current_ip:
                   sys.exit(1)
-              parts = current_ip.split('.')
-              if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-                  print(f"ERROR: Invalid IP returned: {current_ip!r}")
+              try:
+                  ipaddress.IPv4Address(current_ip)
+              except ValueError:
+                  print(f"ERROR: Invalid IPv4 returned: {current_ip!r}")
                   sys.exit(1)
               print(f"Current public IP: {current_ip}")
 

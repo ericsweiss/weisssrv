@@ -75,6 +75,151 @@
       Kernel mismatch: {{ kernel_updated }}
   when: reboot_required | bool
 
+# CI self-host safety: if THIS host runs the Proxmox VM hosting the active GitLab
+# runner EXECUTOR pod (the pod running this very playbook), a synchronous reboot
+# here reboots that VM and kills the job mid-run. Detect it and reboot DETACHED
+# instead (a systemd-run timer that survives the job). Only relevant when we are
+# actually going to reboot (reboot_required AND not skip_reboot — the k3s play
+# passes skip_reboot, so kured, not this, reboots k3s nodes). In a manual run the
+# controller's HOSTNAME is not an executor pod, the pod lookup finds nothing, and
+# is_ci_self_host stays false -> the normal synchronous path runs.
+- name: Identify the CI executor pod + whether we run inside a k8s pod
+  ansible.builtin.set_fact:
+    # In a GitLab k8s executor the controller's HOSTNAME is the pod name
+    # (runner-<token>-...). KUBERNETES_SERVICE_HOST is injected into EVERY pod, so
+    # it tells us we are inside the cluster even if the pod-name prefix ever
+    # changes — used below to fail CLOSED rather than synchronously reboot.
+    ci_executor_pod: "{{ lookup('env', 'HOSTNAME') | default('', true) }}"
+    ci_in_k8s: "{{ (lookup('env', 'KUBERNETES_SERVICE_HOST') | default('', true)) | length > 0 }}"
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+
+# Stub so the fact is always defined even when the lookup below is skipped (manual
+# run, or non-^runner- pod name); the `| default` guards already cope, this just
+# makes the contract explicit.
+- name: Default the executor-node lookup result
+  ansible.builtin.set_fact:
+    ci_executor_node_q: { stdout: '', rc: 1 }
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+
+- name: Find the k3s node hosting the CI executor pod
+  # Retry transient API/server blips (e.g. a k3s server itself mid-reboot) so a
+  # hiccup doesn't fall through to a wrong routing decision. Delegate to a k3s
+  # server NOT co-located with the host being processed (so we don't query a
+  # server whose own host we are about to reboot), falling back to the first
+  # server. A PERSISTENT failure (or rc=0 with empty nodeName) now fails CLOSED:
+  # ci_detection_failed -> reboot_action=defer (see below), so the self-host is
+  # never synchronously rebooted on an inconclusive lookup.
+  #
+  # Namespace IS gitlab-runner-privileged (NOT the shared `gitlab-runner`): every
+  # maintenance job runs on the PRIVILEGED/infrastructure runner (`tags:
+  # [infrastructure]`), whose release.yaml pins `namespace = gitlab-runner-privileged`
+  # and whose job pods carry esweiss.com/runner-class=infrastructure — the same
+  # label kured's blockingPodSelector targets. So this executor pod is always in
+  # gitlab-runner-privileged; the shared runner (gitlab-runner ns) never runs these.
+  ansible.builtin.command: >-
+    k3s kubectl get pod {{ ci_executor_pod }} -n gitlab-runner-privileged
+    -o jsonpath={.spec.nodeName}
+  register: ci_executor_node_q
+  changed_when: false
+  failed_when: false
+  retries: 3
+  delay: 5
+  until: ci_executor_node_q.rc == 0
+  delegate_to: >-
+    {{ (groups['k3s_servers']
+        | map('extract', hostvars)
+        | selectattr('proxmox_host', 'defined')
+        | rejectattr('proxmox_host', 'eq', inventory_hostname)
+        | map(attribute='inventory_hostname')
+        | list | first) | default(groups['k3s_servers'][0]) }}
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    # Only a GitLab k8s EXECUTOR pod is named `runner-<token>-project-...`; a
+    # manual run's HOSTNAME (operator laptop) won't match, so we skip the lookup
+    # (and its retries) entirely and take the synchronous path — correct for a
+    # manual run, which isn't running inside a doomed-on-reboot executor pod.
+    - ci_executor_pod is match('^runner-')
+    - groups['k3s_servers'] | default([]) | length > 0
+
+- name: Compute whether this host is the CI executor's Proxmox host
+  ansible.builtin.set_fact:
+    # The executor's k3s node maps to its Proxmox host via inventory hostvars
+    # (each k3s node sets proxmox_host). | trim consistently (matching
+    # ci_detection_failed) so the two facts can never disagree about the node name
+    # if stray whitespace ever appeared. If detection fails (empty) this is false
+    # and the routing falls to defer/synchronous as appropriate.
+    is_ci_self_host: >-
+      {{ (ci_executor_node_q.stdout | default('') | trim) in
+           ((groups['k3s_agents'] | default([])) + (groups['k3s_servers'] | default([])))
+         and inventory_hostname ==
+           (hostvars[ci_executor_node_q.stdout | default('') | trim] | default({})).proxmox_host | default('') }}
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+
+# Decide HOW (or whether) to reboot. Three facts drive it:
+#  - host_runs_etcd_server: this Proxmox host carries a k3s SERVER VM (etcd
+#    member). A DETACHED reboot of such a host can't coordinate with kured and
+#    could take a 2nd etcd member down -> defer it (the SYNCHRONOUS path, play 1
+#    serial:1 + the etcd-rejoin wait below, stays one-member-at-a-time and is
+#    fine). Derived from the inventory, not a manual flag.
+#  - ci_detection_failed: we are definitely inside a CI executor (^runner-) but
+#    the node lookup never resolved -> we cannot prove this host is NOT the
+#    self-host, so fail CLOSED (defer) rather than synchronously reboot and risk
+#    killing the run.
+#  - proxmox_self_reboot_safe (per-host, default true; false for pve-nas-01):
+#    never auto-reboot at all (encrypted pools + onboot=0 VMs).
+- name: Compute reboot-routing facts (etcd host, detection failure)
+  ansible.builtin.set_fact:
+    host_runs_etcd_server: >-
+      {{ inventory_hostname in (groups['k3s_servers'] | default([])
+         | map('extract', hostvars) | selectattr('proxmox_host', 'defined')
+         | map(attribute='proxmox_host') | list) }}
+    host_etcd_server_node: >-
+      {{ (groups['k3s_servers'] | default([])
+          | map('extract', hostvars) | selectattr('proxmox_host', 'defined')
+          | selectattr('proxmox_host', 'eq', inventory_hostname)
+          | map(attribute='inventory_hostname') | list | first) | default('') }}
+    # True iff EVERY k3s VM hosted on this Proxmox host is onboot=1
+    # (proxmox_autostart_enabled). A DETACHED host reboot is only safe if the
+    # executor's agent VM auto-returns afterward; if any hosted k3s VM is onboot=0
+    # (like pve-nas-01's), rebooting the host would strand it. Vacuously true for a
+    # host with no k3s VMs (it never takes the detached path anyway).
+    host_vms_autostart: >-
+      {{ (((groups['k3s_servers'] | default([])) + (groups['k3s_agents'] | default([])))
+          | map('extract', hostvars) | selectattr('proxmox_host', 'defined')
+          | selectattr('proxmox_host', 'eq', inventory_hostname)
+          | map(attribute='proxmox_autostart_enabled') | map('default', false)
+          | reject('equalto', true) | list | length) == 0 }}
+    # Fail closed whenever we run INSIDE the cluster (ci_in_k8s) but cannot CONFIRM
+    # the executor's node->host mapping: the pod name doesn't match ^runner- (a
+    # future executor naming change), the lookup errored (rc != 0), it returned
+    # empty (pod found but unscheduled / nodeName not yet set), OR it resolved a
+    # node that has no proxmox_host in inventory (a future node added without it).
+    # Any of these means we can't prove this host isn't the self-host, so DEFER
+    # rather than synchronously reboot and risk killing the run. A manual run (not
+    # in a pod) never sets this.
+    ci_detection_failed: >-
+      {{ (ci_in_k8s | default(false))
+         and (not ((ci_executor_pod | default('')) is match('^runner-'))
+              or (ci_executor_node_q.rc | default(1)) != 0
+              or (ci_executor_node_q.stdout | default('') | trim) == ''
+              or ((ci_executor_node_q.stdout | default('') | trim) != ''
+                  and (hostvars[ci_executor_node_q.stdout | default('') | trim] | default({})
+                       ).proxmox_host | default('') == '')) }}
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+
 - name: Pause for manual reboot decision
   ansible.builtin.pause:
     prompt: |
@@ -85,6 +230,50 @@
     - not (auto_reboot | default(false))
     - not (skip_reboot | default(false))
 
+- name: Decide reboot action (synchronous | detached | defer)
+  ansible.builtin.set_fact:
+    # defer  -> never auto-reboot here (operator + alert metric):
+    #             unsafe host, OR CI detection failed (fail closed), OR the
+    #             executor's own host that ALSO runs an etcd server.
+    # detached -> safe opt-* host running the executor VM (no etcd member): arm a
+    #             reboot that survives the job.
+    # synchronous -> safe, confirmed non-executor host: reboot in place.
+    reboot_action: >-
+      {{ 'defer'
+         if ((not (proxmox_self_reboot_safe | default(true)))
+             or (ci_detection_failed | default(false))
+             or ((is_ci_self_host | default(false)) and (host_runs_etcd_server | default(false)))
+             or ((is_ci_self_host | default(false)) and not (host_vms_autostart | default(false))))
+         else ('detached' if (is_ci_self_host | default(false)) else 'synchronous') }}
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+
+# --- SYNCHRONOUS: a safe, confirmed-non-executor host. play 1 is serial:1, so
+# only one host is down at a time.
+# etcd-quorum (BEFORE the reboot): if this host carries an etcd-server VM, do NOT
+# reboot it while kured is mid-reboot of ANOTHER server — that drops two of three
+# etcd members at once. In a single maintenance-all-ops run, play 1 finishes
+# before any sentinel is flagged so kured is idle here; this guard additionally
+# closes the CROSS-RUN window (a prior run's kured reboots still in flight).
+- name: Serialize against kured before a synchronous etcd-host reboot
+  ansible.builtin.include_tasks: _wait-no-kured-server-reboot.yml
+  vars:
+    kured_clear_reason: synchronous etcd-host reboot
+    kured_clear_delegate: >-
+      {{ (groups['k3s_servers']
+          | map('extract', hostvars)
+          | selectattr('proxmox_host', 'defined')
+          | rejectattr('proxmox_host', 'eq', inventory_hostname)
+          | map(attribute='inventory_hostname')
+          | list | first) | default(groups['k3s_servers'][0]) }}
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'synchronous'
+    - host_runs_etcd_server | default(false)
+
 - name: Reboot host if required
   ansible.builtin.reboot:
     reboot_timeout: "{{ reboot_timeout | default(600) }}"
@@ -92,6 +281,7 @@
   when:
     - reboot_required | bool
     - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'synchronous'
 
 - name: Wait for host to come back online
   ansible.builtin.wait_for_connection:
@@ -99,3 +289,167 @@
   when:
     - reboot_required | bool
     - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'synchronous'
+
+# etcd-quorum: if this host carries a k3s SERVER VM (etcd member), block serial:1
+# from advancing to the NEXT server-bearing host until THIS server's node is
+# Ready again (etcd member rejoined) — otherwise two etcd members could be down
+# at once. Delegated to a server NOT on this host. No-op for hosts with no server.
+# No failed_when:false on purpose: if the rebooted server's etcd member does NOT
+# come Ready within 3x300s, FAIL the run — a degraded etcd is a hard stop, do not
+# keep rebooting more hosts on top of it.
+- name: Wait for this host's k3s server (etcd member) to rejoin before serial advances
+  ansible.builtin.command: >-
+    k3s kubectl wait --for=condition=Ready node/{{ host_etcd_server_node }} --timeout=300s
+  register: etcd_rejoin_wait
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: etcd_rejoin_wait.rc == 0
+  delegate_to: >-
+    {{ (groups['k3s_servers']
+        | map('extract', hostvars)
+        | selectattr('proxmox_host', 'defined')
+        | rejectattr('proxmox_host', 'eq', inventory_hostname)
+        | map(attribute='inventory_hostname')
+        | list | first) | default(groups['k3s_servers'][0]) }}
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'synchronous'
+    - host_runs_etcd_server | default(false)
+    - host_etcd_server_node | default('') | length > 0
+
+# --- DETACHED: a safe opt-* host (no etcd member) running the CI executor's VM.
+# A synchronous reboot would kill the run. Arm a fallback detached reboot now; the
+# CI after_script re-arms a prompt reboot once the job ends and disarms this one
+# (scripts/maintenance-all-ops.sh + .gitlab-ci.yml). The long timer is the
+# fallback if the after_script never runs (crash). Only opt-* hosts reach here, so
+# it can never take an etcd member down out-of-band.
+- name: Clear any pending/failed self-reboot timer + service (idempotent re-run)  # noqa: command-instead-of-module
+  # `systemctl stop` does NOT clear a unit left in FAILED state, and systemd-run
+  # --unit collides with a same-named failed unit; reset-failed clears it. There
+  # is no systemd-module equivalent for reset-failed, hence the shell. --collect on
+  # the arm below normally garbage-collects the unit, so this is belt-and-suspenders.
+  ansible.builtin.shell: |
+    systemctl reset-failed maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true
+    systemctl stop maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'detached'
+
+- name: Schedule detached fallback reboot (this host runs the CI executor's VM)
+  ansible.builtin.command: >-
+    systemd-run --no-block --collect
+    --on-active={{ self_reboot_delay | default(3600) }}s
+    --unit=maintenance-self-reboot
+    systemctl reboot
+  changed_when: true
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'detached'
+
+- name: Record the detached self-host on the controller (for after_script re-arm/disarm)
+  ansible.builtin.copy:
+    # Path is hardcoded (not a var) so it CANNOT diverge from the rearm script's
+    # default — scripts/maintenance-rearm-self-reboot.sh reads the same
+    # /tmp/maintenance-self-host. Keep the two in sync if ever changed.
+    dest: /tmp/maintenance-self-host
+    content: "{{ inventory_hostname }}\n"
+    mode: "0644"
+  delegate_to: localhost
+  # become: false — the including play runs become: true, which a delegate_to:
+  # localhost task inherits and would try to sudo inside the CI runner pod (may
+  # not allow it), failing the marker write AFTER the detached timer is already
+  # armed. Writing a 0644 file under /tmp needs no privilege escalation.
+  become: false
+  changed_when: false
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'detached'
+
+- name: Report armed detached self-host reboot
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} runs the CI executor's VM
+      ({{ ci_executor_node_q.stdout | default('?') }}); armed a DETACHED fallback
+      reboot (+{{ self_reboot_delay | default(3600) }}s) that survives this job.
+      The CI after_script re-arms a prompt reboot once the job ends.
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'detached'
+
+# --- DEFER to operator: unsafe host (pve-nas-01), an etcd-server host that is the
+# executor's own host (laptop/prec — a detached reboot there can't coordinate with
+# kured), or a CI run where self-host detection failed (fail closed). Do NOT
+# reboot; surface a durable, alertable metric + a loud warning.
+- name: Report reboot DEFERRED to operator
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ inventory_hostname }} needs a reboot but it was DEFERRED to an
+      operator. Reason:
+      {{ 'unsafe to auto-reboot (encrypted pools / onboot=0 VMs)'
+         if not (proxmox_self_reboot_safe | default(true))
+         else ('CI self-host detection failed (failing closed)'
+               if (ci_detection_failed | default(false))
+               else ('runs the CI executor VM AND a k3s etcd server (avoiding a kured quorum race)'
+                     if (host_runs_etcd_server | default(false))
+                     else 'runs the CI executor VM but a hosted k3s VM is not onboot=1 (a host reboot would strand it)')) }}.
+      Reboot it manually when convenient.
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'defer'
+
+# A transient debug line is easy to miss; surface the deferral as a DURABLE,
+# alertable node_exporter textfile metric so monitoring flags the pending reboot.
+# Ensure the textfile dir exists first (via the role's default path) so the metric
+# is written even on a host class without node_exporter_host (Plex LXC) — there it
+# is at least a durable, operator-discoverable file; on the scraped hosts
+# (proxmox/dns/mail/gitlab) it also fires MaintenanceRebootDeferred.
+- name: Ensure the node_exporter textfile dir exists (for the deferred-reboot metric)
+  ansible.builtin.file:
+    path: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+    state: directory
+    mode: "0755"
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'defer'
+
+- name: Surface a DEFERRED reboot as a node_exporter metric
+  ansible.builtin.copy:
+    dest: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}/maintenance_reboot_deferred.prom"
+    mode: "0644"
+    content: |
+      # HELP maintenance_reboot_deferred Host needs a manual reboot deferred by maintenance (1=pending).
+      # TYPE maintenance_reboot_deferred gauge
+      maintenance_reboot_deferred{host="{{ inventory_hostname }}"} 1
+  when:
+    - reboot_required | bool
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'defer'
+
+# Self-correct: once the host no longer needs a reboot (operator rebooted it),
+# the next run clears the stale metric. Scoped to every host group that runs this
+# reboot path and can therefore write the metric — base_managed PLUS the app hosts
+# (plex/gitlab), which also include _reboot-if-needed and can hit the defer path
+# (e.g. CI detection failure). state=absent is a safe no-op on a host without the
+# file or the textfile dir. The k3s play passes skip_reboot and never defers.
+- name: Clear a stale deferred-reboot metric once the host no longer needs a reboot
+  ansible.builtin.file:
+    path: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}/maintenance_reboot_deferred.prom"
+    state: absent
+  failed_when: false
+  when:
+    - not (reboot_required | bool)
+    - inventory_hostname in ((groups['base_managed'] | default([]))
+        + (groups['plex_servers'] | default([]))
+        + (groups['gitlab_servers'] | default([])))

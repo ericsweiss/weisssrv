@@ -194,6 +194,11 @@ workflow:
   # at runtime), so an empty needs lets an operator play them immediately
   # without waiting on the entire build/test/deploy graph to complete first.
   needs: []
+  # Cap below the detached self-host reboot's 5400s (90m) fallback timer: GitLab
+  # must cancel a runaway job (-> the after_script re-arm fires) BEFORE that timer
+  # could go off mid-run and reboot the executor's own host. The longest job
+  # (maintenance-run-all) is ~30-45m, so 70m is comfortable headroom.
+  timeout: 70m
   before_script:
     - !reference [.deploy-base, before_script]
     - apt-get install -y -qq jq
@@ -214,6 +219,15 @@ workflow:
       echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
       chmod 600 ~/.kube/config
       export KUBECONFIG="$HOME/.kube/config"
+  after_script:
+    # If the run armed a DETACHED self-host reboot (the executor's own Proxmox
+    # host needed a reboot), re-arm it to fire promptly (+60s) now that the job is
+    # ending and disarm the long fallback timer. Runs on success, failure, AND
+    # cancel (so a cancelled run can't leave a 90-min timer ticking), and anchors
+    # the reboot to the real job-end instead of a fixed-delay guess. No-op if the
+    # run armed nothing (marker absent). Best-effort: the long fallback timer
+    # armed during the run still covers the reboot if this step fails.
+    - bash scripts/maintenance-rearm-self-reboot.sh || true
 
 .k3s-deploy-base:
   extends: .install-1password
@@ -2423,7 +2437,7 @@ maintenance-update-packages:
   script:
     - cd ansible
     - bash ../scripts/maintenance-run-with-verify.sh
-        op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true
+        op run -- ansible-playbook -i inventories/prod playbooks/maintenance/update-packages.yml -e auto_reboot=true -e self_reboot_delay=5400
   environment:
     name: production/maintenance-packages
     action: prepare
@@ -2464,7 +2478,7 @@ maintenance-update-applications:
       when: manual
       allow_failure: true
 
-# 3. K3s node updates - MANUAL (drains/cordons nodes)
+# 3. K3s node updates - MANUAL (cordon/upgrade/restart; no drain — kernel reboots via kured)
 maintenance-update-k3s-nodes:
   stage: maintenance
   extends: .maintenance-base

@@ -25,7 +25,7 @@ LIB = Path(__file__).resolve().parent / "maintenance-lib.sh"
 def _run(func_call: str, stdin: str = "") -> subprocess.CompletedProcess:
     """Source the library and run a function call, returning the completed proc.
 
-    `func_call` is bash appended after sourcing, e.g. 'count_not_ready_nodes'
+    `func_call` is bash appended after sourcing, e.g. 'not_ready_node_names'
     or 'deployment_replicas_ok 2 2'.
     """
     script = f". {LIB}\n{func_call}\n"
@@ -37,33 +37,34 @@ def _run(func_call: str, stdin: str = "") -> subprocess.CompletedProcess:
     )
 
 
-# --- count_not_ready_nodes -------------------------------------------------
+# --- not_ready_node_names --------------------------------------------------
 
-class TestCountNotReadyNodes:
-    def test_all_ready(self):
-        out = _run("count_not_ready_nodes", "node-a Ready control-plane 1d v1\n"
-                                            "node-b Ready <none> 1d v1\n").stdout.strip()
-        assert out == "0"
+class TestNotReadyNodeNames:
+    def test_all_ready_prints_nothing(self):
+        out = _run("not_ready_node_names", "node-a Ready control-plane 1d v1\n"
+                                           "node-b Ready <none> 1d v1\n").stdout.strip()
+        assert out == ""
 
     def test_cordoned_is_ready(self):
-        # Ready,SchedulingDisabled is healthy-but-cordoned, must NOT count.
+        # Ready,SchedulingDisabled is healthy-but-cordoned, must NOT be listed.
         out = _run(
-            "count_not_ready_nodes",
+            "not_ready_node_names",
             "node-a Ready,SchedulingDisabled <none> 1d v1\n",
         ).stdout.strip()
-        assert out == "0"
+        assert out == ""
 
-    def test_notready_counted(self):
+    def test_notready_names_listed(self):
+        # Both a plain NotReady and a cordoned-AND-down node are listed by NAME.
         out = _run(
-            "count_not_ready_nodes",
+            "not_ready_node_names",
             "node-a Ready <none> 1d v1\n"
             "node-b NotReady <none> 1d v1\n"
             "node-c NotReady,SchedulingDisabled <none> 1d v1\n",
-        ).stdout.strip()
-        assert out == "2"
+        ).stdout.split()
+        assert out == ["node-b", "node-c"]
 
-    def test_empty_input_zero(self):
-        assert _run("count_not_ready_nodes", "").stdout.strip() == "0"
+    def test_empty_input_empty(self):
+        assert _run("not_ready_node_names", "").stdout.strip() == ""
 
 
 # --- list_unhealthy_pods ---------------------------------------------------
@@ -86,6 +87,53 @@ class TestListUnhealthyPods:
             "ns job-2 0/1 Succeeded 0 5m\n",
         ).stdout.strip()
         assert out == ""
+
+    def test_error_and_failed_batch_pods_skipped(self):
+        # Terminal Job/CronJob failures (restartPolicy Never/OnFailure) — e.g. a
+        # cloudflare-ddns retry pod that hit a transient egress blip before the
+        # run succeeded. Not a maintenance regression; must not be flagged.
+        out = _run(
+            "list_unhealthy_pods",
+            "cloudflare-ddns cloudflare-ddns-29705525-66qkg 0/1 Error 0 5m\n"
+            "ns job-3 0/1 Failed 0 5m\n",
+        ).stdout.strip()
+        assert out == ""
+
+    def test_crashloop_still_flagged_not_confused_with_error(self):
+        # A long-running workload that keeps crashing surfaces as
+        # CrashLoopBackOff (restartPolicy Always never reaches Error/Failed) and
+        # MUST still be flagged.
+        out = _run(
+            "list_unhealthy_pods",
+            "ns app-1 0/1 CrashLoopBackOff 7 20m\n",
+        ).stdout
+        assert "app-1" in out
+
+    def test_init_error_not_substring_skipped(self):
+        # The Error/Failed skip is an EXACT $4 match, not a substring. A pod stuck
+        # in Init:Error / Init:CrashLoopBackOff (a failing init container) is a
+        # real problem and MUST still be flagged, not swallowed by the skip.
+        out = _run(
+            "list_unhealthy_pods",
+            "ns app-1 0/1 Init:Error 0 5m\n"
+            "ns app-2 0/1 Init:CrashLoopBackOff 2 5m\n",
+        ).stdout
+        assert "app-1" in out
+        assert "app-2" in out
+
+    def test_real_failure_statuses_still_flagged(self):
+        # Only the terminal BATCH statuses Error/Failed are excused. Evicted,
+        # OOMKilled, and NodeLost are real failures with distinct $4 tokens and
+        # MUST still be flagged (boundary in the other direction from the skip).
+        out = _run(
+            "list_unhealthy_pods",
+            "ns app-1 0/1 Evicted 0 5m\n"
+            "ns app-2 0/1 OOMKilled 3 5m\n"
+            "ns app-3 1/1 NodeLost 0 5m\n",
+        ).stdout
+        assert "app-1" in out
+        assert "app-2" in out
+        assert "app-3" in out
 
     def test_non_running_flagged(self):
         out = _run(
@@ -142,6 +190,40 @@ class TestDeploymentReplicasOk:
     def test_non_numeric_does_not_falsely_pass(self):
         # A garbage availableReplicas must not be treated as ok.
         assert _run("deployment_replicas_ok foo 2").returncode != 0
+
+
+# --- deployment_pod_nodes --------------------------------------------------
+
+class TestDeploymentPodNodes:
+    # Input mirrors the verify's jsonpath rows: "<pod-name>\t<nodeName>".
+    def test_matches_own_pod_not_vowel_bearing_sibling(self):
+        # cert-manager pods (hash = no-vowel SafeEncode) match; cert-manager-webhook
+        # / cert-manager-cainjector ('webhook'/'cainjector' contain vowels) do NOT.
+        rows = (
+            "cert-manager-65bf9cc8d9-abc12\tnode-a\n"
+            "cert-manager-webhook-7d9f8c6b5-xkz\tnode-b\n"
+            "cert-manager-cainjector-6b8d9f7c5-qq\tnode-c\n"
+        )
+        out = _run("deployment_pod_nodes cert-manager", rows).stdout.split()
+        assert out == ["node-a"]
+
+    def test_coredns_excludes_autoscaler(self):
+        rows = (
+            "coredns-77ccd6b8f-zzz\tnode-a\n"
+            "coredns-autoscaler-5d8b9c7f6-bbb\tnode-b\n"
+        )
+        out = _run("deployment_pod_nodes coredns", rows).stdout.split()
+        assert out == ["node-a"]
+
+    def test_no_match_prints_nothing(self):
+        rows = "other-app-7d9f8c6b5-xkz\tnode-a\n"
+        assert _run("deployment_pod_nodes cert-manager", rows).stdout.strip() == ""
+
+    def test_unscheduled_pod_emits_sentinel(self):
+        # An evicted / not-yet-scheduled pod (empty nodeName) prints "<unscheduled>"
+        # so the verify can excuse it during a kured drain instead of ERRORing.
+        rows = "metallb-controller-7d9f8c6b5-xkz\t\n"  # empty nodeName after the tab
+        assert _run("deployment_pod_nodes metallb-controller", rows).stdout.strip() == "<unscheduled>"
 
 
 # --- ha_reset_verdict ------------------------------------------------------

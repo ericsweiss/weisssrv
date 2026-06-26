@@ -9,3 +9,4 @@ resources:
   - external-dns
   - onepassword-connect
   - vpa
+  - kured

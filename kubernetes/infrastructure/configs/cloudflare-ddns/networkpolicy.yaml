@@ -12,9 +12,10 @@ spec:
 
 ---
 # Egress allowlist: kube-dns + external HTTPS only.
-# The CronJob calls api.ipify.org and api.cloudflare.com (both proxied to
-# Cloudflare edge over TCP/443). No private-LAN egress is needed; deny it
-# explicitly via `except` blocks on RFC1918 ranges.
+# The CronJob calls api.cloudflare.com plus a public IPv4-detection provider
+# (api.ipify.org, with ipv4.icanhazip.com / checkip.amazonaws.com as fallbacks) —
+# all public TCP/443. No private-LAN egress is needed; deny it explicitly via
+# `except` blocks on RFC1918 ranges.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -38,19 +39,39 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # External HTTPS (api.cloudflare.com, api.ipify.org)
+    # External HTTPS (api.cloudflare.com + public IPv4-detection providers)
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
+            # Egress is public-unicast HTTPS only (api.cloudflare.com + the public
+            # IPv4-detection providers, all in ordinary public ranges). EXCEPT every
+            # non-public / reserved IPv4 block so a compromised pod cannot reach the
+            # LAN, loopback, cloud-metadata, or other reserved space over 443.
             except:
+              # RFC1918 private LAN.
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
-              # Link-local (RFC 3927) — never a legitimate HTTPS destination.
+              # "This network" / unspecified (RFC 1122).
+              - 0.0.0.0/8
+              # Loopback (RFC 1122).
+              - 127.0.0.0/8
+              # Link-local (RFC 3927) — incl. 169.254.169.254 cloud-metadata.
               - 169.254.0.0/16
-              # Tailscale CGNAT (RFC 6598) — same trust boundary as the LAN;
-              # exclude it too.
+              # Tailscale / CGNAT (RFC 6598) — same trust boundary as the LAN.
               - 100.64.0.0/10
+              # IETF protocol assignments (RFC 6890).
+              - 192.0.0.0/24
+              # TEST-NET-1/2/3 documentation (RFC 5737).
+              - 192.0.2.0/24
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              # Benchmarking (RFC 2544).
+              - 198.18.0.0/15
+              # Multicast (RFC 5771) — HTTPS is unicast.
+              - 224.0.0.0/4
+              # Reserved / future use (RFC 1112) — incl. 255.255.255.255.
+              - 240.0.0.0/4
       ports:
         - protocol: TCP
           port: 443

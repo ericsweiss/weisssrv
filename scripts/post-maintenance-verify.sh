@@ -22,6 +22,32 @@ _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== Post-Maintenance Verification ==="
 ERRORS=0
 
+# kured (Kubernetes Reboot Daemon) reboots flagged k3s nodes one at a time,
+# during AND after a maintenance run (cordon -> drain -> reboot -> uncordon). A
+# node it is mid-reboot on is briefly NotReady and its pods are transiently
+# evicted/rescheduling (incl. NAS-pinned single replicas on RWO storage) — a
+# controlled, expected transient, NOT a maintenance regression. kured annotates
+# such nodes; the checks below treat THAT node's NotReady / unavailable pods as
+# expected (warn, verified next run) instead of failing — but still SURFACE them
+# so a node stuck-after-reboot isn't silently dropped, and scoped to the actual
+# node so an unrelated failure on a healthy node still ERRORs. Read fresh in each
+# check: kured reboots serially over minutes, so a single early snapshot goes
+# stale (a node may start/finish rebooting partway through verify).
+# DEPENDS on configuration.annotateNodes:true in kured/release.yaml — that is what
+# emits weave.works/kured-reboot-in-progress. If it is ever turned off this returns
+# empty and every kured reboot looks like a hard failure here (loud, not silent).
+kured_rebooting_nodes() {
+  # A node is "actively rebooting" only if it is BOTH kured-annotated AND cordoned
+  # (unschedulable). kured writes the annotation BEFORE its block-check and does NOT
+  # clear it when blocked, so an annotated-but-still-schedulable node is stale/blocked,
+  # not mid-reboot — excusing it would mask a real problem. (Matches the same
+  # annotation+cordoned logic in _wait-no-kured-server-reboot.yml.) Emit name only
+  # when annotation is set ($2) AND unschedulable is true ($3).
+  kubectl get nodes \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.weave\.works/kured-reboot-in-progress}{"\t"}{.spec.unschedulable}{"\n"}{end}' \
+    2>/dev/null | awk -F'\t' '$2 != "" && $3 == "true" {print $1}' || true
+}
+
 echo "Checking k3s node status..."
 # Capture failure as a verify error rather than aborting under set -e.
 node_query_failed=false
@@ -34,14 +60,56 @@ elif [ -z "$NODE_OUTPUT" ]; then
   echo "ERROR: kubectl returned no nodes"
   ERRORS=$((ERRORS + 1))
 else
-  # count_not_ready_nodes accepts both "Ready" and "Ready,SchedulingDisabled"
-  # (cordoned-but-healthy node, e.g., during a k3s rolling upgrade).
-  NOT_READY=$(echo "$NODE_OUTPUT" | count_not_ready_nodes)
-  if [ "$NOT_READY" -gt 0 ]; then
-    echo "ERROR: $NOT_READY node(s) not Ready"
-    ERRORS=$((ERRORS + 1))
+  # A node is not-ready if STATUS ($2) does not begin with "Ready" (so
+  # "Ready,SchedulingDisabled" — cordoned-but-healthy — does NOT count). Classify
+  # each not-ready node by EXACT name: one kured is actively rebooting is an
+  # expected transient (WARN, surfaced); anything else is a real ERROR.
+  KURED_NOW=$(kured_rebooting_nodes)
+  NOT_READY_NAMES=$(echo "$NODE_OUTPUT" | not_ready_node_names)
+  # If anything is not-ready-and-unexcused, grace + re-read once: a node that JUST
+  # finished a kured reboot can be briefly NotReady with its annotation already
+  # cleared (so neither the live KURED_NOW nor the grace alone would excuse it).
+  if [ -n "$NOT_READY_NAMES" ]; then
+    needs_grace=false
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      printf '%s\n' "$KURED_NOW" | grep -qxF "$n" || needs_grace=true
+    done <<< "$NOT_READY_NAMES"
+    if [ "$needs_grace" = true ]; then
+      sleep 20
+      # Only re-classify if the FRESH node query succeeds. Otherwise keep the
+      # pre-grace snapshot + KURED_NOW: mixing a stale NODE_OUTPUT with a
+      # fresh-and-empty KURED_NOW could wrongly flip a still-rebooting node to ERROR
+      # on a transient API blip.
+      if FRESH_NODES=$(kubectl get nodes --no-headers 2>/dev/null); then
+        NODE_OUTPUT="$FRESH_NODES"
+        KURED_NOW=$(kured_rebooting_nodes)
+        NOT_READY_NAMES=$(echo "$NODE_OUTPUT" | not_ready_node_names)
+      fi
+    fi
+  fi
+  node_errors=0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if printf '%s\n' "$KURED_NOW" | grep -qxF "$n"; then
+      echo "WARNING: node $n NotReady (kured rebooting; verified next run)"
+    else
+      echo "ERROR: node $n not Ready"
+      node_errors=$((node_errors + 1))
+    fi
+  done <<< "$NOT_READY_NAMES"
+  # Stuck-cordon detection: a node Ready,SchedulingDisabled but NOT currently
+  # kured-rebooting may be a kured uncordon failure (kubereboot/kured #955) or a
+  # left-over op-3 cordon. WARN (not ERROR — it can also be an intentional cordon).
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    printf '%s\n' "$KURED_NOW" | grep -qxF "$n" || \
+      echo "WARNING: node $n cordoned (Ready,SchedulingDisabled) with no active kured reboot — check for a stuck uncordon"
+  done <<< "$(echo "$NODE_OUTPUT" | awk '$2 == "Ready,SchedulingDisabled" {print $1}')"
+  if [ "$node_errors" -gt 0 ]; then
+    ERRORS=$((ERRORS + node_errors))
   else
-    echo "All nodes Ready"
+    echo "All nodes Ready${KURED_NOW:+ (kured-rebooting node(s) excused)}"
   fi
 fi
 
@@ -78,15 +146,71 @@ if [ -n "$BAD" ]; then
   fi
 fi
 if [ -n "$BAD" ]; then
-  echo "ERROR: pod(s) still unhealthy after grace:"
-  echo "$BAD"
-  ERRORS=$((ERRORS + 1))
+  KURED_NOW=$(kured_rebooting_nodes)
+  # NODE-SCOPED kured excuse. Map pod -> node via jsonpath (NOT `-o wide`, whose
+  # RESTARTS "5 (3m ago)" suffix shifts columns). While kured is mid-reboot, excuse
+  # an unhealthy pod ONLY if it is on a kured-rebooting node OR unscheduled (no node
+  # = evicted from one, not yet rescheduled). Any unhealthy pod on a HEALTHY node —
+  # or any unhealthy pod when kured is idle — ERRORs. No status-class shortcut: a
+  # CrashLoop on a healthy node ERRORs (node-scoped), one on a kured-rebooting node
+  # is excused and re-verified next run; bare Error/Failed is already dropped
+  # upstream in maintenance-lib.sh.
+  #
+  # RESIDUAL (unscheduled false-green, accepted): a node-less Pending pod is excused
+  # while kured is active, so a genuinely-unschedulable pod (resource pressure, bad
+  # nodeSelector) UNRELATED to kured WARNs instead of ERRORs in that window. Not
+  # precisely fixable from snapshots — a kured-drain-evicted pod is ALSO briefly
+  # node-less and can transiently read PodScheduled=False, indistinguishable from a
+  # stuck pod at one instant; only persistence-over-minutes separates them, which the
+  # next run re-checks once kured is idle (the excuse only holds mid-reboot).
+  pn_ok=true
+  if ! POD_NODES=$(kubectl get pods -A \
+      -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.nodeName}{"\n"}{end}' \
+      2>/dev/null); then
+    pn_ok=false
+    POD_NODES=""
+  fi
+  pod_errors=0
+  pod_warn=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    pkey=$(echo "$line" | awk '{print $1"/"$2}')
+    pstatus=$(echo "$line" | awk '{print $4}')
+    if [ -z "$KURED_NOW" ]; then
+      echo "ERROR: pod $pkey unhealthy (status $pstatus)"
+      pod_errors=$((pod_errors + 1))
+      continue
+    fi
+    if [ "$pn_ok" = false ]; then
+      # kured active but the pod->node lookup failed: can't node-scope. WARN
+      # (undetermined) like the deployment check — don't mask, don't false-fail on
+      # an API blip during reboot churn.
+      pod_warn="${pod_warn}  $pkey ($pstatus, node lookup inconclusive)"$'\n'
+      continue
+    fi
+    pnode=$(printf '%s\n' "$POD_NODES" | awk -F'\t' -v p="$pkey" '$1 == p {print $2}')
+    if [ -z "$pnode" ] || printf '%s\n' "$KURED_NOW" | grep -qxF "$pnode"; then
+      pod_warn="${pod_warn}  $pkey ($pstatus, node ${pnode:-<unscheduled>})"$'\n'
+    else
+      echo "ERROR: pod $pkey unhealthy on a healthy node (status $pstatus, node $pnode)"
+      pod_errors=$((pod_errors + 1))
+    fi
+  done <<< "$BAD"
+  if [ -n "$pod_warn" ]; then
+    echo "WARNING: pod(s) excused while kured is rebooting node(s) - not failing (verified next run):"
+    printf '%s' "$pod_warn"
+  fi
+  ERRORS=$((ERRORS + pod_errors))
 else
   echo "All pods healthy"
 fi
 
 echo ""
 echo "Checking critical deployments..."
+# One kured snapshot for the whole (fast, 5-deployment) loop is intentional —
+# unlike the node/pod checks that re-read per check because they span the 25s grace
+# and serial node churn, this loop completes in well under a kured reboot cycle.
+KURED_NOW=$(kured_rebooting_nodes)
 for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb-controller:metallb-system authentik-server:authentik; do
   name="${dep%%:*}"
   ns="${dep##*:}"
@@ -97,15 +221,146 @@ for dep in traefik:traefik coredns:kube-system cert-manager:cert-manager metallb
     DESIRED="${DEP_REPLICAS##* }"
     if deployment_replicas_ok "$AVAIL" "$DESIRED"; then
       echo "  $name ($ns): ${AVAIL:-0}/${DESIRED:-1} available"
+      continue
+    fi
+    # Under-replicated. NODE-SCOPED kured excuse: is one of THIS deployment's pods
+    # on a node kured is actively rebooting (a single replica pinned there shows
+    # availableReplicas=0 transiently)? An unrelated down deployment on a healthy
+    # node still ERRORs even while kured reboots elsewhere. Capture the pod-node
+    # lookup so an API blip is 'undetermined -> WARN', not a silent mis-ERROR.
+    # jsonpath name<TAB>node (NOT `-o wide` $7, whose RESTARTS "(3m ago)" suffix
+    # shifts columns); pod name anchored to the no-vowel pod-template-hash charset
+    # so a vowel-bearing sibling (cert-manager-webhook for cert-manager,
+    # coredns-autoscaler for coredns) is not matched.
+    #
+    # RESIDUAL (multi-replica masking, accepted): traefik/coredns/authentik-server
+    # run >=2 replicas. If one replica is genuinely missing on a HEALTHY node while
+    # a SEPARATE replica sits on a kured-rebooting node, this (available<desired +
+    # any-pod-on-kured-node) excuse WARNs and masks the real shortfall for that run.
+    # A precise per-replica fix is infeasible from these snapshots: a missing replica
+    # has no pod object to inspect, and a pod on a kured node may still be Ready
+    # (counted in availableReplicas until evicted), so (desired-available) vs
+    # (#pods-on-kured-nodes) is unreliable and would false-FAIL real kured transients.
+    # Bounded + backstopped: the per-POD pod check above still ERRORs a
+    # CrashLoop/Pending replica on a healthy node regardless of a kured sibling; the
+    # excuse only holds while kured is mid-reboot (serial, minutes) so the next run
+    # re-verifies; and KubeDeploymentReplicasMismatch fires independently in Prometheus.
+    dep_excuse=no
+    if [ -n "$KURED_NOW" ]; then
+      if DEP_PODNODES=$(kubectl get pods -n "$ns" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.nodeName}{"\n"}{end}' 2>/dev/null); then
+        DEP_NODES=$(echo "$DEP_PODNODES" | deployment_pod_nodes "$name")
+        # Excuse if a replica is on a kured-rebooting node OR is unscheduled
+        # (evicted by a kured drain and not yet rescheduled — same transient the
+        # pod check excuses, kept consistent here).
+        if printf '%s\n' "$DEP_NODES" | grep -qxF '<unscheduled>' \
+           || printf '%s\n' "$DEP_NODES" | grep -qxFf <(printf '%s\n' "$KURED_NOW"); then
+          dep_excuse=yes
+        fi
+      else
+        dep_excuse=undetermined
+      fi
+    fi
+    if [ "$dep_excuse" = no ]; then
+      # Grace (matching the node/pod checks): a deployment can be briefly
+      # under-replicated (a rolling pod, a just-rescheduled replica). Re-query once
+      # after a short sleep before failing.
+      sleep 10
+      if DEP2=$(kubectl get deployment "$name" -n "$ns" -o jsonpath='{.status.availableReplicas} {.spec.replicas}' 2>/dev/null) \
+         && deployment_replicas_ok "${DEP2%% *}" "${DEP2##* }"; then
+        echo "  $name ($ns): ${DEP2%% *}/${DEP2##* } available (recovered after grace)"
+      else
+        echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"
+        ERRORS=$((ERRORS + 1))
+      fi
     else
-      echo "  ERROR: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available"
-      ERRORS=$((ERRORS + 1))
+      sfx=""
+      [ "$dep_excuse" = undetermined ] && sfx=" (pod-node lookup inconclusive)"
+      echo "  WARNING: $name ($ns): ${AVAIL:-0}/${DESIRED:-?} available (kured rebooting; verified next run)$sfx"
     fi
   else
     echo "  ERROR: $name ($ns): deployment lookup failed"
     ERRORS=$((ERRORS + 1))
   fi
 done
+
+echo ""
+echo "Checking for failed Jobs..."
+# list_unhealthy_pods skips terminal Error/Failed pods (mostly flaky CronJob retry
+# pods — see maintenance-lib.sh), which could hide a genuinely-failed one-shot Job
+# (e.g. a DB migration/bootstrap Job that exhausted its backoffLimit). Check Jobs
+# directly: a Failed=True condition that did NOT also Complete, on a NON-CronJob
+# Job. NODE-SCOPE the kured excuse like the pod/deployment checks: a one-shot Job
+# with backoffLimit:0 whose pod is evicted by a kured drain can reach Failed
+# through no fault of its own. Excuse (WARN) only if a pod of the Job is/was on a
+# kured-rebooting node or unscheduled, OR its pods are already gone (TTL cleanup,
+# can't node-scope) AND kured is active; otherwise ERROR — a real, terminal failure.
+# The pods-gone-during-kured case is ambiguous (a real terminal failure looks the
+# same as a reboot-evicted one once pods are TTL-cleaned), so it WARNs here — but
+# the default KubeJobFailed Prometheus alert fires on ANY failed Job independently
+# of this run, so a genuinely-broken Job is never lost to monitoring.
+KURED_NOW=$(kured_rebooting_nodes)
+# Split the kubectl query from the awk filter so a query FAILURE (API/RBAC/token)
+# is counted as an ERROR, not silently read as "no failed Jobs". A plain
+# VAR=$(...) assignment does not trip `set -e`, and the old `... | awk ... || true`
+# masked a failed `kubectl get jobs` as empty output -> false green. Mirrors the
+# node/pod/deployment checks, which all count an ERROR on query failure.
+jobs_query_failed=false
+if JOBS_RAW=$(kubectl get jobs -A --request-timeout=15s \
+  -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.metadata.ownerReferences[0].kind}{"\t"}{range .status.conditions[*]}{.type}={.status},{end}{"\n"}{end}' \
+  2>/dev/null); then
+  FAILED_JOBS=$(printf '%s\n' "$JOBS_RAW" | awk -F'\t' '$2 != "CronJob" && $3 ~ /Failed=True/ && $3 !~ /Complete=True/ {print $1}')
+else
+  echo "ERROR: failed to query Jobs (kubectl get jobs -A failed) - cannot verify failed Jobs this run"
+  ERRORS=$((ERRORS + 1))
+  FAILED_JOBS=""
+  jobs_query_failed=true
+fi
+job_errors=0
+job_warn=""
+while IFS= read -r jk; do
+  [ -n "$jk" ] || continue
+  jns="${jk%%/*}"
+  jname="${jk##*/}"
+  if [ -z "$KURED_NOW" ]; then
+    echo "ERROR: failed Job $jk (terminal Failed condition)"
+    job_errors=$((job_errors + 1))
+    continue
+  fi
+  # Distinguish a query FAILURE from an empty result: if this pod lookup itself
+  # errors (API/RBAC), we cannot node-scope the excuse, so treat the terminal Job
+  # as a real ERROR rather than the benign "pods gone" WARN below (which would
+  # masquerade a failed check as an excused transient).
+  if ! JOB_NODES=$(kubectl get pods -n "$jns" -l batch.kubernetes.io/job-name="$jname" --request-timeout=15s \
+    -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null); then
+    echo "ERROR: failed Job $jk (could not query its pods to confirm a kured excuse)"
+    job_errors=$((job_errors + 1))
+    continue
+  fi
+  if [ -z "$JOB_NODES" ]; then
+    # RESIDUAL (pods-gone false-green, accepted): a terminal-failed Job whose pods
+    # were already TTL-cleaned/deleted has no node to attribute, so while kured is
+    # active it WARNs rather than ERRORs — a real failure whose pods happened to be
+    # cleaned in a kured window is indistinguishable from a kured eviction here. Not
+    # precisely fixable (no pod = no node); backstopped by the next run's re-verify
+    # and the independent KubeJobFailed Prometheus alert (fires on any failed Job).
+    job_warn="${job_warn} $jk(pods gone; kured active)"
+  elif ! printf '%s\n' "$JOB_NODES" | grep -v '^$' | grep -vxFf <(printf '%s\n' "$KURED_NOW") | grep -q .; then
+    # Excuse ONLY if EVERY pod of the Job is unscheduled (blank) or on a
+    # kured-rebooting node. If even one attempt pod failed on a HEALTHY node, that
+    # is a real failure — don't let one evicted attempt mask it.
+    job_warn="${job_warn} $jk(all pods unscheduled or on a kured-rebooting node)"
+  else
+    echo "ERROR: failed Job $jk (a pod failed on a healthy node, not a kured transient)"
+    job_errors=$((job_errors + 1))
+  fi
+done <<< "$FAILED_JOBS"
+if [ -n "$job_warn" ]; then
+  echo "WARNING: failed Job(s) excused while kured is rebooting - not failing (verified next run):$job_warn"
+fi
+if [ "$job_errors" -eq 0 ] && [ -z "$job_warn" ] && [ "$jobs_query_failed" = false ]; then
+  echo "No failed Jobs"
+fi
+ERRORS=$((ERRORS + job_errors))
 
 echo ""
 echo "Checking GitLab health..."

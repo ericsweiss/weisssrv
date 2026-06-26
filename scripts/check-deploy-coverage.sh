@@ -65,8 +65,9 @@ set -euo pipefail
 # Roles deliberately not mapped to a CI deploy job because deployment
 # requires human-in-the-loop work that doesn't belong in unattended CI:
 #
-#   k3s            — node lifecycle (rolling drain/cordon/upgrade) via
-#                    `task k3s:deploy` / `task maintenance:update-k3s-nodes`.
+#   k3s            — node lifecycle (rolling cordon/upgrade; kernel reboots
+#                    delegated to kured) via `task k3s:deploy` /
+#                    `task maintenance:update-k3s-nodes`.
 #   proxmox_vm     — VM provisioning, intentionally out of CI; runs via
 #                    `task k3s:provision-vms` and similar wrappers.
 #   proxmox_lxc    — same reasoning as proxmox_vm.
@@ -92,7 +93,7 @@ INTENTIONALLY_UNMAPPED_ROLES=(
 #                                  invokes site.yml lists its own
 #                                  role/inventory triggers.
 #   k3s.yml                      — k3s node lifecycle (rolling
-#                                  drain/cordon/upgrade) via
+#                                  cordon/upgrade) via
 #                                  `task k3s:deploy`. Never CI-driven.
 #   k3s-provision-vms.yml        — VM provisioning on Proxmox hosts
 #                                  via `task k3s:provision-vms`. Manual.
@@ -113,6 +114,7 @@ INTENTIONALLY_UNMAPPED_ROLES=(
 #                                  destructive to automate via CI.
 #   maintenance/_ensure-nfs-server-healthy.yml,
 #   maintenance/_reboot-if-needed.yml,
+#   maintenance/_wait-no-kured-server-reboot.yml,
 #   maintenance/update-applications.yml,
 #   maintenance/update-full.yml,
 #   maintenance/update-helm-charts.yml,
@@ -134,6 +136,7 @@ INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
     bootstrap/storage-bootstrap.yml
     maintenance/_ensure-nfs-server-healthy.yml
     maintenance/_reboot-if-needed.yml
+    maintenance/_wait-no-kured-server-reboot.yml
     maintenance/update-applications.yml
     maintenance/update-full.yml
     maintenance/update-helm-charts.yml

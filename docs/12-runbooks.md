@@ -489,7 +489,7 @@ sudo qmrestore /path/to/backup.vma.zst 100 --storage local-lvm
 The infrastructure has three independent update scopes, each with rolling deployment (one host/node at a time) to maintain service availability:
 
 1. **Base infrastructure** - Proxmox hosts, DNS servers, SMTP relay, Plex LXC (managed by Ansible)
-2. **K3s cluster nodes** - k3s binary on server/agent VMs (managed by Ansible, rolling drain/cordon)
+2. **K3s cluster nodes** - k3s binary on server/agent VMs (Ansible, rolling cordon/restart; kernel reboots via kured)
 3. **K3s workloads** - Helm charts and application images (managed by Flux: update `all.yml`, `task flux:sync-versions`, commit, push)
 
 **Note:** OS package updates (`task maintenance:update-packages`) span base infrastructure hosts, k3s node VMs, and app hosts (Plex + GitLab) in a single rolling run.
@@ -505,7 +505,7 @@ The infrastructure has three independent update scopes, each with rolling deploy
 | Full base update (packages + apps) | `task maintenance:update-full` |
 | Full base update (auto-reboot) | `task maintenance:update-full-auto` |
 | Plex only | `task maintenance:update-plex` |
-| K3s nodes (rolling drain/cordon/upgrade) | `task maintenance:update-k3s-nodes` |
+| K3s nodes (rolling cordon/upgrade; reboots via kured) | `task maintenance:update-k3s-nodes` |
 | K3s Helm charts + workload images | Edit `all.yml` → `task flux:sync-versions` → `git commit` → `git push`. Flux reconciles. |
 | Full cluster update (nodes + versions) | `task maintenance:update-cluster` (4-phase: k3s node upgrades, check-versions, update-all-versions, sync-versions; commit + push to deploy via Flux) |
 
@@ -723,19 +723,59 @@ task maintenance:update-k3s-nodes
 task k3s:status
 ```
 
-**Process (per node, serial: 1):**
-1. Cordons node (prevents new pods)
-2. Drains node (evicts existing pods, 30s grace period)
-3. Upgrades k3s binary via install script
-4. Restarts k3s service
-5. Uncordons node (allows scheduling)
-6. Waits for node Ready status
+**Process (per node, serial: 1) — k3s BINARY upgrade only:**
+1. Cordons node (prevents new pods during the ~1-2 min upgrade)
+2. Upgrades k3s binary via install script
+3. Restarts the k3s / k3s-agent service
+4. Uncordons node, waits for node Ready
+
+There is **no drain**: a k3s service restart keeps running pods (containerd
+persists the containers across a kubelet restart), so eviction is unnecessary —
+and draining the node that hosts the CI job's own runner executor pod would
+deadlock the run.
+
+**Kernel/OS reboots are NOT done here.** `task maintenance:update-packages` only
+`touch`es `/var/run/reboot-required` on a node whose kernel changed; **kured**
+(Kubernetes Reboot Daemon, a DaemonSet — `kubernetes/infrastructure/controllers/kured/`)
+then reboots each flagged node one at a time (cordon → drain → reboot → uncordon),
+coordinated by a cluster-wide lock and gated by a `blockingPodSelector` so it
+never reboots the node running the maintenance job until that job has finished.
+The Proxmox HOST that runs the executor's VM is handled by a detached
+`systemd-run` reboot in `_reboot-if-needed.yml` (it can't reboot itself
+synchronously without killing the run).
+
+> **Operator note — kured runs concurrently with the maintenance ops.** During
+> `maintenance-run-all`, op 1 flags node sentinels and kured may begin rebooting
+> a flagged node ~5 min later, while ops 3–6 are still running. This is safe
+> (kured does one node at a time, the cluster tolerates one server down, and the
+> ops retry their delegated `kubectl`), but you may see transient delegated-kubectl
+> retries in ops 3–6 and a NotReady node mid-run — these are expected, not
+> failures. The post-maintenance verify excludes kured-rebooting nodes and their
+> transient pods for exactly this reason.
+>
+> **etcd quorum stays safe — by construction, not by timing.** The 3 etcd
+> servers (k3s-srv on pve-nas-01 / pve-laptop-01 / pve-prec-01) are never rebooted
+> two-at-once, enforced four ways: (1) kured is `concurrency: 1` (one node at a
+> time, cluster-locked); (2) `update-packages` play 1 (synchronous Proxmox-host
+> reboots, `serial: 1`) **waits for each rebooted server's k3s node to be Ready
+> (etcd rejoined) before advancing** to the next host; (3) `update-k3s-nodes`'
+> server play **waits until no server carries the `kured-reboot-in-progress`
+> annotation** before restarting a server's k3s (which briefly drops its etcd
+> member); and (4) the detached self-host reboot only ever targets an **opt-\*
+> host (no etcd member)** — an etcd-server host that is the executor's own host
+> defers to the operator instead. With single-fault etcd tolerance, no path puts
+> two members down at once.
+>
+> **kured reboots whenever `/var/run/reboot-required` appears.** On the k3s VMs
+> (Debian; no `unattended-upgrades` configured by any role) the maintenance apt
+> upgrade is the sole writer, so kured reboots are maintenance-driven. If a future
+> out-of-band writer ever sets the sentinel, kured still reboots safely
+> (`concurrency: 1` + the `blockingPodSelector` deferral of any node running a CI
+> job) — just not on a maintenance schedule.
 
 **Special considerations:**
 - Servers are updated first, then agents
-- Agents with persistent storage (Authentik/Mealie PostgreSQL) are drained carefully
-- DaemonSets are ignored during drain (expected behavior)
-- If drain fails, the node is uncordoned and the upgrade aborts (investigate PDBs or stuck pods)
+- If the service restart fails, the always-block uncordons the node
 
 #### 2. Helm Chart + Workload Image Updates (Flux)
 

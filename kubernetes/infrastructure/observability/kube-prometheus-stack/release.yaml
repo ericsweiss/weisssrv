@@ -706,6 +706,45 @@ spec:
                     Proxmox host {{ $labels.id }} has been unreachable for 5 minutes.
                     If id is empty, the Proxmox exporter itself may be down.
 
+              # A k3s node left unschedulable (Ready,SchedulingDisabled) long after
+              # a reboot — a kured uncordon failure (kubereboot/kured #955) or a
+              # drain that timed out with forceReboot:false — is invisible to
+              # KubeNodeNotReady (the node is Ready). 30m is well past a normal
+              # kured cycle (~5m) or op-3 cordon (~2m), so this only fires on a
+              # genuinely stuck cordon.
+              - alert: NodeStuckCordoned
+                expr: kube_node_spec_unschedulable == 1
+                for: 30m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Node {{ $labels.node }} cordoned (unschedulable) for 30m'
+                  description: >-
+                    Node {{ $labels.node }} has been SchedulingDisabled for 30
+                    minutes. If maintenance is not in progress, suspect a stuck
+                    kured uncordon or a timed-out drain — investigate, then
+                    `kubectl uncordon {{ $labels.node }}`.
+
+              # _reboot-if-needed.yml writes the maintenance_reboot_deferred
+              # node_exporter textfile metric when it DEFERS a host reboot to an
+              # operator (pve-nas-01's encrypted pools, an etcd-server host running
+              # the CI executor, or a fail-closed detection). It self-clears once
+              # the host no longer needs a reboot.
+              - alert: MaintenanceRebootDeferred
+                expr: maintenance_reboot_deferred == 1
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Host {{ $labels.host }} has a maintenance-deferred reboot pending'
+                  description: >-
+                    Maintenance deferred a kernel reboot of {{ $labels.host }} to an
+                    operator. Reboot it manually when convenient (unlock ZFS keys +
+                    start its VMs after, for pve-nas-01); the alert clears on the
+                    next run once the host no longer needs a reboot.
+
               # corosync CPU wedge — incident 2026-05-09: corosync PID stuck at
               # ~99% CPU on pve-nas-01, process alive (so ProxmoxHostDown stayed
               # green and the systemd unit stayed "active") but pmxcfs frozen.
