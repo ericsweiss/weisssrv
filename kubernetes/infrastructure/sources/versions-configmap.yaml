@@ -33,7 +33,7 @@ data:
   kube_vip_version: v1.2.1
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.4-alpine
-  mealie_version: v3.20.0
+  mealie_version: v3.20.1
   meilisearch_version: v1.15.2
   nzbget_version: '26.2'
   plex_version: 1.43.2.10687-563d026ea
