@@ -99,17 +99,26 @@
   hosts: dns-01
   become: true
   tasks:
-    - name: Test SSH to dns-02 (certificate distribution)
-      ansible.builtin.command: ssh -i /home/eric/.ssh/id_ed25519_certs -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 eric@192.168.0.160 'echo success'
+    # Exercise the SAME pinned-key path the cert-reload script uses:
+    # StrictHostKeyChecking=yes against /root/.ssh/known_hosts (populated by
+    # acme_certs), so a changed/unknown host key fails loudly here exactly as
+    # the real cert push would — accept-new would mask that. Loops over every
+    # cert_distribution_target rather than two hardcoded hosts.
+    - name: Test SSH to each certificate distribution target
+      ansible.builtin.command: >-
+        ssh -i /home/eric/.ssh/id_ed25519_certs
+        -o BatchMode=yes
+        -o StrictHostKeyChecking=yes
+        -o UserKnownHostsFile=/root/.ssh/known_hosts
+        -o ConnectTimeout=5
+        -p {{ item.ssh_port | default(22) }}
+        {{ item.ssh_user | default('eric') }}@{{ item.ip }} 'echo success'
       changed_when: false
-      register: dns02_ssh
-      failed_when: "'success' not in dns02_ssh.stdout"
-
-    - name: Test SSH to smtp-relay (certificate distribution)
-      ansible.builtin.command: ssh -i /home/eric/.ssh/id_ed25519_certs -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 eric@192.168.0.151 'echo success'
-      changed_when: false
-      register: smtp_ssh
-      failed_when: "'success' not in smtp_ssh.stdout"
+      register: cert_target_ssh
+      failed_when: "'success' not in cert_target_ssh.stdout"
+      loop: "{{ cert_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }} ({{ item.ip }})"
 
     - name: Verify AdGuard Home Sync timer is enabled
       ansible.builtin.systemd:

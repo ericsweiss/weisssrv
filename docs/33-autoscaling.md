@@ -20,6 +20,18 @@ stays manual — see the last section for why.
 - **CoreDNS HPA pin** (`kubernetes/infrastructure/configs/coredns/hpa.yaml`):
   min=max=2. k3s manages CoreDNS as a wrangler AddOn and resets replicas on
   server restarts; the HPA scales it back within seconds.
+- **metrics-server is the dependency this whole subsystem rests on.** The
+  k3s-bundled metrics-server (kube-system, single replica) supplies the metrics
+  every HPA (Traefik, authentik-server, Connect, salt-rim, the CoreDNS pin) and
+  the VPA recommender read. It is therefore a single point of failure: if its one
+  pod OOMs or can't schedule, every HPA goes stale (holds its last replica count,
+  can't scale) and the recommender stops getting data. Like CoreDNS it is a k3s
+  AddOn (k3s reverts Auto-applied changes on reconcile), so it carries a
+  **recommend-only VPA** (`updateMode: Off`, `configs/vpa/platform.yaml`) rather
+  than an Auto one. The durability fix — raise it to 2 replicas and add a memory
+  limit via a k3s `HelmChartConfig` override — is a k3s/Ansible change tracked in
+  [docs/16-next-steps.md](./16-next-steps.md) (Deferred from the 2026 comprehensive
+  review).
 - **Horizontal autoscaling for the stateless, HA-fronting tiers.** Prefer each
   chart's own autoscaling toggle over a standalone HPA — so the chart omits
   static `.spec.replicas` and nothing re-asserts a replica count against the HPA
@@ -79,7 +91,9 @@ sidecars, leader-elected singletons), not effort.
 | ESO webhook / cert-controller | external-secrets | reject | admission/cert paths, already 2 replicas, no benefit |
 | exporters / kube-state-metrics | observability | reject | 1:1 scrape mapping; a second replica breaks dedup |
 | Prometheus / Loki / Alertmanager / Postgres | various | reject | stateful (StatefulSet / zvol) |
+| grafana | observability | reject | single-writer SQLite on an NFS-backed RWX PV; not horizontally safe (carries an Initial VPA) |
 | coredns | kube-system | n/a | min==max==2 HPA pin (replica anchor, not an autoscaler) |
+| metrics-server / local-path-provisioner / kube-vip / kured | various | n/a | k3s/infra add-ons, not application workloads (metrics-server is the HPA/VPA dependency — see Components) |
 
 ## CPU limits (intentionally unset)
 
@@ -92,11 +106,18 @@ real). Memory stays limited because it is incompressible — its failure mode is
 OOM, not throttling.
 
 VPAs keep their default `controlledValues: RequestsAndLimits`. A VPA scales an
-*existing* limit to preserve its request:limit ratio but never *adds* a limit a
-manifest omits (verified on the runner managers: no CPU limit declared, none
-imposed live), so memory limits keep tracking the recommendation while CPU stays
-limit-free. `RequestsOnly` is deliberately **not** used as a blanket setting — on
-a `[cpu,memory]` VPA it would freeze the memory limit too (an OOM risk).
+*existing* limit — one present in the **rendered pod spec** — to preserve its
+request:limit ratio, but never *adds* a limit the rendered spec omits (verified on
+the runner managers: no CPU limit declared, none imposed live), so memory limits
+keep tracking the recommendation while CPU stays limit-free. The subtlety:
+"rendered" includes **chart-default limits a Helm chart injects even when the
+values file sets none** — node-exporter's chart still rendered a ~110m CPU limit,
+so its `RequestsAndLimits` VPA kept *re-imposing* that CPU limit (and
+`CPUThrottlingHigh`) until it was switched to `RequestsOnly`
+(`observability/vpa.yaml`, the worked example). This is also why a values-only
+lint can miss a CPU limit (it never sees the chart default). `RequestsOnly` is the
+targeted fix for such charts; it is deliberately **not** a blanket setting — on a
+`[cpu,memory]` VPA it would freeze the memory limit too (an OOM risk).
 
 Removing the CPU limit moves these pods from Guaranteed to Burstable QoS; with
 memory requests sized to the working set they remain eviction candidates only
@@ -162,11 +183,13 @@ Apply an `Off`-tier recommendation by editing the workload's resources in
 git (the recommendation is the data, the HelmRelease stays the source of
 truth).
 
-## Hand-tuned baselines (VPA Off tier)
+## Hand-tuned request baselines
 
-Set from observed working sets (2026-06): Prometheus 2Gi request / 4Gi
-limit at 365d retention; Grafana 512Mi/1Gi; Loki 512Mi/1Gi; Flux
-controllers 256Mi requests (patched in
+Set from observed working sets (2026-06). The `Off`-tier (recommendation-only)
+workloads keep these hand-tuned numbers permanently: Prometheus 2Gi request / 4Gi
+limit at 365d retention; Loki 512Mi/1Gi. The `Initial`-tier workloads start from
+these baselines but let the VPA right-size them on the next natural restart:
+Grafana 512Mi/1Gi; Flux controllers 256Mi requests (patched in
 `kubernetes/clusters/weisssrv/flux-system/kustomization.yaml`).
 
 ## Proxmox-level scaling (manual by design)

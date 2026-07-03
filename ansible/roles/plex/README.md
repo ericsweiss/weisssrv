@@ -13,7 +13,8 @@ Installs and configures Plex Media Server in an LXC container with GPU transcodi
 ### Configuration
 - GPU transcoding enablement (via proxmox_lxc role)
 - Media library access (bind mount from pve-nas-01)
-- Systemd service override (Restart=always)
+- Systemd service override (Restart=on-failure)
+- TLS custom-certificate hook (plex-cert-reload.sh)
 
 ### Traefik Ingress
 - IngressRoute deployment for external access
@@ -26,14 +27,17 @@ Installs and configures Plex Media Server in an LXC container with GPU transcodi
 # Version (from group_vars/all.yml)
 plex_version: "1.42.2.10156-f737b826c"  # Or "latest" for auto-update
 
-# LXC configuration (in hosts.yml)
+# LXC configuration (host_vars/plex.yml)
 plex:
   vmid: 152
   proxmox_host: pve-nas-01
   lxc_bind_mounts:
+    - host_path: /mnt/ssd/appdata/plex
+      container_path: /config
+    - host_path: /mnt/nvme/fast/plex-transcode
+      container_path: /transcode
     - host_path: /mnt/media
       container_path: /media
-      options: "mp=/media,ro=0"
   lxc_gpu_passthrough: true
 ```
 
@@ -55,7 +59,10 @@ task plex:check
 ```
 Plex LXC (192.168.0.152)
 ├─ Plex Media Server
-├─ Bind mount: /mnt/media (mergerfs on pve-nas-01, read-write for metadata)
+├─ Bind mounts (from pve-nas-01):
+│  ├─ /mnt/ssd/appdata/plex          → /config
+│  ├─ /mnt/nvme/fast/plex-transcode  → /transcode
+│  └─ /mnt/media (mergerfs)          → /media (read-write for metadata)
 ├─ GPU: /dev/dri (Intel/AMD transcoding)
 └─ Traefik Ingress
    └─ plex.esweiss.com → 192.168.0.152:32400
@@ -65,21 +72,37 @@ Plex LXC (192.168.0.152)
 
 ```
 1. Check if Plex GPG key exists
-2. Download Plex GPG key (if needed)
+2. Download + verify Plex GPG key (if needed)
 3. Add Plex apt repository
-4. Install Plex Media Server (pinned version or latest)
-5. Deploy systemd override (Restart=always)
-6. Reload systemd daemon
-7. Ensure Plex service is enabled and running
-8. Wait for Plex to be ready (port 32400)
+4. Install Plex Media Server (pinned version or latest); hold the pinned version
+5. Add plex user to media/video/render groups
+6. Deploy TLS cert-reload hook (plex-cert-reload.sh + PFX passphrase)
+7. Deploy systemd override (Restart=on-failure)
+8. Reload systemd daemon
+9. Ensure Plex service is enabled and running
+10. Wait for Plex to be ready (port 32400)
 ```
 
 ## Files
 
-- `tasks/main.yml` - Main orchestration
-- `tasks/install.yml` - Plex installation
+- `tasks/main.yml` - Main orchestration (includes install/configure/service)
+- `tasks/install.yml` - apt repo, GPG key, package install + version hold
+- `tasks/configure.yml` - groups, TLS cert-reload hook, bind-mount checks, systemd override
+- `tasks/service.yml` - daemon-reload, enable/start, health check
+- `handlers/main.yml` - Restart plex / reload systemd handlers
 - `templates/plex-override.conf.j2` - Systemd override
+- `templates/plex-cert-reload.sh.j2` - PEM -> PKCS#12 cert-reload hook
 - `defaults/main.yml` - Default variables
+
+## TLS Certificate
+
+acme_certs (on dns-01) distributes the wildcard cert to `/etc/ssl/plex`.
+`plex-cert-reload.sh` (deployed by this role at `/usr/local/sbin`, root:root 0750)
+converts the PEM pair into the PKCS#12 (`.pfx`) bundle Plex's "Custom certificate
+location" requires, verifies it, swaps it in atomically, and restarts Plex. The
+PFX passphrase comes from 1Password (`PLEX_PFX_PASSPHRASE`, item "Plex Custom
+Certificate") and must match the value set under Plex Settings -> Network ->
+"Custom certificate encryption key".
 
 ## Dependencies
 
@@ -143,13 +166,13 @@ Media accessed via read-write bind mount (required for Plex metadata/watch statu
 
 ```
 pve-nas-01:/mnt/media (mergerfs)
-  └─ Bind mounted to → plex:/mnt/media (read-write)
-     └─ Plex libraries point to /mnt/media/*
+  └─ Bind mounted to → plex:/media (read-write)
+     └─ Plex libraries point to /media/*
 ```
 
-Directory structure:
+Directory structure (inside the LXC):
 ```
-/mnt/media/
+/media/
 ├─ movies/
 ├─ tv/
 ├─ music/
@@ -165,9 +188,9 @@ systemctl status plexmediaserver
 # View logs
 tail -f /var/lib/plexmediaserver/Library/Application\ Support/Plex\ Media\ Server/Logs/Plex\ Media\ Server.log
 
-# Check media mount
-ls /mnt/media
-df -h /mnt/media
+# Check media mount (inside the LXC)
+ls /media
+df -h /media
 
 # Check GPU
 ls -la /dev/dri

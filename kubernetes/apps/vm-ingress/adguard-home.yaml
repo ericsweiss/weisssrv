@@ -18,7 +18,9 @@ spec:
           namespace: traefik
       services:
         - name: adguard-home-01-backend
-          port: 3000
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: esweiss-com-tls
 ---
@@ -41,6 +43,8 @@ spec:
           namespace: traefik
       services:
         - name: adguard-home-02-backend
-          port: 3000
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
   tls:
     secretName: esweiss-com-tls

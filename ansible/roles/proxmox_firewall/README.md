@@ -118,6 +118,29 @@ None - foundational role
 - Service-specific Security Groups
 - Per-guest isolation with opt-in networking
 
+## Egress filtering (opt-in)
+
+Inbound is default-deny; host-originated **egress** is `ACCEPT` by default.
+`proxmox_firewall_egress_filtering` (default `false`) applies the
+`sg-host-egress` allowlist (DNS/NTP/HTTP(S)/Tailscale/corosync/SSH/NFS/SMTP/
+migration) and appends an explicit trailing `OUT DROP` rule in `host.fw`.
+`pve-firewall` honours OUT *rules* in `host.fw` but **ignores** the host-level
+`policy_out` option (that key is only effective in `cluster.fw`), so the trailing
+`OUT DROP` rule — not a policy setting — is what enforces default-deny. Guest
+traffic is unaffected.
+
+Enable carefully — a missing allowlist entry can break a node or remote access:
+
+1. Set `proxmox_firewall_egress_filtering: true` in **one** host's `host_vars`
+   (start with a non-critical compute node), deploy, then validate with
+   `pve-firewall compile` and confirm the node stays reachable, joins the cluster
+   (`pvecm status`), and can reach apt/Tailscale.
+2. The `OUT DROP` rule logs dropped OUT packets at `info` — review
+   `journalctl -k | grep 'DROP'` (or the kernel log) and extend `sg-host-egress`
+   in `cluster.fw.j2` for any legitimate egress that was missed (e.g. a service
+   on a non-standard port).
+3. Once stable, roll out to the remaining hosts (or set it in `group_vars`).
+
 ## Testing
 
 ```bash

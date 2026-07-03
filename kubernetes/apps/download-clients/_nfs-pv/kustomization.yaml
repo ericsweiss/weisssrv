@@ -1,0 +1,23 @@
+---
+# Shared static NFS PV+PVC pair — a Kustomize Component mirroring the _arr /
+# _vpn-sidecar pattern. It carries the boilerplate that every downloads app
+# config volume previously copy-pasted: the kustomize force annotation, Retain
+# reclaim policy, storageClassName "", the NAS hostname (server:
+# pve-nas-01.esweiss.com), and — critically — the xprtsec=tls mountOptions. That
+# TLS mount option is defined exactly ONCE here, so a new app can never silently
+# omit it and mount plaintext.
+#
+# Each per-app overlay (../storage/<app>) lists this component and patches only
+# the per-app differences (PV name/label/capacity/path, PVC name/size/volumeName)
+# via in-place JSON6902 ops. The sonarr/radarr/lidarr overlays additionally
+# INSERT actimeo/lookupcache ahead of xprtsec=tls (so xprtsec stays defined once
+# in this component).
+#
+# server: is an immutable PV field — the force annotation lets Flux delete+
+# recreate a PV when server/mountOptions change (Retain → NFS data safe).
+# Hostname (not IP) is required so xprtsec=tls verifies against the
+# *.esweiss.com cert SAN; an IP mount fails the TLS handshake. See docs/07.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - resources.yaml

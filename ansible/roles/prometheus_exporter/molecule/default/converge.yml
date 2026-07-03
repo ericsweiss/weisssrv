@@ -72,16 +72,13 @@
     # Build a tiny .tar.gz holding a sleep-loop binary at a nested archive
     # member path, served back to the role over file:// so the real
     # get_url -> unarchive -> copy -> cleanup chain runs without leaving CI.
-    - name: Stage tarball fixture + scratch dirs
+    # The role creates its own scratch tmp_dir, so only the fixture build dir
+    # is staged here.
+    - name: Stage tarball fixture build dir
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ _pe_install_tmp }}/build/pe-install-mock-{{ _pe_install_version }}.linux-amd64"
         state: directory
         mode: "0755"
-      loop:
-        - "{{ _pe_install_tmp }}/build/pe-install-mock-{{ _pe_install_version }}.linux-amd64"
-        # get_url dest is a file path; its parent (the role's scratch tmp_dir)
-        # must exist before the install-path invocation downloads into it.
-        - /tmp/pe-install-scratch
 
     - name: Stage the fixture binary inside the archive member dir
       ansible.builtin.copy:

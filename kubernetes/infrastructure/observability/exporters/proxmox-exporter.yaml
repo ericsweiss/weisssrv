@@ -1,5 +1,5 @@
 ---
-# Proxmox VE Exporter — scrapes all 6 Proxmox hosts via API.
+# Proxmox VE Exporter — scrapes the Proxmox cluster API.
 # API credentials sourced from observability-exporter-secrets (ExternalSecret).
 apiVersion: apps/v1
 kind: Deployment
@@ -57,7 +57,12 @@ spec:
                 secretKeyRef:
                   name: observability-exporter-secrets
                   key: proxmox-token-secret
-            # Proxmox uses self-signed certs; TLS verification disabled intentionally
+            # Proxmox nodes serve per-node self-signed certs with no IP SAN, so
+            # verifying against the target IP can't succeed without distributing
+            # a shared cert to pveproxy. Verification is left off as an accepted
+            # LAN MITM risk: the token is still encrypted in transit (8006 is
+            # HTTPS) and scoped to the read-only PVEAuditor role (see
+            # proxmox_firewall), so a captured token cannot mutate cluster state.
             - name: PVE_VERIFY_SSL
               value: "false"
           livenessProbe:
@@ -78,7 +83,7 @@ spec:
               memory: 64Mi
             limits:
               # No CPU limit: pve-exporter bursts during scrape (Python parses
-              # /pve API responses for 6 hosts) and CFS throttling at 500m
+              # the cluster-wide /pve API response) and CFS throttling at 500m
               # caused sustained CPUThrottlingHigh false-positives. Memory
               # limit kept since OOM is a real failure mode.
               memory: 256Mi
@@ -100,9 +105,13 @@ spec:
     - name: metrics
       port: 9221
 ---
-# Multi-target ServiceMonitor: one endpoint per Proxmox host, each with
-# params.target pointing at the host IP. The exporter uses the ?target=
-# query parameter to decide which PVE node to scrape.
+# The exporter returns cluster-wide data (/cluster/resources, /nodes)
+# regardless of which node ?target= points at, so every target produces the
+# same pve_* series. We scrape just two hosts rather than all six to avoid
+# storing every series 2-6x (TSDB cardinality / on-disk size); two targets
+# on different hosts give resilience if the queried node is down, and
+# ProxmoxHostDown's min()/absent() logic already handles a target dropping
+# out. Add a node IP to params.target to scrape a specific PVE node.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -113,8 +122,14 @@ spec:
     matchLabels:
       app.kubernetes.io/name: proxmox-exporter
   endpoints:
+    # Both endpoints share one scrape config and differ only by params.target
+    # (which PVE node the exporter queries). A YAML anchor carries the shared
+    # block so the target IP is the only per-host edit; add a node by appending
+    # another `- <<: *pve-endpoint` with its own params. (Kustomize expands the
+    # anchor at build time, so the rendered scrape config is unchanged.)
     # pve-nas-01
-    - port: metrics
+    - &pve-endpoint
+      port: metrics
       interval: 60s
       scrapeTimeout: 30s
       path: /pve
@@ -124,58 +139,8 @@ spec:
       relabelings:
         - sourceLabels: [__param_target]
           targetLabel: target
-    # pve-laptop-01
-    - port: metrics
-      interval: 60s
-      scrapeTimeout: 30s
-      path: /pve
-      params:
-        target: ["192.168.0.103"]
-        module: ["default"]
-      relabelings:
-        - sourceLabels: [__param_target]
-          targetLabel: target
-    # pve-opt-01
-    - port: metrics
-      interval: 60s
-      scrapeTimeout: 30s
-      path: /pve
-      params:
-        target: ["192.168.0.104"]
-        module: ["default"]
-      relabelings:
-        - sourceLabels: [__param_target]
-          targetLabel: target
-    # pve-opt-02
-    - port: metrics
-      interval: 60s
-      scrapeTimeout: 30s
-      path: /pve
-      params:
-        target: ["192.168.0.105"]
-        module: ["default"]
-      relabelings:
-        - sourceLabels: [__param_target]
-          targetLabel: target
-    # pve-opt-03
-    - port: metrics
-      interval: 60s
-      scrapeTimeout: 30s
-      path: /pve
-      params:
-        target: ["192.168.0.106"]
-        module: ["default"]
-      relabelings:
-        - sourceLabels: [__param_target]
-          targetLabel: target
-    # pve-prec-01
-    - port: metrics
-      interval: 60s
-      scrapeTimeout: 30s
-      path: /pve
+    # pve-prec-01 (second target for resilience if pve-nas-01 is down)
+    - <<: *pve-endpoint
       params:
         target: ["192.168.0.107"]
         module: ["default"]
-      relabelings:
-        - sourceLabels: [__param_target]
-          targetLabel: target

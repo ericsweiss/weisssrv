@@ -12,7 +12,10 @@ LAN Clients
         - Port 53 (DNS)
         - Port 853 (DoT)
         - Port 443 (HTTPS/DoH)
-        - Port 3000 (Web UI)
+        - Port 3000 (plaintext admin API — firewall-restricted to admin LAN /
+          Tailscale; used by the adguard-exporter and the role's localhost
+          reconcile of split-horizon rewrites). The human-facing HTTPS admin UI
+          and DoH are AdGuard's own :443, which the Traefik IngressRoute proxies.
               |
               v
         Unbound (127.0.0.1:5335)

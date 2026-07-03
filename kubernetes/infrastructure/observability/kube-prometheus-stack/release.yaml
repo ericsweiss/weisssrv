@@ -706,6 +706,27 @@ spec:
                     Proxmox host {{ $labels.id }} has been unreachable for 5 minutes.
                     If id is empty, the Proxmox exporter itself may be down.
 
+              # ProxmoxHostDown only covers id=~"node/.*", so the HA-managed
+              # infra LXCs are invisible there. A stopped/crashed DNS resolver
+              # (lxc/150 dns-01, lxc/160 dns-02) or the mail relay (lxc/151
+              # smtp-relay) is critical — cluster-wide name resolution and alert
+              # email egress depend on them. HA restarts the guest on another
+              # node within a couple of minutes, so the 5m hold avoids paging on
+              # a normal failover/migration.
+              - alert: HAInfraLXCDown
+                expr: max by (id) (pve_up{id=~"lxc/(150|151|160)"}) == 0
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'HA infrastructure LXC {{ $labels.id }} is stopped'
+                  description: >-
+                    Proxmox guest {{ $labels.id }} (a DNS resolver or the SMTP
+                    relay) has reported stopped for 5 minutes. HA should have
+                    restarted it on another node — if it has not, investigate the
+                    guest and its host.
+
               # A k3s node left unschedulable (Ready,SchedulingDisabled) long after
               # a reboot — a kured uncordon failure (kubereboot/kured #955) or a
               # drain that timed out with forceReboot:false — is invisible to
@@ -978,6 +999,28 @@ spec:
                   summary: 'Endpoint {{ $labels.instance }} is down'
                   description: 'Blackbox probe for {{ $labels.instance }} has failed for 5 minutes.'
 
+              # EndpointDown fires per-resolver at warning severity; this is the
+              # critical aggregate for total DNS loss — both AdGuard blackbox DNS
+              # probes (.150 and .160) failing at once takes name resolution down
+              # cluster-wide. Also catches the service-level outage (AdGuard down
+              # but the container still running) that HAInfraLXCDown's
+              # guest-stopped check misses.
+              - alert: DNSResolutionDown
+                expr: >-
+                  count(
+                    max by (instance) (probe_success{instance=~"192\\.168\\.0\\.(150|160):53"}) == 0
+                  ) == 2
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+                  summary: 'Both DNS resolvers are failing to answer'
+                  description: >-
+                    Both AdGuard resolvers (192.168.0.150 and 192.168.0.160) have
+                    failed their DNS blackbox probe for 5 minutes — name
+                    resolution is down cluster-wide.
+
               - alert: BlackboxExporterDown
                 expr: absent(up{job=~".*blackbox.*"} == 1)
                 for: 5m
@@ -1052,20 +1095,22 @@ spec:
                   summary: 'Certificate renewal failed'
                   description: 'The certificate renewal and distribution script has not completed successfully.'
 
-              - alert: CertRenewalStale
-                expr: (time() - cert_renewal_last_success_timestamp_seconds > 86400 * 2) or absent(cert_renewal_last_success_timestamp_seconds)
+              - alert: CertExpiringSoon
+                expr: (cert_local_expiry_timestamp_seconds - time() < 86400 * 14) or absent(cert_local_expiry_timestamp_seconds)
                 for: 1h
                 labels:
                   severity: warning
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
-                  summary: 'Certificate renewal has not succeeded in over 2 days'
+                  summary: 'Host-distributed wildcard cert expires in under 14 days'
                   description: >-
-                    No successful acme.sh certificate renewal/distribution has
-                    been recorded for more than 48 hours, or the metric is
-                    missing (timer removed, host off inventory). cert-manager's
-                    CertExpiring alerts cover in-cluster certs but not these
-                    host-distributed acme.sh certs.
+                    The acme.sh-distributed *.esweiss.com cert is within 14 days
+                    of its notAfter (so acme.sh renewal/distribution has stopped
+                    working), or the metric is missing (host off inventory).
+                    Tracks real expiry, not time-since-renewal — acme.sh renews
+                    ~60d apart, so a renewal-timestamp staleness proxy false-fires
+                    for most of each cycle. cert-manager's CertExpiring alerts
+                    cover in-cluster certs but not these host-distributed certs.
 
               - alert: GitLabBackupFailed
                 expr: gitlab_backup_last_run_success == 0

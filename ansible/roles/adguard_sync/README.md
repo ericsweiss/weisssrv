@@ -38,14 +38,19 @@ adguardhome_sync_version: "0.8.2"
 adguardhome_sync_origin: "https://dns-01.{{ internal_domain }}"
 adguardhome_sync_replica: "https://dns-02.{{ internal_domain }}"
 
-# Sync settings
-adguard_sync_features:
-  general: true
-  filters: true
-  rewrites: true
-  services: true
-  clients: true
-  dhcp: false  # DHCP disabled in homelab (router handles it)
+# Sync settings (group_vars/dns.yml)
+adguardhome_sync_features:
+  dns:
+    accessLists: true
+    serverConfig: true
+    rewrites: true
+  dhcp:
+    serverConfig: true
+    staticLeases: true
+  generalSettings: true
+  queryLogConfig: true
+  statsConfig: true
+  clientSettings: true
 ```
 
 ### 1Password Secrets
@@ -123,7 +128,7 @@ rewrite / blocklist edit on both UIs) so drift never opens up.
 6. Create home directory (/var/lib/adguardhome-sync)
 7. Deploy configuration file (/etc/adguardhome-sync.yaml)
 8. Deploy systemd service unit
-9. Deploy systemd timer unit (OnBootSec=1min, OnUnitActiveSec=5min)
+9. Deploy systemd timer unit (OnCalendar=*:0/5, Persistent=true)
 10. Enable and start timer
 ```
 
@@ -164,10 +169,11 @@ systemctl start adguardhome-sync.service
 
 ### Sync Frequency
 
-```yaml
-# Timer configuration
-OnBootSec=1min        # First sync 1 minute after boot
-OnUnitActiveSec=5min  # Subsequent syncs every 5 minutes
+```ini
+# Timer configuration (adguardhome_sync_schedule, default *:0/5)
+[Timer]
+OnCalendar=*:0/5      # Every 5 minutes
+Persistent=true       # Runs a missed sync once after downtime
 ```
 
 ### Manual Sync
@@ -191,7 +197,9 @@ adguardhome_sync_version: "0.8.2"
 Then run:
 
 ```bash
-task maintenance:update-applications
+task maintenance:update-version SERVICE=adguardhome-sync
+# or update everything outdated at once:
+task maintenance:update-all-versions
 ```
 
 ## Troubleshooting
@@ -220,16 +228,17 @@ curl -I https://dns-02.esweiss.com
 **Configuration drift:**
 ```bash
 # Compare configurations via the Traefik-fronted endpoints (HTTPS, wildcard cert).
+# The AdGuard admin user is eric.
 # On dns-01:
-curl -u admin:password https://dns-01.esweiss.com/control/dns_info
+curl -u eric:password https://dns-01.esweiss.com/control/dns_info
 
 # On dns-02:
-curl -u admin:password https://dns-02.esweiss.com/control/dns_info
+curl -u eric:password https://dns-02.esweiss.com/control/dns_info
 
 # Backend diagnostic only — bypasses Traefik and talks to the AdGuard
 # Home HTTP listener directly on the LXC (handy when Traefik itself is suspect):
-#   curl -u admin:password http://192.168.0.150:3000/control/dns_info
-#   curl -u admin:password http://192.168.0.160:3000/control/dns_info
+#   curl -u eric:password http://192.168.0.150:3000/control/dns_info
+#   curl -u eric:password http://192.168.0.160:3000/control/dns_info
 ```
 
 **Reset sync:**

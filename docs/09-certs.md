@@ -25,7 +25,6 @@ dns-01 (Primary)
       ├── smtp-relay (Postfix TLS)
       ├── gitlab (/etc/gitlab/ssl, `gitlab-ctl hup nginx`)
       ├── pve-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
-      ├── k3s-agt-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
       ├── plex (/etc/ssl/plex, PKCS#12 conversion via plex-cert-reload.sh)
       └── home (HAOS /ssl via SSH :22222, `ha core restart`)
 ```
@@ -80,7 +79,7 @@ This will:
 1. Detect that certificates exist in `/root/.acme.sh/esweiss.com_ecc/`
 2. Install them to `/opt/AdGuardHome/certs/` on dns-01
 3. Configure the `--reloadcmd` hook to run `homelab-cert-reload.sh`
-4. The reload script distributes certs to all seven targets, then restarts/reloads each service
+4. The reload script distributes certs to all six targets, then restarts/reloads each service
 
 **Important**: This is idempotent - once certificates are installed, subsequent runs will skip
 the installation step.
@@ -112,7 +111,7 @@ Prometheus metrics. Current flow:
 2. **dns-02**: Copy certs via SSH, fix permissions, restart AdGuard
 3. **smtp-relay**: Copy certs to `/etc/postfix/tls`, restart Postfix
 4. **gitlab**: Copy to `/etc/gitlab/ssl`, `gitlab-ctl hup nginx`
-5. **pve-nas-01 / k3s-agt-nas-01**: Copy to `/etc/ssl/private` (tlshd for NFS-over-TLS)
+5. **pve-nas-01**: Copy to `/etc/ssl/private` (tlshd for NFS-over-TLS; the NFS server is the sole TLS cert holder — k3s agents are xprtsec=tls clients that validate via the system CA and hold no cert)
 6. **plex**: Copy to `/etc/ssl/plex`, convert to PKCS#12 via `plex-cert-reload.sh`
 7. **home (HAOS)**: Copy to `/ssl` via SSH :22222 as root, `ha core restart`
 
@@ -138,13 +137,13 @@ Certificates have specific ownership/permissions for security:
 
 ### AdGuard Home (dns-01, dns-02)
 
-DoT (DNS-over-TLS) on port 853 and AdGuard's own HTTPS/DoH listener on port 443. (The admin UI is on port 3000 and is reached over HTTPS via the Traefik IngressRoute at `dns-01.esweiss.com`/`dns-02.esweiss.com`, not AdGuard's :443 — hence `force_https: false` below.)
+DoT (DNS-over-TLS) on port 853 and AdGuard's own HTTPS/DoH listener on port 443. The human-facing HTTPS admin UI and DoH are AdGuard's own :443, which the Traefik IngressRoute (scheme https) at `dns-01.esweiss.com`/`dns-02.esweiss.com` proxies. `force_https` stays false (see below) because the role reconciles AdGuard over the plaintext localhost :3000 API (incl. split-horizon rewrites); a global redirect would 301 those to :443 and fail TLS verification, breaking reconciliation. The :3000 listener is firewall-restricted to admin LAN/Tailscale.
 
 ```yaml
 tls:
   enabled: true
   server_name: dns.esweiss.com
-  force_https: false  # admin UI is Traefik-fronted; forcing HTTPS would break the :3000 backend hop
+  force_https: false  # role reconciles via the plaintext localhost :3000 API; a global redirect would 301 those calls to :443 and break reconciliation
   port_https: 443
   port_dns_over_tls: 853
   certificate_path: /opt/AdGuardHome/certs/fullchain.pem
@@ -247,7 +246,7 @@ sudo journalctl -u postfix -f
 
 1. **Check SSH connectivity** (using cert distribution key; repeat for each
    target in `cert_distribution_targets` — dns-02, smtp-relay, gitlab,
-   pve-nas-01, k3s-agt-nas-01, plex, home):
+   pve-nas-01, plex, home):
    ```bash
    # From dns-01 - uses dedicated cert distribution key
    ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.160 "echo OK"  # dns-02

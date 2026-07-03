@@ -17,6 +17,9 @@ spec:
         - name: hsts-header
           namespace: traefik
       services:
+        # Plaintext HTTP exception: the router's web UI is HTTP-only (no TLS),
+        # so the Traefik->backend hop stays cleartext. Internal-only route
+        # (lan-tailscale-only), so exposure is limited to the LAN/Tailscale.
         - name: router-backend
           port: 80
   tls:

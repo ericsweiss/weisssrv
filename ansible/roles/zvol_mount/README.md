@@ -42,6 +42,12 @@ Per entry:
 | `fstype`     | yes      | Expected filesystem (ext4, xfs, ...); enforced by assert         |
 | `scsi_slot`  | no       | Explicit QEMU SCSI slot; defaults to list index + 1              |
 
+> **Production contract:** here `zvol_mount_disks` is always aliased to
+> `vm_additional_disks` (k3s.yml, gitlab.yml), where every entry carries an
+> explicit `scsi_slot`. proxmox_vm requires and asserts a unique slot per disk
+> because attaching by list position can remap a live zvol. The `idx + 1`
+> fallback above is only for standalone / molecule use with sequential slots —
+> do not rely on it for guests holding persistent data.
 
 ## Deployment
 

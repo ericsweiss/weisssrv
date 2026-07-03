@@ -8,11 +8,15 @@ resources:
   # 1Password "PrivadoVPN Credentials" via the onepassword-homelab
   # ClusterSecretStore. See externalsecret.yaml.
   - externalsecret.yaml
-  - storage.yaml
+  # Storage: shared media volume + per-app config PV/PVC pairs generated from the
+  # _nfs-pv Kustomize component (TLS mountOptions defined once there).
+  - storage
   - certificate.yaml
-  # Download clients with optional VPN sidecars
-  - nzbget.yaml
-  - qbittorrent.yaml
+  # Download clients with optional VPN sidecars. nzbget/qbittorrent share the
+  # Gluetun killswitch sidecar via the _vpn-sidecar Kustomize component; each is
+  # a thin per-app overlay (resources + component + a small per-app patch).
+  - nzbget
+  - qbittorrent
   # Media management apps (*arr stack)
   # sonarr/radarr/lidarr are near-identical; their shared Deployment+Service
   # skeleton lives in the _arr Kustomize component and each app is a thin

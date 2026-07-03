@@ -1,11 +1,9 @@
 ---
-# Molecule configuration for base role testing
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: base-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -21,37 +19,17 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # Use testuser instead of root for non-root user testing
         admin_user: testuser
         admin_email: test@test.local
         timezone: America/Los_Angeles
-        # Skip SSH config (sshd not running in container)
         skip_ssh_config: true
-        # Skip DNS config (no inventory groups in molecule)
         skip_dns_config: true
-        # Skip sudoers validation (visudo may not work reliably in containers)
         skip_sudoers_validation: true
-        # SSH keys for authorized_keys test
         ssh_authorized_keys:
-          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForMolecule test@molecule"
-        # Common packages to install
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForMolecule test@molecule
         common_packages:
           - curl
           - wget
@@ -67,31 +45,11 @@ provisioner:
           - ca-certificates
           - gnupg
           - lsb-release
-        # VM packages (won't be installed since we're in docker, not KVM)
         vm_packages:
           - qemu-guest-agent
-        # Fail2ban configuration for testing
         fail2ban_enabled: true
-        # Disable pveproxy jail (not a Proxmox host)
         fail2ban_pveproxy_enabled: false
-        # Disable recidive in tests (depends on fail2ban.log which may not exist)
         fail2ban_recidive_enabled: false
-        # Simplified whitelist for testing
         fail2ban_ignoreip:
           - 127.0.0.1/8
           - ::1
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

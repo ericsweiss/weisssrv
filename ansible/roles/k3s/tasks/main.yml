@@ -32,6 +32,22 @@
     state: directory
     mode: "0755"
 
+# Pin the GitLab registry hostname to the internal Traefik VIP so containerd
+# resolves it locally (no upstream DNS) and pulls CI images via the direct
+# internal path. See k3s_registry_host_pins in defaults/main.yml for the why +
+# the post-deploy verification. Idempotent; empty list is a no-op.
+- name: Pin container-registry hostnames to the internal Traefik VIP in /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED: k3s registry host pins"
+    block: |
+      {% for pin in k3s_registry_host_pins %}
+      {{ pin.ip }} {{ pin.name }}
+      {% endfor %}
+  when:
+    - k3s_registry_host_pins | default([]) | length > 0
+    - not (skip_k3s_install | default(false))
+
 # Mount additional persistent disks (ZFS zvols attached as SCSI devices by proxmox_vm role)
 - name: Mount additional persistent disks
   ansible.builtin.include_role:

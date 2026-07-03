@@ -260,6 +260,38 @@ GROUP sg-k3s-ingress-pub
 GROUP sg-metrics
 ```
 
+## Kubernetes NetworkPolicies (in-cluster pod egress)
+
+The Proxmox firewall above governs host/VM/LXC traffic. *Inside* the k3s cluster,
+pod-to-pod and pod-to-external traffic is governed by Kubernetes NetworkPolicies
+(Flux-managed under `kubernetes/apps/*/networkpolicy.yaml` and the controller
+namespaces). Each app namespace runs **default-deny** ingress + egress, and every
+pod is then granted exactly the egress it needs by a **scoped, per-pod
+NetworkPolicy** (selected by `app.kubernetes.io/name`).
+
+### Design decision: per-pod egress is deliberately granular (not deduplicated)
+
+The same egress *entries* recur across policies — "allow DNS to kube-dns" appears
+in ~9 policies and "allow apiserver (`192.168.0.222/223/227:6443`)" in ~5. This
+duplication is **intentional and is kept as-is**:
+
+- Egress is scoped per workload, so each pod gets the minimum it needs. For
+  example, the Authentik Postgres pod has `allow-egress-postgres-dns-only` (DNS
+  only, **no** apiserver), while `allow-egress-authentik` grants the server pods
+  DNS + apiserver + their specific destinations.
+- The only way to remove the duplication in Kustomize is a namespace-wide
+  baseline policy granting DNS + apiserver to **all** pods. Because
+  NetworkPolicies are additive (a pod's egress is the union of all policies
+  selecting it), that baseline can only *loosen* the posture — Postgres (and any
+  DNS-only pod) would gain apiserver egress it deliberately lacks. That is a real
+  reduction in defense-in-depth (a lateral-movement path from a compromised data
+  pod to the API server) that offline CI cannot catch.
+- The duplication is therefore the price of keeping each pod's egress minimal and
+  explicitly auditable. We keep the granular per-pod policies; re-IPing a server
+  node is the only maintenance cost, and that is rare and caught at deploy time.
+
+(Reviewed as DUP-7 / k8s-infra-03 / RV-SIMP-5; decision: keep granular.)
+
 ## Ansible Role
 
 Deploy with: `ansible/roles/proxmox_firewall`

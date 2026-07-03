@@ -100,7 +100,7 @@ API, so the exporter shares the pod network namespace rather than running in the
   `vpn_enabled` for the same reason — disabling the VPN stops Gluetun's control
   server, so `gluetun_vpn_status` reads `0` forever and `VPNDown` pages falsely.
   Remove the `gluetun-exporter` sidecar **and** the `gluetun-qbittorrent`
-  PodMonitor from `qbittorrent.yaml` in the same edit that sets
+  PodMonitor from `qbittorrent/resources.yaml` in the same edit that sets
   `vpn_enabled: "false"` (re-add both when re-enabling). See the download-clients
   README for the step-by-step.
 
@@ -186,19 +186,23 @@ The downloads stack is Flux-managed. All files live under
 kubernetes/apps/download-clients/
 ├── namespace.yaml              # downloads namespace (pod-security: privileged for Gluetun CAP_NET_ADMIN)
 ├── externalsecret.yaml         # VPN credentials from 1Password (via ESO)
-├── storage.yaml                # PVCs + PVs for appdata and media NFS mounts
+├── _vpn-sidecar/               # shared Gluetun VPN sidecar Component (killswitch defined once)
+├── _nfs-pv/                    # shared NFS PV+PVC Component (TLS mountOptions defined once)
+├── storage/                    # per-app NFS PV/PVC overlays over _nfs-pv + storage/shared.yaml (RWX media PV)
 ├── certificate.yaml            # Wildcard cert in the downloads namespace
-├── nzbget.yaml                 # Deployment + per-app VPN ConfigMap (nzbget-vpn-config) + Gluetun sidecar inline
-├── qbittorrent.yaml            # As nzbget + gluetun-exporter sidecar + PodMonitor (VPN-always-on)
+├── nzbget/                     # overlay over _vpn-sidecar: resources.yaml (Deployment + nzbget-vpn-config) + kustomization.yaml
+├── qbittorrent/                # as nzbget + gluetun-exporter + PodMonitor (VPN-always-on)
 ├── prowlarr.yaml
-├── sonarr.yaml
-├── radarr.yaml
-├── lidarr.yaml
+├── _arr/                       # shared *arr base: deployment.yaml + service.yaml + kustomization.yaml
+├── sonarr/                     # per-*arr overlay (kustomization.yaml) over _arr base
+├── radarr/                     # per-*arr overlay
+├── lidarr/                     # per-*arr overlay
 ├── pulsarr.yaml
 ├── ingress-routes.yaml         # Traefik IngressRoutes for all apps
 ├── ingress-routes-ha-bypass.yaml  # High-priority routes bypassing SSO for Home Assistant's IP
 ├── networkpolicy.yaml          # default-deny + per-app allowlist (incl. observability->qbittorrent:8002 VPN scrape)
 ├── vpa.yaml                    # VerticalPodAutoscalers (per-container sizing, incl. gluetun-exporter)
+├── README.md
 └── kustomization.yaml
 ```
 
@@ -296,16 +300,16 @@ kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https:/
 
 ### Per-App VPN Control
 
-VPN enablement and provider selection are per-app ConfigMaps inlined in the
-relevant Deployment YAMLs: `nzbget-vpn-config` in `nzbget.yaml` and
-`qbittorrent-vpn-config` in `qbittorrent.yaml`. There is no shared
-`gluetun.yaml` — the sidecar is injected per-Deployment and its config is
-loaded from the matching ConfigMap.
+VPN enablement and provider selection are per-app ConfigMaps in each app
+overlay's `resources.yaml`: `nzbget-vpn-config` in `nzbget/resources.yaml` and
+`qbittorrent-vpn-config` in `qbittorrent/resources.yaml`. The Gluetun sidecar
+itself is the shared `_vpn-sidecar/` Kustomize Component (killswitch defined
+once); each overlay injects it and points it at the matching ConfigMap.
 
 To change a VPN setting:
 
-1. Edit the `<app>-vpn-config` ConfigMap section inside `nzbget.yaml` or
-   `qbittorrent.yaml` (set `vpn_enabled: "true"` / `"false"` and
+1. Edit the `<app>-vpn-config` ConfigMap section inside `nzbget/resources.yaml`
+   or `qbittorrent/resources.yaml` (set `vpn_enabled: "true"` / `"false"` and
    `vpn_provider: "privado"` / `"vpn unlimited"`).
 2. Commit and push.
 3. Flux reconciles; run `task flux:rotate-secret -- downloads` to roll the
@@ -331,7 +335,7 @@ This shows:
 2. Trigger refresh: `task flux:rotate-secret -- downloads`
 
 (Or switch provider: edit the `vpn_provider` key in the per-app
-ConfigMap inside `nzbget.yaml` or `qbittorrent.yaml`, commit, push.
+ConfigMap inside `nzbget/resources.yaml` or `qbittorrent/resources.yaml`, commit, push.
 If switching to VPN Unlimited, also update `externalsecret.yaml` to
 reference the `VPN Unlimited Credentials` 1P item title.)
 
@@ -645,8 +649,8 @@ This is the killswitch working correctly. If Gluetun can't establish VPN:
 1. Check VPN provider status
 2. Check credentials in 1Password (rotate if needed, then `task flux:rotate-secret -- downloads`)
 3. Temporarily disable VPN by setting `vpn_enabled: "false"` in the app's
-   per-app ConfigMap (inside `nzbget.yaml` or `qbittorrent.yaml`) and
-   pushing. Then `task flux:rotate-secret -- downloads` to roll the pod.
+   per-app ConfigMap (inside `nzbget/resources.yaml` or `qbittorrent/resources.yaml`)
+   and pushing. Then `task flux:rotate-secret -- downloads` to roll the pod.
 
 ### Apps Can't Access Storage
 

@@ -2,12 +2,17 @@
 # MetalLB IP Address Pools for esweiss.com homelab.
 # Public pool: 192.168.0.100 — publicly accessible services (Traefik ingress).
 # Internal pool: 192.168.0.101 — internal-only services.
+# autoAssign:false — each pool is a single /32 claimed explicitly via
+# metallb.io/loadBalancerIPs on the Traefik Services. Keep MetalLB from ever
+# auto-handing these pinned VIPs to another LoadBalancer that omits an address;
+# explicit requesters still get them.
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
   name: public-pool
   namespace: metallb-system
 spec:
+  autoAssign: false
   addresses:
     - 192.168.0.100/32
 ---
@@ -17,6 +22,7 @@ metadata:
   name: internal-pool
   namespace: metallb-system
 spec:
+  autoAssign: false
   addresses:
     - 192.168.0.101/32
 ---

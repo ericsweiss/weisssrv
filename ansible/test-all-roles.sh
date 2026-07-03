@@ -15,6 +15,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROLES_DIR="${SCRIPT_DIR}/roles"
+# Shared Molecule base config merged into every role's default scenario via -c.
+BASE_CONFIG="${SCRIPT_DIR}/molecule/base.yml"
 
 # Additional molecule options (e.g., --destroy=never)
 MOLECULE_OPTS="${MOLECULE_OPTS:-}"
@@ -109,7 +111,7 @@ for role in "${ROLES_TO_TEST[@]}"; do
     pushd "${role_path}" >/dev/null
 
     # shellcheck disable=SC2086
-    if ${MOLECULE_CMD} test ${MOLECULE_OPTS} 2>&1; then
+    if ${MOLECULE_CMD} -c "${BASE_CONFIG}" test ${MOLECULE_OPTS} 2>&1; then
         echo -e "${GREEN}PASS${NC} ${role}"
         PASSED+=("${role}")
     else

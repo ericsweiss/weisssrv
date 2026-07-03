@@ -11,7 +11,12 @@ postfix_config:
   relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
   mynetworks: "127.0.0.0/8"
   inet_interfaces: "loopback-only"
-  smtp_tls_security_level: "encrypt"
+  # "secure" = encrypt AND verify the relay's certificate against CAfile.
+  # The relay presents the wildcard *.esweiss.com cert (covers the
+  # smtp-relay.esweiss.com relayhost) and the system CA bundle trusts the
+  # Let's Encrypt chain, so "encrypt" alone would let a LAN MITM capture the
+  # SASL relay credentials inside STARTTLS.
+  smtp_tls_security_level: "secure"
   smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
   smtp_sasl_auth_enable: "yes"
   smtp_sasl_security_options: "noanonymous"

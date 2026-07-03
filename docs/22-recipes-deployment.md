@@ -176,6 +176,9 @@ kubernetes/apps/recipes/
 ├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
 ├── certificate.yaml        # cert-manager Certificates (recipes-esweiss-tls, recipes-ericsweiss-tls)
 ├── ingress-routes.yaml     # Traefik IngressRoutes for food/bar domains
+├── hpa.yaml                # salt-rim standalone HPA (see docs/33-autoscaling.md)
+├── networkpolicy.yaml      # default-deny + per-app allowlist
+├── vpa.yaml                # VerticalPodAutoscalers (per-container sizing)
 └── kustomization.yaml
 ```
 

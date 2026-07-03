@@ -108,8 +108,9 @@ node_exporter_host_port: 9101            # 9101 to avoid k3s DaemonSet on 9100
 node_exporter_host_textfile_dir: /var/lib/node_exporter
 ```
 
-Version pinning lives in `ansible/inventories/prod/group_vars/all.yml`
-(`node_exporter_version`); this role consumes it via the playbook vars.
+The `prometheus-node-exporter` package is installed with `state: present`
+(unpinned) and `update_cache: true`, so it tracks whatever the Debian repo
+currently ships — there is no `node_exporter_version` pin in all.yml.
 
 ## See also
 

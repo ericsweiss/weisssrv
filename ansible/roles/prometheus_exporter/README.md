@@ -55,13 +55,13 @@ scenario), and the shared handler restarts `prometheus_exporter_service_name`.
 | `prometheus_exporter_version` | Pinned upstream version | `{{ zfs_exporter_version }}` | `{{ unbound_exporter_version }}` |
 | `prometheus_exporter_artifact_type` | `tarball` or `deb` | `tarball` | `deb` |
 | `prometheus_exporter_download_url` | Release artifact URL | GitHub tarball | GitHub `.deb` |
-| `prometheus_exporter_checksum` | `get_url` checksum; empty = none | `{{ zfs_exporter_checksum }}` | `""` |
+| `prometheus_exporter_checksum` | `get_url` checksum; empty = none | `{{ zfs_exporter_checksum }}` | `{{ unbound_exporter_checksum }}` |
 | `prometheus_exporter_binary_path` | Installed binary (tarball) | `/usr/local/bin/zfs_exporter` | `/usr/bin/unbound_exporter` (deb-managed) |
 | `prometheus_exporter_archive_member` | Binary path inside the tarball | `zfs_exporter-<ver>.linux-amd64/zfs_exporter` | _(unused)_ |
 | `prometheus_exporter_version_check_cmd` | Shell printing installed version | `--version` + awk | `dpkg-query` + sed |
 | `prometheus_exporter_service_name` | systemd unit (no `.service`) | `zfs-exporter` | `unbound-exporter` |
 | `prometheus_exporter_port` | Health-check port | `{{ zfs_exporter_port }}` | `{{ unbound_exporter_port }}` |
-| `prometheus_exporter_tmp_dir` | Scratch dir for download/extract | `/tmp` | `/tmp` |
+| `prometheus_exporter_tmp_dir` | Scratch dir for download/extract | `/var/cache/prometheus_exporter` | `/var/cache/prometheus_exporter` |
 
 The version-check command is the source of truth for idempotence: empty stdout
 or a non-zero rc means "(re)install"; a stdout matching

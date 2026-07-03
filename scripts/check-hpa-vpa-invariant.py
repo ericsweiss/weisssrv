@@ -30,6 +30,13 @@ policy (docs/33-autoscaling.md): CPU is compressible, so a CPU limit only adds
 CFS throttling that hurts latency and inflates the CPU% a CPU-based HPA reads.
 The check covers both rendered pod specs and HelmRelease `.spec.values`.
 
+Limitation: a CPU limit baked into a third-party chart's subchart defaults that
+is NOT overridden in `.spec.values` is invisible here (the corpus is kustomize-
+only, no `helm template`). validate-helm-values.py renders the value-heavy
+releases (traefik, kube-prometheus-stack, authentik, kured) via `helm template`
+and reuses _cpu_limit_violations to catch those; other charts rely on the live
+pod-spec audit in docs/33-autoscaling.md.
+
 Usage (wired into flux:lint, on the accumulated full corpus):
   kustomize build <path> | envsubst >> corpus
   python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < corpus
@@ -74,7 +81,6 @@ def _hpa_metrics(spec: dict) -> set[str]:
     """
     metrics = spec.get("metrics") or []
     if not metrics:
-        # No metrics declared: autoscaling/v2 implicitly targets CPU at 80%.
         return {"cpu"}
     resources: set[str] = set()
     for metric in metrics:

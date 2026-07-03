@@ -37,7 +37,8 @@ fi
 # qm scan (and the Taskfile task calling this script) indefinitely. ServerAlive*
 # trips on a dead post-connect channel; the outer `timeout` is the backstop.
 # `timeout` is GNU coreutils (gtimeout via brew on macOS); falls through to a
-# bare ssh if neither exists.
+# bare ssh if neither exists. Intentionally duplicated in
+# diagnose-network-issues.sh — keep both copies in sync.
 timeout_cmd() {
     local seconds="$1"
     shift
@@ -98,9 +99,14 @@ if [ -z "$NODE" ]; then
 fi
 
 # Step 4: per-host scan (fallback when cluster API unavailable)
+# Capture then test rather than `ssh ... | grep -q`: under pipefail, grep -q
+# closing the pipe early can SIGPIPE a still-writing ssh, making the pipeline
+# non-zero even on a match and false-reporting the VM as not-found. Reading the
+# stream fully first removes that race.
 if [ -z "$NODE" ]; then
     for host in "${HOSTS[@]}"; do
-        if ssh_quick "$host" "sudo qm status ${VMID}" 2>/dev/null | grep -q "status:"; then
+        qm_status=$(ssh_quick "$host" "sudo qm status ${VMID}" 2>/dev/null || true)
+        if printf '%s' "$qm_status" | grep -q "status:"; then
             NODE="$host"
             break
         fi

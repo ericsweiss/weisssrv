@@ -15,43 +15,22 @@ Thumbs.db
 .worktrees/
 
 # Secrets - NEVER COMMIT
+# Ignore secret VALUE artifacts by type / known filename only. We deliberately
+# do NOT ignore every path containing "secret"/"password": that pattern
+# silently dropped GitOps manifests (ExternalSecret CRs, onepassword-connect-*
+# files) from `git add` and forced a hand-maintained un-ignore list. Actual
+# secret VALUES never live in git — ESO produces them in-cluster from 1Password
+# — so only their generated artifacts are listed here. The gitleaks
+# secret_detection job (.gitleaks.toml) is the content-level backstop.
 *.key
 *.pem
 **/secrets/
-**/*secret*
-**/*password*
 .env
 .env.*
 sasl_passwd
 sasl_passwd.db
-# Exception: External Secrets Operator manifests reference secrets but are not
-# themselves secret values. Flux/kustomize structural files with "secret" in
-# their path or name are safe to commit. Actual secret VALUES go through ESO
-# (ExternalSecret CRs reference 1Password) and never appear in git.
-!kubernetes/infrastructure/sources/external-secrets.yaml
-!kubernetes/infrastructure/controllers/external-secrets
-!kubernetes/infrastructure/controllers/external-secrets/**
-!kubernetes/infrastructure/configs/cluster-secret-store.yaml
-# Planned: Flux Receiver manifest for webhook-triggered reconciliation
-!kubernetes/infrastructure/configs/flux-webhook-secret.yaml
-!kubernetes/infrastructure/configs/shared-cloudflare-secrets
-!kubernetes/infrastructure/configs/shared-cloudflare-secrets/**
-!kubernetes/apps/**/externalsecret*.yaml
-!kubernetes/apps/**/externalsecrets.yaml
-!kubernetes/infrastructure/**/externalsecret*.yaml
-!kubernetes/clusters/weisssrv/tenants/**/cluster-secret-store.yaml
-!kubernetes/clusters/weisssrv/tenants/**/secret-store.yaml
-!kubernetes/infrastructure/controllers/onepassword-connect
-!kubernetes/infrastructure/controllers/onepassword-connect/**
-!kubernetes/infrastructure/sources/onepassword-connect.yaml
-# Connect IngressRoute + Certificate moved out of controllers/ into configs/
-# so they reconcile same-stage as the middlewares + ClusterIssuer they
-# reference. These are routing/cert manifests, no actual secret material.
-!kubernetes/infrastructure/configs/onepassword-connect-*.yaml
-# Jinja2 template with op:// refs, not actual secrets
-!ansible/roles/home_assistant/templates/secrets.yaml.j2
-# GitLab Secret Detection custom ruleset (configuration, not secret values)
-!.gitlab/secret-detection-ruleset.toml
+# 1Password Connect bootstrap credentials (`op connect server create` output)
+1password-credentials.json
 
 # Terraform
 **/.terraform/

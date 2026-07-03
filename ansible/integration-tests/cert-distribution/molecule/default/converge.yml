@@ -328,6 +328,10 @@
         # Override defaults for container testing (cert issuance is mocked
         # by the pre-created /root/.acme.sh content above)
         local_cert_dir: /opt/AdGuardHome/certs
+        # The molecule cert source container is not 192.168.0.150, so do NOT pin
+        # the distribution key to that source IP — the from="..." restriction
+        # would reject the SSH push from the container and fail distribution.
+        acme_certs_key_from: ""
 
     # The role deploys the real ed25519 keypair (generated earlier in this
     # converge, injected via add_host) to /home/eric/.ssh/id_ed25519_certs and pushes

@@ -472,46 +472,25 @@ mount.
 
 ### Backup Configuration
 
-**Step 1: Create NFS Mount for Backups** (Optional but Recommended)
+**Step 1: Where backups live**
 
-Home Assistant backups should be stored on NFS for durability.
+HAOS backups are written to its own `/backup` on the VM disk, which is itself
+HA-managed and ZFS-replicated across nodes (Proxmox HA), so they survive a host
+loss. For off-site durability, download full backups from the UI (Step 2) or use
+HA's built-in remote-backup integrations.
 
-1. **On pve-nas-01**, ensure backup directory exists:
-
-```bash
-ssh pve-nas-01
-mkdir -p /mnt/ssd/appdata/home-assistant/backups
-chown 1000:1000 /mnt/ssd/appdata/home-assistant/backups
-chmod 755 /mnt/ssd/appdata/home-assistant/backups
-```
-
-2. **Verify NFS export** (should already be configured):
-
-```bash
-# Check /etc/exports on pve-nas-01
-grep appdata /etc/exports
-# Should include: /mnt/ssd/appdata 192.168.0.0/24(rw,sync,no_subtree_check,no_root_squash)
-```
-
-3. **Mount NFS in Home Assistant**:
-
-Install "Samba share" or "SSH & Web Terminal" add-on, then:
-
-```bash
-ssh root@192.168.0.154 -p 22222
-
-# Create mount point
-mkdir -p /mnt/backups
-
-# Add to fstab (persistent across reboots)
-echo "pve-nas-01.esweiss.com:/mnt/ssd/appdata/home-assistant/backups /mnt/backups nfs defaults,timeo=900,retrans=5,_netdev 0 0" >> /etc/fstab
-
-# Mount
-mount -a
-
-# Verify
-df -h | grep backups
-```
+> **Note — NAS-backed HAOS backups via the `appdata` export do NOT work.** The
+> `/export/appdata` export is bound to `/mnt/ssd/appdata` and is exported **only**
+> to the k3s CIDRs (`192.168.0.200/29`, `192.168.0.220/29`) with `all_squash`
+> (anonuid/anongid 1000/2000) and `xprtsec=tls` **required** — HAOS (.154) is not
+> in that export, and the locked HAOS image ships no `tlshd` so it can never
+> request `xprtsec` (same constraint as the read-only media mount above). With
+> `fsid=0` on `/export`, the NFSv4 path would also be `/appdata/...`, not the
+> absolute `/mnt/ssd/appdata/...`. To back HAOS up to the NAS you would have to
+> add a **dedicated plaintext `.154` backup export** in
+> `host_vars/pve-nas-01.yml` (a separate path, exported to `192.168.0.154/32`
+> without `xprtsec`), then mount it by hostname with the fsid-relative path. Until
+> such an export exists, rely on HA-native backups + off-site download.
 
 **Step 2: Configure Automatic Backups**
 
@@ -1019,9 +998,10 @@ Home Assistant manages its own backups:
 2. Create a full backup
 3. Download backup file for off-site storage
 
-Consider storing backups on NAS:
-- Mount NFS share in Home Assistant
-- Configure backup location to NFS path
+For off-site durability, download backups for external storage. NAS-backed HAOS
+backups over the `appdata` NFS export are not possible (TLS-required, HAOS not in
+the export) — see the "Backup Configuration" note above for the constraint and
+the dedicated-export workaround.
 
 ### Update Home Assistant
 

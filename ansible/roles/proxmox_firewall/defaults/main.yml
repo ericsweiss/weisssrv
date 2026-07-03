@@ -3,6 +3,16 @@
 
 pve_firewall_enabled: true
 
+# Host-originated egress filtering (default-deny OUT on the node itself, NOT
+# guests). OFF by default because a missing allowlist entry breaks the host
+# (and possibly remote access). When enabled, host.fw applies the sg-host-egress
+# allowlist (cluster.fw.j2) and appends an explicit `OUT DROP -log info` rule —
+# pve-firewall ignores the host-level policy_out option, so the trailing DROP
+# rule (not a policy setting) is what enforces default-deny. ENABLE PER HOST AND
+# VERIFY with `pve-firewall compile` — see the role README "Egress filtering"
+# section. Override per-host in host_vars to roll out gradually (one node first).
+proxmox_firewall_egress_filtering: false
+
 # Filesystem paths for the Proxmox firewall config. Defaults match the real
 # clustered FUSE filesystem; molecule scenarios override these to redirect
 # template writes to a stub directory.

@@ -1,16 +1,12 @@
 ---
 # SMTP relay server configuration
 
-# Root SSH login disabled; access is via the standard 'eric' user
-ssh_permit_root_login: "no"
-
 # LXC container settings
 # Nesting required for systemd 257+ (Debian 13) to function correctly
 lxc_nesting: true
 
-# Boot order configuration
-proxmox_startup_order: 20
-proxmox_startup_delay: 15
+# Boot order (proxmox_startup_order/delay) is set in host_vars/smtp-relay.yml
+# (the only mail host).
 
 # Postfix relay configuration
 smtp_relay_config:

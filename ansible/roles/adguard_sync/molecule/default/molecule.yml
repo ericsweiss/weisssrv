@@ -1,13 +1,9 @@
 ---
-# Molecule configuration for adguard_sync role testing
-# Tests: binary download, systemd timer, config generation
-# Partial testing: Timer functionality (actual sync requires two AdGuard instances)
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: dns-01
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -23,32 +19,15 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # AdGuard sync configuration
-        adguardhome_sync_version: "0.8.2"
-        adguardhome_sync_schedule: "*:0/5"
-        adguardhome_sync_origin: "http://192.168.0.150:3000"
-        adguardhome_sync_replica: "http://192.168.0.160:3000"
-        # Mock credentials (never used - no actual sync in testing)
-        adguard_admin_user: "admin"
-        adguard_admin_password: "test-password"
-        # Sync features (from production config)
+        adguardhome_sync_version: 0.8.2
+        adguardhome_sync_schedule: '*:0/5'
+        adguardhome_sync_origin: http://192.168.0.150:3000
+        adguardhome_sync_replica: http://192.168.0.160:3000
+        adguard_admin_user: admin
+        adguard_admin_password: test-password
         adguardhome_sync_features:
           generalSettings: true
           queryLogConfig: true
@@ -63,18 +42,3 @@ provisioner:
             serverConfig: true
             accessLists: true
             rewrites: true
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

@@ -37,7 +37,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Flux controllers (PodMonitor) | flux-system | `/metrics` | 30s |
 | Proxmox hosts (x6) | observability | `/pve` | 60s |
 | ZFS exporter (pve-nas-01) | observability | `/metrics` | 60s |
-| Node exporter (Proxmox hosts x6 + DNS hosts x2, port 9101) | observability | `/metrics` | 60s |
+| Node exporter (Proxmox hosts x6 + DNS hosts x2 + GitLab VM, port 9101) | observability | `/metrics` | 60s |
 | Unbound exporter (dns-01 + dns-02) | observability | `/metrics` | 60s |
 | AdGuard exporter | observability | `/metrics` | 60s |
 | Plex exporter | observability | `/metrics` | 60s |
@@ -112,7 +112,7 @@ The `node_exporter_host` Ansible role installs Prometheus node_exporter on all 6
 
 Each bare host is scraped via a headless `Service` + manually pinned `Endpoints` in `kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`, selected by a single `ServiceMonitor` (`jobLabel: app.kubernetes.io/name`). The GitLab VM's 9101 scrape is authorized by the `sg-metrics` security group it already carries.
 
-The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal, the GitLab backup wrapper) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed, GitLabBackupFailed/Stale) when scripts fail or become stale.
+The role also configures the **textfile collector** directory (`/var/lib/node_exporter/`), which allows custom scripts to expose metrics by writing `.prom` files. Scripts running on the host (archive-backupctl, media-mover, acme.sh cert renewal, the GitLab backup wrapper) write timestamped success/failure metrics that node_exporter serves alongside its built-in hardware metrics. Prometheus scrapes these via ServiceMonitors targeting the external Endpoints, and PrometheusRules fire alerts (ArchiveBackupFailed/Stale, MediaMoverFailed/Stale, CertRenewalFailed, CertExpiringSoon, GitLabBackupFailed/Stale) when scripts fail, become stale, or (for certs) approach expiry.
 
 ### Shared exporter install pipeline
 
@@ -490,7 +490,8 @@ These alerts use metrics exposed via the node_exporter textfile collector on Pro
 | ArchiveBackupStale | archive-backupctl last success > 2 days ago | warning | 1h |
 | MediaMoverFailed | media-mover last run exit code != 0 | warning | 1h |
 | MediaMoverStale | media-mover last success > 2 days ago | warning | 1h |
-| CertRenewalFailed | acme.sh cert renewal exit code != 0 | warning | 1h |
+| CertRenewalFailed | acme.sh cert renewal/distribution exit code != 0 | warning | 1h |
+| CertExpiringSoon | host-distributed `*.esweiss.com` cert within 14 days of its real `notAfter` (`cert_local_expiry_timestamp_seconds`), or metric absent | warning | 1h |
 | GitLabBackupFailed | gitlab-backup-run.sh last run exit code != 0 | warning | 1h |
 | GitLabBackupStale | GitLab backup last success > 2 days ago (or metric absent) | warning | 1h |
 

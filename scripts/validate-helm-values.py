@@ -59,10 +59,12 @@ _hpa_spec.loader.exec_module(_hpa)
 # kind-qualified form (.Capabilities.APIVersions.Has
 # "monitoring.coreos.com/v1/ServiceMonitor"), so declare the kind-qualified CRDs
 # the cluster actually has, not just the bare group/version.
-# Kubernetes version for capability-gated rendering. Shared by `helm template`
+# Kubernetes version for capability-gated rendering, shared by `helm template`
 # (--kube-version) and kubeconform (-kubernetes-version) so version-gated chart
-# templates render the same way both tools see — keep it at the cluster version.
-KUBE_VERSION = "1.35.0"
+# templates render the way both tools see them. Derived at runtime from
+# k3s_version in the cluster-versions ConfigMap (see derive_kube_version) so it
+# tracks the live cluster; this fallback only applies if that key is missing.
+KUBE_VERSION_FALLBACK = "1.36.0"
 
 HELM_API_VERSIONS = [
     "monitoring.coreos.com/v1",
@@ -105,6 +107,13 @@ RELEASES = [
         "repo_name": "kured",
         "repo_url": "https://kubereboot.github.io/charts",
     },
+    {
+        "name": "reloader",
+        "manifest": "kubernetes/infrastructure/controllers/reloader/release.yaml",
+        "chart": "reloader",
+        "repo_name": "stakater",
+        "repo_url": "https://stakater.github.io/stakater-charts",
+    },
 ]
 
 VERSIONS_CONFIGMAP = "kubernetes/infrastructure/sources/versions-configmap.yaml"
@@ -124,6 +133,16 @@ def load_versions(repo_root: str) -> dict:
     if not data:
         raise SystemExit(f"ERROR: no data keys in {VERSIONS_CONFIGMAP}")
     return {k: str(v) for k, v in data.items()}
+
+
+def derive_kube_version(versions: dict) -> str:
+    """Cluster Kubernetes version (X.Y.Z) for helm/kubeconform, from k3s_version.
+
+    e.g. "v1.36.2+k3s1" -> "1.36.2". Falls back to KUBE_VERSION_FALLBACK when the
+    key is absent or unparseable so a malformed pin can't break flux:lint.
+    """
+    m = re.match(r"v?(\d+\.\d+\.\d+)", str(versions.get("k3s_version", "")))
+    return m.group(1) if m else KUBE_VERSION_FALLBACK
 
 
 def substitute(text: str, versions: dict) -> tuple[str, list[str]]:
@@ -155,7 +174,8 @@ def extract_helmrelease(manifest_path: str) -> dict:
         return extract_helmrelease_from_text(f.read(), manifest_path)
 
 
-def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform: bool) -> bool:
+def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform: bool,
+                     kube_version: str) -> bool:
     """Template one release; return True on success."""
     manifest = os.path.join(repo_root, rel["manifest"])
     # Substitute ${placeholders} in the RAW manifest text first — exactly like
@@ -196,7 +216,7 @@ def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform:
             f"{rel['repo_name']}/{rel['chart']}",
             "--version", version,
             "--namespace", namespace,
-            "--kube-version", KUBE_VERSION,
+            "--kube-version", kube_version,
             "-f", values_file,
             "--skip-tests",
         ]
@@ -235,7 +255,7 @@ def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform:
             kc = subprocess.run(
                 [
                     "kubeconform", "-strict", "-ignore-missing-schemas",
-                    "-kubernetes-version", KUBE_VERSION,
+                    "-kubernetes-version", kube_version,
                     "-schema-location", "default",
                     "-schema-location",
                     "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/"
@@ -274,6 +294,7 @@ def main() -> int:
         return 1
 
     versions = load_versions(args.repo_root)
+    kube_version = derive_kube_version(versions)
 
     # Add/refresh the chart repos once (network).
     for rel in RELEASES:
@@ -296,7 +317,7 @@ def main() -> int:
 
     failed = 0
     for rel in RELEASES:
-        if not validate_release(rel, versions, args.repo_root, args.kubeconform):
+        if not validate_release(rel, versions, args.repo_root, args.kubeconform, kube_version):
             failed += 1
     if failed:
         print(f"\n{failed} release(s) failed helm-values validation")

@@ -1,0 +1,181 @@
+---
+# Strategic-merge patch injecting the Gluetun VPN sidecar into a Deployment.
+# metadata.name is a placeholder: the patch is applied via the component's
+# `patches[].target` (kind: Deployment), so the target — not this name — selects
+# the resource, and this name is NOT merged in (the Deployment keeps its own).
+#
+# The per-app ConfigMap name is the placeholder `placeholder-vpn-config`; each
+# consuming overlay (../nzbget, ../qbittorrent) replaces it on the two gluetun
+# env refs and the vpn-config volume. The base `ports` carry only the shared
+# health port; overlays append the app-specific ports.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpn-sidecar
+spec:
+  template:
+    spec:
+      # Pod-level DNS fallback: primary + secondary internal resolvers.
+      # When Gluetun is enabled, Gluetun's own DNS_ADDRESS (set on the gluetun
+      # sidecar) takes precedence inside the tunnel; if the gluetun container is
+      # crashed or the VPN is disabled, the app falls back to these nameservers.
+      # dns-01/dns-02 are the AdGuard HA VIPs.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 192.168.0.150
+          - 192.168.0.160
+        options:
+          - name: ndots
+            value: "1"
+          - name: single-request-reopen
+      # Init container verifies VPN prerequisites when VPN is enabled
+      initContainers:
+        - name: check-vpn-config
+          image: busybox:${busybox_version}
+          command:
+            - sh
+            - -c
+            - |
+              VPN_ENABLED=$(cat /config/vpn_enabled)
+              echo "VPN enabled: $VPN_ENABLED"
+              if [ "$VPN_ENABLED" = "true" ]; then
+                echo "VPN mode - checking TUN device..."
+                if [ ! -c /dev/net/tun ]; then
+                  echo "ERROR: TUN device not available but VPN is enabled!"
+                  exit 1
+                fi
+                echo "TUN device available"
+              else
+                echo "Direct mode - skipping TUN check"
+              fi
+          volumeMounts:
+            - name: vpn-config
+              mountPath: /config
+            - name: tun
+              mountPath: /dev/net/tun
+      containers:
+        # Gluetun VPN sidecar - provides VPN tunnel when enabled
+        # When VPN is disabled, this container runs `sleep infinity` (minimal
+        # resources — the pod stays healthy; network path bypasses gluetun).
+        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        - name: gluetun
+          image: qmcgaw/gluetun:${gluetun_version}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              VPN_ENABLED=$(cat /gluetun/vpn_enabled)
+              if [ "$VPN_ENABLED" != "true" ]; then
+                echo "VPN disabled - sleeping indefinitely"
+                # Sleep but stay alive so pod doesn't restart
+                exec sleep infinity
+              fi
+              echo "VPN enabled - starting Gluetun"
+              exec /gluetun-entrypoint
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+          env:
+            - name: VPN_SERVICE_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: placeholder-vpn-config
+                  key: vpn_provider
+            # VPN credentials: NOT optional. If vpn-credentials is missing or
+            # a field is blank (e.g., ESO lost access to 1Password), we want the
+            # pod to fail to start — that's clearer than Gluetun CrashLoopBackOff
+            # with silent auth failures. Gluetun reads these only when it
+            # actually starts (OpenVPN mode); with vpn_enabled=false the
+            # sidecar execs `sleep infinity` and never consumes them.
+            - name: OPENVPN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vpn-credentials
+                  key: openvpn-user
+            - name: OPENVPN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vpn-credentials
+                  key: openvpn-password
+            - name: SERVER_COUNTRIES
+              valueFrom:
+                configMapKeyRef:
+                  name: placeholder-vpn-config
+                  key: server_countries
+                  optional: true
+            - name: FIREWALL_OUTBOUND_SUBNETS
+              value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+            - name: HEALTH_SERVER_ADDRESS
+              value: ":8000"
+            - name: HEALTH_VPN_DURATION_INITIAL
+              value: "30s"
+            - name: HTTP_CONTROL_SERVER_ADDRESS
+              value: ":8001"
+            - name: DNS_ADDRESS
+              # Gluetun v3.41 rejects comma-separated values (only a single
+              # address is accepted) — a single-resolver dependency on dns-01
+              # INSIDE the tunnel. Pod-level dnsConfig.nameservers above covers
+              # dns-02 as a fallback only when Gluetun is disabled or crashed.
+              value: "192.168.0.150"
+            - name: TZ
+              value: America/Los_Angeles
+            - name: LOG_LEVEL
+              value: info
+          ports:
+            - name: health
+              containerPort: 8000
+              protocol: TCP
+          # Only run health checks when VPN is supposed to be active
+          # When disabled, gluetun just sleeps and health checks would fail
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  VPN_ENABLED=$(cat /gluetun/vpn_enabled)
+                  if [ "$VPN_ENABLED" != "true" ]; then
+                    exit 0
+                  fi
+                  wget -q -O /dev/null http://localhost:8000/ || exit 1
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  VPN_ENABLED=$(cat /gluetun/vpn_enabled)
+                  if [ "$VPN_ENABLED" != "true" ]; then
+                    exit 0
+                  fi
+                  wget -q -O /dev/null http://localhost:8000/ || exit 1
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: tun
+              mountPath: /dev/net/tun
+            - name: vpn-config
+              mountPath: /gluetun
+      volumes:
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+        - name: vpn-config
+          configMap:
+            name: placeholder-vpn-config

@@ -49,12 +49,13 @@ zfs_encryption_guest_ctids: [152]
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
 # /export/* fstab binds (and the nfs-server drop-in) on the late
 # zfs-mount-encrypted.service rather than the early zfs-mount.service, so the
-# binds capture the real (unlocked) datasets, never an empty mountpoint. Both
-# current ZFS-backed exports are encrypted; /mnt/media (mergerfs, plaintext)
-# is not ZFS-backed and keeps a plain bind.
+# binds capture the real (unlocked) datasets, never an empty mountpoint. All
+# three ZFS-backed exports (appdata, share, tank/proxmox) are encrypted;
+# /mnt/media (mergerfs, plaintext) is not ZFS-backed and keeps a plain bind.
 nas_encrypted_bind_sources:
   - /mnt/ssd/appdata
   - /mnt/tank/share
+  - /mnt/tank/proxmox
 
 # ZFS pool configuration
 zfs_pools:

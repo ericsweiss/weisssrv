@@ -272,6 +272,15 @@ Managed via Terraform + Cloudflare.
 
 Certificate expired or not renewing automatically.
 
+**Related alerts** (see docs/31-observability.md):
+- **CertRenewalFailed** — the acme.sh renewal/distribution script exited non-zero.
+- **CertExpiringSoon** — the host-distributed `*.esweiss.com` cert is within 14
+  days of its real `notAfter` (so renewal/distribution has actually stopped
+  working), or the metric is missing. This fires off
+  `cert_local_expiry_timestamp_seconds`, which the cert-reload script emits from
+  the live cert — it replaced the old "time since last renewal > 2 days" proxy
+  that false-fired for most of each ~60-day renewal cycle.
+
 ### Procedure
 
 1. **Check Certificate Status**:
@@ -422,9 +431,11 @@ Certificate expired or not renewing automatically.
 sudo zfs rollback tank/media@backup-20260101
 ```
 
-**Proxmox Restore**:
+**Proxmox Restore** (use a ZFS pool actually in use — `ssd` on the NAS,
+`local-ssd` on compute nodes; `local-lvm` exists from the default install but
+holds no managed guests except the Plex/k3s NAS roots):
 ```bash
-sudo qmrestore /path/to/backup.vma.zst 100 --storage local-lvm
+sudo qmrestore /path/to/backup.vma.zst 100 --storage local-ssd
 ```
 
 ---
@@ -1428,6 +1439,12 @@ regular-mode only (it SSHes DNS/mail/k3s VMs/GitLab); `--json` is a fast
 core probe whose host gate covers just the 6 Proxmox hosts — so an
 unreachable auxiliary host yields `PARTIAL` from regular while `--json`
 can still say `healthy: true`.
+
+The non-Proxmox hosts (DNS, smtp-relay, GitLab VM, k3s VMs, HAOS) are
+addressed by IP, not bare hostname — only the 6 Proxmox hosts use SSH-config
+host aliases. This keeps remote/Tailscale `--json` runs from false-failing the
+coverage gate on DNS resolution (a bare hostname like `gitlab` won't resolve off
+the LAN).
 
 ---
 

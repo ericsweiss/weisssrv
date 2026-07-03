@@ -11,7 +11,7 @@
 #
 # Exits 0 if cluster is healthy, 1 if any critical check fails.
 
-set -eo pipefail
+set -euo pipefail
 
 # Resolve to an absolute dir so sourcing works regardless of CWD / PATH
 # invocation (matches maintenance-ha-restart.sh).

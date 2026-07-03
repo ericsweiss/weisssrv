@@ -22,13 +22,22 @@
       {{ prometheus_exporter_current.rc != 0
          or (prometheus_exporter_current.stdout | trim) != prometheus_exporter_version }}
 
+- name: Ensure scratch dir for {{ prometheus_exporter_name }}
+  ansible.builtin.file:
+    path: "{{ prometheus_exporter_tmp_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: prometheus_exporter_needs_install
+
 - name: Download artifact for {{ prometheus_exporter_name }}
   ansible.builtin.get_url:
     url: "{{ prometheus_exporter_download_url }}"
     dest: "{{ prometheus_exporter_tmp_dir }}/{{ prometheus_exporter_download_url | basename }}"
     mode: "0644"
-    # Empty checksum omits the param entirely (preserves unbound's
-    # no-checksum behavior; zfs pins a sha256 in all.yml).
+    # Empty checksum omits the param entirely; both wrappers pin a sha256 in
+    # all.yml, so this is just the generic fallback for a checksumless caller.
     checksum: "{{ prometheus_exporter_checksum | default(omit, true) }}"
   when: prometheus_exporter_needs_install
 

@@ -7,7 +7,7 @@ This guide covers preparing new LXC containers and VMs for Ansible automation. F
 1. [Overview](#overview)
 2. [Prerequisites](#prerequisites)
 3. [LXC Container Bootstrap](#lxc-container-bootstrap)
-4. [VM Bootstrap (Future)](#vm-bootstrap-future)
+4. [VM Bootstrap](#vm-bootstrap)
 5. [What the Base Role Expects](#what-the-base-role-expects)
 6. [Validation](#validation)
 7. [Troubleshooting](#troubleshooting)
@@ -53,7 +53,7 @@ Before bootstrapping any system, ensure you have:
 - **IP Address**: Static IP allocated (avoid DHCP conflicts)
 - **Gateway**: 192.168.0.1 (router)
 - **DNS Servers**: 192.168.0.150, 192.168.0.160 (dns-01, dns-02)
-- **Hostname**: Follows naming convention (e.g., `app-01`, `k3s-master-01`)
+- **Hostname**: Follows naming convention (e.g., `app-01`; k3s nodes use `k3s-srv-*` / `k3s-agt-*`)
 
 ### Access Requirements
 
@@ -121,7 +121,7 @@ pct create <VMID> \
 
 **Parameter Notes**:
 - `<VMID>`: Container ID (e.g., 201, 202)
-- `<hostname>`: DNS name (e.g., k3s-master-01)
+- `<hostname>`: DNS name (e.g., app-01)
 - `<IP>`: Static IP (e.g., 192.168.0.201)
 - `--rootfs local-lvm:8`: 8GB root filesystem (adjust as needed)
 - `--unprivileged 1`: Run as unprivileged (security best practice)
@@ -133,7 +133,7 @@ pct create <VMID> \
 ```bash
 pct create 201 \
   local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
-  --hostname k3s-master-01 \
+  --hostname app-01 \
   --net0 name=eth0,bridge=vmbr0,ip=192.168.0.201/24,gw=192.168.0.1 \
   --nameserver 192.168.0.150 \
   --nameserver 192.168.0.160 \
@@ -222,11 +222,15 @@ Edit the inventory file to add the new container:
 Add to appropriate group:
 
 ```yaml
-# Example: Adding a k3s master node
-k3s_masters:
+# Example: a k3s agent node. NOTE: the k3s VM fleet (3 servers + 6 agents) is
+# normally created and provisioned by Ansible (`task k3s:provision-vms`, the
+# proxmox_vm role + cloud-init), not bootstrapped by hand — this snippet just
+# shows the inventory shape. Groups are k3s_servers / k3s_agents with
+# k3s_role: server|agent.
+k3s_agents:
   hosts:
-    k3s-master-01:
-      ansible_host: 192.168.0.201
+    k3s-agt-opt-01:
+      ansible_host: 192.168.0.204
       ansible_user: eric
 ```
 
@@ -246,10 +250,10 @@ monitoring:
 If the host needs specific configuration:
 
 ```bash
-# ansible/inventories/prod/host_vars/k3s-master-01.yml
+# ansible/inventories/prod/host_vars/k3s-agt-opt-01.yml
 ---
 # Host-specific variables
-k3s_role: master
+k3s_role: agent
 ```
 
 ### Step 7: Configure Firewall
@@ -295,12 +299,12 @@ EOF
 Verify Ansible can reach the new container:
 
 ```bash
-ansible k3s-master-01 -m ping
+ansible app-01 -m ping
 ```
 
 Expected output:
 ```
-k3s-master-01 | SUCCESS => {
+app-01 | SUCCESS => {
     "changed": false,
     "ping": "pong"
 }
@@ -312,13 +316,13 @@ Run Ansible to configure the system:
 
 ```bash
 # Check what would change (dry run)
-task infra:check -- --limit k3s-master-01
+task infra:check -- --limit app-01
 
 # Deploy base configuration
-ansible-playbook ansible/playbooks/base.yml --limit k3s-master-01
+ansible-playbook ansible/playbooks/base.yml --limit app-01
 
 # Or deploy everything for this host
-ansible-playbook ansible/playbooks/site.yml --limit k3s-master-01
+ansible-playbook ansible/playbooks/site.yml --limit app-01
 ```
 
 ### Step 10: Verify Deployment
@@ -327,7 +331,7 @@ Run post-deployment verification:
 
 ```bash
 # Full verification playbook
-ansible-playbook ansible/playbooks/postflight.yml --limit k3s-master-01
+ansible-playbook ansible/playbooks/postflight.yml --limit app-01
 ```
 
 Or manually verify:
@@ -349,9 +353,13 @@ which htop neovim git
 
 ---
 
-## VM Bootstrap (Future)
+## VM Bootstrap
 
-When deploying VMs (planned for k3s nodes):
+VMs (including the entire 9-node k3s fleet and the GitLab/HAOS VMs) are normally
+created and provisioned by Ansible — the `proxmox_vm` role builds them from the
+Debian cloud image with cloud-init, driven by the inventory (`task k3s:provision-vms`,
+`task gitlab:deploy`). The manual `qm` steps below are retained for reference and
+for bootstrapping a VM outside that flow; prefer the automated path for k3s nodes.
 
 ### Cloud-Init Method (Recommended)
 
@@ -746,7 +754,7 @@ After successfully bootstrapping and deploying base configuration:
 
 1. **Deploy Service-Specific Configuration**:
    - Run appropriate playbooks for the service role
-   - Example: `ansible-playbook ansible/playbooks/k3s.yml --limit k3s-master-01`
+   - Example: `ansible-playbook ansible/playbooks/k3s.yml --limit k3s-srv-nas-01`
 
 2. **Configure Application**:
    - Deploy application-specific roles

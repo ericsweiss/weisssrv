@@ -62,15 +62,17 @@ AUTH_HEADER="Authorization: Bearer $TOKEN"
 # /proc/<pid>/cmdline during the curl invocation). Writes the body to
 # $2, prints the HTTP code on stdout. Network failures yield code 000.
 connect_get() {
-    local path="$1" out="$2"
-    printf '%s\n' "$AUTH_HEADER" \
+    local path="$1" out="$2" code
+    # curl's -w already prints '000' on a transport failure; capture its rc
+    # via `|| code=000` instead of appending a second '000' to that output.
+    code=$(printf '%s\n' "$AUTH_HEADER" \
         | curl -sS \
             --max-time 10 \
             -H @- \
             -o "$out" \
             -w '%{http_code}' \
-            "${CONNECT_URL}${path}" \
-        || echo 000
+            "${CONNECT_URL}${path}") || code=000
+    printf '%s' "$code"
 }
 
 # Pool must already be imported by zfs-import.target before this unit

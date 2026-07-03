@@ -24,7 +24,7 @@ spec:
         - protocol: TCP
           port: 8081
     # Traefik fronts Connect at connect.esweiss.com (internal-only via
-    # the lan-tailscale-only middleware) so bare-metal Proxmox hosts can
+    # the lan-tailscale-strict middleware) so bare-metal Proxmox hosts can
     # fetch ZFS-encryption passphrases at boot. Only the API port (8080)
     # is exposed; the sync sidecar (8081) stays in-namespace.
     - from:

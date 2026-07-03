@@ -208,6 +208,7 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10
               - 169.254.0.0/16
       ports:
         - { protocol: UDP, port: 1194 }   # OpenVPN UDP
@@ -215,8 +216,6 @@ spec:
         - { protocol: UDP, port: 443 }    # OpenVPN/Wireguard over 443
         - { protocol: TCP, port: 443 }    # OpenVPN TCP/443 fallback
         - { protocol: UDP, port: 51820 }  # Wireguard default
-        - { protocol: TCP, port: 6881 }   # BitTorrent peer (post-tunnel)
-        - { protocol: UDP, port: 6881 }   # BitTorrent peer (post-tunnel)
 
 ---
 # 7. Egress for the direct-internet *arr apps (NOT routed through Gluetun).
@@ -244,6 +243,7 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10
               - 169.254.0.0/16
       ports:
         - { protocol: TCP, port: 443 }
@@ -253,7 +253,7 @@ spec:
 # 7b. Egress for NZBGet in direct mode (vpn_enabled: "false" in
 #     nzbget-vpn-config). NZBGet talks NNTPS (TCP 563) and unencrypted NNTP
 #     (TCP 119) to external Usenet providers. The VPN-egress rule above only
-#     opens 1194/443/51820/6881 — which would silently kill all Usenet
+#     opens 1194/443/51820 — which would silently kill all Usenet
 #     downloads in direct mode. When the ConfigMap is flipped to VPN mode,
 #     this rule is harmless (Gluetun owns the network namespace and rejects
 #     non-tunnel traffic) but keeps the policy intent explicit.
@@ -276,6 +276,7 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10
               - 169.254.0.0/16
       ports:
         - { protocol: TCP, port: 563 }   # NNTPS (TLS)
@@ -286,7 +287,7 @@ spec:
 # qbittorrent-vpn-config.vpn_enabled = "false". The repo ships
 # vpn_enabled: "true" so this policy is dormant under the current
 # config, but the ConfigMap exposes the toggle as a supported choice
-# and the gluetun-VPN policy alone (1194/443/51820/6881) isn't enough
+# and the gluetun-VPN policy alone (1194/443/51820) isn't enough
 # for direct-mode tracker + peer traffic — without this rule, flipping
 # the toggle would silently break peer/tracker connectivity.
 #
@@ -327,6 +328,7 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10
               - 169.254.0.0/16
       ports:
         - { protocol: TCP, port: 80 }                       # tracker HTTP

@@ -157,6 +157,22 @@
     - proxmox_resource_pools is defined
     - proxmox_resource_pool not in proxmox_resource_pools
 
+# An empty key still creates the container, but the authorized_keys reconcile
+# below is gated on a non-empty key — it silently skips, yet the SSH wait still
+# passes (sshd is listening), leaving a container Ansible can never SSH into.
+# Mirror proxmox_vm and fail fast on the create path.
+- name: Assert SSH public key is available for the container
+  ansible.builtin.assert:
+    that:
+      - lxc_ssh_public_keys | length > 0
+    fail_msg: >-
+      lxc_ssh_public_keys is empty. Run via the task wrapper (op run) so the
+      container gets an authorized key.
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
+
 - name: Download LXC template if not present
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -538,9 +554,12 @@
       echo "DNS working"
       exit 0
     fi
-    # If DNS fails, fall back to public DNS
-    echo "DNS not working with internal servers, using public DNS fallback..."
-    pct exec {{ container_id }} -- bash -c 'echo "nameserver 1.1.1.1" > /etc/resolv.conf'
+    # If DNS fails, APPEND public DNS (keep the configured internal servers as
+    # primary) only to complete bootstrap apt-get. The restore task below resets
+    # resolv.conf to internal-only so the container doesn't persist on public
+    # DNS, which can't resolve split-horizon *.esweiss.com names.
+    echo "WARNING: internal DNS not answering apt-get; appending public DNS (1.1.1.1) to complete bootstrap"
+    pct exec {{ container_id }} -- bash -c 'echo "nameserver 1.1.1.1" >> /etc/resolv.conf'
     if pct exec {{ container_id }} -- apt-get update >/dev/null 2>&1; then
       echo "DNS working with public fallback"
       exit 0
@@ -550,6 +569,7 @@
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
+  register: lxc_dns_check
   changed_when: false
 
 - name: Install required packages in container
@@ -559,6 +579,26 @@
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
+  changed_when: true
+
+# The public-DNS fallback above is only a bootstrap crutch. Now that apt-get is
+# done, restore the configured internal nameservers so the container doesn't
+# persist resolving through public DNS (which can't see split-horizon
+# *.esweiss.com names and leaks queries past AdGuard). No further task here
+# needs DNS, so this is safe even when internal DNS is still down.
+- name: Restore configured nameservers after public-DNS bootstrap fallback
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ container_id }} -- bash -c '
+      printf "search %s\n" "{{ lxc_searchdomain }}" > /etc/resolv.conf
+      for ns in {{ lxc_nameserver }}; do
+        printf "nameserver %s\n" "$ns" >> /etc/resolv.conf
+      done
+    '
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - "'public fallback' in (lxc_dns_check.stdout | default(''))"
   changed_when: true
 
 - name: Create eric user with sudo group

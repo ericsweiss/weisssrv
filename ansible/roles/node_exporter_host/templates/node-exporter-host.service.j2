@@ -8,6 +8,9 @@
 # are explicit-intent no-ops kept for readability. We do NOT pass
 # --collector.disable-defaults, so the default collectors
 # (diskstats/filesystem/netdev/cpu/meminfo/…) stay on without being listed here.
+# Metrics are served as unauthenticated plaintext HTTP on all interfaces; the
+# Proxmox firewall (scrape port limited to cluster scrapers) is the sole access
+# control protecting this endpoint.
 
 [Service]
 ExecStart=

@@ -7,7 +7,7 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 ### ZFS
 - Pool property configuration (compression, atime, xattr)
 - Dataset creation and management
-- Snapshots (manual, not automated)
+- Automated periodic snapshots via zfs-auto-snapshot
 
 ### NFS
 - NFS server installation and configuration
@@ -26,14 +26,14 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 - Automatic remount on boot
 
 ### Media Mover
-- Systemd timer (runs at 3 AM daily)
+- Systemd timer (runs at 03:30 daily; overridable via media_mover_schedule)
 - Moves completed downloads from nvme to tank
 - Preserves directory structure and permissions
 
 ### SMART Monitoring
 - Smartmontools configuration
 - Email alerts via SMTP relay
-- Daily short tests, weekly long tests
+- Daily short tests, monthly long tests (staggered per pool)
 
 ## Configuration
 
@@ -141,7 +141,7 @@ pve-nas-01
 │  └─ Combines: tank/media + nvme/media
 ├─ NFS: Exports to k3s nodes
 ├─ Samba: Shares to LAN
-├─ Media Mover: nvme → tank (3 AM daily)
+├─ Media Mover: nvme → tank (03:30 daily)
 └─ SMART: Monitoring + alerts
 ```
 
@@ -152,8 +152,8 @@ pve-nas-01
 - `tasks/nfs.yml` - NFS exports
 - `tasks/samba.yml` - Samba shares
 - `tasks/mergerfs.yml` - Unified media directory
-- `tasks/media-mover.yml` - Automated file mover
-- `tasks/smart.yml` - SMART monitoring
+- `tasks/media_mover.yml` - Automated file mover
+- `tasks/smartd.yml` - SMART monitoring
 - `templates/*` - Configuration templates
 
 ## Dependencies

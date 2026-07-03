@@ -37,6 +37,8 @@ resource "cloudflare_zone_settings_override" "external" {
       max_age            = 31536000 # 1 year
       include_subdomains = true
       nosniff            = true
+      # preload intentionally omitted — submission to the browser HSTS preload
+      # list is a hard-to-reverse commitment we don't want for this domain.
     }
   }
 }

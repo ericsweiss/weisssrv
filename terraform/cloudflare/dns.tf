@@ -2,10 +2,11 @@
 # Note: Service CNAME records (auth, bar, food, plex, home) are managed by external-dns in k3s
 
 # Root domain A record - IP managed by DDNS, config managed by Terraform
-# name = var.external_domain (FQDN apex form). The CAA records below use the
-# "@" apex shorthand; both resolve to the zone apex in the v4 provider. The
-# FQDN form is kept here because it doubles as inline documentation of which
-# zone this record lives in.
+# name = var.external_domain (FQDN apex form). The CAA records and the apex SPF
+# TXT below use the "@" apex shorthand (the DMARC TXT lives at _dmarc); both the
+# FQDN and "@" forms resolve to the zone apex in the v4 provider. The FQDN form
+# is kept here because it doubles as inline documentation of which zone this
+# record lives in.
 resource "cloudflare_record" "root" {
   zone_id = data.cloudflare_zone.external.id
   name    = var.external_domain # ericsweiss.com
@@ -27,106 +28,110 @@ resource "cloudflare_record" "root" {
   }
 }
 
-# CAA records - restrict TLS cert issuance to Let's Encrypt only.
-# Both `letsencrypt.org` (cert-manager via Cloudflare DNS-01 in cluster)
-# and the same authority used by acme.sh on dns-01 cover everything we issue.
-resource "cloudflare_record" "caa_issue" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "@"
-  type    = "CAA"
-  ttl     = 1
-  data {
-    flags = 0
-    tag   = "issue"
-    value = "letsencrypt.org"
+# CAA records — restrict TLS cert issuance to the CAs we actually use:
+# Let's Encrypt (cert-manager DNS-01 in-cluster + acme.sh on dns-01) plus the
+# Cloudflare Universal SSL partner CAs (Google Trust Services, SSL.com) so edge-
+# cert renewal isn't blocked. Cloudflare ALSO auto-injects CAA records for its
+# other Universal SSL partner CAs (currently digicert.com, comodoca.com) that it
+# manages outside this config — they are intentionally not represented here. The
+# iodef entry publishes a violation-reporting address per RFC 8659.
+locals {
+  caa_records = {
+    issue_letsencrypt     = { tag = "issue", value = "letsencrypt.org", comment = "Restrict cert issuance to Let's Encrypt" }
+    issuewild_letsencrypt = { tag = "issuewild", value = "letsencrypt.org", comment = "Restrict wildcard cert issuance to Let's Encrypt" }
+    issue_pki_goog        = { tag = "issue", value = "pki.goog", comment = "Allow Cloudflare Universal SSL partner CA (Google Trust Services)" }
+    issuewild_pki_goog    = { tag = "issuewild", value = "pki.goog", comment = "Allow Cloudflare Universal SSL partner CA wildcard (Google Trust Services)" }
+    issue_ssl_com         = { tag = "issue", value = "ssl.com", comment = "Allow Cloudflare Universal SSL partner CA (SSL.com)" }
+    issuewild_ssl_com     = { tag = "issuewild", value = "ssl.com", comment = "Allow Cloudflare Universal SSL partner CA wildcard (SSL.com)" }
+
+    # iodef: published in public DNS so CAs can report issuance-policy
+    # violations. PII exposure is by design — RFC 8659 §4.1.3 requires an
+    # operator-reachable channel, and no role inbox (security@, certmaster@)
+    # currently exists.
+    iodef = { tag = "iodef", value = "mailto:ericsweiss1@gmail.com", comment = "CAA violation reports go here" }
   }
-  comment = "Restrict cert issuance to Let's Encrypt"
 }
 
-resource "cloudflare_record" "caa_issuewild" {
+resource "cloudflare_record" "caa" {
+  for_each = local.caa_records
+
   zone_id = data.cloudflare_zone.external.id
   name    = "@"
   type    = "CAA"
   ttl     = 1
+
   data {
     flags = 0
-    tag   = "issuewild"
-    value = "letsencrypt.org"
+    tag   = each.value.tag
+    value = each.value.value
   }
-  comment = "Restrict wildcard cert issuance to Let's Encrypt"
+
+  comment = each.value.comment
 }
 
-# Cloudflare Universal SSL edge certs may be issued by a partner CA (Google Trust
-# Services / SSL.com), not just Let's Encrypt. Without these the CAA records above
-# would block edge-cert renewal. Add issue + issuewild for each partner CA.
-resource "cloudflare_record" "caa_issue_pki_goog" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "@"
-  type    = "CAA"
-  ttl     = 1
-  data {
-    flags = 0
-    tag   = "issue"
-    value = "pki.goog"
-  }
-  comment = "Allow Cloudflare Universal SSL partner CA (Google Trust Services)"
+# Migrate the previously hand-written per-record CAA blocks into the for_each
+# above so apply moves state in place instead of destroy/recreate.
+moved {
+  from = cloudflare_record.caa_issue
+  to   = cloudflare_record.caa["issue_letsencrypt"]
+}
+moved {
+  from = cloudflare_record.caa_issuewild
+  to   = cloudflare_record.caa["issuewild_letsencrypt"]
+}
+moved {
+  from = cloudflare_record.caa_issue_pki_goog
+  to   = cloudflare_record.caa["issue_pki_goog"]
+}
+moved {
+  from = cloudflare_record.caa_issuewild_pki_goog
+  to   = cloudflare_record.caa["issuewild_pki_goog"]
+}
+moved {
+  from = cloudflare_record.caa_issue_ssl_com
+  to   = cloudflare_record.caa["issue_ssl_com"]
+}
+moved {
+  from = cloudflare_record.caa_issuewild_ssl_com
+  to   = cloudflare_record.caa["issuewild_ssl_com"]
+}
+moved {
+  from = cloudflare_record.caa_iodef
+  to   = cloudflare_record.caa["iodef"]
 }
 
-resource "cloudflare_record" "caa_issuewild_pki_goog" {
+# Anti-spoofing records, deployed in monitoring-first mode. SPF starts as
+# softfail (~all) and DMARC as p=none so legitimate senders (if any mail is ever
+# sent as @ericsweiss.com, e.g. via the Gmail relay) are flagged, not dropped.
+# Note: the rua target is a consumer Gmail address on a different org domain, so
+# DMARC aggregate reports likely WON'T be delivered (cross-domain rua needs an
+# authorization record that gmail.com doesn't publish for consumer accounts) —
+# the value here is the published policy itself. Tighten SPF to -all and DMARC to
+# p=reject once confident no legitimate senders exist.
+resource "cloudflare_record" "spf" {
   zone_id = data.cloudflare_zone.external.id
   name    = "@"
-  type    = "CAA"
+  type    = "TXT"
+  content = "v=spf1 ~all"
   ttl     = 1
-  data {
-    flags = 0
-    tag   = "issuewild"
-    value = "pki.goog"
-  }
-  comment = "Allow Cloudflare Universal SSL partner CA wildcard (Google Trust Services)"
+  comment = "SPF - softfail (monitoring); tighten to -all after DMARC reports"
 }
 
-resource "cloudflare_record" "caa_issue_ssl_com" {
+resource "cloudflare_record" "dmarc" {
   zone_id = data.cloudflare_zone.external.id
-  name    = "@"
-  type    = "CAA"
+  name    = "_dmarc"
+  type    = "TXT"
+  content = "v=DMARC1; p=none; rua=mailto:ericsweiss1@gmail.com"
   ttl     = 1
-  data {
-    flags = 0
-    tag   = "issue"
-    value = "ssl.com"
-  }
-  comment = "Allow Cloudflare Universal SSL partner CA (SSL.com)"
+  comment = "DMARC - monitoring policy (p=none); rua best-effort (cross-domain to consumer Gmail)"
 }
 
-resource "cloudflare_record" "caa_issuewild_ssl_com" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "@"
-  type    = "CAA"
-  ttl     = 1
-  data {
-    flags = 0
-    tag   = "issuewild"
-    value = "ssl.com"
-  }
-  comment = "Allow Cloudflare Universal SSL partner CA wildcard (SSL.com)"
-}
-
-resource "cloudflare_record" "caa_iodef" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "@"
-  type    = "CAA"
-  ttl     = 1
-  data {
-    flags = 0
-    tag   = "iodef"
-    # Intentional: this address is published in the public DNS CAA record
-    # so CAs can report issuance-policy violations. PII exposure is by
-    # design — RFC 8659 §4.1.3 requires an operator-reachable channel,
-    # and no role-specific inbox (security@, certmaster@) currently exists.
-    value = "mailto:ericsweiss1@gmail.com"
-  }
-  comment = "CAA violation reports go here"
-}
+# Records present in the Cloudflare zone but intentionally managed outside this
+# config (not service CNAMEs, so external-dns does not own them either):
+#   - null MX (0 .)                            — disables inbound mail
+#   - google-site-verification=... (apex TXT)  — Google Search Console ownership
+# Kept out of IaC so the verification token never lands in git and because the
+# null MX is a one-time dashboard setting; `terraform plan` will not touch them.
 
 # =============================================================================
 # GitLab DNS Records
@@ -156,30 +161,6 @@ resource "cloudflare_record" "git" {
     # the literal in the CronJob in sync with proxied below.
     ignore_changes = [content]
   }
-}
-
-# GitLab Container Registry - registry.git.ericsweiss.com
-# Nested subdomain - not covered by Universal SSL, use direct access
-resource "cloudflare_record" "registry_git" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "registry.git"
-  type    = "CNAME"
-  content = "direct.${var.external_domain}"
-  proxied = false
-  ttl     = 1
-  comment = "GitLab Container Registry - DNS only, TLS via Traefik"
-}
-
-# GitLab Pages - pages.git.ericsweiss.com (apex for pages)
-# Nested subdomain - not covered by Universal SSL, use direct access
-resource "cloudflare_record" "pages_git" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "pages.git"
-  type    = "CNAME"
-  content = "direct.${var.external_domain}"
-  proxied = false
-  ttl     = 1
-  comment = "GitLab Pages apex - DNS only, TLS via Traefik"
 }
 
 # Direct A record (DNS-only) for services that can't use Cloudflare proxy
@@ -213,50 +194,58 @@ resource "cloudflare_record" "direct" {
   }
 }
 
-# GitLab Pages wildcard - *.pages.git.ericsweiss.com
-# Note: Cloudflare Universal SSL only covers first-level wildcards (*.ericsweiss.com).
-# Nested wildcards like *.pages.git require Advanced Certificate Manager ($10/mo).
-# Using DNS-only mode via direct.ericsweiss.com so Traefik handles TLS with Let's Encrypt cert.
-resource "cloudflare_record" "pages_git_wildcard" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "*.pages.git"
-  type    = "CNAME"
-  content = "direct.${var.external_domain}"
-  proxied = false
-  ttl     = 1
-  comment = "GitLab Pages wildcard - DNS only, TLS via Traefik"
+# Nested-subdomain records pointing at direct.${var.external_domain} (DNS-only,
+# TLS via Traefik). Nested subdomains and nested wildcards aren't covered by
+# Cloudflare Universal SSL (first-level wildcards only — nested would need
+# Advanced Certificate Manager, $10/mo), and wildcards can't be expressed via
+# external-dns annotations, so they're managed here.
+#
+# The ide.git / *.ide.git pair is the Web IDE extension host: each VS Code
+# extension iframe loads from <ext-id>.ide.git.ericsweiss.com so the browser
+# same-origin policy keeps extension JS away from the GitLab session cookie
+# (CVE-2026-5816 mitigation; see docs/27-gitlab-deployment.md "Web IDE extension
+# host").
+locals {
+  gitlab_direct_cnames = {
+    "registry.git" = "GitLab Container Registry - DNS only, TLS via Traefik"
+    "pages.git"    = "GitLab Pages apex - DNS only, TLS via Traefik"
+    "*.pages.git"  = "GitLab Pages wildcard - DNS only, TLS via Traefik"
+    "ide.git"      = "GitLab Web IDE extension host apex - DNS only, TLS via Traefik"
+    "*.ide.git"    = "GitLab Web IDE wildcard - DNS only, TLS via Traefik"
+  }
 }
 
-# =============================================================================
-# GitLab Web IDE Extension Host
-# =============================================================================
-# Per-extension SOP isolation: each VS Code extension iframe is loaded from
-# <ext-id>.ide.git.ericsweiss.com so the browser SOP keeps extension JS away
-# from the GitLab session cookie. CVE-2026-5816 mitigation; see
-# docs/27-gitlab-deployment.md "Web IDE extension host" section.
+resource "cloudflare_record" "gitlab_direct" {
+  for_each = local.gitlab_direct_cnames
 
-# GitLab Web IDE - ide.git.ericsweiss.com (apex)
-# Nested subdomain - not covered by Universal SSL, use direct access
-resource "cloudflare_record" "ide_git" {
   zone_id = data.cloudflare_zone.external.id
-  name    = "ide.git"
+  name    = each.key
   type    = "CNAME"
   content = "direct.${var.external_domain}"
   proxied = false
   ttl     = 1
-  comment = "GitLab Web IDE extension host apex - DNS only, TLS via Traefik"
+  comment = each.value
 }
 
-# GitLab Web IDE wildcard - *.ide.git.ericsweiss.com
-# Note: Cloudflare Universal SSL only covers first-level wildcards (*.ericsweiss.com).
-# Nested wildcards like *.ide.git require Advanced Certificate Manager ($10/mo).
-# Using DNS-only mode via direct.ericsweiss.com so Traefik handles TLS with Let's Encrypt cert.
-resource "cloudflare_record" "ide_git_wildcard" {
-  zone_id = data.cloudflare_zone.external.id
-  name    = "*.ide.git"
-  type    = "CNAME"
-  content = "direct.${var.external_domain}"
-  proxied = false
-  ttl     = 1
-  comment = "GitLab Web IDE wildcard - DNS only, TLS via Traefik"
+# Migrate the previously hand-written per-record CNAME blocks into the for_each
+# above so apply moves state in place instead of destroy/recreate.
+moved {
+  from = cloudflare_record.registry_git
+  to   = cloudflare_record.gitlab_direct["registry.git"]
+}
+moved {
+  from = cloudflare_record.pages_git
+  to   = cloudflare_record.gitlab_direct["pages.git"]
+}
+moved {
+  from = cloudflare_record.pages_git_wildcard
+  to   = cloudflare_record.gitlab_direct["*.pages.git"]
+}
+moved {
+  from = cloudflare_record.ide_git
+  to   = cloudflare_record.gitlab_direct["ide.git"]
+}
+moved {
+  from = cloudflare_record.ide_git_wildcard
+  to   = cloudflare_record.gitlab_direct["*.ide.git"]
 }

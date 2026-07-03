@@ -1,0 +1,75 @@
+---
+# qBittorrent overlay: qBittorrent-specific resources + the shared Gluetun VPN
+# sidecar. The component injects the gluetun container (containers[0]), the
+# check-vpn-config initContainer (prepended ahead of clean-stale-locks), and the
+# tun/vpn-config volumes (volumes[0]/[1]) + pod dnsConfig. The JSON6902 patches
+# below edit those injected fields IN PLACE (no list reordering) to set the
+# per-app ConfigMap name (qbittorrent-vpn-config) on the two gluetun env refs +
+# the vpn-config volume, and append qBittorrent's ports to the gluetun container
+# (which owns the shared pod network namespace): the gluetun control port, the
+# WebUI, and the BT peer ports. Indices are fixed by the component:
+# gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0], SERVER_COUNTRIES=env[3],
+# vpn-config=volumes[1].
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: downloads
+resources:
+  - resources.yaml
+components:
+  - ../_vpn-sidecar
+patches:
+  - target:
+      kind: Deployment
+      name: qbittorrent
+    patch: |
+      # Guard the component's injected layout: if _vpn-sidecar ever changes the
+      # container/env/volume ordering, these `test` ops fail the kustomize build
+      # loudly instead of silently patching the wrong container/volume.
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: gluetun
+      - op: test
+        path: /spec/template/spec/containers/0/env/0/name
+        value: VPN_SERVICE_PROVIDER
+      - op: test
+        path: /spec/template/spec/containers/0/env/3/name
+        value: SERVER_COUNTRIES
+      - op: test
+        path: /spec/template/spec/volumes/1/name
+        value: vpn-config
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/valueFrom/configMapKeyRef/name
+        value: qbittorrent-vpn-config
+      - op: replace
+        path: /spec/template/spec/containers/0/env/3/valueFrom/configMapKeyRef/name
+        value: qbittorrent-vpn-config
+      - op: replace
+        path: /spec/template/spec/volumes/1/configMap/name
+        value: qbittorrent-vpn-config
+      # Control server (HTTP_CONTROL_SERVER_ADDRESS :8001). Reached only on
+      # loopback by the gluetun-exporter sidecar; declared so the port is
+      # documented, not exposed by the Service.
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          name: gluetun-ctrl
+          containerPort: 8001
+          protocol: TCP
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          name: qbittorrent
+          containerPort: 8080
+          protocol: TCP
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          name: bt-tcp
+          containerPort: 6881
+          protocol: TCP
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          name: bt-udp
+          containerPort: 6881
+          protocol: UDP

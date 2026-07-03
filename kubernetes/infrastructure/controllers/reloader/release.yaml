@@ -1,0 +1,79 @@
+---
+# stakater/Reloader — watches ConfigMaps/Secrets and rolls the workloads that
+# consume them when their content changes, so a mounted-file ConfigMap edit
+# actually reaches running pods (a plain Flux reconcile updates the ConfigMap but
+# leaves the pod's mounted copy stale until a manual rollout).
+#
+# WHY: the download-clients VPN config is a per-app ConfigMap mounted into the
+# Gluetun sidecar (nzbget-vpn-config / qbittorrent-vpn-config). Editing it used
+# to require `kubectl rollout restart` (or `task flux:rotate-secret`). Those
+# Deployments now carry `reloader.stakater.com/auto: "true"`, so Reloader detects
+# the ConfigMap/Secret refs in their pod specs and restarts them automatically on
+# change. Opt-in only (annotation-driven) — Reloader does NOTHING to workloads
+# that don't carry an annotation, so adding it is behavior-preserving everywhere
+# else in the cluster.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: reloader
+  namespace: reloader
+spec:
+  interval: 30m
+  releaseName: reloader
+  chart:
+    spec:
+      chart: reloader
+      version: "${helm_chart_versions_reloader}"
+      sourceRef:
+        kind: HelmRepository
+        name: stakater
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    reloader:
+      # Watch every namespace (cluster default) so opt-in annotations work
+      # anywhere; Reloader only acts on annotated workloads.
+      watchGlobally: true
+      # Reloads here are ConfigMap-driven (the download-clients VPN config), so
+      # ignore Secrets: this drops cluster-wide Secret get/list/watch from
+      # Reloader's RBAC, keeping the secret-read surface off this controller.
+      # (Annotated workloads still auto-reload on their ConfigMap changes; a rare
+      # credential-Secret rotation is handled by a manual restart.)
+      ignoreSecrets: true
+      logFormat: json
+      # Chart toggle: sets the container's readOnlyRootFilesystem AND mounts the
+      # paired writable /tmp emptyDir. Setting readOnlyRootFilesystem only via
+      # containerSecurityContext (below) would leave Reloader with a read-only
+      # rootfs and no writable /tmp.
+      readOnlyRootFileSystem: true
+      deployment:
+        # Single replica is fine — a brief gap during a Reloader restart only
+        # delays (never drops) a reload; no HA needed for this low-stakes role.
+        replicas: 1
+        # Satisfy the namespace's restricted Pod Security Standard. The chart's
+        # default pod securityContext already sets runAsNonRoot/runAsUser 65534/
+        # seccompProfile RuntimeDefault; the container-level fields below
+        # (allowPrivilegeEscalation + drop ALL caps) are what restricted also
+        # requires and the chart leaves empty by default. (readOnlyRootFilesystem
+        # comes from the reloader.readOnlyRootFileSystem toggle above so it also
+        # gets the writable /tmp emptyDir.)
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          # Memory limit only — no CPU limit (compressible resource; see
+          # docs/33-autoscaling.md).
+          limits:
+            memory: 128Mi

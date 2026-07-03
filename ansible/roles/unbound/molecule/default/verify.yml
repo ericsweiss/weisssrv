@@ -51,21 +51,21 @@
       register: remote_control_config
       failed_when: not remote_control_config.stat.exists
 
-    - name: Check if unbound-control TLS certificate files exist
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      register: unbound_cert_files
-      loop:
-        - /etc/unbound/unbound_server.pem
-        - /etc/unbound/unbound_server.key
-        - /etc/unbound/unbound_control.pem
-        - /etc/unbound/unbound_control.key
+    - name: Read the remote-control config
+      ansible.builtin.slurp:
+        src: /etc/unbound/unbound.conf.d/remote-control.conf
+      register: remote_control_content
 
-    - name: Assert all TLS certificate files exist
+    - name: Assert remote-control uses the local Unix socket (no TLS control certs)
+      # The role configures unbound-control over a local Unix socket
+      # (control-interface: /run/unbound.ctl, control-use-cert: no), so the
+      # unbound_server/_control .pem/.key files are intentionally NOT generated.
       ansible.builtin.assert:
         that:
-          - unbound_cert_files.results | map(attribute='stat.exists') | list | min
-        fail_msg: "One or more unbound-control TLS certificate files are missing"
+          - "'control-interface: /run/unbound.ctl' in (remote_control_content.content | b64decode)"
+          - "'control-use-cert: no' in (remote_control_content.content | b64decode)"
+        fail_msg: "unbound remote-control is not configured for the local Unix socket"
+        success_msg: "unbound remote-control uses the local Unix socket (no control certs)"
 
     - name: Test DNS resolution via Unbound
       ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short

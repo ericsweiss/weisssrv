@@ -5,6 +5,11 @@
 # Tailscale subnet routing configuration
 # Proxmox hosts advertise the internal LAN but do NOT accept routes from other peers
 # This prevents routing loops where the host routes its own traffic through Tailscale
+#
+# Advertising a route only makes it usable once APPROVED in the tailnet. Route
+# auto-approval (so all six hosts' advertisements approve = real HA failover, not
+# a single-host SPOF) and the SSH/access ACLs are managed as code in
+# terraform/tailscale (see that module's README).
 tailscale_accept_routes: false  # CRITICAL: Subnet routers must NOT accept routes
 tailscale_advertise_routes:
   - "192.168.0.0/24"  # Advertise internal LAN for remote access via Tailscale

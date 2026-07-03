@@ -80,6 +80,11 @@
     state: present
     key: "{{ dns01_ssh_public_key }}"
     comment: "eric@dns-01 (cert distribution)"
+    # dns-01 keeps .150 across Proxmox-HA moves; pinning the source shrinks
+    # the blast radius if this key (root-equivalent on every target) leaks.
+    # Configurable via acme_certs_key_from so a test harness whose source isn't
+    # .150 can relax it; empty -> no from= restriction.
+    key_options: "{{ ('from=\"' ~ acme_certs_key_from ~ '\"') if (acme_certs_key_from | default('') | length > 0) else omit }}"
   loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
   loop_control:
     label: "{{ item.host }}"
@@ -102,9 +107,10 @@
     name:
       - curl
       - openssl
-      - socat
     state: present
-  when: ansible_facts['os_family'] == "Debian"
+  when:
+    - inventory_hostname == 'dns-01'
+    - ansible_facts['os_family'] == "Debian"
 
 - name: Check if acme.sh is installed
   ansible.builtin.stat:
@@ -343,7 +349,10 @@
     # explicit second run to avoid distributing twice in one play.
     - not (cert_install_result.changed | default(false))
   register: cert_distribution_result
-  changed_when: cert_distribution_result.rc == 0
+  # The script prints "OK: <host>" only when it actually pushed+reloaded a target
+  # and "unchanged: <host>" when it skipped (cert already applied), so report
+  # changed only on a real push — an all-unchanged run now converges to ok.
+  changed_when: "'OK:' in (cert_distribution_result.stdout | default(''))"
   # The script tries every target before exiting and uses distinct exit
   # codes — rc=1 hard local error (cert files unreadable etc.), rc=2 one
   # or more targets unreachable but the script delivered to all reachable

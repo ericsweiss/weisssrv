@@ -78,9 +78,7 @@
 - name: Get list of local VMIDs on this node
   ansible.builtin.shell: |
     set -o pipefail
-    # Get VMs
     (qm list 2>/dev/null | awk 'NR>1 {print $1}') || true
-    # Get containers
     (pct list 2>/dev/null | awk 'NR>1 {print $1}') || true
   args:
     executable: /bin/bash

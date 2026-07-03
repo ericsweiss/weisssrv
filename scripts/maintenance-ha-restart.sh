@@ -53,7 +53,16 @@ case "$reset_verdict" in
     echo "Home Assistant VM reset confirmed on its host."
     ;;
   *)
-    echo "ERROR: VM 154 not found on any reachable Proxmox host (the node hosting 154 may be unreachable)"
+    # No vmreset token at all. Distinguish a genuine "VM not found" from an
+    # op/ansible tooling or auth failure (no token because op couldn't read its
+    # service-account token, or ansible couldn't reach/authenticate to any
+    # host), which would otherwise be misreported as a missing VM.
+    tool_err=$(printf '%s\n' "$reset_output" | grep -E '\[ERROR\]|authoriz|UNREACHABLE!|FAILED!' || true)
+    if [ -n "$tool_err" ]; then
+      echo "ERROR: could not run 'qm reset 154' — op/ansible tooling or connectivity failure (see captured output above), not necessarily a missing VM"
+    else
+      echo "ERROR: VM 154 not found on any reachable Proxmox host (the node hosting 154 may be unreachable)"
+    fi
     exit 1
     ;;
 esac

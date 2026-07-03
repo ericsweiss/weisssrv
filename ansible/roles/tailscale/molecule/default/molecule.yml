@@ -1,13 +1,9 @@
 ---
-# Molecule configuration for tailscale role testing
-# Tests: apt repo setup, package installation, service enablement
-# Skips: tailscale up command (requires auth key and network)
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: tailscale-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -23,47 +19,15 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
   env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    # Empty auth key - tailscale up will be skipped
-    TAILSCALE_AUTH_KEY: ""
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
+    TAILSCALE_AUTH_KEY: ''
   inventory:
     group_vars:
       all:
-        # Use pinned version matching group_vars/all.yml
-        # The role installs tailscale={{ tailscale_version }}-* so this must be a real version
-        tailscale_version: "1.94.1"
+        tailscale_version: 1.94.1
         tailscale_enabled: true
         tailscale_accept_routes: false
         tailscale_accept_dns: false
-        # Set a test route so IP forwarding and systemd drop-in are exercised
         tailscale_advertise_routes:
-          - "192.168.0.0/24"
+          - 192.168.0.0/24
         tailscale_additional_flags: []
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

@@ -37,6 +37,18 @@ server:
   cache-min-ttl: 60
   cache-max-ttl: 86400
 
+  # DNS rebinding protection: a public domain must never resolve to a
+  # private/loopback address. Internal *.esweiss.com names are answered by
+  # AdGuard rewrites before reaching unbound, so it never legitimately
+  # returns these ranges.
+  private-address: 10.0.0.0/8
+  private-address: 172.16.0.0/12
+  private-address: 192.168.0.0/16
+  private-address: 127.0.0.0/8
+  private-address: ::1
+  private-address: fd00::/8
+  private-address: fe80::/10
+
   # allow only local clients (loopback)
 {% for acl in unbound_access_control %}
   access-control: {{ acl }}

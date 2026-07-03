@@ -1,0 +1,66 @@
+---
+# NFS storage for downloads stack
+# Unified /media mount enables hard linking between downloads and library
+# NFS export: /media (bind from /mnt/media mergerfs)
+# Pod mount: /media (via volumeMounts)
+#
+# This file holds the one-off shared media volume. The per-app config PV/PVC
+# pairs (nzbget, qbittorrent, prowlarr, pulsarr, sonarr, radarr, lidarr) are
+# generated from the ../_nfs-pv Kustomize component by the per-app overlays in
+# this directory — see kustomization.yaml.
+#
+# All xprtsec=tls PVs use server: pve-nas-01.esweiss.com (NOT the IP) so the TLS
+# handshake matches the *.esweiss.com cert. server: is an immutable PV field —
+# the live IP->hostname cutover deletes+recreates each PV (Retain → data safe)
+# and rolls the consuming pod. See docs/16 cutover procedure.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: downloads-data
+  annotations:
+    # Lets Flux delete+recreate this PV when an immutable field (server,
+    # mountOptions) changes, instead of stalling the Kustomization. Retain
+    # reclaim policy keeps the NFS data — data safe.
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
+  labels:
+    type: nfs
+    app: downloads
+spec:
+  capacity:
+    storage: 100Ti  # Large value since NFS doesn't enforce quotas
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    # Hostname, not IP: xprtsec=tls verifies the server cert, whose SAN is
+    # *.esweiss.com. Mounting by 192.168.0.102 fails the handshake
+    # ("Certificate owner unexpected"); pve-nas-01.esweiss.com resolves to
+    # .102 via AdGuard and matches the wildcard. See docs/07 Transport Security.
+    server: pve-nas-01.esweiss.com
+    path: /media           # NFS export path (exposes /mnt/media mergerfs via bind mount)
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - rsize=1048576
+    - wsize=1048576
+    - noatime
+    # The /export/media k3s client lines require TLS (xprtsec=tls); HAOS (.154)
+    # shares the export in plaintext via its own client line — see
+    # host_vars/pve-nas-01.yml + docs/24.
+    - xprtsec=tls
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: downloads
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 100Ti
+  volumeName: downloads-data

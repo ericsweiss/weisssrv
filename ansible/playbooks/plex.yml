@@ -55,4 +55,9 @@
     - base
     - postfix_null_client
     - plex
+    # site.yml ships host-side log collection (alloy_host) to plex_servers in a
+    # dedicated play; include it here so a standalone `task plex:deploy` keeps
+    # log shipping in sync. node_exporter_host is NOT deployed to plex by
+    # site.yml, so it is intentionally omitted.
+    - alloy_host
     - proxmox_firewall

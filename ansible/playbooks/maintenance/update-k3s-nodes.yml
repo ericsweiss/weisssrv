@@ -238,7 +238,11 @@
           args:
             executable: /bin/bash
           environment:
-            K3S_TOKEN: "{{ k3s_token }}"
+            # Use the (opt-in) agent token so a node-version upgrade rewrites the
+            # agent env file with the lower-privilege token, not the cluster token
+            # (ANS-D-2). Falls back to k3s_token when K3S_AGENT_TOKEN is unset, so
+            # this is behaviour-preserving until the feature is enabled.
+            K3S_TOKEN: "{{ k3s_agent_token }}"
           changed_when: true
           no_log: true
 

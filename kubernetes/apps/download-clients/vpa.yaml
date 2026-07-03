@@ -19,12 +19,15 @@ spec:
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
-      # maxAllowed matches the nzbget container's 4Gi/2cpu limit so the
-      # request can grow into the unrar/par2 headroom the limit signals.
+        controlledValues: RequestsOnly
+      # maxAllowed caps the request at the nzbget container's 4Gi/2cpu limit;
+      # RequestsOnly leaves the limit at the manifest value so it can't balloon
+      # past the cap (RequestsAndLimits would scale it by the 1:8 req:limit ratio).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 2, memory: 4Gi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -41,16 +44,19 @@ spec:
         minAllowed: {cpu: 10m, memory: 32Mi}
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
       # The VPN-health exporter is tiny (polls the control API on loopback);
       # cap it so the "*" floor doesn't over-provision it. Must precede "*".
       - containerName: gluetun-exporter
         minAllowed: {cpu: 10m, memory: 16Mi}
         maxAllowed: {cpu: 50m, memory: 32Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
         maxAllowed: {cpu: 2, memory: 2Gi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler

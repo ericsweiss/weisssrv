@@ -76,7 +76,14 @@ spec:
             }
           }
 
-          // Collect logs from discovered pods
+          // Collect logs from discovered pods.
+          // loki.source.kubernetes tails logs by streaming them through the
+          // kube-apiserver and tracks read offsets only in memory, so an Alloy
+          // restart (eviction, chart upgrade) can gap or duplicate a small
+          // window of logs and adds some apiserver load. Accepted here for the
+          // simpler setup; the file-based path (local.file_match +
+          // loki.source.file with a hostPath positions file) would survive
+          // restarts and drop the apiserver streaming if this becomes a problem.
           loki.source.kubernetes "pods" {
             targets    = discovery.relabel.pods.output
             forward_to = [loki.write.default.receiver]

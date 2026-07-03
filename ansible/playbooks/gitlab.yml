@@ -55,5 +55,9 @@
     # written but no exporter exposed it (GitLabBackupStale via absent()).
     # Ordered before gitlab so the exporter is in place when the wrapper lands.
     - node_exporter_host
+    # site.yml deploys alloy_host (host journald -> Loki) to gitlab_servers in a
+    # dedicated play; include it here so a standalone `task gitlab:deploy` keeps
+    # log shipping in sync.
+    - alloy_host
     - gitlab
     - proxmox_firewall

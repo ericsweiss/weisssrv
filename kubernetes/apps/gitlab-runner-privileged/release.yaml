@@ -48,17 +48,19 @@ spec:
     # deployment silently at 0 like it did on 2026-06-08.
     replicas: 1
 
-    # Concurrent jobs, capped to what the namespace ResourceQuota admits. A full
-    # DinD job pod sums to ~8Gi memory limits (build 3Gi + dind 4Gi + helper 1Gi).
-    # The build container runs the pre-built molecule-ci image (molecule + ansible
-    # control) and peaks well under 1Gi in practice (live kubectl top: ~250Mi), so
-    # the former 8Gi build limit was ~30x over and capped concurrency at 3 under
-    # the old 48Gi quota. With build right-sized to 3Gi and the quota raised to
-    # 90Gi limits / 28Gi requests, the quota admits 10 (restores pre-!103
-    # throughput — 15 ran fine before this quota existed). A higher value would
-    # let the runner submit job pods the quota rejects (403, no retry => spurious
-    # CI failures); excess jobs queue at the runner slot instead. Move with quota.
-    concurrent: 10
+    # Concurrent jobs, capped to what the namespace ResourceQuota admits. Live
+    # `kubectl top` during a full molecule matrix shows each DinD job pod uses
+    # ~0.55Gi TOTAL (build ~250-400Mi ansible control, dind ~120Mi, helper ~18Mi).
+    # The previous 8Gi-limit / 2.3Gi-request sizing was ~15x over real use and
+    # capped concurrency at 10 (the limits.memory quota rejected the 11th pod under
+    # transition churn -> runner_system_failure). Right-sized to ~3.25Gi limits /
+    # ~1Gi requests per job (still 3-8x the measured peak), the same node footprint
+    # admits ~18 concurrent, roughly halving the test-stage wall-clock. The real
+    # ceiling is CPU (~1 cpu per actively-converging job, ~25 cores across agents),
+    # not memory. A higher value would let the runner submit job pods the quota
+    # rejects (403 -> spurious CI failure); excess jobs queue at the runner slot.
+    # Move this in lockstep with the ResourceQuota.
+    concurrent: 18
 
     # Check interval (seconds)
     checkInterval: 30
@@ -109,25 +111,35 @@ spec:
         [[runners]]
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
-            image = "python:3.11"
+            # Default CI job image, digest-pinned for reproducibility (the
+            # tag is retained for readability; the digest is authoritative).
+            # Refresh with: docker buildx imagetools inspect python:3.11
+            image = "python:3.11@sha256:9800957d2a88867f853ce6072ae1669e37fa269cc6f76009fa1aef4757f62212"
             privileged = true
 
-            # CPU/Memory limits for job pods
-            # Higher limits for DinD test jobs; lint/deploy jobs use less.
-            # build memory_limit was 8Gi, but molecule jobs run the pre-built
-            # molecule-ci image (ansible control + molecule) and peak ~250Mi live
-            # — 3Gi is ~12x headroom and lets the quota admit concurrent:10. The
-            # heavy work runs in the dind service container (kept at 4Gi below).
+            # CPU/Memory for the build container (runs the pre-built molecule-ci
+            # image — ansible control + molecule, NOT the test workload). Live
+            # kubectl top peaks ~250-400Mi, so 1Gi limit / 384Mi request is still
+            # 2.5x real peak. cpu_limit stays generous (bursty ansible); the
+            # request is what reserves a node slot, so keep it lean.
             cpu_limit = "4"
-            cpu_request = "500m"
-            memory_limit = "3Gi"
-            memory_request = "1Gi"
+            cpu_request = "250m"
+            memory_limit = "1Gi"
+            memory_request = "384Mi"
 
-            # Service container resource limits (docker:dind sidecar for test jobs)
+            # Service container (docker:dind sidecar) — holds the molecule test
+            # container(s). Live top ~120Mi; 2Gi limit gives headroom for
+            # multi-container integration scenarios + image layers, 512Mi request
+            # reserves the node slot.
             service_cpu_limit = "2"
-            service_cpu_request = "500m"
-            service_memory_limit = "4Gi"
-            service_memory_request = "1Gi"
+            service_cpu_request = "300m"
+            service_memory_limit = "2Gi"
+            service_memory_request = "512Mi"
+
+            # Helper container (git clone + artifacts) — tiny (~18Mi live).
+            helper_cpu_request = "100m"
+            helper_memory_limit = "256Mi"
+            helper_memory_request = "128Mi"
 
             # Service account
             service_account = "gitlab-runner-privileged"

@@ -1,6 +1,6 @@
 # ACME Certificates Role
 
-Manages Let's Encrypt wildcard certificates using acme.sh with Cloudflare DNS-01 validation. Certificates are issued on dns-01 and distributed to other hosts (dns-02, smtp-relay) via SSH.
+Manages Let's Encrypt wildcard certificates using acme.sh with Cloudflare DNS-01 validation. Certificates are issued on dns-01 and distributed to the hosts listed in `cert_distribution_targets` (dns-02, smtp-relay, gitlab, pve-nas-01, plex, HAOS) via SSH.
 
 ## What This Role Manages
 
@@ -13,10 +13,10 @@ Manages Let's Encrypt wildcard certificates using acme.sh with Cloudflare DNS-01
 - Proper ownership and permissions
 
 ### Certificate Distribution
-- SSH public key deployment to target hosts (dns-02, smtp-relay)
+- SSH public key deployment to every target host (host_vars/dns-01.yml)
 - Automated copying via homelab-cert-reload.sh script
-- Service reload on target hosts (AdGuard Home, Postfix)
-- Error handling and warnings
+- Per-target service reload, skipped when the cert is unchanged
+- Per-target Prometheus metrics + error handling
 
 ### Domains
 - Primary domain certificate (esweiss.com)
@@ -27,19 +27,29 @@ Manages Let's Encrypt wildcard certificates using acme.sh with Cloudflare DNS-01
 ### Default Variables
 
 ```yaml
-# ACME configuration
-acme_email: "{{ admin_email }}"
-local_cert_dir: "/etc/acme-certs"
+# ACME configuration (defaults/main.yml)
+acme_email: "admin@esweiss.com"
+local_cert_dir: "/opt/AdGuardHome/certs"
 internal_domain: "esweiss.com"
+acme_sh_version: "3.1.2"
+```
 
-# Certificate distribution targets
+Certificate distribution targets live in
+`inventories/prod/host_vars/dns-01.yml` (`cert_distribution_targets`), not
+in this role's defaults. Each entry uses the schema:
+
+```yaml
 cert_distribution_targets:
-  - host: dns-02.{{ internal_domain }}
+  - host: dns-02                    # inventory hostname (drives the IP env var)
+    ip: 192.168.0.160               # SSH target address
+    host_key: "ssh-ed25519 AAAA..." # REQUIRED; capture via task certs:show-host-keys
     cert_dir: /opt/AdGuardHome/certs
-    reload_cmd: "sudo systemctl reload AdGuardHome"
-  - host: smtp-relay.{{ internal_domain }}
-    cert_dir: /etc/postfix/certs
-    reload_cmd: "sudo systemctl reload postfix"
+    owner: root
+    group: adguard
+    cert_mode: "0644"
+    key_mode: "0640"
+    restart_service: AdGuardHome    # or restart_command for compound reloads
+    # ssh_port / ssh_user / ssh_no_sudo override the defaults (22 / eric / sudo)
 ```
 
 ### 1Password Secrets
@@ -105,17 +115,20 @@ the stale one, and re-run `task dns:deploy`.
 dns-01 (certificate authority)
   ├─ acme.sh (Let's Encrypt client)
   ├─ /root/.acme.sh/*.esweiss.com_ecc/ (managed by acme.sh)
-  ├─ /etc/acme-certs/ (local installation)
+  ├─ /opt/AdGuardHome/certs/ (local installation)
   └─ homelab-cert-reload.sh
        │
-       ├─> Distributes to → dns-02
-       │                    └─ /opt/AdGuardHome/certs/
-       │                    └─ Reloads AdGuard Home
-       │
-       └─> Distributes to → smtp-relay
-                            └─ /etc/postfix/certs/
-                            └─ Reloads Postfix
+       ├─> dns-02      → /opt/AdGuardHome/certs/ → restart AdGuard Home
+       ├─> smtp-relay  → /etc/postfix/tls/       → restart Postfix
+       ├─> gitlab      → /etc/gitlab/ssl/        → gitlab-ctl hup nginx
+       ├─> pve-nas-01  → /etc/ssl/private/       → restart tlshd (NFS+TLS)
+       ├─> plex        → /etc/ssl/plex/          → rebuild PKCS#12 + restart
+       └─> HAOS        → /ssl/                   → ha core restart
 ```
+
+The script skips any target whose `fullchain.pem` already matches the cert
+being pushed, so a proactive run with no renewal does not restart services.
+The full, authoritative target list is in `host_vars/dns-01.yml`.
 
 ## Manual Certificate Issuance
 
@@ -142,27 +155,23 @@ task dns:deploy
 
 ## Task Flow
 
+All meaningful tasks gate on `inventory_hostname == 'dns-01'`.
+
 ```
-1. Create eric .ssh directory on dns-01
-2. Deploy dns-01 SSH private key (for distribution)
-3. Deploy dns-01 SSH public key
-4. Deploy dns-01 public key to dns-02 authorized_keys
-5. Deploy dns-01 public key to smtp-relay authorized_keys
-6. Install acme.sh dependencies (curl, openssl, socat)
-7. Check if acme.sh is installed
-8. Download and install acme.sh (if not present)
-9. Deploy homelab-cert-reload.sh script
-10. Check if certificates exist in acme.sh
-11. Check if certificates are installed locally
-12. Install certificates to local directory (if needed)
-    ├─ Copy cert.pem, privkey.pem, fullchain.pem
-    ├─ Set reload command (homelab-cert-reload.sh)
-    └─ Set proper ownership (root:adguard)
-13. Distribute certificates to remote hosts
-    ├─ SCP certs to dns-02 and smtp-relay
-    ├─ Set proper ownership on targets
-    └─ Reload services on targets
-14. Display status messages
+1. Validate required acme.sh variables (SSH keys, email, domain)
+2. Create eric .ssh directory and deploy the distribution key pair
+3. Deploy dns-01 pubkey to every cert_distribution_target's authorized_keys
+   (looped over host_vars/dns-01.yml; delegate_to each target)
+4. Install acme.sh dependencies (curl, openssl)
+5. Download + install acme.sh (default CA pinned to Let's Encrypt)
+6. Ensure renewal cronjob exists and default CA is Let's Encrypt
+7. Deploy homelab-cert-reload.sh script
+8. Pin each target's host key into /root/.ssh/known_hosts
+9. Install certificates to local_cert_dir (only if acme.sh has them and the
+   local dir is empty) and set ownership (root:adguard)
+10. Distribute certificates to remote hosts (skips targets that already have
+    the current cert; only changed targets are reloaded)
+11. Display status messages
 ```
 
 ## Files
@@ -200,7 +209,7 @@ When renewal occurs:
 
 ## Distribution on Every Run
 
-Every Ansible run triggers distribution if certificates exist locally, target hosts are defined, and the run is not in check mode. This covers cases where a target host was rebuilt or a previous distribution failed.
+Every Ansible run invokes the distribution script if certificates exist locally, target hosts are defined, and the run is not in check mode. The script compares each target's `fullchain.pem` against the cert being pushed and skips the copy + service reload when they match, so an unchanged cert never restarts services. Targets that are missing the cert, have an older one, or were rebuilt get the full push — covering recovery from a failed previous distribution.
 
 ## Operational Notes
 
@@ -211,10 +220,10 @@ Every Ansible run triggers distribution if certificates exist locally, target ho
 /root/.acme.sh/acme.sh --list
 
 # Check expiration
-openssl x509 -in /etc/acme-certs/fullchain.pem -noout -dates
+openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -dates
 
 # View certificate details
-openssl x509 -in /etc/acme-certs/fullchain.pem -noout -text
+openssl x509 -in /opt/AdGuardHome/certs/fullchain.pem -noout -text
 ```
 
 ### Manual Distribution
@@ -255,23 +264,29 @@ cat /home/eric/.ssh/authorized_keys | grep dns-01
 **Permissions issues:**
 ```bash
 # Fix cert ownership
-sudo chown root:adguard /etc/acme-certs/*
-sudo chmod 0640 /etc/acme-certs/privkey.pem
-sudo chmod 0644 /etc/acme-certs/fullchain.pem
+sudo chown root:adguard /opt/AdGuardHome/certs/*
+sudo chmod 0640 /opt/AdGuardHome/certs/privkey.pem
+sudo chmod 0644 /opt/AdGuardHome/certs/fullchain.pem
 ```
 
 ### Adding Distribution Targets
 
-To add a new host:
+To add a new host, append an entry to `cert_distribution_targets` in
+`inventories/prod/host_vars/dns-01.yml`:
 
 ```yaml
-# In group_vars/dns.yml
 cert_distribution_targets:
-  - host: new-host.esweiss.com
+  - host: new-host
+    ip: 192.168.0.x
+    host_key: "ssh-ed25519 AAAA..."   # capture via task certs:show-host-keys
     cert_dir: /etc/certs
-    reload_cmd: "sudo systemctl reload service-name"
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0640"
+    restart_service: service-name      # or restart_command for compound reloads
 ```
 
-Then:
-1. Deploy dns-01 public key to new host's authorized_keys
-2. Run deployment: `task dns:deploy`
+Then run `task dns:deploy`. The role deploys the distribution pubkey to the
+new host's authorized_keys and pins its host key automatically; only HAOS
+(ssh_no_sudo) needs the pubkey pasted in by hand.

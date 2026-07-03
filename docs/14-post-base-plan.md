@@ -7,6 +7,10 @@
 > - `docs/19-k3s-deployment.md` — k3s cluster deployment
 > - `docs/29-flux-operations.md` — Flux operations (day-2, rotation, rollback)
 > - `docs/30-multi-repo-onboarding.md` — tenant onboarding
+> - `docs/31-observability.md` — the observability stack (Prometheus + Grafana +
+>   Loki + Alloy), **deployed since 2026-04-17** — the "Layer 3: Observability
+>   (PLANNED)" / "Planned Applications" sections below are now DONE (only Uptime
+>   Kuma remains)
 > - `docs/16-next-steps.md` — ongoing/next work (observability, alerting, etc.)
 >
 > Do NOT follow any "deploy" commands below — they predate the Flux
@@ -164,7 +168,7 @@ Namespace: `esweiss.com/*`
    - User management with password-less SSO (OIDC required for apps)
    - PostgreSQL on ZFS zvol for persistence
 
-### Layer 3: Observability (PLANNED)
+### Layer 3: Observability (DONE — deployed 2026-04-17, see docs/31)
 
 7. **Prometheus Stack** (kube-prometheus-stack) - PLANNED
    - Prometheus

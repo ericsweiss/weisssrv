@@ -4,7 +4,7 @@
 # These live in infrastructure/configs/ (not apps/vm-ingress/) because
 # they are referenced from IngressRoutes outside the apps stage:
 #   - infrastructure/configs/onepassword-connect-ingress.yaml
-#     uses lan-tailscale-only + hsts-header (configs stage, same as here).
+#     uses lan-tailscale-strict + hsts-header (configs stage, same as here).
 #   - infrastructure/observability/ingress/ingress-route.yaml
 #     uses lan-tailscale-only on Loki (observability stage, runs after
 #     configs — middlewares already exist by then).
@@ -51,6 +51,27 @@ spec:
       - 192.168.0.0/24     # Local LAN
       - 100.64.0.0/10      # Tailscale CGNAT range
       - 10.42.0.0/16       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
+
+---
+# Stricter allowlist for the secrets-backend front door (1Password Connect at
+# connect.esweiss.com). Same as lan-tailscale-only but WITHOUT the pod CIDR: no
+# in-cluster consumer needs the connect.esweiss.com ingress — ESO reaches
+# Connect via the ClusterIP directly (cluster-secret-store.yaml), and Connect's
+# own NetworkPolicy (controllers/onepassword-connect/networkpolicy.yaml) scopes
+# that ClusterIP to same-namespace ESO pods. Putting Connect behind the broad
+# pod-CIDR allowlist would let any pod reach the secrets API through Traefik,
+# undoing that scoping. Only LAN + Tailscale boot clients (zfs-load-key@) reach
+# this front door.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: lan-tailscale-strict
+  namespace: traefik
+spec:
+  ipAllowList:
+    sourceRange:
+      - 192.168.0.0/24     # Local LAN
+      - 100.64.0.0/10      # Tailscale CGNAT range
 
 ---
 # HSTS headers for public services

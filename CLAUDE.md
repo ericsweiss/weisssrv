@@ -39,13 +39,7 @@ weisssrv/
 
 ### Current Infrastructure (Base Parity)
 
-- **6 Proxmox Hosts** (cluster name: weisssrv):
-  - pve-nas-01 (192.168.0.102) - NAS + storage
-  - pve-laptop-01 (192.168.0.103) - Compute
-  - pve-opt-01 (192.168.0.104) - Compute
-  - pve-opt-02 (192.168.0.105) - Compute
-  - pve-opt-03 (192.168.0.106) - Compute
-  - pve-prec-01 (192.168.0.107) - Compute
+- **6 Proxmox Hosts** (cluster name: weisssrv) — `.102`-`.107` (pve-nas-01 is NAS + storage, the rest are compute); host-by-host list in the README architecture diagram and `docs/01-overview.md`
 - **NAS Storage**: ZFS (tank/ssd/nvme/archive pools), NFS, Samba
 - **DNS**: 2x AdGuard Home + Unbound (DoT) - 192.168.0.150/160
 - **SMTP**: Relay via Gmail - 192.168.0.151
@@ -58,20 +52,10 @@ weisssrv/
 
 ### K3s Platform
 
-**9-node cluster** (3 servers + 6 agents):
-
-**Server Nodes** (etcd quorum):
-- **k3s-srv-nas-01** (192.168.0.222) - Server on pve-nas-01
-- **k3s-srv-laptop-01** (192.168.0.223) - Server on pve-laptop-01
-- **k3s-srv-prec-01** (192.168.0.227) - Server on pve-prec-01
-
-**Agent Nodes**:
-- **k3s-agt-nas-01** (.202) - NAS workloads (esweiss.com/nas)
-- **k3s-agt-laptop-01** (.203) - Ingress + general
-- **k3s-agt-opt-01** (.204) - Ingress + general
-- **k3s-agt-opt-02** (.205) - Ingress + general
-- **k3s-agt-opt-03** (.206) - Ingress + general
-- **k3s-agt-prec-01** (.207) - General + compute (esweiss.com/compute)
+**9-node cluster** (3 servers + 6 agents): three server nodes form the etcd
+quorum; the six agents carry NAS, ingress, and compute workloads. Node-by-node
+list with IPs and host placement lives in the README architecture diagram and
+`docs/01-overview.md`.
 
 **Deployment Model** (Two-phase approach):
 1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161). One-off and idempotent.
@@ -373,22 +357,19 @@ from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →
 ### NAS Node (pve-nas-01) - Specialized ZFS Pools
 
 **ZFS Pools**:
-- `tank` - 6x 22TB raidz2 (~88TB usable, 122TB raw) - Media and bulk storage
-- `ssd` - 3x 4TB raidz1 (~10.9TB) - App data, databases, and containers
+- `tank` - 6x 22TB raidz2 (~88TB usable, 132TB raw) - Media and bulk storage
+- `ssd` - 3x 4TB raidz1 (~8TB usable / 10.9TB raw) - App data, databases, and containers
 - `nvme` - 1x 4TB NVMe (~2.27TB) - Hot downloads and fast scratch
 - `archive` - 4x 6TB raidz1 (~18TB usable, 3x 6TB data) - Cold storage and backups
 
 **Key Datasets**: tank/media, tank/share, ssd/appdata, nvme/media, nvme/fast
 
-**Persistent Storage (ZFS zvols)**:
-- `ssd/appdata/authentik/postgres` - 10GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdb, mounted at /mnt/postgres-data
-- `ssd/appdata/mealie/postgres` - 32GB zvol, ext4, attached to k3s-agt-nas-01 as /dev/sdc, mounted at /mnt/mealie-postgres-data
-- `ssd/appdata/gitlab/repos` - 200GB zvol, ext4, attached to gitlab VM as /dev/sdb, mounted at /mnt/gitlab-repos
-- `ssd/appdata/prometheus/data` - 150GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/prometheus-data
-- `ssd/appdata/loki/data` - 75GB zvol, ext4, attached to k3s-agt-nas-01, mounted at /mnt/loki-data
-- Grafana SQLite DB uses NFS-backed PV at `/appdata/grafana` (1Gi, NFS from pve-nas-01) — persists user preferences and service accounts
-- Zvols are defined in `vm_additional_disks` in hosts.yml, created by proxmox_vm role, formatted/mounted by role
-- Data survives pod and VM recreation (zvols persist on Proxmox host's ZFS pool)
+**Persistent Storage (ZFS zvols)**: per-app zvols under `ssd/appdata/*`
+(Authentik/Mealie Postgres, GitLab repos, Prometheus, Loki) plus the Grafana
+NFS-backed PV. The full list with sizes, SCSI slots, and mount points is the
+`vm_additional_disks` block in hosts.yml (created and mounted by the
+proxmox_vm/zvol_mount roles) and is documented in `docs/06-zfs.md`. Data
+survives pod and VM recreation (zvols persist on the Proxmox host's ZFS pool).
 
 ### Compute Nodes - local-ssd ZFS Pool
 

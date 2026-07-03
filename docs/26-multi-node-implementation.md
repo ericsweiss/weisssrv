@@ -462,11 +462,34 @@ Uncomment and update the k3s node definitions in `hosts.yml`:
               zvol: ssd/appdata/authentik/postgres
               mount_point: /mnt/postgres-data
               fstype: ext4
+              scsi_slot: 1
+              vzdump_backup: false
             - name: mealie-postgres-data
               size: 32G
               zvol: ssd/appdata/mealie/postgres
               mount_point: /mnt/mealie-postgres-data
               fstype: ext4
+              scsi_slot: 2
+              vzdump_backup: false
+            - name: prometheus-data
+              size: 150G
+              zvol: ssd/appdata/prometheus/data
+              mount_point: /mnt/prometheus-data
+              fstype: ext4
+              scsi_slot: 3
+              vzdump_backup: false
+            - name: loki-data
+              size: 75G
+              zvol: ssd/appdata/loki/data
+              mount_point: /mnt/loki-data
+              fstype: ext4
+              scsi_slot: 4
+              vzdump_backup: false
+          # NOTE: the four data zvols live on the ENCRYPTED ssd pool, so on the
+          # live host k3s-agt-nas-01 sets proxmox_autostart_enabled: false and is
+          # started by pve-start-encrypted-guests.service after the pool unlocks
+          # (see hosts.yml + docs/32-zfs-encryption.md). hosts.yml is the source
+          # of truth for this host — keep these disks in sync with it.
           proxmox_autostart_enabled: true
           proxmox_startup_order: 40
           proxmox_startup_delay: 10
@@ -1007,9 +1030,11 @@ The k3s role handles this automatically based on `k3s_is_first_server` flag.
 
 **Not required immediately, but recommended:**
 
-Current VMs on pve-nas-01 use `local-lvm` (LVM thin pool). For HA:
+The k3s VMs on pve-nas-01 (k3s-srv-nas-01, k3s-agt-nas-01) use `local-lvm`
+(LVM thin pool) for their root disks; the GitLab VM root already lives on the
+`ssd` ZFS pool (see hosts.yml + docs/27). For HA:
 - `local-lvm` works for running VMs but cannot be replicated
-- Move to `ssd` pool (ZFS) for replication capability
+- Move the remaining `local-lvm` roots to the `ssd` pool (ZFS) for replication capability
 
 Migration procedure (per VM):
 ```bash

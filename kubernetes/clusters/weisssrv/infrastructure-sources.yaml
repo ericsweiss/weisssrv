@@ -22,4 +22,10 @@ spec:
     name: flux-system
   path: ./kubernetes/infrastructure/sources
   prune: true
-  wait: true
+  # wait:false — this stage only declares HelmRepository CRs + the
+  # cluster-versions ConfigMap, all applied (and substitutable) the moment it
+  # reconciles. Waiting for every repo's index fetch to go Ready would let one
+  # transient registry outage (even an app-only repo) keep sources NotReady and
+  # stall the whole controllers->configs->observability->apps chain;
+  # helm-controller already waits for each chart's own repo before pulling.
+  wait: false

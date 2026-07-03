@@ -255,13 +255,14 @@ helm_chart_versions:
   cert_manager: "v1.20.3"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.7.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.2.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "87.3.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
   loki: "18.1.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.0"
   prometheus_blackbox_exporter: "11.13.0"
   onepassword_connect: "2.4.1"
   vpa: "4.12.2"
   kured: "6.0.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
+  reloader: "2.2.12"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap/Secret change
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

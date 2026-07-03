@@ -21,12 +21,13 @@ data:
   helm_chart_versions_cert_manager: v1.20.3
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.7.0
-  helm_chart_versions_kube_prometheus_stack: 87.2.1
+  helm_chart_versions_kube_prometheus_stack: 87.3.0
   helm_chart_versions_kured: 6.0.0
   helm_chart_versions_loki: 18.1.1
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.13.0
+  helm_chart_versions_reloader: 2.2.12
   helm_chart_versions_traefik: 41.0.0
   helm_chart_versions_vpa: 4.12.2
   k3s_version: v1.36.2+k3s1

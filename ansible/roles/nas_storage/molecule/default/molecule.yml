@@ -1,12 +1,9 @@
 ---
-# Molecule configuration for nas_storage role testing
-# Note: ZFS functionality is limited in containers, so we test configuration tasks
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: nas-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -24,20 +21,6 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
@@ -46,56 +29,31 @@ provisioner:
         internal_domain: test.local
         skip_ssh_config: true
         skip_dns_config: true
-        # NFS configuration. Three exports exercise the exports.j2 xprtsec
-        # precedence: plaintext (no xprtsec anywhere), export-level require
-        # TLS (every client line gets xprtsec=tls), and mixed per-client (one
-        # require-TLS client + one explicitly plaintext client — the
-        # /export/media shape that requires TLS from k3s while keeping HAOS
-        # .154 with no xprtsec at all). xprtsec=tls matches the production
-        # value: require (reject plaintext); the .154 line stays plaintext
-        # because xprtsec is applied per client.
         nfs_exports:
           - path: /tank/media/unified
             clients:
-              - spec: "192.168.0.0/24"
-                options: "ro,sync,no_subtree_check"
+              - spec: 192.168.0.0/24
+                options: ro,sync,no_subtree_check
           - path: /tank/appdata/tls
-            xprtsec: "tls"
+            xprtsec: tls
             clients:
-              - spec: "192.168.0.200/29"
-                options: "rw,sync,no_subtree_check,fsid=91"
-              - spec: "192.168.0.220/29"
-                options: "rw,sync,no_subtree_check,fsid=91"
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,fsid=91
+              - spec: 192.168.0.220/29
+                options: rw,sync,no_subtree_check,fsid=91
           - path: /tank/media/mixed
             clients:
-              - spec: "192.168.0.200/29"
-                options: "rw,sync,no_subtree_check,fsid=92"
-                xprtsec: "tls"
-              - spec: "192.168.0.154/32"
-                options: "ro,sync,no_subtree_check,fsid=92"
-        # Samba configuration
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,fsid=92
+                xprtsec: tls
+              - spec: 192.168.0.154/32
+                options: ro,sync,no_subtree_check,fsid=92
         samba_shares:
           - name: media
             path: /tank/media/unified
             read_only: true
             guest_ok: false
-        # Skip actual ZFS/mergerfs/NFS/smartd operations in container
         skip_zfs_operations: true
         skip_mergerfs: true
         skip_nfs_reload: true
         skip_smartd_service: true
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

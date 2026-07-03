@@ -6,7 +6,7 @@ admin_user: eric
 # Packages installed by the QoL role (override per host/group as needed).
 qol_packages:
   - zsh
-  - neovim
+  - neovim  # also in base common_packages; kept so `--tags qol` works standalone
   - fzf
   - ripgrep
   - fd-find

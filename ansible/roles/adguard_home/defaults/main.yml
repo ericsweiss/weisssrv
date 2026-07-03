@@ -28,8 +28,3 @@ adguard_cert_path: "{{ adguard_install_path }}/certs"
 # Upstream DNS (local Unbound)
 adguard_upstream_dns:
   - "127.0.0.1:5335"
-
-# Bootstrap DNS for initial setup
-adguard_bootstrap_dns:
-  - "9.9.9.10"
-  - "149.112.112.10"

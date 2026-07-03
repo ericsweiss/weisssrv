@@ -7,9 +7,13 @@ vars:
   INVENTORY: ./inventories/prod
   # Proxmox host list (used for HA status, Home Assistant VM discovery, etc.)
   PVE_HOSTS: "pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01"
+  # k3s server/etcd node IPs (kubeconfig fetch + etcd snapshots; first reachable wins)
+  K3S_SERVERS: "192.168.0.222 192.168.0.223 192.168.0.227"
   # GitLab project ID for Terraform state backend
   # Find at: git.ericsweiss.com/eric/weisssrv (shown on project overview page)
   GITLAB_PROJECT_ID: "1"
+  # GitLab VM IP (ssh + smoke tests)
+  GITLAB_VM_IP: "192.168.0.153"
   # Home Assistant VM configuration
   HA_VM_ID: "154"
   HA_VM_IP: "192.168.0.154"
@@ -211,6 +215,9 @@ tasks:
       ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
       DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+      # dns.yml now runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/dns.yml {{.CLI_ARGS}}
 
@@ -220,6 +227,9 @@ tasks:
     env:
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       SAMBA_NAS_PASSWORD: op://Homelab/Samba NAS User/password
+      # storage.yml now runs alloy_host on pve-nas-01, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/storage.yml {{.CLI_ARGS}}
 
@@ -240,24 +250,23 @@ tasks:
   plex:deploy:
     desc: Deploy Plex Media Server (provisions LXC container and installs Plex)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
+    # Anchor shared with plex:check so dry-run and deploy can't diverge.
+    env: &plex_env
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
+      # plex.yml now runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml {{.CLI_ARGS}}
 
   plex:check:
     desc: Check mode - show what Plex deployment would change
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
-      PLEX_PFX_PASSPHRASE: op://Homelab/Plex Custom Certificate/password
+    env: *plex_env
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/plex.yml --check --diff {{.CLI_ARGS}}
 
@@ -296,6 +305,12 @@ tasks:
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+      # Lower-privilege worker-join token (ANS-D-2) is OPT-IN. To enable, create
+      # the "K3s Agent Token" 1Password item and add the line below here (and in
+      # the maintenance-k3s-provision CI job):
+      #   K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
+      # It is omitted by default so `op run` does not hard-fail on a missing item;
+      # the role then falls back to the cluster token. See docs/19 "Agent token".
       # k3s.yml runs alloy_host on the k3s nodes, which asserts the Loki push
       # creds are present (https endpoint). Inject them like infra:deploy does.
       LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
@@ -308,11 +323,22 @@ tasks:
     cmds:
       - |
         echo "Fetching kubeconfig from k3s server..."
+        SERVER=""
+        for ip in {{.K3S_SERVERS}}; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "eric@$ip" "true" 2>/dev/null; then
+            SERVER="$ip"
+            break
+          fi
+        done
+        if [ -z "$SERVER" ]; then
+          echo "ERROR: Cannot reach any k3s server ({{.K3S_SERVERS}})"
+          exit 1
+        fi
         SSH_STDERR=$(mktemp)
-        KUBECONFIG_DATA=$(ssh eric@192.168.0.222 "sudo cat /etc/rancher/k3s/k3s.yaml" 2>"$SSH_STDERR")
+        KUBECONFIG_DATA=$(ssh "eric@$SERVER" "sudo cat /etc/rancher/k3s/k3s.yaml" 2>"$SSH_STDERR")
         SSH_RC=$?
         if [ $SSH_RC -ne 0 ]; then
-          echo "ERROR: Failed to fetch kubeconfig from k3s server (exit code: $SSH_RC)"
+          echo "ERROR: Failed to fetch kubeconfig from k3s server $SERVER (exit code: $SSH_RC)"
           cat "$SSH_STDERR"
           rm -f "$SSH_STDERR"
           exit 1
@@ -322,6 +348,7 @@ tasks:
           echo "ERROR: Kubeconfig data is empty"
           exit 1
         fi
+        mkdir -p ~/.kube
         echo "$KUBECONFIG_DATA" | \
           sed 's/127.0.0.1/192.168.0.161/g; s/0.0.0.0/192.168.0.161/g' > ~/.kube/config-k3s
         chmod 600 ~/.kube/config-k3s
@@ -359,11 +386,9 @@ tasks:
     cmds:
       - echo "Restarting Authentik..."
       - kubectl rollout restart deployment -n authentik -l app.kubernetes.io/name=authentik
-      - kubectl rollout restart statefulset -n authentik -l app.kubernetes.io/name=authentik
       - echo "Waiting for rollout to complete..."
       - kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
       - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s
-      - kubectl rollout status statefulset/authentik-postgresql -n authentik --timeout=300s
 
   # ── Observability ────────────────────────────────────────────────────
   observability:status:
@@ -397,11 +422,10 @@ tasks:
       DURATION: '{{.DURATION | default "2H"}}'
     cmds:
       - |
-        cleanup() { kill $PF_PID 2>/dev/null; }
+        RESP=$(mktemp)
+        cleanup() { kill $PF_PID 2>/dev/null; rm -f "$RESP"; }
         trap cleanup EXIT
-        # BSD date only — macOS local dev workflow. The previous fallback to
-        # `date -d '+2H'` was dead code: GNU coreutils accepts `+2 hours`,
-        # not `+2H`, so the alternate branch could never produce a value.
+        # Requires BSD date (macOS local dev); GNU date won't parse +2H.
         END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
         if [ -z "$END" ]; then echo "ERROR: Invalid DURATION '{{.DURATION}}' (use BSD date units: S/M/H/d — this task expects macOS BSD date)"; exit 1; fi
         START=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
@@ -423,7 +447,7 @@ tasks:
           echo "ERROR: Failed to JSON-encode alert name"; exit 1;
         }
         if [ -z "$ALERT_VALUE" ]; then echo "ERROR: Alert name resolved to empty string"; exit 1; fi
-        HTTP_CODE=$(curl -s -o /tmp/am-silence-response.json -w '%{http_code}' -X POST http://localhost:9093/api/v2/silences -H "Content-Type: application/json" -d "{
+        HTTP_CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST http://localhost:9093/api/v2/silences -H "Content-Type: application/json" -d "{
           \"matchers\": [{\"name\": \"alertname\", \"value\": \"$ALERT_VALUE\", \"isRegex\": false}],
           \"startsAt\": \"$START\",
           \"endsAt\": \"$END\",
@@ -432,22 +456,34 @@ tasks:
         }")
         if [ "$HTTP_CODE" -ne 200 ]; then
           echo "ERROR: Alertmanager API returned HTTP $HTTP_CODE"
-          cat /tmp/am-silence-response.json 2>/dev/null
+          cat "$RESP" 2>/dev/null
           exit 1
         fi
-        cat /tmp/am-silence-response.json | python3 -m json.tool
+        python3 -m json.tool "$RESP"
 
   k3s:backup:
     desc: Create etcd snapshot on k3s server
     cmds:
       - |
+        set -eo pipefail
         SNAPSHOT_NAME="manual-$(date +%Y%m%d-%H%M%S)"
-        echo "Creating etcd snapshot: $SNAPSHOT_NAME"
-        ssh eric@192.168.0.222 "sudo k3s etcd-snapshot save --name $SNAPSHOT_NAME"
+        SERVER=""
+        for ip in {{.K3S_SERVERS}}; do
+          if ssh -o ConnectTimeout=2 -o BatchMode=yes "eric@$ip" "true" 2>/dev/null; then
+            SERVER="$ip"
+            break
+          fi
+        done
+        if [ -z "$SERVER" ]; then
+          echo "ERROR: Cannot reach any k3s server ({{.K3S_SERVERS}})"
+          exit 1
+        fi
+        echo "Creating etcd snapshot: $SNAPSHOT_NAME (via $SERVER)"
+        ssh "eric@$SERVER" "sudo k3s etcd-snapshot save --name $SNAPSHOT_NAME"
         echo "Snapshot created successfully"
         echo ""
         echo "To list snapshots:"
-        echo "  ssh eric@192.168.0.222 'sudo k3s etcd-snapshot ls'"
+        echo "  ssh eric@$SERVER 'sudo k3s etcd-snapshot ls'"
         echo ""
         echo "Snapshots are stored in: /var/lib/rancher/k3s/server/db/snapshots/"
 
@@ -565,7 +601,8 @@ tasks:
 
   flux:reconcile:
     desc: Trigger full reconciliation of Flux-managed resources (source → infra chain → apps)
-    preconditions:
+    # Anchor shared by the flux:* operational tasks so the install hint stays in one place.
+    preconditions: &flux_preconditions
       - sh: command -v flux
         msg: "flux CLI not installed. Run: task flux:install-cli"
       - sh: command -v kubectl
@@ -580,22 +617,14 @@ tasks:
 
   flux:verify:
     desc: Run flux check and show status of all managed resources
-    preconditions:
-      - sh: command -v flux
-        msg: "flux CLI not installed. Run: task flux:install-cli"
-      - sh: command -v kubectl
-        msg: "kubectl not found"
+    preconditions: *flux_preconditions
     cmds:
       - flux check
       - flux get all -A
 
   flux:status:
     desc: Concise health summary
-    preconditions:
-      - sh: command -v flux
-        msg: "flux CLI not installed. Run: task flux:install-cli"
-      - sh: command -v kubectl
-        msg: "kubectl not found"
+    preconditions: *flux_preconditions
     cmds:
       - flux get kustomizations -A
       - flux get helmreleases -A
@@ -603,11 +632,7 @@ tasks:
 
   flux:suspend:
     desc: "Suspend a Flux resource (usage: task flux:suspend -- <ns>/<kind>/<name>)"
-    preconditions:
-      - sh: command -v flux
-        msg: "flux CLI not installed. Run: task flux:install-cli"
-      - sh: command -v kubectl
-        msg: "kubectl not found"
+    preconditions: *flux_preconditions
     cmds:
       - |
         if [ -z "{{.CLI_ARGS}}" ]; then
@@ -621,11 +646,7 @@ tasks:
 
   flux:resume:
     desc: "Resume a suspended Flux resource (usage: task flux:resume -- <ns>/<kind>/<name>)"
-    preconditions:
-      - sh: command -v flux
-        msg: "flux CLI not installed. Run: task flux:install-cli"
-      - sh: command -v kubectl
-        msg: "kubectl not found"
+    preconditions: *flux_preconditions
     cmds:
       - |
         if [ -z "{{.CLI_ARGS}}" ]; then
@@ -929,7 +950,8 @@ tasks:
   maintenance:update-applications:
     desc: Update base applications (AdGuard, Tailscale, Plex, Ansible collections)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
+    # Anchor shared by the base-update variants so they can't drift on secrets.
+    env: &base_app_env
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
@@ -943,28 +965,14 @@ tasks:
   maintenance:update-full:
     desc: Full base update - OS packages + applications (rolling, interactive)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
-      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
-      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    env: *base_app_env
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml {{.CLI_ARGS}}
 
   maintenance:update-full-auto:
     desc: Full base update - OS packages + applications (rolling, auto-reboot)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-      ADGUARD_ADMIN_PASSWORD: op://Homelab/AdGuard Home/password
-      TAILSCALE_AUTH_KEY: op://Homelab/Tailscale Auth Key/credential
-      DNS01_SSH_PRIVATE_KEY: op://Homelab/DNS-01 SSH Key/private key
-      DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
+    env: *base_app_env
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-full.yml -e auto_reboot=true {{.CLI_ARGS}}
 
@@ -980,6 +988,9 @@ tasks:
     dir: "{{.ANSIBLE_DIR}}"
     env:
       K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
+      # If the opt-in agent token (ANS-D-2) is enabled, also add here so a node
+      # upgrade keeps agents on the lower-privilege token (see docs/19 "Agent token"):
+      #   K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-k3s-nodes.yml {{.CLI_ARGS}}
 
@@ -1123,7 +1134,9 @@ tasks:
       # Replication status must be checked on source nodes (pve-nas-01 is not a source)
       - echo "=== Replication Status (all source nodes) ==="
       - |
-        for host in pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01; do
+        # Source nodes = all PVE hosts except pve-nas-01 (replication targets it).
+        for host in {{.PVE_HOSTS}}; do
+          [ "$host" = "pve-nas-01" ] && continue
           echo "--- $host ---"
           if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
             ssh -o BatchMode=yes "$host" "sudo pvesr status" 2>/dev/null || echo "(No replication status)"
@@ -1149,7 +1162,8 @@ tasks:
       TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
       TF_HTTP_LOCK_METHOD: "POST"
       TF_HTTP_UNLOCK_METHOD: "DELETE"
-    preconditions:
+    # Anchor shared by terraform:plan/apply (same terraform + op-auth checks).
+    preconditions: &tf_preconditions
       - sh: command -v terraform
         msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
       - sh: command -v op
@@ -1162,7 +1176,8 @@ tasks:
   terraform:plan:
     desc: Plan Terraform changes
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
-    env:
+    # Anchor shared with terraform:apply (identical backend + Cloudflare vars).
+    env: &tf_state_env
       TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
       TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
       TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
@@ -1172,36 +1187,15 @@ tasks:
       TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
       TF_HTTP_LOCK_METHOD: "POST"
       TF_HTTP_UNLOCK_METHOD: "DELETE"
-    preconditions:
-      - sh: command -v terraform
-        msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
-      - sh: command -v op
-        msg: "1Password CLI is not installed"
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    preconditions: *tf_preconditions
     cmds:
       - op run -- terraform plan {{.CLI_ARGS}}
 
   terraform:apply:
     desc: Apply Terraform changes
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
-    env:
-      TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
-      TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
-      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
-      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
-      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
-      TF_HTTP_USERNAME: "terraform"
-      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
-      TF_HTTP_LOCK_METHOD: "POST"
-      TF_HTTP_UNLOCK_METHOD: "DELETE"
-    preconditions:
-      - sh: command -v terraform
-        msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
-      - sh: command -v op
-        msg: "1Password CLI is not installed"
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    env: *tf_state_env
+    preconditions: *tf_preconditions
     cmds:
       - op run -- terraform apply {{.CLI_ARGS}}
 
@@ -1513,36 +1507,14 @@ tasks:
     cmds:
       - echo "=== Home Assistant VM Status ==="
       - |
-        # Find first reachable Proxmox host (HA-resilient)
-        REACHABLE_HOST=""
-        for host in {{.PVE_HOSTS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
-            REACHABLE_HOST="$host"
-            break
-          fi
-        done
-        if [ -z "$REACHABLE_HOST" ]; then
-          echo "Cannot reach any Proxmox host"
+        # Locate the VM's current node via the shared, hardened helper
+        # (HA-resilient: ha-manager -> cluster resources -> per-host qm scan).
+        CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}} || true)
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "Cannot find VM {{.HA_VM_ID}} on any reachable Proxmox host"
         else
-          # Try HA manager first to detect which node VM {{.HA_VM_ID}} is on
-          CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo ha-manager status 2>/dev/null | grep 'service vm:{{.HA_VM_ID}}'" 2>/dev/null | sed 's/.*(\([^,]*\),.*/\1/')
-          if [ -z "$CURRENT_NODE" ]; then
-            # HA not configured or VM not in HA - query cluster resources for authoritative node
-            echo "HA not configured for VM {{.HA_VM_ID}}, querying cluster resources..."
-            CURRENT_NODE=$(ssh -o BatchMode=yes "$REACHABLE_HOST" "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null | \
-              python3 -c "import sys,json; data=json.load(sys.stdin); vms=[v for v in data if v.get('vmid')=={{.HA_VM_ID}}]; print(vms[0]['node'] if vms else '')" 2>/dev/null)
-            # Convert node name to hostname (e.g., pve-nas-01 format)
-            if [ -n "$CURRENT_NODE" ]; then
-              CURRENT_NODE="pve-${CURRENT_NODE#pve-}"  # Ensure pve- prefix
-            fi
-          fi
-          if [ -z "$CURRENT_NODE" ]; then
-            echo "Cannot find VM {{.HA_VM_ID}} on any node"
-          else
-            echo "Connected to cluster via $REACHABLE_HOST"
-            echo "VM {{.HA_VM_ID}} is on node: $CURRENT_NODE"
-            ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || echo "Cannot reach node $CURRENT_NODE"
-          fi
+          echo "VM {{.HA_VM_ID}} is on node: $CURRENT_NODE"
+          ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || echo "Cannot reach node $CURRENT_NODE"
         fi
       - echo ""
       - echo "=== Network Connectivity ==="
@@ -1588,10 +1560,15 @@ tasks:
     desc: Stop the Home Assistant VM gracefully
     cmds:
       - |
+        set -eo pipefail
         CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
         echo "Stopping VM {{.HA_VM_ID}} on $CURRENT_NODE..."
-        ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}}"
-        echo "Sent shutdown signal to Home Assistant VM"
+        if ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}}"; then
+          echo "Sent shutdown signal to Home Assistant VM"
+        else
+          echo "ERROR: Failed to stop VM {{.HA_VM_ID}} on $CURRENT_NODE"
+          exit 1
+        fi
 
   home-assistant:vm-restart:
     desc: Restart the Home Assistant VM
@@ -1616,23 +1593,31 @@ tasks:
         ssh root@{{.HA_VM_IP}} -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
 
   home-assistant:logs:
-    desc: View Home Assistant core logs via API (requires long-lived access token)
-    vars:
-      TOKEN: '{{.TOKEN | default ""}}'
+    desc: View Home Assistant core logs via API (reads token from HA_TOKEN env var)
     cmds:
       - |
-        TOKEN="{{.TOKEN}}"
-        if [ -z "$TOKEN" ]; then
-          echo "Usage: task home-assistant:logs TOKEN=<long-lived-access-token>"
+        if [ -z "$HA_TOKEN" ]; then
+          echo "Usage: HA_TOKEN=<long-lived-access-token> task home-assistant:logs"
           echo ""
           echo "To get a token:"
           echo "1. Go to https://home.esweiss.com/profile"
           echo "2. Scroll to 'Long-Lived Access Tokens'"
           echo "3. Create a new token"
+          echo ""
+          echo "Tip: 'export HA_TOKEN=...' (or read it from 1Password) keeps the"
+          echo "token out of process listings — it's sent via curl --config below."
           exit 1
         fi
-        curl -s -H "Authorization: Bearer $TOKEN" \
-          https://home.esweiss.com/api/error_log | head -100
+        # Pass the bearer token via curl's stdin config, never argv, so it does
+        # not appear in ps/process listings. Capture the body and check curl's
+        # exit (--fail-with-body => non-zero on HTTP >=400) rather than piping
+        # straight into head, which would mask a network/HTTP error and emit the
+        # error page as if it were the logs.
+        resp=$(curl -sS --fail-with-body --config - https://home.esweiss.com/api/error_log <<EOF
+        header = "Authorization: Bearer $HA_TOKEN"
+        EOF
+        ) || { echo "ERROR: failed to fetch Home Assistant logs (network error or HTTP >=400)" >&2; exit 1; }
+        printf '%s\n' "$resp" | head -100
 
   home-assistant:snapshot:
     desc: Create a Proxmox snapshot of the Home Assistant VM
@@ -1641,12 +1626,28 @@ tasks:
       DESC: '{{.DESC | default "Manual snapshot"}}'
     cmds:
       - |
+        set -eo pipefail
         NAME="{{.NAME}}"
         DESC="{{.DESC}}"
+        # NAME is interpolated into a remote `qm snapshot` command; pin it to the
+        # Proxmox snapshot-name charset so it can't break out of the quoting.
+        if ! printf '%s' "$NAME" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]*$'; then
+          echo "ERROR: NAME must match ^[A-Za-z0-9][A-Za-z0-9_-]*$ (Proxmox snapshot-name rules)"
+          exit 1
+        fi
+        # DESC is wrapped in single quotes remotely; reject single quotes so it
+        # can't terminate the quoting and inject into the root qm command.
+        case "$DESC" in
+          *\'*) echo "ERROR: DESC must not contain a single quote"; exit 1 ;;
+        esac
         CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
         echo "Creating snapshot '$NAME' of Home Assistant VM on $CURRENT_NODE..."
-        ssh "$CURRENT_NODE" "sudo qm snapshot {{.HA_VM_ID}} '${NAME}' --description '${DESC}'"
-        echo "Snapshot created successfully"
+        if ssh "$CURRENT_NODE" "sudo qm snapshot {{.HA_VM_ID}} '${NAME}' --description '${DESC}'"; then
+          echo "Snapshot created successfully"
+        else
+          echo "ERROR: Failed to create snapshot of VM {{.HA_VM_ID}} on $CURRENT_NODE"
+          exit 1
+        fi
         echo ""
         echo "To list snapshots: ssh $CURRENT_NODE 'sudo qm listsnapshot {{.HA_VM_ID}}'"
         echo "To rollback: ssh $CURRENT_NODE \"sudo qm rollback {{.HA_VM_ID}} '${NAME}'\""
@@ -1692,15 +1693,19 @@ tasks:
   gitlab:deploy:
     desc: Deploy GitLab (provisions VM and installs GitLab)
     dir: "{{.ANSIBLE_DIR}}"
-    env:
+    # Anchors shared with gitlab:deploy-check so dry-run and deploy can't diverge.
+    env: &gitlab_env
       ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
       SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      # gitlab.yml now runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
       GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
       GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
       GITLAB_API_TOKEN: op://Homelab/GitLab API Token/credential
-    preconditions:
+    preconditions: &gitlab_deploy_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
       - sh: op whoami 2>/dev/null
@@ -1711,19 +1716,8 @@ tasks:
   gitlab:deploy-check:
     desc: Check mode - show what GitLab deployment would change
     dir: "{{.ANSIBLE_DIR}}"
-    env:
-      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
-      GITLAB_ROOT_PASSWORD: op://Homelab/GitLab/root-password
-      GITLAB_SAML_CERT_FINGERPRINT: op://Homelab/GitLab SSO/saml-cert-fingerprint
-      GITLAB_API_TOKEN: op://Homelab/GitLab API Token/credential
-    preconditions:
-      - sh: command -v ansible-playbook
-        msg: "ansible-playbook is not installed"
-      - sh: op whoami 2>/dev/null
-        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    env: *gitlab_env
+    preconditions: *gitlab_deploy_preconditions
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml --check --diff {{.CLI_ARGS}}
 
@@ -1731,7 +1725,7 @@ tasks:
     desc: Show GitLab status
     cmds:
       - echo "=== GitLab VM Status ==="
-      - ssh gitlab "sudo gitlab-ctl status" || echo "GitLab VM not reachable or not installed"
+      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl status" || echo "GitLab VM not reachable or not installed"
       - echo ""
       - echo "=== GitLab IngressRoutes ==="
       - kubectl get ingressroute -n gitlab 2>/dev/null || echo "No IngressRoutes found"
@@ -1749,9 +1743,8 @@ tasks:
   gitlab:verify:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)
     # Requires bash for 'local' keyword in shell functions (dash doesn't support it)
+    # GITLAB_VM_IP comes from top-level vars (shared with the gitlab:* ssh tasks).
     shell: bash
-    vars:
-      GITLAB_VM_IP: "192.168.0.153"
     cmds:
       - |
         echo "=== GitLab Smoke Tests ==="
@@ -1851,7 +1844,7 @@ tasks:
         # A green Test 8 proves DNS+Cloudflare+Traefik+IngressRoute+nginx are wired for
         # the new wildcard host. It does NOT validate the application_settings flip.
         # To confirm the CVE-2026-5816 mitigation:
-        #   ssh gitlab "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
+        #   ssh eric@192.168.0.153 "sudo gitlab-rails runner 'puts ApplicationSetting.last.vscode_extension_marketplace_single_origin_fallback_enabled'"
         # Expected: false
         echo -n "Web IDE extension host route (probe.ide.git.ericsweiss.com)... "
         if check_http_ok "https://probe.ide.git.ericsweiss.com/-/health"; then
@@ -1872,23 +1865,23 @@ tasks:
     desc: Create GitLab backup
     cmds:
       - echo "Creating GitLab backup..."
-      - ssh gitlab "sudo gitlab-backup create"
+      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-backup create"
       - echo ""
       - 'echo "Backup complete. List backups with:"'
-      - echo "  ssh gitlab 'sudo ls -la /var/opt/gitlab/backups/'"
+      - echo "  ssh eric@{{.GITLAB_VM_IP}} 'sudo ls -la /var/opt/gitlab/backups/'"
 
   gitlab:console:
     desc: SSH to GitLab VM
     cmds:
-      - ssh gitlab
+      - ssh eric@{{.GITLAB_VM_IP}}
 
   gitlab:logs:
     desc: View GitLab logs
     cmds:
-      - ssh gitlab "sudo gitlab-ctl tail"
+      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl tail"
 
   gitlab:reconfigure:
     desc: Reconfigure GitLab after changes
     cmds:
-      - ssh gitlab "sudo gitlab-ctl reconfigure"
+      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl reconfigure"
 

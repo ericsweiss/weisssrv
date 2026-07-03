@@ -25,42 +25,14 @@
     create_home: false
     state: present
 
-# Password reaches smbpasswd via stdin (never the shell command text).
-# Idempotency comes from probing whether the current 1Password value
-# already authenticates — so rotations apply, but steady-state runs
-# report ok.
-# smbclient reads PASSWD from the environment — the secret never appears
-# in argv/process listings.
-# NOTE: this check fails-OPEN on transport errors — any non-zero rc (smbd
-# mid-restart, loopback socket refused, etc.), not just an auth failure,
-# triggers the password reset below. Blast radius is small (re-sets the same
-# secret), but a transport blip during a deploy will report a spurious
-# 'changed' and could reset the stored password if the env secret has drifted.
-- name: Check whether the current Samba password already works
-  ansible.builtin.command:
-    cmd: smbclient -L localhost -U nas
-  environment:
-    PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
-  register: samba_password_check
-  changed_when: false
-  failed_when: false
-  no_log: true
-  check_mode: false
-  when: lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
-
-- name: Set Samba password for nas user
-  ansible.builtin.command:
-    cmd: smbpasswd -a -s nas
-    stdin: "{{ pw }}\n{{ pw }}"
-  vars:
-    pw: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
-  when:
-    - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
-    - samba_password_check.rc | default(1) != 0
-  no_log: true
-  register: samba_password_set
-  changed_when: true
-
+# smbd must be configured and running BEFORE the password probe below. The probe
+# authenticates against the live smbd (smbclient -L) and only resets the stored
+# password on a confirmed auth failure; a transport error (smbd down) is treated
+# as "unreachable, skip". If smbd were still down at probe time, a first deploy
+# would skip the reset (password never set), and the next run — with smbd now up
+# and the password still unset — would set it and report changed (non-idempotent).
+# Deploying the config and starting smbd first fixes both the first-deploy gap and
+# idempotence.
 - name: Deploy Samba configuration
   ansible.builtin.template:
     src: smb.conf.j2
@@ -79,3 +51,60 @@
   loop:
     - smbd
     - nmbd
+
+# Password reaches smbpasswd via stdin (never the shell command text).
+# Idempotency comes from probing whether the current 1Password value already
+# authenticates — so rotations apply, but steady-state runs report ok.
+# smbclient reads PASSWD from the environment — the secret never appears in
+# argv/process listings.
+# The probe retries and resets the stored password ONLY on a confirmed auth
+# failure (NT_STATUS_LOGON_FAILURE/ACCESS_DENIED). A transport error (smbd
+# mid-restart, loopback socket refused) is ridden out by the retries; if it
+# persists the stored password is left untouched rather than clobbered with the
+# env value on a transient blip.
+- name: Check whether the current Samba password already works
+  ansible.builtin.shell: |
+    set -uo pipefail
+    # Exit codes: 0 auth ok | 1 auth failure (reset) | 2 smbd unreachable (skip)
+    for _ in 1 2 3; do
+      if out=$(smbclient -L localhost -U nas 2>&1); then
+        exit 0
+      fi
+      if printf '%s\n' "$out" | grep -qiE 'NT_STATUS_LOGON_FAILURE|NT_STATUS_ACCESS_DENIED'; then
+        exit 1
+      fi
+      sleep 3
+    done
+    exit 2
+  args:
+    executable: /bin/bash
+  environment:
+    PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
+  register: samba_password_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  check_mode: false
+  when: lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+
+- name: Warn when the Samba password could not be verified (smbd unreachable)
+  ansible.builtin.debug:
+    msg: >-
+      smbd was unreachable after retries; leaving the stored Samba password
+      unchanged this run. If this is a first deploy, re-run once smbd is up.
+  when:
+    - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+    - samba_password_check.rc | default(2) == 2
+
+- name: Set Samba password for nas user
+  ansible.builtin.command:
+    cmd: smbpasswd -a -s nas
+    stdin: "{{ pw }}\n{{ pw }}"
+  vars:
+    pw: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
+  when:
+    - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+    - samba_password_check.rc | default(2) == 1
+  no_log: true
+  register: samba_password_set
+  changed_when: true

@@ -1,24 +1,173 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources:
-  - adguard.yaml
-  - alertmanager-self.yaml
-  - alerts-overview.yaml
-  - blackbox.yaml
-  - cert-manager.yaml
-  - cluster-overview.yaml
-  - dns-combined.yaml
-  - flux.yaml
-  - gitlab.yaml
-  - home-assistant.yaml
-  - infrastructure.yaml
-  - mail.yaml
-  - media-stack.yaml
-  - node-exporter-full.yaml
-  - prometheus-self.yaml
-  - recipes.yaml
-  - redis.yaml
-  - thermals.yaml
-  - traefik-official.yaml
-  - unbound.yaml
+# Pin the namespace explicitly (the parent observability kustomization also sets
+# it — belt-and-suspenders): the generated dashboard ConfigMaps must land in
+# observability for the Grafana sidecar to discover them, and this keeps the
+# directory rendering correctly even when built standalone.
+namespace: observability
+# ConfigMap names must stay STABLE (no content-hash suffix) so the Grafana
+# sidecar keeps discovering them and no orphans accumulate.
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: grafana-dashboard-adguard
+    files:
+      - adguard.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Networking"
+  - name: grafana-dashboard-alertmanager-self
+    files:
+      - alertmanager-self.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-alerts-overview
+    files:
+      - alerts-overview.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-blackbox
+    files:
+      - blackbox.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-cert-manager
+    files:
+      - cert-manager.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-cluster-overview
+    files:
+      - cluster-overview.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-dns-combined
+    files:
+      - dns-combined.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Networking"
+  - name: grafana-dashboard-flux
+    files:
+      - flux-cluster.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-gitlab
+    files:
+      - gitlab.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-home-assistant
+    files:
+      - home-assistant.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-infrastructure
+    files:
+      - infrastructure.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-mail
+    files:
+      - mail.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-media-stack
+    files:
+      - media-stack.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-node-exporter-full
+    files:
+      - node-exporter-full.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-prometheus-self
+    files:
+      - prometheus-self.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-recipes
+    files:
+      - recipes.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-redis
+    files:
+      - redis.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-thermals
+    files:
+      - thermals.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-traefik-official
+    files:
+      - traefik-official.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Networking"
+  - name: grafana-dashboard-unbound
+    files:
+      - unbound.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Networking"

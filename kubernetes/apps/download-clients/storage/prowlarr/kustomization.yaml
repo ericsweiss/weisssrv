@@ -1,0 +1,37 @@
+---
+# prowlarr config storage: thin overlay over the ../../_nfs-pv component.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: downloads
+components:
+  - ../../_nfs-pv
+patches:
+  - target:
+      kind: PersistentVolume
+      name: nfs-pv
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: downloads-appdata-prowlarr
+      - op: replace
+        path: /metadata/labels/app
+        value: prowlarr
+      - op: replace
+        path: /spec/capacity/storage
+        value: 5Gi
+      - op: replace
+        path: /spec/nfs/path
+        value: /appdata/prowlarr
+  - target:
+      kind: PersistentVolumeClaim
+      name: nfs-pvc
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: prowlarr-config
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 5Gi
+      - op: replace
+        path: /spec/volumeName
+        value: downloads-appdata-prowlarr

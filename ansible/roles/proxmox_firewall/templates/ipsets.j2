@@ -26,7 +26,7 @@
 {%- endfor -%}
 
 {#- Add special entries (VIPs, non-host IPs) -#}
-{%- for ipset_name, special_entries in firewall_ipset_special_entries.items() -%}
+{%- for ipset_name, special_entries in (firewall_ipset_special_entries | default({})).items() -%}
   {%- if ipset_name not in ipset_members -%}
     {%- set _ = ipset_members.update({ipset_name: []}) -%}
   {%- endif -%}
@@ -35,8 +35,9 @@
   {%- endfor -%}
 {%- endfor -%}
 
-{#- Render IPSets in alphabetical order -#}
-{%- for ipset_name in ['core-cluster', 'k3s_nodes', 'nfs_clients', 'pve_hosts'] -%}
+{#- Render every discovered IPSet (sorted), so adding a set to a host's
+    firewall_ipsets in inventory is enough — no hardcoded whitelist to update. -#}
+{%- for ipset_name in ipset_members.keys() | sort -%}
   {%- if ipset_name in ipset_members %}
 [IPSET {{ ipset_name }}]
 

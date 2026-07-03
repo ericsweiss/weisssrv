@@ -16,3 +16,31 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: external-secrets
+---
+# The validating/conversion webhook runs 2 replicas (release.yaml
+# webhook.replicaCount: 2) on the synchronous admission path for ExternalSecret/
+# SecretStore CR writes. Keep one replica up during drains so those writes never
+# briefly fail-closed when both replicas would otherwise evict together.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: external-secrets-webhook
+  namespace: external-secrets
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets-webhook
+---
+# cert-controller runs 2 replicas (release.yaml certController.replicaCount: 2)
+# and rotates the webhook's serving cert; keep one up across drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: external-secrets-cert-controller
+  namespace: external-secrets
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets-cert-controller

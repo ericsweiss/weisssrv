@@ -13,3 +13,8 @@
     - nfs_tls
     - nas_storage
     - zfs_exporter
+    # site.yml deploys node_exporter_host (to pve-nas-01 via proxmox) and
+    # alloy_host (via base_managed) in dedicated plays; include them here so a
+    # standalone `task storage:deploy` keeps host metrics + log shipping in sync.
+    - node_exporter_host
+    - alloy_host

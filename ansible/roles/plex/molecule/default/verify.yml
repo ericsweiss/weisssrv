@@ -107,6 +107,57 @@
       vars:
         override_decoded: "{{ plex_override_content.content | b64decode }}"
 
+    # Verify the custom-certificate hook artifacts. These handle the TLS
+    # private-key material for the Plex cert, so their ownership/modes matter:
+    # /etc/ssl/plex is root:plex 0750 (a compromised plex account must not be
+    # able to swap files root's reload script later consumes), the passphrase
+    # file is root:plex 0640, and the reload script itself is root:root 0750.
+    - name: Check /etc/ssl/plex directory
+      ansible.builtin.stat:
+        path: /etc/ssl/plex
+      register: plex_ssl_dir
+
+    - name: Verify /etc/ssl/plex ownership and mode
+      ansible.builtin.assert:
+        that:
+          - plex_ssl_dir.stat.exists
+          - plex_ssl_dir.stat.isdir
+          - plex_ssl_dir.stat.pw_name == 'root'
+          - plex_ssl_dir.stat.gr_name == 'plex'
+          - plex_ssl_dir.stat.mode == '0750'
+        fail_msg: "/etc/ssl/plex must be root:plex 0750"
+        success_msg: "/etc/ssl/plex is root:plex 0750"
+
+    - name: Check PFX passphrase file
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/pfx-passphrase
+      register: plex_pfx_passphrase_file
+
+    - name: Verify PFX passphrase file ownership and mode
+      ansible.builtin.assert:
+        that:
+          - plex_pfx_passphrase_file.stat.exists
+          - plex_pfx_passphrase_file.stat.pw_name == 'root'
+          - plex_pfx_passphrase_file.stat.gr_name == 'plex'
+          - plex_pfx_passphrase_file.stat.mode == '0640'
+        fail_msg: "/etc/ssl/plex/pfx-passphrase must be root:plex 0640"
+        success_msg: "/etc/ssl/plex/pfx-passphrase is root:plex 0640"
+
+    - name: Check plex-cert-reload.sh
+      ansible.builtin.stat:
+        path: /usr/local/sbin/plex-cert-reload.sh
+      register: plex_cert_reload
+
+    - name: Verify plex-cert-reload.sh ownership and mode
+      ansible.builtin.assert:
+        that:
+          - plex_cert_reload.stat.exists
+          - plex_cert_reload.stat.pw_name == 'root'
+          - plex_cert_reload.stat.gr_name == 'root'
+          - plex_cert_reload.stat.mode == '0750'
+        fail_msg: "/usr/local/sbin/plex-cert-reload.sh must be root:root 0750"
+        success_msg: "/usr/local/sbin/plex-cert-reload.sh is root:root 0750"
+
     # Verify plex user exists (created by plexmediaserver package)
     - name: Check if plex user exists
       ansible.builtin.command: id plex
@@ -225,6 +276,7 @@
           - "  - Custom application support directory"
           - "  - Custom tmpdir for transcoding"
           - "  - Restart on failure policy"
+          - "Cert-reload hook deployed (/etc/ssl/plex, pfx-passphrase, plex-cert-reload.sh)"
           - "plex user: {{ 'yes' if plex_user_check.rc == 0 else 'no (container limitation)' }}"
           - "  - Member of media group: {{ media_group_status }}"
           - "  - Member of video group: {{ video_group_status }}"

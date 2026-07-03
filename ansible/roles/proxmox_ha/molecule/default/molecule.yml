@@ -1,19 +1,9 @@
 ---
-# Molecule scenario for proxmox_ha (contract test).
-# Models proxmox_vm/molecule/default: the Proxmox CLIs (ha-manager, pvesr, qm,
-# pct, pvecm) are stubbed in /usr/local/bin during prepare. Mutating stub
-# subcommands LOG their invocations to /tmp/molecule-stub-state/*.log; read-only
-# subcommands answer from configurable state files there. Converge drives the
-# role across absent / already-correct / drifted HA resources and an absent
-# replication job by flipping that state, then captures the logged calls; verify
-# asserts the role issued exactly the right ha-manager / pvesr mutations.
-# No real Proxmox is required.
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: proxmox-ha-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -25,46 +15,22 @@ platforms:
     command: /lib/systemd/systemd
     stop_signal: SIGRTMIN+3
     tty: true
-    # /tmp NOT tmpfs — see proxmox_vm/molecule/default/molecule.yml.
     tmpfs:
       - /run
     groups:
       - proxmox
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-      # Anchor remote_tmp under /tmp; see proxmox_vm/molecule/default/
-      # molecule.yml for the full rationale. Literal path because the
-      # scenario's `env:` block drops USER from the molecule-to-Ansible
-      # env, leaving `${USER}` expanding to empty.
-      remote_tmp: /tmp/ansible-tmp
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # Empty defaults so the role's `... | length > 0` gates are off until
-        # converge activates each task file by passing real fixtures via
-        # `include_role: vars:` (which override these per-include).
         ha_rules: []
         storage_replication_jobs: []
         ha_resources: []
         ha_groups: []
-verifier:
-  name: ansible
+  config_options:
+    defaults:
+      remote_tmp: /tmp/ansible-tmp
 scenario:
-  # No `idempotence`: like proxmox_vm, converge runs the role repeatedly with
-  # different stub state to exercise add/set/create paths, so a re-run is
-  # expected to report changes (the contract is verified explicitly instead).
   test_sequence:
     - dependency
     - cleanup

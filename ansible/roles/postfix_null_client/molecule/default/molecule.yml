@@ -1,11 +1,9 @@
 ---
-# Molecule configuration for postfix_null_client role testing
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: postfix-null-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -21,20 +19,6 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
@@ -45,35 +29,20 @@ provisioner:
         postfix_sasl_user: testuser
         postfix_sasl_password: testpassword
         postfix_config:
-          myhostname: "postfix-null-test.test.local"
-          myorigin: "/etc/mailname"
-          mydestination: "postfix-null-test.test.local, test.local, localhost.localdomain, localhost"
-          relayhost: "[smtp-relay.test.local]:587"
-          mynetworks: "127.0.0.0/8"
-          inet_interfaces: "loopback-only"
-          smtp_tls_security_level: "encrypt"
-          smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
-          smtp_sasl_auth_enable: "yes"
-          smtp_sasl_security_options: "noanonymous"
-          smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+          myhostname: postfix-null-test.test.local
+          myorigin: /etc/mailname
+          mydestination: postfix-null-test.test.local, test.local, localhost.localdomain, localhost
+          relayhost: '[smtp-relay.test.local]:587'
+          mynetworks: 127.0.0.0/8
+          inet_interfaces: loopback-only
+          smtp_tls_security_level: secure
+          smtp_tls_CAfile: /etc/ssl/certs/ca-certificates.crt
+          smtp_sasl_auth_enable: 'yes'
+          smtp_sasl_security_options: noanonymous
+          smtp_sasl_password_maps: hash:/etc/postfix/sasl_passwd
         mail_aliases:
           postmaster: root
           nobody: root
           hostmaster: root
           webmaster: root
-          root: "test@test.local"
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy
+          root: test@test.local

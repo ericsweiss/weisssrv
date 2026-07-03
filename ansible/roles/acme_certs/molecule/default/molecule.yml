@@ -1,15 +1,10 @@
 ---
-# Molecule configuration for acme_certs role testing
-# Tests acme.sh installation, SSH key deployment, certificate directory structure
-# Skips: Cloudflare API calls, actual certificate issuance
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
-  # Use dns-01 as the container name to match inventory_hostname checks in the role
   - name: dns-01
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
     pre_build_image: true
@@ -23,80 +18,43 @@ platforms:
     tmpfs:
       - /run
       - /run/lock
-    # Keep /tmp as regular directory (not tmpfs) to preserve state between test phases
-    # This allows git clone, ansible tmp files, etc. to persist through idempotence tests
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-      # Use /tmp for remote_tmp to avoid Docker container stability issues
-      # The ~/.ansible/tmp directory can become inaccessible when containers restart
-      remote_tmp: /tmp/.ansible-${USER}/tmp
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # Mock SSH keys for testing (not real keys)
-        dns01_ssh_private_key: |
-          -----BEGIN OPENSSH PRIVATE KEY-----
+        dns01_ssh_private_key: '-----BEGIN OPENSSH PRIVATE KEY-----
+
           b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+
           QyNTUxOQAAACBtb2NrLWtleS1mb3ItdGVzdGluZy1vbmx5LWRvbnQtdXNlAAAAUm1vY2st
+
           a2V5LWZvci10ZXN0aW5nLW9ubHktZG9udC11c2Vtb2NrLWtleS1mb3ItdGVzdGluZy1v
+
           bmx5LWRvbnQtdXNlAAAAC3Rlc3RAbW9sZWN1bGUBAgMEBQ==
+
           -----END OPENSSH PRIVATE KEY-----
-        dns01_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtlc3Qtc3NoLWtleS1mb3ItbW9sZWN1bGUtdGVzdGluZw== test@molecule"
+
+          '
+        dns01_ssh_public_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtlc3Qtc3NoLWtleS1mb3ItbW9sZWN1bGUtdGVzdGluZw==
+          test@molecule
         acme_email: test@molecule.local
         internal_domain: test.local
         local_cert_dir: /opt/AdGuardHome/certs
         adguard_group: root
-        # Secrets for the debug message (not used for actual issuance)
         secrets:
-          cloudflare_api_token: "op://Homelab/Cloudflare DNS Token/credential"
-          cloudflare_account_id: "op://Homelab/Cloudflare DNS Token/username"
-        # Distribution targets (for template rendering, not actual distribution)
-        # The role's "Deploy pubkey to each target's authorized_keys" task
-        # uses delegate_to: item.host which would fall through to the prod
-        # inventory and SSH to 192.168.0.160 from the CI pod (times out).
-        # acme_certs_distribute_pubkeys: false short-circuits it; the rest
-        # of the role (template rendering, acme.sh install, asserts) still
-        # runs against the populated targets list.
+          cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
+          cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
         acme_certs_distribute_pubkeys: false
         cert_distribution_targets:
           - host: dns-02
             ip: 192.168.0.160
-            # Mock pinned host_key — production deploy fails the role
-            # assert without it; the molecule scenario only exercises
-            # template rendering + the known_hosts entry write, so a
-            # syntactically-valid placeholder is sufficient.
-            host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY"
+            host_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY
             cert_dir: /opt/AdGuardHome/certs
             owner: root
             group: adguard
-            cert_mode: "0644"
-            key_mode: "0640"
+            cert_mode: '0644'
+            key_mode: '0640'
             restart_service: AdGuardHome
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy
+  config_options:
+    defaults:
+      remote_tmp: /tmp/.ansible-${USER}/tmp

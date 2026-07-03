@@ -2,10 +2,15 @@
 # Agent name: weisssrv-k3s
 # Cluster: 9-node k3s cluster (3 servers + 6 agents)
 #
-# This agent enables:
-# - CI/CD access to the k3s cluster without kubeconfig secrets
+# This agent provides:
 # - Kubernetes dashboard in GitLab UI (Operate > Kubernetes clusters)
-# - Future Flux GitOps integration
+# - Cluster resource queries for GitLab observability
+#
+# NOTE: CI jobs do NOT currently use this agent's kubeconfig — the k8s-touching
+# jobs (.k3s-deploy-base, .maintenance-base, deploy-verify) read a long-lived
+# kubeconfig from 1Password (op://Homelab/K3s Kubeconfig). The ci_access grant
+# below is retained for a future migration to the agent's scoped, short-lived
+# credential; until then it is unused by the pipeline.
 
 # Allow CI/CD pipelines from these projects to use this agent's kubeconfig
 ci_access:

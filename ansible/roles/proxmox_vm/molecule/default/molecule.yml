@@ -1,15 +1,9 @@
 ---
-# Molecule scenario for proxmox_vm.
-# Verifies the storage-selection logic, pool validation, and existence guard
-# without hitting any real Proxmox API. `qm`, `pvesh`, `pvesm`, `zfs` are stubbed
-# in /usr/local/bin during prepare. The role's `get_url` and `wait_for` SSH steps
-# are gated behind proxmox_vm_skip_create=true.
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: proxmox-vm-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -21,49 +15,13 @@ platforms:
     command: /lib/systemd/systemd
     stop_signal: SIGRTMIN+3
     tty: true
-    # /tmp deliberately NOT tmpfs-mounted: the working acme_certs
-    # scenario doesn't tmpfs /tmp either, and adding it here was
-    # causing converge's gather_facts mkdir to exit with rc=1 inside
-    # the subshell (regardless of whether remote_tmp pointed at
-    # /tmp or $HOME). /run stays tmpfs for systemd.
     tmpfs:
       - /run
 provisioner:
-  name: ansible
   env:
-    ANSIBLE_ROLES_PATH: ../../..
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    SSH_PUBLIC_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYDONOTUSE molecule@test"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-      # Anchor remote_tmp under /tmp instead of $HOME/.ansible/tmp.
-      # Without this, converge's gather_facts fails on this container
-      # with "Failed to create temporary directory" — the prepare-stage
-      # stub installation seems to interact badly with the default
-      # ~/.ansible/tmp path in this image.
-      #
-      # Literal "/tmp/ansible-tmp" rather than `${USER}` expansion:
-      # this scenario's `env:` block adds SSH_PUBLIC_KEY which appears
-      # to drop USER from the env molecule passes to Ansible, leaving
-      # ${USER} expanding to empty (`/tmp/.ansible-/tmp` then mkdir
-      # fails). All molecule containers run as root so a fixed path is
-      # safe and reproducible.
-      remote_tmp: /tmp/ansible-tmp
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
+    SSH_PUBLIC_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYDONOTUSE molecule@test
   inventory:
     host_vars:
-      # The role's storage selection reads proxmox_role from
-      # hostvars[proxmox_host] — play vars in converge.yml don't flow into
-      # hostvars[inventory_hostname], so the converge's `proxmox_role: nas`
-      # would silently fall through to the role's default of 'compute'.
-      # Pinning it here means the NAS-default scenario actually exercises the
-      # NAS branch of proxmox_storage_defaults (ssd).
       proxmox-vm-test:
         proxmox_role: nas
     group_vars:
@@ -78,8 +36,9 @@ provisioner:
           - apps-public
           - platform
           - apps-private
-verifier:
-  name: ansible
+  config_options:
+    defaults:
+      remote_tmp: /tmp/ansible-tmp
 scenario:
   test_sequence:
     - dependency

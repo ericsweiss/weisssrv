@@ -7,6 +7,7 @@ Installs and configures Unbound as a recursive DNS resolver with DNS-over-TLS (D
 ### DNS Resolution
 - Recursive DNS resolver configuration
 - DNS-over-TLS (DoT) to Cloudflare (1.1.1.1, 1.0.0.1)
+- DNS-over-TLS (DoT) to Quad9 (9.9.9.9, 149.112.112.112)
 - DNS-over-TLS (DoT) to Google (8.8.8.8, 8.8.4.4)
 - DNS root hints from dns-root-data package
 - DNSSEC validation
@@ -28,27 +29,37 @@ Installs and configures Unbound as a recursive DNS resolver with DNS-over-TLS (D
 unbound_interface: "127.0.0.1"
 unbound_port: 5335  # Non-standard port (AdGuard uses 53)
 
-# DoT upstream servers
-unbound_forward_tls_upstream: true
-unbound_forward_servers:
-  # Cloudflare DNS-over-TLS
-  - addr: "1.1.1.1@853"
+# DoT upstreams (forward-tls-upstream is always enabled in the template)
+unbound_forwarders:
+  # Cloudflare
+  - addr: "1.1.1.1"
+    port: 853
     name: "cloudflare-dns.com"
-  - addr: "1.0.0.1@853"
+  - addr: "1.0.0.1"
+    port: 853
     name: "cloudflare-dns.com"
-  # Google DNS-over-TLS
-  - addr: "8.8.8.8@853"
+  # Quad9
+  - addr: "9.9.9.9"
+    port: 853
+    name: "dns.quad9.net"
+  - addr: "149.112.112.112"
+    port: 853
+    name: "dns.quad9.net"
+  # Google
+  - addr: "8.8.8.8"
+    port: 853
     name: "dns.google"
-  - addr: "8.8.4.4@853"
+  - addr: "8.8.4.4"
+    port: 853
     name: "dns.google"
 
-# Cache settings (optimized for 2GB RAM DNS server)
-unbound_cache_min_ttl: 300        # 5 minutes minimum cache
-unbound_cache_max_ttl: 86400      # 24 hours maximum cache
-unbound_msg_cache_size: "50m"     # Message cache
-unbound_rrset_cache_size: "100m"  # RRset cache
-unbound_key_cache_size: "50m"     # DNSSEC key cache
+# Cache sizes
+unbound_msg_cache_size: "16m"     # Message cache
+unbound_rrset_cache_size: "32m"   # RRset cache
 ```
+
+`cache-min-ttl` (60s) and `cache-max-ttl` (86400s) are hardcoded in the
+template, not variables. There is no DNSSEC key-cache variable.
 
 ## Deployment
 
@@ -68,6 +79,7 @@ AdGuard Home (port 53)
       ├─ Queries → Unbound (127.0.0.1:5335)
       │               │
       │               └─> DoT to Cloudflare (1.1.1.1@853)
+      │               └─> DoT to Quad9 (9.9.9.9@853)
       │               └─> DoT to Google (8.8.8.8@853)
       │
       └─ Filtering/blocking applied before reaching Unbound
@@ -134,12 +146,11 @@ unbound-control flush_zone .
 
 Configured for 2GB RAM DNS servers:
 
-- **Message cache**: 50MB (stores query responses)
-- **RRset cache**: 100MB (stores resource records)
-- **Key cache**: 50MB (stores DNSSEC keys)
+- **Message cache**: 16MB (stores query responses)
+- **RRset cache**: 32MB (stores resource records)
 - **Prefetch**: Enabled (refreshes popular domains before expiry)
-- **Cache min TTL**: 5 minutes (prevents rapid lookups)
-- **Cache max TTL**: 24 hours (balances freshness and performance)
+- **Cache min TTL**: 60 seconds (hardcoded in the template)
+- **Cache max TTL**: 24 hours (hardcoded in the template)
 
 ## Operational Notes
 

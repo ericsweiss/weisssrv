@@ -1,16 +1,9 @@
 ---
-# Molecule configuration for zvol_mount role testing
-#
-# Tests the role's logic using loopback devices to simulate SCSI-attached ZFS zvols.
-# In production, Proxmox attaches zvols as SCSI devices with predictable paths:
-#   /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi{N}
-# Here we create a loopback device and symlink it to that path.
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: zvol-mount-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -26,20 +19,6 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
@@ -47,18 +26,3 @@ provisioner:
           - name: test-data
             mount_point: /mnt/test-data
             fstype: ext4
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

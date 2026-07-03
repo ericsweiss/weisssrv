@@ -170,6 +170,13 @@
     body:
       enabled: "{{ adguard_tls_enabled }}"
       server_name: "{{ adguard_tls_server_name }}"
+      # Keep force_https FALSE: this role reconciles AdGuard over the plaintext
+      # localhost API (http://127.0.0.1:3000/control/..., incl. the split-horizon
+      # rewrites in api_config.yml). A global HTTP->HTTPS redirect would 301 those
+      # to :443 and fail TLS verification (the cert is *.esweiss.com, not
+      # 127.0.0.1), breaking config reconciliation. The :3000 listener is already
+      # firewall-restricted to admin LAN/Tailscale (sg-dns), and the in-cluster
+      # exporter/ingress use the :443 endpoint by hostname (SEC-001).
       force_https: false
       port_https: "{{ adguard_https_port }}"
       port_dns_over_tls: "{{ adguard_dot_port }}"

@@ -10,3 +10,4 @@ resources:
   - onepassword-connect
   - vpa
   - kured
+  - reloader

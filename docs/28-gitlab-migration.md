@@ -276,8 +276,9 @@ task flux:reconcile   # or wait ~1 minute
 
 # Verify both runners are registered (reads HelmRelease status via flux get)
 task gitlab:status
-flux get hr -n gitlab-runner     # lists both the shared runner AND the privileged runner
-                                 # (both live in the gitlab-runner namespace)
+flux get hr -n gitlab-runner             # the shared (unprivileged) runner
+flux get hr -n gitlab-runner-privileged  # the privileged runner (its own namespace,
+                                         # PSS enforce: privileged — SOP isolation, docs/27)
 ```
 
 Runner token rotation (glrt-* tokens):
@@ -652,8 +653,8 @@ If others access the repository:
 3. Check runner executor (should be `kubernetes` for k3s runner)
 4. Review runner logs:
    ```bash
-   # Infrastructure runner
-   kubectl logs -n gitlab-runner -l app=gitlab-runner-privileged
+   # Infrastructure (privileged) runner — its own namespace
+   kubectl logs -n gitlab-runner-privileged -l app=gitlab-runner-privileged
    # Shared runner
    kubectl logs -n gitlab-runner -l app=gitlab-runner
    ```

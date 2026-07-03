@@ -30,6 +30,6 @@ plex_transcode_dir: /transcode
 plex_media_dir: /media
 
 # Systemd service dependencies
-# Plex should start after mergerfs is mounted
+# Plex starts after the network is online
 plex_service_after:
   - network-online.target

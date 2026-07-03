@@ -4,15 +4,16 @@
 - name: Validate required k3s variables
   ansible.builtin.assert:
     that:
-      - k3s_token is defined
-      - k3s_token | length > 0
+      - k3s_agent_token is defined
+      - k3s_agent_token | length > 0
       - k3s_version is defined
       - k3s_version | length > 0
       - k3s_api_vip is defined
       - k3s_api_vip | length > 0
     fail_msg: >-
-      Required k3s variables are not set. Ensure K3S_TOKEN environment variable
-      is provided via 'op run' and k3s_version/k3s_api_vip are set in group_vars.
+      Required k3s variables are not set. Ensure K3S_TOKEN (and optionally
+      K3S_AGENT_TOKEN) environment variables are provided via 'op run' and
+      k3s_version/k3s_api_vip are set in group_vars.
       Run deployment with: task k3s:deploy (which injects 1Password secrets)
     success_msg: "Required k3s variables are present"
   tags: [validation, always]
@@ -48,52 +49,14 @@
     success_msg: "Config file successfully created at /etc/rancher/k3s/config.yaml"
   when: not ansible_check_mode
 
-- name: Check current k3s version
-  ansible.builtin.command: k3s --version
-  register: k3s_current_version
-  changed_when: false
-  failed_when: false
-
-- name: Parse current k3s version
-  ansible.builtin.set_fact:
-    k3s_installed_version: "{{ k3s_current_version.stdout | regex_search('v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+') | default('') }}"
-  when: k3s_current_version.rc == 0
-
-- name: Debug k3s version info
-  ansible.builtin.debug:
-    msg:
-      - "Installed version: {{ k3s_installed_version | default('not installed') }}"
-      - "Target version: {{ k3s_version }}"
-      - "Needs install/upgrade: {{ k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version }}"
-  tags: [debug]
-
-- name: Download k3s install script
-  ansible.builtin.get_url:
-    # Download and execute are deliberately separate tasks (no `curl | sh`) so
-    # the root-run installer can be integrity-checked before it executes.
-    # Write to /root with 0700 to prevent local tampering/symlink abuse in /tmp.
-    # force: true ensures upgrades always use the current upstream installer.
-    # checksum (optional): pin a sha256 of install.sh per k3s_version in all.yml
-    # alongside k3s_version to close the unverified-script-execution gap. Empty
-    # default => get_url omits the param. NOTE: install.sh ALSO verifies the
-    # downloaded k3s binary's sha256 against the GitHub release on its own; this
-    # pin protects the installer script itself (a force-push to the tag, a
-    # compromised CDN, or MITM cannot deliver an arbitrary root-run script).
-    url: "{{ k3s_install_script_url }}"
-    dest: /root/k3s-install.sh
-    owner: root
-    group: root
-    mode: "0700"
-    force: true
-    checksum: "{{ k3s_install_script_checksum | default(omit, true) }}"
-  when:
-    - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
-    - not (skip_k3s_install | default(false))
+# Version detection + install-script staging (shared with server.yml)
+- name: Detect k3s version and stage install script
+  ansible.builtin.include_tasks: install-script.yml
 
 - name: Install or upgrade k3s agent
   ansible.builtin.command: /root/k3s-install.sh agent
   environment:
-    K3S_TOKEN: "{{ k3s_token }}"
+    K3S_TOKEN: "{{ k3s_agent_token }}"
     INSTALL_K3S_VERSION: "{{ k3s_version }}"
     K3S_URL: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
   when:
@@ -102,6 +65,23 @@
   notify: Restart k3s-agent
   changed_when: true
   no_log: true
+
+# k3s-install.sh only writes K3S_TOKEN to the agent env file on a (re)install,
+# which is version-gated above — so an already-joined agent would keep whatever
+# token it first joined with. When a distinct lower-privilege agent token is
+# configured (k3s_agent_token != k3s_token), reconcile it on every run so existing
+# agents migrate off the full server token. Servers advertise agent-token earlier
+# in the play (serial server restart), so the new token is already accepted.
+- name: Reconcile k3s agent token in service env (migrate existing agents)
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/system/k3s-agent.service.env
+    regexp: '^K3S_TOKEN='
+    line: "K3S_TOKEN={{ k3s_agent_token }}"
+  notify: Restart k3s-agent
+  no_log: true
+  when:
+    - not (skip_k3s_install | default(false))
+    - k3s_agent_token != k3s_token
 
 # SAFEGUARD: Ensure k3s.service (server) is never running on agent nodes.
 # This protects against incorrect manual installations or bugs.

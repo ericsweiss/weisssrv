@@ -52,6 +52,19 @@ default:
   interruptible: true
 
 # ============================================================================
+# Global variables
+# ============================================================================
+variables:
+  # Single source for the Ansible pin used by the lint (.ansible-base) and
+  # deploy (.deploy-base) pip installs. Keep in step with requirements.txt's
+  # ansible pin (which the molecule-ci image builds from).
+  ANSIBLE_VERSION: "11.6.0"
+  # Single source for the kustomize pin installed by flux-lint and deploy-verify
+  # (was duplicated inline in both jobs — ci-dup-kustomize).
+  KUSTOMIZE_VERSION: "5.4.3"
+  KUSTOMIZE_SHA256: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
+
+# ============================================================================
 # Workflow rules - when to run the pipeline
 # ============================================================================
 workflow:
@@ -81,7 +94,7 @@ workflow:
     # wheels ship a broken mypyc extension (ImportError: undefined symbol
     # CPyMndule_black___resources) that makes ansible-lint fail to load. Pin below
     # it (ansible-lint only needs black>=24.3.0); lift once 26.5.x is fixed.
-    - pip install --quiet ansible==11.6.0 ansible-lint==25.12.2 'black<26.5.0'
+    - pip install --quiet "ansible==${ANSIBLE_VERSION}" ansible-lint==25.12.2 'black<26.5.0'
     - ansible-galaxy collection install -r ansible/requirements.yml
 
 .install-1password:
@@ -113,6 +126,29 @@ workflow:
       apk add --no-cache 1password-cli
     - op --version
 
+# Shared "never on scheduled or web pipelines" rule preamble. Deploy/
+# maintenance/gate jobs start their rules with this so the policy lives in
+# one place. Pull in via `- !reference [.skip-schedule-web, rules]`.
+.skip-schedule-web:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: never
+
+# GitLab HTTP state backend (project-scoped Terraform state + lock) shared by
+# terraform-plan and deploy-terraform via `extends`. Edit the path/auth once.
+.terraform-http-backend:
+  variables:
+    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
+    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_USERNAME: "gitlab-ci-token"
+    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
+    TF_HTTP_LOCK_METHOD: "POST"
+    TF_HTTP_UNLOCK_METHOD: "DELETE"
+    TF_HTTP_RETRY_WAIT_MIN: "5"
+
 .deploy-base:
   extends: .install-1password
   # Deploys touch shared infrastructure; never cancel a running deploy when a new
@@ -137,7 +173,7 @@ workflow:
     LOKI_PUSH_PASSWORD: "op://Homelab/Loki Push Auth/password"
   before_script:
     - !reference [.install-1password, before_script]
-    - pip install --quiet ansible==11.6.0
+    - pip install --quiet "ansible==${ANSIBLE_VERSION}"
     - |
       # Copy ansible.cfg to secure temp path (world-writable checkout causes Ansible to ignore it)
       export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
@@ -149,39 +185,43 @@ workflow:
       chmod 700 ~/.ssh
       op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
       chmod 600 ~/.ssh/id_ed25519
-      # ----------------------------------------------------------------
-      # ssh-keyscan to populate known_hosts: this is TOFU (trust on
-      # first use) — the runner blindly accepts whatever fingerprint
-      # the host serves at the moment of the keyscan. Each CI runner
-      # is ephemeral, so there's no persistent known_hosts to inherit
-      # from a prior trusted handshake; fetching fresh per-job is the
-      # only way to drive Ansible without baking host keys into the
-      # runner image (which has its own staleness/rotation problems).
-      #
-      # Threat model: an attacker would need to MITM both the runner's
-      # network path AND the target host's network path simultaneously
-      # for the same job window. On a single-LAN single-operator
-      # homelab this is a high bar, and the blast radius is bounded
-      # to the tasks the deploy pipeline already runs as root via the
-      # SSH key fetched from 1Password. We accept this trade-off in
-      # exchange for not having to maintain a host_key store in CI.
-      #
-      # Strict pinning IS enforced on the operator path:
-      #   - ansible/ansible.cfg uses StrictHostKeyChecking=accept-new
-      #     + UserKnownHostsFile=~/.ssh/known_hosts (TOFU on first
-      #     contact, then strict on every subsequent connection from
-      #     that workstation).
-      #   - Cert distribution (acme_certs role) is fully pinned via
-      #     ansible/inventories/prod/host_vars/dns-01.yml host_key
-      #     fields — populated via `task certs:show-host-keys`.
-      # See those locations for the strict-pinning surface area.
-      # ----------------------------------------------------------------
+      # TOFU keyscan: ephemeral runners have no known_hosts to inherit, so we
+      # fetch fresh per job rather than bake host keys into the image. Accepted
+      # on a single-LAN homelab (MITM would need both network paths in the job
+      # window). Strict pinning lives on the operator path: ansible.cfg
+      # (StrictHostKeyChecking=accept-new) + host_vars/dns-01.yml host_key for
+      # acme_certs cert distribution.
       # Add known hosts for all infrastructure (Proxmox hosts, services, k3s VMs)
       ssh-keyscan -H 192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107 >> ~/.ssh/known_hosts 2>/dev/null || true
       ssh-keyscan -H 192.168.0.150 192.168.0.151 192.168.0.152 192.168.0.153 192.168.0.154 192.168.0.160 >> ~/.ssh/known_hosts 2>/dev/null || true
       ssh-keyscan -H 192.168.0.202 192.168.0.203 192.168.0.204 192.168.0.205 192.168.0.206 192.168.0.207 >> ~/.ssh/known_hosts 2>/dev/null || true
       ssh-keyscan -H 192.168.0.222 192.168.0.223 192.168.0.227 >> ~/.ssh/known_hosts 2>/dev/null || true
     - ansible-galaxy collection install -r ansible/requirements.yml
+
+# Shared kubectl install (pinned checksum) + kubeconfig fetch from 1Password.
+# Pulled into .maintenance-base and .k3s-deploy-base via
+# `- !reference [.kubectl-setup, before_script]` so the version, checksum, and
+# kubeconfig logic live in one place.
+.kubectl-setup:
+  before_script:
+    - |
+      # Install kubectl (pinned checksum for supply-chain integrity).
+      curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
+      echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
+      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+    - |
+      # Kubeconfig from 1Password (base64-encoded to preserve YAML formatting).
+      set -eo pipefail
+      mkdir -p ~/.kube
+      KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
+      if [ -z "$KUBECONFIG_B64" ]; then
+        echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
+        exit 1
+      fi
+      echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
+      chmod 600 ~/.kube/config
+      export KUBECONFIG="$HOME/.kube/config"
+      echo "Kubeconfig written ($(wc -c < ~/.kube/config) bytes), KUBECONFIG=$KUBECONFIG"
 
 # Maintenance jobs need both ansible (from .deploy-base) and kubectl
 # (so each job can call scripts/post-maintenance-verify.sh after its
@@ -202,23 +242,7 @@ workflow:
   before_script:
     - !reference [.deploy-base, before_script]
     - apt-get install -y -qq jq
-    - |
-      # kubectl install (matches .k3s-deploy-base, same pinned checksum)
-      curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
-      echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
-      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-    - |
-      # Kubeconfig from 1Password (base64-encoded; matches .k3s-deploy-base)
-      set -eo pipefail
-      mkdir -p ~/.kube
-      KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
-      if [ -z "$KUBECONFIG_B64" ]; then
-        echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
-        exit 1
-      fi
-      echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
-      chmod 600 ~/.kube/config
-      export KUBECONFIG="$HOME/.kube/config"
+    - !reference [.kubectl-setup, before_script]
   after_script:
     # If the run armed a DETACHED self-host reboot (the executor's own Proxmox
     # host needed a reboot), re-arm it to fire promptly (+60s) now that the job is
@@ -237,28 +261,11 @@ workflow:
   interruptible: false
   before_script:
     - !reference [.install-1password, before_script]
+    # jq is used by deploy-verify to parse kubectl JSON output (Flux CR
+    # readiness checks). helm and yq are not installed — Flux manages chart
+    # deployments, so no CI job needs them.
     - apt-get install -y -qq jq
-    - |
-      # Install kubectl (pinned checksum for supply-chain integrity).
-      # helm and yq removed — Flux manages chart deployments; no CI job needs them
-      # jq comes from apt above — used by deploy-verify to parse kubectl JSON output (Flux CR readiness checks).
-      curl -fsSL "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl" -o /tmp/kubectl
-      echo "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277  /tmp/kubectl" | sha256sum -c -
-      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-    - |
-      # Setup kubeconfig from 1Password (stored as base64 to preserve YAML formatting).
-      # Only the verify jobs still need this; all workload deploys are Flux-managed.
-      set -eo pipefail
-      mkdir -p ~/.kube
-      KUBECONFIG_B64=$(op read "op://Homelab/K3s Kubeconfig/kubeconfig")
-      if [ -z "$KUBECONFIG_B64" ]; then
-        echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
-        exit 1
-      fi
-      echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
-      chmod 600 ~/.kube/config
-      export KUBECONFIG="$HOME/.kube/config"
-      echo "Kubeconfig written ($(wc -c < ~/.kube/config) bytes), KUBECONFIG=$KUBECONFIG"
+    - !reference [.kubectl-setup, before_script]
     # Skipping `kubectl cluster-info` — requires list perms on kube-system
     # services, which the runner ServiceAccount lacks. Per-job kubectl calls
     # target narrower scopes and use the K3s Kubeconfig credentials.
@@ -271,6 +278,19 @@ workflow:
 build-molecule-images:
   # Pushes images consumed by later jobs in this pipeline; do not interrupt.
   interruptible: false
+  # This job pulls a lot of external deps at build time — the base image, apt,
+  # pip, ansible-galaxy (galaxy.ansible.com), and the dind daemon — any of which
+  # can transiently fail and surface as a script_failure (e.g. a galaxy download
+  # 500/timeout, or "Cannot connect to the Docker daemon"). Since the build itself
+  # is deterministic (a REAL error still fails after the retries), retry those too
+  # so a transient download doesn't block the whole molecule matrix. (Test jobs
+  # keep a narrow retry — a failing test must NOT be masked; see .molecule-base.)
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+      - script_failure
   # Builds both CI images:
   # - molecule-test: the container molecule spins up (has all role apt deps)
   # - molecule-ci: the GitLab CI runner image (has docker-cli + molecule + ansible)
@@ -283,7 +303,27 @@ build-molecule-images:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
   before_script:
-    - apt-get update -qq && apt-get install -y -qq docker.io
+    # Install the static docker CLI (NOT docker.io: the Trixie docker.io package
+    # ships only the daemon, no CLI — see docker/molecule-ci/Dockerfile). Pinned
+    # version + sha256 to match the checksum discipline used for every other
+    # downloaded binary in this pipeline.
+    - |
+      ARCH=$(dpkg --print-architecture)
+      case "$ARCH" in
+        amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256=4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640 ;;
+        arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256=e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817 ;;
+        *) echo "unsupported arch: $ARCH"; exit 1 ;;
+      esac
+      curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-27.5.1.tgz" -o /tmp/docker.tgz
+      echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c -
+      tar xz --strip-components=1 -C /usr/local/bin -f /tmp/docker.tgz docker/docker
+      rm /tmp/docker.tgz
+      docker --version
+      # Wait for the dind service daemon to accept connections before building;
+      # it can lag the job start, otherwise `docker build` fails with
+      # "Cannot connect to the Docker daemon at tcp://docker:2375".
+      for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
+      docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
   script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     # molecule-test: the container roles run inside
@@ -345,7 +385,9 @@ build-molecule-images:
 shellcheck:
   needs: []
   stage: lint
-  image: koalaman/shellcheck-alpine:stable
+  # Pinned (not :stable) so lint results are reproducible — a moving tag could
+  # silently change shellcheck behavior between runs.
+  image: koalaman/shellcheck-alpine:v0.10.0
   script:
     - echo "Running ShellCheck..."
     - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
@@ -358,28 +400,18 @@ shellcheck:
       find ansible/roles -name '*.sh' -type f \
         -exec shellcheck --severity=warning --exclude=SC1091,SC2034 {} +
     - |
-      # Lint shell-script Jinja templates (*.sh.j2) shipped in roles —
-      # including the boot-time crypto-unlock units. We can't render real
-      # values in CI, so neutralize Jinja first. The {% %} strip + the {{ }} and
-      # literal-brace substitutions are safe everywhere; the {# #} comment-RANGE
-      # delete is NOT — it eats bash ${#arr[@]} (array length) and corrupts the
-      # body. So for {% raw %}-wrapped scripts (whose body is literal bash) drop
-      # the comment-RANGE rule and instead delete only FULL-LINE {# ... #} Jinja
-      # comments (anchored ^...$, so it can't touch a mid-line ${#...}), while
-      # still neutralizing any {{ }} that sits OUTSIDE the raw block (e.g. quoted
-      # header vars). Plain templates keep the full neutralizer. Either way this
-      # catches shell logic/quoting bugs in the body, not Jinja correctness.
-      # CONSTRAINT: a MULTI-LINE or inline {# #} Jinja comment in the out-of-raw
-      # header of a {% raw %}-wrapped *.sh.j2 is still not stripped (only full-line
-      # ones are); keep header comments to single full lines. (Out-of-raw {{ }}
-      # expressions are fine in any quantity — still neutralized to JINJA.)
+      # Lint shell-script Jinja templates (*.sh.j2) shipped in roles (incl. the
+      # boot-time crypto-unlock units). We can't render real values, so
+      # neutralize Jinja first. The {# #} comment-RANGE delete eats bash
+      # ${#arr[@]} and corrupts the body, so {% raw %}-wrapped scripts (literal
+      # bash) instead delete only FULL-LINE {# ... #} comments (anchored, can't
+      # touch a mid-line ${#...}); plain templates keep the full neutralizer.
+      # CONSTRAINT: a multi-line/inline {# #} in the out-of-raw header of a raw-
+      # wrapped template isn't stripped — keep header comments to single lines.
       #
-      # Accumulate an rc instead of `find | while`: the latter masks failures
-      # because the pipeline's exit status is the while loop's (rc of its last
-      # iteration), so a shellcheck failure on any earlier-rendered template
-      # would go green. We redirect find output to a list file (NOT a pipe, and
-      # NOT bash process substitution — this job runs in shellcheck-alpine whose
-      # default shell is ash/sh) so the while loop runs in the current shell and
+      # Accumulate rc (not `find | while`, whose exit status is only the last
+      # iteration's) via a list file — not a pipe or process substitution, since
+      # this job's shell is ash/sh — so the loop runs in the current shell and
       # rc survives. `rc=1` on any failure + the final `exit $rc` fails the job.
       rendered=$(mktemp)
       tmpl_list=$(mktemp)
@@ -611,8 +643,8 @@ terraform-fmt:
     name: hashicorp/terraform:1.15
     entrypoint: [""]
   script:
-    - cd terraform/cloudflare
-    - terraform fmt -check -recursive
+    # Cover every module under terraform/ (cloudflare + tailscale), not just one.
+    - terraform fmt -check -recursive terraform/
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -731,9 +763,15 @@ terraform-validate:
     name: hashicorp/terraform:1.15
     entrypoint: [""]
   script:
-    - cd terraform/cloudflare
-    - terraform init -backend=false
-    - terraform validate
+    # Validate every module under terraform/ (cloudflare + tailscale). Each needs
+    # its own init (different providers); -backend=false skips state/creds.
+    - |
+      set -eo pipefail
+      for mod in terraform/*/; do
+        [ -f "${mod}versions.tf" ] || continue
+        echo "=== terraform validate ${mod} ==="
+        ( cd "$mod" && terraform init -backend=false && terraform validate )
+      done
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -746,20 +784,12 @@ terraform-validate:
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-plan:
+  extends: .terraform-http-backend
   needs: []
   stage: validate
   image:
     name: hashicorp/terraform:1.15
     entrypoint: [""]
-  variables:
-    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
-    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_USERNAME: "gitlab-ci-token"
-    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
-    TF_HTTP_LOCK_METHOD: "POST"
-    TF_HTTP_UNLOCK_METHOD: "DELETE"
-    TF_HTTP_RETRY_WAIT_MIN: "5"
   before_script:
     - !reference [.install-1password-alpine, before_script]
   script:
@@ -779,6 +809,10 @@ terraform-plan:
          "delete":(map(select(.=="delete"))|length)}
       ' > tfplan.json
   artifacts:
+    # The binary plan embeds rendered resource attributes; restrict download to
+    # developer+ (default is any project member). deploy-terraform still consumes
+    # it via needs:artifacts — access only gates UI/API download, not job needs.
+    access: developer
     paths:
       - terraform/cloudflare/tfplan
     reports:
@@ -906,8 +940,8 @@ flux-lint:
         https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
       echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
       tar xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
-      curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
-      echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  /tmp/kustomize.tar.gz" | sha256sum -c -
+      curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
+      echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c -
       tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
       # helm: schema-validates HelmRelease .spec.values (scripts/validate-helm-values.py).
       # Tarball unpacks to linux-amd64/helm (unlike kubeconform/kustomize bare binaries).
@@ -946,6 +980,13 @@ flux-lint:
       RENDER_ALL=$(mktemp)
       trap 'rm -f "$RENDER_ALL"' EXIT
 
+      # kubeconform schema version: derive MAJOR.MINOR from k3s_version in the
+      # versions ConfigMap (the same source validate-helm-values.py reads) so both
+      # track one source at kubeconform's MAJOR.MINOR.0 schema granularity. The
+      # `|| true` keeps the empty-match fallback reachable under `set -eo pipefail`.
+      K8S_VER=$(grep -E '^ *k3s_version:' kubernetes/infrastructure/sources/versions-configmap.yaml | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+      K8S_VER="${K8S_VER:-1.36}.0"
+      echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
       # Iterate every Flux Kustomization under clusters/weisssrv/ and validate
       # the target path it points at. This picks up new top-level Kustomizations
       # automatically without CI edits.
@@ -1000,7 +1041,7 @@ flux-lint:
         # are in the catalog, but a CR for a kind not in the catalog is unchecked.
         # Tracked as a follow-up (vendor CRD JSON schemas + a second strict pass).
         if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
-            -kubernetes-version 1.35.0 \
+            -kubernetes-version "$K8S_VER" \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             -summary; then
@@ -1066,32 +1107,28 @@ flux-lint:
 # molecule/ directory gets its own CI job via parallel:matrix.
 .molecule-base:
   stage: test
+  # Backstop for infra-class scheduling failures (a pod that briefly can't be
+  # placed during transition churn surfaces as runner_system_failure). The primary
+  # fix is right-sizing the job resources + quota (gitlab-runner-privileged) so
+  # these are rare; deliberately NOT retrying stuck_or_timeout_failure — a
+  # genuinely hung test should fail fast, not burn another full timeout.
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   needs:
     - job: build-molecule-images
       optional: true
-      # When build-molecule-images runs (Dockerfile/requirements changes
-      # in this pipeline), it emits a dotenv setting MOLECULE_CI_IMAGE
-      # to the pinned digest (e.g.
-      # `<registry>/molecule-ci@sha256:abc...`). The `image:` reference
-      # below picks that up so this same-pipeline run is digest-pinned
-      # and immune to anyone retagging :latest mid-flight. When build
-      # doesn't run (most pipelines, Dockerfile unchanged), the dotenv
-      # is absent and the image falls back to the :latest tag from the
-      # previous main build — same behavior as before, but only on the
-      # cold path. The MOLECULE_IMAGE (test target) is independently
-      # pinned to ${CI_COMMIT_SHORT_SHA} below.
+      # When it runs (Dockerfile/requirements changed this pipeline), the build
+      # job emits a dotenv pinning MOLECULE_CI_IMAGE to the image digest, which
+      # overrides the :latest fallback below; artifacts:true consumes it.
       artifacts: true
-  # Pre-built CI runner image: has docker-cli, molecule, ansible, and all
-  # pip deps + ansible collections baked in. Eliminates ~2 min of apt-get +
-  # pip install + galaxy install per job vs the generic python:3.11 image.
-  #
-  # `image:` only supports single-variable expansion ($VAR), not bash
-  # default-value syntax. The fallback to :latest happens in two layers:
-  # (a) MOLECULE_CI_IMAGE is set to the :latest tag in the `variables:`
-  # block below (cold path — no Docker rebuild this pipeline); (b) when
-  # build-molecule-images runs in the same pipeline its dotenv artifact
-  # overrides this with the SHA-digest-pinned reference (hot path —
-  # protects against retagging races).
+  # Pre-built CI runner image (docker-cli + molecule + ansible + collections
+  # baked in) — saves ~2 min of apt/pip/galaxy per job vs python:3.11.
+  # `image:` only supports single-var expansion ($VAR), not bash defaults, so
+  # the :latest fallback lives in the variables block below; the build job's
+  # dotenv digest pin (above) overrides it on the hot path (anti-retag race).
   image: $MOLECULE_CI_IMAGE
   services:
     - docker:24.0-dind
@@ -1149,14 +1186,19 @@ molecule-tests:
     # storm); destroy + a randomized 15-45s sleep de-conflicts the
     # restart instead. $RANDOM is per-shell and the runner pod start
     # times differ, so the jitter genuinely spreads.
+    # The default scenarios inherit shared config from ansible/molecule/base.yml
+    # via -c; the self-contained non-default scenarios (k3s/agent,
+    # resolv_conf/empty-search) keep their full molecule.yml and get no -c.
     - |
+      base_opt=""
+      [ "$SCENARIO" = "default" ] && base_opt="-c $CI_PROJECT_DIR/ansible/molecule/base.yml"
       attempt=1; max=3
-      until molecule test -s "$SCENARIO"; do
+      until molecule $base_opt test -s "$SCENARIO"; do
         rc=$?
         attempt=$((attempt+1))
         if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
         echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
-        molecule destroy -s "$SCENARIO" || true
+        molecule $base_opt destroy -s "$SCENARIO" || true
         sleep $(( (RANDOM % 31) + 15 ))
       done
   parallel:
@@ -1215,13 +1257,13 @@ molecule-tests:
         SCENARIO: default
       - ROLE: unbound_exporter
         SCENARIO: default
-      # zvol_mount uses loop devices in prepare; works under privileged DinD.
       - ROLE: node_exporter_host
         SCENARIO: default
       - ROLE: resolv_conf
         SCENARIO: default
       - ROLE: resolv_conf
         SCENARIO: empty-search
+      # zvol_mount uses loop devices in prepare; works under privileged DinD.
       - ROLE: zvol_mount
         SCENARIO: default
       - ROLE: proxmox_firewall
@@ -1245,11 +1287,13 @@ molecule-tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - ansible/roles/**/*
+        - ansible/molecule/**/*
         - ansible/playbooks/**/*
         - ansible/inventories/prod/group_vars/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - ansible/roles/**/*
+        - ansible/molecule/**/*
         - ansible/playbooks/**/*
         - ansible/inventories/prod/group_vars/**/*
     - if: '$CI_PIPELINE_SOURCE == "web"'
@@ -1406,14 +1450,18 @@ validation-gate:
       fi
     - echo "All applicable checks passed - deploy jobs may proceed"
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ============================================================================
 # DEPLOY STAGE - Auto-deploy on merge to main
+#
+# Each Ansible deploy job sets a per-job resource_group so GitLab serializes it
+# across pipelines (two rapid pushes to main can't run the same Ansible play
+# against the same hosts at once). Per-job (not one shared group) keeps
+# within-pipeline parallelism: jobs targeting different hosts still run
+# concurrently. (deploy-terraform relies on its HTTP state lock instead; the
+# read-only deploy-verify job needs no serialization.)
 # ============================================================================
 
 # ------------------------------------------------------------------------------
@@ -1421,20 +1469,12 @@ validation-gate:
 # ------------------------------------------------------------------------------
 
 deploy-terraform:
+  extends: .terraform-http-backend
   stage: deploy
   interruptible: false
   image:
     name: hashicorp/terraform:1.15
     entrypoint: [""]
-  variables:
-    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
-    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_USERNAME: "gitlab-ci-token"
-    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
-    TF_HTTP_LOCK_METHOD: "POST"
-    TF_HTTP_UNLOCK_METHOD: "DELETE"
-    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: validation-gate
     - job: terraform-plan
@@ -1453,10 +1493,7 @@ deploy-terraform:
   environment:
     name: production/cloudflare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - terraform/**/*
@@ -1468,6 +1505,7 @@ deploy-terraform:
 deploy-ansible-base:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-base
   needs:
     - job: validation-gate
   variables:
@@ -1486,10 +1524,7 @@ deploy-ansible-base:
   environment:
     name: production/ansible-base
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/base/**/*
@@ -1512,6 +1547,7 @@ deploy-ansible-base:
 deploy-ansible-proxmox:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-proxmox
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
@@ -1529,10 +1565,7 @@ deploy-ansible-proxmox:
   environment:
     name: production/ansible-proxmox
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/qol/**/*
@@ -1542,6 +1575,7 @@ deploy-ansible-proxmox:
 deploy-ansible-firewall:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-firewall
   needs:
     - job: validation-gate
     - job: deploy-ansible-proxmox
@@ -1553,10 +1587,7 @@ deploy-ansible-firewall:
   environment:
     name: production/ansible-firewall
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/proxmox_firewall/**/*
@@ -1574,6 +1605,7 @@ deploy-ansible-firewall:
 deploy-ansible-dns:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-dns
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
@@ -1592,10 +1624,7 @@ deploy-ansible-dns:
   environment:
     name: production/ansible-dns
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/unbound/**/*
@@ -1622,6 +1651,7 @@ deploy-ansible-dns:
 deploy-ansible-storage:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-storage
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
@@ -1635,10 +1665,7 @@ deploy-ansible-storage:
   environment:
     name: production/ansible-storage
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/nas_storage/**/*
@@ -1657,6 +1684,7 @@ deploy-ansible-storage:
 deploy-ansible-mail:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-mail
   needs:
     - job: validation-gate
     - job: deploy-ansible-dns
@@ -1675,10 +1703,7 @@ deploy-ansible-mail:
   environment:
     name: production/ansible-mail
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/smtp_relay/**/*
@@ -1691,6 +1716,7 @@ deploy-ansible-mail:
 deploy-ansible-certs:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-ansible-certs
   needs:
     - job: validation-gate
     - job: deploy-ansible-dns
@@ -1718,10 +1744,7 @@ deploy-ansible-certs:
   environment:
     name: production/ansible-certs
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/acme_certs/**/*
@@ -1737,6 +1760,7 @@ deploy-ansible-certs:
 deploy-plex:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-plex
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
@@ -1759,10 +1783,7 @@ deploy-plex:
   environment:
     name: production/plex
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/plex/**/*
@@ -1772,6 +1793,7 @@ deploy-plex:
 deploy-gitlab:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-gitlab
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
@@ -1817,10 +1839,7 @@ deploy-gitlab:
   environment:
     name: production/gitlab
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/gitlab/**/*
@@ -1838,6 +1857,7 @@ deploy-gitlab:
 deploy-home-assistant-config:
   stage: deploy
   extends: .deploy-base
+  resource_group: deploy-home-assistant-config
   needs:
     - job: validation-gate
     - job: deploy-ansible-base
@@ -1855,10 +1875,7 @@ deploy-home-assistant-config:
   environment:
     name: production/home-assistant
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/home_assistant/**/*
@@ -1981,8 +1998,8 @@ deploy-verify:
       # extends .k3s-deploy-base (kubectl + jq only), so we install them here.
       apt-get install -y -qq gettext-base > /dev/null 2>&1
       pip install --quiet pyyaml
-      curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz -o /tmp/kustomize.tar.gz
-      echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  /tmp/kustomize.tar.gz" | sha256sum -c -
+      curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
+      echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c -
       tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
 
       # Bounded retry helper for transient startup states.
@@ -2414,6 +2431,15 @@ deploy-verify:
     - !reference [deploy-plex, rules]
     - !reference [deploy-gitlab, rules]
     - !reference [deploy-home-assistant-config, rules]
+    # Flux-only changes (kubernetes/ manifests with no Ansible or all.yml edit)
+    # match none of the deploy-* rules above, so the live Flux reconcile +
+    # server-side dry-run below would never run for the most common GitOps
+    # change. Trigger verify directly on kubernetes/ edits. schedule/web are
+    # already excluded by the when:never guards in the referenced blocks
+    # (rules are first-match-wins, and those guards come first).
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - kubernetes/**/*
   # No allow_failure: the verification explicitly fails if nodes aren't Ready,
   # Flux reconciliation times out, any Flux resource is not Ready, server-side
   # dry-run rejects manifests, or GitLab is unreachable. ExternalSecret
@@ -2433,9 +2459,6 @@ deploy-verify:
 #   5. proxmox-ha            — HA rules (rarely changes)
 #   6. home-assistant-restart — Only when needed
 #   7. verify                — Always last
-#
-# NOTE: maintenance-update-full removed from CI — superseded by
-# update-packages + update-applications. Taskfile version kept for local use.
 # ============================================================================
 
 # 1. OS package updates - MANUAL (all hosts, auto-reboot in CI)
@@ -2452,10 +2475,7 @@ maintenance-update-packages:
     name: production/maintenance-packages
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
@@ -2480,10 +2500,7 @@ maintenance-update-applications:
     name: production/maintenance-applications
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
@@ -2503,10 +2520,7 @@ maintenance-update-k3s-nodes:
     name: production/k3s-nodes
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
@@ -2519,6 +2533,9 @@ maintenance-k3s-provision:
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
+    # K3S_AGENT_TOKEN intentionally omitted — opt-in (op run hard-fails on a
+    # missing item). To enable the lower-privilege agent token, create the item
+    # and add it here. See docs/19 "Agent token".
   script:
     - cd ansible
     # k3s-provision is two playbooks; chain them inside `bash -c` so the
@@ -2532,10 +2549,7 @@ maintenance-k3s-provision:
     name: production/k3s-provision
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
@@ -2557,10 +2571,7 @@ maintenance-proxmox-ha:
     name: production/proxmox-ha
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
@@ -2578,10 +2589,7 @@ maintenance-home-assistant-restart:
     name: production/home-assistant-restart
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true
@@ -2611,10 +2619,7 @@ maintenance-run-all:
     name: production/maintenance-run-all
     action: prepare
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       # GitLab quirk: rules-based `when: manual` defaults to
@@ -2639,10 +2644,7 @@ maintenance-verify:
   script:
     - bash scripts/post-maintenance-verify.sh
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: never
+    - !reference [.skip-schedule-web, rules]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       when: manual
       allow_failure: true

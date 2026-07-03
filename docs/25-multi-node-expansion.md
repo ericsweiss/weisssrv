@@ -202,7 +202,7 @@ Storage can be overridden per-VM/container by setting `proxmox_storage` or `lxc_
 4. **lz4 for VMs**: Low-latency compression (~10x faster decompression than zstd, near-zero CPU overhead)
 
 **Current Storage Layout**:
-- pve-nas-01: Uses `ssd` pool for containers (plex), `local-lvm` for VMs (k3s server/agent)
+- pve-nas-01: `local-lvm` holds the Plex container root and the k3s VM roots (server/agent); the `ssd` pool holds the GitLab VM root, the k3s-agt-nas-01 passthrough zvols (postgres/mealie/prometheus/loki), and the Plex `/config` bind mount
 - All compute nodes (pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01): Use `local-ssd` for all VM/container workloads
 
 ### Prerequisites

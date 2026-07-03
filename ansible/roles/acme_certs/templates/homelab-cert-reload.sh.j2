@@ -23,8 +23,19 @@ PROM_TARGET_FILE="${PROM_DIR}/cert_distribution_targets.prom"
 
 write_prom_metrics() {
   local success="$1" duration="$2"
-  local ts
+  local ts notafter_epoch=""
   ts="$(date +%s)"
+  # Compute the cert's real notAfter BEFORE the redirected block below, so a parse
+  # warning reaches real stderr (the block sends stderr to /dev/null). Compute it
+  # on BOTH success and failure: expiry is a property of the on-disk cert, not of
+  # this run, so a FAILED distribution run must still emit it — otherwise the
+  # metric drops from the file and CertExpiringSoon's absent(cert_local_expiry...)
+  # clause false-fires even though the cert itself is fine. It's omitted only when
+  # the local cert is genuinely missing/unparseable (which SHOULD alert). Alerting
+  # tracks actual expiry, not time-since-renewal (acme.sh renews ~60d apart, so a
+  # staleness proxy on the renewal timestamp false-fires for most of a cycle).
+  notafter_epoch="$(date -d "$(openssl x509 -enddate -noout -in "$FULLCHAIN_SRC" 2>/dev/null | cut -d= -f2)" +%s 2>/dev/null || true)"
+  [ -n "$notafter_epoch" ] || echo "warning: could not parse cert notAfter; cert_local_expiry_timestamp_seconds omitted" >&2
   local tmp="${PROM_FILE}.$$"
   {
     echo "# HELP cert_renewal_last_run_duration_seconds Duration of last cert renewal run"
@@ -33,6 +44,13 @@ write_prom_metrics() {
     echo "# HELP cert_renewal_last_run_success Whether the last cert renewal succeeded (1=success, 0=failure)"
     echo "# TYPE cert_renewal_last_run_success gauge"
     echo "cert_renewal_last_run_success ${success}"
+    # Expiry: emitted on success AND failure (see the notAfter comment above) so a
+    # failed run doesn't drop it and false-fire CertExpiringSoon's absent() clause.
+    if [ -n "$notafter_epoch" ]; then
+      echo "# HELP cert_local_expiry_timestamp_seconds Unix timestamp of the distributed wildcard cert's notAfter"
+      echo "# TYPE cert_local_expiry_timestamp_seconds gauge"
+      echo "cert_local_expiry_timestamp_seconds ${notafter_epoch}"
+    fi
     if [ "$success" -eq 1 ]; then
       echo "# HELP cert_renewal_last_success_timestamp_seconds Unix timestamp of last successful cert renewal"
       echo "# TYPE cert_renewal_last_success_timestamp_seconds gauge"
@@ -116,6 +134,48 @@ push_target() {
           owner="$7" group="$8" cert_mode="$9" key_mode="${10}" \
           reload_cmd="${11}"
 
+    # Skip the push+reload only when this exact cert was ALREADY SUCCESSFULLY
+    # APPLIED — tracked by a per-target marker written after the reload succeeds
+    # (see end of this function), NOT by the on-disk fullchain.pem. Gating on the
+    # cert file alone would skip a target that received the cert but whose reload
+    # FAILED: the cert is copied before the reload runs, so the file would already
+    # match and the failed reload would never retry. The proactive Ansible path
+    # runs every deploy; this guard stops re-firing the reload commands (HAOS
+    # `ha core restart`, Plex/AdGuard/postfix/tlshd restarts) when nothing
+    # changed. acme.sh's own --reloadcmd path differs on renewal and pushes as
+    # before; a missing/stale marker or unreachable target falls through to the
+    # full push below (the first run after this change re-applies once per target).
+    # Skip only when the applied marker matches AND both remote cert files still
+    # exist and hash-match the local source. A stale .applied-fullchain.sha256 — or
+    # a deleted/corrupted/manually-replaced fullchain.pem OR privkey.pem — must NOT
+    # be treated as unchanged and suppress the self-healing re-push. Read the marker
+    # plus the live remote fullchain AND privkey hashes (a missing/mismatched file
+    # leaves its hash empty/different and falls through to the push below).
+    local local_hash local_key_hash applied_hash remote_hash remote_key_hash
+    local_hash=$(sha256sum "$FULLCHAIN_SRC" | cut -d' ' -f1)
+    local_key_hash=$(sha256sum "$PRIVKEY_SRC" | cut -d' ' -f1)
+    if ! applied_hash=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+            "${sudo_prefix}cat \"${cert_dir}/.applied-fullchain.sha256\" 2>/dev/null"); then
+        applied_hash=""
+    fi
+    applied_hash=$(printf '%s' "$applied_hash" | tr -d '[:space:]')
+    if ! remote_hash=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+            "${sudo_prefix}sha256sum \"${cert_dir}/fullchain.pem\" 2>/dev/null | cut -d' ' -f1"); then
+        remote_hash=""
+    fi
+    remote_hash=$(printf '%s' "$remote_hash" | tr -d '[:space:]')
+    if ! remote_key_hash=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+            "${sudo_prefix}sha256sum \"${cert_dir}/privkey.pem\" 2>/dev/null | cut -d' ' -f1"); then
+        remote_key_hash=""
+    fi
+    remote_key_hash=$(printf '%s' "$remote_key_hash" | tr -d '[:space:]')
+    if [[ -n "$applied_hash" && "$applied_hash" == "$local_hash" \
+          && "$remote_hash" == "$local_hash" && "$remote_key_hash" == "$local_key_hash" ]]; then
+        write_target_metric "$host" 1
+        echo "unchanged: ${host}"
+        return
+    fi
+
     # Stage into a per-run, 0700 mktemp dir under /tmp on the target
     # instead of scp-ing privkey.pem into world-readable /tmp directly —
     # avoids a window where the unencrypted wildcard key is readable by
@@ -180,7 +240,8 @@ push_target() {
              && ${sudo_prefix}chmod \"${cert_mode}\" \"${cert_dir}/fullchain.pem\" \
              && ${sudo_prefix}chmod \"${key_mode}\" \"${cert_dir}/privkey.pem\" \
              && ${sudo_prefix}rm -rf \"${stage}\" \
-             && ${reload_cmd}"; then
+             && ${reload_cmd} \
+             && printf '%s' '${local_hash}' | ${sudo_prefix}tee \"${cert_dir}/.applied-fullchain.sha256\" >/dev/null"; then
         echo "FAIL: remote install/reload on ${host} failed" >&2
         # Best-effort cleanup if the mv failed mid-step.
         ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
@@ -223,13 +284,25 @@ push_target \
 {% endfor %}
 
 # Local: restart AdGuard on dns-01 last, so a local AdGuard config
-# regression doesn't abort distribution to remote hosts.
-if ! systemctl restart AdGuardHome; then
+# regression doesn't abort distribution to remote hosts. Skip the restart
+# when the local cert is unchanged from the one AdGuard last loaded — the
+# proactive Ansible path runs this script on every deploy. Verify the installed
+# fullchain AND privkey are present (and the hash non-empty) before skipping,
+# mirroring the remote-target guard: a deleted/unreadable local cert or key must
+# restart AdGuard to self-heal, not be silently treated as unchanged.
+LOCAL_APPLIED_HASH_FILE="{{ local_cert_dir }}/.applied-fullchain.sha256"
+_local_hash=$(sha256sum "$FULLCHAIN_SRC" 2>/dev/null | cut -d' ' -f1)
+if [[ -r "$LOCAL_APPLIED_HASH_FILE" && -r "$FULLCHAIN_SRC" && -r "$PRIVKEY_SRC" && -n "$_local_hash" \
+      && "$(cat "$LOCAL_APPLIED_HASH_FILE")" == "$_local_hash" ]]; then
+    echo "unchanged: dns-01 (local AdGuard)"
+    write_target_metric "dns-01" 1
+elif systemctl restart AdGuardHome; then
+    printf '%s\n' "$_local_hash" > "$LOCAL_APPLIED_HASH_FILE" 2>/dev/null || true
+    write_target_metric "dns-01" 1
+else
     echo "FAIL: local AdGuardHome restart failed" >&2
     write_target_metric "dns-01" 0
     ANY_FAIL=1
-else
-    write_target_metric "dns-01" 1
 fi
 
 flush_target_metrics

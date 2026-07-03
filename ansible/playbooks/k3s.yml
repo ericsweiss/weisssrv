@@ -71,6 +71,6 @@
 
           Next steps:
           1. Get kubeconfig: task k3s:kubeconfig
-          2. Deploy MetalLB for LoadBalancer services
-          3. Deploy Traefik ingress controller
-          4. Deploy external-dns for automatic DNS management
+          2. Platform controllers (MetalLB, Traefik, external-dns) and apps
+             reconcile automatically via Flux from kubernetes/ — run
+             task flux:status to watch.

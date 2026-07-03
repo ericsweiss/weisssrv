@@ -13,7 +13,6 @@
       loop:
         - curl
         - openssl
-        - socat
 
     - name: Check if eric .ssh directory exists
       ansible.builtin.stat:
@@ -101,7 +100,7 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "acme.sh dependencies installed (curl, openssl, socat)"
+          - "acme.sh dependencies installed (curl, openssl)"
           - "eric .ssh directory created with correct permissions (0700)"
           - "SSH private key deployed for cert distribution (0600)"
           - "SSH public key deployed for cert distribution (0644)"

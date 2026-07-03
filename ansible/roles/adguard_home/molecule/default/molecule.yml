@@ -1,11 +1,9 @@
 ---
-# Molecule configuration for adguard_home role testing
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: adguard-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -24,65 +22,25 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        adguard_home_version: "0.107.71"
+        adguard_home_version: 0.107.71
         adguard_user: adguard
         adguard_group: adguard
         adguard_install_path: /opt/AdGuardHome
         adguard_cert_path: /opt/AdGuardHome/certs
         adguard_http_port: 3000
         adguard_dns_port: 53
-        adguard_admin_password: "testpassword123"
-        # Note: adguard_admin_password_hash not needed since skip_adguard_api_config: true
-        # Bcrypt hashes contain dollar signs which Molecule interprets as env var placeholders
+        adguard_admin_password: testpassword123
         adguard_protection_enabled: true
         adguard_upstream_dns:
-          - "127.0.0.1:5335"
+          - 127.0.0.1:5335
         adguard_enable_dnssec: true
         internal_domain: test.local
         skip_ssh_config: true
         skip_dns_config: true
         skip_adguard_api_config: true
-        # COVERAGE GAP: resolv.conf update path is not tested in molecule
-        # Docker containers have /etc/resolv.conf as a bind mount that cannot be replaced.
-        # This is a Docker limitation - the resolv.conf tasks use standard Ansible modules
-        # (template, command) that are well-tested. The idempotence logic uses the same
-        # pattern as the base role's dns.yml which is tested in integration tests.
-        # Testing this path would require a VM-based molecule driver (vagrant, ec2, etc.)
-        # which adds significant complexity for minimal benefit.
         skip_resolv_conf_update: true
-        # Disable PrivateTmp in systemd service for Docker container compatibility
         adguard_use_private_tmp: false
-        # Disable ProtectSystem in systemd service for Docker container compatibility
         adguard_use_protect_system: false
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

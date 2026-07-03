@@ -1,22 +1,9 @@
 ---
-# Molecule scenario for nfs_tls role.
-#
-# Validates the role's deploy contract — ktls-utils package install, cert
-# preflight assertion, /etc/tlshd.conf template render, and tlshd.service
-# enable — without exercising actual TLS handshakes (no kernel TLS netlink
-# in the test container, no real NFS server/client over xprtsec=tls).
-#
-# A drop-in override (`prepare.yml`) replaces tlshd's ExecStart with
-# /bin/true so the role's `state: started` step succeeds in a container
-# that lacks the AF_TLSH netlink subsystem; verify.yml therefore checks
-# unit recognition (`systemctl cat`) and config + package state, not a
-# live tlshd handshake.
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: nfs-tls-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -32,45 +19,8 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # Force the role's internal `nfs_tls_enabled | default(false)` guards
-        # to fire — without this, every task is a no-op and we'd be testing
-        # nothing.
         nfs_tls_enabled: true
-        # Exercise the NFS-server render (matches pve-nas-01): server block
-        # with cert + private key. nfs_tls_client_cert is left at its default
-        # (false) so the [authenticate.client] block omits the private key —
-        # verify.yml asserts privkey appears exactly once (server only),
-        # proving the least-privilege client render under xprtsec=tls.
         nfs_tls_is_server: true
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

@@ -7,7 +7,7 @@ Installs and configures shell and editor tooling. Sets up zsh with Oh My Zsh, Ne
 ### Shell Configuration
 - Zsh installation and set as default shell
 - Oh My Zsh framework with Risto theme
-- 20 Oh My Zsh plugins:
+- 15 Oh My Zsh plugins:
   - Development: ansible, docker, docker-compose, kubectl, terraform, golang, vscode
   - Productivity: git, fzf, tmux, rsync, systemd
   - Utilities: 1password, command-not-found, dotenv
@@ -41,7 +41,7 @@ admin_user: eric
 # Oh My Zsh theme
 omz_theme: risto
 
-# Oh My Zsh plugins (20 total)
+# Oh My Zsh plugins (15 total)
 omz_plugins:
   - 1password
   - ansible
@@ -85,6 +85,11 @@ nvim_plugins:
   - preservim/nerdtree
   - airblade/vim-gitgutter
 ```
+
+Only OMZ-bundled plugins are supported in `omz_plugins` — the role templates
+the `plugins=()` array but does not clone external plugins (e.g.
+`zsh-autosuggestions`), so listing one would emit "plugin not found" at shell
+startup.
 
 ## Deployment
 

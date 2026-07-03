@@ -109,6 +109,7 @@
     name: "plexmediaserver={{ plex_version }}"
     state: present
     allow_downgrade: true
+    allow_change_held_packages: true
   when: plex_version != 'latest'
   notify: Restart plex
 
@@ -116,8 +117,27 @@
   ansible.builtin.apt:
     name: plexmediaserver
     state: latest
+    allow_change_held_packages: true
   when: plex_version == 'latest'
   notify: Restart plex
+
+# Hold the package at the pinned version so a manual `apt upgrade` on the LXC
+# can't move Plex past it (the Plex repo continuously serves newer builds).
+# Mirrors the gitlab role. Not a handler: the install task is a no-op when the
+# pinned version is already present, so a handler would never fire on a re-run.
+- name: Hold Plex package to prevent unintended upgrades
+  ansible.builtin.dpkg_selections:
+    name: plexmediaserver
+    selection: hold
+  when: plex_version != 'latest'
+
+# In auto-update mode, ensure the package is not held (undo a prior pin) so
+# state: latest / apt upgrade can move it forward.
+- name: Unhold Plex package (auto-update mode)
+  ansible.builtin.dpkg_selections:
+    name: plexmediaserver
+    selection: install
+  when: plex_version == 'latest'
 
 - name: Verify Plex package version
   ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver

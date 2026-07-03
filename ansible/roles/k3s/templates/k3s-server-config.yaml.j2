@@ -22,10 +22,29 @@ tls-san:
   - "{{ inventory_hostname }}"
   - "{{ ansible_host }}"
 
+# Node labels/taints applied declaratively at registration (k3s passes these to
+# the kubelet's register-with-taints). The control-plane NoSchedule taint is
+# therefore enforced the moment the server joins, closing the window where a
+# workload could land on an etcd node before the post-join kubectl step. server.yml
+# still re-asserts these via kubectl for already-registered nodes (agent path).
+{% if k3s_labels | length > 0 %}
+node-label:
+{% for key, value in k3s_labels.items() %}
+  - "{{ key }}={{ value }}"
+{% endfor %}
+{% endif %}
+
+{% if k3s_taints | length > 0 %}
+node-taint:
+{% for taint in k3s_taints %}
+  - "{{ taint.key }}={{ taint.value }}:{{ taint.effect }}"
+{% endfor %}
+{% endif %}
+
 # CNI backend. wireguard-native enables WireGuard encryption on every
 # cross-node pod packet (UDP/51820); set to vxlan to roll back. See
 # group_vars/k3s.yml for the full rationale and rollout caveats.
-flannel-backend: "{{ k3s_flannel_backend | default('wireguard-native') }}"
+flannel-backend: "{{ k3s_flannel_backend }}"
 
 {% if k3s_is_first_server | default(false) %}
 # Enable embedded etcd for HA (first server initializes the cluster)
@@ -36,6 +55,12 @@ server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
 {% endif %}
 
 write-kubeconfig-mode: "0600"
+
+# Lower-privilege token for agent (worker) joins. Agents authenticate with this
+# instead of the server token, so a compromised agent can't register a
+# control-plane node or pull the cluster CA. Defaults to the server token until a
+# dedicated K3S_AGENT_TOKEN is provisioned (see group_vars/k3s.yml).
+agent-token: "{{ k3s_agent_token }}"
 
 # Encrypt secrets at rest in etcd
 # For existing clusters: after enabling, run on a server node:

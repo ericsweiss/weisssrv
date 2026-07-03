@@ -251,7 +251,13 @@
   when:
     - not (skip_gitlab_install | default(false))
 
-# Check if keyring already exists (needed for conditional dearmor)
+# The keyring (/usr/share/keyrings/gitlab-ee.gpg) is the persistent artifact;
+# gate the whole download -> verify -> dearmor -> cleanup sequence on its
+# absence so the role stays idempotent. Without this gate, the cleanup task
+# below deletes the temp key, which makes get_url re-download (changed) and the
+# cleanup re-delete (changed) on every subsequent run. Key rotation is handled
+# by deleting the keyring first (the "Remove old GitLab keyring files" task
+# already clears the legacy .asc form).
 - name: Check if GitLab keyring exists
   ansible.builtin.stat:
     path: /usr/share/keyrings/gitlab-ee.gpg
@@ -264,12 +270,9 @@
     url: https://packages.gitlab.com/gpg.key
     dest: /tmp/gitlab-ee.asc
     mode: '0644'
-    # Force download to check for key rotation
-    # The checksum comparison happens automatically by get_url
-    force: true
-  register: gitlab_gpg_key_download
   when:
     - not (skip_gitlab_install | default(false))
+    - not (gitlab_keyring_exists.stat.exists | default(false))
 
 - name: Verify GitLab GPG key fingerprint (primary key must match exactly)
   ansible.builtin.shell: |
@@ -284,17 +287,19 @@
   changed_when: false
   when:
     - not (skip_gitlab_install | default(false))
+    - not (gitlab_keyring_exists.stat.exists | default(false))
 
-# Dearmor the key for compatibility with all Debian/apt configurations
-# Binary .gpg format is preferred over ASCII .asc for signed-by
-# Re-run when the downloaded key changes (handles key rotation)
+# Dearmor the key for compatibility with all Debian/apt configurations.
+# Binary .gpg format is preferred over ASCII .asc for signed-by. Only runs
+# when the keyring is absent (rotation: delete the keyring first).
 - name: Convert GPG key to binary format
   ansible.builtin.shell: |
     gpg --yes --dearmor -o /usr/share/keyrings/gitlab-ee.gpg < /tmp/gitlab-ee.asc
+  args:
+    creates: /usr/share/keyrings/gitlab-ee.gpg
   when:
     - not (skip_gitlab_install | default(false))
-    - gitlab_gpg_key_download.changed | default(false) or not (gitlab_keyring_exists.stat.exists | default(false))
-  changed_when: true
+    - not (gitlab_keyring_exists.stat.exists | default(false))
 
 - name: Set permissions on GPG keyring
   ansible.builtin.file:
@@ -309,6 +314,7 @@
     state: absent
   when:
     - not (skip_gitlab_install | default(false))
+    - not (gitlab_keyring_exists.stat.exists | default(false))
 
 - name: Add GitLab EE repository
   ansible.builtin.apt_repository:
@@ -321,6 +327,10 @@
 # Install or upgrade GitLab EE to the pinned version. allow_change_held_packages
 # upgrades through the apt hold without the old unhold/hold cycle (which
 # reported changed every run and briefly left the package unheld).
+# allow_downgrade is deliberately NOT set: GitLab Omnibus does not support
+# downgrades (older code/migrations against a newer-schema DB can corrupt it),
+# so a lower gitlab_version fails the apt task instead of silently downgrading.
+# A deliberate downgrade must be a manual, backup-first operation.
 # EXTERNAL_URL and GITLAB_ROOT_PASSWORD are only used during initial install
 # and are safely ignored on upgrades (existing config is preserved)
 - name: Install/upgrade GitLab EE (pinned version)
@@ -328,7 +338,6 @@
     name: "gitlab-ee={{ gitlab_version }}"
     state: present
     update_cache: true
-    allow_downgrade: true
     allow_change_held_packages: true
   environment:
     EXTERNAL_URL: "{{ gitlab_external_url }}"

@@ -4,15 +4,17 @@
 # the hood) via the passthrough in `.gitlab/secret-detection-ruleset.toml`.
 #
 # Scope of exclusions (see `paths` and `regexes` blocks below):
-#   - `docs/*.md` and `ansible/roles/*/molecule/*` are scanned with default
-#     rules but suppressed via PATH allowlist. Both trees are full of
-#     placeholder-shaped strings (bracketed examples, fixture credentials)
-#     that gitleaks's defaults flag heavily. Trade-off: a real secret
-#     committed under either path won't be caught here — but those trees
-#     are operator-authored and reviewed independently, and the
-#     `regexes` content patterns below still silence the most common
-#     false-positives outside those paths (1Password op:// refs, doc
-#     placeholders like `[your-...]`, anchored molecule fixture tokens).
+#   - `docs/*.md` is scanned normally — the `regexes` content allowlist below
+#     covers the placeholder shapes docs use (1Password op:// refs, doc
+#     placeholders like `[your-...]`), so the whole tree no longer needs a PATH
+#     exclusion and a real secret committed under docs/ is still caught.
+#   - The molecule trees (`ansible/roles/*/molecule/*`,
+#     `ansible/integration-tests/*/molecule/*`) ARE excluded via PATH allowlist:
+#     several scenarios generate throwaway PEM private keys inline (acme_certs,
+#     nfs_tls, the cert/mail integration tests) that trip gitleaks's
+#     `private-key` rule and cannot be safely anchored by a content regex.
+#     Trade-off: a real secret committed under a molecule path won't be caught
+#     here, but those fixtures are operator-authored and reviewed independently.
 #
 # `useDefault = true` is REQUIRED — without it gitleaks loads only the rules
 # defined in this file (which has none), disabling all detection.
@@ -29,9 +31,8 @@ regexes = [
   '''op://[A-Za-z0-9_ /-]+''',
   # Documentation placeholders like [your-cloudflare-api-token].
   '''\[your-[a-z0-9-]+\]''',
-  # Molecule fixtures — anchored at start of token so a real secret prefixed
-  # with "prodtestkey_…" or similar can't be silenced. Combined with the
-  # `paths` allowlist below this is also scoped to molecule/doc trees.
+  # Test/fixture tokens — anchored at start of token so a real secret prefixed
+  # with "prodtestkey_…" or similar can't be silenced.
   '''^(test|fake|dummy|example)[-_]?(password|token|key|secret)[A-Za-z0-9_-]*''',
   # acme_certs molecule generates a throwaway ed25519 keypair labelled
   # "kest-ssh-key-for-molecule-testing"; allow the comment marker.
@@ -42,9 +43,7 @@ paths = [
   # Generated cluster snapshots (gitignored, but never trip on a stray copy).
   '''CLUSTER_STATUS\.txt''',
   '''cluster-state-.*\.txt''',
-  # Molecule fixture files always carry placeholder credentials.
+  # Molecule fixtures generate throwaway PEM private keys inline (see header).
   '''ansible/roles/.*/molecule/.*''',
   '''ansible/integration-tests/.*/molecule/.*''',
-  # Doc walk-throughs use bracketed placeholders that look secret-shaped.
-  '''docs/.*\.md''',
 ]

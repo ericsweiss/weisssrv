@@ -11,7 +11,8 @@ terraform {
   required_providers {
     cloudflare = {
       source = "cloudflare/cloudflare"
-      # Patch-floating pin: minor bumps are deliberate (v4 minors have shipped
+      # Patch-floating pin (~> 4.52.0 = >= 4.52.0, < 4.53.0): patches float, but a
+      # minor bump must be a deliberate edit here (v4 minors have shipped
       # schema/deprecation changes). v5 is a breaking rewrite — migrate explicitly.
       #
       # KNOWN MIGRATION DEBT (v4 -> v5): the v5 provider removed/renamed the
@@ -22,10 +23,9 @@ terraform {
       #     (different argument schema; `data {}` blocks for CAA become a
       #     typed `data` object)
       # Migrating means rewriting every resource above AND `terraform state mv`
-      # for each, so the ~> 4.52 pin defers it deliberately. Do NOT bump to v5
-      # incidentally — schedule it as its own change. Tracked in
-      # docs/16-next-steps.md.
-      version = "~> 4.52"
+      # for each, so the ~> 4.52.0 pin defers it deliberately. Do NOT bump to v5
+      # incidentally — schedule it as its own change.
+      version = "~> 4.52.0"
     }
   }
 }

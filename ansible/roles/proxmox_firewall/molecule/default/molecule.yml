@@ -1,16 +1,9 @@
 ---
-# Molecule scenario for proxmox_firewall.
-# Renders cluster.fw / host.fw / per-guest <vmid>.fw to a stub directory and
-# asserts the IPSets, security groups, and aliases derived from sample
-# inventory match expected values. pveum / pve-firewall systemd are bypassed
-# via pve_firewall_skip_pveum=true so the role can run in a Docker container
-# with no real Proxmox cluster.
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: proxmox-firewall-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -28,23 +21,9 @@ platforms:
     groups:
       - proxmox
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # Redirect template writes away from /etc/pve (FUSE-only on real Proxmox).
         pve_firewall_config_dir: /tmp/pve-firewall-test/firewall
         pve_firewall_node_dir: /tmp/pve-firewall-test/nodes
         pve_firewall_skip_pveum: true
@@ -54,26 +33,12 @@ provisioner:
               comment: k3s API VIP
     host_vars:
       proxmox-firewall-test:
-        # The role's ipsets template iterates `groups['all']` (which
-        # includes this molecule platform alongside the local-connection
-        # placeholder hosts) and reads pve_firewall_node_ip — which
-        # defaults to ansible_host. We can't set ansible_host here
-        # because molecule's docker connection plugin uses it as the
-        # container name (overriding it to an IP breaks `docker exec`
-        # with "No such container"). pve_firewall_node_ip lets the
-        # template render a realistic IP without disturbing the docker
-        # target.
         pve_firewall_node_ip: 192.168.0.102
         proxmox_role: nas
         firewall_ipsets:
           - pve_hosts
           - core-cluster
           - nfs_clients
-        # vmid 100 deliberately picked to NOT collide with dns-01 (150)
-        # or smtp-relay (151) — the guest.fw template embeds the host
-        # name, so two hosts writing the same <vmid>.fw via delegate_to
-        # the same target fight each other every converge and break
-        # idempotence.
         vmid: 100
         guest_security_groups:
           - sg-vm-admin
@@ -86,43 +51,45 @@ provisioner:
             ansible_host: 192.168.0.102
             ansible_connection: local
             proxmox_role: nas
-            firewall_ipsets: [pve_hosts, core-cluster, nfs_clients]
+            firewall_ipsets:
+              - pve_hosts
+              - core-cluster
+              - nfs_clients
           pve-laptop-01:
             ansible_host: 192.168.0.103
             ansible_connection: local
             proxmox_role: compute
-            firewall_ipsets: [pve_hosts, core-cluster, nfs_clients]
+            firewall_ipsets:
+              - pve_hosts
+              - core-cluster
+              - nfs_clients
           pve-opt-01:
             ansible_host: 192.168.0.104
             ansible_connection: local
             proxmox_role: compute
-            firewall_ipsets: [pve_hosts, core-cluster, nfs_clients]
+            firewall_ipsets:
+              - pve_hosts
+              - core-cluster
+              - nfs_clients
       dns:
         hosts:
           dns-01:
             ansible_host: 192.168.0.150
             ansible_connection: local
             vmid: 150
-            firewall_ipsets: [core-cluster]
-            guest_security_groups: [sg-vm-admin, sg-dns, sg-metrics]
+            firewall_ipsets:
+              - core-cluster
+            guest_security_groups:
+              - sg-vm-admin
+              - sg-dns
+              - sg-metrics
           smtp-relay:
             ansible_host: 192.168.0.151
             ansible_connection: local
             vmid: 151
-            firewall_ipsets: [core-cluster]
-            guest_security_groups: [sg-vm-admin, sg-smtp-relay, sg-metrics]
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy
+            firewall_ipsets:
+              - core-cluster
+            guest_security_groups:
+              - sg-vm-admin
+              - sg-smtp-relay
+              - sg-metrics

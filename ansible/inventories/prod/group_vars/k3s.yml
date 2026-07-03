@@ -6,8 +6,17 @@ k3s_cluster_name: esweiss-k3s
 k3s_api_vip: 192.168.0.161
 k3s_api_port: 6443
 
-# Node token (from 1Password at runtime)
-k3s_token: "{{ lookup('ansible.builtin.env', 'K3S_TOKEN', default='') }}"
+# Server (control-plane) token — grants the ability to join as a SERVER and pull
+# cluster CA material (from 1Password at runtime).
+k3s_token: "{{ lookup('ansible.builtin.env', 'K3S_TOKEN') or undef(hint='K3S_TOKEN env var must be set (run via op run)') }}"
+
+# Lower-privilege agent token. Agents join with this (worker-only), so a
+# compromised agent VM can't register a control-plane node or fetch the cluster
+# CA. Servers advertise it via `agent-token` in the server config. Falls back to
+# the server token when K3S_AGENT_TOKEN is unset, so this is non-breaking until a
+# dedicated token is provisioned (1Password item + env) in the agent-token
+# rollout — see docs/19-k3s-deployment.md.
+k3s_agent_token: "{{ lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN') or k3s_token }}"
 
 # Network configuration
 k3s_cluster_cidr: "10.42.0.0/16"
@@ -61,9 +70,11 @@ k3s_kubelet_args:
 
 # NFSv4-over-TLS: install + start tlshd on every k3s agent so a pod that
 # schedules to ANY agent can mount pve-nas-01's exports (/appdata, /share,
-# /media) with xprtsec=tls. Those exports are permissive (none:tls — accept
-# plaintext + TLS); the PVs drive the encrypted mount, by hostname
-# (pve-nas-01.esweiss.com, so the *.esweiss.com cert verifies). Set
+# /media) with xprtsec=tls. /appdata and /share require TLS (xprtsec=tls —
+# plaintext mounts are rejected); /media is require-TLS for the k3s client
+# lines too, with a permissive plaintext per-client exception only for HAOS
+# (.154). The PVs drive the mount by hostname (pve-nas-01.esweiss.com, so the
+# *.esweiss.com cert verifies). Set
 # group-wide rather than per-agent because the NFS-backed PVs (grafana,
 # *arr, recipes, downloads data) float across the cluster. The nfs_tls role
 # only runs on k3s_agents (playbooks/k3s.yml); on k3s servers this var is
@@ -79,12 +90,10 @@ metallb_internal_range: "192.168.0.101-192.168.0.101"
 # kube-vip configuration
 kube_vip_interface: "eth0"
 
-# Boot order configuration (k3s VMs boot after DNS at order 10)
-proxmox_startup_order: 30
-proxmox_startup_delay: 0
-
-# Proxmox resource pool for organization
-proxmox_resource_pool: platform
+# Boot order (DNS 10 -> SMTP 20 -> k3s servers 30 -> agents 40 -> apps 50) and
+# the `platform` resource pool are set per host in hosts.yml — servers and
+# agents use different orders, so a single group value would only ever be
+# shadowed. Driven entirely from host_vars to keep one source of truth.
 
 # VM and cloud-init defaults inherited from proxmox_vm role
 # Override in host_vars if needed (see hosts.yml for per-host resources)

@@ -13,5 +13,6 @@ galaxy_info:
       versions:
         - trixie
 
-dependencies:
-  - role: base
+# Dependencies are handled in the playbook, not in meta, to allow isolated
+# unit testing of this role. The plex playbook applies the base role first.
+dependencies: []

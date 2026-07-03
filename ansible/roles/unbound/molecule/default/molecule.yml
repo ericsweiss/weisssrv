@@ -1,11 +1,9 @@
 ---
-# Molecule configuration for unbound role testing
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: unbound-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -21,28 +19,14 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
         unbound_port: 5335
-        unbound_interface: "127.0.0.1"
+        unbound_interface: 127.0.0.1
         unbound_access_control:
-          - "127.0.0.0/8 allow"
-          - "::1 allow"
+          - 127.0.0.0/8 allow
+          - ::1 allow
         unbound_num_threads: 2
         unbound_msg_cache_size: 16m
         unbound_rrset_cache_size: 32m
@@ -54,24 +38,9 @@ provisioner:
         unbound_aggressive_nsec: true
         unbound_edns_buffer_size: 1232
         unbound_forwarders:
-          - addr: "1.1.1.1"
+          - addr: 1.1.1.1
             port: 853
-            name: "cloudflare-dns.com"
-          - addr: "8.8.8.8"
+            name: cloudflare-dns.com
+          - addr: 8.8.8.8
             port: 853
-            name: "dns.google"
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy
+            name: dns.google

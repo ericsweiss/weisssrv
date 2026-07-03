@@ -1,6 +1,12 @@
-# Python dependencies for Ansible and Molecule testing
-ansible>=11.0.0,<12.0.0
-molecule>=6.0.0
-molecule-plugins[docker]>=23.5.0
-ansible-lint>=25.0.0
-yamllint>=1.37.0
+# Python dependencies for Ansible and Molecule testing.
+#
+# Exact pins, not lower bounds: this file is COPYed and pip-installed to build
+# the molecule-ci CI image (docker/molecule-ci/Dockerfile), so a rebuild must be
+# reproducible and must not silently pull a new major. The ansible/ansible-lint
+# pins are kept in step with the inline pins in .gitlab-ci.yml (ANSIBLE_VERSION
+# + the lint job) so the molecule and lint jobs agree on those versions.
+ansible==11.6.0
+ansible-lint==25.12.2
+molecule==26.4.0
+molecule-plugins[docker]==25.8.12
+yamllint==1.38.0

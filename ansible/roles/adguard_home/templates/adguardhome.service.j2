@@ -3,6 +3,7 @@
 Description=AdGuard Home: Network-level blocker
 ConditionFileIsExecutable={{ adguard_install_path }}/AdGuardHome
 After=syslog.target network-online.target
+Wants=network-online.target
 
 # systemd honors the start-rate limit only in [Unit]; in [Service] it is
 # ignored (logged as a warning). With RestartSec=10 below, allow up to 5

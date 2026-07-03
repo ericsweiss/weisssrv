@@ -1,0 +1,310 @@
+---
+# qBittorrent - BitTorrent client with optional VPN sidecar
+# URL: qbittorrent.esweiss.com
+#
+# VPN Mode (vpn_enabled: "true"):
+#   - Gluetun sidecar provides VPN tunnel
+#   - Containers share network namespace for killswitch enforcement
+#   - If VPN dies, qBittorrent loses network (by design)
+#
+# Direct Mode (vpn_enabled: "false"):
+#   - qBittorrent runs without VPN
+#   - Direct internet access
+#
+# The shared Gluetun sidecar (container + check-vpn-config initContainer +
+# tun/vpn-config volumes + pod dnsConfig) is injected by the ../_vpn-sidecar
+# Kustomize Component (see kustomization.yaml). This file carries only the
+# qBittorrent-specific pieces (the clean-stale-locks initContainer, the
+# gluetun-exporter sidecar, the app container, and the PodMonitor).
+#
+# Switch modes: edit the qbittorrent-vpn-config ConfigMap below (vpn_enabled
+# and vpn_provider); see README.md § Per-App VPN Control.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qbittorrent-vpn-config
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+    app.kubernetes.io/component: config
+data:
+  # COUPLED WITH THE gluetun-exporter SIDECAR + PodMonitor BELOW. qbittorrent
+  # ships VPN-always-on, so the exporter and the VPNDown alert assume the VPN is
+  # up. If you set this to "false", gluetun sleeps, its control server stops
+  # listening, and the exporter reports gluetun_vpn_status=0 forever — VPNDown
+  # then pages permanently and falsely. So turning the VPN off here REQUIRES
+  # removing the gluetun-exporter container AND the gluetun-qbittorrent PodMonitor
+  # at the bottom of this file in the SAME edit (and vice-versa when re-enabling).
+  vpn_enabled: "true"
+  # VPN provider: "privado", "vpn unlimited"
+  vpn_provider: "privado"
+  # Server location (optional, provider-dependent)
+  server_countries: "Netherlands"
+
+---
+# Deployment. The Gluetun VPN sidecar (killswitch semantics: see file header /
+# README.md) is added by the ../_vpn-sidecar component.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qbittorrent
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+    app.kubernetes.io/component: download-client
+    app.kubernetes.io/part-of: media-stack
+  annotations:
+    # Track VPN state for observability
+    esweiss.com/vpn-mode: "sidecar"
+    # stakater/Reloader auto-restarts this Deployment when a ConfigMap/Secret it
+    # references changes (it auto-detects the qbittorrent-vpn-config ConfigMap
+    # mounted by the Gluetun sidecar). So editing vpn_enabled/vpn_provider +
+    # commit/push is enough — Flux reconciles the ConfigMap and Reloader rolls
+    # the pod; no manual `kubectl rollout restart` needed. Reloader runs in the
+    # `reloader` namespace (kubernetes/infrastructure/controllers/reloader/).
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qbittorrent
+        app.kubernetes.io/component: download-client
+    spec:
+      nodeSelector:
+        esweiss.com/nas: "true"
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      # qBittorrent flushes torrent state on shutdown; default 30s can leave
+      # corrupted resume data on slow NFS. 60s gives a clean exit margin.
+      terminationGracePeriodSeconds: 60
+
+      # Pod hardening: no container here talks to the kube-API. Only the
+      # universally-safe subset is applied at pod level — the gluetun sidecar
+      # needs NET_ADMIN (preserved in the component), the gluetun-exporter keeps
+      # its own tighter securityContext, and qbittorrent is a LinuxServer.io
+      # image (s6 + PUID/PGID) that starts as root to drop privileges, so
+      # per-container runAsNonRoot / drop-ALL / aPE:false are deliberately NOT
+      # set on it.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Init container verifies VPN prerequisites when VPN is enabled
+      initContainers:
+        # qBittorrent leaves a lockfile + IPC socket in /config/qBittorrent/
+        # when it shuts down ungracefully (SIGKILL from kubelet on probe
+        # timeout, node reboot, OOM, etc.). On the next start, qbittorrent
+        # detects the stale IPC socket as a "running" instance, gracefully
+        # terminates immediately, and the pod enters CrashLoopBackOff with
+        # the cycle "qBittorrent v5.2.1 started ... qBittorrent termination
+        # initiated" repeating every ~1s.
+        #
+        # Removing the stale files on every start is safe because the
+        # Deployment is single-replica with `Recreate` strategy, so no other
+        # qbittorrent pod is running when this initContainer executes. (The
+        # config PVC is `ReadWriteOnce`, but NFS-backed RWO is enforced
+        # per-node, not per-pod — don't rely on it as a lock.) If replicas>1,
+        # RollingUpdate, or an RWX PVC is ever introduced, this initContainer
+        # must be revisited because a live peer's lock could be deleted. The
+        # files are recreated on successful start.
+        #
+        # `rm -f` already silently ignores missing files (exit 0); we do
+        # NOT swallow other failures (e.g. EPERM from a bad subPath mount)
+        # so the initContainer fails loudly and the pod surfaces the real
+        # problem instead of looping into the same CrashLoopBackOff.
+        #
+        # Incident 2026-06-10: this stale-lock cycle blocked qbittorrent
+        # for 2 days until the lock was manually removed inside the pod;
+        # this initContainer keeps it from recurring after the next crash.
+        - name: clean-stale-locks
+          image: busybox:${busybox_version}
+          command:
+            - sh
+            - -ec
+            - rm -fv /config/qBittorrent/lockfile /config/qBittorrent/ipc-socket
+          volumeMounts:
+            - name: config
+              mountPath: /config
+
+      containers:
+        # Gluetun VPN-health exporter. Polls the gluetun control server on
+        # loopback (shares the pod network namespace) and serves a Prometheus
+        # gluetun_vpn_status gauge on :8002 (1 = running, 0 = stopped/unreachable,
+        # -1 = error, -2 = unknown). Scraped by the PodMonitor at the end of this
+        # file and alerted on by VPNDown (kube-prometheus-stack release.yaml).
+        #
+        # COUPLED WITH vpn_enabled IN THE ConfigMap ABOVE. The exporter's gauge
+        # defaults to 0 when the control server is unreachable, so it only makes
+        # sense while the VPN is on. If vpn_enabled is set to "false", gluetun
+        # runs `sleep infinity`, the control server stops listening, and this
+        # exporter reports gluetun_vpn_status=0 forever — VPNDown then pages
+        # permanently and falsely. So this sidecar AND the gluetun-qbittorrent
+        # PodMonitor below MUST be removed in the same edit that disables the VPN
+        # (and re-added when re-enabling it). Same reasoning is why nzbget — which
+        # ships VPN-off by default — carries neither; if nzbget's VPN is ever
+        # enabled, replicate this sidecar + PodMonitor there.
+        #
+        # No first-party gluetun exporter exists; thecfu/gluetun-exporter is a
+        # small MIT Go binary that only reads the control API over loopback.
+        # Pinned by immutable @sha256 digest (the 0.1.1-standalone tag) — same
+        # convention as plex-exporter — so an upstream tag move can't silently
+        # change the running image. Re-resolve the digest when bumping the tag.
+        # readOnlyRootFilesystem + drop ALL + no mounts + no extra egress keep
+        # the blast radius minimal for a low-profile third-party image.
+        - name: gluetun-exporter
+          image: ghcr.io/thecfu/gluetun-exporter:0.1.1-standalone@sha256:bafeabb2a9638bf6b0800c2d3d47d49c6236d879bd01eec8caea45dfca2b50c5
+          imagePullPolicy: IfNotPresent
+          env:
+            # Control server lives on :8001 here (not the exporter's :8000
+            # default); the exporter serves its own /metrics on EXPORTER_PORT.
+            - name: GLUETUN_URL
+              value: "http://127.0.0.1:8001"
+            - name: EXPORTER_PORT
+              value: "8002"
+            - name: EXPORTER_INTERVAL
+              value: "30"
+            # standalone build has no netlink throughput collection
+            - name: EXPORTER_BUNDLED
+              value: "false"
+          ports:
+            - name: vpn-metrics
+              containerPort: 8002
+              protocol: TCP
+          # Liveness only — never gate pod readiness on the exporter, so a
+          # scrape blip can't take qbittorrent out of rotation.
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: vpn-metrics
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        # Note: qBittorrent uses bare version tags (not version- prefixed like other LinuxServer images)
+        - name: qbittorrent
+          image: lscr.io/linuxserver/qbittorrent:${qbittorrent_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "2000"
+            - name: TZ
+              value: America/Los_Angeles
+            - name: UMASK
+              value: "002"
+            - name: WEBUI_PORT
+              value: "8080"
+            - name: TORRENTING_PORT
+              value: "6881"
+            # qBittorrent 5.2+ adds a non-interactive EULA-style legal
+            # notice — without `QBT_LEGAL_NOTICE=confirm` the daemon
+            # writes its prompt to stderr and exits immediately (looks
+            # like the "qBittorrent termination initiated" loop). LSIO
+            # forwards this env var to qbittorrent-nox.
+            - name: QBT_LEGAL_NOTICE
+              value: "confirm"
+          # Note: Ports are defined on gluetun sidecar (which owns the network namespace)
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: data
+              mountPath: /media/downloads
+              subPath: downloads
+
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: qbittorrent-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qbittorrent
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+spec:
+  selector:
+    app.kubernetes.io/name: qbittorrent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# Scrape the gluetun-exporter sidecar directly (PodMonitor, not ServiceMonitor):
+# the exporter port is pod-local and the app Service only fronts the UI. The
+# kube-prometheus-stack discovers PodMonitors cluster-wide. Prometheus reaching
+# :8002 requires the allow-observability-vpn-scrape NetworkPolicy in
+# networkpolicy.yaml (downloads is default-deny ingress).
+#
+# COUPLED WITH vpn_enabled + the gluetun-exporter sidecar above: remove this
+# PodMonitor in the same edit that disables the VPN, or VPNDown false-fires
+# permanently on the stopped exporter.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gluetun-qbittorrent
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: qbittorrent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  podMetricsEndpoints:
+    - port: vpn-metrics
+      path: /metrics
+      interval: 30s

@@ -6,3 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: gitlab
     app.kubernetes.io/managed-by: flux
+    # Routing objects only (IngressRoutes/Services/ServersTransport) — no pods
+    # live here, but keep the PSA baseline fail-closed in case one ever does.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

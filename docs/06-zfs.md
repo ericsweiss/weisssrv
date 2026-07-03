@@ -8,8 +8,8 @@ The NAS has four ZFS pools with different performance characteristics:
 
 | Pool | Type | Capacity | Use Case |
 |------|------|----------|----------|
-| `tank` | raidz2 (6x 22TB) + special device + cache | ~88TB usable (122TB raw) | Bulk media storage |
-| `ssd` | raidz1 (3x 4TB SSD) | 10.9TB | App data, databases |
+| `tank` | raidz2 (6x 22TB) + special device + cache | ~88TB usable (132TB raw) | Bulk media storage |
+| `ssd` | raidz1 (3x 4TB SSD) | ~8TB usable / 10.9TB raw | App data, databases |
 | `nvme` | Single NVMe 4TB | 2.27TB | Hot downloads, fast scratch |
 | `archive` | raidz1 (4x 6TB) | ~18TB usable (3x 6TB data) | Cold backups |
 
@@ -34,6 +34,12 @@ recordsize: 1M (tank/media), 128K (tank/share, default)
 - `tank/share` - General shared storage (mounted `/mnt/tank/share`)
 - `tank/proxmox` - Proxmox VM backup target (mounted `/mnt/tank/proxmox`)
 - `tank/pve` - Ephemeral Proxmox VM/LXC images (mounted `/mnt/tank/pve`)
+- `tank/backups` - General backup target (encryption root; replicated to `archive`)
+- `tank/nextcloud-data` - Nextcloud data (planned app; encryption root, replicated)
+- `tank/immich-data` - Immich data (planned app; encryption root, replicated)
+
+> The canonical dataset inventory is the encryption table (§At Rest) and the
+> backup section below — these per-pool lists are a quick reference.
 
 ## Current Cluster Configuration
 
@@ -301,6 +307,9 @@ compression: lz4 (ssd/appdata; pool default zstd)
 **Datasets**:
 - `ssd/appdata` - Application persistent data (per-app children:
   authentik, gitlab, loki, mealie, prometheus)
+- `ssd/databases` - Database storage (encryption root; replicated to `archive`)
+- `ssd/pve` - GitLab VM disks (encryption root; intentionally NOT replicated by
+  `archive-backupctl` — the GitLab repos zvol under `ssd/appdata` is the backed-up copy)
 
 ### nvme (Fast Scratch Pool)
 

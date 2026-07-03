@@ -122,6 +122,27 @@
   register: tailscale_up
   changed_when: "'Success' in tailscale_up.stdout or tailscale_up.rc == 0"
 
+# `tailscale up` above only runs for the initial authentication (gated on
+# BackendState), so prefs edited in inventory afterwards would never reach an
+# already-Running node. Reconcile them every run with `tailscale set`, which is
+# idempotent and applies changes without re-auth. (Advertised routes still need
+# approval in the admin console; this only sets the node's own prefs.)
+# tailscale_additional_flags (e.g. --ssh, --operator) are applied only by the
+# initial `up` — they rarely drift and --operator isn't a `tailscale set` pref.
+# changed_when is false because `tailscale set` is idempotent and gives no
+# reliable changed signal; a drift diff would need `tailscale debug prefs`.
+- name: Reconcile Tailscale preferences on authenticated node
+  ansible.builtin.command: >
+    tailscale set
+    --accept-routes={{ tailscale_accept_routes | lower }}
+    --accept-dns={{ tailscale_accept_dns | lower }}
+    --advertise-routes={{ tailscale_advertise_routes | join(',') }}
+  when:
+    - not ansible_check_mode
+    - tailscale_status.rc == 0
+    - (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') == "Running"
+  changed_when: false
+
 - name: Display Tailscale authentication status
   ansible.builtin.debug:
     msg: |

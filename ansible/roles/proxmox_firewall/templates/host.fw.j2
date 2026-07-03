@@ -17,6 +17,15 @@ log_level_out: nolog
 GROUP sg-pve-cluster
 GROUP sg-host-admin
 GROUP sg-metrics
+{% if proxmox_firewall_egress_filtering | default(false) %}
+# Host-originated egress default-deny: the sg-host-egress allowlist (OUT ACCEPT)
+# followed by an explicit OUT DROP. pve-firewall honors OUT *rules* in host.fw but
+# IGNORES the host-level policy_out option, so this trailing DROP — not a policy
+# setting — is what enforces default-deny. Drops log at info for allowlist tuning;
+# conntrack auto-allows replies. ENABLE PER HOST AND VERIFY (pve-firewall compile).
+GROUP sg-host-egress
+OUT DROP -log info
+{% endif %}
 
 {# Exact match (not substring): only proxmox_role == 'nas' inherits the NFS/SMB
    server groups, so a future role string that merely contains 'nas' (e.g.

@@ -80,9 +80,11 @@ joins.
 ## Backup Dedup: vzdump Exclusion of App-Data Zvols
 
 The app-data zvols (Authentik/Mealie PostgreSQL, Prometheus, Loki, GitLab
-repos, Plex `/config`) are backed up by `archive-backupctl` (`ssd/appdata` →
+repos) plus the Plex `/config` LXC directory bind mount (not a zvol — `mp0` →
+`/mnt/ssd/appdata/plex`) are backed up by `archive-backupctl` (`ssd/appdata` →
 `archive`, raw ZFS). They are attached to their host VM/CT as passthrough
-disks, so they were *also* captured by the nightly vzdump into `tank/proxmox`
+disks (or, for Plex, a bind mount), so they were *also* captured by the nightly
+vzdump into `tank/proxmox`
 — double-storing ~2 TB. They now carry `backup=0` (`vzdump_backup: false` in
 `hosts.yml`; `backup=0` in the Plex LXC mount options), so vzdump skips them
 and **`archive-backupctl` is their sole backup path.** OS disks stay in vzdump
@@ -621,16 +623,22 @@ Should match configured values in `host_vars/pve-nas-01.yml`.
 
 ### 4. Test NFS Mounts
 
-From a client machine:
+After `nfs_tls` hardening the `/export/{media,share,appdata}` exports are scoped
+to the k3s CIDRs (.200/29, .220/29) with `xprtsec=tls` **required** (plaintext is
+rejected); `/export/media` also has a plaintext read-only entry for HAOS (.154).
+General LAN clients are intentionally not exported to, so a plaintext mount by IP
+from a laptop fails by design (and a TLS mount by IP fails too — the
+`*.esweiss.com` cert has no IP SAN). Verify from an authorized k3s agent, mounting
+**by hostname over TLS**:
 
 ```bash
-# Show NFS exports
-showmount -e pve-nas-01
-
-# Test mount
-sudo mount -t nfs4 192.168.0.102:/media /mnt/test
+# From a k3s agent (an authorized CIDR with tlshd running)
+sudo mount -t nfs4 -o xprtsec=tls pve-nas-01.esweiss.com:/media /mnt/test
 ls -la /mnt/test
 sudo umount /mnt/test
+
+# Or simply confirm the existing PV-backed pods are Running (they mount the same
+# exports over TLS): kubectl get pods -A | grep -Ev 'Running|Completed'
 ```
 
 ### 5. Test Samba Access

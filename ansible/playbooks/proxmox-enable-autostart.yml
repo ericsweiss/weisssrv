@@ -7,10 +7,9 @@
   hosts: lxc_containers
   gather_facts: false
   tasks:
-    - name: Determine container ID from IP
+    - name: Determine container ID
       ansible.builtin.set_fact:
-        container_id: "{{ ansible_host.split('.')[-1] }}"
-      delegate_to: localhost
+        container_id: "{{ vmid }}"
 
     - name: Find which Proxmox host has this container
       ansible.builtin.shell: |
@@ -53,10 +52,9 @@
   hosts: k3s
   gather_facts: false
   tasks:
-    - name: Determine VM ID from IP
+    - name: Determine VM ID
       ansible.builtin.set_fact:
-        vm_id: "{{ ansible_host.split('.')[-1] }}"
-      delegate_to: localhost
+        vm_id: "{{ vmid }}"
 
     - name: Check if VM exists
       delegate_to: "{{ proxmox_host }}"

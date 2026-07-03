@@ -4,11 +4,8 @@
 # them into alertmanager.yaml. Uses webhook_url (not webhook_url_file)
 # because the Prometheus Operator's config parser does not support the
 # _file suffix for discord_configs.
-#
-# Constraint: secrets injected via template must not contain characters
-# that break YAML double-quoted scalars (" or \). The Discord webhook URL
-# is a plain HTTPS URL (safe). The SMTP password is operator-controlled —
-# avoid " and \ when setting it in 1Password.
+# Secret values are rendered through the `quote` template function so a
+# rotated password or webhook URL with any special characters stays valid.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -31,7 +28,7 @@ spec:
             smtp_from: "Alertmanager <alertmanager@esweiss.com>"
             smtp_require_tls: true
             smtp_auth_username: relayuser
-            smtp_auth_password: "{{ .smtpPassword }}"
+            smtp_auth_password: {{ .smtpPassword | quote }}
 
           inhibit_rules:
             - source_matchers:
@@ -43,17 +40,37 @@ spec:
                 - namespace
             # The custom warning/critical pairs use different alertnames
             # (DiskUsageWarning vs DiskUsageCritical, CPUTempWarning vs
-            # CPUTempCritical, ...) so the rule above never matches them;
-            # pair them on instance+component instead.
+            # CPUTempCritical, ...) so the rule above never matches them.
+            # CPU/GPU/NIC carry one temp alert per host+component, so pairing
+            # on instance+component dedups warning->critical cleanly. Storage
+            # is deliberately excluded here: SATA/NVMe report many drives per
+            # host (all component=storage), and equal:[instance,component]
+            # would let one drive crossing critical silence a *different*
+            # drive's warning on the same host. The per-device storage pairs
+            # below key on instance+chip instead.
             - source_matchers:
                 - severity="critical"
-                - component=~".+"
+                - component=~"cpu|gpu|network"
               target_matchers:
                 - severity="warning"
-                - component=~".+"
+                - component=~"cpu|gpu|network"
               equal:
                 - instance
                 - component
+            - source_matchers:
+                - alertname="SATADriveTempCritical"
+              target_matchers:
+                - alertname="SATADriveTempWarning"
+              equal:
+                - instance
+                - chip
+            - source_matchers:
+                - alertname="NVMeDriveTempCritical"
+              target_matchers:
+                - alertname="NVMeDriveTempWarning"
+              equal:
+                - instance
+                - chip
             - source_matchers:
                 - alertname="DiskUsageCritical"
               target_matchers:
@@ -137,14 +154,14 @@ spec:
             - name: "null"
             - name: discord-default
               discord_configs:
-                - webhook_url: "{{ .discordWebhookUrl }}"
+                - webhook_url: {{ .discordWebhookUrl | quote }}
                   send_resolved: true
             - name: email-and-discord
               email_configs:
                 - to: "ericsweiss1@gmail.com"
                   send_resolved: true
               discord_configs:
-                - webhook_url: "{{ .discordWebhookUrl }}"
+                - webhook_url: {{ .discordWebhookUrl | quote }}
                   send_resolved: true
   data:
     - secretKey: discordWebhookUrl

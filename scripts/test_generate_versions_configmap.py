@@ -67,6 +67,16 @@ class TestTypeSafety:
         with pytest.raises(ValueError, match="bool"):
             gen.flatten({"helm_chart_versions": {"traefik": True}})
 
+    def test_float_at_top_level_raises(self):
+        # An unquoted version like `foo_version: 1.20` parses to the float 1.2 and
+        # would silently ship as "1.2" — fail loud so the author quotes it.
+        with pytest.raises(ValueError, match="float"):
+            gen.flatten({"redis_version": 1.20})
+
+    def test_float_inside_nested_helm_chart_raises(self):
+        with pytest.raises(ValueError, match="float"):
+            gen.flatten({"helm_chart_versions": {"traefik": 1.20}})
+
     def test_dict_inside_nested_helm_chart_raises(self):
         with pytest.raises(ValueError, match="non-scalar"):
             gen.flatten({"helm_chart_versions": {"traefik": {"nested": "bad"}}})

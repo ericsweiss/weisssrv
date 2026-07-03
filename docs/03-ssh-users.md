@@ -70,7 +70,7 @@ secrets:
 The key is deployed to `~/.ssh/authorized_keys` with IP restrictions:
 
 ```
-from="192.168.0.0/24,100.64.0.0/10" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esweiss.com
+from="192.168.0.0/24,100.64.0.0/10,10.42.0.0/16" ssh-ed25519 AAAAC3Nza... eric@MacBookPro.esweiss.com
 ```
 
 ## Connecting to Hosts
@@ -174,6 +174,7 @@ eric ALL=(ALL) NOPASSWD: ALL
 SSH keys include `from=` restrictions limiting access to:
 - Local LAN: `192.168.0.0/24`
 - Tailscale VPN: `100.64.0.0/10`
+- k3s pod CIDR: `10.42.0.0/16` (required so in-cluster CI runner pods can SSH back to their own node — see `group_vars/all.yml`)
 
 ## Firewall Integration
 

@@ -171,9 +171,10 @@ External Secrets Operator (1Password Connect provider) supplies all k8s Secrets.
   (kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards).
   Apps then depend on `infrastructure-observability`.
 - **Apps** (`kubernetes/apps/`): `authentik/`, `download-clients/`, `recipes/`,
-  `gitlab-runner/`, `gitlab-runner-privileged/`, `gitlab-agent/`, `vm-ingress/`
-  (IngressRoutes for non-k8s services: Plex, Home Assistant, GitLab VM, AdGuard,
-  router, Traefik dashboard).
+  `gitlab-runner/`, `gitlab-runner-privileged/`, `gitlab-runner-reaper/` (a
+  maintenance CronJob that reaps leaked runner pods, not a runner),
+  `gitlab-agent/`, `vm-ingress/` (IngressRoutes for non-k8s services: Plex,
+  Home Assistant, GitLab VM, AdGuard, router, Traefik dashboard).
 - **Version flow**: `all.yml` → `task flux:sync-versions` → `cluster-versions`
   ConfigMap → Flux `postBuild.substituteFrom` substitutes `${...}` placeholders.
 - **Secrets**: two bootstrap Secrets (`op-credentials` and `onepassword-connect-token`)
@@ -286,6 +287,70 @@ Onboarding flow: fork template → add CI vars → add wiring YAML under
 
 ## Outstanding Follow-Ups
 
+### Deferred from the 2026 comprehensive review
+
+Items the 2026 comprehensive review intentionally deferred (the review MR fixed
+the bug/security/correctness classes; these are refactors, durability work, and
+supervised live steps that deserve their own change):
+
+- **DUP-5 — de-duplicate the wildcard Certificates.** The three identical
+  `*.esweiss.com` wildcard `Certificate` resources (one per consuming namespace)
+  should be issued once and propagated via reflector/trust-manager instead of
+  re-issued. Deferred because it adds a new controller to the platform.
+- **metrics-server HA.** metrics-server is the single-replica SPOF the whole
+  HPA/VPA subsystem depends on. Raise it to 2 replicas and add a memory limit
+  via a k3s `HelmChartConfig` override (an Ansible/k3s-manifest change). A
+  recommend-only VPA is already in place; this is the durability follow-up.
+- **DUP-11 — express the `*arr` overlay rename patches via a kustomize labels
+  transformer** instead of per-overlay name/label patches.
+- **k8s-apps-08 — split the `downloads` namespace** into a privileged tier
+  (qbittorrent/nzbget) and a restricted tier (`*arr`) so PSS can enforce
+  `restricted` on the managers.
+- **Molecule test build-outs** — ANS-A-08 (SSH-hardening path), ANS-C-10 (zvol
+  data-safety cases), and ANS-INV-13 (health-verify resilience) need a runnable
+  molecule environment to author and validate, so they are deferred from this MR.
+- **Tailscale ACLs-as-code and Proxmox egress filtering.** The code/IaC landed
+  in this MR, but the actual apply/enable is a supervised live step (a botched
+  ACL push or egress rule can lock out remote access), so it is staged for a
+  maintenance window rather than applied here.
+- **ARCH-4 — split `.gitlab-ci.yml` into `include:` files.** The 2,706-line
+  pipeline is anchor-free (extends/!reference only), so a split is safe in
+  principle, but `local:` includes can only be validated by pushing and
+  iterating on the live pipeline, and the template/job sections are interleaved.
+  Deferred to its own focused MR to avoid risking this MR's pipeline; purely a
+  maintainability change.
+- **k8s-infra-04 — one `ClusterExternalSecret` for the Cloudflare token** in
+  place of the three byte-identical per-namespace `ExternalSecret`s. Deferred
+  because the new CRD kind can't be schema-validated offline (kubeconform skips
+  CRDs) and the cluster wasn't reliably reachable to confirm the API version.
+- **k8s-infra-06 — install monitoring CRDs in an early Kustomization** so a fresh
+  bootstrap/DR doesn't need a manual ServiceMonitor pre-apply (requires pinning
+  upstream prometheus-operator CRDs).
+- **k8s-apps-10 — pin the default CI executor images** (`python:3.11`,
+  `debian:trixie`) to digests; needs a registry lookup to choose current digests.
+- **CI optimizations** — `ci-gitlab-broad-trigger` (move `gitlab_version` to a
+  dedicated group_vars file so only it triggers a GitLab reconfigure) and
+  `ci-no-build-cache` (add a pip/apt cache to lint jobs). Low-value pipeline
+  tuning, best validated against the live pipeline.
+  > NetworkPolicy DNS/apiserver egress duplication (DUP-7 / k8s-infra-03 /
+  > RV-SIMP-5) is **not** a deferred refactor — it is a deliberate design choice
+  > (the per-pod egress policies are intentionally granular). The decision and
+  > rationale are documented in `docs/11-firewall.md` ("Kubernetes NetworkPolicies").
+  > DUP-9 (the inline `if schedule: when never` rule on ~16 jobs) is likewise
+  > **not** deduped into `.skip-schedule-web`: that anchor also skips `web`, but
+  > those jobs are schedule-only skips and several (molecule-tests, integration-tests)
+  > deliberately *run* on `web` — folding them into the anchor would break that.
+  > DUP-8 (the 21 dashboard ConfigMaps) is **done** — generated via
+  > `configMapGenerator` from per-dashboard `.json` files.
+- **CI render-loop dedup (ci-dup-kustomize-versions, partial)** — the kustomize
+  version+sha256 is now single-sourced via the `KUSTOMIZE_VERSION` /
+  `KUSTOMIZE_SHA256` CI variables, but the kustomize-build + versions-ConfigMap
+  render loop is still implemented separately in `flux-lint` and `deploy-verify`.
+  Sharing the loop body is deferred — the two jobs differ enough (offline
+  kubeconform vs live server-side dry-run) that a `!reference` split is low-value
+  churn. (The molecule base-config DUP-3/4 and collect-state SH-3/DUP-12 dedups
+  from this backlog are now done.)
+
 ### 2026-06-11 review backlog (deferred findings)
 
 Items surfaced by the full-repo review that were deliberately deferred (the
@@ -326,7 +391,7 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
   update_version_in_file, debian_version_compare
 - shellcheck CI pattern misses *.j2 shell templates (archive-backupctl,
   media-mover, cert-reload) — add a render-then-shellcheck step
-- cert-distribution postflight asserts only 2 of 7 targets
+- cert-distribution postflight asserts only 2 of 6 targets
 - Samba password-rotation path (smbclient auth-probe → smbpasswd) has no
   molecule coverage; same for the qm/pct firewall=1 reconcile failure path
   (inject a failing qm set in the existing stub) and collect-state's
@@ -469,18 +534,18 @@ to `tls` once every k3s client was confirmed mounting over TLS by hostname
 `.154` HAOS line stays plaintext via its own per-client entry — it is not
 locked out, because `xprtsec` is applied per client.
 
-**Why all six agents, not just `k3s-agt-nas-01`:** the NFS-backed PVs
-(grafana, `*arr`, recipes, downloads data) float across the cluster, so a
-pod can become the tlshd client on any agent. All six agents are in
-`cert_distribution_targets` (`host_vars/dns-01.yml`). k3s **server** nodes
-(.222/.223/.227) don't mount NFS and are intentionally absent.
-
-**Operator prerequisite (requires prod access):** the five newly added
-agent `cert_distribution_targets` entries carry a placeholder `host_key`.
-Capture the real keys with `task certs:show-host-keys` and paste them in
-before `task dns:deploy`, then `task k3s:deploy`. The order matters — the
-cert must land on each agent (`/etc/ssl/private/`) before `nfs_tls`'s assert
-runs, or the play fails loud (by design).
+**Why `tlshd` on all six agents, not just `k3s-agt-nas-01`:** the NFS-backed
+PVs (grafana, `*arr`, recipes, downloads data) float across the cluster, so a
+pod can become the tlshd client on any agent — hence `tlshd` runs on every
+agent (`nfs_tls_enabled: true` in `group_vars/k3s.yml`). The agents are **not**
+in `cert_distribution_targets`: under `xprtsec=tls` they are pure TLS clients
+that validate `pve-nas-01`'s server cert against the system CA truststore and
+present no client cert, so they hold neither `fullchain.pem` nor `privkey.pem`
+(see the least-privilege item under Infrastructure Improvements → Security
+Hardening, and `host_vars/dns-01.yml`). k3s **server** nodes (.222/.223/.227)
+don't mount NFS and are intentionally absent. Re-add an agent as a target only
+for a future `xprtsec=mtls` migration (which would also set
+`nfs_tls_client_cert=true`).
 
 **Live cutover (DONE):** `server:` is an immutable PV field, so the
 IP→hostname switch on an already-bound PV could not be applied in place — Flux
@@ -601,6 +666,17 @@ obvious.
   other on-agent service (alloy_host, postfix_null_client, k3s) consumes them. The
   nfs_tls role now also scrubs any stale `/etc/ssl/private/{fullchain,privkey}.pem`
   on client-only hosts. Re-add a target only for an `xprtsec=mtls` migration.
+
+### Terraform / Cloudflare
+
+- [ ] **Cloudflare provider v4 -> v5 migration.** `terraform/cloudflare/versions.tf`
+  pins `cloudflare/cloudflare` at `~> 4.52.0`; v5 is a breaking rewrite that
+  removed/renamed the resources this config uses — `cloudflare_record` ->
+  `cloudflare_dns_record` (different argument schema; CAA `data {}` blocks become
+  a typed `data` object) and `cloudflare_zone_settings_override` -> per-setting
+  `cloudflare_zone_setting` resources. Migrating means rewriting every resource
+  plus a `terraform state mv` for each, so it is deferred as its own change (do
+  not bump to v5 incidentally).
 
 ### Storage Enhancements
 

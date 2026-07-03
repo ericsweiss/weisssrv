@@ -89,6 +89,18 @@ class TestLoadVersions:
             vhv.load_versions(str(root))
 
 
+class TestDeriveKubeVersion:
+    def test_strips_v_prefix_and_k3s_suffix(self):
+        assert vhv.derive_kube_version({"k3s_version": "v1.36.2+k3s1"}) == "1.36.2"
+
+    def test_plain_semver(self):
+        assert vhv.derive_kube_version({"k3s_version": "1.36.2"}) == "1.36.2"
+
+    def test_falls_back_when_absent_or_unparseable(self):
+        assert vhv.derive_kube_version({}) == vhv.KUBE_VERSION_FALLBACK
+        assert vhv.derive_kube_version({"k3s_version": "garbage"}) == vhv.KUBE_VERSION_FALLBACK
+
+
 # --- extract_helmrelease() -------------------------------------------------
 
 class TestExtractHelmRelease:

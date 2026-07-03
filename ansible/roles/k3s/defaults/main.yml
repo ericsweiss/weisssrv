@@ -1,10 +1,30 @@
 ---
 # K3s installation defaults
 
+# Pin the GitLab container registry's external hostname to the internal Traefik
+# VIP in each node's /etc/hosts. The external name (registry.git.ericsweiss.com)
+# otherwise resolves to a public IP via the upstream/Cloudflare path, whose DNS
+# lookup intermittently fails ("Try again") and flakes CI image pulls. A local
+# pin skips the DNS query entirely and uses the direct internal Traefik path.
+# TLS is unaffected: Traefik serves the existing cert for this hostname (the pin
+# only overrides the A record; SNI/validation still use the hostname). Empty list
+# disables. (Verify per-node after deploy: `getent hosts <name>` -> the VIP, and a
+# test image pull succeeds — roll to one agent first.)
+k3s_registry_host_pins:
+  - name: "registry.git.{{ external_domain | default('ericsweiss.com') }}"
+    ip: "192.168.0.101"
+
 # K3s version and installation
 # Note: Version should be set in group_vars/k3s.yml or all.yml
 # This is a fallback default
 k3s_version: "v1.35.3+k3s1"
+
+# Agent (worker) join token, used for agent installs and the server config's
+# `agent-token`. Defaults to the server token so the role is self-contained
+# (molecule sets only k3s_token); prod overrides it in group_vars/k3s.yml with a
+# dedicated lower-privilege token. See group_vars/k3s.yml and docs/19.
+k3s_agent_token: "{{ k3s_token }}"
+
 # Pin to a specific k3s release tag instead of the mutable get.k3s.io redirect.
 # This fixes the installer URL path (not the bytes) per version. The script is
 # downloaded to a local file and executed separately (no `curl | sh`), so its
@@ -32,10 +52,11 @@ k3s_disable:
   - servicelb
   - traefik
 
-# Flannel CNI backend; group_vars/k3s.yml pins it to wireguard-native.
-# The default here keeps vanilla k3s behavior for any consumer that
-# imports this role without that override.
-k3s_flannel_backend: "vxlan"
+# Flannel CNI backend. Default to wireguard-native so cross-node pod traffic
+# is encrypted out of the box; a standalone consumer of this role (or a dropped
+# group_var) gets the secure backend rather than plaintext vxlan. Set to vxlan
+# to roll back (see group_vars/k3s.yml for the full rationale and caveats).
+k3s_flannel_backend: "wireguard-native"
 
 # Node configuration
 k3s_labels: {}

@@ -13,6 +13,12 @@ local_cert_dir: /opt/AdGuardHome/certs
 # Mirrors the per-target `group` field in cert_distribution_targets.
 acme_local_cert_group: "{{ adguard_group | default('adguard') }}"
 
+# Source-IP restriction (from="...") applied to the cert-distribution key in each
+# target's authorized_keys. dns-01 keeps .150 across Proxmox-HA moves; pinning the
+# source shrinks the blast radius if this root-equivalent key leaks. Set empty to
+# disable the restriction (e.g. molecule, where the cert source isn't .150).
+acme_certs_key_from: "192.168.0.150"
+
 acme_domains:
   - "*.{{ internal_domain }}"
   - "{{ internal_domain }}"

@@ -1,0 +1,26 @@
+---
+# Shared Gluetun VPN sidecar — a Kustomize Component mirroring the _arr pattern.
+# It carries the security-critical killswitch pieces that nzbget and qbittorrent
+# previously copy-pasted byte-for-byte: the `gluetun` container (command wrapper,
+# NET_ADMIN, the full env incl. FIREWALL_OUTBOUND_SUBNETS, probes, resources,
+# mounts), the `check-vpn-config` initContainer, the `tun` hostPath + `vpn-config`
+# configMap volumes, and the pod dnsPolicy/dnsConfig.
+#
+# Applied as a strategic-merge patch onto the consuming Deployment, so the
+# sidecar/initContainer/volumes are PREPENDED ahead of each app's own
+# container(s) — matching the original ordering (gluetun first, then the app).
+#
+# Each consumer (../nzbget, ../qbittorrent) lists this component and patches ONLY
+# what differs: the per-app ConfigMap name (nzbget-vpn-config vs
+# qbittorrent-vpn-config, referenced by the gluetun env + the vpn-config volume)
+# and the extra container ports each app exposes through the shared netns.
+# The killswitch semantics (command, NET_ADMIN, FIREWALL_OUTBOUND_SUBNETS) live
+# here exactly once.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+    path: vpn-sidecar.yaml

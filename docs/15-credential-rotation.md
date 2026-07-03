@@ -34,6 +34,7 @@ this list (not those files) when an item is added or its fields change.
 - **Samba NAS User** - nas user password
 - **DNS-01 SSH Key** - private + public key (for cert distribution)
 - **K3s Cluster Token** - cluster join token (credential)
+- **K3s Agent Token** - lower-privilege worker-join token (credential). Optional: when absent the role falls back to the cluster token. See docs/19 "Agent token".
 - **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
 - **PrivadoVPN Credentials** - openvpn-user, openvpn-password (for Gluetun VPN sidecar)
 - **VPN Unlimited Credentials** - openvpn-user, openvpn-password (alternate VPN provider)

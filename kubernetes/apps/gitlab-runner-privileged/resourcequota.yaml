@@ -1,17 +1,23 @@
 ---
-# Aggregate resource bounds for the privileged-runner namespace. concurrent:10
-# DinD job pods, each ~8Gi memory limits (build 3Gi + dind 4Gi + helper 1Gi) and
-# ~2.3Gi requests (build 1Gi + dind 1Gi + helper 256Mi). The build container was
-# 8Gi but molecule jobs peak ~250Mi live (it runs the pre-built molecule-ci image
-# — ansible control, not the test workload), so it was ~30x over and capped
-# concurrency at 3 under the old 48Gi limits cap. These values admit 10 jobs plus
-# a one-pod transition buffer + the manager: limits.memory 90Gi, requests.memory
-# 28Gi, requests.cpu 14. The REAL capacity gate is requests (the scheduler places
-# pods on requests, ~23Gi for 10 jobs — well under the cluster's free headroom);
-# limits.memory is an admission ceiling for DECLARED limits, not a reservation:
-# actual use is ~20Gi and the cluster ran concurrent:15 fine before this quota
-# existed. Per-pod limits + the scheduler + kubelet OOM-kill protect individual
-# nodes; this still bounds a runaway namespace burst.
+# Aggregate resource bounds for the privileged-runner namespace, sized to admit
+# concurrent:18 (see release.yaml) plus a generous transition buffer. Live
+# `kubectl top` during a full molecule matrix showed each DinD job pod uses only
+# ~0.55Gi total (build ~250-400Mi ansible control, dind ~120Mi, helper ~18Mi),
+# yet the old sizing reserved ~8Gi limits / ~2.3Gi requests per job — ~15x over.
+# That bloat (not real usage) capped concurrency at 10: under the matrix's churn a
+# finished pod stays Terminating (still counted) while the runner starts the next,
+# so the 11th pod's 8Gi tipped the old 90Gi ceiling and failed to schedule
+# ("exceeded quota" -> runner_system_failure).
+#
+# Per job is now right-sized to ~3.25Gi limits / ~1Gi requests / ~0.65 cpu (still
+# 3-8x the measured peak), so these values admit ~24 job slots — 18 concurrent
+# plus a ~6-pod transition buffer — in a SMALLER node footprint than before:
+# requests.cpu 16, requests.memory 28Gi, limits.memory 80Gi. The real ceiling is
+# CPU (~1 cpu per actively-converging job; ~25 cores across the agents), so
+# concurrent:18 leaves headroom; raise concurrent + these together if more is
+# wanted. requests are the scheduler's reservation (placement gate); limits.memory
+# is an admission ceiling for DECLARED limits, not a reservation (real use ~10Gi
+# at 18 jobs). Per-pod limits + scheduler + kubelet OOM-kill protect nodes.
 #
 # Deliberately NO cpu / limits.cpu quota dimension: a CPU-limit quota would force
 # EVERY pod in the namespace to declare a CPU limit, which would reject the
@@ -24,10 +30,10 @@ metadata:
   namespace: gitlab-runner-privileged
 spec:
   hard:
-    requests.cpu: "14"
+    requests.cpu: "16"
     requests.memory: 28Gi
-    limits.memory: 90Gi
-    pods: "20"
+    limits.memory: 80Gi
+    pods: "28"
 ---
 # Default requests/limits so any pod created in this namespace without explicit
 # resources still counts against the quota above. Only memory carries a default

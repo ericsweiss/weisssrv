@@ -53,7 +53,9 @@ def _scalar_str(key: str, value: object) -> str:
 
     Rejects bool because `isinstance(True, int)` is True and str(True) == "True",
     which silently ships as an image tag or chart version — obviously wrong
-    but hard to debug. Also rejects anything non-scalar (lists, dicts) that
+    but hard to debug. Rejects float for the same reason: an unquoted version
+    like `1.20` parses to the float 1.2 and would ship as "1.2", silently losing
+    the trailing zero. Also rejects anything non-scalar (lists, dicts) that
     could sneak through a refactor of all.yml.
     """
     if isinstance(value, bool):
@@ -61,10 +63,15 @@ def _scalar_str(key: str, value: object) -> str:
             f"key {key!r} has bool value {value!r} — quote the value in all.yml "
             "(YAML's unquoted 'true'/'yes' parse to bool)"
         )
-    if not isinstance(value, (str, int, float)):
+    if isinstance(value, float):
+        raise ValueError(
+            f"key {key!r} has float value {value!r} — quote the value in all.yml "
+            "(an unquoted version like 1.20 parses to a float and loses precision)"
+        )
+    if not isinstance(value, (str, int)):
         raise ValueError(
             f"key {key!r} has non-scalar value (type {type(value).__name__}) — "
-            "only strings, ints, and floats are supported"
+            "only quoted strings and ints are supported"
         )
     return str(value)
 

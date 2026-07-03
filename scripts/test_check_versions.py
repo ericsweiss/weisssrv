@@ -621,11 +621,36 @@ class TestHelmIndexParser(unittest.TestCase):
         "    version: 1.2.2\n"
     )
 
+    # A chart entry with a dependencies: sub-block whose dependency version
+    # outranks the chart's own version. The parser must NOT collect the
+    # dependency version (real index.yaml shape: e.g. authentik's postgresql dep).
+    INDEX_WITH_DEPENDENCY = (
+        "apiVersion: v1\n"
+        "entries:\n"
+        "  mychart:\n"
+        "  - apiVersion: v2\n"
+        "    appVersion: 9.9.9\n"
+        "    dependencies:\n"
+        "    - name: postgresql\n"
+        "      repository: https://example.com\n"
+        "      version: 99.0.0\n"
+        "    version: 1.2.3\n"
+        "  - apiVersion: v2\n"
+        "    version: 1.2.2\n"
+    )
+
     def test_extra_spaces_and_appversion_excluded(self):
         svc = {"helm_repo": "https://example.com", "helm_chart": "mychart"}
         with patch.object(check_versions, "_make_request", return_value=self.INDEX):
             latest = check_versions.fetch_helm_version(svc)
         # 1.2.3 (highest version:), not 9.9.9 (appVersion), and the 3-space line parsed
+        self.assertEqual(latest, "1.2.3")
+
+    def test_dependency_version_not_captured(self):
+        svc = {"helm_repo": "https://example.com", "helm_chart": "mychart"}
+        with patch.object(check_versions, "_make_request", return_value=self.INDEX_WITH_DEPENDENCY):
+            latest = check_versions.fetch_helm_version(svc)
+        # 1.2.3 (chart's own version), NOT 99.0.0 (postgresql dependency version)
         self.assertEqual(latest, "1.2.3")
 
 
@@ -643,6 +668,102 @@ class TestContainerFetcherGuards(unittest.TestCase):
         with patch.object(check_versions, "_make_request", return_value="not json"):
             with self.assertRaises(RuntimeError):
                 check_versions.fetch_lsio_version(svc)
+
+
+class TestDockerhubMajorPinAndPrefix(unittest.TestCase):
+    """fetch_dockerhub_version confines results when pinning a major or a series."""
+
+    @staticmethod
+    def _payload(*tags):
+        return {"results": [{"name": t} for t in tags]}
+
+    def test_pin_major_confines_to_current_major(self):
+        # postgres pins its major so a DB-breaking major bump is never proposed.
+        svc = {
+            "docker_image": "library/postgres",
+            "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",
+            "pin_major_version": True,
+            "_current_version": "17-trixie",
+        }
+        payload = self._payload("18-trixie", "17.2-trixie", "17-trixie", "16.9-trixie")
+        with patch.object(check_versions, "_make_request", return_value=payload):
+            # Highest tag within major 17 — never 18-trixie.
+            self.assertEqual(check_versions.fetch_dockerhub_version(svc), "17.2-trixie")
+
+    def test_version_prefix_confines_to_series(self):
+        # Meilisearch is held to its 1.15.x series via version_prefix.
+        svc = {
+            "docker_image": "getmeili/meilisearch",
+            "tag_regex": r"^v(\d+\.\d+\.\d+)$",
+            "version_prefix": "v1.15.",
+        }
+        payload = self._payload("v1.16.0", "v1.15.2", "v1.15.0")
+        with patch.object(check_versions, "_make_request", return_value=payload):
+            self.assertEqual(check_versions.fetch_dockerhub_version(svc), "v1.15.2")
+
+    def test_pin_major_handles_v_prefixed_versions(self):
+        # Regression: a leading "v" (gluetun, k3s, redis-exporter, ...) must not
+        # make the major pin a no-op. Previously `^(\d+)` failed to match "v3.x",
+        # left major_filter unset, and let a v4 major bump leak through.
+        svc = {
+            "docker_image": "qmcgaw/gluetun",
+            "tag_regex": r"^(v\d+\.\d+\.\d+)$",
+            "pin_major_version": True,
+            "_current_version": "v3.41.1",
+        }
+        payload = self._payload("v4.0.0", "v3.42.0", "v3.41.1", "v2.9.0")
+        with patch.object(check_versions, "_make_request", return_value=payload):
+            # Highest tag within major 3 — never v4.0.0.
+            self.assertEqual(check_versions.fetch_dockerhub_version(svc), "v3.42.0")
+
+
+class TestVersionTupleGreaterRules(unittest.TestCase):
+    """version_tuple_greater unequal-length and release-vs-prerelease ordering."""
+
+    def setUp(self):
+        self.gt = check_versions.version_greater
+
+    def test_longer_numeric_is_newer(self):
+        self.assertTrue(self.gt("17.1", "17"))
+        self.assertFalse(self.gt("17", "17.1"))
+
+    def test_release_beats_prerelease(self):
+        self.assertTrue(self.gt("1.0.0", "1.0.0-rc1"))
+        self.assertFalse(self.gt("1.0.0-rc1", "1.0.0"))
+        self.assertTrue(self.gt("17", "17-alpha"))
+        self.assertFalse(self.gt("17-alpha", "17"))
+
+    def test_numeric_minor_beats_string_suffix(self):
+        self.assertTrue(self.gt("17.1-trixie", "17-trixie"))
+        self.assertTrue(self.gt("18-trixie", "17.1-trixie"))
+
+
+class TestFetchAptRepoVersion(unittest.TestCase):
+    """fetch_apt_repo_version parses plain and gzip Packages payloads."""
+
+    PACKAGES = (
+        "Package: tailscale\nVersion: 1.80.0\nArchitecture: amd64\n\n"
+        "Package: tailscale\nVersion: 1.82.3\nArchitecture: amd64\n\n"
+        "Package: other\nVersion: 9.9.9\nArchitecture: amd64\n"
+    )
+
+    def test_plain_packages(self):
+        svc = {"apt_index_url": "https://example.com/Packages", "apt_package": "tailscale"}
+        with patch.object(check_versions, "_urlopen_with_retry", return_value=self.PACKAGES.encode()):
+            self.assertEqual(check_versions.fetch_apt_repo_version(svc), "1.82.3")
+
+    def test_gzip_packages(self):
+        import gzip as _gz
+        svc = {"apt_index_url": "https://example.com/Packages.gz", "apt_package": "tailscale"}
+        with patch.object(check_versions, "_urlopen_with_retry",
+                          return_value=_gz.compress(self.PACKAGES.encode())):
+            self.assertEqual(check_versions.fetch_apt_repo_version(svc), "1.82.3")
+
+    def test_missing_package_raises(self):
+        svc = {"apt_index_url": "https://example.com/Packages", "apt_package": "nope"}
+        with patch.object(check_versions, "_urlopen_with_retry", return_value=self.PACKAGES.encode()):
+            with self.assertRaises(RuntimeError):
+                check_versions.fetch_apt_repo_version(svc)
 
 
 class TestUpdateVersionInFile(unittest.TestCase):
@@ -1070,6 +1191,53 @@ class TestReadCurrentVersions(unittest.TestCase):
             os.unlink(path)
         self.assertEqual(versions.get("helm_chart_versions.traefik"), "40.0.0")
         self.assertEqual(versions.get("gitlab_version"), "17.0.0")
+
+
+class TestAnnotateLatestResolution(unittest.TestCase):
+    """_annotate_latest_resolution surfaces the resolved version in notes only
+    for services that track 'latest', so the table shows what 'latest' maps to
+    (on both the cache-hit and live-fetch paths)."""
+
+    def _mk(self, latest_version=None, notes=""):
+        return check_versions.ServiceVersion(
+            name="Some Service",
+            category="dockerhub",
+            current_version="latest",
+            latest_version=latest_version,
+            var_name="some_version",
+            notes=notes,
+        )
+
+    def test_latest_with_resolution_appends_suffix(self):
+        # current == 'latest' + a resolved latest_version => suffix added.
+        result = self._mk(latest_version="1.2.3")
+        check_versions._annotate_latest_resolution(result, "latest")
+        self.assertEqual(result.notes, "'latest' resolves to 1.2.3")
+
+    def test_latest_preserves_existing_notes(self):
+        # Existing notes are kept and the suffix appended after a space.
+        result = self._mk(latest_version="1.2.3", notes="pre-existing note")
+        check_versions._annotate_latest_resolution(result, "latest")
+        self.assertEqual(result.notes, "pre-existing note 'latest' resolves to 1.2.3")
+
+    def test_non_latest_current_left_untouched(self):
+        # A pinned (non-'latest') service is never annotated.
+        result = check_versions.ServiceVersion(
+            name="Some Service",
+            category="dockerhub",
+            current_version="1.2.0",
+            latest_version="1.2.3",
+            var_name="some_version",
+            notes="keep me",
+        )
+        check_versions._annotate_latest_resolution(result, "1.2.0")
+        self.assertEqual(result.notes, "keep me")
+
+    def test_latest_without_resolution_left_untouched(self):
+        # 'latest' but no resolved version yet => nothing to surface.
+        result = self._mk(latest_version=None, notes="")
+        check_versions._annotate_latest_resolution(result, "latest")
+        self.assertEqual(result.notes, "")
 
 
 if __name__ == "__main__":

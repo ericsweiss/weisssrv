@@ -16,7 +16,6 @@ echo "=== Network Diagnostics for weisssrv Cluster ==="
 echo "Generated: $(date)"
 echo ""
 
-# Define hosts
 PVE_HOSTS="192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107"
 K3S_SERVERS="192.168.0.222 192.168.0.223 192.168.0.227"
 
@@ -26,7 +25,8 @@ K3S_SERVERS="192.168.0.222 192.168.0.223 192.168.0.227"
 SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
           -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
-# timeout is GNU coreutils; on stock macOS install via 'brew install coreutils' (gtimeout)
+# timeout is GNU coreutils; on stock macOS install via 'brew install coreutils' (gtimeout).
+# Intentionally duplicated in find-pve-host-for-vm.sh — keep both copies in sync.
 timeout_cmd() {
     local seconds="$1"
     shift

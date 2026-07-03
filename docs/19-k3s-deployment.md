@@ -115,7 +115,7 @@ To upgrade k3s to a new version:
 
 1. **Update the version** in `ansible/inventories/prod/group_vars/all.yml`:
    ```yaml
-   k3s_version: "v1.33.8+k3s1"  # New version
+   k3s_version: "v<new>+k3s1"  # New version (must be >= the current pin in all.yml)
    ```
 
 2. **Run the node upgrade task** - it drains and upgrades each node in turn:
@@ -175,6 +175,30 @@ openssl rand -base64 32
 # Field: credential
 # Value: <generated token>
 ```
+
+#### Agent token (lower-privilege worker join) — optional
+
+By default agents join with the cluster (server) token, which also grants
+control-plane join and cluster-CA access. To limit a compromised agent to
+worker-join only, provision a distinct **K3s Agent Token**:
+
+```bash
+openssl rand -base64 32
+# Store in 1Password — Vault: Homelab, Item: "K3s Agent Token", Field: credential
+```
+
+To enable, after creating the item add
+`K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential` to the `k3s:deploy`
+env, the `maintenance-k3s-provision` CI job, and the node-upgrade path
+(`maintenance:update-k3s-nodes` + its CI job, so a binary upgrade keeps agents on
+the lower-privilege token). It is omitted by default so
+`op run` does not hard-fail on a missing item; when `K3S_AGENT_TOKEN` is unset the
+role falls back to the cluster token (non-breaking). With it set, the server config
+advertises it via `agent-token`, and the role reconciles each agent's `K3S_TOKEN`
+to it on the next deploy (existing nodes stay registered through the change — the
+token is only used at join time). **Rollout:** deploy servers first (they advertise
+the agent-token via a serial control-plane restart), then agents migrate; verify
+all nodes return to `Ready` before proceeding.
 
 ### 2. DNS Configuration
 
@@ -332,7 +356,7 @@ After bootstrap, Flux reconciles five Kustomizations in `dependsOn` order:
 2. `infrastructure-controllers` — HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA (dependsOn sources; CRDs installed here).
 3. `infrastructure-configs` — ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS HelmChartConfig, DDNS CronJob, shared-cloudflare-secrets (dependsOn controllers; uses CRDs installed above).
 4. `infrastructure-observability` — kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress (dependsOn configs).
-5. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, vm-ingress (dependsOn infrastructure-observability).
+5. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper (leaked-pod reaper CronJob), gitlab-agent, vm-ingress (dependsOn infrastructure-observability).
 
 ### Step 8: Register the GitLab Webhook (Optional, Recommended)
 

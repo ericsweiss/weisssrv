@@ -49,8 +49,12 @@ spec:
             capabilities:
               drop: [ALL]
           env:
+            # Connect over TLS by hostname so the Plex auth token isn't sent in
+            # cleartext over the LAN. plex-direct.esweiss.com resolves straight
+            # to the Plex LXC (.152) — unlike plex.esweiss.com, which goes to the
+            # Traefik VIP — and Plex's wildcard *.esweiss.com cert verifies.
             - name: PLEX_SERVER
-              value: "http://192.168.0.152:32400"
+              value: "https://plex-direct.esweiss.com:32400"
             - name: PLEX_TOKEN
               valueFrom:
                 secretKeyRef:

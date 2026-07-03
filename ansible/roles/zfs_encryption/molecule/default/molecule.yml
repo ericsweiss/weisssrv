@@ -1,17 +1,9 @@
 ---
-# Molecule scenario for zfs_encryption role.
-#
-# Validates the role's deploy contract — token file, per-pool env file,
-# unlock script template rendering, systemd template unit, per-pool
-# service enable — without exercising actual ZFS operations (no kernel
-# module in the test container) or actual Connect calls (no live
-# 1Password Connect endpoint).
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: zfs-encryption-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -27,55 +19,12 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
-        # Fake values — the role doesn't reach Connect during a deploy,
-        # only during the systemd-unit invocation at boot (which we
-        # don't trigger here).
-        internal_domain: "test.local"
-        zfs_encryption_connect_token: "fake-test-token-must-be-non-empty"
-        # Non-empty pools exercise the single deployment mode (token +
-        # per-pool enable). The role has no two-phase flag; the pools list
-        # alone decides whether units get activated.
+        internal_domain: test.local
+        zfs_encryption_connect_token: fake-test-token-must-be-non-empty
         zfs_encryption_pools:
           - name: testpool
-            item: "ZFS Pool testpool Passphrase"
-        # The molecule-test base image doesn't carry the `contrib` apt
-        # repo where zfsutils-linux lives. Skip the install — the rest
-        # of the role (template rendering + systemd unit drop + token
-        # placement + per-pool service enable) is what this scenario
-        # verifies. The role's `zfs get encryption` pre-activation
-        # assert is gated on this same flag (no ZFS binary → no
-        # assertion possible), so per-pool services still get enabled
-        # below, which is what verify.yml checks.
+            item: ZFS Pool testpool Passphrase
         zfs_encryption_install_zfsutils: false
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

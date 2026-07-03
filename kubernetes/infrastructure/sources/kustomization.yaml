@@ -22,4 +22,5 @@ resources:
   - onepassword-connect.yaml
   - fairwinds.yaml
   - kured.yaml
+  - stakater.yaml
   - versions-configmap.yaml

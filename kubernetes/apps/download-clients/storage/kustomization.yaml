@@ -1,0 +1,15 @@
+---
+# Downloads storage aggregator. The shared media volume is defined inline
+# (shared.yaml); each app's config PV/PVC pair is a thin per-app overlay over
+# the ../_nfs-pv component (TLS mountOptions defined once there).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - shared.yaml
+  - nzbget
+  - qbittorrent
+  - prowlarr
+  - pulsarr
+  - sonarr
+  - radarr
+  - lidarr

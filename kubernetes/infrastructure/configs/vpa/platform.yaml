@@ -254,3 +254,54 @@ spec:
         minAllowed: {cpu: 25m, memory: 32Mi}
         maxAllowed: {cpu: 500m, memory: 256Mi}
         controlledResources: [cpu, memory]
+---
+# local-path-provisioner (k3s AddOn) ships with empty resources: {} → BestEffort
+# QoS and has no VPA. Recommend-only (updateMode: Off) so the updater never
+# evicts the provisioner off the PVC-bind path; it just records a right-sizing
+# signal so a request bump (or a HelmChartConfig override) can be data-driven.
+# Inspect with `kubectl describe vpa local-path-provisioner -n kube-system`.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: local-path-provisioner
+  namespace: kube-system
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: local-path-provisioner
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 16Mi}
+        maxAllowed: {cpu: 100m, memory: 128Mi}
+        controlledResources: [cpu, memory]
+---
+# metrics-server (k3s AddOn) is the single source of pod/node resource metrics
+# that the whole autoscaling stack depends on — every HPA's CPU/memory target
+# and the VPA recommender both read from it. Recommend-only (updateMode: Off) so
+# the updater never evicts the cluster's only metrics provider (an eviction gap
+# would blind every HPA and the VPA recommender at once); it just records a
+# right-sizing signal so a request bump is data-driven. Adding limits/replicas
+# is a deferred follow-up. Inspect with
+# `kubectl describe vpa metrics-server -n kube-system`.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metrics-server
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 32Mi}
+        maxAllowed: {cpu: 500m, memory: 256Mi}
+        controlledResources: [cpu, memory]

@@ -127,7 +127,12 @@ gitlab_monitoring_whitelist:
 
 # Backup configuration (local path, Proxmox VM snapshots for DR)
 gitlab_backup_path: "/var/opt/gitlab/backups"
-gitlab_backup_keep_time: 604800  # 7 days in seconds
+# 3 days. Backups live on the VM's ~99G OS disk with no off-VM copy, and a full
+# tarball is ~6.5G/day — 7 days (~44G) overran the disk (DiskUsageCritical, and
+# the next backup then failed to create -> GitLabBackupFailed). 3 days (~20G)
+# keeps the root fs comfortable; raise this only alongside a larger/dedicated
+# backup volume (e.g. an NFS-backed path) instead of the OS disk.
+gitlab_backup_keep_time: 259200  # 3 days in seconds
 
 # Performance tuning for 16GB RAM
 gitlab_puma_workers: 3

@@ -6,8 +6,12 @@ metadata:
   labels:
     app.kubernetes.io/name: observability
     app.kubernetes.io/managed-by: flux
-    # node-exporter DaemonSet requires hostPID, hostNetwork, and hostPath
-    # which are only permitted under the 'privileged' Pod Security Standard
+    # The bundled node-exporter DaemonSet requires hostPID, hostNetwork, and
+    # hostPath, which only the 'privileged' Pod Security Standard permits.
+    # Accepted tradeoff: this relaxes PSS for the whole namespace, so other
+    # workloads here are not admission-guarded against requesting hostPath/
+    # privileged. Every other workload (Grafana, Prometheus, Loki, Alloy, the
+    # exporters) sets its own hardened securityContext to compensate.
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: privileged
     pod-security.kubernetes.io/warn: privileged

@@ -9,7 +9,7 @@ Installs and configures GitLab EE (using CE features) via Omnibus package.
 - Container Registry (registry.git.ericsweiss.com)
 - GitLab Pages (*.pages.git.ericsweiss.com)
 - SMTP via internal relay (smtp-relay.esweiss.com)
-- Traefik reverse proxy integration (no local TLS)
+- Traefik reverse proxy integration (TLS terminated on GitLab nginx via the acme-distributed cert)
 - Git SSH on port 22 (external access via port 2222)
 
 ## Requirements
@@ -41,21 +41,25 @@ task gitlab:deploy-check
 ## Architecture
 
 ```
-Internet → Cloudflare → Traefik (k3s) → GitLab VM
-                                         ├─ Web UI (:80)
-                                         ├─ Registry (:5050)
-                                         └─ Pages (:8090)
+Internet → Cloudflare → Traefik (k3s) → GitLab VM (nginx terminates TLS)
+                                         ├─ Web UI  (:443,  HTTPS)
+                                         ├─ Registry (:5050, HTTPS)
+                                         └─ Pages   (:8443, HTTPS)
 
 Git SSH: External port 2222 → GitLab VM port 22
 ```
+
+GitLab's nginx terminates TLS on 443/5050/8443 using the wildcard cert
+distributed to `/etc/gitlab/ssl` by acme_certs, so the Traefik->GitLab hop is
+HTTPS rather than plain :80.
 
 ## Services
 
 | Service | Internal Port | External URL |
 |---------|---------------|--------------|
-| Web UI | 80 | https://git.esweiss.com |
-| Registry | 5050 | https://registry.git.ericsweiss.com |
-| Pages | 8090 | https://*.pages.git.ericsweiss.com |
+| Web UI | 443 (HTTPS) | https://git.esweiss.com |
+| Registry | 5050 (HTTPS) | https://registry.git.ericsweiss.com |
+| Pages | 8443 (HTTPS) | https://*.pages.git.ericsweiss.com |
 | SSH | 22 | git@git.ericsweiss.com:2222 |
 
 ## Configuration

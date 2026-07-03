@@ -1,0 +1,43 @@
+// Tailnet policy for the weisssrv homelab — managed by terraform/tailscale.
+//
+// REVIEW BEFORE FIRST APPLY: this OVERWRITES the live tailnet ACL. It is written
+// to be NON-BREAKING (preserves the current full-mesh member access and Tailscale
+// SSH) while adding route auto-approval so subnet-router failover is real. Verify
+// the owner identity below matches your tailnet before applying.
+{
+  "acls": [
+    // Preserve current access: tailnet members reach everything. This matches
+    // the personal-tailnet default; tighten to tag-scoped rules later (see
+    // README "Tightening") once segmentation is validated.
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["*:*"],
+    },
+  ],
+
+  // Auto-approve the LAN subnet route advertised by any of the owner's devices
+  // (all six Proxmox hosts are owned by this identity). This is what makes the
+  // multi-host subnet-router redundancy actually fail over instead of depending
+  // on a one-time manual approval of a single host. Referencing the owning user
+  // (not a tag) avoids having to re-auth the hosts with --advertise-tags.
+  "autoApprovers": {
+    "routes": {
+      "192.168.0.0/24": ["ericsweiss1@gmail.com"],
+    },
+  },
+
+  // Tailscale SSH: members may SSH to their own tagged/owned devices, matching
+  // the existing `tailscale up --ssh` on the Proxmox hosts.
+  // PRE-APPLY: confirm this `action` against the live Admin-console ACL before
+  // the first `terraform apply` — if the console currently uses "check" (periodic
+  // re-auth), keep "check" here, or accept the change to "accept" consciously.
+  "ssh": [
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:self"],
+      "users": ["autogroup:nonroot", "root"],
+    },
+  ],
+}

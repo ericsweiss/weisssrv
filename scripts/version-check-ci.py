@@ -56,13 +56,25 @@ def _services(data: dict) -> list:
 
 
 def main():
-    # Run version check once with --json
+    # Run version check once with --json. check-versions checks ~45 services
+    # sequentially, each with its own request timeout + bounded retries, so a few
+    # slow/unreachable endpoints under a partial outage can take minutes. Give
+    # generous headroom (env-tunable) so that doesn't SIGKILL the run and report
+    # a false "timed out" when most services actually succeeded.
+    _timeout_raw = os.environ.get("VERSION_CHECK_TIMEOUT", "600")
+    try:
+        timeout = int(_timeout_raw)
+        if timeout <= 0:
+            raise ValueError("must be positive")
+    except ValueError:
+        print(f"Warning: invalid VERSION_CHECK_TIMEOUT={_timeout_raw!r}; using 600s")
+        timeout = 600
     try:
         result = subprocess.run(
             ["./scripts/check-versions.py", "--json"],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         print("Error: version check timed out")

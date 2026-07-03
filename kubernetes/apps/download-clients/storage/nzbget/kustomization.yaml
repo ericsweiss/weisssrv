@@ -1,0 +1,37 @@
+---
+# nzbget config storage: thin overlay over the ../../_nfs-pv component.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: downloads
+components:
+  - ../../_nfs-pv
+patches:
+  - target:
+      kind: PersistentVolume
+      name: nfs-pv
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: downloads-appdata-nzbget
+      - op: replace
+        path: /metadata/labels/app
+        value: nzbget
+      - op: replace
+        path: /spec/capacity/storage
+        value: 10Gi
+      - op: replace
+        path: /spec/nfs/path
+        value: /appdata/nzbget
+  - target:
+      kind: PersistentVolumeClaim
+      name: nfs-pvc
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: nzbget-config
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 10Gi
+      - op: replace
+        path: /spec/volumeName
+        value: downloads-appdata-nzbget

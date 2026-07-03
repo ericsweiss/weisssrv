@@ -956,6 +956,25 @@ def debian_version_compare(a: str, b: str) -> int:
     return _debian_version_part_compare(ra, rb)
 
 
+def _collect_apt_versions(text: str, package: str) -> list[str]:
+    """All `Version:` values for `package` in a Debian Packages index.
+
+    Packages files are blank-line-separated stanzas, each with a `Package:` and
+    a `Version:` line. Returns the version of every stanza whose Package matches;
+    callers pick their own comparator (debian_version_compare vs the
+    parse_version_tuple family) and any pre-release filtering on the result.
+    """
+    versions: list[str] = []
+    in_pkg = False
+    for line in text.split("\n"):
+        if line.startswith("Package:"):
+            in_pkg = line.split(":", 1)[1].strip() == package
+        elif in_pkg and line.startswith("Version:"):
+            versions.append(line.split(":", 1)[1].strip())
+            in_pkg = False
+    return versions
+
+
 def fetch_apt_repo_version(svc: dict) -> str:
     """Fetch latest version from a Debian apt repo's Packages index.
 
@@ -987,19 +1006,11 @@ def fetch_apt_repo_version(svc: dict) -> str:
         else raw.decode("utf-8", errors="replace")
     )
 
-    # Packages files are stanzas separated by blank lines; each stanza has
-    # `Package:` and `Version:` lines among others. Collect all Version
-    # lines for stanzas whose Package matches our target, then return the
-    # highest using debian-policy version ordering (epochs, revisions,
-    # and `~` pre-release semantics — a plain string-tuple compare would
-    # silently get these wrong).
-    versions: list[str] = []
-    in_pkg = False
-    for line in text.splitlines():
-        if line.startswith("Package:"):
-            in_pkg = line.split(":", 1)[1].strip() == pkg
-        elif in_pkg and line.startswith("Version:"):
-            versions.append(line.split(":", 1)[1].strip())
+    # Collect every Version line for our target package, then return the
+    # highest using debian-policy version ordering (epochs, revisions, and `~`
+    # pre-release semantics — a plain string-tuple compare would silently get
+    # these wrong).
+    versions = _collect_apt_versions(text, pkg)
     if not versions:
         raise RuntimeError(f"package '{pkg}' not found in {url}")
     latest = versions[0]
@@ -1075,34 +1086,28 @@ def fetch_github_release(svc: dict) -> str:
         return version
 
 
-def fetch_dockerhub_version(svc: dict) -> str:
-    """Fetch latest version from Docker Hub using tag_regex.
+def _dockerhub_best_tag(
+    image: str,
+    regex: str,
+    *,
+    version_prefix: str = "",
+    pin_major: bool = False,
+    current: str = "",
+    return_full_tag: bool = False,
+) -> Optional[str]:
+    """Highest Docker Hub tag of `image` matching `regex` (group 1 = version).
 
-    The tag_regex should have a capture group for the version portion.
-    The highest matching version (by version tuple comparison) is returned,
-    prefixed with the non-captured portion of the tag.
-
-    If pin_major_version is True, only returns versions matching the same major
-    version as the current version.
+    Shared by fetch_dockerhub_version and fetch_lsio_version. With
+    return_full_tag the original tag name is returned (what all.yml pins store);
+    otherwise the captured version group is returned. version_prefix narrows both
+    the API query (Docker Hub `name=` filter) and the accepted tags (startswith)
+    to a release series; pin_major + current confine results to current's major.
+    Returns None if nothing matches; raises on a non-JSON response.
     """
-    image = svc["docker_image"]
-    tag_regex = svc.get("tag_regex", r"^(v?\d+(?:\.\d+)*)$")
-    pin_major = svc.get("pin_major_version", False)
-    current_version = svc.get("_current_version", "")
-
-    # Extract major version from current version if pinning
-    major_version_filter = None
-    if pin_major and current_version:
-        # Extract major version (e.g., "17-trixie" -> "17", "17.2-trixie" -> "17")
-        match = re.match(r"^(\d+)", current_version)
-        if match:
-            major_version_filter = match.group(1)
-
     # For postgres, use larger page size to find alpine/trixie tags.
     # For version_prefix-pinned services, use Docker Hub's name= filter so
     # old tags that have scrolled off the first page are still found.
     page_size = 100 if image == "library/postgres" else 50
-    version_prefix = svc.get("version_prefix", "")
     url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={page_size}&ordering=last_updated"
     if version_prefix:
         url += f"&name={version_prefix}"
@@ -1110,42 +1115,67 @@ def fetch_dockerhub_version(svc: dict) -> str:
     if not isinstance(data, dict):
         raise RuntimeError(f"Unexpected non-JSON response from {url}")
 
-    best_tag = None
-    best_tuple = None
+    # Extract the major version from `current` when pinning (e.g. "17-trixie"
+    # -> "17", "17.2-trixie" -> "17", "v1.2.3" -> "1"). Tolerate a leading "v" so
+    # v-prefixed schemes (k3s, gluetun, redis-exporter, ...) aren't silently
+    # un-pinned.
+    major_filter = None
+    if pin_major and current:
+        m = re.match(r"^v?(\d+)", current)
+        if m:
+            major_filter = m.group(1)
 
+    best = None
+    best_tuple = None
     for result in data.get("results", []):
         tag_name = result.get("name", "")
-        match = re.match(tag_regex, tag_name)
-        if match:
-            # version_prefix: only consider tags starting with this prefix
-            # (e.g., "v1.15." restricts to patch updates within 1.15.x)
-            version_prefix = svc.get("version_prefix")
-            if version_prefix and not tag_name.startswith(version_prefix):
-                continue
+        match = re.match(regex, tag_name)
+        if not match:
+            continue
+        # version_prefix: only consider tags starting with this prefix
+        # (e.g. "v1.15." restricts to patch updates within 1.15.x).
+        if version_prefix and not tag_name.startswith(version_prefix):
+            continue
+        # Compare/filter on the CAPTURED version (group 1), not the raw tag: a
+        # leading "v" (or a regex prefix before the digits) must not bypass the
+        # major pin or wrongly reject valid same-major tags.
+        extracted = match.group(1)
+        if major_filter:
+            tag_major = re.match(r"^v?(\d+)", extracted)
+            if not tag_major or tag_major.group(1) != major_filter:
+                continue  # Skip tags from a different major version
+        try:
+            vtuple = parse_version_tuple(extracted)
+        except (TypeError, ValueError):
+            continue
+        if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
+            best_tuple = vtuple
+            best = tag_name if return_full_tag else extracted
+    return best
 
-            # If pinning major version, check if this tag matches
-            if major_version_filter:
-                tag_major = re.match(r"^(\d+)", tag_name)
-                if not tag_major or tag_major.group(1) != major_version_filter:
-                    continue  # Skip tags from different major versions
 
-            # Compare using the captured version portion (match.group(1)) to avoid
-            # TypeError when comparing tuples with mixed int/str elements (e.g.,
-            # "17-trixie" vs "17.1-trixie" produces (17, "trixie") vs (17, 1, "trixie")).
-            # Still return the full tag name since that's what's stored in all.yml.
-            # Use version_tuple_greater for proper semantic ordering with (type_rank, value) tuples.
-            extracted_version = match.group(1)
-            try:
-                vtuple = parse_version_tuple(extracted_version)
-                if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
-                    best_tuple = vtuple
-                    best_tag = tag_name
-            except (TypeError, ValueError):
-                continue
+def fetch_dockerhub_version(svc: dict) -> str:
+    """Fetch latest version from Docker Hub using tag_regex.
 
+    The tag_regex should have a capture group for the version portion.
+    The highest matching version (by version tuple comparison) is returned as
+    the full tag name (that is what all.yml pins store).
+
+    If pin_major_version is True, only returns versions matching the same major
+    version as the current version.
+    """
+    image = svc["docker_image"]
+    tag_regex = svc.get("tag_regex", r"^(v?\d+(?:\.\d+)*)$")
+    best_tag = _dockerhub_best_tag(
+        image,
+        tag_regex,
+        version_prefix=svc.get("version_prefix", ""),
+        pin_major=svc.get("pin_major_version", False),
+        current=svc.get("_current_version", ""),
+        return_full_tag=True,
+    )
     if best_tag is None:
         raise RuntimeError(f"No matching tags found for {image} (regex: {tag_regex})")
-
     return best_tag
 
 
@@ -1156,47 +1186,20 @@ def fetch_lsio_version(svc: dict) -> str:
       version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
       version-X.Y.Z.BUILD (*arr apps - stable branch)
 
-    The regex captures the version portion from the tag.
+    The regex captures the version portion from the tag, which is returned.
     """
     image = svc["docker_image"]
     version_regex = svc["lsio_version_regex"]
-
-    # Docker Hub API v2 - list tags sorted by most recently updated
-    # For postgres, use larger page size to find alpine/trixie tags.
-    # For version_prefix-pinned services, use Docker Hub's name= filter so
-    # old tags that have scrolled off the first page are still found.
-    page_size = 100 if image == "library/postgres" else 50
-    version_prefix = svc.get("version_prefix", "")
-    url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={page_size}&ordering=last_updated"
-    if version_prefix:
-        url += f"&name={version_prefix}"
-    data = _make_request(url)
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Unexpected non-JSON response from {url}")
-
-    best_version = None
-    best_tuple = None
-
-    for result in data.get("results", []):
-        tag_name = result.get("name", "")
-        match = re.match(version_regex, tag_name)
-        if match:
-            extracted = match.group(1)
-            try:
-                vtuple = parse_version_tuple(extracted)
-                # Use version_tuple_greater for proper semantic ordering with (type_rank, value) tuples
-                if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
-                    best_tuple = vtuple
-                    best_version = extracted
-            except (TypeError, ValueError):
-                continue
-
+    best_version = _dockerhub_best_tag(
+        image,
+        version_regex,
+        version_prefix=svc.get("version_prefix", ""),
+    )
     if best_version is None:
         raise RuntimeError(
             f"No matching tags found for {image} "
             f"(regex: {version_regex})"
         )
-
     return best_version
 
 
@@ -1271,6 +1274,11 @@ def fetch_helm_version(svc: dict) -> str:
     in_entries = False
     in_chart = False
     chart_indent = 0
+    # Indent of the first key of each chart entry (the list-item content
+    # column). The chart's own `version:` is a direct child key of the entry
+    # and sits at this column; a dependency/maintainer `version:` nests deeper,
+    # so pinning the match here keeps a dependency version from being collected.
+    entry_key_indent = None
     versions = []
 
     for line in lines:
@@ -1305,11 +1313,25 @@ def fetch_helm_version(svc: dict) -> str:
             if line_indent <= chart_indent and not stripped.startswith("-"):
                 break
 
-            # Look for "version:" lines within chart entries (indented
-            # deeper than the chart name). Match on the exact key so
-            # "appVersion:" is excluded and arbitrary post-colon
-            # whitespace (YAML permits it) doesn't drop the line.
-            if stripped.split(":", 1)[0].strip() == "version":
+            # Resolve the key name and the column it starts at. A list-item
+            # line ("- key: ...") starts its first key two columns past the
+            # dash; that column is the chart entry's key indent.
+            if stripped.startswith("- "):
+                key_indent = line_indent + 2
+                key = stripped[2:].split(":", 1)[0].strip()
+            else:
+                key_indent = line_indent
+                key = stripped.split(":", 1)[0].strip()
+            if entry_key_indent is None and stripped.startswith("- "):
+                entry_key_indent = key_indent
+
+            # Capture the chart's own "version:" — a direct child key of the
+            # entry (at entry_key_indent). Match on the exact key so
+            # "appVersion:" is excluded and arbitrary post-colon whitespace
+            # (YAML permits it) doesn't drop the line. Restricting to the entry
+            # key indent skips deeper "version:" lines under a dependencies:/
+            # maintainers: sub-block, which would otherwise be collected.
+            if key == "version" and (entry_key_indent is None or key_indent == entry_key_indent):
                 ver = stripped.split(":", 1)[1].strip().strip('"').strip("'")
                 if not re.search(r"(alpha|beta|rc|dev|snapshot)", ver, re.IGNORECASE):
                     versions.append(ver)
@@ -1338,25 +1360,9 @@ def fetch_plex_version(svc: dict) -> str:
     packages_url = "https://repo.plex.tv/deb/dists/public/main/binary-amd64/Packages"
     raw = fetch_apt_packages(packages_url)
 
-    # Parse the Packages file format (debian control file)
-    # Looking for:
-    #   Package: plexmediaserver
-    #   Version: X.Y.Z.BUILD-hash
-    versions = []
-    in_plex_package = False
-
-    for line in raw.split("\n"):
-        if line.startswith("Package:"):
-            package_name = line.split(":", 1)[1].strip()
-            in_plex_package = package_name == "plexmediaserver"
-        elif in_plex_package and line.startswith("Version:"):
-            version = line.split(":", 1)[1].strip()
-            versions.append(version)
-            in_plex_package = False  # Reset for next package block
-        elif line == "" and in_plex_package:
-            # End of package block without finding version
-            in_plex_package = False
-
+    # The Packages file may carry multiple plexmediaserver versions; collect
+    # them all (Package: plexmediaserver / Version: X.Y.Z.BUILD-hash).
+    versions = _collect_apt_versions(raw, "plexmediaserver")
     if not versions:
         raise RuntimeError("Could not find plexmediaserver version in apt repository")
 
@@ -1396,35 +1402,20 @@ def fetch_gitlab_version(svc: dict) -> str:
              + "; ".join(errors)) if errors else "Could not fetch GitLab apt Packages"
         )
 
-    # Parse the Packages file format (debian control file)
-    # Looking for:
-    #   Package: gitlab-ee
-    #   Version: X.Y.Z-ee.N
+    # Collect every gitlab-ee Version (X.Y.Z-ee.N), skip pre-releases, and keep
+    # the highest by semantic ordering with (type_rank, value) tuples.
     best_version = None
     best_tuple = None
-    in_gitlab_package = False
-
-    for line in raw.split("\n"):
-        if line.startswith("Package:"):
-            package_name = line.split(":", 1)[1].strip()
-            in_gitlab_package = package_name == "gitlab-ee"
-        elif in_gitlab_package and line.startswith("Version:"):
-            version = line.split(":", 1)[1].strip()
-            # Skip RC/beta versions
-            if re.search(r"(rc|beta|alpha)", version, re.IGNORECASE):
-                in_gitlab_package = False
-                continue
-            try:
-                vtuple = parse_version_tuple(version)
-                # Use version_tuple_greater for proper semantic ordering with (type_rank, value) tuples
-                if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
-                    best_tuple = vtuple
-                    best_version = version
-            except (TypeError, ValueError):
-                pass
-            in_gitlab_package = False
-        elif line == "" and in_gitlab_package:
-            in_gitlab_package = False
+    for version in _collect_apt_versions(raw, "gitlab-ee"):
+        if re.search(r"(rc|beta|alpha)", version, re.IGNORECASE):
+            continue
+        try:
+            vtuple = parse_version_tuple(version)
+            if best_tuple is None or version_tuple_greater(vtuple, best_tuple):
+                best_tuple = vtuple
+                best_version = version
+        except (TypeError, ValueError):
+            pass
 
     if not best_version:
         raise RuntimeError("Could not find gitlab-ee version in apt repository")
@@ -1619,6 +1610,14 @@ def update_version_in_file(var_name: str, new_version: str) -> bool:
 # Main logic
 # ---------------------------------------------------------------------------
 
+def _annotate_latest_resolution(result: ServiceVersion, current: str) -> None:
+    """When a service tracks 'latest', surface the resolved version in the notes
+    so the table shows it on both the cache-hit and live-fetch paths."""
+    if current == "latest" and result.latest_version:
+        suffix = f"'latest' resolves to {result.latest_version}"
+        result.notes = (result.notes + " " + suffix) if result.notes else suffix
+
+
 def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bool = True) -> ServiceVersion:
     """Check a single service for available updates."""
     name = svc_def["name"]
@@ -1665,6 +1664,7 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
                 and cached != current
                 and version_greater(cached, current)
             )
+            _annotate_latest_resolution(result, current)
             return result
 
     # Fetch latest version
@@ -1699,7 +1699,7 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
 
         # Determine if update is available
         if current == "latest":
-            result.notes = (result.notes + " " if result.notes else "") + f"'latest' resolves to {latest}"
+            _annotate_latest_resolution(result, current)
             result.update_available = False
         elif svc_def.get("pin_version"):
             # Version is intentionally pinned (e.g., newer releases lack binary assets)
@@ -2046,8 +2046,12 @@ def main():
     category_filter = None
 
     # Parse arguments
+    value_flags = ("--service", "--category", "--update")
     i = 0
     while i < len(args):
+        if args[i] in value_flags and i + 1 >= len(args):
+            print(f"Error: {args[i]} requires an argument", file=sys.stderr)
+            sys.exit(2)
         if args[i] == "--service" and i + 1 < len(args):
             service_filter = args[i + 1].lower()
             i += 2
@@ -2102,7 +2106,6 @@ def main():
                 sys.exit(1)
 
         elif args[i] == "--update-all":
-            current_versions = read_current_versions()
             results = check_all(use_cache=False)
             updated = []
             write_failed = []

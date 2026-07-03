@@ -66,15 +66,15 @@ top-level `apps` Kustomization.
 
 - **Namespace**: `namespace.yaml` (labeled `pod-security.kubernetes.io/enforce: privileged` — required for Gluetun `CAP_NET_ADMIN`)
 - **Secret**: `externalsecret.yaml` — ExternalSecret `vpn-credentials` sourcing `openvpn-user` / `openvpn-password` from 1Password via ESO
-- **Workloads**: one YAML per app (`nzbget.yaml`, `qbittorrent.yaml`, `prowlarr.yaml`, `sonarr.yaml`, `radarr.yaml`, `lidarr.yaml`, `pulsarr.yaml`). Image tags use `${<app>_version}` placeholders substituted from the `cluster-versions` ConfigMap at reconcile time.
-- **Storage**: `storage.yaml` (PV/PVCs bound to NFS exports on pve-nas-01)
+- **Workloads**: `prowlarr.yaml` and `pulsarr.yaml` are standalone manifests; `nzbget/` and `qbittorrent/` are overlays over the shared Gluetun VPN sidecar component (`_vpn-sidecar/`); `sonarr/`, `radarr/`, and `lidarr/` are overlays over the shared `_arr` component (`_arr/`). Each overlay's `resources.yaml` holds its app-specific resources (incl. the per-app VPN ConfigMap for nzbget/qbittorrent). Image tags use `${<app>_version}` placeholders substituted from the `cluster-versions` ConfigMap at reconcile time.
+- **Storage**: `storage/` — per-app NFS PV/PVC overlays over the shared `_nfs-pv/` component (TLS mountOptions defined once), plus `storage/shared.yaml` for the RWX media PV
 - **Ingress**: `ingress-routes.yaml` (standard) + `ingress-routes-ha-bypass.yaml` (HA integration API-only routes)
 - **Certificate**: `certificate.yaml` (single wildcard cert for `*.esweiss.com`)
 
 Deploy workflow (edit + commit + push):
 
 ```bash
-vim kubernetes/apps/download-clients/qbittorrent.yaml  # or any file
+vim kubernetes/apps/download-clients/qbittorrent/resources.yaml  # or any file
 git add kubernetes/apps/download-clients/
 git commit -m "..."
 git push
@@ -88,32 +88,39 @@ task downloads:vpn-status
 ```
 
 Default VPN state: NZBGet sidecar VPN disabled, qBittorrent VPN enabled.
-Toggle by editing the `VPN_SERVICE_PROVIDER` / entrypoint config in the
-relevant pod spec and pushing.
+Toggle by editing `vpn_enabled` in the app's VPN ConfigMap (see VPN
+Management below) and pushing.
 
 ## VPN Management
 
 ### Per-App VPN Control
 
 Each download client has a per-app ConfigMap (e.g., `nzbget-vpn-config`,
-`qbittorrent-vpn-config`) that Gluetun reads. Edit the ConfigMap section of
-the app's YAML file to toggle `vpn_enabled` or change `vpn_provider`:
+`qbittorrent-vpn-config`) that Gluetun reads. The Gluetun sidecar itself is the
+shared `_vpn-sidecar/` component; the per-app ConfigMap lives in the app
+overlay's `resources.yaml`. Edit it to toggle `vpn_enabled` or change
+`vpn_provider`:
 
 ```bash
-vim kubernetes/apps/download-clients/qbittorrent.yaml
+vim kubernetes/apps/download-clients/qbittorrent/resources.yaml
 # Find the ConfigMap section and edit:
 #   vpn_enabled: "true"          # or "false"
 #   vpn_provider: "privado"      # or "vpn unlimited" (note space for Gluetun)
 #   server_countries: "Netherlands"
 
-git add kubernetes/apps/download-clients/qbittorrent.yaml
+git add kubernetes/apps/download-clients/qbittorrent/resources.yaml
 git commit -m "Disable VPN on qbittorrent" # or similar
 git push
-
-# Roll the consumers to pick up the ConfigMap change (ConfigMap mounts don't
-# auto-reload on pod):
-task flux:rotate-secret -- downloads
 ```
+
+The nzbget and qbittorrent Deployments carry the
+`reloader.stakater.com/auto: "true"` annotation, so once Flux reconciles the
+ConfigMap change, **stakater/Reloader automatically rolls the pod** to pick up
+the new mounted VPN config — no manual `kubectl rollout restart` (or
+`task flux:rotate-secret -- downloads`) is needed. Reloader runs in the
+`reloader` namespace (`kubernetes/infrastructure/controllers/reloader/`). If you
+ever need to force a restart out of band, `kubectl rollout restart
+deployment/qbittorrent -n downloads` still works.
 
 > **Disabling the VPN on qBittorrent requires one more edit.** qBittorrent
 > carries a `gluetun-exporter` sidecar plus a `gluetun-qbittorrent` PodMonitor
@@ -122,7 +129,7 @@ task flux:rotate-secret -- downloads
 > `gluetun_vpn_status=0` forever and `VPNDown` pages permanently and falsely. So
 > in the **same** edit that sets `vpn_enabled: "false"`, remove the
 > `gluetun-exporter` container and the `gluetun-qbittorrent` PodMonitor from
-> `qbittorrent.yaml` (and re-add both when re-enabling the VPN). NZBGet ships
+> `qbittorrent/resources.yaml` (and re-add both when re-enabling the VPN). NZBGet ships
 > VPN-off and carries neither, which is why it has no false-fire problem.
 
 ### Check VPN Status
@@ -299,15 +306,16 @@ in this section.
 ## Files
 
 - `namespace.yaml` - Downloads namespace (privileged PSS label for Gluetun CAP_NET_ADMIN)
-- `storage.yaml` - PV/PVC definitions for NFS storage
+- `_nfs-pv/` - shared NFS PV+PVC Kustomize component (TLS mountOptions defined once)
+- `_vpn-sidecar/` - shared Gluetun VPN sidecar Kustomize component (killswitch defined once)
+- `storage/` - per-app NFS PV/PVC overlays over `_nfs-pv/` + `storage/shared.yaml` (RWX media PV)
 - `externalsecret.yaml` - ExternalSecret `vpn-credentials` sourced from 1Password via ESO
 - `certificate.yaml` - Wildcard cert for *.esweiss.com (issued by cert-manager/letsencrypt-prod)
-- `nzbget.yaml` - NZBGet deployment with optional Gluetun sidecar
-- `qbittorrent.yaml` - qBittorrent deployment with optional Gluetun sidecar
+- `nzbget/` - NZBGet overlay over `_vpn-sidecar` (resources.yaml + kustomization.yaml)
+- `qbittorrent/` - qBittorrent overlay over `_vpn-sidecar` (+ gluetun-exporter + PodMonitor)
 - `prowlarr.yaml` - Prowlarr deployment
-- `sonarr.yaml` - Sonarr deployment
-- `radarr.yaml` - Radarr deployment
-- `lidarr.yaml` - Lidarr deployment
+- `_arr/` - shared Deployment+Service Kustomize component for sonarr/radarr/lidarr
+- `sonarr/`, `radarr/`, `lidarr/` - per-app overlays over the `_arr` component
 - `pulsarr.yaml` - Pulsarr deployment
 - `ingress-routes.yaml` - Traefik IngressRoutes with SSO
 - `kustomization.yaml` - Kustomize configuration

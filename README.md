@@ -65,6 +65,7 @@ Internet
 - macOS/Linux workstation
 - [Task](https://taskfile.dev/) runner
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`)
+- Python 3 with `pip` (for the lint/test tooling in `requirements.txt`)
 - Ansible and Terraform
 
 ### Setup
@@ -76,6 +77,11 @@ cd weisssrv
 
 # Or clone from GitHub (read-only mirror)
 # git clone https://github.com/ericsweiss/weisssrv.git
+
+# Install Python lint/test tooling (Ansible, Molecule, ansible-lint, yamllint).
+# The script unit tests run by `task lint` additionally need pytest + pyyaml:
+#   pip install pytest pyyaml
+pip install -r requirements.txt
 
 # Install Ansible collections
 task ansible:install-collections
@@ -97,7 +103,7 @@ and have separate capture + validate commands.
 
 #### Cert distribution host-key bootstrap
 
-Targets: dns-02, smtp-relay, gitlab, pve-nas-01, k3s-agt-nas-01, plex,
+Targets: dns-02, smtp-relay, gitlab, pve-nas-01, plex,
 home. (`task certs:show-host-keys` enumerates from
 `cert_distribution_targets` in `host_vars/dns-01.yml`, so its output
 is the authoritative list — keep this paragraph aligned with the
@@ -281,6 +287,11 @@ secrets:
   smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
 ```
 
+In-cluster Kubernetes Secrets are produced by External Secrets Operator from
+`ExternalSecret` manifests. See the Secrets Management section of `CLAUDE.md`
+for the canonical 1Password consumer details and the `remoteRef` key/property
+format (not duplicated here).
+
 **Never commit secrets to git.**
 
 ## DNS Architecture
@@ -292,9 +303,9 @@ Split-horizon DNS:
 ## K3s Platform
 
 9-node HA cluster (3 servers + 6 agents) with:
-- **kube-vip**: API VIP at 192.168.0.161 (tolerates 1 server failure)
+- **kube-vip**: API VIP at 192.168.0.161 (the 3-node etcd quorum tolerates 1 server failure)
 - **MetalLB**: LoadBalancer IPs (.100 public, .101 internal)
-- **Traefik**: Ingress controller with Let's Encrypt
+- **Traefik**: Ingress controller (TLS served from cert-manager wildcard certs)
 - **external-dns**: Automatic Cloudflare DNS management
 - **cert-manager**: Let's Encrypt certificate automation
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)

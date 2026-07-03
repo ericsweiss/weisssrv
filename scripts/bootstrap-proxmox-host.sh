@@ -94,7 +94,6 @@ echo ""
 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "root@${HOST_IP}" bash << REMOTE_SCRIPT
 set -euo pipefail
 
-# Password embedded via heredoc expansion (not visible in process list)
 ERIC_PASSWORD_B64="$ERIC_PASSWORD_B64"
 
 echo "Checking for existing user 'eric'..."
@@ -254,7 +253,10 @@ sleep 2
 if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "echo 'SSH access as eric: SUCCESS'"; then
     echo ""
     echo "=== Step 4: Verifying sudo access ==="
-    REMOTE_SUDO_WHOAMI=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "sudo whoami")
+    # Capture stderr and tolerate a non-zero exit so a misconfigured remote sudo
+    # (or a BatchMode no-tty prompt) doesn't abort under `set -e` before the
+    # diagnostic below can run; the captured message lands in the error string.
+    REMOTE_SUDO_WHOAMI=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 "eric@${HOST_IP}" "sudo whoami" 2>&1) || true
     if [[ "$REMOTE_SUDO_WHOAMI" == "root" ]]; then
         echo "Sudo access: SUCCESS (sudo whoami returned 'root')"
     else

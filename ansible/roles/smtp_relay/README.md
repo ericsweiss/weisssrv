@@ -37,7 +37,7 @@ smtp_relay_config:
   myorigin: "{{ internal_domain }}"
   relayhost: "[smtp.gmail.com]:587"
   smtp_sasl_auth_enable: true
-  smtp_tls_security_level: "encrypt"
+  smtp_tls_security_level: "secure"
   smtpd_tls_security_level: "may"
 
 # TLS certificates (smtp_tls_cert_dir defaults to /etc/postfix/tls; the
@@ -96,26 +96,25 @@ Null Clients (Proxmox, DNS, k3s)
 ```
 1. Validate Gmail credentials are set (assert)
 2. Validate relay auth credentials are set (assert)
-3. Deploy dns-01 certificate distribution key
-4. Install Postfix and dependencies
+3. Install Postfix and dependencies
    ├─ postfix
    ├─ libsasl2-modules
    ├─ sasl2-bin
    └─ mailutils
-5. Configure /etc/mailname
-6. Create TLS certificate directory
-7. Deploy main.cf (relay configuration)
-8. Deploy master.cf (submission service)
-9. Deploy SASL password file (Gmail credentials)
-10. Postmap SASL password file
-11. Create SASL configuration directory
-12. Deploy smtpd.conf (inbound auth config)
-13. Check if SASL user exists
-14. Create/update relay user in SASL database
-15. Set permissions on /etc/sasldb2 (root:postfix 0640)
-16. Configure mail aliases
-17. Run newaliases
-18. Ensure Postfix is enabled and running
+4. Configure /etc/mailname
+5. Create TLS certificate directory
+6. Deploy main.cf (relay configuration)
+7. Deploy master.cf (submission service)
+8. Deploy SASL password file (Gmail credentials)
+9. Postmap SASL password file
+10. Create SASL configuration directory
+11. Deploy smtpd.conf (inbound auth config)
+12. Check if SASL user exists
+13. Create/update relay user in SASL database
+14. Set permissions on /etc/sasldb2 (root:postfix 0640)
+15. Configure mail aliases
+16. Run newaliases
+17. Ensure Postfix is enabled and running
 ```
 
 ## Files
@@ -161,7 +160,7 @@ postfix_config:
   smtp_sasl_auth_enable: true
   smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
   smtp_sasl_security_options: "noanonymous"
-  smtp_tls_security_level: "encrypt"
+  smtp_tls_security_level: "secure"
 ```
 
 SASL credentials on null clients:
@@ -209,7 +208,7 @@ grep "sasl_username=" /var/log/mail.log
 openssl s_client -connect localhost:587 -starttls smtp
 
 # View cert details
-openssl x509 -in /etc/postfix/certs/fullchain.pem -noout -text
+openssl x509 -in /etc/postfix/tls/fullchain.pem -noout -text
 ```
 
 ## Troubleshooting
@@ -241,7 +240,7 @@ grep "authentication failed" /var/log/mail.log
 **TLS issues:**
 ```bash
 # Check cert files exist
-ls -la /etc/postfix/certs/
+ls -la /etc/postfix/tls/
 
 # Verify cert ownership
 # fullchain.pem should be readable by postfix

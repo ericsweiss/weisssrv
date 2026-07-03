@@ -18,7 +18,7 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
    - `task flux:dev-apply -- <path>` for local iteration (Flux will revert on the next reconcile)
    - The one-time bootstrap secrets `op-credentials` and `onepassword-connect-token` in `external-secrets` namespace
    - Ansible-provisioned objects outside of `kubernetes/` (e.g. the k3s node layer itself)
-6. **Use the wrong `remoteRef` format in `ExternalSecret` manifests** - The 1Password Connect provider uses `remoteRef.key` for the item **title** and `remoteRef.property` for the **field name**. No `op://` prefix, no item IDs.
+6. **Use the wrong `remoteRef` format in `ExternalSecret` manifests** - `key` is the 1Password item title, `property` is the field name (no `op://`, no item IDs). See CLAUDE.md (Secrets Management) for the canonical detail.
 
 ### ALWAYS
 
@@ -28,7 +28,7 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
 4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes)
 5. **Use snake_case** - For all Ansible variables
 6. **Deploy Kubernetes changes via `git push`** - Flux reconciles within ~1 minute. Use `task flux:reconcile` to force.
-7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise. Manifests use `${name}` placeholders (e.g. `version-${sonarr_version}`) resolved at reconcile time by Flux `postBuild.substituteFrom` the `cluster-versions` ConfigMap; see CLAUDE.md and `docs/29-flux-operations.md` (Version pinning / Substitution Not Applied).
+7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise. See CLAUDE.md and `docs/29-flux-operations.md` (Version pinning / Substitution) for how the `${name}` substitution works.
 
 ## Code Conventions
 

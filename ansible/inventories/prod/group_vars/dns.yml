@@ -1,9 +1,6 @@
 ---
 # DNS server configuration (dns-01, dns-02)
 
-# Root SSH login disabled; access is via the standard 'eric' user
-ssh_permit_root_login: "no"
-
 # LXC container settings
 lxc_nesting: true  # Required for systemd 257+
 
@@ -25,7 +22,7 @@ adguard_dot_port: 853
 adguard_https_port: 443
 adguard_admin_user: eric
 # Password from 1Password; bcrypt hash is generated at deploy time by the adguard_home role
-adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD', default='') }}"
+adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD') or undef(hint='ADGUARD_ADMIN_PASSWORD env var must be set (run via op run)') }}"
 
 # TLS/Encryption configuration
 # TLS enabled for DoT (853) and DoQ (853) - AdGuard Home handles these directly
@@ -212,8 +209,8 @@ adguard_dhcp_enabled: false
 # postfix_sasl_password, and mail_aliases are defined in all.yml.
 
 # dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
-dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY', default='') }}"
-dns01_ssh_public_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY', default='') }}"
+dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY') or undef(hint='DNS01_SSH_PRIVATE_KEY env var must be set (run via op run)') }}"
+dns01_ssh_public_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY') or undef(hint='DNS01_SSH_PUBLIC_KEY env var must be set (run via op run)') }}"
 
 # AdGuard Home Sync configuration (dns-01 -> dns-02).
 # URLs hit Traefik (192.168.0.101) which fronts each AdGuard instance

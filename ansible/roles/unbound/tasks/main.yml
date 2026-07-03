@@ -25,20 +25,12 @@
       remote-control:
         control-enable: yes
         control-interface: /run/unbound.ctl
-        # Use Unix socket without TLS certificates (control-use-cert: no)
-        # This is required when not setting up separate control certificates
-        # and allows unbound-control to work via the Unix socket
+        # Unix socket, no control certs (control-use-cert: no)
         control-use-cert: no
     dest: /etc/unbound/unbound.conf.d/remote-control.conf
     owner: root
     group: root
     mode: "0644"
-  notify: Restart unbound
-
-- name: Generate unbound-control TLS certificates
-  ansible.builtin.command:
-    cmd: unbound-control-setup
-    creates: /etc/unbound/unbound_server.pem
   notify: Restart unbound
 
 - name: Ensure Unbound is enabled and running

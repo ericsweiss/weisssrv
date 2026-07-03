@@ -150,7 +150,8 @@ pipeline state. CI's job for k8s is to validate (`flux-lint`, `kubeconform`,
 **All Kubernetes workloads deploy via Flux, not CI jobs.** Every platform component
 (MetalLB, Traefik, cert-manager, external-dns, external-secrets, CoreDNS, DDNS,
 Authentik) and every application (downloads, recipes, gitlab-runner,
-gitlab-runner-privileged, gitlab-agent, vm-ingress) is reconciled by Flux from
+gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, vm-ingress) is
+reconciled by Flux from
 `kubernetes/` on every `git push` to `main`. CI only validates (`flux-lint`,
 `kubeconform`, `flux-versions-sync`).
 
@@ -502,7 +503,7 @@ To view the legacy workflows:
    - This runner has `privileged = true` which enables Docker-in-Docker
    - To change runner config: edit `kubernetes/apps/gitlab-runner-privileged/release.yaml`,
      commit, push; Flux reconciles within ~1 min (or `task flux:reconcile` to force).
-   - Check runner pods: `kubectl get pods -n gitlab-runner -l release=gitlab-runner-privileged`
+   - Check runner pods: `kubectl get pods -n gitlab-runner-privileged -l release=gitlab-runner-privileged` (the privileged runner has its own namespace)
 
 2. Run tests locally:
    ```bash

@@ -1,19 +1,9 @@
 ---
-# Molecule configuration for nic_tuning role testing.
-#
-# Tests the role's generated drop-ins and idempotence without requiring real
-# NICs. We use a loopback interface (`lo`) for the ethtool overrides — the
-# kernel accepts the commands (they no-op; lo doesn't have these features)
-# and the generated /etc/network/interfaces.d/*.cfg file can be content-checked.
-#
-# The template + sysctl file verification is the hot path; ethtool itself
-# no-ops on loopback but the generated drop-in content is fully verified.
-dependency:
-  name: galaxy
-  options:
-    requirements-file: requirements.yml
-driver:
-  name: docker
+# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
+# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
+# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
+# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
+# custom scenario where needed).
 platforms:
   - name: nic-tuning-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -29,20 +19,6 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-  playbooks:
-    prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
@@ -51,21 +27,6 @@ provisioner:
           - interface: lo
             options:
               - feature: rx
-                value: "on"
+                value: 'on'
               - feature: tx
-                value: "on"
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy
+                value: 'on'

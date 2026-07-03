@@ -29,7 +29,7 @@ smtp_relay_port: 587
 # Postfix configuration
 postfix_config:
   myhostname: "{{ inventory_hostname }}.{{ internal_domain }}"
-  myorigin: "{{ internal_domain }}"
+  myorigin: "/etc/mailname"
   relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
   smtp_sasl_auth_enable: true
   smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
@@ -40,7 +40,7 @@ postfix_virtual_aliases:
   root: "{{ admin_email }}"
 
 # Mail aliases
-postfix_mail_aliases:
+mail_aliases:
   root: "{{ admin_email }}"
 ```
 
