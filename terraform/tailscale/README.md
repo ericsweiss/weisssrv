@@ -22,7 +22,7 @@ remote admin relies on). Do **not** wire this into CI auto-apply. Review
 
 1. **OAuth client** — Admin console → Settings → OAuth clients → generate a
    client with the **`acl`** scope (write). Store id + secret in a 1Password
-   item `Tailscale Terraform OAuth` (fields `client_id`, `client_secret`).
+   item `Tailscale OAuth` (fields `client id`, `credential`).
 2. **Verify the owner identity** in `policy.hujson` (`autoApprovers.routes`)
    matches your tailnet owner (currently `ericsweiss1@gmail.com`).
 3. **State backend** — use a tailscale-specific GitLab state name so it does not
@@ -31,6 +31,8 @@ remote admin relies on). Do **not** wire this into CI auto-apply. Review
    export TF_HTTP_ADDRESS="https://git.ericsweiss.com/api/v4/projects/1/terraform/state/tailscale"
    export TF_HTTP_LOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
    export TF_HTTP_UNLOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
+   export TF_HTTP_LOCK_METHOD=POST      # GitLab state backend locks via POST
+   export TF_HTTP_UNLOCK_METHOD=DELETE  # and unlocks via DELETE (else apply → 405)
    # plus TF_HTTP_USERNAME / TF_HTTP_PASSWORD as in the cloudflare tasks
    ```
 
@@ -38,8 +40,8 @@ remote admin relies on). Do **not** wire this into CI auto-apply. Review
 
 ```bash
 cd terraform/tailscale
-export TF_VAR_tailscale_oauth_client_id=$(op read "op://Homelab/Tailscale Terraform OAuth/client_id")
-export TF_VAR_tailscale_oauth_client_secret=$(op read "op://Homelab/Tailscale Terraform OAuth/client_secret")
+export TF_VAR_tailscale_oauth_client_id=$(op read "op://Homelab/Tailscale OAuth/client id")
+export TF_VAR_tailscale_oauth_client_secret=$(op read "op://Homelab/Tailscale OAuth/credential")
 terraform init
 terraform plan          # review carefully — confirm the diff vs the live ACL
 # First apply adopts the ACL. If the resource reports the ACL already has
