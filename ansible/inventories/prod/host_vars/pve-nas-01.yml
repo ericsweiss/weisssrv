@@ -370,3 +370,11 @@ nic_tuning_overrides:
     options:
       - feature: gro
         value: "off"
+
+# Host egress filtering is ON cluster-wide (group_vars/proxmox.yml) but held OFF
+# here: pve-nas-01 is the NAS and a primary Tailscale access path/SSH jump, so
+# enabling default-deny OUT on it is done under supervision (able to recover at
+# the console if the allowlist misses a NAS-specific egress). The compute hosts
+# were rolled out + validated first (2026-07-04). Flip this to true (or remove
+# it) once verified on the NAS with someone watching.
+proxmox_firewall_egress_filtering: false

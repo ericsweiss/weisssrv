@@ -35,3 +35,13 @@ fail2ban_pveproxy_enabled: true
 # pve_firewall occasionally resets this; nic_tuning role installs a sysctl.d
 # drop-in that persists across reboots and `sysctl --system` reloads.
 nic_tuning_ip_forward: true
+
+# Host-originated egress filtering (default-deny OUT on the node itself + the
+# sg-host-egress allowlist; see proxmox_firewall/templates/cluster.fw.j2). ON by
+# default for the cluster; pve-nas-01 is the deliberate exception (host_vars).
+# Rolled out + validated 2026-07-04 on the 5 compute hosts: cluster stayed
+# Quorate (corosync 5404:5412 allowlisted), Tailscale subnet-routing + SSH-jump
+# forwarding survived (FORWARD chain / dport 22+443 allowed), and the OUT DROP
+# rule logged zero legitimate drops. FORWARDed guest/subnet traffic is unaffected
+# (host.fw OUT rules are host-originated only).
+proxmox_firewall_egress_filtering: true

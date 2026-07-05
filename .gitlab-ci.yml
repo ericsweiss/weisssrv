@@ -2540,9 +2540,10 @@ maintenance-k3s-provision:
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
-    # K3S_AGENT_TOKEN intentionally omitted — opt-in (op run hard-fails on a
-    # missing item). To enable the lower-privilege agent token, create the item
-    # and add it here. See docs/19 "Agent token".
+    # Lower-privilege agent token (ANS-D-2), enabled 2026-07-04. Servers advertise
+    # it (agent-token) and agents join with it instead of the cluster token. See
+    # docs/19 "Agent token".
+    K3S_AGENT_TOKEN: "op://Homelab/K3s Agent Token/credential"
   script:
     - cd ansible
     # k3s-provision is two playbooks; chain them inside `bash -c` so the

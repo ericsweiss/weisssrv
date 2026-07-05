@@ -28,13 +28,13 @@
   },
 
   // Tailscale SSH: members may SSH to their own tagged/owned devices, matching
-  // the existing `tailscale up --ssh` on the Proxmox hosts.
-  // PRE-APPLY: confirm this `action` against the live Admin-console ACL before
-  // the first `terraform apply` — if the console currently uses "check" (periodic
-  // re-auth), keep "check" here, or accept the change to "accept" consciously.
+  // the existing `tailscale up --ssh` on the Proxmox hosts. Kept at "check"
+  // (periodic re-auth) to match the live Admin-console ACL — this is a security
+  // hardening pass, so we do NOT loosen SSH to "accept" (no re-auth). Verified
+  // 2026-07-05: the live tailnet SSH rule used action "check".
   "ssh": [
     {
-      "action": "accept",
+      "action": "check",
       "src": ["autogroup:member"],
       "dst": ["autogroup:self"],
       "users": ["autogroup:nonroot", "root"],

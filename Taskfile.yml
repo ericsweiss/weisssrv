@@ -305,12 +305,11 @@ tasks:
       SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
       SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
       K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
-      # Lower-privilege worker-join token (ANS-D-2) is OPT-IN. To enable, create
-      # the "K3s Agent Token" 1Password item and add the line below here (and in
-      # the maintenance-k3s-provision CI job):
-      #   K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
-      # It is omitted by default so `op run` does not hard-fail on a missing item;
-      # the role then falls back to the cluster token. See docs/19 "Agent token".
+      # Lower-privilege worker-join token (ANS-D-2). Agents join with this
+      # worker-only token instead of the cluster token; servers advertise it via
+      # agent-token in the server config. See docs/19 "Agent token".
+      # Enabled 2026-07-04 (1Password item "K3s Agent Token" created).
+      K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
       # k3s.yml runs alloy_host on the k3s nodes, which asserts the Loki push
       # creds are present (https endpoint). Inject them like infra:deploy does.
       LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
@@ -988,9 +987,9 @@ tasks:
     dir: "{{.ANSIBLE_DIR}}"
     env:
       K3S_TOKEN: op://Homelab/K3s Cluster Token/credential
-      # If the opt-in agent token (ANS-D-2) is enabled, also add here so a node
-      # upgrade keeps agents on the lower-privilege token (see docs/19 "Agent token"):
-      #   K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
+      # Agent token (ANS-D-2) enabled — keep node upgrades on the lower-privilege
+      # token (see docs/19 "Agent token").
+      K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/maintenance/update-k3s-nodes.yml {{.CLI_ARGS}}
 
