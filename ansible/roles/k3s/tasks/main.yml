@@ -9,6 +9,7 @@
       - nfs-common
     state: present
     update_cache: true
+    cache_valid_time: 3600
   when: not (skip_k3s_install | default(false))
 
 - name: Install k3s prerequisites (minimal for config testing)
@@ -17,6 +18,7 @@
       - curl
     state: present
     update_cache: true
+    cache_valid_time: 3600
   when: skip_k3s_install | default(false)
 
 - name: Enable iscsid service

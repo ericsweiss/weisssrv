@@ -109,8 +109,10 @@ node_exporter_host_textfile_dir: /var/lib/node_exporter
 ```
 
 The `prometheus-node-exporter` package is installed with `state: present`
-(unpinned) and `update_cache: true`, so it tracks whatever the Debian repo
-currently ships — there is no `node_exporter_version` pin in all.yml.
+(unpinned) and `update_cache: true` (with `cache_valid_time: 3600` to skip a
+redundant apt refresh when the cache is under an hour old), so it tracks
+whatever the Debian repo currently ships — there is no `node_exporter_version`
+pin in all.yml.
 
 ## See also
 

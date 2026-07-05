@@ -10,6 +10,7 @@
       - smartmontools
     state: present
     update_cache: true
+    cache_valid_time: 3600
 
 # drivetemp only makes sense on bare-metal Proxmox hosts — it's a kernel
 # module that exposes SATA drive temperatures via hwmon. DNS LXCs (which

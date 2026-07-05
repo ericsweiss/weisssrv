@@ -1717,6 +1717,13 @@ deploy-ansible-certs:
   stage: deploy
   extends: .deploy-base
   resource_group: deploy-ansible-certs
+  variables:
+    # acme_certs asserts acme_email on dns-01, and acme_email <- admin_email <-
+    # ROOT_EMAIL_ALIAS. Every other deploy job injects this op:// ref; it was
+    # missing here, so `op run` left admin_email undefined and the play failed
+    # the "Validate required acme.sh variables" assert (the SSH-key fields, by
+    # contrast, are handled via `op read` in script below).
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
   needs:
     - job: validation-gate
     - job: deploy-ansible-dns
@@ -1983,11 +1990,11 @@ deploy-verify:
       # Version + checksum are pinned together (supply-chain); bump both in
       # one change. check-versions tracks flux_version in all.yml, and the
       # guard below fails the job if this pin drifts from it.
-      FLUX_VERSION="2.8.8"
+      FLUX_VERSION="2.9.0"
       grep -q "flux_version: ${FLUX_VERSION}" kubernetes/infrastructure/sources/versions-configmap.yaml \
         || { echo "FLUX_VERSION ${FLUX_VERSION} drifted from versions-configmap flux_version"; exit 1; }
       curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" -o /tmp/flux.tar.gz
-      echo "3791d8fbb73b967ada021186f7b46686a2b180ce206d3c279c3f2ad183877a7f  /tmp/flux.tar.gz" | sha256sum -c -
+      echo "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f  /tmp/flux.tar.gz" | sha256sum -c -
       tar xzf /tmp/flux.tar.gz -C /usr/local/bin flux
       flux --version
     - |

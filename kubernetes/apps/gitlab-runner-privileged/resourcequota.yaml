@@ -1,6 +1,6 @@
 ---
 # Aggregate resource bounds for the privileged-runner namespace, sized to admit
-# concurrent:18 (see release.yaml) plus a generous transition buffer. Live
+# concurrent:15 (see release.yaml) plus a generous transition buffer. Live
 # `kubectl top` during a full molecule matrix showed each DinD job pod uses only
 # ~0.55Gi total (build ~250-400Mi ansible control, dind ~120Mi, helper ~18Mi),
 # yet the old sizing reserved ~8Gi limits / ~2.3Gi requests per job — ~15x over.
@@ -9,15 +9,22 @@
 # so the 11th pod's 8Gi tipped the old 90Gi ceiling and failed to schedule
 # ("exceeded quota" -> runner_system_failure).
 #
-# Per job is now right-sized to ~3.25Gi limits / ~1Gi requests / ~0.65 cpu (still
-# 3-8x the measured peak), so these values admit ~24 job slots — 18 concurrent
-# plus a ~6-pod transition buffer — in a SMALLER node footprint than before:
-# requests.cpu 16, requests.memory 28Gi, limits.memory 80Gi. The real ceiling is
-# CPU (~1 cpu per actively-converging job; ~25 cores across the agents), so
-# concurrent:18 leaves headroom; raise concurrent + these together if more is
-# wanted. requests are the scheduler's reservation (placement gate); limits.memory
-# is an admission ceiling for DECLARED limits, not a reservation (real use ~10Gi
-# at 18 jobs). Per-pod limits + scheduler + kubelet OOM-kill protect nodes.
+# Memory per job is right-sized (~3.25Gi limits / ~1Gi requests) and was never
+# the bottleneck. CPU was: an earlier pass set job CPU requests to ~0.65 cpu
+# while a converge really uses ~1.5 cpu, so requests.cpu:16 "admitted" ~24 jobs
+# that actually demanded ~36 cpu on 25 shared cores, and the scheduler over-packed
+# the 3-core agents -> local oversubscription -> molecule's docker-exec-per-task
+# crawled (task-heavy jobs 4-7x slower; see release.yaml concurrent: note). Now
+# each job requests the real ~1.5 cpu (build 900m + dind 500m + helper 100m), so
+# requests.cpu is raised to 32 to admit concurrent:15 (22.5 cpu) plus a ~6-pod
+# transition buffer (Terminating pods still count against the quota, so a thin
+# buffer can 403 under churn) without a 403. requests are the scheduler's
+# reservation (placement gate)
+# and now match reality, so the scheduler — not this quota — caps effective
+# parallelism at what the agents (shared with apps/observability) can run and
+# queues the rest as Pending. limits.memory is an admission ceiling for DECLARED
+# limits, not a reservation. Per-pod limits + scheduler + kubelet OOM-kill protect
+# nodes. Move requests.cpu in lockstep with concurrent × per-job-cpu.
 #
 # Deliberately NO cpu / limits.cpu quota dimension: a CPU-limit quota would force
 # EVERY pod in the namespace to declare a CPU limit, which would reject the
@@ -30,7 +37,7 @@ metadata:
   namespace: gitlab-runner-privileged
 spec:
   hard:
-    requests.cpu: "16"
+    requests.cpu: "32"
     requests.memory: 28Gi
     limits.memory: 80Gi
     pods: "28"

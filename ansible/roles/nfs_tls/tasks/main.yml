@@ -6,6 +6,7 @@
     name: ktls-utils
     state: present
     update_cache: true
+    cache_valid_time: 3600
   when:
     - nfs_tls_enabled | default(false)
     - ansible_facts['os_family'] == "Debian"

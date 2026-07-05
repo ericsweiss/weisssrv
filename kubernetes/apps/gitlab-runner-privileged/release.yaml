@@ -48,19 +48,27 @@ spec:
     # deployment silently at 0 like it did on 2026-06-08.
     replicas: 1
 
-    # Concurrent jobs, capped to what the namespace ResourceQuota admits. Live
-    # `kubectl top` during a full molecule matrix shows each DinD job pod uses
-    # ~0.55Gi TOTAL (build ~250-400Mi ansible control, dind ~120Mi, helper ~18Mi).
-    # The previous 8Gi-limit / 2.3Gi-request sizing was ~15x over real use and
-    # capped concurrency at 10 (the limits.memory quota rejected the 11th pod under
-    # transition churn -> runner_system_failure). Right-sized to ~3.25Gi limits /
-    # ~1Gi requests per job (still 3-8x the measured peak), the same node footprint
-    # admits ~18 concurrent, roughly halving the test-stage wall-clock. The real
-    # ceiling is CPU (~1 cpu per actively-converging job, ~25 cores across agents),
-    # not memory. A higher value would let the runner submit job pods the quota
-    # rejects (403 -> spurious CI failure); excess jobs queue at the runner slot.
-    # Move this in lockstep with the ResourceQuota.
-    concurrent: 18
+    # Concurrent jobs. The governor here is CPU, not memory. Memory per job is
+    # tiny (~0.55Gi live: build ~250-400Mi ansible control, dind ~120Mi, helper
+    # ~18Mi) and was correctly right-sized. But an earlier pass set the CPU
+    # *requests* too low (~0.65 cpu/job) while a converge actually uses ~1.5 cpu
+    # (ansible control + dind + the systemd test container). At concurrent:18 the
+    # scheduler packed job pods onto the small 3-core agents (opt-01/02/03) by
+    # those understated requests -> 4+ jobs on a 3-core node -> ~2x LOCAL CPU
+    # oversubscription. Under that starvation the docker-exec-per-task molecule
+    # connection crawls, and task-count-heavy jobs inflated ~4-7x (proxmox_vm
+    # 2.5min -> 18min, storage-stack 3min -> 17min; measured across pipelines
+    # 550/551 @c=10 vs 553 @c=18). Fix: request the real ~1.5 cpu/job (below), so
+    # per-node packing is correct and the scheduler self-limits effective
+    # parallelism to what the ~25 (shared) agent cores can actually run, queuing
+    # the rest as Pending. Effective concurrency realistically lands ~11-13, not
+    # the full 15: co-tenant app/DaemonSet pods largely under-declare CPU, so a
+    # small 3-core agent fits ~1 CI pod. That is still a real gain over the old
+    # c=10 without the local oversubscription, and the Pending overflow is
+    # tolerated by poll_timeout (below), not failed. concurrent stays at/below
+    # what the ResourceQuota's requests.cpu admits so the runner never submits a
+    # pod the quota rejects (403). Move in lockstep with the quota.
+    concurrent: 15
 
     # Check interval (seconds)
     checkInterval: 30
@@ -111,6 +119,15 @@ spec:
         [[runners]]
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
+            # A ~15-job start burst requests ~22.5 cpu; the scheduler places what
+            # the ~25 shared agent cores fit (~11-13) and queues the rest Pending
+            # until running jobs free slots. The default poll_timeout (180s) is
+            # shorter than a molecule converge, so a queued pod would fail
+            # spuriously as runner_system_failure before a slot opens; 1200s lets
+            # it wait for a real slot (the .gitlab-ci.yml retries are the backstop,
+            # not the primary mechanism). A scalar key — must stay above the first
+            # [runners.kubernetes.*] sub-table (see the positional note above).
+            poll_timeout = 1200
             # Default CI job image, digest-pinned for reproducibility (the
             # tag is retained for readability; the digest is authoritative).
             # Refresh with: docker buildx imagetools inspect python:3.11
@@ -118,21 +135,26 @@ spec:
             privileged = true
 
             # CPU/Memory for the build container (runs the pre-built molecule-ci
-            # image — ansible control + molecule, NOT the test workload). Live
-            # kubectl top peaks ~250-400Mi, so 1Gi limit / 384Mi request is still
-            # 2.5x real peak. cpu_limit stays generous (bursty ansible); the
-            # request is what reserves a node slot, so keep it lean.
+            # image — ansible control + molecule, NOT the test workload). Memory
+            # peaks ~250-400Mi, so 1Gi limit / 384Mi request stays. The CPU
+            # REQUEST is the scheduler's per-node reservation: ansible control is
+            # the dominant CPU consumer during converge (~0.9 cpu actively driving
+            # tasks), so request 900m — the earlier 250m under-reserved and let
+            # the scheduler over-pack small nodes (see the concurrent: note).
+            # cpu_limit stays generous (bursty ansible).
             cpu_limit = "4"
-            cpu_request = "250m"
+            cpu_request = "900m"
             memory_limit = "1Gi"
             memory_request = "384Mi"
 
             # Service container (docker:dind sidecar) — holds the molecule test
-            # container(s). Live top ~120Mi; 2Gi limit gives headroom for
-            # multi-container integration scenarios + image layers, 512Mi request
-            # reserves the node slot.
+            # container(s). Memory ~120Mi live; 2Gi limit gives headroom for
+            # multi-container integration scenarios + image layers, 512Mi request.
+            # CPU request 500m reserves the dind daemon + the systemd test
+            # container's steady CPU (build 900m + dind 500m + helper 100m ≈ the
+            # ~1.5 cpu a real converge uses, so per-node packing matches reality).
             service_cpu_limit = "2"
-            service_cpu_request = "300m"
+            service_cpu_request = "500m"
             service_memory_limit = "2Gi"
             service_memory_request = "512Mi"
 

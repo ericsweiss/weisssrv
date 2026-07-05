@@ -130,7 +130,7 @@ tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should adv
 # Application version pins
 adguard_home_version: "0.107.77"
 adguardhome_sync_version: "0.9.2"
-tailscale_version: "1.98.4"
+tailscale_version: "1.98.8"
 debian_version: "13"
 k3s_version: "v1.36.2+k3s1"
 # Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
@@ -144,7 +144,7 @@ k3s_install_script_checksum: ""
 kube_vip_version: "v1.2.1"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
-flux_version: "2.8.8"
+flux_version: "2.9.0"
 
 # Authentik SSO identity provider
 authentik_version: "2026.5.3"
@@ -176,7 +176,7 @@ prowlarr_version: "2.4.0.5397"
 sonarr_version: "4.0.19.2979"
 radarr_version: "6.2.1.10461"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.16.0"
+pulsarr_version: "0.17.2"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
@@ -251,16 +251,16 @@ helm_chart_versions:
   # images per upstream. Re-evaluate when the fix lands.
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
-  traefik: "41.0.0"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.0.1"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.20.3"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.7.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.3.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
-  loki: "18.1.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  kube_prometheus_stack: "87.10.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  loki: "18.4.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.0"
-  prometheus_blackbox_exporter: "11.13.0"
+  prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"
-  vpa: "4.12.2"
+  vpa: "4.12.3"
   kured: "6.0.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.12"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap/Secret change
 
