@@ -11,6 +11,10 @@ set -uo pipefail
 
 BACKUP_PATH="{{ gitlab_backup_path }}"
 PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+# Components excluded from the tarball (gitlab-backup SKIP=). Rendered here in the
+# non-raw preamble and quote-filtered, so an overridden gitlab_backup_skip with
+# whitespace/metacharacters can't be word-split or interpreted when used below.
+BACKUP_SKIP={{ (gitlab_backup_skip | default('', true) | regex_replace('\\s+', '')) | quote }}
 {% raw %}
 PROM_FILE="${PROM_DIR}/gitlab_backup.prom"
 START_TS="$(date +%s)"
@@ -50,7 +54,17 @@ write_prom_metrics() {
 
 mkdir -p "$PROM_DIR"
 
-/opt/gitlab/bin/gitlab-backup create CRON=1
+# SKIP excludes the container registry (rebuildable CI images — by far the
+# largest component, ~7.5G vs a 16K repo) and CI artifacts (ephemeral job
+# output) from the tarball, so a backup is DB + repos + config, not multi-GB.
+# The registry data persists on its own zvol and is re-pushable from CI; back it
+# up separately (zvol snapshot) if ever needed. Configurable via gitlab_backup_skip.
+if [ -n "$BACKUP_SKIP" ]; then
+  /opt/gitlab/bin/gitlab-backup create CRON=1 "SKIP=$BACKUP_SKIP"
+else
+  /opt/gitlab/bin/gitlab-backup create CRON=1
+fi
+
 rc=$?
 
 # gitlab-backup excludes gitlab-secrets.json and gitlab.rb; without them a

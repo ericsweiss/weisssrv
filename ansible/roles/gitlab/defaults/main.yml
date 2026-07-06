@@ -127,11 +127,17 @@ gitlab_monitoring_whitelist:
 
 # Backup configuration (local path, Proxmox VM snapshots for DR)
 gitlab_backup_path: "/var/opt/gitlab/backups"
-# 3 days. Backups live on the VM's ~99G OS disk with no off-VM copy, and a full
-# tarball is ~6.5G/day — 7 days (~44G) overran the disk (DiskUsageCritical, and
-# the next backup then failed to create -> GitLabBackupFailed). 3 days (~20G)
-# keeps the root fs comfortable; raise this only alongside a larger/dedicated
-# backup volume (e.g. an NFS-backed path) instead of the OS disk.
+# Components excluded from the tarball (gitlab-backup SKIP=). The container
+# registry was ~7.5G and CI artifacts ~1.4G — vs a 16K repo — so unfiltered
+# backups were ~6.5-8.5G/day and overran the 99G OS disk (DiskUsageCritical ->
+# failed backups -> no prune -> vicious cycle). Both are non-irreplaceable
+# (registry images are re-pushable from CI + persist on their own zvol; artifacts
+# are ephemeral CI output), so a DB+repos+config backup is the right scope and is
+# sub-GB. Set to "" to back up everything (only with a dedicated/off-OS-disk path).
+gitlab_backup_skip: "registry,artifacts"
+# Retention. With registry/artifacts skipped the tarball is small, so 3 days on
+# the OS disk is comfortable; raise only alongside a larger/dedicated (e.g.
+# NFS-backed) backup volume. Prune only runs after a SUCCESSFUL backup.
 gitlab_backup_keep_time: 259200  # 3 days in seconds
 
 # Performance tuning for 16GB RAM
