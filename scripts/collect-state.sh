@@ -98,11 +98,20 @@ probe_flux_not_ready() {
 }
 
 # Recent Warning events (last hour). Extra kubectl args pass through via "$@".
-# Echoes the count (0 on failure).
+# Echoes the count (0 on failure). Excludes ONLY the CI runner's designed
+# capacity overflow: FailedScheduling in gitlab-runner* namespaces whose message
+# cites "Insufficient cpu/memory" (a job burst queues pods the shared agent cores
+# can't fit yet; poll_timeout waits for a slot rather than fail), so it recurs on
+# every pipeline and is not a health signal. Guards keep real problems visible: a
+# message that ALSO cites a genuinely-anomalous blocker (PVC / exceeded quota /
+# volume node affinity) is NOT excluded, and any non-capacity or non-runner
+# FailedScheduling still counts. We deliberately do NOT disqualify on taint/
+# affinity mentions — every normal overflow message lists the known tainted nodes
+# (NAS + servers), so keying off those would defeat the exclusion entirely.
 probe_warning_events() {
     local out=0 json
     if json=$(kubectl "$@" get events -A --field-selector type=Warning -o json 2>/dev/null); then
-        out=$(echo "$json" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(.lastTimestamp >= $cutoff)] | length' 2>/dev/null || echo 0)
+        out=$(echo "$json" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(.lastTimestamp >= $cutoff) | select((.reason == "FailedScheduling" and ((.metadata.namespace // "") | test("^gitlab-runner")) and ((.message // "") | test("Insufficient (cpu|memory)"; "i")) and (((.message // "") | test("persistentvolumeclaim|exceeded quota|volume node affinity conflict"; "i")) | not)) | not)] | length' 2>/dev/null || echo 0)
     fi
     echo "$out"
 }
@@ -129,11 +138,24 @@ probe_k3s_ready() {
     fi
 }
 
-# GitLab application health via the full delivery chain (internal DNS ->
-# Traefik VIP -> GitLab nginx), TLS verified (no -k). Echoes the HTTP status
-# code ("000"/empty on connection failure); callers treat 200 as healthy.
+# GitLab application health, TLS verified (no -k); callers treat 200 as healthy.
+# Try the internal chain (DNS -> Traefik VIP -> GitLab nginx) first, then fall
+# back to the external hostname. The internal Traefik->VM leg can stall past the
+# timeout even when GitLab is healthy (connection + TLS succeed, the HTTP response
+# hangs), which returned a false 000 and gated an otherwise-green run to PARTIAL.
+# The external route is a second opinion so only a genuinely-unhealthy GitLab
+# reports != 200. Echoes the HTTP status code ("000"/empty on total failure).
 probe_gitlab_http() {
-    curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://git.esweiss.com/-/health 2>/dev/null || true
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://git.esweiss.com/-/health 2>/dev/null || true)
+    # Fall back to the external hostname ONLY on a connection-level failure
+    # ("000"/empty) — the transient internal Traefik/ingress blip this guards
+    # against. A real HTTP status (incl 4xx/5xx) means GitLab answered, so trust
+    # it rather than let an external 200 mask an internal error.
+    if [ -z "$code" ] || [ "$code" = "000" ]; then
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://git.ericsweiss.com/-/health 2>/dev/null || true)
+    fi
+    echo "$code"
 }
 
 if [ "${1:-}" = "--json" ]; then
@@ -1284,7 +1306,7 @@ fi
     echo "# K3s API reachable: $K3S_API_OK"
     echo "# Flux not-ready: $FLUX_NOT_READY_REG"
     echo "# ZFS degraded pools: $ZFS_DEGRADED_REG"
-    echo "# GitLab health (https://git.esweiss.com/-/health): HTTP ${GITLAB_HTTP_REG:-unreachable}"
+    echo "# GitLab health (/-/health, internal then external): HTTP ${GITLAB_HTTP_REG:-unreachable}"
     echo "# Warning events (last hour): $WARNING_EVENTS_REG"
     echo "# Coverage floor: $COVERAGE_FLOOR_PCT% (run is FAILED below this)"
     echo "# Redacted: Yes"

@@ -28,7 +28,7 @@ data:
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.15.1
   helm_chart_versions_reloader: 2.2.12
-  helm_chart_versions_traefik: 41.0.1
+  helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
   k3s_version: v1.36.2+k3s1
   kube_vip_version: v1.2.1

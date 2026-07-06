@@ -1,8 +1,11 @@
 ---
 # VPA policies for platform controllers. Most use updateMode Auto (the updater
-# may evict to apply new requests — these tolerate restarts; Traefik has a PDB
-# and an HPA, and is memory-only here). external-dns is single-replica with no
-# PDB so it uses Initial to avoid eviction-driven reconciliation gaps. Lives in
+# may evict to apply new requests — these tolerate restarts). Components on the
+# synchronous request/admission path use Initial instead (apply recommendations
+# on the next natural restart, never proactive eviction): Traefik (ingress for
+# every service — an Auto eviction blip 502'd the registry and hung
+# git.esweiss.com under CI-burst load, even with a PDB), cert-manager-webhook
+# (single-replica admission), and external-dns (single-replica, no PDB). Lives in
 # configs/ because the VPA CRD is installed by controllers/vpa.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -52,8 +55,16 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: traefik
+  # Initial (not Auto): Traefik is the ingress data path for EVERY service,
+  # including the container registry. Under CI-burst load the Auto updater evicted
+  # Traefik to apply a new memory request, and the recreated pod's startup
+  # readiness gap surfaced as transient 502s on registry.git.ericsweiss.com (CI
+  # image pulls -> ImagePullBackOff), git.esweiss.com hangs (collect-state false
+  # 000), and Unhealthy events — a PDB doesn't help, since each replacement pod is
+  # briefly not-ready regardless. Initial applies memory recommendations on the
+  # next natural restart instead of evicting a serving ingress pod.
   updatePolicy:
-    updateMode: Auto
+    updateMode: Initial
   resourcePolicy:
     # Memory only: Traefik's chart-native autoscaling (autoscaling.enabled in
     # controllers/traefik/release.yaml) scales on CPU, so this VPA must not also
