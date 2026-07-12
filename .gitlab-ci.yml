@@ -1516,6 +1516,40 @@ secret_detection:
 #
 # Net effect: all applicable checks must pass before any deploy job runs.
 
+# Fan-in for the parallel test matrices. molecule-tests (one job per role) and
+# integration-tests (one per stack) are `parallel: matrix` jobs, so a `needs:`
+# on either expands to ONE entry PER matrix instance (32 + 5 = 37). Listed
+# directly in validation-gate alongside its scalar needs the total hit 52, over
+# GitLab's hard cap of 50 needs-per-job, so the main pipeline failed to even be
+# created ("one job can only need 50 others"). This thin job collapses those 37
+# into a single dependency: it needs both matrices (37 < 50) and validation-gate
+# needs only this. Gating is unchanged — a failed matrix instance leaves its
+# (non-optional-by-default) dependency unmet, this job is skipped, and
+# validation-gate (which needs it) is skipped in turn, blocking every deploy job.
+# optional:true on each matrix keeps a path-filtered no-op pipeline green.
+test-aggregate:
+  stage: security
+  image: alpine:3.23
+  interruptible: true
+  needs:
+    # artifacts: false — this is a status-only fan-in (script is a bare echo).
+    # The matrices extend .molecule-base and emit junit artifacts; without this,
+    # GitLab would download them from all 37 instances here for no reason.
+    - job: molecule-tests
+      optional: true
+      artifacts: false
+    - job: integration-tests
+      optional: true
+      artifacts: false
+  script:
+    - echo "molecule + integration test matrices complete"
+  # These rules MUST stay identical to validation-gate's below: it needs this
+  # job non-optionally, so if this job is created for a pipeline where that gate
+  # is not (or vice versa), pipeline creation fails. Same rules => co-present.
+  rules:
+    - !reference [.skip-schedule-web, rules]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 validation-gate:
   stage: gate
   image: alpine:3.23
@@ -1545,10 +1579,15 @@ validation-gate:
       optional: true
     - job: python-tests
       optional: true
-    - job: molecule-tests
-      optional: true
-    - job: integration-tests
-      optional: true
+    # molecule-tests + integration-tests are fanned in via test-aggregate (see
+    # its comment above) so this gate's expanded needs stay under GitLab's hard
+    # 50-per-job cap. test-aggregate carries the SAME rules as this gate (skip-
+    # schedule-web + main-only), so the two are always created together. This
+    # need is intentionally NON-optional: if that shared-rules invariant is ever
+    # broken, a loud pipeline-creation failure is safer than optional's silent
+    # skip, which would let deploy run with the test matrices un-gated. Keep the
+    # two rule blocks identical (or make this optional) if you change either.
+    - job: test-aggregate
     - job: deploy-coverage-check
       optional: true
     - job: molecule-matrix-coverage-check
