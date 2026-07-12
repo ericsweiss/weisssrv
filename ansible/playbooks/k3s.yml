@@ -14,6 +14,20 @@
     # leave the k3s VMs without host log shipping.
     - alloy_host
 
+# NFSv4-over-TLS daemon for k3s NFS clients — MUST precede the server/agent plays.
+# The k3s role's off-node etcd-snapshot task asserts tlshd is active (and mounts
+# an xprtsec=tls export), so tlshd has to be installed first. Enabled group-wide
+# (nfs_tls_enabled in group_vars/k3s.yml): the six agents mount the NAS-backed
+# PVs, and the three servers mount the off-node etcd-snapshot export — both need
+# tlshd for the handshake. nfs_tls has no dependency on the k3s role (just apt +
+# the CA truststore from the base play). The role's tasks self-guard on
+# `nfs_tls_enabled | default(false)`, so this is a no-op if that var is unset.
+- name: Deploy NFSv4-over-TLS daemon on NFS-mounting k3s nodes
+  hosts: k3s
+  become: true
+  roles:
+    - nfs_tls
+
 - name: Deploy k3s server(s)
   hosts: k3s_servers
   become: true
@@ -26,16 +40,6 @@
   become: true
   roles:
     - k3s
-
-# Opt-in NFSv4-over-TLS daemon for k3s NFS clients (currently k3s-agt-nas-01,
-# which mounts pve-nas-01 directly). The role's tasks are individually guarded
-# by `nfs_tls_enabled | default(false)`, so this is a no-op unless that var is
-# set true in host_vars or group_vars on the relevant agents.
-- name: Deploy NFSv4-over-TLS daemon on NFS-mounting agents
-  hosts: k3s_agents
-  become: true
-  roles:
-    - nfs_tls
 
 - name: Deploy guest firewall rules
   hosts: k3s
@@ -54,6 +58,20 @@
     - name: Display cluster status
       ansible.builtin.debug:
         msg: "{{ node_status.stdout_lines }}"
+
+    # Fail loud on any node whose STATUS column does not begin with 'Ready'
+    # (Ready,SchedulingDisabled — a cordoned-but-healthy node — still passes),
+    # mirroring scripts/post-maintenance-verify.sh. STATUS is the 2nd column of
+    # `get nodes -o wide`; skip the header row.
+    - name: Fail if any node is not Ready
+      ansible.builtin.assert:
+        that:
+          - item.split()[1] is match('^Ready')
+        fail_msg: "Node not Ready: {{ item }}"
+        quiet: true
+      loop: "{{ node_status.stdout_lines[1:] }}"
+      loop_control:
+        label: "{{ item.split()[0] }}"
 
     - name: Get pod status across all namespaces
       ansible.builtin.command: k3s kubectl get pods -A

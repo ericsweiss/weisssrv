@@ -1,15 +1,28 @@
 ---
 # Configure DNS servers on all hosts
 
-# For DNS servers: Use external DNS during base role to avoid chicken-and-egg problems
-# The unbound role will switch to localhost:5335 after Unbound is working
-# The adguard_home role will switch to localhost:53 after the full stack is verified
-# This ensures DNS works during initial deployment when services aren't ready yet
-- name: Set DNS servers for DNS containers (external DNS during base role)
+# DNS containers get external bootstrap DNS only while the local resolver
+# stack is not yet answering (chicken-and-egg on first deploy: the unbound and
+# adguard_home roles run later and switch resolv.conf to localhost). Once
+# 127.0.0.1 resolves, keep it — otherwise a standalone base re-run would leave
+# a healthy DNS container pointed at external DNS (and immutable) until the
+# dns play next runs, breaking internal *.esweiss.com resolution.
+- name: Probe the local resolver on DNS containers
+  ansible.builtin.command:
+    cmd: dig +short +time=2 +tries=1 @127.0.0.1 google.com A
+  register: base_local_resolver_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: inventory_hostname in groups['dns']
+
+- name: Set DNS servers for DNS containers
   ansible.builtin.set_fact:
-    host_dns_servers:
-      - "1.1.1.1"
-      - "8.8.8.8"
+    host_dns_servers: >-
+      {{ ['127.0.0.1']
+         if (base_local_resolver_probe.rc | default(1) == 0
+             and base_local_resolver_probe.stdout | default('') | trim | length > 0)
+         else ['1.1.1.1', '8.8.8.8'] }}
   when: inventory_hostname in groups['dns']
 
 - name: Set DNS servers for all other hosts
@@ -17,34 +30,12 @@
     host_dns_servers: "{{ dns_servers }}"
   when: inventory_hostname not in groups['dns']
 
-# Remove immutable flag before writing resolv.conf (may be set from previous run)
-# Skip in check mode to avoid modifying system state during dry-run
-- name: Remove immutable flag from resolv.conf before update
-  ansible.builtin.command:
-    cmd: chattr -i /etc/resolv.conf
-  changed_when: false
-  failed_when: false
-  when: not ansible_check_mode
-
+# The immutable-flag (chattr) handling lives in the resolv_conf role.
+# resolv.conf changes take effect immediately; no networking restart is needed.
 - name: Configure /etc/resolv.conf with DNS servers
   ansible.builtin.include_role:
     name: resolv_conf
-
-# resolv.conf changes take effect immediately; no networking restart is needed.
-
-- name: Check if resolv.conf is already immutable
-  ansible.builtin.command:
-    cmd: lsattr /etc/resolv.conf
-  register: resolv_conf_attrs
-  changed_when: false
-  failed_when: false
-
-- name: Ensure resolv.conf is immutable
-  ansible.builtin.command:
-    cmd: chattr +i /etc/resolv.conf
-  # Only report changed if immutable flag was not already set
-  # lsattr output format: "----i--------e-- /etc/resolv.conf" where 'i' indicates immutable
-  changed_when: resolv_conf_attrs.stdout | default('') is not search('^[^ ]*i[^ ]* ')
-  failed_when: false
-  # Skip in check mode to avoid modifying system state during dry-run
-  when: not ansible_check_mode
+    apply:
+      tags: [dns, networking, base]
+  vars:
+    resolv_conf_immutable: true

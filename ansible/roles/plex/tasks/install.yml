@@ -18,9 +18,20 @@
     state: present
     update_cache: false
   loop:
+    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+  when: not (skip_gpu_drivers | default(false))
+
+# Drop the superseded plaintext http:// entries left on hosts provisioned
+# before the https switch, so apt no longer fetches non-free over http.
+- name: Remove legacy plaintext non-free repositories
+  ansible.builtin.apt_repository:
+    repo: "{{ item }}"
+    state: absent
+    update_cache: false
+  loop:
     - "deb http://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
     - "deb http://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
-  when: not (skip_gpu_drivers | default(false))
 
 - name: Update apt cache after adding non-free repos
   ansible.builtin.apt:
@@ -39,70 +50,28 @@
 # Plex repository v2 (as of Plex v1.43.0)
 # https://support.plex.tv/articles/235974187-enable-repository-updating-for-supported-linux-server-distributions/
 
-- name: Create apt keyrings directory
-  ansible.builtin.file:
-    path: /etc/apt/keyrings
-    state: directory
-    mode: "0755"
-
 - name: Remove legacy Plex repository configuration
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
   loop:
     - /etc/apt/sources.list.d/plexmediaserver.list
+    - /etc/apt/sources.list.d/plexmediaserver.sources
+    - /etc/apt/apt.conf.d/99allow-plex-sha1
     - /usr/share/keyrings/plex-archive-keyring.gpg
     - /usr/share/keyrings/plexmediaserver.gpg
 
-# The keyring (/etc/apt/keyrings/plexmediaserver.v2.gpg) is the persistent
-# artifact; gate the whole download -> verify -> dearmor -> cleanup sequence on
-# its absence so the role stays idempotent. Without this gate, the cleanup task
-# below deletes the temp key, which makes get_url re-download (changed) and the
-# cleanup re-delete (changed) on every subsequent run — breaking idempotence.
-- name: Check whether the Plex v2 GPG keyring already exists
-  ansible.builtin.stat:
-    path: /etc/apt/keyrings/plexmediaserver.v2.gpg
-  register: plex_v2_keyring
-
-- name: Download Plex v2 GPG key
-  ansible.builtin.get_url:
-    url: https://downloads.plex.tv/plex-keys/PlexSign.v2.key
-    dest: /tmp/PlexSign.v2.key
-    mode: "0644"
-  when: not plex_v2_keyring.stat.exists
-
-- name: Verify Plex v2 GPG key fingerprint (primary key must match exactly)
-  ansible.builtin.shell: |
-    set -o pipefail
-    # Extract the primary key fingerprint (first fpr record after first pub)
-    # and verify it matches the expected value exactly (full-line match).
-    primary_fpr=$(gpg --show-keys --with-colons /tmp/PlexSign.v2.key 2>/dev/null \
-        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-    [ "$primary_fpr" = "6EFFEB478A6559D75C7C4FE706C521790B9CFFDE" ]
-  args:
-    executable: /bin/bash
-  changed_when: false
-  when: not plex_v2_keyring.stat.exists
-
-- name: Add Plex v2 GPG key to keyring
-  ansible.builtin.shell: |
-    gpg --yes --dearmor -o /etc/apt/keyrings/plexmediaserver.v2.gpg < /tmp/PlexSign.v2.key
-  args:
-    creates: /etc/apt/keyrings/plexmediaserver.v2.gpg
-  when: not plex_v2_keyring.stat.exists
-
-- name: Clean up downloaded GPG key
-  ansible.builtin.file:
-    path: /tmp/PlexSign.v2.key
-    state: absent
-  when: not plex_v2_keyring.stat.exists
-
-- name: Add Plex v2 repository
-  ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/etc/apt/keyrings/plexmediaserver.v2.gpg] https://repo.plex.tv/deb/ public main"
-    filename: plex
-    state: present
-    update_cache: true
+# Shared stat -> download -> verify-fingerprint -> dearmor -> add-repo pipeline.
+# gnupg is already installed by the "Install required packages" task above.
+- name: Add Plex v2 signed APT repository
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://downloads.plex.tv/plex-keys/PlexSign.v2.key
+    apt_signed_repo_fingerprint: 6EFFEB478A6559D75C7C4FE706C521790B9CFFDE
+    apt_signed_repo_keyring_path: /etc/apt/keyrings/plexmediaserver.v2.gpg
+    apt_signed_repo_repo_line: "deb [signed-by=/etc/apt/keyrings/plexmediaserver.v2.gpg] https://repo.plex.tv/deb/ public main"
+    apt_signed_repo_filename: plex
 
 - name: Install Plex Media Server (pinned version)
   ansible.builtin.apt:

@@ -132,24 +132,13 @@
     # ============================================
     # Integration Tests (Client -> Relay)
     # ============================================
-    # INTEGRATION TEST LIMITATION:
-    # This test verifies SMTP connectivity at the transport level only:
-    # - TCP connection to port 25 succeeds
-    # - SMTP banner (220) is received
-    #
-    # What is NOT tested (would require real Gmail credentials):
-    # - SASL authentication between client and relay
-    # - Actual mail delivery to Gmail SMTP
-    # - TLS negotiation (STARTTLS)
-    # - Mail queue processing and delivery
-    #
-    # These limitations exist because:
-    # 1. Integration tests use mock credentials (not real Gmail app password)
-    # 2. Gmail SMTP requires valid authentication
-    # 3. Container networking may not allow outbound SMTP
-    #
-    # Full mail flow is validated manually in production by sending test emails.
-    # The SASL password files and Postfix configuration ARE validated above.
+    # Tested end to end below: transport connectivity (banner), then a real
+    # message relayed client -> relay (alias rewriting + relay acceptance +
+    # queuing for [smtp.gmail.com]:587). The Gmail upstream itself is NOT
+    # exercised — mock credentials mean every upstream outcome (no network,
+    # DNS failure, 535 auth reject) leaves the message DEFERRED at the relay,
+    # which is exactly what the end-to-end assertion keys on. Actual Gmail
+    # delivery is validated manually in production.
     - name: Test SMTP connectivity from client to relay
       ansible.builtin.shell: |
         set -o pipefail
@@ -177,16 +166,50 @@
         msg: "SMTP banner received: {{ smtp_test.stdout }}"
       when: "'mail_clients' in group_names"
 
-    - name: Check mail queue is empty on clients
-      ansible.builtin.command: mailq
-      register: client_mailq
+    # End-to-end relay acceptance: send a real message on each client and
+    # assert (a) it leaves the client queue (handed to the relay) and (b) it
+    # lands on the relay queued for the rewritten recipient. root ->
+    # admin@example.com rewriting happens on the client (aliases/virtual), so
+    # seeing admin@example.com on the relay proves rewriting + acceptance.
+    - name: Send test mail on client (root -> aliased recipient)
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "molecule relay test from {{ inventory_hostname }}" | /usr/sbin/sendmail root
+      args:
+        executable: /bin/bash
+      changed_when: true
+      when: "'mail_clients' in group_names"
+
+    - name: Flush client mail queue
+      ansible.builtin.command: postqueue -f
       changed_when: false
       when: "'mail_clients' in group_names"
 
-    - name: Log client mail queue
-      ansible.builtin.debug:
-        msg: "Client mail queue: {{ client_mailq.stdout_lines }}"
+    - name: Wait for client queue to drain (message handed to relay)
+      ansible.builtin.command: postqueue -p
+      register: client_queue_drain
+      changed_when: false
+      retries: 15
+      delay: 4
+      until: "'Mail queue is empty' in client_queue_drain.stdout"
       when: "'mail_clients' in group_names"
+
+    - name: Wait for relayed message on the relay (queued/deferred for Gmail upstream)
+      ansible.builtin.command: postqueue -p
+      register: relay_queue
+      changed_when: false
+      retries: 15
+      delay: 4
+      until: "'admin@example.com' in relay_queue.stdout"
+      when: "'relay_servers' in group_names"
+
+    - name: Assert relay accepted and queued the rewritten message
+      ansible.builtin.assert:
+        that:
+          - "'admin@example.com' in relay_queue.stdout"
+        fail_msg: "Relay never queued the client message for admin@example.com (relay queue: {{ relay_queue.stdout | default('') }})"
+        success_msg: "Client mail relayed end-to-end: accepted by relay, rewritten to admin@example.com, queued for the Gmail upstream"
+      when: "'relay_servers' in group_names"
 
     # ============================================
     # Configuration Verification

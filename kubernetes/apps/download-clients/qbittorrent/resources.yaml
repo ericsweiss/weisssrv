@@ -29,13 +29,9 @@ metadata:
     app.kubernetes.io/name: qbittorrent
     app.kubernetes.io/component: config
 data:
-  # COUPLED WITH THE gluetun-exporter SIDECAR + PodMonitor BELOW. qbittorrent
-  # ships VPN-always-on, so the exporter and the VPNDown alert assume the VPN is
-  # up. If you set this to "false", gluetun sleeps, its control server stops
-  # listening, and the exporter reports gluetun_vpn_status=0 forever — VPNDown
-  # then pages permanently and falsely. So turning the VPN off here REQUIRES
-  # removing the gluetun-exporter container AND the gluetun-qbittorrent PodMonitor
-  # at the bottom of this file in the SAME edit (and vice-versa when re-enabling).
+  # COUPLED: vpn_enabled + the gluetun-exporter container + the
+  # gluetun-qbittorrent PodMonitor below must change together — see the
+  # download-clients README § Per-App VPN Control.
   vpn_enabled: "true"
   # VPN provider: "privado", "vpn unlimited"
   vpn_provider: "privado"
@@ -144,16 +140,9 @@ spec:
         # -1 = error, -2 = unknown). Scraped by the PodMonitor at the end of this
         # file and alerted on by VPNDown (kube-prometheus-stack release.yaml).
         #
-        # COUPLED WITH vpn_enabled IN THE ConfigMap ABOVE. The exporter's gauge
-        # defaults to 0 when the control server is unreachable, so it only makes
-        # sense while the VPN is on. If vpn_enabled is set to "false", gluetun
-        # runs `sleep infinity`, the control server stops listening, and this
-        # exporter reports gluetun_vpn_status=0 forever — VPNDown then pages
-        # permanently and falsely. So this sidecar AND the gluetun-qbittorrent
-        # PodMonitor below MUST be removed in the same edit that disables the VPN
-        # (and re-added when re-enabling it). Same reasoning is why nzbget — which
-        # ships VPN-off by default — carries neither; if nzbget's VPN is ever
-        # enabled, replicate this sidecar + PodMonitor there.
+        # COUPLED: vpn_enabled in the ConfigMap above + this sidecar + the
+        # gluetun-qbittorrent PodMonitor below must change together — see the
+        # download-clients README § Per-App VPN Control.
         #
         # No first-party gluetun exporter exists; thecfu/gluetun-exporter is a
         # small MIT Go binary that only reads the control API over loopback.
@@ -290,9 +279,8 @@ spec:
 # :8002 requires the allow-observability-vpn-scrape NetworkPolicy in
 # networkpolicy.yaml (downloads is default-deny ingress).
 #
-# COUPLED WITH vpn_enabled + the gluetun-exporter sidecar above: remove this
-# PodMonitor in the same edit that disables the VPN, or VPNDown false-fires
-# permanently on the stopped exporter.
+# COUPLED: vpn_enabled + the gluetun-exporter sidecar above + this PodMonitor
+# must change together — see the download-clients README § Per-App VPN Control.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

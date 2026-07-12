@@ -152,6 +152,43 @@ def test_scenario_dir_without_molecule_yml_ignored(repo: Path):
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
 
 
+def test_role_without_any_molecule_scenario_fails(repo: Path):
+    """A role dir with no molecule/ at all never appears in the scenario diff,
+    so it needs its own check — it would otherwise ship permanently untested."""
+    (repo / "ansible/roles/gamma/tasks").mkdir(parents=True)
+    (repo / "ansible/roles/gamma/tasks/main.yml").write_text("---\n")
+    res = _run(repo)
+    assert res.returncode == 1
+    assert "ansible/roles/gamma/" in res.stderr
+    assert "UNTESTED_ROLES" in res.stderr
+
+
+def test_role_with_empty_molecule_dir_fails(repo: Path):
+    """A molecule/ dir with no runnable scenario (no molecule.yml) counts as
+    untested, same as no molecule/ at all."""
+    d = repo / "ansible/roles/gamma/molecule/default"
+    d.mkdir(parents=True)
+    (d / "README.md").write_text("not a scenario\n")
+    res = _run(repo)
+    assert res.returncode == 1
+    assert "ansible/roles/gamma/" in res.stderr
+
+
+def test_allowlisted_untested_role_passes(repo: Path):
+    """A role named in UNTESTED_ROLES is exempt from the no-scenario check."""
+    (repo / "ansible/roles/gamma/tasks").mkdir(parents=True)
+    (repo / "ansible/roles/gamma/tasks/main.yml").write_text("---\n")
+    script = repo / "scripts" / "check-molecule-matrix-coverage.sh"
+    script.write_text(
+        script.read_text().replace(
+            'UNTESTED_ROLES: set[str] = set()',
+            'UNTESTED_ROLES: set[str] = {"gamma"}',
+        )
+    )
+    res = _run(repo)
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+
+
 if __name__ == "__main__":
     import sys
 

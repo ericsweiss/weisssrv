@@ -6,5 +6,22 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-Environment=HOME=/var/lib/adguardhome-sync
-ExecStart=/usr/local/bin/adguardhome-sync run --config /etc/adguardhome-sync.yaml
+# The root-only config (0600) is handed to the unprivileged DynamicUser via
+# the systemd credentials mechanism; the .yaml extension is preserved because
+# the tool derives the config format from it.
+LoadCredential=config.yaml:/etc/adguardhome-sync.yaml
+ExecStart=/usr/local/bin/adguardhome-sync run --config ${CREDENTIALS_DIRECTORY}/config.yaml
+Environment=HOME=%S/adguardhome-sync
+StateDirectory=adguardhome-sync
+# Unprivileged + sandboxed: only needs HTTPS to dns-01/dns-02, the
+# credential-mounted config, and its state directory.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native

@@ -21,12 +21,15 @@ dns-01 (Primary)
   ├── Installs to /opt/AdGuardHome/certs
   ├── Runs homelab-cert-reload.sh hook
   └── Distributes certs to (cert_distribution_targets in host_vars/dns-01.yml):
-      ├── dns-02 (AdGuard Home)
-      ├── smtp-relay (Postfix TLS)
-      ├── gitlab (/etc/gitlab/ssl, `gitlab-ctl hup nginx`)
-      ├── pve-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
-      ├── plex (/etc/ssl/plex, PKCS#12 conversion via plex-cert-reload.sh)
-      └── home (HAOS /ssl via SSH :22222, `ha core restart`)
+      ├── Forced-command receiver targets (one SSH round-trip each; the
+      │   receiver validates, installs, and reloads):
+      │   ├── dns-02 (AdGuard Home)
+      │   ├── smtp-relay (Postfix TLS)
+      │   ├── gitlab (/etc/gitlab/ssl, `gitlab-ctl hup nginx`)
+      │   ├── pve-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
+      │   └── plex (/etc/ssl/plex, PKCS#12 conversion via plex-cert-reload.sh)
+      └── Legacy scp push (operator-managed appliance, no sudo):
+          └── home (HAOS /ssl via SSH :22222, `ha core restart`)
 ```
 
 ## Certificate Issuance
@@ -45,7 +48,9 @@ This role:
 - Installs acme.sh on dns-01
 - Creates the certs directory at `/opt/AdGuardHome/certs`
 - Deploys the `homelab-cert-reload.sh` distribution script
-- Sets up SSH keys for cert distribution to every target in `cert_distribution_targets`
+- Deploys the `cert-receive` forced-command receiver (+ its sudoers drop-in)
+  to every sudo target, and pins the distribution pubkey in each target's
+  `authorized_keys` to that receiver (see "Distribution security model" below)
 - **Automatically installs certificates** if they exist in acme.sh but are not yet in the target directory
 - Configures the `--reloadcmd` hook for automatic distribution on future renewals
 
@@ -105,19 +110,76 @@ The `homelab-cert-reload.sh` script on `dns-01` is generated from the
 data-driven `cert_distribution_targets` list in `host_vars/dns-01.yml` —
 the source of truth for targets, per-target SSH host-key pinning, cert
 paths/permissions, and restart commands. It also emits per-target
-Prometheus metrics. Current flow:
+Prometheus metrics.
 
-1. **Local AdGuard Home**: Restart service to load new cert
-2. **dns-02**: Copy certs via SSH, fix permissions, restart AdGuard
-3. **smtp-relay**: Copy certs to `/etc/postfix/tls`, restart Postfix
-4. **gitlab**: Copy to `/etc/gitlab/ssl`, `gitlab-ctl hup nginx`
-5. **pve-nas-01**: Copy to `/etc/ssl/private` (tlshd for NFS-over-TLS; the NFS server is the sole TLS cert holder — k3s agents are xprtsec=tls clients that validate via the system CA and hold no cert)
-6. **plex**: Copy to `/etc/ssl/plex`, convert to PKCS#12 via `plex-cert-reload.sh`
-7. **home (HAOS)**: Copy to `/ssl` via SSH :22222 as root, `ha core restart`
+For the five **sudo targets** (dns-02, smtp-relay, gitlab, pve-nas-01, plex)
+the push is a single SSH round-trip: the script streams the cert bundle
+(fullchain + delimiter + privkey) to the target's stdin, where the pinned
+forced command runs `/usr/local/sbin/cert-receive`. The receiver validates,
+installs, reloads, and prints `OK` / `unchanged` / `FAIL` — no scp, no remote
+mktemp/chown, no client-side pre-checks. Per-target install specifics:
 
-### Script Location
+1. **Local AdGuard Home** (dns-01): restart service to load the new cert —
+   done last, and skipped when the local cert is unchanged
+2. **dns-02**: `/opt/AdGuardHome/certs`, restart AdGuard
+3. **smtp-relay**: `/etc/postfix/tls`, restart Postfix
+4. **gitlab**: `/etc/gitlab/ssl`, `gitlab-ctl hup nginx`
+5. **pve-nas-01**: `/etc/ssl/private` (tlshd for NFS-over-TLS; the NFS server is the sole TLS cert holder — k3s agents are xprtsec=tls clients that validate via the system CA and hold no cert)
+6. **plex**: `/etc/ssl/plex`, PKCS#12 conversion via `plex-cert-reload.sh`
 
-`/usr/local/sbin/homelab-cert-reload.sh` on `dns-01`
+**home (HAOS)** is the one remaining **legacy scp push** (`/ssl` via SSH
+:22222 as root, `ha core restart`): its `authorized_keys` is operator-managed
+inside the appliance, so the role cannot deploy a receiver there — see the
+HAOS runbook below.
+
+### Distribution security model (forced-command receiver)
+
+The dns-01 push key is pinned in each sudo target's `authorized_keys` as:
+
+```
+from="192.168.0.150",command="sudo /usr/local/sbin/cert-receive",restrict ssh-ed25519 AAAA...
+```
+
+- `restrict` disables pty/agent/port/X11 forwarding and user rc files;
+  `command=` forces every connection into the receiver — a leaked or abused
+  key never gets a shell or arbitrary sudo. `from=` keeps the source pinned
+  to dns-01 (which holds .150 across Proxmox-HA moves) as defense in depth.
+- The receiver (`/usr/local/sbin/cert-receive`, root:root `0500`, invoked
+  via the `/etc/sudoers.d/cert-receive` drop-in) treats stdin as untrusted:
+  size-capped read, receiver-assigned filenames (nothing from the wire
+  becomes a path), then full validation — cert and key parse, cert not
+  expired, key matches the leaf, and the SAN covers `*.esweiss.com` — before
+  an atomic install with **baked-in** owner/group/mode and the baked-in
+  reload command. Paths, permissions, and reload are rendered at deploy time
+  from `cert_distribution_targets`; the client controls only the cert bytes.
+- Unchanged-vs-apply is decided **server-side** (sha256 marker written only
+  after a clean reload, so a failed reload self-heals on the next push).
+- Blast radius of a leaked key: install a *validated* wildcard cert and run
+  one baked-in reload — not a root shell.
+
+### Script Locations
+
+- `/usr/local/sbin/homelab-cert-reload.sh` on `dns-01`
+- `/usr/local/sbin/cert-receive` + `/etc/sudoers.d/cert-receive` on each sudo target
+
+### HAOS operator runbook (legacy path + optional hardening)
+
+HAOS (`home`, `ssh_no_sudo: true`, SSH add-on on :22222 as root) keeps the
+legacy scp+install push because its `authorized_keys` lives inside the
+appliance and is operator-managed — the acme_certs role does not touch it.
+Current posture is mitigated by the `from="192.168.0.150"` source pin and by
+HAOS being a single non-sudo appliance.
+
+To harden it to the receiver model later (operator steps, via the SSH
+add-on):
+
+1. Install a receiver script at `/config/cert-receive.sh` on HAOS (same
+   validate-then-install-then-`ha core restart` shape as `cert-receive`,
+   without sudo).
+2. Replace the cert key's line in the add-on's authorized_keys with:
+   `from="192.168.0.150",command="/config/cert-receive.sh",restrict <key>`
+3. Flip the `home` target off `ssh_no_sudo` handling only if the push flow
+   is also updated — until then the legacy path expects plain scp+ssh.
 
 ### Permissions
 
@@ -244,16 +306,21 @@ sudo journalctl -u postfix -f
 
 ### Distribution Failing
 
-1. **Check SSH connectivity** (using cert distribution key; repeat for each
-   target in `cert_distribution_targets` — dns-02, smtp-relay, gitlab,
-   pve-nas-01, plex, home):
+1. **Check SSH connectivity** (using the cert distribution key; repeat for
+   each target in `cert_distribution_targets`). On the five sudo targets the
+   key is pinned to the forced-command receiver, so any connection runs
+   `cert-receive` — an empty stdin probe answering `FAIL: empty bundle`
+   proves SSH + forced command + sudoers are all wired:
    ```bash
-   # From dns-01 - uses dedicated cert distribution key
-   ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.160 "echo OK"  # dns-02
-   ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.151 "echo OK"  # smtp-relay
+   # From dns-01 (as root — the reload script runs as root)
+   ssh -i /home/eric/.ssh/id_ed25519_certs eric@192.168.0.160 < /dev/null  # dns-02
+   # Expected output: "FAIL: empty bundle" (exit non-zero) — that is success
+   # for a connectivity probe. A permission/hostkey error means SSH is broken;
+   # a shell prompt would mean the forced-command pin is missing.
    ```
 
-2. **Manually run distribution**:
+2. **Manually run distribution** (streams real bundles; prints per-target
+   `OK` / `unchanged` / `FAIL`):
    ```bash
    sudo /usr/local/sbin/homelab-cert-reload.sh
    ```
@@ -294,7 +361,10 @@ sudo journalctl -u postfix -f
 
 If DNS-01 challenge fails:
 
-1. **Verify API token permissions**:
+1. **Verify API token permissions** (the `Cloudflare DNS Token` item used by
+   acme.sh and the in-cluster ESO consumers is scoped to exactly these two —
+   Terraform uses the separate `Cloudflare Terraform Token` item, which adds
+   Zone Settings:Edit):
    - Zone: DNS: Edit
    - Zone: Zone: Read
 

@@ -47,6 +47,10 @@ spec:
         options:
           - name: ndots
             value: "1"
+          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
+          # fresh socket for the second of glibc's parallel A/AAAA queries so the
+          # conntrack DNAT-insert race can't cost a ~5s resolver stall. Kept in
+          # sync with recipes/mealie.yaml (same ClusterFirst+ndots:1 setup).
           - name: single-request-reopen
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml

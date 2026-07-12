@@ -18,7 +18,8 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
    - `task flux:dev-apply -- <path>` for local iteration (Flux will revert on the next reconcile)
    - The one-time bootstrap secrets `op-credentials` and `onepassword-connect-token` in `external-secrets` namespace
    - Ansible-provisioned objects outside of `kubernetes/` (e.g. the k3s node layer itself)
-6. **Use the wrong `remoteRef` format in `ExternalSecret` manifests** - `key` is the 1Password item title, `property` is the field name (no `op://`, no item IDs). See CLAUDE.md (Secrets Management) for the canonical detail.
+6. **Use the wrong `remoteRef` format in `ExternalSecret` manifests** - `key` is the 1Password item title, `property` is the field name (no `op://`, no item IDs). See `docs/29-flux-operations.md` ("1Password Connect Provider Reference Format") for the canonical detail.
+7. **Push directly to `main`** - Every change ships via a feature branch + merge request, even one-line fixes.
 
 ### ALWAYS
 
@@ -27,7 +28,7 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
 3. **Follow existing patterns** - Check similar roles or `kubernetes/apps/<neighbour>` for conventions
 4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes)
 5. **Use snake_case** - For all Ansible variables
-6. **Deploy Kubernetes changes via `git push`** - Flux reconciles within ~1 minute. Use `task flux:reconcile` to force.
+6. **Deploy Kubernetes changes via git (branch → MR → merge to `main`)** - Flux reconciliation is push-triggered (GitLab agent Flux module; ~1-minute poll fallback). Use `task flux:reconcile` to force.
 7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise. See CLAUDE.md and `docs/29-flux-operations.md` (Version pinning / Substitution) for how the `${name}` substitution works.
 
 ## Code Conventions
@@ -72,11 +73,9 @@ secrets:
 See `docs/18-bootstrap-new-systems.md`
 
 ### Update Application Version
-1. `task maintenance:check-versions` - Check for updates
-2. `task maintenance:update-version SERVICE=<name>` - Update version in `ansible/inventories/prod/group_vars/all.yml`
-3. For Kubernetes workloads: `task flux:sync-versions` then `git commit` + `git push` - Flux rolls the new version out
-4. For base infra: run the appropriate deploy task (run `task --list` for the full set)
-5. Verify: `task infra:verify` (base infra), `task flux:status` (k8s), or `task k3s:status`
+Versions are pinned in `ansible/inventories/prod/group_vars/all.yml`; run
+`task flux:sync-versions` after editing pins that feed Kubernetes manifests.
+Full workflow (discovery, update, deploy, verify): `docs/12-runbooks.md`.
 
 ## Ansible Patterns
 
@@ -126,14 +125,14 @@ See `docs/18-bootstrap-new-systems.md`
 
 ## Key References
 
-- **Full project docs**: `CLAUDE.md`
-- **Main playbook**: `ansible/playbooks/site.yml`
-- **Inventory**: `ansible/inventories/prod/hosts.yml`
-- **Global vars / versions**: `ansible/inventories/prod/group_vars/all.yml`
-- **Task runner**: `Taskfile.yml` (run `task --list` for all tasks)
-- **Flux entrypoint**: `kubernetes/clusters/weisssrv/` (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
-- **Platform sources**: `kubernetes/infrastructure/sources/` (HelmRepository CRs, versions-configmap.yaml)
-- **Platform controllers**: `kubernetes/infrastructure/controllers/` — browse the dir for the current set (dependsOn sources)
-- **Platform configs**: `kubernetes/infrastructure/configs/` — browse the dir for the current set (CRs requiring controller CRDs; dependsOn controllers)
-- **Apps**: `kubernetes/apps/` — one dir per app; browse the dir for the current set (dependsOn infrastructure-observability)
-- **All docs**: `docs/` (see the `README.md` Documentation section for the numbered index)
+Structure and stage descriptions live in `CLAUDE.md` — paths only here:
+
+- `CLAUDE.md`
+- `ansible/playbooks/site.yml`
+- `ansible/inventories/prod/hosts.yml`
+- `ansible/inventories/prod/group_vars/all.yml`
+- `Taskfile.yml` (run `task --list`)
+- `kubernetes/clusters/weisssrv/`
+- `kubernetes/infrastructure/`
+- `kubernetes/apps/`
+- `docs/` (numbered index in the `README.md` Documentation section)

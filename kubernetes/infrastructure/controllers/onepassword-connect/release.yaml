@@ -95,3 +95,19 @@ spec:
             memory: 256Mi
     operator:
       create: false
+  # Connect (connect-api + connect-sync) never calls the Kubernetes API — it
+  # serves ESO from its local encrypted cache — so it needs no ServiceAccount
+  # token mounted. The connect chart (2.x) exposes no automount value, so patch
+  # the rendered Deployment to drop the projected token.
+  postRenderers:
+    - kustomize:
+        patches:
+          - patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: onepassword-connect
+              spec:
+                template:
+                  spec:
+                    automountServiceAccountToken: false

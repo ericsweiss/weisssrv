@@ -45,7 +45,7 @@ spec:
             # Use python:3-slim (Debian) for reliable DNS resolution. Alpine/musl has issues
             # with getaddrinfo() in Kubernetes environments (EAI_NONAME errors).
             # Pinned to specific SHA digest for reproducibility and security
-            image: python:3.13-slim@sha256:8bc60ca09afaa8ea0d6d1220bde073bacfedd66a4bf8129cbdc8ef0e16c8a952
+            image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
             command:
             - python3
             - -c
@@ -141,8 +141,12 @@ spec:
                   return None
 
               def update_record(zone_id, record_name, current_ip, proxied):
-                  """Update or create a DNS A record."""
-                  print(f"\n=== Processing {record_name} (proxied={proxied}) ===")
+                  """Update or create a DNS A record. `proxied` only seeds
+                  record CREATION (Cloudflare would default a fresh record to
+                  proxied=false, exposing the origin IP for the root domain);
+                  on update the record's existing value is preserved —
+                  Terraform owns proxied, same anti-fight rationale as TTL."""
+                  print(f"\n=== Processing {record_name} (create-default proxied={proxied}) ===")
 
                   # Get existing record
                   url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type=A&name={record_name}"
@@ -163,6 +167,10 @@ spec:
                   # Falling back to 1 ("Auto") preserves the previous
                   # behavior for any record Terraform doesn't manage.
                   existing_ttl = existing_record.get('ttl', 1) if existing_record else 1
+                  # Same for proxied: preserve the existing value on update so
+                  # the full-body PUT can't fight a Terraform-side change; the
+                  # per-record literal only applies when creating from scratch.
+                  existing_proxied = existing_record.get('proxied', proxied) if existing_record else proxied
 
                   print(f"Existing IP: {existing_ip or 'none'}")
 
@@ -176,7 +184,7 @@ spec:
                       'name': record_name,
                       'content': current_ip,
                       'ttl': existing_ttl,
-                      'proxied': proxied
+                      'proxied': existing_proxied
                   }
 
                   if record_id:

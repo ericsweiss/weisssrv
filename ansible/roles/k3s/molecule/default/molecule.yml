@@ -22,8 +22,31 @@ platforms:
       - /tmp
     networks:
       - name: k3s-test-net
+  # Second server exercising the JOIN branch of k3s-server-config.yaml.j2
+  # (k3s_is_first_server: false in host_vars): server stanza instead of
+  # cluster-init, and no kube-vip manifest (first-server only).
+  - name: k3s-server-join-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    capabilities:
+      - SYS_ADMIN
+    tmpfs:
+      - /run
+      - /tmp
+    networks:
+      - name: k3s-test-net
 provisioner:
   inventory:
+    host_vars:
+      k3s-server-join-test:
+        k3s_is_first_server: false
     group_vars:
       all:
         k3s_version: v1.35.0+k3s3
@@ -41,3 +64,7 @@ provisioner:
         skip_ssh_config: true
         skip_dns_config: true
         skip_k3s_install: true
+        # Exercise the off-node etcd snapshot copy artifacts (script/service/timer).
+        # The container-hostile steps (NFS mount, tlshd assert, timer start) are
+        # molecule-notest-tagged; the file/template tasks render for verify.yml.
+        k3s_etcd_snapshot_offnode_enabled: true

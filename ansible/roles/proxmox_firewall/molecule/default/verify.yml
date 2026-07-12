@@ -139,6 +139,25 @@
           collided. 100.fw should mention proxmox-firewall-test;
           150.fw should mention dns-01.
 
+    # Coverage for the guest_firewall_policy_out egress-DROP branch:
+    # smtp-relay (151) sets guest_firewall_policy_out: DROP in molecule.yml,
+    # so its .fw must render the enforced default-deny egress policy; dns-01
+    # (150) leaves it unset, so its .fw must omit policy_out entirely.
+    - name: Read smtp-relay's 151.fw
+      ansible.builtin.slurp:
+        src: "/tmp/pve-firewall-test/firewall/151.fw"
+      register: smtp_guest_fw_content
+
+    - name: Assert policy_out DROP renders when enforced and is omitted otherwise
+      ansible.builtin.assert:
+        that:
+          - "'policy_out: DROP' in (smtp_guest_fw_content.content | b64decode)"
+          - "'policy_out:' not in (dns01_guest_fw_content.content | b64decode)"
+        fail_msg: >-
+          guest_firewall_policy_out rendering wrong — 151.fw (smtp-relay)
+          should carry 'policy_out: DROP' and 150.fw (dns-01) should omit
+          policy_out. Check the conditional in guest.fw.j2.
+
     # Regression guard for the verify scope-creep bug fixed in 234c0e2:
     # verify.yml used to be `hosts: all`, blowing up on the local-
     # connection placeholder hosts that can't see files written via

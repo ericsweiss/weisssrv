@@ -12,7 +12,7 @@ set -euo pipefail
 
 _CERT_START_TS="$(date +%s)"
 
-PROM_DIR="/var/lib/node_exporter"
+PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 # node_exporter's textfile collector dir is normally created by the
 # node_exporter_host role, but cert-reload can race that on a fresh host
 # (cron-driven reload firing before the role's first deploy completes).
@@ -109,7 +109,11 @@ IDENTITY_FILE="/home/eric/.ssh/id_ed25519_certs"
 
 {% for target in cert_distribution_targets %}
 {{ target.host | upper | replace('-', '_') }}_IP="{{ target.ip }}"
+{% if target.ssh_no_sudo | default(false) %}
+{# cert_dir is baked into the receiver on sudo targets; only the legacy
+   (ssh_no_sudo) push path still needs it client-side. #}
 {{ target.host | upper | replace('-', '_') }}_CERT_DIR="{{ target.cert_dir }}"
+{% endif %}
 {% endfor %}
 
 # Helper: non-interactive ssh/scp with dedicated identity file.
@@ -128,7 +132,42 @@ SCP_OPTS=(-q -i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -
 # trap catches and writes the failure metric).
 ANY_FAIL=0
 
-push_target() {
+# Boundary between the two PEM parts in the bundle streamed to the receiver.
+# Not valid PEM/base64, so it can never collide with cert or key content.
+DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
+
+# Sudo targets: one SSH round-trip. The key is pinned to
+# command="sudo /usr/local/sbin/cert-receive",restrict, so we just stream the
+# bundle to stdin; the receiver validates, installs, reloads, and decides
+# unchanged-vs-apply itself, printing OK / unchanged / FAIL. No scp, no remote
+# mktemp/chown/chmod, no pre-check probes — the forced command shrinks a leaked
+# key from a root shell to "install a validated cert + run one baked-in reload".
+push_target_receiver() {
+    local host="$1" ip="$2" ssh_user="$3" ssh_port="$4"
+    local out rc
+    if out=$( { cat "$FULLCHAIN_SRC"; printf '\n%s\n' "$DELIM"; cat "$PRIVKEY_SRC"; } \
+                | ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" 2>&1 ); then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx 'OK'; then
+        write_target_metric "$host" 1
+        echo "OK: ${host}"
+    elif [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx 'unchanged'; then
+        write_target_metric "$host" 1
+        echo "unchanged: ${host}"
+    else
+        echo "FAIL: ${host}: ${out:-ssh exited ${rc}}" >&2
+        write_target_metric "$host" 0
+        ANY_FAIL=1
+    fi
+}
+
+# Legacy scp+sudo push, retained ONLY for ssh_no_sudo appliance targets (HAOS)
+# whose authorized_keys is operator-managed and cannot host the forced-command
+# receiver. See docs/09-certs.md for the operator runbook to migrate HAOS too.
+push_target_legacy() {
     local host="$1" ip="$2" cert_dir="$3" \
           ssh_user="$4" ssh_port="$5" sudo_prefix="$6" \
           owner="$7" group="$8" cert_mode="$9" key_mode="${10}" \
@@ -144,7 +183,7 @@ push_target() {
     # `ha core restart`, Plex/AdGuard/postfix/tlshd restarts) when nothing
     # changed. acme.sh's own --reloadcmd path differs on renewal and pushes as
     # before; a missing/stale marker or unreachable target falls through to the
-    # full push below (the first run after this change re-applies once per target).
+    # full push below.
     # Skip only when the applied marker matches AND both remote cert files still
     # exist and hash-match the local source. A stale .applied-fullchain.sha256 — or
     # a deleted/corrupted/manually-replaced fullchain.pem OR privkey.pem — must NOT
@@ -268,7 +307,8 @@ push_target() {
 {% set _reload = target.restart_command | default(_sudo ~ 'systemctl restart ' ~ (target.restart_service | default(''))) %}
 {% set _ssh_port = target.ssh_port | default(22) %}
 {% set _ssh_user = target.ssh_user | default('eric') %}
-push_target \
+{% if target.ssh_no_sudo | default(false) %}
+push_target_legacy \
     "{{ target.host }}" \
     "${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
     "${{"{"}}{{ target.host | upper | replace('-', '_') }}_CERT_DIR{{"}"}}" \
@@ -280,6 +320,13 @@ push_target \
     "{{ target.cert_mode }}" \
     "{{ target.key_mode }}" \
     "{{ _reload }}"
+{% else %}
+push_target_receiver \
+    "{{ target.host }}" \
+    "${{"{"}}{{ target.host | upper | replace('-', '_') }}_IP{{"}"}}" \
+    "{{ _ssh_user }}" \
+    "{{ _ssh_port }}"
+{% endif %}
 
 {% endfor %}
 

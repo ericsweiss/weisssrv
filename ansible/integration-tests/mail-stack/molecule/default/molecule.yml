@@ -75,8 +75,13 @@ provisioner:
     SMTP_RELAY_USER: relay_user
     SMTP_RELAY_PASSWORD: test_relay_password
     # admin_email in group_vars/all.yml hard-requires this env var
-    # (undef() guard); the aliases template renders it on every host.
-    ROOT_EMAIL_ALIAS: test-root@molecule.test
+    # (undef() guard); the aliases template renders it on every host. Set to the
+    # asserted relay address so all.yml's admin_email (which shadows the
+    # inventory group_vars) rewrites root -> admin@example.com and the verify
+    # play's relay-queue assertion matches.
+    ROOT_EMAIL_ALIAS: admin@example.com
+  playbooks:
+    prepare: ../../../_shared/prepare.yml
   inventory:
     group_vars:
       relay_servers:

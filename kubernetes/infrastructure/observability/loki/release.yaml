@@ -68,7 +68,11 @@ spec:
       persistence:
         enabled: true
         size: 75Gi
-        storageClass: ""
+        # "-" is the chart's sentinel for a literal `storageClassName: ""`
+        # (a plain "" is dropped from the rendered volumeClaimTemplate, which
+        # lets the PVC fall through to the local-path default class instead of
+        # statically binding to the pre-provisioned loki-data zvol PV).
+        storageClass: "-"
       nodeSelector:
         esweiss.com/nas: "true"
       tolerations:

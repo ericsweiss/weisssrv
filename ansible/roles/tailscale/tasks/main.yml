@@ -10,29 +10,59 @@
     mode: '0755'
   when: ansible_facts['os_family'] == "Debian"
 
-# force: true re-fetches on every run so a rotated upstream signing key is
-# picked up without manual file removal; the fingerprint verification below
-# is the gate against a tampered download.
-- name: Download Tailscale GPG key
-  ansible.builtin.get_url:
-    url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
-    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
-    mode: '0644'
-    force: true
+# The key is re-fetched on every run (force: true) so a rotated upstream
+# signing key is picked up without manual file removal — but into a staging
+# path, and fingerprint-verified BEFORE being copied into the trusted keyring
+# location. Installing first and verifying after would leave a tampered
+# download trusted by apt (tailscale.list already references the keyring path
+# on established hosts) even though the play fails.
+- name: Create staging file for Tailscale GPG key
+  ansible.builtin.tempfile:
+    state: file
+    suffix: tailscale-gpg
+  register: tailscale_gpg_staging
+  changed_when: false
+  check_mode: false
   when: ansible_facts['os_family'] == "Debian"
 
-- name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
-  ansible.builtin.shell: |
-    set -o pipefail
-    # Extract the primary key fingerprint (first fpr record after first pub)
-    # and verify it matches the expected value exactly (full-line match).
-    primary_fpr=$(gpg --show-keys --with-colons /usr/share/keyrings/tailscale-archive-keyring.gpg 2>/dev/null \
-        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-    [ "$primary_fpr" = "2596A99EAAB33821893C0A79458CA832957F5868" ]
-  args:
-    executable: /bin/bash
-  changed_when: false
+- name: Verify the Tailscale GPG key, then install it
   when: ansible_facts['os_family'] == "Debian"
+  block:
+    - name: Download Tailscale GPG key to staging path
+      ansible.builtin.get_url:
+        url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+        dest: "{{ tailscale_gpg_staging.path }}"
+        mode: '0644'
+        force: true
+      changed_when: false
+
+    - name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Extract the primary key fingerprint (first fpr record after first pub)
+        # and verify it matches the expected value exactly (full-line match).
+        primary_fpr=$(gpg --show-keys --with-colons {{ tailscale_gpg_staging.path | quote }} 2>/dev/null \
+            | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
+        [ "$primary_fpr" = "2596A99EAAB33821893C0A79458CA832957F5868" ]
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Install verified Tailscale GPG key
+      ansible.builtin.copy:
+        src: "{{ tailscale_gpg_staging.path }}"
+        dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+        owner: root
+        group: root
+        mode: '0644'
+        remote_src: true
+  always:
+    - name: Clean up the GPG key staging file
+      ansible.builtin.file:
+        path: "{{ tailscale_gpg_staging.path }}"
+        state: absent
+      changed_when: false
+      check_mode: false
 
 - name: Add Tailscale repository
   ansible.builtin.apt_repository:
@@ -59,14 +89,34 @@
     state: started
     enabled: true
 
+# Persisted in a role-owned sysctl.d drop-in (NOT the module's /etc/sysctl.conf
+# default, and NOT nic_tuning's 99-nic-tuning-ip-forward.conf — that file is
+# deleted by nic_tuning's disable path).
 - name: Enable IP forwarding for subnet routing
   ansible.posix.sysctl:
     name: net.ipv4.ip_forward
     value: '1'
+    sysctl_file: /etc/sysctl.d/99-tailscale-ip-forward.conf
     sysctl_set: true
     state: present
     reload: true
   when: tailscale_advertise_routes | length > 0
+
+- name: Remove ip_forward sysctl drop-in when subnet routing disabled
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-tailscale-ip-forward.conf
+    state: absent
+  when: tailscale_advertise_routes | length == 0
+
+# Earlier revisions of this role persisted the value in /etc/sysctl.conf (the
+# sysctl module default); remove that entry so the drop-in above is the single
+# owner. Only matches the uncommented directive — the distribution's commented
+# example line is left alone.
+- name: Remove ip_forward entry from /etc/sysctl.conf
+  ansible.builtin.lineinfile:
+    path: /etc/sysctl.conf
+    regexp: '^net\.ipv4\.ip_forward\s*='
+    state: absent
 
 - name: Create tailscaled systemd drop-in directory
   ansible.builtin.file:

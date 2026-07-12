@@ -40,6 +40,20 @@
   when: ha_rules_check.rc != 0 or ha_rules_check.stdout | length == 0 or ha_rules_check.stdout == '[]'
   tags: [proxmox_ha_rules]
 
+# The create/update tasks below gate on `item.type == 'node-affinity'`, so any
+# other rule type (e.g. PVE9 resource-affinity) would otherwise be silently
+# ignored — fail loud instead.
+- name: Assert every HA rule is a supported type
+  ansible.builtin.assert:
+    that:
+      - ha_rules | default([]) | rejectattr('type', 'equalto', 'node-affinity') | list | length == 0
+    fail_msg: >-
+      Unsupported HA rule type(s) in ha_rules:
+      {{ ha_rules | default([]) | rejectattr('type', 'equalto', 'node-affinity') | map(attribute='name') | join(', ') }}.
+      This role only manages type: node-affinity rules — other types would be
+      silently skipped, not applied.
+  tags: [proxmox_ha_rules]
+
 # Remove BEFORE add/update so replacing a rule (e.g. swapping the flat
 # critical-services-no-nas for per-service affinity rules) never leaves a resource
 # in two node-affinity rules mid-run, which Proxmox's rule feasibility check can
@@ -59,7 +73,7 @@
     - "'not found' not in (ha_rule_remove_result.stderr | default(''))"
   tags: [proxmox_ha_rules]
 
-- name: Create or update node-affinity HA rules
+- name: Create node-affinity HA rules
   ansible.builtin.command: >-
     ha-manager rules add node-affinity {{ item.name }}
     --resources {{ item.resources | join(',') }}
@@ -118,12 +132,18 @@
          _desired_resources != _current_resources or
          _desired_strict != _current_strict or
          _desired_comment != _current_comment }}
+    # `rules set` only updates supplied options, so a comment removed from
+    # config must be cleared with an explicit --comment "" — otherwise the old
+    # comment persists and the drift check re-fires every run without ever
+    # converging (same pattern as replication.yml's _needs_comment_arg).
+    _needs_comment_arg: "{{ (item.comment is defined) or (_current_comment | length > 0) }}"
+    _comment_value: "{{ item.comment | default('') }}"
   ansible.builtin.command: >-
     ha-manager rules set node-affinity {{ item.name }}
     --resources {{ item.resources | join(',') }}
     --nodes {{ item.nodes | join(',') }}
     --strict {{ '1' if item.strict | default(false) else '0' }}
-    {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
+    {% if _needs_comment_arg %}--comment "{{ _comment_value }}"{% endif %}
   when:
     - ha_rules_check.rc == 0
     - item.name in (current_ha_rule_ids | default([]))

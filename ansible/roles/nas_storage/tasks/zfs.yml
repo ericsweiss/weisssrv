@@ -14,11 +14,12 @@
 # Reads each property's current value and only `zfs set`s on a mismatch,
 # so the task reports changed only when it actually changed something.
 # Datasets in a pool that is not imported are skipped (not failed).
-# NOTE: property values in zfs_pools[].properties MUST be in the canonical form
-# `zfs get -H -o value <prop>` returns — ZFS normalizes several inputs (e.g.
-# compression 'on' -> active algorithm, recordsize '1M' -> '1048576', quota
-# '1T' -> a byte count). A human-form value here would never compare equal, so
-# the task would `zfs set` and report changed on every run (masking real drift).
+# NOTE: property values in zfs_pools[].properties MUST be written exactly as
+# `zfs get -H -o value <prop>` prints them — the HUMAN-READABLE form, since the
+# comparison runs without -p (recordsize prints '1M', not 1048576; acltype
+# prints 'posix'). A value in any other form (e.g. a byte count) would never
+# compare equal, so the task would `zfs set` and report changed on every run
+# (masking real drift).
 - name: Verify ZFS datasets exist and set properties
   ansible.builtin.shell: |
     if ! zfs list {{ item.1.name | quote }} >/dev/null 2>&1; then
@@ -71,3 +72,46 @@
     name: zfs-auto-snapshot
     state: present
   when: ansible_facts['os_family'] == "Debian"
+
+# Cap the ZFS ARC via a module parameter when zfs_arc_max_bytes is set. Baked
+# into the initramfs (Update initramfs handler) so it applies at early boot,
+# before the data pools import and the ARC grows to the ~half-RAM default and
+# swap-thrashes the pinned guests on this memory-over-committed host. Empty
+# default -> the file is not managed (no cap enforced, nothing removed).
+- name: Cap ZFS ARC via modprobe.d
+  ansible.builtin.template:
+    src: zfs-modprobe.conf.j2
+    dest: /etc/modprobe.d/zfs.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: zfs_arc_max_bytes | default('') | string | length > 0
+  notify: Update initramfs
+
+# The modprobe.d file + initramfs rebuild above only take effect at the next
+# boot. Apply the cap to the running kernel too so a changed zfs_arc_max_bytes
+# is live immediately (compare-then-set, matching the property task above).
+# Guarded on the sysfs param existing — the molecule container has no ZFS
+# module, so the file is absent there.
+- name: Check for running ZFS ARC parameter
+  ansible.builtin.stat:
+    path: /sys/module/zfs/parameters/zfs_arc_max
+  register: zfs_arc_max_param
+  when: zfs_arc_max_bytes | default('') | string | length > 0
+
+- name: Apply ZFS ARC cap to the running kernel
+  ansible.builtin.shell: |
+    current=$(cat /sys/module/zfs/parameters/zfs_arc_max)
+    if [ "$current" != {{ zfs_arc_max_bytes | quote }} ]; then
+      echo {{ zfs_arc_max_bytes | quote }} > /sys/module/zfs/parameters/zfs_arc_max
+      echo "CHANGED"
+    else
+      echo "OK"
+    fi
+  register: zfs_arc_runtime
+  changed_when: "'CHANGED' in zfs_arc_runtime.stdout"
+  # No check_mode:false — this task writes /sys, so a dry-run (task infra:check)
+  # must skip it rather than mutate the running kernel on the live NAS.
+  when:
+    - zfs_arc_max_bytes | default('') | string | length > 0
+    - zfs_arc_max_param.stat.exists | default(false)

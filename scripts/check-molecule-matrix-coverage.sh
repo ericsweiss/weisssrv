@@ -11,7 +11,10 @@
 # adds to the matrix runs in NO CI job — a brand-new role's tests would
 # silently never execute, and the gap is invisible at review time. This check
 # fails loudly when a scenario/test exists on disk with no matching matrix
-# entry, naming the missing entries and where to add them.
+# entry, naming the missing entries and where to add them. It ALSO fails when
+# a role under ansible/roles/ has no molecule scenario at all (a role committed
+# without molecule/ would otherwise ship permanently untested), unless the role
+# is named in the UNTESTED_ROLES allowlist below with a rationale.
 #
 # Direction is deliberately one-way: we flag on-disk scenarios MISSING from
 # the matrix (the dangerous drift — untested code). A matrix entry pointing at
@@ -98,6 +101,25 @@ if roles_dir.is_dir():
         scenario = scenario_dir.name
         disk_molecule.add((role, scenario))
 
+# Roles intentionally shipped without molecule coverage. Empty by design; add a
+# role name here only with an inline rationale (mirrors the
+# INTENTIONALLY_UNMAPPED_* pattern in check-deploy-coverage.sh).
+UNTESTED_ROLES: set[str] = set()
+
+# Roles with NO runnable molecule scenario at all: a new role committed without
+# molecule/ would never appear in disk_molecule, so the matrix diff alone can't
+# catch it.
+untested_roles = []
+if roles_dir.is_dir():
+    tested_roles = {role for role, _scenario in disk_molecule}
+    for role_dir in sorted(roles_dir.iterdir()):
+        if not role_dir.is_dir():
+            continue
+        if role_dir.name in UNTESTED_ROLES:
+            continue
+        if role_dir.name not in tested_roles:
+            untested_roles.append(role_dir.name)
+
 # ---- integration-tests: TEST list --------------------------------------------
 # Matrix shape: a single {TEST: [a, b, ...]} entry (a list of test names).
 ci_integration = set()
@@ -122,6 +144,19 @@ if it_dir.is_dir():
             disk_integration.add(d.name)
 
 failed = False
+
+if untested_roles:
+    failed = True
+    sys.stderr.write(
+        "ERROR: role(s) with no molecule scenario (would ship permanently untested):\n\n"
+    )
+    for role in untested_roles:
+        sys.stderr.write(f"  - ansible/roles/{role}/ (no molecule/*/molecule.yml)\n")
+    sys.stderr.write(
+        "\n  Add a molecule scenario for the role (plus its molecule-tests\n"
+        "  matrix entry in .gitlab-ci.yml), or — only with a rationale — name\n"
+        "  it in UNTESTED_ROLES in scripts/check-molecule-matrix-coverage.sh.\n\n"
+    )
 
 missing_molecule = sorted(disk_molecule - ci_molecule)
 if missing_molecule:
@@ -156,6 +191,7 @@ if failed:
 
 print(
     f"Molecule matrix covers all {len(disk_molecule)} scenario dir(s); "
-    f"integration matrix covers all {len(disk_integration)} test dir(s)."
+    f"integration matrix covers all {len(disk_integration)} test dir(s); "
+    f"every role has at least one scenario."
 )
 PYEOF

@@ -123,3 +123,27 @@
     - nfs_tls_enabled | default(false)
     - not (nfs_tls_is_server | default(false))
     - not (nfs_tls_client_cert | default(false))
+
+# Opt-out reconciliation: flipping nfs_tls_enabled back to false must not
+# leave tlshd enabled and running with a stale /etc/tlshd.conf — mirror the
+# zfs_encryption pattern of disabling units and removing files on de-listed
+# hosts. Tolerate ONLY the missing-unit case (hosts that never had ktls-utils
+# installed, so systemd knows no tlshd.service) — a blanket failed_when: false
+# would silence a real regression (e.g. a typo'd unit name) and never
+# reconcile anything.
+- name: Stop and disable tlshd when NFS-TLS is opted out
+  ansible.builtin.systemd:
+    name: tlshd.service
+    enabled: false
+    state: stopped
+  register: tlshd_optout
+  failed_when:
+    - tlshd_optout is failed
+    - "'Could not find the requested service' not in (tlshd_optout.msg | default(''))"
+  when: not (nfs_tls_enabled | default(false))
+
+- name: Remove tlshd configuration when NFS-TLS is opted out
+  ansible.builtin.file:
+    path: /etc/tlshd.conf
+    state: absent
+  when: not (nfs_tls_enabled | default(false))

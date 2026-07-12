@@ -251,13 +251,16 @@ Components: pve-enterprise
 Enabled: no
 EOF
 
-# Add no-subscription repo
+# Add no-subscription repo (Signed-By pins the repo to the Proxmox archive key,
+# matching what the base role deploys; keep the http:// URI —
+# download.proxmox.com's TLS cert does not cover that hostname)
 cat > /etc/apt/sources.list.d/pve-no-subscription.sources << 'EOF'
 # Proxmox VE No-Subscription Repository
 Types: deb
 URIs: http://download.proxmox.com/debian/pve
 Suites: trixie
 Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
 
 # Update and upgrade

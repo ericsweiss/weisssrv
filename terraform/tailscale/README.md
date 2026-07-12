@@ -15,8 +15,10 @@ making subnet-router **failover real** instead of a single-host SPOF.
 
 `terraform apply` here **overwrites the live tailnet ACL**. A wrong policy can
 sever tailnet connectivity and Tailscale SSH (including the path this repo's
-remote admin relies on). Do **not** wire this into CI auto-apply. Review
-`policy.hujson` against the current Admin console ACL first.
+remote admin relies on). Do **not** wire `apply` into CI — a read-only drift
+`plan` in CI is fine (and wanted, so Admin-console hot-fixes surface instead
+of being silently reverted at the next apply), but `apply` stays supervised.
+Review `policy.hujson` against the current Admin console ACL first.
 
 ## One-time setup
 
@@ -59,5 +61,4 @@ on all six hosts.
 The initial `acls` block preserves full member access (non-breaking). Once
 validated, scope it to tags/groups and tag the Proxmox subnet routers
 (`tag:subnet-router`) — see `docs/05-tailscale.md`. Adding `terraform:tailscale-*`
-Taskfile wrappers (op-run + TF_HTTP_*) is a small follow-up tracked in
-`docs/16-next-steps.md`.
+Taskfile wrappers (op-run + TF_HTTP_*) is a small follow-up.

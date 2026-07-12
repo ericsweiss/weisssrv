@@ -1,0 +1,30 @@
+# EditorConfig — https://editorconfig.org
+# Conventions the linters already enforce (yamllint/ansible-lint expect
+# 2-space YAML; scripts use 4-space shell/Python; terraform fmt uses 2).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{sh,sh.j2}]
+indent_style = space
+indent_size = 4
+
+[*.{tf,tfvars}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Trailing double-space is a Markdown hard line break.
+trim_trailing_whitespace = false

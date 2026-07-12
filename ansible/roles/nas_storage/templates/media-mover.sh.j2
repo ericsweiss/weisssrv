@@ -12,6 +12,10 @@ LOCK="/run/media-mover.lock"
 MIN_AGE="${MIN_AGE:-{{ media_mover_min_age | default('12h') }}}"
 DRY_RUN="${DRY_RUN:-0}"
 
+# Optional rsync throughput cap (load-shaping). Empty = unlimited. Accepts any
+# rsync --bwlimit value (e.g. 50m for 50 MiB/s).
+BWLIMIT="{{ media_mover_bwlimit | default('') }}"
+
 PROM_DIR="/var/lib/node_exporter"
 PROM_FILE="${PROM_DIR}/media_mover.prom"
 _MM_START_TS="$(date +%s)"
@@ -72,6 +76,9 @@ flock -n 9 || { echo "media-mover already running"; exit 0; }
 AGE_MINUTES="$(parse_age_to_minutes "$MIN_AGE")"
 
 RSYNC_FLAGS=(-aHAX --numeric-ids --remove-source-files --info=stats2)
+if [[ -n "$BWLIMIT" ]]; then
+  RSYNC_FLAGS+=(--bwlimit="$BWLIMIT")
+fi
 if [[ "$DRY_RUN" == "1" ]]; then
   RSYNC_FLAGS+=(--dry-run -v)
 fi

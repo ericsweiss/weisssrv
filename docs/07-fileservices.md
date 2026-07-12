@@ -40,10 +40,14 @@ Fast NVMe storage is merged with slower HDD storage:
 
 ### Media Mover
 
-A systemd timer (`media-mover.timer`, daily at 02:00) runs
-`/usr/local/sbin/media-mover.sh`, which moves files older than 12 hours
+A systemd timer (`media-mover.timer`, daily at 04:15 —
+`media_mover_schedule` in `host_vars/pve-nas-01.yml`; role default 03:30)
+runs `/usr/local/sbin/media-mover.sh`, which moves files older than 12 hours
 (`media_mover_min_age`) from `/mnt/nvme/media/library` to
-`/mnt/tank/media/library`.
+`/mnt/tank/media/library`. The service is load-shaped so a large overnight
+move cannot starve Plex or backups: `Nice`/`ionice` plus cgroup-v2
+`CPUWeight`/`IOWeight` (defaults 20), with an optional hard rsync cap via
+`media_mover_bwlimit`.
 
 ## Permission Model
 
@@ -141,11 +145,18 @@ With setgid + GID 2000:
 
 | Export | Clients | Access | Transport |
 |--------|---------|--------|-----------|
-| /export | Proxmox hosts, k3s VMs, .154 | RW, crossmnt | plaintext (fsid=0 root; no `xprtsec`) |
+| /export | Proxmox hosts, k3s VMs, .154 | RO, no crossmnt | plaintext (fsid=0 pseudo-root, traversal only; no `xprtsec`) |
 | /export/appdata | k3s VMs (192.168.0.200/29, 192.168.0.220/29) | RW | require TLS (`xprtsec=tls`); plaintext rejected |
 | /export/share | k3s VMs | RW | require TLS (`xprtsec=tls`); plaintext rejected |
 | /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS (`xprtsec=tls` on k3s lines); **.154 plaintext** via its own line (HAOS can't do `xprtsec`) |
-| /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | plaintext (TLS deferred) |
+| /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | export lines carry no `xprtsec`; the Proxmox storage entry mounts with `xprtsec=tls` by hostname (proxmox_backup role) |
+
+The `/export` pseudo-root is traversal-only: NFSv4 clients cross from it into
+whichever child exports are explicitly listed for them. `crossmnt` is
+deliberately absent — it would implicitly export any child bound under
+`/export` to every root client *with the root line's options* (plaintext, no
+`xprtsec`), bypassing the per-child client lists and TLS requirements. Any new
+dataset bound under `/export` must get its own explicit export entry.
 
 **The k3s client lines require TLS.** They carry `xprtsec=tls`, so a plaintext
 mount from those CIDRs is rejected; the k3s PVs *mount* with `xprtsec=tls`, **by
@@ -184,21 +195,25 @@ The k3s NFS PVs already use `server: pve-nas-01.esweiss.com` for this reason
 
 - **Samba**: every SMB session is encrypted — `smb encrypt = required` and
   `server min protocol = SMB3_00` in smb.conf.
-- **NFS**: NFSv4-over-TLS (`xprtsec=tls`) is enabled for k3s clients via the
-  `nfs_tls` role (`nfs_tls_enabled: true` on `pve-nas-01` + every k3s agent —
-  `tlshd` runs everywhere a pod might schedule). The k3s client lines of
+- **NFS**: NFSv4-over-TLS (`xprtsec=tls`) is enabled via the `nfs_tls` role
+  (`nfs_tls_enabled: true` on every k3s agent — `tlshd` runs everywhere a pod
+  might schedule — and on all six Proxmox hosts, covering both the NFS server
+  and the tank-proxmox mounting hosts). The k3s client lines of
   `/export/{appdata,share,media}` carry `xprtsec=tls` — **require TLS**: a
   plaintext mount from those CIDRs is rejected. The k3s PVs *mount* with
   `xprtsec=tls`, **by hostname** (`pve-nas-01.esweiss.com`, so the
   `*.esweiss.com` cert verifies — an IP mount fails the handshake).
-  Two documented plaintext exceptions:
+  One documented plaintext exception:
   - **HAOS (.154) on `/export/media`** — Home Assistant's Supervisor hardcodes
     its NFS mount options and the appliance ships no `tlshd`, so it cannot
     speak `xprtsec`. Its client line omits `xprtsec` entirely and stays
     plaintext; `xprtsec` is per-client, so it is not locked out by the
     require-TLS k3s lines on the same export. See docs/24.
-  - **Proxmox `tank-proxmox` backup target** — Proxmox-managed NFS storage;
-    TLS rollout deferred (see docs/16).
+
+  The **Proxmox `tank-proxmox` backup target** mounts over TLS: the
+  `proxmox_backup` role codifies its `storage.cfg` entry as hostname +
+  `vers=4.2,xprtsec=tls` (one-time migration of the legacy IP entry pending —
+  see docs/06 and docs/16).
 
   The fsid=0 `/export` root carries no `xprtsec` (HAOS and Proxmox traverse
   it). `xprtsec` is applied per client line, so the require-TLS k3s lines and a

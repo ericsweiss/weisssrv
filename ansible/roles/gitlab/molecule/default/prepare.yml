@@ -63,6 +63,22 @@
         executable: /bin/bash
       changed_when: false
 
+    # Seed drifted NAT redirect rules (legacy -m comment variant in PREROUTING,
+    # missing -o lo in OUTPUT) so converge proves the role's cleanup removes
+    # variants a fixed `iptables -C` check can never match, and verify can
+    # assert exactly one managed rule per chain survives.
+    - name: Seed legacy SSH redirect rules for drift-cleanup coverage
+      ansible.builtin.shell: |
+        iptables -t nat -A PREROUTING -p tcp --dport {{ gitlab_ssh_port }} \
+          -m comment --comment "GitLab SSH port redirect {{ gitlab_ssh_port }}->22" \
+          -j REDIRECT --to-ports 22
+        iptables -t nat -A OUTPUT -p tcp --dport {{ gitlab_ssh_port }} \
+          -m comment --comment "GitLab SSH local redirect" \
+          -j REDIRECT --to-ports 22
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     # ==========================================================================
     # Create mock GitLab environment for template testing
     # We skip actual GitLab installation but need the directory structure
@@ -119,7 +135,9 @@
 
     # Mock gitlab-backup: drops a fake tarball and honors a fault file so
     # verify.yml can exercise both the success and failure metric paths of
-    # the backup wrapper. `create` -> exit 0 unless /tmp/gitlab-backup-fail
+    # the backup wrapper. Every invocation's arguments are recorded so verify
+    # can assert the backup-slimming contract (SKIP=registry,artifacts reaches
+    # gitlab-backup). `create` -> exit 0 unless /tmp/gitlab-backup-fail
     # exists. Installed via copy (not the raw heredoc above) to keep the
     # script out of raw's Jinja parsing.
     - name: Install mock gitlab-backup
@@ -128,6 +146,7 @@
         mode: "0755"
         content: |
           #!/bin/bash
+          echo "$@" >> /tmp/gitlab-backup-args
           if [ "$1" = "create" ]; then
             if [ -f /tmp/gitlab-backup-fail ]; then
               echo "Mock: gitlab-backup create FAILED"
@@ -157,3 +176,23 @@
         path: /var/lib/node_exporter
         state: directory
         mode: "0755"
+
+    # The role's fresh-deploy guard requires the TLS cert + key whenever
+    # registry/pages are enabled (they always terminate TLS), regardless of
+    # gitlab_nginx_listen_https. Stage dummy PEMs so converge exercises the
+    # guard's passing path; nothing in the scenario reads their content.
+    - name: Create /etc/gitlab/ssl for the cert fixtures
+      ansible.builtin.file:
+        path: /etc/gitlab/ssl
+        state: directory
+        mode: "0750"
+
+    - name: Stage dummy TLS cert fixtures for the fresh-deploy guard
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: |
+          # molecule dummy cert fixture
+        mode: "0640"
+      loop:
+        - /etc/gitlab/ssl/fullchain.pem
+        - /etc/gitlab/ssl/privkey.pem

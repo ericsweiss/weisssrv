@@ -1,0 +1,78 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd
+      ansible.builtin.raw: |
+        for i in $(seq 1 30); do
+          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        systemctl status >/dev/null 2>&1 && exit 0
+        exit 1
+      changed_when: false
+      retries: 3
+      delay: 2
+      register: systemd_ready
+      until: systemd_ready.rc == 0
+
+    - name: Disable apt background services
+      ansible.builtin.raw: |
+        systemctl stop apt-daily.timer 2>/dev/null || true
+        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
+        exit 0
+      changed_when: false
+
+    - name: Ensure ansible temp directory exists
+      ansible.builtin.raw: |
+        mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
+      changed_when: false
+
+    # Contract-test harness, modelled on proxmox_ha/molecule/default: pvesh
+    # is stubbed in /usr/local/bin. Read-only GETs answer from configurable
+    # state files under /tmp/molecule-stub-state so converge can simulate
+    # "absent" / "already correct" / "drifted"; every mutation (create/set)
+    # is logged to pvesh.log for exact-invocation asserts.
+    - name: Stub state directory
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Default storage list to empty JSON array
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/pvesh_storage
+        content: "[]\n"
+        mode: "0644"
+      become: true
+
+    - name: Default backup job list to empty JSON array
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/pvesh_backup
+        content: "[]\n"
+        mode: "0644"
+      become: true
+
+    - name: Pvesh stub (logs mutations, answers GETs from state)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pvesh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          STATE=/tmp/molecule-stub-state
+          if [ "$1" = "get" ] && [ "$2" = "/storage" ]; then
+            cat "$STATE/pvesh_storage" 2>/dev/null || echo "[]"
+            exit 0
+          fi
+          if [ "$1" = "get" ] && [ "$2" = "/cluster/backup" ]; then
+            cat "$STATE/pvesh_backup" 2>/dev/null || echo "[]"
+            exit 0
+          fi
+          # Everything else (create/set/delete) is a mutation: record it.
+          echo "pvesh $*" >> "$STATE/pvesh.log"
+          exit 0
+      become: true

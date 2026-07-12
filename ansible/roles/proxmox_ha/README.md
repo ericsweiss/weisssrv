@@ -16,26 +16,26 @@ Configures Proxmox VE High Availability for VMs and containers. Manages HA rules
 
 ## Configuration
 
-Variables are defined in `group_vars/all.yml`:
+Variables are defined in `group_vars/all.yml` — the `ha_rules` /
+`ha_resources` / `storage_replication_jobs` blocks there are the canonical,
+current examples. Representative shapes:
 
 ```yaml
-# HA Rules - Node affinity (Proxmox 9+)
+# HA Rules - one node-affinity rule PER SERVICE (Proxmox 9+).
+# Nodes carry explicit priorities: the ":2" home wins whenever it's available
+# (fail-back after an outage), the ":1" entries are ranked fallbacks.
 ha_rules:
-  - name: critical-services-no-nas
+  - name: affinity-dns-01
     type: node-affinity
     resources:
       - ct:150  # dns-01
-      - ct:160  # dns-02
-      - ct:151  # smtp-relay
-      - vm:154  # home-assistant
     nodes:
-      - pve-laptop-01
-      - pve-opt-01
-      - pve-opt-02
-      - pve-opt-03
-      - pve-prec-01
-    strict: false  # Allow pve-nas-01 only if ALL other nodes unavailable
-    comment: "Exclude pve-nas-01 to avoid I/O contention"
+      - "pve-opt-01:2"  # home — service fails back here when available
+      - "pve-opt-02:1"
+      - "pve-opt-03:1"
+      - "pve-prec-01:1"
+    strict: false  # Allow pve-nas-01 only if ALL listed nodes are unavailable
+    comment: "dns-01 home pve-opt-01; never pve-nas-01"
     enabled: true
 
 # HA Resources - VMs/containers managed by HA
@@ -46,15 +46,20 @@ ha_resources:
     comment: "dns-01 (AdGuard Home primary)"
     enabled: true
 
-# Storage Replication - Multi-target ZFS replication
+# Storage Replication - Multi-target ZFS replication.
+# Schedules are explicit staggered minute lists (not "*/15") so each service
+# gets a deterministic offset and the four services never replicate at once.
 storage_replication_jobs:
   - id: "150-0"
     source_node: pve-laptop-01
     target_node: pve-opt-01
-    schedule: "*/15"  # Every 15 minutes
+    schedule: "0,15,30,45"   # dns-01 slots; the next service uses "3,18,33,48"
     comment: "dns-01 -> pve-opt-01"
     enabled: true
 ```
+
+Only `type: node-affinity` rules are supported — the role asserts this and
+fails loud on any other rule type.
 
 ## Deployment
 

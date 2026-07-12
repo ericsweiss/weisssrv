@@ -76,6 +76,53 @@
     label: "{{ item.bind_source | default('N/A') }}"
   when: item.bind_source is defined
 
+# Fail loud if a per-app appdata path is itself a mountpoint. A nested ZFS
+# dataset auto-created under ssd/appdata/<name> (e.g. proxmox_vm's
+# `zfs create -p -V ...mealie/postgres` materializes ssd/appdata/mealie) can
+# mount over the stub the task below chowns, while NFS clients read the
+# shadowed dir under the NON-recursive /export/appdata bind. Detect the
+# shadowing instead of silently chowning the wrong filesystem; the fix is
+# `canmount=off` on the nested dataset (codified in host_vars zfs_pools).
+- name: Guard against a per-app appdata path being a shadowing mountpoint
+  ansible.builtin.command: "mountpoint -q {{ nas_appdata_base }}/{{ item }}"
+  loop: "{{ nas_appdata_dirs | default([]) }}"
+  loop_control:
+    label: "{{ nas_appdata_base }}/{{ item }}"
+  register: nfs_appdata_mountpoint
+  changed_when: false
+  check_mode: false
+  failed_when:
+    - nfs_appdata_mountpoint.rc == 0
+    - not (skip_zfs_operations | default(false))
+  when:
+    - nas_appdata_dirs | default([]) | length > 0
+    - nas_appdata_base in (nfs_exports | selectattr('bind_source', 'defined')
+        | map(attribute='bind_source') | list)
+
+# Per-app subdirectories under the appdata NFS export. The apps that persist
+# config on this export (Grafana + the downloads/recipes clients) mount
+# /appdata/<name>; the directory must exist and be owned 1000:2000 (the export
+# all_squashes every client write to that uid/gid, so a container running as any
+# other UID still writes as 1000:2000) before the app's first write, or a
+# floating pod lands on an unwritable/absent path. Placed AFTER the
+# mounted-dataset guard above so a locked/unmounted ssd pool never gets these
+# mkdir'd onto its bare mountpoint — the same empty-mountpoint capture the guard
+# prevents for the binds. Skipped on any host that does not export appdata.
+- name: Create per-app appdata subdirectories
+  ansible.builtin.file:
+    path: "{{ nas_appdata_base }}/{{ item }}"
+    state: directory
+    owner: "{{ nas_appdata_owner }}"
+    group: "{{ nas_appdata_group }}"
+    mode: "{{ nas_appdata_mode }}"
+  loop: "{{ nas_appdata_dirs | default([]) }}"
+  loop_control:
+    label: "{{ nas_appdata_base }}/{{ item }}"
+  when:
+    - nas_appdata_dirs | default([]) | length > 0
+    - nas_appdata_base in (nfs_exports | selectattr('bind_source', 'defined')
+        | map(attribute='bind_source') | list)
+
 - name: Configure bind mounts in fstab
   ansible.posix.mount:
     path: "{{ item.path }}"

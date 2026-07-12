@@ -34,9 +34,12 @@
           - "'relayhost = [smtp.gmail.com]:587' in (main_cf_content.content | b64decode)"
           - "'inet_interfaces = all' in (main_cf_content.content | b64decode)"
           - "'smtp_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
-          - "'smtpd_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
+          # Prod hardening pins: outbound TLS verifies Gmail's cert, port-25
+          # AUTH stays off (submission re-enables it behind mandatory TLS).
+          - "'smtpd_sasl_auth_enable = no' in (main_cf_content.content | b64decode)"
+          - "'smtpd_tls_auth_only = yes' in (main_cf_content.content | b64decode)"
           - "'smtpd_tls_security_level = may' in (main_cf_content.content | b64decode)"
-          - "'smtp_tls_security_level = encrypt' in (main_cf_content.content | b64decode)"
+          - "'smtp_tls_security_level = secure' in (main_cf_content.content | b64decode)"
         fail_msg: "main.cf missing expected relay settings"
         success_msg: "main.cf contains all expected relay settings"
 
@@ -82,9 +85,7 @@
       ansible.builtin.stat:
         path: /etc/sasldb2
       register: sasldb2
-      failed_when:
-        - not sasldb2.stat.exists
-        - sasldb2.stat.mode != '0640'
+      failed_when: not sasldb2.stat.exists or sasldb2.stat.mode != '0640'
 
     - name: Check if TLS certificate directory exists
       ansible.builtin.stat:
@@ -104,13 +105,49 @@
         fail_msg: "mailname not set correctly"
         success_msg: "mailname configured correctly"
 
+    - name: Check if queue collector script is installed
+      ansible.builtin.stat:
+        path: /usr/local/sbin/postfix-queue-collector.sh
+      register: queue_collector
+      failed_when: not queue_collector.stat.exists or not queue_collector.stat.executable
+
+    - name: Check queue collector timer status
+      ansible.builtin.systemd:
+        name: postfix-queue-collector.timer
+      register: queue_timer
+      failed_when:
+        queue_timer.status.UnitFileState != 'enabled'
+        or queue_timer.status.ActiveState != 'active'
+
+    # Exercise the collector end-to-end: postfix_up computation, queue-depth
+    # parsing, printf format, and atomic write. Run directly to sidestep the
+    # systemd sandbox, then assert the emitted Prometheus text.
+    - name: Run queue collector once
+      ansible.builtin.command: /usr/local/sbin/postfix-queue-collector.sh /var/lib/node_exporter
+      changed_when: false
+
+    - name: Read generated postfix queue metrics
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/postfix_queue.prom
+      register: postfix_queue_prom
+
+    - name: Verify queue collector emitted expected metrics
+      ansible.builtin.assert:
+        that:
+          - "'postfix_up 1' in (postfix_queue_prom.content | b64decode)"
+          - "'postfix_queue_depth ' in (postfix_queue_prom.content | b64decode)"
+          - "'postfix_queue_collector_last_success_seconds' in (postfix_queue_prom.content | b64decode)"
+        fail_msg: "queue collector did not emit expected metrics"
+        success_msg: "queue collector emitted expected Prometheus metrics"
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
           - "Postfix installed and running"
-          - "main.cf configured with Gmail relay and dual SASL (inbound + outbound)"
+          - "main.cf configured with Gmail relay (port-25 AUTH off; submission enables SASL behind TLS)"
           - "master.cf deployed"
           - "SASL credentials deployed (Gmail relay + incoming auth)"
           - "SASL database created for incoming authentication"
           - "TLS certificate directory created"
           - "Mailname configured correctly"
+          - "Queue collector installed with timer enabled and active"

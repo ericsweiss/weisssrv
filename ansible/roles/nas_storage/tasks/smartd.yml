@@ -25,3 +25,54 @@
     state: started
   when: not (skip_smartd_service | default(false))
   tags: [smart, service]
+
+# The smartd disk lists are static (no DEVICESCAN — see smartd.conf.j2), so a
+# swapped drive would be silently unmonitored until the matching smartd_*_disks
+# host_vars list is updated. Detect that gap at deploy time: every member of
+# every IMPORTED pool must appear in the UNION of the four lists (union, not
+# per-pool — tank's special/cache NVMe vdevs live under smartd_nvme_disks).
+# Whole-disk vdevs report their data partition, so -part<N> is stripped before
+# matching. An exported pool (archive's steady state) is not visible to zpool
+# and is re-checked by the deploy that follows its next plug.
+- name: Enumerate pool member disks missing from smartd_*_disks
+  ansible.builtin.shell: |
+    set -o pipefail
+    known=" {{ _smartd_all_disks | join(' ') }} "
+    missing=""
+    for pool in $(zpool list -H -o name); do
+      for dev in $(zpool status -P "$pool" | awk '$1 ~ "^/dev/" {print $1}'); do
+        base="${dev%-part[0-9]*}"
+        case "$known" in
+          *" ${base} "*) ;;
+          *) missing="${missing}${base} " ;;
+        esac
+      done
+    done
+    printf '%s' "$missing"
+  args:
+    executable: /bin/bash
+  vars:
+    _smartd_all_disks: >-
+      {{ (smartd_tank_disks | default([]))
+         + (smartd_ssd_disks | default([]))
+         + (smartd_nvme_disks | default([]))
+         + (smartd_archive_disks | default([])) }}
+  register: smartd_unlisted_disks
+  changed_when: false
+  check_mode: false
+  when: not (skip_zfs_operations | default(false))
+  tags: [smart, config]
+
+- name: Assert every pool member disk is smartd-monitored
+  ansible.builtin.assert:
+    that:
+      - smartd_unlisted_disks.stdout | trim | length == 0
+    fail_msg: >-
+      Pool member disk(s) missing from every smartd_*_disks list (UNMONITORED
+      until added to host_vars): {{ smartd_unlisted_disks.stdout | default('') }}.
+      Add each to the matching smartd_*_disks list (special/cache NVMe vdevs go
+      under smartd_nvme_disks regardless of pool), then re-run the storage
+      deploy.
+    quiet: true
+  when: not (skip_zfs_operations | default(false))
+  tags: [smart, config]

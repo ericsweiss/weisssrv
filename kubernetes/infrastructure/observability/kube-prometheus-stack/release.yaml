@@ -253,6 +253,11 @@ spec:
               - helmrepositories
               - helmcharts
             verbs: [list, watch]
+          - apiGroups:
+              - autoscaling.k8s.io
+            resources:
+              - verticalpodautoscalers
+            verbs: [list, watch]
       customResourceState:
         enabled: true
         config:
@@ -338,6 +343,80 @@ spec:
                           exported_namespace: [metadata, namespace]
                           ready: [status, conditions, "[type=Ready]", status]
                           suspended: [spec, suspend]
+              # VPA recommendation visibility: the VPA components export no
+              # recommendation metrics themselves, so a recommendation clamped
+              # at maxAllowed (workload outgrew its ceiling) was auditable only
+              # via manual kubectl. Emits one series per container and resource
+              # (labels: container, resource, unit; quantities parsed to base
+              # units) for both the capped and uncapped recommendation —
+              # consumed by the VPARecommendationCapped alert below.
+              - groupVersionKind:
+                  group: autoscaling.k8s.io
+                  version: v1
+                  kind: VerticalPodAutoscaler
+                metricNamePrefix: vpa
+                labelsFromPath:
+                  verticalpodautoscaler: [metadata, name]
+                  exported_namespace: [metadata, namespace]
+                  target_kind: [spec, targetRef, kind]
+                  target_name: [spec, targetRef, name]
+                # One entry per (metric, resource): valueFrom must resolve to a
+                # scalar quantity, so target/uncappedTarget are split into their
+                # cpu and memory members. commonLabels carries the resource/unit
+                # so the cpu and memory series never collide and the alert's
+                # resource/unit annotations are populated.
+                metrics:
+                  - name: recommendation_target
+                    # Same metric family as the memory series below: the HELP text must
+                    # match (resource/unit labels carry the cpu-cores vs memory-bytes split).
+                    help: VPA recommended resource request after minAllowed/maxAllowed capping (see resource/unit labels)
+                    commonLabels:
+                      resource: cpu
+                      unit: core
+                    each:
+                      type: Gauge
+                      gauge:
+                        path: [status, recommendation, containerRecommendations]
+                        labelsFromPath:
+                          container: [containerName]
+                        valueFrom: [target, cpu]
+                  - name: recommendation_target
+                    help: VPA recommended resource request after minAllowed/maxAllowed capping (see resource/unit labels)
+                    commonLabels:
+                      resource: memory
+                      unit: byte
+                    each:
+                      type: Gauge
+                      gauge:
+                        path: [status, recommendation, containerRecommendations]
+                        labelsFromPath:
+                          container: [containerName]
+                        valueFrom: [target, memory]
+                  - name: recommendation_uncappedtarget
+                    # Same metric family as the memory series below — keep HELP identical.
+                    help: VPA recommended resource request ignoring minAllowed/maxAllowed (see resource/unit labels)
+                    commonLabels:
+                      resource: cpu
+                      unit: core
+                    each:
+                      type: Gauge
+                      gauge:
+                        path: [status, recommendation, containerRecommendations]
+                        labelsFromPath:
+                          container: [containerName]
+                        valueFrom: [uncappedTarget, cpu]
+                  - name: recommendation_uncappedtarget
+                    help: VPA recommended resource request ignoring minAllowed/maxAllowed (see resource/unit labels)
+                    commonLabels:
+                      resource: memory
+                      unit: byte
+                    each:
+                      type: Gauge
+                      gauge:
+                        path: [status, recommendation, containerRecommendations]
+                        labelsFromPath:
+                          container: [containerName]
+                        valueFrom: [uncappedTarget, memory]
 
     # -------------------------------------------------------------------------
     # Disable components not present in k3s
@@ -353,9 +432,42 @@ spec:
       enabled: false
     kubeControllerManager:
       enabled: false
-    # k3s embeds etcd without exposing standard metrics endpoints
+    # k3s embeds etcd but does expose its metrics: the server nodes run with
+    # etcd-expose-metrics: true (ansible/roles/k3s), which serves the standard
+    # etcd metrics on :2381 over plain HTTP. The chart builds a Service with
+    # explicit Endpoints from the server-node IPs; enabling this also
+    # re-enables the upstream etcd alert rules (quorum, leader flapping, DB
+    # size) which are gated on kubeEtcd.enabled. Port 2381 is restricted to
+    # k3s_nodes by the Proxmox firewall (docs/11).
     kubeEtcd:
-      enabled: false
+      enabled: true
+      endpoints:
+        - 192.168.0.222
+        - 192.168.0.223
+        - 192.168.0.227
+      service:
+        enabled: true
+        port: 2381
+        targetPort: 2381
+      serviceMonitor:
+        enabled: true
+        scheme: http
+
+    # -------------------------------------------------------------------------
+    # Upstream default-rule overrides
+    # -------------------------------------------------------------------------
+    defaultRules:
+      disabled:
+        # KubeCPUOvercommit fires transiently on every heavy privileged-CI
+        # burst: the gitlab-runner-privileged ResourceQuota deliberately
+        # over-requests CPU (by-design burst scheduling), which trips the
+        # upstream "cluster can't tolerate one node failure" check for the
+        # 15-30m a burst runs. The ResourceQuota is correctly sized, so the
+        # right fix is a tuned copy — re-added under homelab-kubernetes-resources
+        # below — that subtracts the gitlab-runner* namespaces' requests so only
+        # genuine steady-state overcommit alerts. 15m for: was too short to ride
+        # out the flap; excluding the CI namespaces removes the flap at source.
+        KubeCPUOvercommit: true
 
     # -------------------------------------------------------------------------
     # Custom alert rules
@@ -463,6 +575,126 @@ spec:
                     on {{ $labels.instance }}
                     mount {{ $labels.mountpoint }}.
 
+              # Per-device SMART health, fed by the smartmon textfile collector
+              # (node_exporter_host role, every 5m). Complements the ZFS pool
+              # alerts: those catch corruption after it reaches a pool, these
+              # catch the drive-level precursors (SMART FAIL, growing bad
+              # sectors, NVMe media errors) and attribute them to a serial.
+              #
+              # Standby tolerance: `smartctl -n standby` never wakes a sleeping
+              # drive, so a drive in standby emits only smartmon_device_active=0
+              # and its attribute series go absent for that cycle. Every rule
+              # below reads through an over_time window so an absent-while-asleep
+              # series neither false-fires nor prematurely resolves a confirmed
+              # bad reading (finding 497).
+              - alert: SMARTDeviceUnhealthy
+                # min_over_time stays 0 once a drive has reported FAILED, riding
+                # through subsequent standby gaps; a healthy (1) or never-probed
+                # (absent) drive never trips it.
+                expr: min_over_time(smartmon_device_smart_healthy[6h]) == 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+                  summary: 'SMART overall-health FAILED on {{ $labels.device }} ({{ $labels.instance }})'
+                  description: >-
+                    smartmon_device_smart_healthy for {{ $labels.device }} on
+                    {{ $labels.instance }} has reported FAILED within the last
+                    6 hours. The drive's own SMART self-assessment predicts
+                    imminent failure — plan replacement and check the ZFS pool
+                    it backs.
+
+              # Reallocated sectors: a stable nonzero count from a years-old
+              # event is not actionable, but growth means active surface
+              # degradation. max-min over 24h detects an increase while
+              # tolerating standby gaps (both ends computed over samples that
+              # actually exist in the window).
+              - alert: SMARTReallocatedSectorsGrowing
+                expr: >-
+                  max_over_time(smartmon_reallocated_sector_count[24h])
+                  - min_over_time(smartmon_reallocated_sector_count[24h]) > 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+                  summary: 'Reallocated sectors growing on {{ $labels.device }} ({{ $labels.instance }})'
+                  description: >-
+                    Reallocated_Sector_Ct on {{ $labels.device }} on
+                    {{ $labels.instance }} grew by
+                    {{ $value | printf "%.0f" }} in the last 24 hours. A drive
+                    actively remapping sectors is degrading — watch it closely
+                    and plan replacement.
+
+              # Pending / offline-uncorrectable sectors are acute: any nonzero
+              # value is a sector currently unreadable or awaiting reallocation,
+              # not a healed-over historical event. max_over_time bridges standby.
+              - alert: SMARTPendingSectors
+                expr: max_over_time(smartmon_current_pending_sector_count[6h]) > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+                  summary: 'Current pending sectors on {{ $labels.device }} ({{ $labels.instance }})'
+                  description: >-
+                    Current_Pending_Sector on {{ $labels.device }} on
+                    {{ $labels.instance }} is {{ $value | printf "%.0f" }} —
+                    sectors are unreadable and awaiting reallocation. A scrub
+                    of the backing pool will surface any affected data.
+
+              - alert: SMARTOfflineUncorrectable
+                expr: max_over_time(smartmon_offline_uncorrectable_count[6h]) > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+                  summary: 'Offline-uncorrectable sectors on {{ $labels.device }} ({{ $labels.instance }})'
+                  description: >-
+                    Offline_Uncorrectable on {{ $labels.device }} on
+                    {{ $labels.instance }} is {{ $value | printf "%.0f" }} —
+                    sectors that could not be corrected on read. Strong
+                    replace-soon signal.
+
+              # NVMe media & data-integrity errors — the SSD-side equivalent of
+              # reallocated/uncorrectable sectors. Any nonzero is worth a look.
+              - alert: SMARTMediaErrors
+                expr: max_over_time(smartmon_media_errors_count[6h]) > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+                  summary: 'NVMe media errors on {{ $labels.device }} ({{ $labels.instance }})'
+                  description: >-
+                    Media and Data Integrity Errors on {{ $labels.device }} on
+                    {{ $labels.instance }} is {{ $value | printf "%.0f" }}. The
+                    NVMe controller has logged uncorrectable data errors —
+                    investigate and plan replacement.
+
+              # Collector meta-failure: the smartmon script ran but is stuck, or
+              # was never deployed on a host. Mirrors ZFSPoolCollectorStale /
+              # CorosyncHealthCollectorStale — the absent() arm makes an
+              # undeployed collector loud instead of silently blind.
+              - alert: SMARTCollectorStale
+                expr: >-
+                  (time() - smartmon_collector_last_success_seconds > 900)
+                  or absent(smartmon_collector_last_success_seconds)
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
+                  summary: 'smartmon collector is degraded or missing on {{ $labels.instance }}'
+                  description: >-
+                    smartmon_collector_last_success_seconds is stale (>15m) or
+                    entirely absent — the SMART device alerts on this host are
+                    serving stale or no inputs. Check
+                    `journalctl -u smartmon-collector.service` and
+                    `systemctl status smartmon-collector.timer`.
+
       homelab-infrastructure:
         groups:
           - name: homelab.infrastructure
@@ -530,9 +762,10 @@ spec:
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Loki is returning 5xx on more than 5% of requests'
+                  # $value is a 0-1 ratio; humanizePercentage emits the % sign.
                   description: >-
                     Loki is serving HTTP 5xx on
-                    {{ $value | printf "%.1f" }}% of requests over the last
+                    {{ $value | humanizePercentage }} of requests over the last
                     5 minutes (push/query). Log ingestion may be silently
                     failing — senders do not buffer.
 
@@ -686,7 +919,34 @@ spec:
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Traefik 5xx error rate above 5%'
-                  description: 'Traefik is returning 5xx errors at {{ $value | printf "%.1f" }}% over the last 5 minutes.'
+                  # $value is a 0-1 ratio; humanizePercentage emits the % sign.
+                  description: 'Traefik is returning 5xx errors at {{ $value | humanizePercentage }} over the last 5 minutes.'
+
+              # Fed by the kube-state-metrics customResourceState VPA config
+              # above. uncappedTarget above target means the recommendation is
+              # clamped at maxAllowed — the workload has outgrown its ceiling.
+              # 24h hold: recommendations swing with daily load, so a brief
+              # clamp during a burst is expected; a full day clamped is a real
+              # capacity signal. Not written as target == spec.maxAllowed:
+              # containerPolicies keyed by containerName "*" make that PromQL
+              # join unresolvable against per-container recommendations.
+              - alert: VPARecommendationCapped
+                expr: vpa_recommendation_uncappedtarget > vpa_recommendation_target
+                for: 24h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: >-
+                    VPA {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
+                    recommendation capped at maxAllowed
+                  description: >-
+                    The VPA recommendation for container {{ $labels.container }}
+                    ({{ $labels.resource }}) in
+                    {{ $labels.exported_namespace }}/{{ $labels.verticalpodautoscaler }}
+                    has been clamped by maxAllowed for 24 hours — it wants
+                    {{ $value }} {{ $labels.unit }} uncapped. Raise the cap in
+                    infrastructure/configs/vpa/ or investigate the growth.
 
       homelab-monitoring:
         groups:
@@ -707,25 +967,52 @@ spec:
                     If id is empty, the Proxmox exporter itself may be down.
 
               # ProxmoxHostDown only covers id=~"node/.*", so the HA-managed
-              # infra LXCs are invisible there. A stopped/crashed DNS resolver
-              # (lxc/150 dns-01, lxc/160 dns-02) or the mail relay (lxc/151
-              # smtp-relay) is critical — cluster-wide name resolution and alert
-              # email egress depend on them. HA restarts the guest on another
+              # infra guests are invisible there. A stopped/crashed DNS resolver
+              # (lxc/150 dns-01, lxc/160 dns-02), the mail relay (lxc/151
+              # smtp-relay), or the Home Assistant VM (qemu/154) is critical —
+              # cluster-wide name resolution, alert email egress, and home
+              # automation depend on them. HA restarts the guest on another
               # node within a couple of minutes, so the 5m hold avoids paging on
               # a normal failover/migration.
-              - alert: HAInfraLXCDown
-                expr: max by (id) (pve_up{id=~"lxc/(150|151|160)"}) == 0
+              - alert: HAInfraGuestDown
+                expr: max by (id) (pve_up{id=~"lxc/(150|151|160)|qemu/154"}) == 0
                 for: 5m
                 labels:
                   severity: critical
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
-                  summary: 'HA infrastructure LXC {{ $labels.id }} is stopped'
+                  summary: 'HA infrastructure guest {{ $labels.id }} is stopped'
                   description: >-
-                    Proxmox guest {{ $labels.id }} (a DNS resolver or the SMTP
-                    relay) has reported stopped for 5 minutes. HA should have
-                    restarted it on another node — if it has not, investigate the
-                    guest and its host.
+                    Proxmox guest {{ $labels.id }} (a DNS resolver, the SMTP
+                    relay, or the Home Assistant VM) has reported stopped for 5
+                    minutes. HA should have restarted it on another node — if it
+                    has not, investigate the guest and its host.
+
+              # nfsd on pve-nas-01 is the single NFS server behind every k3s
+              # NFS PV, Grafana's storage, and the HAOS media mount. nfsd
+              # stop-hangs are a documented failure mode; a hung/stopped nfsd
+              # otherwise only surfaces indirectly as pod I/O errors. Zero
+              # kernel nfsd threads means the server is not serving; metric
+              # absence means the NAS node-exporter-host itself is dark —
+              # both page.
+              - alert: NFSServerDown
+                expr: >-
+                  node_nfsd_server_threads{instance="192.168.0.102:9101"} == 0
+                  or absent(node_nfsd_server_threads{instance="192.168.0.102:9101"})
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'NFS server on pve-nas-01 is not serving'
+                  description: >-
+                    node_nfsd_server_threads on 192.168.0.102 has been 0 (or
+                    absent) for 5 minutes — all NFS-backed storage (k3s PVs,
+                    Grafana, HAOS media) is stalled. Check
+                    `systemctl status nfs-server` on pve-nas-01; after a
+                    stop-hang, `systemctl reset-failed nfs-server` then start
+                    it. Pods with established mounts may need deleting after
+                    recovery (stale handles).
 
               # A k3s node left unschedulable (Ready,SchedulingDisabled) long after
               # a reboot — a kured uncordon failure (kubereboot/kured #955) or a
@@ -965,29 +1252,35 @@ spec:
                     `journalctl -u zpool-status-collector.service` and
                     `systemctl status zpool-status-collector.timer`.
 
-              # ZFS pool capacity — fed by zfs_exporter on pve-nas-01
-              # (NAS pools only; compute pools get capacity via the
-              # node_exporter zfs collector if ever needed — the
-              # integrity alerts above already cover them).
+              # ZFS pool capacity — fed by the zpool-status textfile collector
+              # (zpool list -Hp alloc/size, node_exporter_host role) on every
+              # Proxmox host, so the five compute local-ssd pools are covered
+              # too. node_filesystem math cannot stand in for compute pools:
+              # a dataset's size shrinks as zvols fill the pool (size =
+              # used + avail of the dataset), so DiskUsage* stays low on a
+              # nearly-full pool while VM I/O is about to stall. Series carry
+              # (instance, pool) — required since all five compute hosts name
+              # their pool local-ssd; keeping both labels also stops one
+              # host's critical from inhibiting another host's warning.
               - alert: ZFSPoolSpaceWarning
-                expr: (max by (pool) (zfs_pool_allocated_bytes) / max by (pool) (zfs_pool_size_bytes)) * 100 > 80
+                expr: (zfs_pool_status_allocated_bytes / zfs_pool_status_size_bytes) * 100 > 80
                 for: 10m
                 labels:
                   severity: warning
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
-                  summary: 'ZFS pool {{ $labels.pool }} above 80% capacity'
-                  description: 'ZFS pool {{ $labels.pool }} is at {{ $value | printf "%.1f" }}% capacity.'
+                  summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} above 80% capacity'
+                  description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
 
               - alert: ZFSPoolSpaceCritical
-                expr: (max by (pool) (zfs_pool_allocated_bytes) / max by (pool) (zfs_pool_size_bytes)) * 100 > 90
+                expr: (zfs_pool_status_allocated_bytes / zfs_pool_status_size_bytes) * 100 > 90
                 for: 5m
                 labels:
                   severity: critical
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#handling-disk-failure-zfs'
-                  summary: 'ZFS pool {{ $labels.pool }} above 90% capacity'
-                  description: 'ZFS pool {{ $labels.pool }} is at {{ $value | printf "%.1f" }}% capacity.'
+                  summary: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} above 90% capacity'
+                  description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
 
               - alert: EndpointDown
                 expr: max by (instance) (probe_success) == 0
@@ -999,27 +1292,79 @@ spec:
                   summary: 'Endpoint {{ $labels.instance }} is down'
                   description: 'Blackbox probe for {{ $labels.instance }} has failed for 5 minutes.'
 
-              # EndpointDown fires per-resolver at warning severity; this is the
-              # critical aggregate for total DNS loss — both AdGuard blackbox DNS
-              # probes (.150 and .160) failing at once takes name resolution down
-              # cluster-wide. Also catches the service-level outage (AdGuard down
-              # but the container still running) that HAInfraLXCDown's
-              # guest-stopped check misses.
-              - alert: DNSResolutionDown
+              # Uniform warning severity is wrong for the load-bearing three:
+              # Authentik is the OIDC front door for every SSO app, GitLab is
+              # the GitOps source of truth, Home Assistant is the HA-managed
+              # home controller. A full outage of these pages email, not just
+              # Discord. instance carries the full probe URL. EndpointDown
+              # still fires alongside; the alertmanager inhibit pair
+              # (EndpointDownCritical -> EndpointDown on instance) dedups.
+              - alert: EndpointDownCritical
                 expr: >-
-                  count(
-                    max by (instance) (probe_success{instance=~"192\\.168\\.0\\.(150|160):53"}) == 0
-                  ) == 2
+                  max by (instance) (
+                    probe_success{instance=~"https://(auth|git|home)\\.esweiss\\.com"}
+                  ) == 0
                 for: 5m
                 labels:
                   severity: critical
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
-                  summary: 'Both DNS resolvers are failing to answer'
+                  summary: 'Key endpoint {{ $labels.instance }} is down'
                   description: >-
-                    Both AdGuard resolvers (192.168.0.150 and 192.168.0.160) have
-                    failed their DNS blackbox probe for 5 minutes — name
-                    resolution is down cluster-wide.
+                    Blackbox probe for {{ $labels.instance }} has failed for 5
+                    minutes. This endpoint is load-bearing infrastructure
+                    (SSO front door, GitOps source, or home automation).
+
+              # EndpointDown fires per-resolver at warning severity; this is the
+              # critical aggregate for total DNS loss — every AdGuard blackbox
+              # DNS probe (.150 and .160) failing at once takes name resolution
+              # down cluster-wide. The failed count is compared against the
+              # number of resolver probes present (not a hardcoded 2) so a
+              # target dropped from the blackbox config cannot silently disarm
+              # the aggregate — DNSResolverProbeMissing below catches the drop
+              # itself. Also catches the service-level outage (AdGuard down
+              # but the container still running) that HAInfraGuestDown's
+              # guest-stopped check misses.
+              - alert: DNSResolutionDown
+                expr: >-
+                  count(
+                    max by (instance) (probe_success{instance=~"192\\.168\\.0\\.(150|160):53"}) == 0
+                  )
+                  ==
+                  count(
+                    max by (instance) (probe_success{instance=~"192\\.168\\.0\\.(150|160):53"})
+                  )
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+                  summary: 'All DNS resolvers are failing to answer'
+                  description: >-
+                    Every probed AdGuard resolver (192.168.0.150 /
+                    192.168.0.160) has failed its DNS blackbox probe for 5
+                    minutes — name resolution is down cluster-wide.
+
+              # Config-drift guard for the self-scaling aggregate above: a
+              # resolver whose blackbox target is removed or renamed vanishes
+              # from both sides of the DNSResolutionDown count, silently
+              # shrinking its coverage. BlackboxExporterDown only covers
+              # whole-exporter absence, so pin each resolver's series here.
+              - alert: DNSResolverProbeMissing
+                expr: >-
+                  absent(probe_success{instance="192.168.0.150:53"})
+                  or absent(probe_success{instance="192.168.0.160:53"})
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+                  summary: 'DNS resolver probe for {{ $labels.instance }} is missing'
+                  description: >-
+                    No probe_success series for {{ $labels.instance }} — its
+                    blackbox target was removed or renamed, and the
+                    DNSResolutionDown aggregate no longer covers this resolver.
+                    Restore the target in exporters/blackbox-exporter.yaml.
 
               - alert: BlackboxExporterDown
                 expr: absent(up{job=~".*blackbox.*"} == 1)
@@ -1112,6 +1457,28 @@ spec:
                     for most of each cycle. cert-manager's CertExpiring alerts
                     cover in-cluster certs but not these host-distributed certs.
 
+              # Critical escalation at 3 days, mirroring the cert-manager
+              # CertExpiringWarning/Critical pair — this cert terminates
+              # NFS-over-TLS on pve-nas-01, AdGuard TLS, and the Loki ingest
+              # ingress, so expiry breaks storage and logging, not just web
+              # UIs. No absent() arm: metric absence stays warning-tier via
+              # CertExpiringSoon above (matching the cert-manager critical,
+              # which has no absent branch either).
+              - alert: CertExpiringSoonCritical
+                expr: cert_local_expiry_timestamp_seconds - time() < 86400 * 3
+                for: 1h
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+                  summary: 'Host-distributed wildcard cert expires in under 3 days'
+                  description: >-
+                    The acme.sh-distributed *.esweiss.com cert on
+                    {{ $labels.instance }} expires in
+                    {{ $value | humanizeDuration }}. NFS-over-TLS (k3s PV
+                    mounts), AdGuard TLS, and the Loki ingress all break at
+                    expiry — fix renewal and redistribute now.
+
               - alert: GitLabBackupFailed
                 expr: gitlab_backup_last_run_success == 0
                 for: 1h
@@ -1136,6 +1503,85 @@ spec:
                     node_exporter on the GitLab VM unreachable, or VM off
                     inventory). GitLab data lives on a zvol; Proxmox VM
                     snapshots are the only other DR path.
+
+              # Critical escalation: four days is two more failed nightly
+              # cycles past the warning — repo data-loss exposure compounds
+              # silently at Discord-only warning severity. No absent() arm:
+              # metric absence stays warning-tier via GitLabBackupStale above.
+              - alert: GitLabBackupStaleCritical
+                expr: time() - gitlab_backup_last_success_timestamp_seconds > 86400 * 4
+                for: 1h
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'GitLab backup has not succeeded in over 4 days'
+                  description: >-
+                    No successful GitLab backup for more than 4 days. GitLab
+                    data lives on a zvol; Proxmox VM snapshots are the only
+                    other DR path. Investigate the backup wrapper on the
+                    GitLab VM now.
+
+              # Off-node etcd snapshot copy (k3s servers -> pve-nas-01,
+              # docs/17). The copy timer on each server node writes
+              # etcd_snapshot_last_copy_timestamp_seconds after each transfer;
+              # k3s snapshots every 12h, so >26h means two consecutive copy
+              # cycles failed on that server. The absent() arm makes an
+              # undeployed or removed collector loud, mirroring
+              # ArchiveBackupStale/GitLabBackupStale.
+              - alert: EtcdSnapshotStale
+                expr: (time() - etcd_snapshot_last_copy_timestamp_seconds > 93600) or absent(etcd_snapshot_last_copy_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'etcd snapshot off-node copy is stale'
+                  description: >-
+                    The newest etcd snapshot copied to pve-nas-01 is more than
+                    26 hours old (two 12h snapshot cycles), or the copy metric
+                    is missing. Losing all three server nodes without an
+                    off-node snapshot loses etcd — check the copy timer on the
+                    k3s server nodes.
+
+              # Proxmox vzdump nightly guest-image backup to tank-proxmox
+              # (job managed by the proxmox_backup role). A vzdump hookscript
+              # deployed to every Proxmox host by node_exporter_host writes
+              # vzdump_backup_last_run_success + _last_success_timestamp_seconds
+              # to the node_exporter textfile dir, mirroring the gitlab/archive
+              # backup collectors. Cadence is nightly, so the staleness window
+              # is one cycle plus grace (~26h), tighter than the 48h GitLab/
+              # archive windows.
+              - alert: VzdumpBackupFailed
+                expr: vzdump_backup_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Proxmox vzdump backup failed'
+                  description: >-
+                    The nightly Proxmox vzdump job (guest images -> tank-proxmox)
+                    did not complete successfully. Guest VM/LXC images are the DR
+                    path for the compute-node guests.
+
+              - alert: VzdumpBackupStale
+                expr: (time() - vzdump_backup_last_success_timestamp_seconds > 93600) or absent(vzdump_backup_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Proxmox vzdump backup has not succeeded in over 26 hours'
+                  description: >-
+                    No successful Proxmox vzdump backup has been recorded for more
+                    than 26 hours (one nightly cycle + grace) on
+                    {{ $labels.instance }}, or the metric is absent on every
+                    Proxmox host (hookscript not deployed anywhere). The metric is
+                    now per-node, so a single node_exporter being unreachable is
+                    covered by the node-down alerts, not this one. Guest VM/LXC
+                    images on tank-proxmox are the DR path for the compute-node
+                    guests.
 
       # The former homelab-backup group's ZFSPoolDegraded (zfs_exporter,
       # zfs_pool_health, NAS-only) was removed: it double-fired with the
@@ -1361,3 +1807,101 @@ spec:
                     NIC {{ $labels.chip_name }} on {{ $labels.instance }}
                     has been at or above 90C for 10 minutes — high NIC temps correlate with
                     link instability on the AQC113.
+
+      homelab-mail:
+        groups:
+          - name: homelab.mail
+            rules:
+              # Postfix relay health, fed by the postfix-queue textfile collector
+              # (smtp_relay role) scraped from smtp-relay (192.168.0.151:9101).
+              # Exists because a wedged Gmail hop (expired app password,
+              # rate-limit) queues mail silently: the LXC stays up, postfix stays
+              # active, and only the growing deferred queue reveals the break.
+              - alert: PostfixQueueBacklog
+                expr: postfix_queue_depth > 5
+                for: 30m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Postfix queue backing up on {{ $labels.instance }}'
+                  description: >-
+                    The Postfix relay has held more than 5 messages queued for
+                    30 minutes ({{ $value | printf "%.0f" }} now). The Gmail hop
+                    is likely wedged (expired app password, rate-limit) — alert
+                    email egress may be delayed or stuck.
+
+              # postfix_up == 0 -> the relay service is not active. Critical: all
+              # alert email egress (Alertmanager email, host cron, backup
+              # notifications) flows through this one relay. Not absent-armed —
+              # a wholly-dark smtp-relay is covered by HAInfraGuestDown (lxc/151)
+              # and PostfixQueueCollectorStale below.
+              - alert: PostfixDown
+                expr: postfix_up == 0
+                for: 10m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Postfix service is not active on {{ $labels.instance }}'
+                  description: >-
+                    postfix_up has been 0 for 10 minutes — the SMTP relay's
+                    postfix service is not active. All alert email egress
+                    (Alertmanager, host cron, backup notifications) is down
+                    until it recovers.
+
+              # Collector meta-failure: the queue collector ran but is stuck, or
+              # was never deployed. Mirrors the other *CollectorStale rules — the
+              # absent() arm makes an undeployed collector loud, so the two rules
+              # above aren't silently serving stale inputs.
+              - alert: PostfixQueueCollectorStale
+                expr: >-
+                  (time() - postfix_queue_collector_last_success_seconds > 900)
+                  or absent(postfix_queue_collector_last_success_seconds)
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'postfix-queue collector is degraded or missing on smtp-relay'
+                  description: >-
+                    postfix_queue_collector_last_success_seconds is stale (>15m)
+                    or entirely absent — the Postfix queue/health alerts are
+                    serving stale or no inputs. Check
+                    `journalctl -u postfix-queue-collector.service` and its
+                    timer on smtp-relay.
+
+      homelab-kubernetes-resources:
+        groups:
+          - name: homelab.kubernetes-resources
+            rules:
+              # Tuned replacement for the upstream KubeCPUOvercommit (disabled via
+              # defaultRules.disabled above). Same shape as upstream — requests
+              # must fit after removing the largest node so a single node failure
+              # is survivable — but the gitlab-runner* namespaces' requests are
+              # subtracted from the total. Those namespaces deliberately
+              # over-request CPU for burst CI (their ResourceQuota is correctly
+              # sized), which flapped the upstream alert for 15-30m per burst.
+              # for: stays at the upstream 10m — with the CI burst removed from
+              # the numerator the residual is genuine steady-state overcommit.
+              - alert: KubeCPUOvercommit
+                expr: >-
+                  (sum(namespace_cpu:kube_pod_container_resource_requests:sum)
+                   - sum(namespace_cpu:kube_pod_container_resource_requests:sum{namespace=~"gitlab-runner.*"}))
+                  - (sum(kube_node_status_allocatable{resource="cpu"})
+                     - max(kube_node_status_allocatable{resource="cpu"})) > 0
+                  and
+                  (sum(kube_node_status_allocatable{resource="cpu"})
+                   - max(kube_node_status_allocatable{resource="cpu"})) > 0
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubecpuovercommit/'
+                  summary: 'Cluster has overcommitted CPU resource requests (CI namespaces excluded).'
+                  description: >-
+                    Non-CI CPU requests exceed the allocatable capacity that
+                    would remain after the largest node fails, so the cluster
+                    cannot tolerate a single node loss. The gitlab-runner*
+                    namespaces are excluded because their ResourceQuota
+                    deliberately over-requests for burst CI.

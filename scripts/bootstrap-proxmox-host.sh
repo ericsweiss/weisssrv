@@ -108,7 +108,6 @@ if ! command -v sudo &>/dev/null; then
     DISABLED_BY_US=()
 
     # Cleanup function to restore disabled repos on exit (success or failure)
-    # This ensures the host is never left with repos disabled if something fails
     restore_repos() {
         # DISABLED_BY_US is always declared above, so "\${arr[@]}" expands to
         # nothing when empty under set -u (bash >= 4.4; PVE hosts run bash 5.x).
@@ -120,7 +119,6 @@ if ! command -v sudo &>/dev/null; then
         done
     }
 
-    # Set trap to restore repos on exit (covers both success and failure paths)
     trap restore_repos EXIT
 
     # Disable enterprise repos temporarily (they require subscription)
@@ -235,6 +233,8 @@ echo "=== Step 2: Deploying SSH public key ==="
 SSH_KEY_B64=$(printf '%s' "$SSH_PUBLIC_KEY" | base64)
 # shellcheck disable=SC2087  # Unquoted heredoc is intentional for variable expansion
 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "root@${HOST_IP}" bash << DEPLOY_KEY
+set -euo pipefail
+
 SSH_KEY_B64="$SSH_KEY_B64"
 SSH_KEY=\$(echo "\$SSH_KEY_B64" | base64 -d)
 echo "\$SSH_KEY" > /home/eric/.ssh/authorized_keys

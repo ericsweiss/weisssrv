@@ -10,37 +10,8 @@
     - ../../../../inventories/prod/group_vars/all.yml
 
   pre_tasks:
-    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    # Fix any interrupted dpkg state in Docker containers
-    - name: Fix any interrupted dpkg state
-      ansible.builtin.shell: |
-        dpkg --configure -a || true
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-      changed_when: false
-
-    - name: Wait for systemd to be ready
-      ansible.builtin.wait_for:
-        path: /run/systemd/system
-        state: present
-        timeout: 30
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
   tasks:
     # 1. Base role - Foundation (packages, user, timezone)

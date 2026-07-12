@@ -33,6 +33,9 @@
         that:
           - "'relayhost = [smtp-relay.test.local]:587' in (main_cf_content.content | b64decode)"
           - "'inet_interfaces = loopback-only' in (main_cf_content.content | b64decode)"
+          # Null-client posture: only $myhostname is local — the bare domain
+          # must never appear or *@test.local mail would be delivered locally.
+          - "'mydestination = postfix-null-test.test.local, localhost.localdomain, localhost' in (main_cf_content.content | b64decode)"
           - "'smtp_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
           - "'smtp_tls_security_level = secure' in (main_cf_content.content | b64decode)"
         fail_msg: "main.cf missing expected settings"

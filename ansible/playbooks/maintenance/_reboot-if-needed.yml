@@ -220,16 +220,6 @@
     - reboot_required | bool
     - not (skip_reboot | default(false))
 
-- name: Pause for manual reboot decision
-  ansible.builtin.pause:
-    prompt: |
-      {{ inventory_hostname }} requires a reboot.
-      Press ENTER to reboot now, or Ctrl+C then 'A' to abort and reboot manually later.
-  when:
-    - reboot_required | bool
-    - not (auto_reboot | default(false))
-    - not (skip_reboot | default(false))
-
 - name: Decide reboot action (synchronous | detached | defer)
   ansible.builtin.set_fact:
     # defer  -> never auto-reboot here (operator + alert metric):
@@ -249,6 +239,20 @@
   when:
     - reboot_required | bool
     - not (skip_reboot | default(false))
+
+# Prompt AFTER the routing decision and only when the reboot would actually
+# happen here — on defer-class hosts (e.g. pve-nas-01) the reboot is routed to
+# an operator regardless, so confirming one would be misleading.
+- name: Pause for manual reboot decision
+  ansible.builtin.pause:
+    prompt: |
+      {{ inventory_hostname }} requires a reboot.
+      Press ENTER to reboot now, or Ctrl+C then 'A' to abort and reboot manually later.
+  when:
+    - reboot_required | bool
+    - not (auto_reboot | default(false))
+    - not (skip_reboot | default(false))
+    - reboot_action | default('') == 'synchronous'
 
 # --- SYNCHRONOUS: a safe, confirmed-non-executor host. play 1 is serial:1, so
 # only one host is down at a time.

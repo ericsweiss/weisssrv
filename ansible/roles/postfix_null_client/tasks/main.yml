@@ -2,7 +2,6 @@
 # Postfix null client configuration
 # Forwards all mail to the central SMTP relay
 
-# Validate SMTP credentials are present
 # This catches misconfiguration when env vars aren't injected via 'op run'
 - name: Validate SMTP relay credentials are present
   ansible.builtin.assert:

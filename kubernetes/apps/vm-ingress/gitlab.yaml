@@ -20,8 +20,6 @@ spec:
     - match: Host(`git.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -34,14 +32,15 @@ spec:
 
 ---
 # Internal - git.esweiss.com
-# Two routes on the same host. The KAS path explicitly DOES NOT carry
-# lan-tailscale-only, because gitlab-agent pods source-IP as the cluster
-# CIDR (10.42.0.0/16) when dialing the traefik-internal VIP under
-# externalTrafficPolicy: Local — which is outside the LAN/Tailscale
-# allowlist and would 403 every KAS long-poll. Authentication on this
-# path is per-agent bearer tokens (gitlab-agent-token ExternalSecret),
-# not IP filtering. Traefik picks the more specific Host+PathPrefix
-# rule first by priority.
+# Two routes on the same host; Traefik picks the more specific
+# Host+PathPrefix rule first by priority. gitlab-agent pods source-IP as
+# the cluster CIDR (10.42.0.0/16) when dialing the traefik-internal VIP
+# under externalTrafficPolicy: Local; lan-tailscale-only allowlists that
+# CIDR (see infrastructure/configs/traefik-middlewares.yaml), so agent
+# long-polls pass. If the pod CIDR is ever dropped from that allowlist,
+# this route must lose lan-tailscale-only or every KAS long-poll 403s.
+# Real authentication on this path is per-agent bearer tokens
+# (gitlab-agent-token ExternalSecret), not IP filtering.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -54,6 +53,8 @@ spec:
     - match: Host(`git.esweiss.com`) && PathPrefix(`/-/kubernetes-agent/`)
       kind: Rule
       middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -78,8 +79,6 @@ spec:
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
-          namespace: traefik
-        - name: strip-www
           namespace: traefik
         - name: hsts-header
           namespace: traefik

@@ -1,14 +1,16 @@
 # https://taskfile.dev
 version: '3'
 
+# Host/IP roster (PVE_HOSTS hostnames, K3S_SERVERS IPs, etc.) is generated from
+# ansible/inventories/prod/hosts.yml into scripts/hosts.env and loaded here as
+# both env vars and template vars ({{.PVE_HOSTS}} / {{.K3S_SERVERS}}). Single
+# source of truth — run `task hosts:sync` after editing hosts.yml.
+dotenv: ['scripts/hosts.env']
+
 vars:
   ANSIBLE_DIR: ./ansible
   TERRAFORM_DIR: ./terraform
   INVENTORY: ./inventories/prod
-  # Proxmox host list (used for HA status, Home Assistant VM discovery, etc.)
-  PVE_HOSTS: "pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01"
-  # k3s server/etcd node IPs (kubeconfig fetch + etcd snapshots; first reachable wins)
-  K3S_SERVERS: "192.168.0.222 192.168.0.223 192.168.0.227"
   # GitLab project ID for Terraform state backend
   # Find at: git.ericsweiss.com/eric/weisssrv (shown on project overview page)
   GITLAB_PROJECT_ID: "1"
@@ -42,25 +44,20 @@ tasks:
     dir: "{{.ANSIBLE_DIR}}"
     cmds:
       - |
-        if command -v ansible-lint >/dev/null 2>&1; then
-          ansible-lint playbooks/ roles/
-        else
-          PYENV_LINT="$(ls -1 ~/.pyenv/versions/*/bin/ansible-lint 2>/dev/null | head -n1)"
-          if [ -n "$PYENV_LINT" ]; then
-            "$PYENV_LINT" playbooks/ roles/
-          else
-            echo "ERROR: ansible-lint not found (pip install ansible-lint)"
-            exit 1
-          fi
-        fi
+        # Resolve ansible-lint via the shared helper (PATH, then validated
+        # pyenv glob; no `python3 -m` step — its module is `ansiblelint`).
+        LINT=$({{.ROOT_DIR}}/scripts/resolve-tool.sh ansible-lint) \
+          || { echo "ERROR: ansible-lint not found (pip install ansible-lint)"; exit 1; }
+        # Unquoted: $LINT may be a bare command or a pyenv path (single word here).
+        $LINT playbooks/ roles/
 
   ansible:test:
     desc: Run Molecule tests for Ansible roles (all or specific)
     dir: "{{.ANSIBLE_DIR}}"
     preconditions:
-      # Check for molecule in pyenv (preferred) or system python
-      # Matches the logic in test-all-roles.sh
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
+      # Resolve molecule via the shared helper (PATH -> python3 -m molecule ->
+      # validated pyenv glob), same chain ansible/test-all-roles.sh uses.
+      - sh: "{{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule >/dev/null"
         msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running. Start Docker Desktop first."
@@ -72,7 +69,7 @@ tasks:
     desc: Run all integration tests (multi-role scenarios)
     dir: "{{.ANSIBLE_DIR}}"
     preconditions:
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
+      - sh: "{{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule >/dev/null"
         msg: "molecule not installed. Run: pip install molecule molecule-docker (or install via pyenv)"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running. Start Docker Desktop first."
@@ -89,25 +86,17 @@ tasks:
     internal: true
     dir: "{{.MOLECULE_DIR}}"
     preconditions:
-      - sh: command -v molecule >/dev/null 2>&1 || python3 -m molecule --version >/dev/null 2>&1 || [ -n "$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)" ]
+      - sh: "{{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule >/dev/null"
         msg: "molecule not installed"
       - sh: docker info 2>/dev/null
         msg: "Docker is not running"
     cmds:
       - |
-        if command -v molecule >/dev/null 2>&1; then
-          molecule test
-        elif python3 -m molecule --version >/dev/null 2>&1; then
-          python3 -m molecule test
-        else
-          PYENV_MOL="$(ls -1 ~/.pyenv/versions/*/bin/molecule 2>/dev/null | head -n1)"
-          if [ -n "$PYENV_MOL" ]; then
-            "$PYENV_MOL" test
-          else
-            echo "ERROR: molecule not found"
-            exit 1
-          fi
-        fi
+        # Shared resolver (PATH -> python3 -m molecule -> validated pyenv glob).
+        MOL=$({{.ROOT_DIR}}/scripts/resolve-tool.sh molecule molecule) \
+          || { echo "ERROR: molecule not found"; exit 1; }
+        # Unquoted: $MOL may be "python3 -m molecule", which must word-split.
+        $MOL test
 
   ansible:test-integration-dns:
     desc: Run DNS stack integration test (unbound + adguard_home + adguard_sync)
@@ -308,7 +297,6 @@ tasks:
       # Lower-privilege worker-join token (ANS-D-2). Agents join with this
       # worker-only token instead of the cluster token; servers advertise it via
       # agent-token in the server config. See docs/19 "Agent token".
-      # Enabled 2026-07-04 (1Password item "K3s Agent Token" created).
       K3S_AGENT_TOKEN: op://Homelab/K3s Agent Token/credential
       # k3s.yml runs alloy_host on the k3s nodes, which asserts the Loki push
       # creds are present (https endpoint). Inject them like infra:deploy does.
@@ -322,19 +310,17 @@ tasks:
     cmds:
       - |
         echo "Fetching kubeconfig from k3s server..."
-        SERVER=""
-        for ip in {{.K3S_SERVERS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "eric@$ip" "true" 2>/dev/null; then
-            SERVER="$ip"
-            break
-          fi
-        done
-        if [ -z "$SERVER" ]; then
+        # First-reachable entry point via the shared helper (targets are
+        # eric@<ip>, so $SERVER already carries the user; no eric@ prefix below).
+        TARGETS=""
+        for ip in {{.K3S_SERVERS}}; do TARGETS="$TARGETS eric@$ip"; done
+        # shellcheck disable=SC2086
+        SERVER=$(scripts/find-reachable-host.sh $TARGETS) || {
           echo "ERROR: Cannot reach any k3s server ({{.K3S_SERVERS}})"
           exit 1
-        fi
+        }
         SSH_STDERR=$(mktemp)
-        KUBECONFIG_DATA=$(ssh "eric@$SERVER" "sudo cat /etc/rancher/k3s/k3s.yaml" 2>"$SSH_STDERR")
+        KUBECONFIG_DATA=$(ssh "$SERVER" "sudo cat /etc/rancher/k3s/k3s.yaml" 2>"$SSH_STDERR")
         SSH_RC=$?
         if [ $SSH_RC -ne 0 ]; then
           echo "ERROR: Failed to fetch kubeconfig from k3s server $SERVER (exit code: $SSH_RC)"
@@ -466,23 +452,21 @@ tasks:
       - |
         set -eo pipefail
         SNAPSHOT_NAME="manual-$(date +%Y%m%d-%H%M%S)"
-        SERVER=""
-        for ip in {{.K3S_SERVERS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "eric@$ip" "true" 2>/dev/null; then
-            SERVER="$ip"
-            break
-          fi
-        done
-        if [ -z "$SERVER" ]; then
+        # First-reachable entry point via the shared helper (targets are
+        # eric@<ip>, so $SERVER already carries the user).
+        TARGETS=""
+        for ip in {{.K3S_SERVERS}}; do TARGETS="$TARGETS eric@$ip"; done
+        # shellcheck disable=SC2086
+        SERVER=$(scripts/find-reachable-host.sh $TARGETS) || {
           echo "ERROR: Cannot reach any k3s server ({{.K3S_SERVERS}})"
           exit 1
-        fi
+        }
         echo "Creating etcd snapshot: $SNAPSHOT_NAME (via $SERVER)"
-        ssh "eric@$SERVER" "sudo k3s etcd-snapshot save --name $SNAPSHOT_NAME"
+        ssh "$SERVER" "sudo k3s etcd-snapshot save --name $SNAPSHOT_NAME"
         echo "Snapshot created successfully"
         echo ""
         echo "To list snapshots:"
-        echo "  ssh eric@$SERVER 'sudo k3s etcd-snapshot ls'"
+        echo "  ssh $SERVER 'sudo k3s etcd-snapshot ls'"
         echo ""
         echo "Snapshots are stored in: /var/lib/rancher/k3s/server/db/snapshots/"
 
@@ -590,13 +574,52 @@ tasks:
         echo "1Password Connect bootstrap (one-time manual setup):"
         echo ""
         echo "1. Create Connect server: op connect server create weisssrv-connect --vaults Homelab"
-        echo "2. Create access token:   op connect token create weisssrv-eso --server <ID> --vaults Homelab"
-        echo "3. Create k8s secrets:"
+        echo "   (writes 1password-credentials.json to the current directory)"
+        echo "2. Create the token + k8s secrets: task flux:bootstrap-onepassword-apply"
+        echo ""
+        echo "Or do step 2 by hand:"
+        echo "   op connect token create weisssrv-eso --server weisssrv-connect --vaults Homelab"
         echo "   kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -"
         echo "   kubectl -n external-secrets create secret generic op-credentials \\"
         echo "     --from-file=1password-credentials.json=./1password-credentials.json"
         echo "   kubectl -n external-secrets create secret generic onepassword-connect-token \\"
         echo "     --from-literal=token=<TOKEN>"
+
+  flux:bootstrap-onepassword-apply:
+    desc: Create the 1Password Connect bootstrap secrets in the cluster (needs ./1password-credentials.json from `op connect server create`)
+    preconditions:
+      - sh: command -v op
+        msg: "1Password CLI is not installed. Install via: https://developer.1password.com/docs/cli/get-started/"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+      - sh: command -v kubectl
+        msg: "kubectl not found"
+      - sh: kubectl cluster-info 2>/dev/null
+        msg: "Cannot reach cluster. Ensure KUBECONFIG points at the k3s cluster"
+      - sh: test -f ./1password-credentials.json
+        msg: "./1password-credentials.json not found. Run: op connect server create weisssrv-connect --vaults Homelab (see task flux:bootstrap-onepassword)"
+    cmds:
+      - |
+        set -eo pipefail
+        # Mint the Connect token fresh — it is deliberately NOT stored as a
+        # 1Password item (docs/15 inventory), so there is nothing to `op read`.
+        # Non-empty validation mirrors the flux:bootstrap GITLAB_TOKEN pattern.
+        TOKEN="$(op connect token create weisssrv-eso --server weisssrv-connect --vaults Homelab)"
+        if [ -z "$TOKEN" ]; then
+          echo "ERROR: op connect token create returned an empty token"
+          exit 1
+        fi
+        TOKEN_FILE=$(mktemp)
+        trap 'rm -f "$TOKEN_FILE"' EXIT
+        printf '%s' "$TOKEN" > "$TOKEN_FILE"
+        kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
+        kubectl -n external-secrets create secret generic op-credentials \
+          --from-file=1password-credentials.json=./1password-credentials.json \
+          --dry-run=client -o yaml | kubectl apply -f -
+        kubectl -n external-secrets create secret generic onepassword-connect-token \
+          --from-file=token="$TOKEN_FILE" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "Bootstrap secrets created. Continue with: task flux:bootstrap"
 
   flux:reconcile:
     desc: Trigger full reconciliation of Flux-managed resources (source → infra chain → apps)
@@ -608,6 +631,10 @@ tasks:
         msg: "kubectl not found"
     cmds:
       - flux reconcile source git flux-system
+      # Root first: it applies the child Kustomization CRs themselves, so
+      # edits under kubernetes/clusters/weisssrv/ take effect immediately
+      # instead of waiting for the root's own interval.
+      - flux reconcile kustomization flux-system
       - flux reconcile kustomization infrastructure-sources
       - flux reconcile kustomization infrastructure-controllers
       - flux reconcile kustomization infrastructure-configs
@@ -705,7 +732,6 @@ tasks:
             ;;
           recipes)
             task flux:refresh-secret -- recipes/recipes-secrets
-            task flux:refresh-secret -- recipes/recipes-openai
             kubectl rollout restart deployment -n recipes
             ;;
           gitlab-runner)
@@ -713,8 +739,8 @@ tasks:
             kubectl rollout restart deployment/gitlab-runner -n gitlab-runner
             ;;
           gitlab-runner-privileged)
-            task flux:refresh-secret -- gitlab-runner/gitlab-runner-privileged-token
-            kubectl rollout restart deployment/gitlab-runner-privileged -n gitlab-runner
+            task flux:refresh-secret -- gitlab-runner-privileged/gitlab-runner-privileged-token
+            kubectl rollout restart deployment/gitlab-runner-privileged -n gitlab-runner-privileged
             ;;
           gitlab-agent)
             task flux:refresh-secret -- gitlab-agent/gitlab-agent-token
@@ -733,6 +759,14 @@ tasks:
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
       - python3 scripts/generate-versions-configmap.py
+
+  hosts:sync:
+    desc: Regenerate scripts/hosts.env from ansible/inventories/prod/hosts.yml (host/IP roster)
+    preconditions:
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      - python3 scripts/generate-hosts-env.py
 
   flux:dev-apply:
     desc: "Dev helper: kustomize build + envsubst + kubectl apply for a path (Flux will revert if it differs from committed state)"
@@ -756,24 +790,12 @@ tasks:
         # the same way Flux's kustomize-controller does at reconcile time.
         # Without this, `kustomize build` emits literal ${gluetun_version}
         # etc. and kubectl applies a broken image tag to the cluster.
+        # Shared extraction (scripts/flux-render.sh) — same block CI uses.
         VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-        VARS_OUTPUT=$(python3 -c "
-        import yaml
-        with open('$VERSIONS_CONFIGMAP') as f:
-            doc = yaml.safe_load(f)
-        for k, v in doc.get('data', {}).items():
-            print(f'{k}\t{v}')
-        ") || { echo "ERROR: Failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
-        if [ -z "$VARS_OUTPUT" ]; then
-          echo "ERROR: No version keys found in $VERSIONS_CONFIGMAP"
-          exit 1
-        fi
-        while IFS=$'\t' read -r k v; do
-          [ -n "$k" ] && export "$k=$v"
-        done <<< "$VARS_OUTPUT"
-        ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+        VARS=$(scripts/flux-render.sh export-versions "$VERSIONS_CONFIGMAP") || exit 1
+        eval "$VARS"
         echo "WARNING: Flux will revert this if it differs from committed state."
-        kustomize build "{{.CLI_ARGS}}" | envsubst "$ENVSUBST_VARS" | kubectl apply -f -
+        kustomize build "{{.CLI_ARGS}}" | envsubst "$FLUX_ENVSUBST_VARS" | kubectl apply -f -
 
   flux:lint:
     desc: Build every Flux Kustomization + envsubst from versions ConfigMap + kubeconform
@@ -796,25 +818,17 @@ tasks:
         # export as env so envsubst resolves ${var} placeholders before
         # kubeconform runs. Without this, a typo in a placeholder slips past
         # lint because kubeconform sees the literal string as a valid string.
+        # The extraction + k8s-version derivation is shared with CI via
+        # scripts/flux-render.sh so the two paths can't drift.
         VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-        if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
-          echo "ERROR: $VERSIONS_CONFIGMAP not found"; exit 1
-        fi
-        VARS_OUTPUT=$(python3 -c "
-        import yaml
-        with open('$VERSIONS_CONFIGMAP') as f:
-            doc = yaml.safe_load(f)
-        for k, v in doc.get('data', {}).items():
-            print(f'{k}\t{v}')
-        ") || { echo "ERROR: Failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
-        if [ -z "$VARS_OUTPUT" ]; then
-          echo "ERROR: No version keys found in $VERSIONS_CONFIGMAP"
-          exit 1
-        fi
-        while IFS=$'\t' read -r k v; do
-          [ -n "$k" ] && export "$k=$v"
-        done <<< "$VARS_OUTPUT"
-        ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+        VARS=$(scripts/flux-render.sh export-versions "$VERSIONS_CONFIGMAP") || exit 1
+        eval "$VARS"
+
+        # kubeconform schema version: derive MAJOR.MINOR.0 from k3s_version in
+        # the versions ConfigMap (shared helper), mirroring the CI flux-lint
+        # job so local and CI always validate against the same API schemas.
+        K8S_VER=$(scripts/flux-render.sh k8s-version "$VERSIONS_CONFIGMAP")
+        echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
 
         # Accumulate the full rendered corpus so the HPA/VPA invariant check
         # (below) sees standalone HPAs + VPAs across every namespace at once.
@@ -860,10 +874,14 @@ tasks:
             FAILED=1
             continue
           fi
-          RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+          # printf '%s\n' (NOT echo): rendered manifests carry Grafana
+          # dashboard JSON with thousands of literal \n inside block scalars,
+          # and echo would expand those into real newlines and corrupt the
+          # YAML stream (see the deploy-verify note for the full rationale).
+          RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
           printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
-          if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
-              -kubernetes-version 1.35.0 \
+          if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
+              -kubernetes-version "$K8S_VER" \
               -schema-location default \
               -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{`{{.Group}}`}}/{{`{{.ResourceKind}}`}}_{{`{{.ResourceAPIVersion}}`}}.json' \
               -summary; then
@@ -899,44 +917,6 @@ tasks:
         fi
 
         exit $FAILED
-
-  flux:webhook-register:
-    desc: "One-time: register GitLab push webhook to Flux Receiver (requires Receiver manifest — planned follow-up, see docs/29-flux-operations.md § Webhook Setup)"
-    cmds:
-      - |
-        set -eo pipefail
-        RECEIVER_PATH=$(kubectl -n flux-system get receiver gitlab-push -o jsonpath='{.status.webhookPath}' 2>/dev/null || true)
-        if [ -z "$RECEIVER_PATH" ]; then
-          echo "ERROR: Flux Receiver 'gitlab-push' not found."
-          echo "The Receiver + IngressRoute manifests are a planned follow-up; see"
-          echo "docs/29-flux-operations.md § Webhook Setup for status."
-          exit 1
-        fi
-        FLUX_HOST="https://flux-webhook.ericsweiss.com"
-        HOOK_URL="${FLUX_HOST}${RECEIVER_PATH}"
-        echo "Registering webhook at $HOOK_URL"
-        TOKEN="$(op read 'op://Homelab/Flux GitLab PAT/credential')"
-        [ -n "$TOKEN" ] || { echo "ERROR: op read returned empty Flux GitLab PAT"; exit 1; }
-        WEBHOOK="$(op read 'op://Homelab/Flux Webhook Token/credential')"
-        [ -n "$WEBHOOK" ] || { echo "ERROR: op read returned empty Flux Webhook Token"; exit 1; }
-        TMPFILE=$(mktemp /tmp/flux-webhook-register.XXXXXX.json)
-        trap 'rm -f "$TMPFILE"' EXIT
-        # -w captures the HTTP status code for clear diagnostics instead of
-        # a silent "null null" from jq on empty stdin. We check $HTTP_CODE
-        # explicitly below, so -f is not used (it conflicts with -w by
-        # aborting before the response body is written).
-        HTTP_CODE=$(curl -sSL -X POST "https://git.ericsweiss.com/api/v4/projects/eric%2Fweisssrv/hooks" \
-          -H "PRIVATE-TOKEN: $TOKEN" \
-          -H "Content-Type: application/json" \
-          -w "%{http_code}" \
-          -o "$TMPFILE" \
-          -d "{\"url\":\"$HOOK_URL\",\"push_events\":true,\"token\":\"$WEBHOOK\",\"enable_ssl_verification\":true}")
-        if [ "$HTTP_CODE" != "201" ]; then
-          echo "ERROR: webhook registration failed (HTTP $HTTP_CODE):"
-          cat "$TMPFILE"
-          exit 1
-        fi
-        jq '.id, .url' "$TMPFILE"
 
   # === Maintenance Tasks ===
   # --- Base Infrastructure ---
@@ -1099,17 +1079,13 @@ tasks:
     cmds:
       # First verify we can reach at least one Proxmox host
       - |
-        REACHABLE_HOST=""
-        for host in {{.PVE_HOSTS}}; do
-          if ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "true" 2>/dev/null; then
-            REACHABLE_HOST="$host"
-            break
-          fi
-        done
-        if [ -z "$REACHABLE_HOST" ]; then
+        # First-reachable Proxmox host via the shared helper. Bare hostnames
+        # (no user@) so ssh-config resolves the login user, as before.
+        # shellcheck disable=SC2086
+        REACHABLE_HOST=$(scripts/find-reachable-host.sh {{.PVE_HOSTS}}) || {
           echo "ERROR: Cannot reach any Proxmox host"
           exit 1
-        fi
+        }
         echo "Connected to cluster via $REACHABLE_HOST"
         echo ""
         echo "=== HA Manager Status ==="
@@ -1151,9 +1127,13 @@ tasks:
   terraform:init:
     desc: Initialize Terraform (with GitLab state backend)
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
-    env:
-      # GitLab Terraform state backend configuration
-      # GITLAB_PROJECT_ID defined in top-level vars
+    # Anchor shared by terraform:init/plan/apply — the GitLab state backend
+    # (GITLAB_PROJECT_ID defined in top-level vars) + Cloudflare vars live in
+    # one place. terraform init ignores the TF_VAR_* values, and op run
+    # resolves them from the same vault the shared preconditions require.
+    env: &tf_state_env
+      TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare Terraform Token/credential
+      TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare Terraform Token/username
       TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
       TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
       TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
@@ -1175,17 +1155,7 @@ tasks:
   terraform:plan:
     desc: Plan Terraform changes
     dir: "{{.TERRAFORM_DIR}}/cloudflare"
-    # Anchor shared with terraform:apply (identical backend + Cloudflare vars).
-    env: &tf_state_env
-      TF_VAR_cloudflare_api_token: op://Homelab/Cloudflare DNS Token/credential
-      TF_VAR_cloudflare_account_id: op://Homelab/Cloudflare DNS Token/username
-      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare"
-      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
-      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/cloudflare/lock"
-      TF_HTTP_USERNAME: "terraform"
-      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
-      TF_HTTP_LOCK_METHOD: "POST"
-      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    env: *tf_state_env
     preconditions: *tf_preconditions
     cmds:
       - op run -- terraform plan {{.CLI_ARGS}}
@@ -1204,28 +1174,39 @@ tasks:
       - task: terraform:validate-local
 
   terraform:fmt:
-    desc: Format Terraform files
-    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    desc: Format Terraform files (all modules)
+    dir: "{{.TERRAFORM_DIR}}"
     cmds:
+      # Run from terraform/ so -recursive covers every module (cloudflare +
+      # tailscale), matching the CI terraform-fmt job.
       - terraform fmt -recursive
 
   terraform:fmt-check:
-    desc: Check Terraform formatting
-    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    desc: Check Terraform formatting (all modules)
+    dir: "{{.TERRAFORM_DIR}}"
     cmds:
       - terraform fmt -check -recursive
 
   terraform:validate-local:
-    desc: Validate Terraform syntax (no backend auth required)
-    dir: "{{.TERRAFORM_DIR}}/cloudflare"
+    desc: Validate Terraform syntax for every module (no backend auth required)
+    dir: "{{.TERRAFORM_DIR}}"
     cmds:
       - |
         set -euo pipefail
-        # Use isolated data dir so backend-free init doesn't corrupt real state
-        TF_DATA_DIR="$(mktemp -d)" || { echo "ERROR: failed to create temp Terraform data dir"; exit 1; }
-        trap 'rm -rf "$TF_DATA_DIR"' EXIT
-        TF_DATA_DIR="$TF_DATA_DIR" terraform init -backend=false -input=false > /dev/null
-        TF_DATA_DIR="$TF_DATA_DIR" terraform validate
+        # Validate every module under terraform/ (mirrors the CI
+        # terraform-validate job). Isolated data dir per module so
+        # backend-free init doesn't corrupt real state.
+        TMP_ROOT="$(mktemp -d)" || { echo "ERROR: failed to create temp Terraform data dir"; exit 1; }
+        trap 'rm -rf "$TMP_ROOT"' EXIT
+        for mod in */; do
+          [ -f "${mod}versions.tf" ] || continue
+          echo "=== terraform validate ${mod} ==="
+          TF_DATA_DIR="$TMP_ROOT/${mod%/}"
+          mkdir -p "$TF_DATA_DIR"
+          ( cd "$mod" \
+            && TF_DATA_DIR="$TF_DATA_DIR" terraform init -backend=false -input=false > /dev/null \
+            && TF_DATA_DIR="$TF_DATA_DIR" terraform validate )
+        done
 
   # === Utility Tasks ===
   collect-state:
@@ -1234,13 +1215,104 @@ tasks:
       - ./scripts/collect-state.sh {{.CLI_ARGS}}
 
   lint:
-    desc: Run all linters (no auth required) — Ansible, Terraform, Flux, Python scripts
+    desc: Run all linters (no auth required) — mirrors the CI lint stage
     cmds:
       - task: ansible:lint
       - task: terraform:fmt-check
       - task: terraform:validate-local
       - task: flux:lint
       - task: scripts:test
+      - task: lint:shellcheck
+      - task: lint:yamllint
+      - task: lint:coverage-checks
+      - task: lint:flux-version-pin
+
+  lint:shellcheck:
+    desc: ShellCheck scripts/, role *.sh, and neutralized *.sh.j2 templates (mirrors CI shellcheck job)
+    preconditions:
+      - sh: command -v shellcheck
+        msg: "shellcheck not installed. brew install shellcheck"
+    cmds:
+      - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+      # `-exec ... {} +` returns non-zero if shellcheck fails on ANY file
+      # (a `find | while` loop would only surface the last iteration's rc).
+      - |
+        find ansible/roles -name '*.sh' -type f \
+          -exec shellcheck --severity=warning --exclude=SC1091,SC2034 {} +
+      - |
+        # Lint shell-script Jinja templates (*.sh.j2) with Jinja neutralized
+        # first — same sed rules as the CI shellcheck job (see that job for
+        # the raw-wrapped vs plain template rationale and constraints).
+        set -eo pipefail
+        rendered=$(mktemp)
+        tmpl_list=$(mktemp)
+        trap 'rm -f "$rendered" "$tmpl_list"' EXIT
+        rc=0
+        find ansible/roles -name '*.sh.j2' -type f > "$tmpl_list"
+        while read -r tmpl; do
+          echo "Checking: $tmpl"
+          if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
+            sed -E \
+              -e '/^[[:space:]]*\{#.*#\}[[:space:]]*$/d' \
+              -e '/\{%.*%\}/d' \
+              -e 's/\{\{"\{"\}\}/{/g' \
+              -e 's/\{\{"\}"\}\}/}/g' \
+              -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+          else
+            sed -E \
+              -e '/\{#/,/#\}/d' \
+              -e '/\{%.*%\}/d' \
+              -e 's/\{\{"\{"\}\}/{/g' \
+              -e 's/\{\{"\}"\}\}/}/g' \
+              -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+          fi
+          shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered" || rc=1
+        done < "$tmpl_list"
+        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
+
+  lint:yamllint:
+    desc: Baseline YAML syntax check (mirrors CI yaml-lint job, plus Taskfile.yml)
+    preconditions:
+      - sh: command -v yamllint
+        msg: "yamllint not installed. pip install yamllint"
+    cmds:
+      - yamllint -d relaxed ansible/
+      - yamllint -d relaxed kubernetes/
+      - yamllint -d relaxed .gitlab-ci.yml
+      - yamllint -d relaxed Taskfile.yml
+
+  lint:coverage-checks:
+    desc: Deploy-coverage + molecule-matrix-coverage gates (mirror the CI lint stage)
+    preconditions:
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      - bash scripts/check-deploy-coverage.sh
+      - bash scripts/check-molecule-matrix-coverage.sh
+
+  lint:flux-version-pin:
+    desc: Check the deploy-verify FLUX_VERSION pin against versions-configmap (mirrors CI flux-version-pin-check)
+    cmds:
+      - |
+        set -eu
+        PIN=$(sed -n 's/^ *FLUX_VERSION="\([0-9.]*\)"$/\1/p' .gitlab-ci.yml | head -1)
+        CM=$(sed -n 's/^ *flux_version: *//p' kubernetes/infrastructure/sources/versions-configmap.yaml | head -1)
+        echo "deploy-verify FLUX_VERSION pin: ${PIN:-<not found>} / versions-configmap flux_version: ${CM:-<not found>}"
+        [ -n "$PIN" ] || { echo "Could not extract FLUX_VERSION pin from .gitlab-ci.yml"; exit 1; }
+        [ -n "$CM" ] || { echo "Could not extract flux_version from versions-configmap.yaml"; exit 1; }
+        [ "$PIN" = "$CM" ] || { echo "FLUX_VERSION pin (${PIN}) drifted from versions-configmap flux_version (${CM}) — bump the deploy-verify version + sha256 pair in .gitlab-ci.yml"; exit 1; }
+
+  lint:prometheus-config:
+    desc: Validate kube-prometheus alert rules + Alertmanager config (promtool/amtool; mirrors CI prometheus-config-lint)
+    preconditions:
+      - sh: command -v promtool
+        msg: "promtool not installed (ships in the prometheus release tarball)"
+      - sh: command -v amtool
+        msg: "amtool not installed (ships in the alertmanager release tarball)"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      - bash scripts/lint-prometheus-config.sh
 
   scripts:test:
     desc: Run Python unit tests for scripts/ (pytest)
@@ -1330,18 +1402,66 @@ tasks:
           kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https://checkip.amazonaws.com 2>/dev/null || echo "  Cannot reach checkip.amazonaws.com"
         fi
 
+  downloads:verify-vpn:
+    desc: Assert VPN egress differs from LAN egress and the NetworkPolicy blocks direct LAN access from VPN-routed pods
+    cmds:
+      - |
+        set -eo pipefail
+        FAILED=0
+        # Reference (non-VPN) egress IP from prowlarr — its netpol allows
+        # TCP 443 out, and it does NOT ride the Gluetun tunnel.
+        LAN_IP=$(kubectl exec -n downloads deployment/prowlarr -- \
+          sh -c 'wget -qO- -T 10 https://checkip.amazonaws.com' 2>/dev/null || true)
+        if [ -z "$LAN_IP" ]; then
+          echo "ERROR: could not determine the non-VPN egress IP (via prowlarr)"
+          exit 1
+        fi
+        echo "Non-VPN egress IP (prowlarr): $LAN_IP"
+        for APP in nzbget qbittorrent; do
+          VPN_ENABLED=$(kubectl get configmap "$APP-vpn-config" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "unknown")
+          if [ "$VPN_ENABLED" != "true" ]; then
+            echo "SKIP: $APP vpn_enabled=$VPN_ENABLED"
+            continue
+          fi
+          VPN_IP=$(kubectl exec -n downloads deployment/"$APP" -c gluetun -- \
+            wget -qO- -T 10 https://checkip.amazonaws.com 2>/dev/null || true)
+          if [ -z "$VPN_IP" ]; then
+            echo "FAIL: $APP: could not fetch the VPN egress IP"
+            FAILED=1
+          elif [ "$VPN_IP" = "$LAN_IP" ]; then
+            echo "FAIL: $APP egress IP $VPN_IP equals the non-VPN egress IP — VPN leak"
+            FAILED=1
+          else
+            echo "OK: $APP egress IP $VPN_IP differs from the non-VPN egress IP"
+          fi
+        done
+        # LAN containment: gluetun's own firewall deliberately permits RFC1918
+        # (FIREWALL_OUTBOUND_SUBNETS), so the allow-gluetun-vpn-egress
+        # NetworkPolicy is the ONLY layer blocking LAN access from these pods.
+        # A netpol drop manifests as a connect timeout (no RST), so any
+        # successful fetch here means the policy is not containing LAN egress.
+        echo "Checking NetworkPolicy LAN containment from qbittorrent (expect timeout)..."
+        if kubectl exec -n downloads deployment/qbittorrent -c gluetun -- \
+             wget -q -O /dev/null -T 5 --no-check-certificate https://192.168.0.1/ 2>/dev/null; then
+          echo "FAIL: qbittorrent pod reached 192.168.0.1:443 directly — NetworkPolicy not containing LAN egress"
+          FAILED=1
+        else
+          echo "OK: direct LAN connect from the qbittorrent pod was blocked"
+        fi
+        exit $FAILED
+
   downloads:restart:
     desc: Restart all download clients and media apps
     cmds:
-      - echo "Restarting download clients..."
-      - kubectl rollout restart deployment/nzbget -n downloads
-      - kubectl rollout restart deployment/qbittorrent -n downloads
-      - echo "Restarting *arr apps..."
-      - kubectl rollout restart deployment/prowlarr -n downloads
-      - kubectl rollout restart deployment/sonarr -n downloads
-      - kubectl rollout restart deployment/radarr -n downloads
-      - kubectl rollout restart deployment/lidarr -n downloads
-      - kubectl rollout restart deployment/pulsarr -n downloads
+      # Pod delete, NOT `kubectl rollout restart`: these Deployments are
+      # Flux-kustomize-managed, so the restartedAt pod-template annotation a
+      # rollout restart adds is drift the kustomize-controller reverts on the
+      # next reconcile — re-rolling every pod a second time. All Deployments
+      # here are replicas:1 + Recreate, so a pod delete is a clean restart.
+      # Pods carry app.kubernetes.io/name (part-of=media-stack is
+      # Deployment-metadata-only; it is not propagated to pod templates).
+      - echo "Restarting download clients and *arr apps (pod delete)..."
+      - kubectl delete pod -n downloads -l 'app.kubernetes.io/name in (nzbget,qbittorrent,prowlarr,sonarr,radarr,lidarr,pulsarr)'
       - echo "Waiting for pods to be ready..."
       - kubectl wait --namespace downloads --for=condition=ready pod --all --timeout=300s
 
@@ -1411,8 +1531,12 @@ tasks:
         # Delete only workload resources, NOT namespace/storage/secrets.
         # Flux will recreate these within ~1 minute on the next reconcile
         # unless the apps Kustomization is suspended first (see echo block below).
-        kubectl delete deployment -n downloads -l app.kubernetes.io/part-of=download-clients --ignore-not-found
+        # part-of=media-stack is the label kustomization.yaml applies to every
+        # resource in this namespace.
+        kubectl delete deployment -n downloads -l app.kubernetes.io/part-of=media-stack --ignore-not-found
         kubectl delete ingressroute -n downloads --all --ignore-not-found
+        echo "Remaining Deployments (should be none until Flux recreates them):"
+        kubectl get deployment -n downloads
       - |
         echo ""
         echo "Workloads deleted. Namespace, PVCs, and secrets preserved."
@@ -1446,14 +1570,15 @@ tasks:
   recipes:restart:
     desc: Restart all recipe apps
     cmds:
-      - echo "Restarting Mealie..."
-      - kubectl rollout restart deployment/mealie -n recipes
-      - kubectl rollout restart deployment/mealie-postgres -n recipes
-      - echo "Restarting Bar Assistant..."
-      - kubectl rollout restart deployment/bar-assistant -n recipes
-      - kubectl rollout restart deployment/bar-assistant-redis -n recipes
-      - kubectl rollout restart deployment/bar-assistant-meilisearch -n recipes
-      - kubectl rollout restart deployment/salt-rim -n recipes
+      # Pod delete, NOT `kubectl rollout restart`: these Deployments are
+      # Flux-kustomize-managed, so the restartedAt pod-template annotation a
+      # rollout restart adds is drift the kustomize-controller reverts on the
+      # next reconcile — the trailing `kubectl wait` would then pass on the OLD
+      # ready pods, masking a no-op restart. A pod delete is a clean restart
+      # (Deployments here are replicas:1) and leaves no drift to revert.
+      # Matches downloads:restart.
+      - echo "Restarting recipe apps (pod delete)..."
+      - kubectl delete pod -n recipes --all
       - echo "Waiting for pods to be ready..."
       - kubectl wait --namespace recipes --for=condition=ready pod --all --timeout=300s
 
@@ -1525,8 +1650,8 @@ tasks:
         fi
       - echo ""
       - echo "=== Kubernetes Resources ==="
-      - kubectl get service home-assistant-backend -o wide 2>/dev/null || echo "Service not found"
-      - kubectl get endpointslice home-assistant-backend 2>/dev/null || echo "EndpointSlice not found"
+      - kubectl get service home-assistant-backend -n default -o wide 2>/dev/null || echo "Service not found"
+      - kubectl get endpointslice home-assistant-backend -n default 2>/dev/null || echo "EndpointSlice not found"
       - kubectl get ingressroute -A 2>/dev/null | grep -E "NAME|home-assistant" || echo "IngressRoutes not found"
       - echo ""
       - echo "=== Traefik Routing Test ==="
@@ -1570,18 +1695,45 @@ tasks:
         fi
 
   home-assistant:vm-restart:
-    desc: Restart the Home Assistant VM
+    desc: "Restart the Home Assistant VM (graceful shutdown + start; FORCE=1 hard-resets a wedged guest)"
+    vars:
+      FORCE: '{{.FORCE | default "0"}}'
     cmds:
       - |
+        set -eo pipefail
         CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
-        echo "Restarting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
-        # qm reset avoids QEMU Guest Agent timeout when HAOS lacks proper agent config.
-        if ssh "$CURRENT_NODE" "sudo qm reset {{.HA_VM_ID}}"; then
+        if [ "{{.FORCE}}" = "1" ]; then
+          echo "FORCE=1: hard-resetting VM {{.HA_VM_ID}} on $CURRENT_NODE (recorder DB may lose recent history)..."
+          ssh "$CURRENT_NODE" "sudo qm reset {{.HA_VM_ID}}"
           echo "Sent reset signal to Home Assistant VM"
-        else
-          echo "ERROR: Failed to restart VM {{.HA_VM_ID}} on $CURRENT_NODE"
-          exit 1
+          exit 0
         fi
+        # Graceful ACPI shutdown + start — the same mechanism vm-stop uses.
+        # A hard `qm reset` on every restart risks recorder-DB corruption;
+        # keep it behind FORCE=1 for a wedged guest. `qm reboot` is NOT used
+        # because it waits on the QEMU Guest Agent, which HAOS lacks proper
+        # config for. The VM is Proxmox-HA-managed, so shutdown/start proxy
+        # through ha-manager.
+        echo "Shutting down VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm shutdown {{.HA_VM_ID}} --timeout 120"
+        for i in $(seq 1 30); do
+          STATUS=$(ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || true)
+          case "$STATUS" in *stopped*) break ;; esac
+          echo "Waiting for shutdown... ($i/30)"
+          sleep 5
+        done
+        STATUS=$(ssh "$CURRENT_NODE" "sudo qm status {{.HA_VM_ID}}" 2>/dev/null || true)
+        case "$STATUS" in
+          *stopped*) ;;
+          *)
+            echo "ERROR: VM {{.HA_VM_ID}} did not stop cleanly (status: ${STATUS:-unknown})."
+            echo "Re-run with FORCE=1 to hard-reset: task home-assistant:vm-restart FORCE=1"
+            exit 1
+            ;;
+        esac
+        echo "Starting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
+        ssh "$CURRENT_NODE" "sudo qm start {{.HA_VM_ID}}"
+        echo "Restart complete"
 
   home-assistant:console:
     desc: Open SSH console to Home Assistant (if SSH add-on installed)
@@ -1729,11 +1881,16 @@ tasks:
       - echo "=== GitLab IngressRoutes ==="
       - kubectl get ingressroute -n gitlab 2>/dev/null || echo "No IngressRoutes found"
       - echo ""
-      - echo "=== GitLab Runner Pods ==="
+      - echo "=== GitLab Runner Pods (shared + privileged) ==="
       - kubectl get pods -n gitlab-runner -o wide 2>/dev/null || echo "No runners found"
+      - kubectl get pods -n gitlab-runner-privileged -o wide 2>/dev/null || echo "No privileged runners found"
       - echo ""
       - echo "=== GitLab Runner HelmReleases (Flux-managed) ==="
       - kubectl get helmrelease -n gitlab-runner 2>/dev/null || echo "No HelmReleases found"
+      - kubectl get helmrelease -n gitlab-runner-privileged 2>/dev/null || echo "No privileged HelmReleases found"
+      - echo ""
+      - echo "=== GitLab Runner Reaper ==="
+      - kubectl get cronjob -n gitlab-runner-reaper 2>/dev/null || echo "No reaper CronJob found"
       - echo ""
       - echo "=== GitLab Agent ==="
       - kubectl get pods -n gitlab-agent 2>/dev/null || echo "No agent pods found"
@@ -1741,9 +1898,9 @@ tasks:
 
   gitlab:verify:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)
-    # Requires bash for 'local' keyword in shell functions (dash doesn't support it)
+    # Task's built-in interpreter (mvdan/sh) supports the 'local' keyword used
+    # in the helper functions below; there is no per-task shell setting.
     # GITLAB_VM_IP comes from top-level vars (shared with the gitlab:* ssh tasks).
-    shell: bash
     cmds:
       - |
         echo "=== GitLab Smoke Tests ==="
@@ -1861,10 +2018,14 @@ tasks:
         fi
 
   gitlab:backup:
-    desc: Create GitLab backup
+    desc: Create GitLab backup (wrapper applies SKIP=registry,artifacts, copies secrets, seeds the freshness metric)
     cmds:
       - echo "Creating GitLab backup..."
-      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-backup create"
+      # The wrapper (installed by the gitlab role) — NOT bare `gitlab-backup
+      # create` — applies the slim-backup SKIP list, copies gitlab-secrets.json
+      # + gitlab.rb alongside, and writes the gitlab_backup.prom freshness
+      # metric the backup-staleness alert reads.
+      - ssh eric@{{.GITLAB_VM_IP}} "sudo /usr/local/sbin/gitlab-backup-run.sh"
       - echo ""
       - 'echo "Backup complete. List backups with:"'
       - echo "  ssh eric@{{.GITLAB_VM_IP}} 'sudo ls -la /var/opt/gitlab/backups/'"

@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Oneshot that samples the Postfix queue once. Invoked every minute by
+# postfix-queue-collector.timer.
+[Unit]
+Description=Sample Postfix queue depth to node_exporter textfile collector
+After=postfix.service
+
+[Service]
+Type=oneshot
+# Passes the textfile dir so the role variable (smtp_relay_textfile_dir)
+# is honored both here and inside the script.
+ExecStart=/usr/local/sbin/postfix-queue-collector.sh {{ smtp_relay_textfile_dir }}
+User=root
+TimeoutStartSec=15s
+Nice=10
+# Sandbox: the collector reads systemd state, asks postqueue for the queue
+# listing, and writes one .prom atomically to the textfile dir.
+# ProtectSystem=strict keeps the fs read-only except the textfile dir and
+# the postfix public socket dir (postqueue connects to the showq socket,
+# which needs write access on the socket inode).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+ReadWritePaths={{ smtp_relay_textfile_dir }} /var/spool/postfix/public

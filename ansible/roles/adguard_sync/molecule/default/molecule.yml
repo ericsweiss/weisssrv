@@ -22,7 +22,7 @@ provisioner:
   inventory:
     group_vars:
       all:
-        adguardhome_sync_version: 0.8.2
+        adguardhome_sync_version: 0.9.2
         adguardhome_sync_schedule: '*:0/5'
         adguardhome_sync_origin: http://192.168.0.150:3000
         adguardhome_sync_replica: http://192.168.0.160:3000

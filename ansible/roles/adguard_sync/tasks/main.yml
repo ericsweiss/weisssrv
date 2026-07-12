@@ -6,80 +6,47 @@
 - name: Configure AdGuard Home Sync on dns-01
   when: inventory_hostname == 'dns-01'
   block:
-    - name: Check if adguardhome-sync binary exists
+    - name: Install adguardhome-sync via shared pipeline
+      ansible.builtin.include_role:
+        name: prometheus_exporter
+        tasks_from: install
+      vars:
+        _as_base: "https://github.com/bakito/adguardhome-sync/releases/download"
+        _as_file: "adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
+        prometheus_exporter_name: adguardhome-sync
+        prometheus_exporter_version: "{{ adguardhome_sync_version }}"
+        prometheus_exporter_artifact_type: tarball
+        # The upstream filename is kept so get_url's checksum lookup matches an
+        # entry in checksums.txt.
+        prometheus_exporter_download_url: "{{ _as_base }}/v{{ adguardhome_sync_version }}/{{ _as_file }}"
+        prometheus_exporter_checksum: "sha256:{{ _as_base }}/v{{ adguardhome_sync_version }}/checksums.txt"
+        prometheus_exporter_binary_path: /usr/local/bin/adguardhome-sync
+        prometheus_exporter_archive_member: adguardhome-sync
+        # `adguardhome-sync --version` prints "adguardhome-sync version X.Y.Z"
+        # (GoReleaser strips the tag's v prefix); pull the bare semver to
+        # compare against the pin.
+        prometheus_exporter_version_check_cmd: |
+          set -o pipefail
+          /usr/local/bin/adguardhome-sync --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+        # Not a long-running exporter: point the shared restart handler at the
+        # timer — its next tick runs the oneshot on the freshly installed binary.
+        prometheus_exporter_service_name: adguardhome-sync.timer
+
+    - name: Check sync state directory
       ansible.builtin.stat:
-        path: /usr/local/bin/adguardhome-sync
-      register: sync_binary
+        path: /var/lib/adguardhome-sync
+      register: sync_state_dir
 
-    # Version-aware install: detect the installed binary's version so a bump to
-    # adguardhome_sync_version actually upgrades a host already running an older
-    # build. Without this the download only fired on first install and silently
-    # skipped every later version bump. `adguardhome-sync --version` prints
-    # "adguardhome-sync version X.Y.Z" (GoReleaser strips the tag's v prefix);
-    # pull the bare semver to compare against the pin.
-    - name: Check installed adguardhome-sync version
-      ansible.builtin.command: /usr/local/bin/adguardhome-sync --version
-      register: sync_version_check
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      when: sync_binary.stat.exists
-
-    - name: Determine adguardhome-sync install need
-      ansible.builtin.set_fact:
-        # Reinstall when the binary is missing, the probe failed, or the parsed
-        # version differs from the pin (no-op when they match -> idempotent).
-        sync_needs_install: >-
-          {{ not sync_binary.stat.exists
-             or sync_version_check.rc | default(1) != 0
-             or (sync_version_check.stdout | default('')
-                 | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default('')) != adguardhome_sync_version }}
-
-    - name: Download adguardhome-sync binary
-      ansible.builtin.get_url:
-        url: "https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"  # noqa yaml[line-length]
-        # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
-        dest: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
-        mode: "0644"
-        force: false
-        checksum: "sha256:https://github.com/bakito/adguardhome-sync/releases/download/v{{ adguardhome_sync_version }}/checksums.txt"
-      when: sync_needs_install
-
-    - name: Extract adguardhome-sync
-      ansible.builtin.unarchive:
-        src: "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
-        dest: /tmp
-        remote_src: true
-        # No `creates:` guard here — on an upgrade the freshly downloaded
-        # tarball must overwrite a stale /tmp/adguardhome-sync from a prior run.
-      when: sync_needs_install
-
-    - name: Install adguardhome-sync binary
-      ansible.builtin.copy:
-        src: /tmp/adguardhome-sync
-        dest: /usr/local/bin/adguardhome-sync
-        owner: root
-        group: root
-        mode: "0755"
-        remote_src: true
-      when: sync_needs_install
-
-    - name: Cleanup download
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "/tmp/adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
-        - /tmp/adguardhome-sync
-      when: sync_needs_install
-
-    - name: Create adguardhome-sync home directory
+    # StateDirectory= + DynamicUser=yes manage /var/lib/adguardhome-sync as a
+    # symlink into /var/lib/private; a plain root-owned directory left by older
+    # deploys blocks unit startup. Its contents are disposable sync state.
+    - name: Remove legacy root-owned sync home directory
       ansible.builtin.file:
         path: /var/lib/adguardhome-sync
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
+        state: absent
+      when:
+        - sync_state_dir.stat.exists
+        - not sync_state_dir.stat.islnk
 
     - name: Deploy adguardhome-sync configuration
       ansible.builtin.template:

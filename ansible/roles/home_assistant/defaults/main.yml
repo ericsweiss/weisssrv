@@ -49,13 +49,21 @@ home_assistant_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CL
 # it true on the production HAOS once acme_certs has pushed the cert.
 home_assistant_ssl_enabled: false
 
+# Controller-side staging directory for the rendered configuration.yaml +
+# secrets.yaml before they are scp'd to HAOS. Empty (production) -> a
+# private per-run tempfile directory is created and removed in always:,
+# so the rendered secrets never sit at a fixed, predictable /tmp path.
+# The molecule render-only scenario pins this to /tmp so verify.yml can
+# assert on stable paths.
+home_assistant_staging_dir: ""
+
 # Render-only mode. When true, the role renders configuration.yaml +
-# secrets.yaml from templates to /tmp on the controller and stops there
-# — it does NOT touch the live HAOS (no ssh, no scp, no `ha core check`,
-# no /ssl pre-flight). Used by the molecule contract test (the scp/ssh
-# path can't be exercised against HAOS in a Docker container, but the
-# templates are pure Jinja2 and easy to verify in isolation).
-# Production deploys leave this false; the molecule converge flips it
-# true so it can assert on rendered output. See
-# ansible/roles/home_assistant/molecule/default/ for the scenario.
+# secrets.yaml from templates into home_assistant_staging_dir on the
+# controller and stops there — it does NOT touch the live HAOS (no ssh,
+# no scp, no `ha core check`, no /ssl pre-flight). Used by the molecule
+# contract test (the scp/ssh path can't be exercised against HAOS in a
+# Docker container, but the templates are pure Jinja2 and easy to verify
+# in isolation). Production deploys leave this false; the molecule
+# converge flips it true (and pins the staging dir) so it can assert on
+# rendered output. See ansible/roles/home_assistant/molecule/default/.
 home_assistant_render_only: false

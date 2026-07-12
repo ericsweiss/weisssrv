@@ -14,7 +14,18 @@ Backs **`zfs_exporter`** (tarball) and **`unbound_exporter`** (deb). Both are
 thin wrappers that pass their specifics as `vars` and keep their own
 `templates/<name>.service.j2` unit file.
 
-## Why `node_exporter_host` is NOT built on this role
+**`adguard_sync`** (adguardhome-sync) is a partial consumer: it runs only the
+**install** half (tarball + `checksums.txt`), then manages its own oneshot
+service and timer directly. The `service` half is unused — adguardhome-sync is
+timer-driven, not a long-running listener, so there is no port to health-check.
+It reuses the shared `Restart prometheus exporter` handler but points
+`prometheus_exporter_service_name` at `adguardhome-sync.timer`, so a fresh
+binary is picked up on the timer's next tick instead of by (re)starting a
+daemon.
+
+## Roles that stay standalone
+
+### `node_exporter_host`
 
 `node_exporter_host` does not fit this abstraction and is intentionally left
 standalone:
@@ -31,6 +42,16 @@ standalone:
 Folding it in would mean an `install_method == 'apt_repo'` branch only one
 caller ever takes plus a passthrough for arbitrary post-install tasks — a worse
 abstraction than an honest standalone role.
+
+### `adguard_home`
+
+`adguard_home` also downloads a tarball with a `checksums.txt`, but stays
+standalone because the shared pipeline installs then starts in one pass. AdGuard
+Home must **stop the running service mid-pipeline** before swapping the binary
+on an upgrade, then run its own API-driven config and `wait_for` health probes —
+neither `service.yml`'s start-then-health-check flow nor the port health check
+fits. `adguard_sync`, by contrast, needs no mid-pipeline stop (its oneshot is
+not running during a deploy), so it can reuse the install half.
 
 ## How wrappers invoke it
 

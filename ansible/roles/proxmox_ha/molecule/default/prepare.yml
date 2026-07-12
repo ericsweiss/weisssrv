@@ -100,7 +100,7 @@
           exit 0
       become: true
 
-    # ha-manager: logs every mutating call (add/set/remove/group*/rules *) to
+    # ha-manager: logs every mutating call (add/set/remove/rules *) to
     # ha-manager.log; answers read-only subcommands from state files.
     - name: Ha-manager stub (logs mutations, answers from state)
       ansible.builtin.copy:
@@ -119,23 +119,14 @@
               # rules.yml passes `--output-format=json`; emit configurable rules.
               cat "$STATE/ha_rules_list" 2>/dev/null || echo "[]"
               exit 0 ;;
-            "groupconfig ")
-              # `ha-manager groupconfig` (no name) -> group list block.
-              cat "$STATE/ha_group_list" 2>/dev/null
-              exit 0 ;;
           esac
           # `ha-manager config <type>:<vmid>` -> per-resource detail.
           if [ "$1" = "config" ] && [ -n "$2" ]; then
             cat "$STATE/ha_resource_detail" 2>/dev/null
             exit 0
           fi
-          # `ha-manager groupconfig <name>` -> per-group detail.
-          if [ "$1" = "groupconfig" ] && [ -n "$2" ]; then
-            cat "$STATE/ha_group_detail" 2>/dev/null
-            exit 0
-          fi
-          # Everything else (add/set/remove/groupadd/groupset/groupremove/
-          # rules add/rules set/rules remove) is a mutation: record it.
+          # Everything else (add/set/remove/rules add/rules set/rules remove)
+          # is a mutation: record it.
           echo "ha-manager $*" >> "$LOG"
           exit 0
       become: true

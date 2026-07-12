@@ -136,6 +136,21 @@
       vars:
         proxmox_storage: ssd
 
+    # HA-aware reconcile: the existence check returns the VM's CURRENT node
+    # (the stub places it on this molecule host), so reconcile tasks must
+    # delegate there rather than the inventory proxmox_host. A regression
+    # that assumed proxmox_host would break deploys for any HA-migrated VM.
+    - name: Assert reconcile host resolved to the VM's actual node
+      ansible.builtin.assert:
+        that:
+          - vm_reconcile_host == inventory_hostname
+        fail_msg: >-
+          vm_reconcile_host resolved to
+          '{{ vm_reconcile_host | default("<undefined>") }}' but the VM is on
+          '{{ inventory_hostname }}' — the existence check must capture the
+          actual node so reconcile tasks delegate there.
+        success_msg: "reconcile host = VM's actual node ({{ inventory_hostname }})"
+
     - name: Count qm calls after existing-VM run
       ansible.builtin.shell: |
         set -o pipefail

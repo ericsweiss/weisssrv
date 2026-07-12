@@ -144,13 +144,15 @@
     group: root
     mode: "0755"
 
+# 0640: the override embeds the PLEX_CLAIM token when set; it is
+# short-lived (~4 min) but shouldn't sit world-readable.
 - name: Deploy Plex systemd override
   ansible.builtin.template:
     src: plex-override.conf.j2
     dest: /etc/systemd/system/plexmediaserver.service.d/override.conf
     owner: root
     group: root
-    mode: "0644"
+    mode: "0640"
   notify:
     - Reload systemd
     - Restart plex

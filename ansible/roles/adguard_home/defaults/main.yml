@@ -24,7 +24,34 @@ adguard_use_protect_system: true
 adguard_tls_enabled: true
 adguard_tls_server_name: "dns.esweiss.com"
 adguard_cert_path: "{{ adguard_install_path }}/certs"
+adguard_doq_port: 853
 
 # Upstream DNS (local Unbound)
 adguard_upstream_dns:
   - "127.0.0.1:5335"
+
+# API-managed base settings (api_base_config.yml). Prod overrides live in
+# inventories/prod/group_vars/dns.yml; these defaults mirror them so the role
+# is self-contained (molecule can exercise the API path without the prod
+# inventory). adguard_admin_password deliberately has no default.
+adguard_protection_enabled: true
+adguard_upstream_mode: "load_balance"
+adguard_fallback_dns: []
+adguard_enable_dnssec: true
+adguard_resolve_clients: true
+adguard_use_private_ptr_resolvers: false
+adguard_disable_ipv6: false
+
+# Cache configuration
+adguard_cache_enabled: true
+adguard_cache_size: 8388608
+adguard_cache_ttl_min: 0
+adguard_cache_ttl_max: 0
+adguard_cache_optimistic: false
+
+# Rate limiting
+adguard_ratelimit: 20
+adguard_ratelimit_whitelist: []
+
+# DHCP (disabled - the router handles DHCP)
+adguard_dhcp_enabled: false

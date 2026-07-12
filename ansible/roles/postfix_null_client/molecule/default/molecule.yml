@@ -31,7 +31,7 @@ provisioner:
         postfix_config:
           myhostname: postfix-null-test.test.local
           myorigin: /etc/mailname
-          mydestination: postfix-null-test.test.local, test.local, localhost.localdomain, localhost
+          mydestination: postfix-null-test.test.local, localhost.localdomain, localhost
           relayhost: '[smtp-relay.test.local]:587'
           mynetworks: 127.0.0.0/8
           inet_interfaces: loopback-only

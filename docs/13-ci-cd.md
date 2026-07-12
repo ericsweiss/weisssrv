@@ -35,6 +35,16 @@ infrastructure runner. The infrastructure runner has privileged mode enabled for
 The shared runner is unprivileged and intended for other GitLab projects that need to deploy to
 k3s. It picks up untagged jobs from any project.
 
+**Runner garbage collection**: the `gitlab-runner-reaper` CronJob
+(`kubernetes/apps/gitlab-runner-reaper/`, every 15 min) reaps leaked executor
+pods (Error/Completed >30 min past `finishedAt`) in the two runner
+namespaces. It also garbage-collects leaked per-job image-pull credential
+Secrets (`type: kubernetes.io/dockercfg`, name `runner-*`, older than
+`MAX_SECRET_AGE_MINUTES` = 180, and unreferenced by any live pod via
+`imagePullSecrets`/ownerReference) — these registry-credential blobs leak
+alongside the pods under memory pressure. Its RBAC grants pod and Secret
+list/delete scoped to the two runner namespaces only.
+
 ## Pipeline Structure
 
 ```yaml
@@ -62,7 +72,11 @@ stages:
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
 | `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/sources/versions-configmap.yaml`, `scripts/generate-versions-configmap.py` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
+| `hosts-env-sync` | inventory, `scripts/generate-hosts-env.py`, `scripts/hosts.env` | Regenerates `scripts/hosts.env` from the inventory; fails if the committed file drifts |
 | `deploy-coverage-check` | All MRs/pushes | Runs `scripts/check-deploy-coverage.sh`; asserts every Ansible role maps to a deploy job or is in the intentionally-unmapped list |
+| `molecule-matrix-coverage-check` | All MRs/pushes | Runs `scripts/check-molecule-matrix-coverage.sh`; asserts every molecule scenario is in the CI matrix |
+| `flux-version-pin-check` | `.gitlab-ci.yml`, versions-configmap | Asserts the `FLUX_VERSION` pin in deploy-verify matches `flux_version` in the versions ConfigMap, so an incomplete flux bump fails before merge |
+| `prometheus-config-lint` | Prometheus/Alertmanager config paths | Extracts rendered rules + alertmanager config and validates with pinned `promtool` / `amtool` (`scripts/extract-prometheus-config.py`, `scripts/lint-prometheus-config.sh`) |
 | `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
@@ -78,12 +92,13 @@ stages:
 |-----|----------|-------------|
 | `terraform-validate` | terraform/** | Terraform syntax |
 | `terraform-plan` | terraform/** + 1Password | Full plan with credentials |
-| `flux-lint` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | `kustomize build` + envsubst (from versions ConfigMap) + kubeconform on every Flux Kustomization; also validates cluster root builds |
+| `flux-lint` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | `kustomize build` + envsubst (from versions ConfigMap) + kubeconform on every Flux Kustomization; also validates cluster root builds, and runs `scripts/validate-helm-values.py` — `helm template` against the pinned chart for the value-heavy releases, catching typo'd `.spec.values` keys (hard-fails where the chart ships a values.schema.json) and unrenderable values. The versions-extraction render loop is shared with `deploy-verify` via `scripts/flux-render.sh` |
 
-> **Limitation**: `flux-lint` validates HelmRelease CRD schemas and envsubst placeholders but does
-> not perform server-side Helm template rendering. Chart value compatibility issues (e.g., a renamed
-> values key in a new chart version) are only caught at Flux reconciliation time. For high-risk chart
-> upgrades, use `task flux:dev-apply` to test in-cluster before committing.
+> **Limitation**: chart value validation covers only the releases listed in
+> `validate-helm-values.py`'s `RELEASES`, and only as deep as `helm template` + the chart's own
+> schema can check. Remaining chart value compatibility issues are only caught at Flux
+> reconciliation time. For high-risk chart upgrades, use `task flux:dev-apply` to test in-cluster
+> before committing.
 
 #### Test Stage
 | Job | Triggers | Description |
@@ -120,7 +135,8 @@ dependencies:
 Ansible/Terraform deploy jobs depend on `validation-gate` as a required `needs`.
 **Kubernetes workloads are not gated by CI** — Flux reconciles from git regardless of
 pipeline state. CI's job for k8s is to validate (`flux-lint`, `kubeconform`,
-`flux-versions-sync`). A planned webhook will allow CI to trigger Flux reconciliation on push.
+`flux-versions-sync`). Flux reconciliation itself is push-triggered via the GitLab
+agent's Flux integration (poll is the fallback — see docs/29-flux-operations.md).
 
 #### Deploy Stage - Terraform
 | Job | Triggers | Description |
@@ -165,7 +181,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 | Job | Triggers | Description | Blocks pipeline? |
 |-----|----------|-------------|------------------|
 | `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/vm-ingress/gitlab*.yaml, kubernetes/apps/vm-ingress/services-gitlab.yaml, kubernetes/apps/gitlab-runner/**, kubernetes/apps/gitlab-runner-privileged/** | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
-| `deploy-verify` | `ansible/**`, `terraform/**`, `kubernetes/**`, `scripts/**` (pushes to main) | Server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
+| `deploy-verify` | `ansible/**`, `terraform/**`, `kubernetes/**`, `scripts/**` (pushes to main) | Runs `scripts/deploy-verify.sh`: server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
 
 > **Note:** The two jobs have different semantics:
 > - `deploy-gitlab-verify` is informational (`allow_failure: true`) — pipeline continues on failure.
@@ -190,7 +206,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 |---------|------|
 | Merge request | Lint, validate, test, security, AI review stages (no deploy) |
 | Push to main | Full validation + auto-deploy |
-| Scheduled | Version checking and secret detection. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded. |
+| Scheduled | Version checking and secret detection. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** a schedule with `SCHEDULE_TYPE=full-test`, which also runs `build-molecule-images` + `molecule-tests` + `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes). |
 | Manual (web) | Lint, validate, test stages only. AI review, deploy, gate, and maintenance jobs are excluded. Security (`secret_detection`) runs if branch is `main`. |
 
 ## Deployment Pipeline
@@ -202,8 +218,9 @@ When a merge request is merged to `main`:
 1. **Validation stages run first** (lint, validate, test, security)
 2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked.
 3. **Only changed components deploy** (path-based triggers on Ansible/Terraform jobs)
-4. **Kubernetes workloads reconcile via Flux** — independent of CI. Flux polls git
-   every 1 minute, and a planned GitLab webhook will trigger Flux's `Receiver` for sub-second sync (see docs/29-flux-operations.md; currently poll-only).
+4. **Kubernetes workloads reconcile via Flux** — independent of CI. Reconciliation
+   is push-triggered via the GitLab agent's Flux integration (seconds after a push);
+   the 1-minute GitRepository poll remains as fallback (see docs/29-flux-operations.md).
 5. **Machine reboots require manual approval** (maintenance stage)
 
 ### Deployment Categories
@@ -233,7 +250,7 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
 
 **Kubernetes workloads (platform + apps)** reconcile via Flux:
 - A commit under `kubernetes/` lands on `main`
-- Flux's 1-minute poll catches the new commit (a planned GitLab webhook to Flux's `Receiver` will reduce this to seconds)
+- The GitLab agent's Flux integration triggers reconciliation within seconds of the push (the 1-minute GitRepository poll remains as fallback)
 - `flux-system` `GitRepository` syncs the new revision
 - Top-level `Kustomization`s reconcile in dependency order:
   `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `infrastructure-observability` → `apps`
@@ -299,10 +316,12 @@ The pipeline uses a 1Password Service Account to fetch secrets at runtime.
 
 The pipeline fetches these secrets from 1Password during job execution:
 
-**Terraform jobs:**
+**Terraform jobs** (dedicated `Cloudflare Terraform Token` item — scoped
+Zone:Read + DNS:Edit + Zone Settings:Edit, separate from the in-cluster
+`Cloudflare DNS Token`):
 ```bash
-export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
+export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare Terraform Token/username")
 ```
 
 **Ansible deploy jobs:**
@@ -333,8 +352,8 @@ Items" for the complete list of items referenced by ExternalSecrets in the clust
 | Item | Fields | Used By |
 |------|--------|---------|
 | SSH Key | `private key` | Ansible deployments |
-| Cloudflare DNS Token | `credential`, `username` | Terraform `deploy-terraform` |
-| GitLab API Token | `credential` | `pr-agent-review` (AI code review) |
+| Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
+| GitLab API Token | `credential` | `pr-agent-review` (AI code review); also hard-asserted by `task gitlab:deploy` |
 | OpenAI API Key | `api-key` | `pr-agent-review` (AI code review) |
 | GitHub Token | `credential` | `version-check` (higher API rate limits) |
 
@@ -451,15 +470,11 @@ The GitHub repository is configured as read-only:
 
 ## Legacy GitHub Actions
 
-The `.github/workflows/` directory contains disabled workflows retained for reference.
-All workflows have `workflow_dispatch` only triggers and will not run automatically.
-
-To view the legacy workflows:
-- `lint.yml` - Shell/Ansible/Terraform/YAML linting
-- `molecule.yml` - Ansible role testing
-- `integration-tests.yml` - Multi-role integration tests
-- `kubernetes.yml` - K8s manifest validation
-- `terraform.yml` - Terraform validation
+The former per-stage workflow stubs (`lint.yml`, `molecule.yml`,
+`kubernetes.yml`, `terraform.yml`, `integration-tests.yml`) were collapsed
+into a single inert placeholder, `.github/workflows/ci-disabled.yml`. It uses
+`on: {}` so it can never trigger (not even via `workflow_dispatch`) — all CI
+runs on GitLab; GitHub is a read-only mirror.
 
 ## Troubleshooting
 
@@ -489,7 +504,7 @@ To view the legacy workflows:
 
 2. Test 1Password access locally:
    ```bash
-   op read "op://Homelab/Cloudflare DNS Token/credential"
+   op read "op://Homelab/Cloudflare Terraform Token/credential"
    ```
 
 3. Check 1Password is configured:

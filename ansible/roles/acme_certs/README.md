@@ -14,7 +14,10 @@ Manages Let's Encrypt wildcard certificates using acme.sh with Cloudflare DNS-01
 
 ### Certificate Distribution
 - SSH public key deployment to every target host (host_vars/dns-01.yml)
-- Automated copying via homelab-cert-reload.sh script
+- Forced-command receiver (`cert-receive`, from `templates/cert-receive.sh.j2`)
+  + sudoers drop-in on every sudo target — the distribution key is locked to
+  it in authorized_keys (see "Forced-command receiver" below)
+- Automated push via homelab-cert-reload.sh script (one SSH per target)
 - Per-target service reload, skipped when the cert is unchanged
 - Per-target Prometheus metrics + error handling
 
@@ -32,7 +35,14 @@ acme_email: "admin@esweiss.com"
 local_cert_dir: "/opt/AdGuardHome/certs"
 internal_domain: "esweiss.com"
 acme_sh_version: "3.1.2"
+acme_sh_tarball_sha256: "a51511ad..."   # sha256 of the pinned release tarball
+acme_certs_receiver_path: /usr/local/sbin/cert-receive  # forced-command receiver on sudo targets
 ```
+
+acme.sh is installed from the pinned GitHub release tarball (checksum-verified),
+not the single-file installer — the tarball ships the `dnsapi/` hooks (dns_cf)
+that DNS-01 issuance and renewal require. The role asserts
+`/root/.acme.sh/dnsapi/dns_cf.sh` exists on every run.
 
 Certificate distribution targets live in
 `inventories/prod/host_vars/dns-01.yml` (`cert_distribution_targets`), not
@@ -126,9 +136,56 @@ dns-01 (certificate authority)
        └─> HAOS        → /ssl/                   → ha core restart
 ```
 
-The script skips any target whose `fullchain.pem` already matches the cert
-being pushed, so a proactive run with no renewal does not restart services.
-The full, authoritative target list is in `host_vars/dns-01.yml`.
+A target is skipped only when its `.applied-fullchain.sha256` marker —
+written after a successful reload — matches the cert being pushed AND both the
+remote `fullchain.pem` and `privkey.pem` still hash-match the source. On sudo
+targets the receiver makes this decision server-side (it prints `unchanged`);
+on the legacy HAOS path the script probes remotely before copying. A
+proactive run with no renewal therefore does not restart services, while a
+target whose reload previously failed (marker missing/stale) is re-pushed on
+the next run. The full, authoritative target list is in `host_vars/dns-01.yml`.
+
+## Forced-command receiver (sudo targets)
+
+The five sudo targets (dns-02, smtp-relay, gitlab, pve-nas-01, plex) do not
+grant the distribution key a shell. The role deploys to each of them:
+
+- **`cert-receive`** (`acme_certs_receiver_path`, default
+  `/usr/local/sbin/cert-receive`, mode 0500, from
+  `templates/cert-receive.sh.j2`) — every operational parameter (cert dir,
+  owner/group/modes, reload command, expected domain) is baked in at deploy
+  time from the target's `cert_distribution_targets` entry, so the client
+  controls only the cert bytes on stdin.
+- **`/etc/sudoers.d/cert-receive`** — `<ssh_user> ALL=(root) NOPASSWD:
+  <receiver>` (+ `!requiretty`), validated with `visudo -cf`. This scopes the
+  escalation: the rule permits exactly the receiver, nothing else.
+- **authorized_keys pinning** — the distribution pubkey is installed with
+  `command="sudo /usr/local/sbin/cert-receive",restrict` (plus a `from=`
+  source pin when `acme_certs_key_from` is set). A leaked or abused key can
+  therefore only install a validated cert and run the one baked-in reload —
+  never a shell or arbitrary sudo.
+
+**Uniform pipe protocol** — `homelab-cert-reload.sh` pushes each sudo target
+in a single SSH round-trip: it streams `fullchain.pem`, a fixed
+non-PEM boundary line (`===CERT-RECEIVE-BUNDLE-BOUNDARY===`), then
+`privkey.pem` to the forced command's stdin. The receiver reads stdin with a
+hard 64 KiB cap, splits at the boundary (the receiver assigns the output
+filenames — nothing from stdin becomes a path), then validates before
+trusting: cert and key must parse, the cert must be unexpired, the key must
+match the leaf, the SAN must cover `*.<internal_domain>`, and the leaf must
+chain to a CA already in the host truststore (so a well-formed but
+self-signed/untrusted wildcard cert is rejected). Only then does
+it install each file via a same-directory temp + rename (so a reader never
+sees a torn file) with the baked-in ownership/modes, run the reload, and
+answer `OK` / `unchanged` / `FAIL` (the marker is written only after a clean
+reload, so a failed reload self-heals on the next push). No scp, no remote
+mktemp/chown, no pre-check probes.
+
+**HAOS legacy exception** — targets with `ssh_no_sudo: true` (HAOS) keep the
+legacy scp+ssh push path: their `authorized_keys` is operator-managed via the
+HAOS SSH add-on UI, so the role cannot deploy the receiver or sudoers rule
+there. The operator runbook for hardening/migrating HAOS is in
+`docs/09-certs.md`.
 
 ## Manual Certificate Issuance
 
@@ -160,10 +217,13 @@ All meaningful tasks gate on `inventory_hostname == 'dns-01'`.
 ```
 1. Validate required acme.sh variables (SSH keys, email, domain)
 2. Create eric .ssh directory and deploy the distribution key pair
-3. Deploy dns-01 pubkey to every cert_distribution_target's authorized_keys
-   (looped over host_vars/dns-01.yml; delegate_to each target)
-4. Install acme.sh dependencies (curl, openssl)
-5. Download + install acme.sh (default CA pinned to Let's Encrypt)
+3. Deploy the cert-receive receiver + sudoers drop-in to every sudo target,
+   then pin the dns-01 pubkey into each target's authorized_keys locked to
+   command="sudo <receiver>",restrict (looped over host_vars/dns-01.yml;
+   delegate_to each target; ssh_no_sudo targets are skipped — operator-managed)
+4. Install acme.sh dependencies (cron, curl, openssl)
+5. Download + install acme.sh from the pinned release tarball
+   (dnsapi hooks included; default CA pinned to Let's Encrypt)
 6. Ensure renewal cronjob exists and default CA is Let's Encrypt
 7. Deploy homelab-cert-reload.sh script
 8. Pin each target's host key into /root/.ssh/known_hosts
@@ -178,6 +238,7 @@ All meaningful tasks gate on `inventory_hostname == 'dns-01'`.
 
 - `tasks/main.yml` - Main task orchestration
 - `templates/homelab-cert-reload.sh.j2` - Certificate distribution script
+- `templates/cert-receive.sh.j2` - Forced-command receiver (sudo targets)
 - `defaults/main.yml` - Default variables
 
 ## Dependencies
@@ -191,6 +252,10 @@ All meaningful tasks gate on `inventory_hostname == 'dns-01'`.
 - Certificates owned by root:adguard (group read for AdGuard)
 - Private key has mode 0640 (group readable)
 - SSH keys from 1Password (never in git)
+- Distribution key locked to the forced-command receiver on sudo targets
+  (`command="sudo cert-receive",restrict`) — no shell, no arbitrary sudo
+- Receiver validates every bundle (parse, expiry, key-matches-cert, SAN
+  covers `*.<internal_domain>`) before installing anything
 - All secret operations use `no_log: true`
 
 ## Automatic Renewal
@@ -209,7 +274,7 @@ When renewal occurs:
 
 ## Distribution on Every Run
 
-Every Ansible run invokes the distribution script if certificates exist locally, target hosts are defined, and the run is not in check mode. The script compares each target's `fullchain.pem` against the cert being pushed and skips the copy + service reload when they match, so an unchanged cert never restarts services. Targets that are missing the cert, have an older one, or were rebuilt get the full push — covering recovery from a failed previous distribution.
+Every Ansible run invokes the distribution script if certificates exist locally, target hosts are defined, and the run is not in check mode. The script skips the copy + service reload only when a target's post-reload `.applied-fullchain.sha256` marker and its on-disk `fullchain.pem` AND `privkey.pem` all match the cert being pushed, so an unchanged, successfully-applied cert never restarts services. Targets that are missing the cert, have an older one, were rebuilt, or whose previous reload failed (marker absent/stale) get the full push — covering recovery from a failed previous distribution.
 
 ## Operational Notes
 
@@ -254,10 +319,12 @@ env | grep CF_
 
 **Distribution fails:**
 ```bash
-# Test SSH connectivity
-ssh -i /home/eric/.ssh/id_ed25519_certs eric@dns-02.esweiss.com
+# Test the channel end-to-end (the key is forced to the receiver, so this
+# runs cert-receive, which reads stdin and answers on stdout — expect
+# "FAIL: empty bundle", proving SSH + forced command + sudo all work):
+ssh -i /home/eric/.ssh/id_ed25519_certs eric@dns-02.esweiss.com </dev/null
 
-# Check authorized_keys on target
+# Check authorized_keys on target (should carry command="sudo ...cert-receive")
 cat /home/eric/.ssh/authorized_keys | grep dns-01
 ```
 
@@ -287,6 +354,8 @@ cert_distribution_targets:
     restart_service: service-name      # or restart_command for compound reloads
 ```
 
-Then run `task dns:deploy`. The role deploys the distribution pubkey to the
-new host's authorized_keys and pins its host key automatically; only HAOS
-(ssh_no_sudo) needs the pubkey pasted in by hand.
+Then run `task dns:deploy`. The role deploys the receiver + sudoers drop-in,
+pins the distribution pubkey (with the forced command) into the new host's
+authorized_keys, and pins its host key automatically; only HAOS
+(ssh_no_sudo) needs the pubkey pasted in by hand and stays on the legacy
+push path.

@@ -41,7 +41,8 @@ is triggered by:
   `nas_storage` README for the field semantics.
 - **Client**: `-o xprtsec=tls` (or `xprtsec=mtls`) flag added to mount
   options. For k3s NFS PVs this is `spec.mountOptions` in the PV manifest;
-  for Proxmox `pve_storage` entries it would be set in `host_vars`. **A TLS
+  for Proxmox the `tank-proxmox` `pve_storage` entry in
+  `host_vars/pve-nas-01.yml` sets it in `options`. **A TLS
   client MUST mount the server by a hostname the cert covers** — the
   distributed cert is the wildcard `*.esweiss.com`, so an IP mount
   (`192.168.0.102`) fails the handshake (`tlshd`: "Certificate owner
@@ -52,7 +53,8 @@ is triggered by:
 
 ## Prerequisites
 
-- Kernel ≥ 6.5 (Proxmox VE 9.x ships kernel 6.17 ✓).
+- Kernel ≥ 6.5 (floor; all Proxmox hosts are comfortably above — 7.0.x as
+  of 2026-07).
 - `nfs-utils` ≥ 2.6.3 (Debian 13 / trixie ships 2.8.x ✓).
 - The NFS **server** (`pve-nas-01`, `nfs_tls_is_server: true`) needs the
   TLS cert + key at `nfs_tls_cert_path` / `nfs_tls_key_path`, owned by root
@@ -62,14 +64,14 @@ is triggered by:
   present no client cert, so they do not need the private key (see
   "Private-key least privilege" below).
 - `acme_certs`'s `homelab-cert-reload.sh` distributes `fullchain.pem` +
-  `privkey.pem` to `/etc/ssl/private/` on `pve-nas-01` (NFS server) and on
-  **all six k3s agents** (.202–.207) per `host_vars/dns-01.yml`; the role's
-  defaults point at those paths so no extra config is needed for the
-  standard NFS topology. All agents are covered because the NFS-backed
-  PVs float across the cluster, so any agent can become the tlshd
-  client. k3s **server** nodes don't mount NFS and are not targets.
-  Adding a new NFS host = add a new `cert_distribution_targets` entry
-  (its `host_key` must be captured via `task certs:show-host-keys`).
+  `privkey.pem` to `/etc/ssl/private/` on `pve-nas-01` **only** (the NFS
+  server) per `host_vars/dns-01.yml`; the role's defaults point at those
+  paths so no extra config is needed. The six k3s agents (.202–.207) are
+  `xprtsec=tls` clients: they need only the system truststore + tlshd and
+  are **deliberately not** distribution targets. k3s **server** nodes don't
+  mount NFS and run no tlshd. Adding a new NFS **server** (or an mTLS
+  client) = add a new `cert_distribution_targets` entry (its `host_key`
+  must be captured via `task certs:show-host-keys`).
 
 ## Variables
 
@@ -117,19 +119,26 @@ config.
 > permissive value (`none:tls`) first if a client can't be guaranteed ready.
 
 1. Confirm `cert_distribution_targets` in `host_vars/dns-01.yml`
-   covers every NFS server + TLS client: `pve-nas-01` (server) and all
-   six k3s agents (.202–.207). Each new entry needs a real `host_key`
-   captured via `task certs:show-host-keys` — a placeholder key is
-   fail-safe (StrictHostKeyChecking rejects the cert push) but blocks
-   the rollout until replaced.
-2. Run cert distribution (`task dns:deploy`); verify each host has
-   `/etc/ssl/private/{fullchain,privkey}.pem`.
+   covers the NFS **server** only: `pve-nas-01`. The TLS clients (the six
+   k3s agents, .202–.207) are deliberately **not** targets — under
+   `xprtsec=tls` they validate the server via the system truststore and
+   present no cert, so they must not hold the wildcard key (see
+   "Private-key least privilege" above; re-add an agent only for an
+   `xprtsec=mtls` migration). Each new server/mTLS-client entry needs a
+   real `host_key` captured via `task certs:show-host-keys` — a
+   placeholder key is fail-safe (StrictHostKeyChecking rejects the cert
+   push) but blocks the rollout until replaced.
+2. Run cert distribution (`task dns:deploy`); verify `pve-nas-01` has
+   `/etc/ssl/private/{fullchain,privkey}.pem`. Clients need nothing
+   staged.
 3. Set `nfs_tls_enabled: true` on the server and every TLS client. For
    k3s this is one line in `group_vars/k3s.yml` (the role runs on
    `k3s_agents`; it's a no-op on servers). Re-run the playbook that
-   includes `nfs_tls`. The role's pre-check asserts the cert files
-   exist, so a missing distribution fails the play loud instead of
-   silently bringing up a misconfigured tlshd.
+   includes `nfs_tls`. The role's preflight asserts cert/key existence
+   only on the server (and any mTLS client) and the truststore
+   everywhere, so a missing distribution fails the play loud instead of
+   silently bringing up a misconfigured tlshd; on client-only hosts it
+   also removes any PEMs a prior rollout staged.
 4. Add `xprtsec=tls` to the relevant `nfs_exports` entries on
    `pve-nas-01` (export-level for k3s-only exports; **per-client** for
    mixed exports like `/export/media` so HAOS keeps a non-xprtsec line).
@@ -145,7 +154,15 @@ config.
      (Retain policy → the NFS data is untouched), let Flux recreate it,
      then `kubectl rollout restart` the consuming workload so it remounts
      against the new server name with TLS.
-   - Proxmox `pve_storage` entries (deferred for `tank-proxmox`).
+   - The Proxmox `tank-proxmox` mount is codified the same way: the
+     `pve_storage` entry in `host_vars/pve-nas-01.yml` (reconciled by the
+     `proxmox_backup` role) sets `server: pve-nas-01.esweiss.com` +
+     `xprtsec=tls`, and the export's client lines carry no `xprtsec` (server
+     default `none:tls:mtls` accepts the TLS mount). The live storage entry
+     still holds the legacy plaintext IP — `server` is create-fixed in
+     Proxmox, so the role fails loud until the one-time migration
+     (`pvesh delete /storage/tank-proxmox`, config only, then re-run; see the
+     proxmox_backup README).
 6. Verify: clients show `xprtsec=tls` in `cat /proc/mounts`, server
    logs show TLS handshakes (`journalctl -u tlshd -n 50` — "Handshake
    with pve-nas-01.esweiss.com was successful"), data still flows;

@@ -25,10 +25,11 @@
         chmod 700 /root/.ansible/tmp
       changed_when: false
 
-    # Defensive: clear any lingering immutable bit on /etc/resolv.conf that
-    # an upstream image build or sibling test left behind. The resolv_conf
-    # role itself doesn't set chattr +i, but this keeps the converge
-    # deterministic across base-image refreshes.
+    # Defensive: strip any lingering immutable bit on /etc/resolv.conf before
+    # converge. This scenario sets resolv_conf_immutable: true, so a prior
+    # converge (or an upstream image build / sibling test) may leave chattr +i
+    # set; clearing it here keeps create/converge deterministic across re-runs
+    # and base-image refreshes.
     - name: Strip immutable attr off /etc/resolv.conf if present
       ansible.builtin.raw: chattr -i /etc/resolv.conf 2>/dev/null || true
       changed_when: false

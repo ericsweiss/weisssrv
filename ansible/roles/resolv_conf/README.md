@@ -33,6 +33,14 @@ Optional:
   in Molecule container environments where `/etc/resolv.conf` is
   bind-mounted from the host and atomic rename returns `EBUSY`.
   Production hosts never need this.
+- `resolv_conf_immutable` — defaults to `false`. When `true`, the role
+  removes the `chattr +i` immutable flag before writing, re-sets it
+  afterwards, and verifies it stuck (protects the file from DHCP/systemd
+  overwrites). On unprivileged containers (LXC guests such as dns-01/02
+  and smtp-relay) `chattr +i` cannot succeed — the role emits a warning
+  there instead of failing, and protection relies on the file being
+  Ansible-managed. Container detection is `resolv_conf_is_container`
+  (derived from `ansible_facts['virtualization_type']`, overridable).
 
 ## See also
 

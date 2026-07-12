@@ -2,7 +2,8 @@
 
 All Kubernetes state for the weisssrv k3s cluster lives in this tree and is
 reconciled by Flux on every push. No `kubectl apply` / `helm upgrade` for
-ongoing operations — edit YAML, commit, push, Flux reconciles within ~1m.
+ongoing operations — edit YAML, commit, push; the GitLab agent's Flux module
+triggers reconciliation on push (the ~1m git poll is the fallback).
 
 ## Layout
 
@@ -20,31 +21,18 @@ kubernetes/
 │       └── README.md              # Onboarding examples
 ├── infrastructure/                # Platform (reconciled before apps)
 │   ├── sources/                   # HelmRepository CRs + versions-configmap.yaml (needed by controllers)
-│   ├── controllers/               # HelmReleases: external-secrets, onepassword-connect, metallb, cert-manager, traefik, external-dns
-│   ├── configs/                   # Cluster-wide CRs that require controllers' CRDs to exist first
-│   │   ├── cluster-secret-store.yaml          # ESO CR
-│   │   ├── cluster-issuer.yaml                # Let's Encrypt + Cloudflare DNS-01
-│   │   ├── metallb-ip-pools.yaml              # .100 (public), .101 (internal)
-│   │   ├── wildcard-certificates.yaml         # *.esweiss.com / *.ericsweiss.com (default ns)
-│   │   ├── coredns/                           # HelmChartConfig override + PDB
-│   │   ├── cloudflare-ddns/                   # CronJob + namespace
-│   │   └── shared-cloudflare-secrets/         # ExternalSecrets for the Cloudflare token in 3 namespaces
+│   ├── controllers/               # Platform HelmReleases — see controllers/kustomization.yaml for the current set
+│   ├── configs/                   # Cluster-wide CRs requiring the controllers' CRDs — see configs/kustomization.yaml
 │   └── observability/             # kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress
-└── apps/                          # Workloads
-    ├── authentik/                 # SSO — HelmRelease + ExternalSecret + IngressRoutes + PG zvol PVC
-    ├── download-clients/          # Media stack — Gluetun + *arr (Kustomize only)
-    ├── recipes/                   # Mealie + Bar Assistant + Salt Rim (Kustomize only)
-    ├── gitlab-runner/             # Shared HelmRelease
-    ├── gitlab-runner-privileged/  # Infrastructure HelmRelease (shares `gitlab-runner` namespace)
-    ├── gitlab-agent/              # GitLab Agent for Kubernetes (`weisssrv-k3s` release)
-    └── vm-ingress/                # IngressRoutes for non-k8s VMs (plex, HA, adguard, router, GitLab VM)
+└── apps/                          # Workloads — one dir per app; see apps/kustomization.yaml for the current set
 ```
 
 ## How it reconciles
 
 1. `flux bootstrap` (one-time) installs the Flux controllers and commits
    `clusters/weisssrv/flux-system/` to `main`.
-2. Flux's `source-controller` polls this repo (1m interval).
+2. Flux's `source-controller` fetches this repo — push-triggered via the
+   GitLab agent's Flux module, with a 1m poll as fallback.
 3. Flux's `kustomize-controller` reconciles in dependency order: `sources` →
    `controllers` → `configs` → `observability` → `apps`.
 4. `postBuild.substituteFrom: cluster-versions` substitutes `${var}`
@@ -71,16 +59,11 @@ task flux:dev-apply -- <path>       # Local iteration (Flux reverts within 1 cyc
 task flux:lint              # kustomize build + kubeconform for infra/ and apps/
 ```
 
-## Important IPs
+## Cluster topology
 
-- **API VIP**: 192.168.0.161 (kube-vip)
-- **Public LoadBalancer**: 192.168.0.100 (MetalLB)
-- **Internal LoadBalancer**: 192.168.0.101 (MetalLB)
-
-## Cluster nodes
-
-- **Servers (etcd quorum)**: k3s-srv-nas-01 (.222), k3s-srv-laptop-01 (.223), k3s-srv-prec-01 (.227)
-- **Agents**: k3s-agt-nas-01 (.202), k3s-agt-laptop-01 (.203), k3s-agt-opt-01 (.204), k3s-agt-opt-02 (.205), k3s-agt-opt-03 (.206), k3s-agt-prec-01 (.207)
+Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
+(API .161 via kube-vip; MetalLB .100 public / .101 internal) live in
+[docs/01-overview.md](../docs/01-overview.md) (canonical).
 
 ## Namespaces (by owner)
 
@@ -92,11 +75,15 @@ task flux:lint              # kustomize build + kubeconform for infra/ and apps/
 | `cert-manager` | Flux (HelmRelease) | cert-manager |
 | `traefik` | Flux (HelmRelease) | Traefik ingress controller |
 | `external-dns` | Flux (HelmRelease) | external-dns |
+| `vpa-system` | Flux (HelmRelease) | Vertical Pod Autoscaler (docs/33) |
+| `reloader` | Flux (HelmRelease) | Reloader — rolls workloads on ConfigMap/Secret changes |
+| `kube-system` | k3s (+ Flux HelmRelease for kured) | k3s built-ins + kured reboot coordinator |
 | `cloudflare-ddns` | Flux (Kustomize) | DDNS CronJob |
 | `authentik` | Flux (HelmRelease) | Authentik SSO + bundled PostgreSQL |
 | `downloads` | Flux (Kustomize) | Gluetun + *arr (privileged PSS — Gluetun needs CAP_NET_ADMIN) |
 | `recipes` | Flux (Kustomize) | Mealie + Bar Assistant + Salt Rim + postgres + meilisearch + redis |
 | `gitlab-runner` | Flux (HelmRelease) | Both shared and privileged runners live here |
+| `gitlab-runner-reaper` | Flux (Kustomize) | CronJob that GCs leaked runner pods + dockercfg Secrets |
 | `gitlab-agent` | Flux (HelmRelease) | `weisssrv-k3s` agent for Kubernetes |
 | `observability` | Flux (HelmRelease + Kustomize) | kube-prometheus-stack, Loki, Alloy, exporters, dashboards |
 | `default` | Flux (Kustomize) | IngressRoutes for non-k8s VMs (via `apps/vm-ingress/`) |

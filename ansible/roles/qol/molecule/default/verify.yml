@@ -58,7 +58,6 @@
         fail_msg: ".zshrc missing plugins configuration"
         success_msg: ".zshrc has plugins array configured"
 
-    # Verify the plugins from molecule config are in the .zshrc
     - name: Verify expected plugins are listed in .zshrc
       ansible.builtin.assert:
         that:
@@ -69,14 +68,12 @@
         fail_msg: ".zshrc missing expected plugins from molecule config"
         success_msg: ".zshrc has expected plugins from molecule config"
 
-    # Verify Oh My Zsh directory structure
     - name: Check Oh My Zsh plugins directory exists
       ansible.builtin.stat:
         path: /home/testuser/.oh-my-zsh/plugins
       register: omz_plugins_dir
       failed_when: not omz_plugins_dir.stat.exists or not omz_plugins_dir.stat.isdir
 
-    # Check that git plugin exists (should be built-in with OMZ)
     - name: Check git plugin exists (built-in OMZ plugin)
       ansible.builtin.stat:
         path: /home/testuser/.oh-my-zsh/plugins/git
@@ -132,7 +129,6 @@
         fail_msg: "testuser shell is not zsh"
         success_msg: "testuser shell is correctly set to zsh"
 
-    # Verify directory ownership
     - name: Check Oh My Zsh directory ownership
       ansible.builtin.stat:
         path: /home/testuser/.oh-my-zsh
@@ -144,19 +140,3 @@
           - omz_ownership.stat.pw_name == 'testuser'
         fail_msg: "Oh My Zsh directory has incorrect ownership"
         success_msg: "Oh My Zsh directory has correct ownership"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "QoL packages installed (zsh, neovim, fzf, ripgrep, htop, tmux)"
-          - "Oh My Zsh installed at /home/testuser/.oh-my-zsh with correct ownership"
-          - ".zshrc configured with Oh My Zsh"
-          - "Plugins configured in .zshrc:"
-          - "  - git, sudo, history, fzf, docker (from molecule config)"
-          - "Oh My Zsh directory structure verified:"
-          - "  - plugins/ directory exists"
-          - "  - git plugin installed (built-in)"
-          - "Neovim config at /home/testuser/.config/nvim"
-          - "init.vim has Vundle configuration"
-          - "Vundle plugin manager installed (with .git directory)"
-          - "User shell changed to zsh"

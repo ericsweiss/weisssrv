@@ -37,18 +37,32 @@
 # Pin the GitLab registry hostname to the internal Traefik VIP so containerd
 # resolves it locally (no upstream DNS) and pulls CI images via the direct
 # internal path. See k3s_registry_host_pins in defaults/main.yml for the why +
-# the post-deploy verification. Idempotent; empty list is a no-op.
+# the post-deploy verification. Idempotent; an empty list removes the pin block
+# (blockinfile deletes the managed block when it renders empty), so setting
+# k3s_registry_host_pins: [] genuinely disables the pin instead of leaving a
+# stale entry behind.
 - name: Pin container-registry hostnames to the internal Traefik VIP in /etc/hosts
   ansible.builtin.blockinfile:
     path: /etc/hosts
     marker: "# {mark} ANSIBLE MANAGED: k3s registry host pins"
     block: |
-      {% for pin in k3s_registry_host_pins %}
+      {% for pin in k3s_registry_host_pins | default([]) %}
       {{ pin.ip }} {{ pin.name }}
       {% endfor %}
-  when:
-    - k3s_registry_host_pins | default([]) | length > 0
-    - not (skip_k3s_install | default(false))
+  when: not (skip_k3s_install | default(false))
+
+# Pin the NAS hostname the NFS-over-TLS PVs mount by, so a remount/reschedule
+# does not depend on AdGuard being up. See k3s_storage_host_pins in
+# defaults/main.yml. Same semantics as above: empty list removes the block.
+- name: Pin the NAS storage hostname in /etc/hosts (DNS-independent NFS mounts)
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED: k3s storage host pins"
+    block: |
+      {% for pin in k3s_storage_host_pins | default([]) %}
+      {{ pin.ip }} {{ pin.name }}
+      {% endfor %}
+  when: not (skip_k3s_install | default(false))
 
 # Mount additional persistent disks (ZFS zvols attached as SCSI devices by proxmox_vm role)
 - name: Mount additional persistent disks

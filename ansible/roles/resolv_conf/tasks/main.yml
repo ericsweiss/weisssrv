@@ -9,6 +9,31 @@
 # Optional variables:
 #   - resolv_conf_search_domains: list of search-suffix domains
 #     (defaults to [internal_domain]; set to [] to omit the search line)
+#   - resolv_conf_immutable: manage the chattr immutable flag around the write
+
+# Immutable-flag tasks skip in check mode to avoid modifying system state
+# during dry-run. Capture the pre-strip state first so both the strip and the
+# changed report key off whether the flag was actually set beforehand.
+- name: Check if resolv.conf is already immutable
+  ansible.builtin.command:
+    cmd: lsattr /etc/resolv.conf
+  register: resolv_conf_attrs_pre
+  changed_when: false
+  failed_when: false
+  when:
+    - resolv_conf_immutable | bool
+    - not ansible_check_mode
+
+# lsattr output format: "----i--------e-- /etc/resolv.conf" where 'i' means immutable.
+- name: Remove immutable flag from resolv.conf before update
+  ansible.builtin.command:
+    cmd: chattr -i /etc/resolv.conf
+  changed_when: false
+  failed_when: false
+  when:
+    - resolv_conf_immutable | bool
+    - not ansible_check_mode
+    - resolv_conf_attrs_pre.stdout | default('') is search('^[^ ]*i[^ ]* ')
 
 # unsafe_writes is needed in container test environments where
 # /etc/resolv.conf is bind-mounted from the host and atomic rename
@@ -23,3 +48,54 @@
     mode: "0644"
     unsafe_writes: "{{ resolv_conf_unsafe_writes | default(false) }}"
   register: resolv_conf_result
+
+- name: Ensure resolv.conf is immutable
+  ansible.builtin.command:
+    cmd: chattr +i /etc/resolv.conf
+  register: resolv_conf_chattr_set
+  # Only report changed on a real absent-to-present transition: the flag was
+  # not set beforehand and the chattr succeeded. This keeps idempotence on real
+  # hosts and avoids a phantom change where chattr can't stick (docker/LXC).
+  changed_when:
+    - resolv_conf_chattr_set.rc == 0
+    - resolv_conf_attrs_pre.stdout | default('') is not search('^[^ ]*i[^ ]* ')
+  failed_when: false
+  when:
+    - resolv_conf_immutable | bool
+    - not ansible_check_mode
+
+- name: Re-check the resolv.conf immutable flag
+  ansible.builtin.command:
+    cmd: lsattr /etc/resolv.conf
+  register: resolv_conf_attrs_after
+  changed_when: false
+  failed_when: false
+  when:
+    - resolv_conf_immutable | bool
+    - not ansible_check_mode
+
+- name: Assert the immutable flag actually stuck
+  ansible.builtin.assert:
+    that:
+      - resolv_conf_attrs_after.stdout | default('') is search('^[^ ]*i[^ ]* ')
+    fail_msg: >-
+      chattr +i on /etc/resolv.conf did not take effect — the intended
+      tamper/overwrite protection is absent.
+    quiet: true
+  when:
+    - resolv_conf_immutable | bool
+    - not ansible_check_mode
+    - not (resolv_conf_is_container | bool)
+
+- name: Note the container immutable-flag exception
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: chattr +i on /etc/resolv.conf is not permitted in unprivileged
+      containers (no CAP_LINUX_IMMUTABLE in the owning namespace); overwrite
+      protection relies on this file being Ansible-managed and re-asserted on
+      each run instead.
+  when:
+    - resolv_conf_immutable | bool
+    - not ansible_check_mode
+    - resolv_conf_is_container | bool
+    - resolv_conf_attrs_after.stdout | default('') is not search('^[^ ]*i[^ ]* ')

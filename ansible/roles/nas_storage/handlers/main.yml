@@ -5,6 +5,15 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# zfs_arc_max is a load-time module parameter, and the data pools import from
+# the initramfs at early boot, so the cap must be baked in there to take effect
+# (a bare /etc/modprobe.d write applies only on the next module (re)load, which
+# never happens for the already-loaded zfs module short of a reboot). Rebuild
+# the initramfs whenever /etc/modprobe.d/zfs.conf changes.
+- name: Update initramfs
+  ansible.builtin.command: update-initramfs -u
+  changed_when: true
+
 - name: Reload NFS exports
   ansible.builtin.command: exportfs -ra
   changed_when: true
@@ -20,9 +29,9 @@
     name: nfs-server.service
     state: restarted
     daemon_reload: true
-  # Bound the restart: `restarted` re-enters nfsd's stop path, which can hang
-  # (the very failure this PR mitigates). async/poll makes a wedged stop fail
-  # the deploy loudly instead of blocking the Ansible run indefinitely.
+  # Bound the restart: `restarted` re-enters nfsd's stop path, which is known
+  # to hang on this host. async/poll makes a wedged stop fail the deploy
+  # loudly instead of blocking the Ansible run indefinitely.
   async: 90
   poll: 5
   when: not (skip_nfs_reload | default(false))

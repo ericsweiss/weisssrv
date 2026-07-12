@@ -48,6 +48,26 @@ provisioner:
                 xprtsec: tls
               - spec: 192.168.0.154/32
                 options: ro,sync,no_subtree_check,fsid=92
+          # bind_source exports: one on an encrypted dataset, one plaintext, so
+          # the fstab _zfs_anchor split (zfs-mount-encrypted.service vs
+          # zfs-mount.service) and the nfs-server drop-in scoping are asserted
+          # in verify.yml. The dirs are plain container paths — the mounted-
+          # dataset guard is bypassed by skip_zfs_operations.
+          - path: /export/appdata
+            bind_source: /mnt/ssd/appdata
+            clients:
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,fsid=93
+          - path: /export/share
+            bind_source: /mnt/tank/share
+            clients:
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,fsid=94
+        nas_encrypted_bind_sources:
+          - /mnt/ssd/appdata
+        media_mover_enabled: true
+        media_mover_src: /mnt/nvme/media/library
+        media_mover_dst: /mnt/tank/media/library
         samba_shares:
           - name: media
             path: /tank/media/unified

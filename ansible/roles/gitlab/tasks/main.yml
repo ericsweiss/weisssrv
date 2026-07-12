@@ -50,32 +50,43 @@
 
 # Fresh-deploy guard: before `gitlab-ctl reconfigure` runs (notified by
 # the gitlab.rb template task below), assert that the cert + key files
-# exist when listen_https is true. Otherwise the omnibus chef recipe
-# crashes at the nginx::ssl recipe with a confusing error. acme_certs
-# distribution is event-driven from dns-01; on a brand-new GitLab VM
-# it hasn't fired yet, so either flip gitlab_nginx_listen_https to
-# false for the initial deploy OR deploy the cert manually first.
-- name: Verify SSL cert exists when nginx HTTPS is enabled
+# exist whenever anything renders TLS: the web UI when listen_https is
+# true, and registry/pages nginx ALWAYS (gitlab.rb.j2 terminates their
+# TLS with the same distributed cert unconditionally). Otherwise the
+# omnibus chef recipe crashes at the nginx::ssl recipe with a confusing
+# error. acme_certs distribution is event-driven from dns-01; on a
+# brand-new GitLab VM it hasn't fired yet, so either deploy the cert
+# manually first, or set gitlab_nginx_listen_https,
+# gitlab_registry_enabled, and gitlab_pages_enabled all to false for
+# the initial deploy.
+- name: Verify SSL cert exists when any nginx terminates TLS
   ansible.builtin.stat:
     path: "{{ item }}"
   loop:
     - "{{ gitlab_nginx_ssl_certificate }}"
     - "{{ gitlab_nginx_ssl_certificate_key }}"
   register: gitlab_ssl_files
-  when: gitlab_nginx_listen_https | default(false)
+  when: >-
+    (gitlab_nginx_listen_https | default(false))
+    or (gitlab_registry_enabled | default(false))
+    or (gitlab_pages_enabled | default(false))
 
 - name: Assert SSL cert files are present
   ansible.builtin.assert:
     that: item.stat.exists
     fail_msg: >-
       {{ item.item }} missing — either run cert distribution from
-      dns-01 first (`task dns:deploy`), or set
-      gitlab_nginx_listen_https: false for the initial deploy and
-      flip back to true after the first cert push.
+      dns-01 first (`task dns:deploy`), or set gitlab_nginx_listen_https,
+      gitlab_registry_enabled, and gitlab_pages_enabled to false for the
+      initial deploy and flip back after the first cert push
+      (registry/pages nginx always terminate TLS with this cert).
   loop: "{{ gitlab_ssl_files.results | default([]) }}"
   loop_control:
     label: "{{ item.item }}"
-  when: gitlab_nginx_listen_https | default(false)
+  when: >-
+    (gitlab_nginx_listen_https | default(false))
+    or (gitlab_registry_enabled | default(false))
+    or (gitlab_pages_enabled | default(false))
 
 # Ownership is set after GitLab install (git user doesn't exist yet)
 # See task below: "Set ownership on git-data directory"
@@ -234,11 +245,6 @@
     daemon_reload: true
   when: gitlab_kernel_tuning_enabled | default(true)
 
-- name: Check if GitLab is installed
-  ansible.builtin.stat:
-    path: /opt/gitlab/bin/gitlab-ctl
-  register: gitlab_installed
-
 # Clean up old keyring format (.asc) if it exists - we use .gpg now
 # This prevents "Conflicting values set for option Signed-By" errors
 - name: Remove old GitLab keyring files
@@ -251,78 +257,25 @@
   when:
     - not (skip_gitlab_install | default(false))
 
-# The keyring (/usr/share/keyrings/gitlab-ee.gpg) is the persistent artifact;
-# gate the whole download -> verify -> dearmor -> cleanup sequence on its
-# absence so the role stays idempotent. Without this gate, the cleanup task
-# below deletes the temp key, which makes get_url re-download (changed) and the
-# cleanup re-delete (changed) on every subsequent run. Key rotation is handled
-# by deleting the keyring first (the "Remove old GitLab keyring files" task
-# already clears the legacy .asc form).
-- name: Check if GitLab keyring exists
-  ansible.builtin.stat:
-    path: /usr/share/keyrings/gitlab-ee.gpg
-  register: gitlab_keyring_exists
-  when:
-    - not (skip_gitlab_install | default(false))
-
-- name: Download GitLab repository GPG key (ASCII armored)
-  ansible.builtin.get_url:
-    url: https://packages.gitlab.com/gpg.key
-    dest: /tmp/gitlab-ee.asc
-    mode: '0644'
-  when:
-    - not (skip_gitlab_install | default(false))
-    - not (gitlab_keyring_exists.stat.exists | default(false))
-
-- name: Verify GitLab GPG key fingerprint (primary key must match exactly)
-  ansible.builtin.shell: |
-    set -o pipefail
-    # Extract the primary key fingerprint (first fpr record after first pub)
-    # and verify it matches the expected value exactly (full-line match).
-    primary_fpr=$(gpg --show-keys --with-colons /tmp/gitlab-ee.asc 2>/dev/null \
-        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-    [ "$primary_fpr" = "F6403F6544A38863DAA0B6E03F01618A51312F3F" ]
-  args:
-    executable: /bin/bash
-  changed_when: false
-  when:
-    - not (skip_gitlab_install | default(false))
-    - not (gitlab_keyring_exists.stat.exists | default(false))
-
-# Dearmor the key for compatibility with all Debian/apt configurations.
-# Binary .gpg format is preferred over ASCII .asc for signed-by. Only runs
-# when the keyring is absent (rotation: delete the keyring first).
-- name: Convert GPG key to binary format
-  ansible.builtin.shell: |
-    gpg --yes --dearmor -o /usr/share/keyrings/gitlab-ee.gpg < /tmp/gitlab-ee.asc
-  args:
-    creates: /usr/share/keyrings/gitlab-ee.gpg
-  when:
-    - not (skip_gitlab_install | default(false))
-    - not (gitlab_keyring_exists.stat.exists | default(false))
-
-- name: Set permissions on GPG keyring
-  ansible.builtin.file:
-    path: /usr/share/keyrings/gitlab-ee.gpg
-    mode: '0644'
-  when:
-    - not (skip_gitlab_install | default(false))
-
-- name: Clean up temporary ASCII key
-  ansible.builtin.file:
-    path: /tmp/gitlab-ee.asc
-    state: absent
-  when:
-    - not (skip_gitlab_install | default(false))
-    - not (gitlab_keyring_exists.stat.exists | default(false))
-
-- name: Add GitLab EE repository
-  ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/gitlab-ee.gpg] https://packages.gitlab.com/gitlab/gitlab-ee/debian/ {{ ansible_distribution_release }} main"
-    state: present
-    filename: gitlab-ee
-  when:
-    - not (skip_gitlab_install | default(false))
+# Shared stat -> download -> verify-fingerprint -> dearmor -> set-perms ->
+# add-repo pipeline. gnupg is installed by the prerequisites task above. Key
+# rotation is delete-the-keyring-first (the "Remove old GitLab keyring files"
+# task already clears the legacy .asc form). keyring_mode pins the historical
+# 0644 (runs whether or not the keyring already existed).
+- name: Add GitLab EE signed APT repository
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://packages.gitlab.com/gpg.key
+    apt_signed_repo_fingerprint: F6403F6544A38863DAA0B6E03F01618A51312F3F
+    apt_signed_repo_keyring_path: /usr/share/keyrings/gitlab-ee.gpg
+    apt_signed_repo_repo_line: >-
+      deb [signed-by=/usr/share/keyrings/gitlab-ee.gpg]
+      https://packages.gitlab.com/gitlab/gitlab-ee/debian/
+      {{ ansible_distribution_release }} main
+    apt_signed_repo_filename: gitlab-ee
+    apt_signed_repo_keyring_mode: "0644"
+    apt_signed_repo_when: "{{ not (skip_gitlab_install | default(false)) }}"
 
 # Install or upgrade GitLab EE to the pinned version. allow_change_held_packages
 # upgrades through the apt hold without the old unhold/hold cycle (which
@@ -475,70 +428,17 @@
   environment:
     DEBIAN_FRONTEND: noninteractive
 
-# Ensure exactly one iptables NAT rule for SSH redirect (port 2222 -> 22)
-# Uses check-then-add pattern for idempotency, with duplicate cleanup for existing drift
-- name: Check PREROUTING SSH redirect rule count
-  ansible.builtin.shell: |
-    set -o pipefail
-    iptables -t nat -S PREROUTING 2>/dev/null | grep -c '\-\-dport {{ gitlab_ssh_port }} .* REDIRECT \-\-to-ports 22' || echo 0
-  args:
-    executable: /bin/bash
-  register: prerouting_rule_count
-  changed_when: false
-
-- name: Remove duplicate PREROUTING SSH redirect rules (keep none, re-add below)
-  ansible.builtin.shell: |
-    while iptables -t nat -C PREROUTING -p tcp --dport {{ gitlab_ssh_port }} -j REDIRECT --to-port 22 2>/dev/null; do
-      iptables -t nat -D PREROUTING -p tcp --dport {{ gitlab_ssh_port }} -j REDIRECT --to-port 22
-    done
-  when:
-    - prerouting_rule_count.stdout | int > 1
-    - not ansible_check_mode
-  changed_when: true
-
-- name: Add PREROUTING SSH redirect rule for GitLab SSH
-  ansible.builtin.iptables:
-    table: nat
-    chain: PREROUTING
-    protocol: tcp
-    destination_port: "{{ gitlab_ssh_port }}"
-    jump: REDIRECT
-    to_ports: "22"
-    state: present
-  when: not ansible_check_mode
-  notify: Save iptables rules
-
-- name: Check OUTPUT SSH redirect rule count
-  ansible.builtin.shell: |
-    set -o pipefail
-    iptables -t nat -S OUTPUT 2>/dev/null | grep -c '\-\-dport {{ gitlab_ssh_port }} .* REDIRECT \-\-to-ports 22' || echo 0
-  args:
-    executable: /bin/bash
-  register: output_rule_count
-  changed_when: false
-
-- name: Remove duplicate OUTPUT SSH redirect rules (keep none, re-add below)
-  ansible.builtin.shell: |
-    while iptables -t nat -C OUTPUT -o lo -p tcp --dport {{ gitlab_ssh_port }} -j REDIRECT --to-port 22 2>/dev/null; do
-      iptables -t nat -D OUTPUT -o lo -p tcp --dport {{ gitlab_ssh_port }} -j REDIRECT --to-port 22
-    done
-  when:
-    - output_rule_count.stdout | int > 1
-    - not ansible_check_mode
-  changed_when: true
-
-- name: Add OUTPUT SSH redirect rule for GitLab SSH loopback
-  ansible.builtin.iptables:
-    table: nat
-    chain: OUTPUT
-    protocol: tcp
-    destination_port: "{{ gitlab_ssh_port }}"
-    jump: REDIRECT
-    to_ports: "22"
-    out_interface: lo
-    state: present
-  when: not ansible_check_mode
-  notify: Save iptables rules
+# Ensure exactly one iptables NAT redirect rule per chain (2222 -> 22),
+# cleaning up any drifted variant (extra copies, legacy rules carrying an
+# -m comment, or a missing -o lo) before re-adding the managed rule.
+- name: Configure SSH redirect rules per NAT chain
+  ansible.builtin.include_tasks: ssh-redirect.yml
+  loop:
+    - { chain: PREROUTING }
+    - { chain: OUTPUT, out_interface: lo }
+  loop_control:
+    loop_var: gitlab_ssh_redirect
+    label: "{{ gitlab_ssh_redirect.chain }}"
 
 # =============================================================================
 # GitLab-specific fail2ban jail (SSH protection)
@@ -549,8 +449,9 @@
 # NOTE: fail2ban is installed and configured globally by the base role.
 # This section adds a GitLab-specific jail for Git SSH on port {{ gitlab_ssh_port }}.
 #
-# Architecture: GitLab Git SSH uses OpenSSH with AuthorizedKeysCommand
-# to authenticate the 'git' user. SSH auth failures are logged to the
+# Architecture: GitLab manages the git user's authorized_keys file via
+# gitlab-shell (the opt-in OpenSSH AuthorizedKeysCommand fast-lookup is
+# not configured). SSH auth failures are still logged by sshd to the
 # systemd journal (not gitlab-shell.log), so we use the standard sshd
 # filter with journald backend.
 
@@ -569,7 +470,7 @@
       # Monitors OpenSSH authentication failures for Git SSH access
       # External Git SSH uses port {{ gitlab_ssh_port }} (open to internet via NAT)
       #
-      # GitLab uses OpenSSH with AuthorizedKeysCommand for git user auth.
+      # GitLab manages the git user's authorized_keys via gitlab-shell.
       # SSH failures are logged to systemd journal, not gitlab-shell.log.
       # We use the built-in sshd filter with journald backend.
       [gitlab-ssh]
@@ -603,7 +504,45 @@
     - gitlab_fail2ban_installed.rc | default(1) == 0
 
 # =============================================================================
-# Web IDE extension host configuration (API-driven; no Omnibus key on 18.11)
+# SSH login restriction (AllowUsers)
+# =============================================================================
+# The WAN-open Git SSH port ({{ gitlab_ssh_port }}) REDIRECTs to the full
+# system sshd on 22, so without this drop-in internet clients can attempt
+# pubkey auth against ANY local account — bypassing the firewall's admin-only
+# source restriction on :22. See gitlab_ssh_allowed_users in defaults/main.yml.
+# 60- sorts after the base role's 00-hardening.conf; AllowUsers is not set
+# there, so first-match-wins precedence is not in play for this directive.
+# `validate` runs sshd -t against the candidate before install, so a bad
+# pattern never lands on disk to break the next sshd restart.
+
+- name: Restrict sshd logins to git + admin from admin networks
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/60-gitlab-allowusers.conf
+    content: |
+      # Managed by Ansible gitlab role.
+      # Port {{ gitlab_ssh_port }} is WAN-open and REDIRECTed to this sshd, so
+      # without this list any local account accepts internet pubkey auth
+      # attempts. git stays unrestricted (Git SSH from anywhere); the admin
+      # user is limited to the LAN and Tailscale sources the firewall intends
+      # for :22.
+      AllowUsers {{ gitlab_ssh_allowed_users | join(' ') }}
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart sshd
+  when: gitlab_ssh_allowusers_enabled | default(true)
+
+- name: Remove the sshd login restriction when disabled
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/60-gitlab-allowusers.conf
+    state: absent
+  notify: Restart sshd
+  when: not (gitlab_ssh_allowusers_enabled | default(true))
+
+# =============================================================================
+# Web IDE extension host configuration (API-driven; no Omnibus key on the
+# pinned release — re-check for a gitlab.rb equivalent on major bumps)
 # =============================================================================
 # CVE-2026-5816 mitigation: disable single-origin fallback once the
 # self-hosted ide.git.ericsweiss.com extension host is reachable.

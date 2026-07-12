@@ -33,7 +33,10 @@
     src: k3s-agent-config.yaml.j2
     dest: /etc/rancher/k3s/config.yaml
     mode: "0600"
-  notify: Restart k3s-agent
+  notify:
+    - Restart k3s-agent
+    - Confirm the restarted k3s-agent is up and stable
+    - Wait for agent node Ready
 
 - name: Verify config file was created
   ansible.builtin.stat:
@@ -60,9 +63,12 @@
     INSTALL_K3S_VERSION: "{{ k3s_version }}"
     K3S_URL: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
   when:
-    - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+    - k3s_needs_install | bool
     - not (skip_k3s_install | default(false))
-  notify: Restart k3s-agent
+  notify:
+    - Restart k3s-agent
+    - Confirm the restarted k3s-agent is up and stable
+    - Wait for agent node Ready
   changed_when: true
   no_log: true
 
@@ -72,15 +78,26 @@
 # configured (k3s_agent_token != k3s_token), reconcile it on every run so existing
 # agents migrate off the full server token. Servers advertise agent-token earlier
 # in the play (serial server restart), so the new token is already accepted.
+# Gated on the env file existing (in prod it only exists after an install)
+# rather than skip_k3s_install, so the molecule agent scenario can pre-stage
+# the file and cover the migration.
+- name: Check for the k3s agent service env file
+  ansible.builtin.stat:
+    path: /etc/systemd/system/k3s-agent.service.env
+  register: k3s_agent_env_file
+
 - name: Reconcile k3s agent token in service env (migrate existing agents)
   ansible.builtin.lineinfile:
     path: /etc/systemd/system/k3s-agent.service.env
     regexp: '^K3S_TOKEN='
     line: "K3S_TOKEN={{ k3s_agent_token }}"
-  notify: Restart k3s-agent
+  notify:
+    - Restart k3s-agent
+    - Confirm the restarted k3s-agent is up and stable
+    - Wait for agent node Ready
   no_log: true
   when:
-    - not (skip_k3s_install | default(false))
+    - k3s_agent_env_file.stat.exists
     - k3s_agent_token != k3s_token
 
 # SAFEGUARD: Ensure k3s.service (server) is never running on agent nodes.

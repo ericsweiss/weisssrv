@@ -10,16 +10,17 @@
 #     configs — middlewares already exist by then).
 #   - infrastructure/controllers/traefik/release.yaml dashboard
 #     ingressRoute uses lan-tailscale-only (controllers stage; on cold
-#     boot Traefik registers the dashboard route briefly without IP
-#     filtering, retries on the next watch cycle once configs runs.
-#     Acceptable: the dashboard is internal-only by hostname anyway).
+#     boot Traefik marks the dashboard router errored while the
+#     middleware is missing — requests 404 — and picks it up on the
+#     next watch cycle once configs runs).
 #
-# If they lived in a later stage, those routes would briefly register
-# without the IP filter (Traefik logs "middleware not found" and serves
-# the route unfiltered until the middleware reconciles).
+# A missing middleware fails CLOSED: Traefik logs "middleware does not
+# exist" and disables the router (404) until the middleware reconciles.
+# Keeping these in an early stage is therefore an availability concern
+# (routes would 404 during every cold-boot gap), not an exposure one.
 #
-# strip-www and home-assistant-headers stay in apps/vm-ingress/middleware.yaml
-# because all of their consumers are in the apps stage.
+# home-assistant-headers stays in apps/vm-ingress/middleware.yaml because all
+# of its consumers are in the apps stage.
 
 # IP allowlist for internal-only services (LAN + Tailscale + in-cluster pods).
 #

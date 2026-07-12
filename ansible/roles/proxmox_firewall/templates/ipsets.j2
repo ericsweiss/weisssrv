@@ -37,14 +37,11 @@
 
 {#- Render every discovered IPSet (sorted), so adding a set to a host's
     firewall_ipsets in inventory is enough — no hardcoded whitelist to update. -#}
-{%- for ipset_name in ipset_members.keys() | sort -%}
-  {%- if ipset_name in ipset_members %}
+{%- for ipset_name in ipset_members.keys() | sort %}
 [IPSET {{ ipset_name }}]
 
 # {{ ipset_comments.get(ipset_name, '') }}
 {% for member in ipset_members[ipset_name] | sort(attribute='ip') -%}
 {{ member.ip }}  # {{ member.name }}
 {% endfor %}
-
-  {%- endif -%}
 {%- endfor -%}

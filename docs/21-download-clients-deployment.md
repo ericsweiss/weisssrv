@@ -97,12 +97,8 @@ API, so the exporter shares the pod network namespace rather than running in the
   would report `gluetun_vpn_status=0` forever and false-fire `VPNDown`. If
   NZBGet's VPN is ever enabled, replicate the sidecar + PodMonitor on it.
 - **Toggling qBittorrent's VPN off**: the exporter and PodMonitor are coupled to
-  `vpn_enabled` for the same reason — disabling the VPN stops Gluetun's control
-  server, so `gluetun_vpn_status` reads `0` forever and `VPNDown` pages falsely.
-  Remove the `gluetun-exporter` sidecar **and** the `gluetun-qbittorrent`
-  PodMonitor from `qbittorrent/resources.yaml` in the same edit that sets
-  `vpn_enabled: "false"` (re-add both when re-enabling). See the download-clients
-  README for the step-by-step.
+  `vpn_enabled` — see the download-clients README §Per-App VPN Control for the
+  canonical coupling warning and step-by-step.
 
 ## Prerequisites
 
@@ -130,18 +126,14 @@ Create VPN credential items in your Homelab vault:
 
 ### 2. NFS Storage Preparation
 
-The NFS exports should already be configured. Verify the appdata directories exist:
+The NFS exports and per-app appdata directories are provisioned by the
+`nas_storage` role: the `nas_appdata_dirs` list in the role defaults creates
+`/mnt/ssd/appdata/<app>` (owned `1000:2000`) for every app that persists
+config on the appdata export. No manual `mkdir` is needed — add the app name
+to `nas_appdata_dirs` and run `task storage:deploy`. Verify:
 
 ```bash
 ssh pve-nas-01 "ls -la /mnt/ssd/appdata/"
-```
-
-Create app directories if needed:
-
-```bash
-ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/{nzbget,qbittorrent,prowlarr,sonarr,radarr,lidarr,pulsarr}"
-ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/"
-ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/"
 ```
 
 Create media directories:
@@ -210,7 +202,8 @@ kubernetes/apps/download-clients/
 
 1. Edit the appropriate YAML under `kubernetes/apps/download-clients/`.
 2. Commit and push.
-3. Flux polls every ~1 minute (a planned webhook will reduce this to seconds).
+3. The GitLab agent's Flux module triggers reconciliation on push (fallback:
+   ~1-minute poll).
 
 ```bash
 # Example: bump Sonarr image tag
@@ -312,9 +305,15 @@ To change a VPN setting:
    or `qbittorrent/resources.yaml` (set `vpn_enabled: "true"` / `"false"` and
    `vpn_provider: "privado"` / `"vpn unlimited"`).
 2. Commit and push.
-3. Flux reconciles; run `task flux:rotate-secret -- downloads` to roll the
-   pod so Gluetun picks up the ConfigMap change (mounted ConfigMaps don't
-   trigger pod restart automatically).
+3. Flux reconciles the ConfigMap, and **stakater/Reloader rolls the pod
+   automatically** — the nzbget and qbittorrent Deployments carry the
+   `reloader.stakater.com/auto: "true"` annotation, so no manual restart is
+   needed (Reloader runs in the `reloader` namespace,
+   `kubernetes/infrastructure/controllers/reloader/`). To force a restart out
+   of band, `kubectl rollout restart deployment/<app> -n downloads` still works.
+
+**Turning qBittorrent's VPN off needs a coupled edit** (exporter + PodMonitor)
+— see the download-clients README §Per-App VPN Control before doing it.
 
 ### Check VPN Status
 
@@ -343,7 +342,12 @@ reference the `VPN Unlimited Credentials` 1P item title.)
 
 ### Container Mount Points
 
-All apps mount `/media` which maps to `/export/media` on the NAS (mergerfs view of `/mnt/media`):
+The media NFS export (`/export/media` on the NAS, the mergerfs view of
+`/mnt/media`) is mounted unevenly by design: **sonarr/radarr/lidarr** mount the
+full `/media`; **nzbget/qbittorrent** mount only `/media/downloads`
+(`subPath: downloads`) so they cannot see `/media/library`;
+**prowlarr/pulsarr** mount no media at all. The full tree as the *arr apps
+see it:
 
 ```
 /media/                      # <- NFS mount of /export/media (mergerfs)
@@ -613,7 +617,7 @@ task flux:sync-versions
 git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump sonarr" && git push
 
-# Flux rolls the Deployments within ~1 minute
+# Flux rolls the Deployments on push (fallback: ~1-minute poll)
 task flux:status
 ```
 
@@ -650,7 +654,9 @@ This is the killswitch working correctly. If Gluetun can't establish VPN:
 2. Check credentials in 1Password (rotate if needed, then `task flux:rotate-secret -- downloads`)
 3. Temporarily disable VPN by setting `vpn_enabled: "false"` in the app's
    per-app ConfigMap (inside `nzbget/resources.yaml` or `qbittorrent/resources.yaml`)
-   and pushing. Then `task flux:rotate-secret -- downloads` to roll the pod.
+   and pushing — Reloader rolls the pod automatically once Flux reconciles the
+   ConfigMap (for qBittorrent, include the coupled exporter/PodMonitor edit —
+   see "Per-App VPN Control").
 
 ### Apps Can't Access Storage
 

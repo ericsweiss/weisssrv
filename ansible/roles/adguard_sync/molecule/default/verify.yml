@@ -30,12 +30,9 @@
       ansible.builtin.debug:
         msg: "adguardhome-sync version: {{ sync_version.stdout | default('(binary incompatible with test host architecture)') }}"
 
-    # Verify home directory
-    - name: Check if home directory exists
-      ansible.builtin.stat:
-        path: /var/lib/adguardhome-sync
-      register: home_dir
-      failed_when: not home_dir.stat.exists or not home_dir.stat.isdir
+    # No home-directory check: StateDirectory= creates
+    # /var/lib/private/adguardhome-sync on the service's first run, not at
+    # deploy time.
 
     # Verify configuration file
     - name: Check if config file exists
@@ -84,9 +81,12 @@
         that:
           - "'Type=oneshot' in (service_content.content | b64decode)"
           - "'ExecStart=/usr/local/bin/adguardhome-sync' in (service_content.content | b64decode)"
-          - "'/etc/adguardhome-sync.yaml' in (service_content.content | b64decode)"
+          - "'LoadCredential=config.yaml:/etc/adguardhome-sync.yaml' in (service_content.content | b64decode)"
+          - "'DynamicUser=yes' in (service_content.content | b64decode)"
+          - "'ProtectSystem=strict' in (service_content.content | b64decode)"
+          - "'StateDirectory=adguardhome-sync' in (service_content.content | b64decode)"
         fail_msg: "Service file missing expected configuration"
-        success_msg: "Service file has correct configuration"
+        success_msg: "Service file has correct configuration (sandboxed DynamicUser)"
 
     # Verify systemd timer
     - name: Check if systemd timer file exists
@@ -136,12 +136,11 @@
           - "adguardhome-sync installed and configured:"
           - "  - Binary: /usr/local/bin/adguardhome-sync (executable)"
           - "  - Version: {{ (sync_version.stdout | default('N/A')) | trim }}"
-          - "  - Home directory: /var/lib/adguardhome-sync"
           - "Configuration:"
-          - "  - Config file: /etc/adguardhome-sync.yaml (mode 0600)"
+          - "  - Config file: /etc/adguardhome-sync.yaml (mode 0600, via LoadCredential)"
           - "  - Contains origin/replica/features/api sections"
           - "Systemd:"
-          - "  - Service: /etc/systemd/system/adguardhome-sync.service (oneshot)"
+          - "  - Service: /etc/systemd/system/adguardhome-sync.service (sandboxed DynamicUser oneshot)"
           - "  - Timer: /etc/systemd/system/adguardhome-sync.timer (every 5 min)"
           - "  - Timer status: enabled and active"
           - "(Actual sync requires two AdGuard Home instances - not tested)"

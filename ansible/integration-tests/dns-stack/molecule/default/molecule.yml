@@ -79,9 +79,6 @@ provisioner:
         # Disable ProtectSystem in systemd service for Docker container compatibility
         # ProtectSystem=strict can crash containers when systemd creates private mounts over system directories
         adguard_use_protect_system: false
-        upstream_dns_servers:
-          - 1.1.1.1
-          - 8.8.8.8
         # AdGuard Home API configuration (required for full initialization)
         adguard_protection_enabled: true
         adguard_upstream_mode: "load_balance"
@@ -98,18 +95,36 @@ provisioner:
         adguard_ratelimit: 20
         adguard_ratelimit_whitelist: []
         adguard_dhcp_enabled: false
-        adguard_rewrites: []
+        # Codified DNS rewrites (TEST-NET-1, RFC 5737). api_config.yml runs on
+        # dns-01 only and reconciles the live rewrite list to exactly this set;
+        # verify.yml asserts both landed. Empty user_rules leaves filtering
+        # untouched (set_rules only fires on drift).
+        adguard_rewrites:
+          - domain: "test-a.molecule.local"
+            answer: "192.0.2.10"
+          - domain: "test-b.molecule.local"
+            answer: "192.0.2.11"
         adguard_user_rules: []
+        # Unbound upstream forwarders (DoT), set at the GROUP level so BOTH the
+        # explicit "Apply unbound role" task AND adguard_home's own
+        # `dependencies: [unbound]` re-apply resolve the SAME list. Passing this
+        # via converge's include_role `vars:` instead is include-scoped — it does
+        # not reach the adguard dependency, so the two unbound applications
+        # flip-flop the config (2-item override vs the role's 6-item default)
+        # every converge and idempotence never settles. verify.yml asserts
+        # exactly these two render (and the defaults, e.g. 9.9.9.9, do not).
+        unbound_forwarders:
+          - {addr: "1.1.1.1", port: 853, name: "cloudflare-dns.com"}
+          - {addr: "8.8.8.8", port: 853, name: "dns.google"}
         # Note: Versions loaded from production group_vars via vars_files in converge.yml
 
       dns_primary:
         # Primary DNS server (dns-01)
-        adguard_home_port: 3000
+        adguard_http_port: 3000
+        adguard_dns_port: 53
         adguard_admin_user: admin
         # bcrypt hash is generated automatically from password by adguard_home role
         adguard_admin_password: password
-        adguard_bind_host: 0.0.0.0
-        adguard_bind_port: 53
         unbound_port: 5335
         unbound_interface: 127.0.0.1
         adguard_tls_enabled: false  # Disable TLS in tests (no real certificates)
@@ -131,12 +146,11 @@ provisioner:
 
       dns_replica:
         # Replica DNS server (dns-02)
-        adguard_home_port: 3000
+        adguard_http_port: 3000
+        adguard_dns_port: 53
         adguard_admin_user: admin
         # bcrypt hash is generated automatically from password by adguard_home role
         adguard_admin_password: password
-        adguard_bind_host: 0.0.0.0
-        adguard_bind_port: 53
         unbound_port: 5335
         unbound_interface: 127.0.0.1
 

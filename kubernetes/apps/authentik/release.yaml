@@ -41,12 +41,9 @@ spec:
   # (Note: chart sourceRef DOES support cross-namespace — this HelmRelease's
   # sourceRef points at flux-system/HelmRepository/authentik, which works.)
   values:
-    global:
-      # Canonical external domain for AUTHENTIK_HOST and redirect URLs
-      # External clients (internet) access this; internal clients use auth.esweiss.com
-      # but SSO flows redirect to this domain for OAuth callbacks
-      domain: auth.ericsweiss.com
-
+    # No canonical-domain value: the chart has no such key, and the OIDC
+    # issuer/redirect URLs derive from the request Host (auth.ericsweiss.com
+    # via the external IngressRoute, auth.esweiss.com internally).
     authentik:
       # secret_key sourced from authentik-secrets via env (see server.env, worker.env below)
 

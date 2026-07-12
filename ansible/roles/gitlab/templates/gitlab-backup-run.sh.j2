@@ -57,8 +57,9 @@ mkdir -p "$PROM_DIR"
 # SKIP excludes the container registry (rebuildable CI images — by far the
 # largest component, ~7.5G vs a 16K repo) and CI artifacts (ephemeral job
 # output) from the tarball, so a backup is DB + repos + config, not multi-GB.
-# The registry data persists on its own zvol and is re-pushable from CI; back it
-# up separately (zvol snapshot) if ever needed. Configurable via gitlab_backup_skip.
+# The registry data lives at the Omnibus default path on the OS disk (covered
+# by the nightly vzdump of the VM) and is re-pushable from CI. Configurable via
+# gitlab_backup_skip.
 if [ -n "$BACKUP_SKIP" ]; then
   /opt/gitlab/bin/gitlab-backup create CRON=1 "SKIP=$BACKUP_SKIP"
 else

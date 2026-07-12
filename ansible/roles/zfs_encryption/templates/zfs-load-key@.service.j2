@@ -35,14 +35,22 @@
 #                              (Wants, not Requires): it never fails the anchor
 #                              for the other pool, nor any boot target.
 #
-# Restart policy: the script itself loops internally for fetch_timeout
-# (default 120s) per Connect call with jitter — and with the C1 vault
-# UUID resolution it now does TWO sequential lookups (vault + item),
-# so worst-case per-ExecStart wall time is ~240s + RestartSec 30s =
-# ~270s. That means within the 3600s StartLimitIntervalSec window we
-# only fit ~13 attempts, well below StartLimitBurst=60: in practice
-# the unit retries forever rather than transitioning to a permanent
-# failed state.
+# Restart policy: the script loops internally for fetch_timeout (default
+# 120s) per phase with jitter — waiting for the pool import first, then
+# (with the C1 vault UUID resolution) THREE sequential Connect lookups
+# (vault + item-id + item-field, each now on the same deadline/retry loop)
+# — so every Connect-phase and pool-wait failure path consumes up to a
+# full fetch_timeout before exiting. Worst-case per-ExecStart wall time is
+# ~480s + RestartSec 30s; even the fastest of those retryable cycles fits
+# well under StartLimitBurst=60 in the 3600s StartLimitIntervalSec window,
+# so the unit retries forever rather than parking failed.
+#
+# The ONE residual fast-fail exit is exit 5 (encryptionroot enumeration
+# failure, zfs-load-key.sh:288-292) — it fires immediately AFTER a
+# successful Connect fetch, so a persistent failure of that shape cycles
+# at ~RestartSec (30s) and WILL trip StartLimitBurst=60 in roughly half an
+# hour, surfacing as failed. That's the intended "misconfiguration
+# eventually trips the limit" behavior below, not a boot-blocking hang.
 #
 # That's fine for our actual recovery path: when an operator manually
 # unlocks via `sudo zfs load-key <pool>` the script's keystatus

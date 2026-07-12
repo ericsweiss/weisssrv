@@ -6,12 +6,31 @@ set -Eeuo pipefail
 POOL_DST="archive"
 RESTORE_BASE="/mnt/restore"
 SNAP_PREFIX="archsync"
+{% endraw %}
+# Archive scrub timer. plug/plug-arm enable it and unplug disables it, so scrub
+# coverage tracks pool presence instead of storage-deploy timing (the Ansible
+# enable in zfs.yml fires only when the pool happens to be imported during a
+# deploy). The schedule token must match the zfs-scrub-<schedule>@ units
+# zfsutils-linux ships and zfs.yml enables.
+SCRUB_TIMER="zfs-scrub-{{ zfs_scrub_schedule | default('monthly') }}@archive.timer"
+{% raw %}
 
 # Retention:
 # - Keep the newest N snapshots always
 # - Plus keep the newest snapshot from the last M months (grandfather)
 KEEP_RECENT=3
 KEEP_MONTHLY=6
+
+# vzdump-overrun guard (see replicate_one). tank/proxmox is the cluster-wide
+# vzdump target: remote PVE nodes write dumps into it over NFS, so a local
+# pgrep can't see an in-flight backup and the 05:00 archsync snapshot could
+# capture a half-written .vma. Before snapshotting that ONE dataset, wait
+# (bounded) for writes under its mountpoint to quiesce — no file modified within
+# the last VZDUMP_QUIESCE_MIN minutes — giving up (and skipping it for this run)
+# after VZDUMP_MAX_WAIT_MIN. Other datasets are unaffected.
+VZDUMP_TARGET="tank/proxmox"
+VZDUMP_QUIESCE_MIN=10
+VZDUMP_MAX_WAIT_MIN=30
 
 # Datasets to replicate (recursive: includes children). tank/immich-data is the
 # (currently empty) store for the planned Immich; it is encrypted at source.
@@ -33,25 +52,22 @@ SRC_LIST=(
   "ssd/databases"
 )
 
-declare -A MAP=(
-  ["tank/share"]="${POOL_DST}/share"
-  ["tank/backups"]="${POOL_DST}/backups"
-  ["tank/nextcloud-data"]="${POOL_DST}/nextcloud-data"
-  ["tank/proxmox"]="${POOL_DST}/proxmox"
-  ["tank/immich-data"]="${POOL_DST}/immich-data"
-  ["ssd/appdata"]="${POOL_DST}/appdata"
-  ["ssd/databases"]="${POOL_DST}/databases"
-)
-
-declare -A RMAP=(
-  ["${POOL_DST}/share"]="tank/share"
-  ["${POOL_DST}/backups"]="tank/backups"
-  ["${POOL_DST}/nextcloud-data"]="tank/nextcloud-data"
-  ["${POOL_DST}/proxmox"]="tank/proxmox"
-  ["${POOL_DST}/immich-data"]="tank/immich-data"
-  ["${POOL_DST}/appdata"]="ssd/appdata"
-  ["${POOL_DST}/databases"]="ssd/databases"
-)
+# MAP/RMAP are derived, never hand-maintained: every backup lands at
+# ${POOL_DST}/<basename of the source>. The lock list and the restore targets
+# are derived from the same arrays, so adding a dataset to SRC_LIST is the
+# ONLY edit. Duplicate basenames would collide on one archive dataset — fail
+# loudly before any zfs command can run.
+declare -A MAP=() RMAP=()
+for _src in "${SRC_LIST[@]}"; do
+  _dst="${POOL_DST}/${_src##*/}"
+  if [[ -n "${RMAP[$_dst]:-}" ]]; then
+    echo "FATAL: duplicate SRC_LIST basename: ${_src} collides with ${RMAP[$_dst]} on ${_dst}" >&2
+    exit 1
+  fi
+  MAP["$_src"]="$_dst"
+  RMAP["$_dst"]="$_src"
+done
+unset _src _dst
 
 PROM_DIR="/var/lib/node_exporter"
 PROM_FILE="${PROM_DIR}/archive_backup.prom"
@@ -123,10 +139,12 @@ lock_backup_tree() {
   zfs set canmount=off "$root"   >/dev/null 2>&1 || true
   zfs set readonly=on "$root"    >/dev/null 2>&1 || true
 
+  # `zfs inherit` (there is no `zfs set mountpoint=inherit`) so children track
+  # the root's mountpoint=none; `|| true` — zvol children reject mountpoint.
   while IFS= read -r child; do
-    zfs set mountpoint=inherit "$child" >/dev/null 2>&1 || true
-    zfs set canmount=off "$child"       >/dev/null 2>&1 || true
-    zfs set readonly=on "$child"        >/dev/null 2>&1 || true
+    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
+    zfs set canmount=off "$child"   >/dev/null 2>&1 || true
+    zfs set readonly=on "$child"    >/dev/null 2>&1 || true
   done < <(zfs list -H -o name -r "$root" | tail -n +2)
 
   zfs unmount -r "$root" >/dev/null 2>&1 || true
@@ -142,9 +160,9 @@ unlock_for_receive() {
   zfs set readonly=off "$root"    >/dev/null 2>&1 || true
 
   while IFS= read -r child; do
-    zfs set mountpoint=inherit "$child" >/dev/null 2>&1 || true
-    zfs set canmount=off "$child"       >/dev/null 2>&1 || true
-    zfs set readonly=off "$child"       >/dev/null 2>&1 || true
+    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
+    zfs set canmount=off "$child"   >/dev/null 2>&1 || true
+    zfs set readonly=off "$child"   >/dev/null 2>&1 || true
   done < <(zfs list -H -o name -r "$root" | tail -n +2)
 
   zfs unmount -r "$root" >/dev/null 2>&1 || true
@@ -160,12 +178,35 @@ maybe_resume_receive() {
   local dst="$1"
   dataset_present "$dst" || return 0
 
-  local tok
-  tok="$(zfs get -H -o value receive_resume_token "$dst" 2>/dev/null || true)"
-  if [[ -n "$tok" && "$tok" != "-" ]]; then
-    log "Resuming interrupted receive into ${dst}"
-    unlock_for_receive "$dst"
-    zfs send -t "$tok" | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "$dst"
+  # An interrupted recursive (-R) receive leaves the resume token on the
+  # dataset that was mid-stream — usually a CHILD, not the root — so enumerate
+  # tokens across the whole tree and resume each one into ITS dataset.
+  local ds tok dtype found=0
+  local -a recv_opts
+  while IFS=$'\t' read -r ds tok; do
+    [[ -n "$tok" && "$tok" != "-" ]] || continue
+    if [[ "$found" -eq 0 ]]; then
+      unlock_for_receive "$dst"
+      found=1
+    fi
+    log "Resuming interrupted receive into ${ds}"
+    # Same zvol/filesystem split as the re-seed loop: a resume stream targets
+    # $ds directly and zfs rejects -o mountpoint/canmount on a volume.
+    dtype="$(zfs get -H -o value type "$ds" 2>/dev/null || true)"
+    if [[ "$dtype" == "volume" ]]; then
+      recv_opts=( -o readonly=on )
+    else
+      recv_opts=( "${RECV_SAFE_OPTS[@]}" )
+    fi
+    if ! zfs send -t "$tok" | zfs receive -s -u "${recv_opts[@]}" "$ds"; then
+      # A dead token (e.g. the source snapshot was pruned) can never resume;
+      # abort the partial receive state so the incremental/full paths — which
+      # any receive into $ds would otherwise reject — can proceed this run.
+      log "Resume failed for ${ds}; aborting its partial receive state"
+      zfs receive -A "$ds" || true
+    fi
+  done < <(zfs get -H -o name,value -r receive_resume_token "$dst" 2>/dev/null || true)
+  if [[ "$found" -eq 1 ]]; then
     lock_backup_tree "$dst"
   fi
 }
@@ -180,9 +221,18 @@ latest_common_snapshot() {
     | sed -n "s|^${src}@||p" \
     | grep -E "^${SNAP_PREFIX}-" || true)"
 
-  dst_snaps="$(zfs list -H -t snapshot -o name -s creation -r "$dst" 2>/dev/null \
-    | sed -n "s|^${dst}@||p" \
-    | grep -E "^${SNAP_PREFIX}-" || true)"
+  # The incremental base must exist on EVERY dataset in the dst tree, not just
+  # its root: an interrupted recursive receive leaves later children one
+  # snapshot behind the root, and `zfs send -R -i` into such a tree fails on
+  # the child missing the base. Keep only snapshot names carried by all
+  # ds_count datasets (max one per dataset, so count==ds_count means all).
+  local ds_count
+  ds_count="$(zfs list -H -o name -r "$dst" 2>/dev/null | grep -c . || true)"
+  [[ "$ds_count" -gt 0 ]] || return 0
+  dst_snaps="$(zfs list -H -t snapshot -o name -r "$dst" 2>/dev/null \
+    | sed -n "s|^.*@\(${SNAP_PREFIX}-.*\)$|\1|p" \
+    | sort | uniq -c \
+    | awk -v n="$ds_count" '$1 == n { print $2 }')"
 
   common="$(comm -12 <(printf "%s\n" "$src_snaps" | sort) <(printf "%s\n" "$dst_snaps" | sort) | tail -n 1 || true)"
   printf "%s" "$common"
@@ -285,6 +335,31 @@ replicate_one() {
   local reseed_tmp="${dst}-reseed"
 
   dataset_present "$src" || { log "SKIP: missing source $src"; return 0; }
+
+  # vzdump-overrun guard: only for the cluster-wide dump target. Wait for the
+  # remote-node NFS writes to settle so this run's snapshot never captures a
+  # half-written backup; skip the dataset (leaving last night's copy in place,
+  # retried next run) if they don't settle within the bound. Snapshot/receive
+  # of OTHER datasets is unaffected. Runs before the snapshot below.
+  if [[ "$src" == "$VZDUMP_TARGET" ]]; then
+    local vz_mp vz_waited=0
+    vz_mp="$(zfs get -H -o value mountpoint "$src" 2>/dev/null || true)"
+    if [[ -n "$vz_mp" && "$vz_mp" != "-" && -d "$vz_mp" ]]; then
+      while find "$vz_mp" -type f -mmin "-${VZDUMP_QUIESCE_MIN}" -print -quit 2>/dev/null | grep -q .; do
+        if (( vz_waited >= VZDUMP_MAX_WAIT_MIN )); then
+          # Return non-zero so cmd_run marks the run failed and the prior
+          # last-success timestamp is preserved: a chronic overrun then
+          # surfaces via ArchiveBackupFailed/Stale rather than reporting
+          # full success while this dataset silently never replicates.
+          log "SKIP ${src}: vzdump still writing under ${vz_mp} after ${vz_waited}m; leaving prior backup, will retry next run"
+          return 1
+        fi
+        log "vzdump appears active under ${vz_mp} (writes < ${VZDUMP_QUIESCE_MIN}m old); waiting ${VZDUMP_QUIESCE_MIN}m for quiesce"
+        sleep $(( VZDUMP_QUIESCE_MIN * 60 ))
+        vz_waited=$(( vz_waited + VZDUMP_QUIESCE_MIN ))
+      done
+    fi
+  fi
 
   # Encrypted sources must be sent raw (-w): ZFS refuses to send an encrypted
   # dataset with properties (-R) unless raw. A raw stream carries the wrapped
@@ -481,18 +556,48 @@ cmd_run() {
   set_pool_root_props
 
   log "Starting replication to '${POOL_DST}'"
+  local failed=0
   for src in "${SRC_LIST[@]}"; do
-    replicate_one "$src" "${MAP[$src]}"
+    # Isolate each dataset in a fresh process so one persistently failing
+    # dataset cannot starve the later ones of backups. A plain
+    # `if ! replicate_one ...` would NOT do: bash disables errexit and the ERR
+    # trap for a function called inside a condition, turning unguarded
+    # send|receive failures into silent false successes. The child keeps full
+    # set -Eeuo pipefail semantics; it inherits fd 9 (lock stays held) and its
+    # _BACKUP_METRICS_ACTIVE stays 0, so only this parent writes metrics.
+    if ! "$0" __run-one "$src"; then
+      log "Replication FAILED for ${src}; continuing with remaining datasets"
+      failed=1
+    fi
   done
 
-  log "Replication complete."
+  if [[ "$failed" -eq 1 ]]; then
+    log "Replication finished WITH FAILURES (see per-dataset errors above)."
+  else
+    log "Replication complete."
+  fi
   zfs list -o name,used,avail,refer,mountpoint -r "${POOL_DST}" | sed 's/^/  /'
 
-  # Write Prometheus textfile metrics on success
+  # Write Prometheus textfile metrics. success=0 preserves the last-success
+  # timestamp, so ArchiveBackupFailed fires while the staleness alert still
+  # measures time since the last fully good run.
   local end_ts
   end_ts="$(date +%s)"
   local duration=$(( end_ts - _BACKUP_START_TS ))
+  if [[ "$failed" -eq 1 ]]; then
+    write_prom_metrics 0 "$duration"
+    exit 1
+  fi
   write_prom_metrics 1 "$duration"
+}
+
+# Internal subcommand used only by cmd_run: replicate exactly one SRC_LIST
+# dataset in this fresh process, where errexit + the ERR trap are fully
+# active. The parent holds the run lock.
+cmd_run_one() {
+  local src="$1"
+  [[ -n "${MAP[$src]:-}" ]] || { log "__run-one: '${src}' is not in SRC_LIST"; exit 2; }
+  replicate_one "$src" "${MAP[$src]}"
 }
 
 cmd_enable() {
@@ -512,8 +617,27 @@ cmd_status() {
   zfs list -r "${POOL_DST}" 2>/dev/null || true
 }
 
+# Single-instance lock shared with cmd_run (which takes it with its own
+# exit-0 "already running" semantics). plug/plug-arm/unplug and the restores
+# must never interleave with a mid-send replication: plug re-locks datasets an
+# active receive needs writable, unplug would die on a busy `zpool export`
+# after already disabling the timer, and a restore would race the pruner.
+# Fail fast rather than block: a held lock means replication is mid-send.
+_take_run_lock_or_die() {
+  exec 9>/run/archive-backup.lock
+  if ! flock -n 9; then
+    log "replication in progress (lock held); retry after the nightly window"
+    exit 1
+  fi
+}
+
 cmd_unplug() {
+  _take_run_lock_or_die
   cmd_disable
+  # Scrub coverage tracks pool presence — a monthly scrub against an exported
+  # pool would just fail. `|| true`: the timer may not exist/be enabled on a
+  # host that never ran plug or a storage deploy with the pool imported.
+  systemctl disable --now "${SCRUB_TIMER}" >/dev/null 2>&1 || true
   if ! pool_present; then
     log "Pool '${POOL_DST}' already not present."
     exit 0
@@ -527,20 +651,16 @@ cmd_unplug() {
 
 _lock_existing_backup_datasets() {
   set_pool_root_props
-  for dst in \
-    "${POOL_DST}/share" \
-    "${POOL_DST}/backups" \
-    "${POOL_DST}/nextcloud-data" \
-    "${POOL_DST}/proxmox" \
-    "${POOL_DST}/immich-data" \
-    "${POOL_DST}/appdata" \
-    "${POOL_DST}/databases"
-  do
-    dataset_present "$dst" && lock_backup_tree "$dst"
+  local dst
+  for dst in "${!RMAP[@]}"; do
+    if dataset_present "$dst"; then
+      lock_backup_tree "$dst"
+    fi
   done
 }
 
 cmd_plug() {
+  _take_run_lock_or_die
   if pool_present; then
     log "Pool '${POOL_DST}' already imported."
   else
@@ -549,10 +669,15 @@ cmd_plug() {
   fi
   _lock_existing_backup_datasets
   cmd_enable
+  systemctl enable --now "${SCRUB_TIMER}" || log "WARNING: could not enable ${SCRUB_TIMER}"
+  # cmd_run re-opens fd 9, briefly releasing this lock before re-taking it.
+  # If the timer wins that race, cmd_run exits 0 ("already running") — which
+  # is equivalent: a replication run is underway either way.
   cmd_run
 }
 
 cmd_plug_arm() {
+  _take_run_lock_or_die
   if pool_present; then
     log "Pool '${POOL_DST}' already imported."
   else
@@ -561,6 +686,7 @@ cmd_plug_arm() {
   fi
   _lock_existing_backup_datasets
   cmd_enable
+  systemctl enable --now "${SCRUB_TIMER}" || log "WARNING: could not enable ${SCRUB_TIMER}"
   log "Plug-arm complete (timer enabled; no immediate replication run)."
 }
 
@@ -574,10 +700,17 @@ _restore_mount_tree() {
 
   zfs set canmount=on "$restore_root"
   zfs set mountpoint="$mp" "$restore_root"
+  # The stream carries the archive's local readonly=on as a RECEIVED value on
+  # every dataset (received beats inherited); inherit -r masks it tree-wide so
+  # the restore is writable (root + children fall back to the pool default).
+  zfs inherit -r readonly "$restore_root" >/dev/null 2>&1 || true
 
+  # `zfs inherit` (not the invalid `zfs set mountpoint=inherit`) also masks a
+  # RECEIVED mountpoint=none a re-seeded child carries, so children mount
+  # under $mp instead of silently staying unmounted.
   while IFS= read -r child; do
     zfs set canmount=on "$child" >/dev/null 2>&1 || true
-    zfs set mountpoint=inherit "$child" >/dev/null 2>&1 || true
+    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
   done < <(zfs list -H -o name -r "$restore_root" | tail -n +2)
 
   zfs mount -r "$restore_root" >/dev/null 2>&1 || true
@@ -590,6 +723,41 @@ _restore_mount_tree() {
     log "  Unlock + mount: zfs load-key -r -L prompt ${restore_root} && zfs mount -r ${restore_root}  (mounts under ${mp})"
   else
     log "Mounted restore tree at: $mp"
+  fi
+}
+
+# A force-restored stream carries the archive's local lockdown props
+# (mountpoint=none, canmount=off, readonly=on) as received values — and the
+# fresh/recreated dst has no local props masking them, so left alone the
+# restored data sits unmounted and read-only while `zfs mount -a` silently
+# no-ops. Reset the tree. The original mountpoint is NOT in the stream:
+# restore the /mnt/<pool>/<dataset> production convention and let the next
+# storage deploy re-assert the host_vars properties. (`zfs receive -x/-o`
+# can't do this: with -R they apply only to the stream's top-level dataset,
+# so children would stay locked.)
+_force_restore_reset_props() {
+  local root="$1"
+  local child dtype
+  # received readonly=on beats inheritance; inherit -r masks it tree-wide.
+  zfs inherit -r readonly "$root" >/dev/null 2>&1 || true
+  zfs set canmount=on "$root"
+  zfs set mountpoint="/mnt/${root}" "$root"
+  # canmount is not inheritable — set it per filesystem child; volumes hold
+  # neither mountpoint nor canmount, so skip them (readonly already cleared).
+  while IFS= read -r child; do
+    dtype="$(zfs get -H -o value type "$child" 2>/dev/null || true)"
+    [[ "$dtype" == "volume" ]] && continue
+    zfs set canmount=on "$child" >/dev/null 2>&1 || true
+    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
+  done < <(zfs list -H -o name -r "$root" | tail -n +2)
+  zfs mount -r "$root" >/dev/null 2>&1 || true
+  # A raw-restored encrypted dataset is key-less, so the mount above is a
+  # silent no-op — tell the operator how to unlock instead of claiming success.
+  if zfs get -H -o value -r keystatus "$root" 2>/dev/null | grep -q '^unavailable$'; then
+    log "Restored tree ${root} contains encrypted key-less datasets — mount is incomplete."
+    log "  Unlock + mount: zfs load-key -r -L prompt ${root} && zfs mount -r ${root}"
+  else
+    log "Restored ${root}, mounted at /mnt/${root} (re-run the storage deploy to re-assert host_vars properties)"
   fi
 }
 
@@ -630,90 +798,68 @@ _restore_one() {
   if ! dataset_present "$dst"; then
     log "FORCE restore target missing; creating: ${snap_full} -> ${dst}"
     zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${dst}"
-    zfs mount -a 2>/dev/null || true
+    _force_restore_reset_props "$dst"
     return 0
   fi
 
+  # receive -F of a full replication stream destroys and recreates $dst, so
+  # its local props are lost too — both force branches need the reset.
   log "FORCE restore (destructive): ${snap_full} -> ${dst} (receive -F)"
   zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u -F "${dst}"
-  zfs mount -a 2>/dev/null || true
+  _force_restore_reset_props "$dst"
+}
+
+# Valid restore targets, derived from SRC_LIST basenames (for usage strings).
+_restore_usage_targets() {
+  local out="" src
+  for src in "${SRC_LIST[@]}"; do
+    out+="${src##*/}|"
+  done
+  printf '%s' "${out}all"
+}
+
+# A restore READS the archive but WRITES into the source pool: safe mode
+# receives ${dst}-restore-<ts> trees onto tank/ssd (the space cost lands on
+# the SOURCE pool, not the archive), force receives in place over the live
+# dataset. It must never interleave with the nightly replication reading and
+# pruning the same datasets, so take the SAME single-instance lock cmd_run
+# uses (fail-fast — see _take_run_lock_or_die).
+_cmd_restore_impl() {
+  local mode="$1" what="$2" cmd_name="$3"
+
+  _take_run_lock_or_die
+
+  pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
+
+  [[ -n "$what" ]] || { echo "Usage: archive-backupctl ${cmd_name} <$(_restore_usage_targets)>" >&2; exit 2; }
+
+  local -a targets=()
+  local src bdst
+  if [[ "$what" == "all" ]]; then
+    for src in "${SRC_LIST[@]}"; do
+      targets+=( "${MAP[$src]}" )
+    done
+  else
+    bdst="${POOL_DST}/${what}"
+    if [[ -z "${RMAP[$bdst]:-}" ]]; then
+      echo "Unknown restore target: $what" >&2
+      exit 2
+    fi
+    targets=( "$bdst" )
+  fi
+
+  for bdst in "${targets[@]}"; do
+    _restore_one "$bdst" "$mode"
+  done
 }
 
 cmd_restore() {
-  # A restore mutates the archive datasets (safe mode creates *-restore-* trees;
-  # force receives in place). It must never interleave with the nightly
-  # replication, so take the SAME single-instance lock cmd_run uses. Fail fast
-  # rather than block: a held lock means replication is mid-send.
-  exec 9>/run/archive-backup.lock
-  if ! flock -n 9; then
-    log "replication in progress (lock held); retry after the nightly window"
-    exit 1
-  fi
-
-  pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
-
-  local what="${1:-}"
-  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore <share|backups|nextcloud-data|proxmox|immich-data|appdata|databases|all>" >&2; exit 2; }
-
-  case "$what" in
-    all)
-      _restore_one "${POOL_DST}/share" safe
-      _restore_one "${POOL_DST}/backups" safe
-      _restore_one "${POOL_DST}/nextcloud-data" safe
-      _restore_one "${POOL_DST}/proxmox" safe
-      _restore_one "${POOL_DST}/immich-data" safe
-      _restore_one "${POOL_DST}/appdata" safe
-      _restore_one "${POOL_DST}/databases" safe
-      ;;
-    share) _restore_one "${POOL_DST}/share" safe ;;
-    backups) _restore_one "${POOL_DST}/backups" safe ;;
-    nextcloud-data) _restore_one "${POOL_DST}/nextcloud-data" safe ;;
-    proxmox) _restore_one "${POOL_DST}/proxmox" safe ;;
-    immich-data) _restore_one "${POOL_DST}/immich-data" safe ;;
-    appdata) _restore_one "${POOL_DST}/appdata" safe ;;
-    databases) _restore_one "${POOL_DST}/databases" safe ;;
-    *) echo "Unknown restore target: $what" >&2; exit 2 ;;
-  esac
-
-  log "Restore (safe) complete. Restores are under: ${RESTORE_BASE}/<target>/<timestamp>/"
+  _cmd_restore_impl safe "${1:-}" restore
+  log "Restore (safe) complete. Restores are under: ${RESTORE_BASE}/<target>/<timestamp>/ (space consumed on the source pool)"
 }
 
 cmd_restore_force() {
-  # A restore mutates the archive datasets (safe mode creates *-restore-* trees;
-  # force receives in place). It must never interleave with the nightly
-  # replication, so take the SAME single-instance lock cmd_run uses. Fail fast
-  # rather than block: a held lock means replication is mid-send.
-  exec 9>/run/archive-backup.lock
-  if ! flock -n 9; then
-    log "replication in progress (lock held); retry after the nightly window"
-    exit 1
-  fi
-
-  pool_present || { log "Pool '${POOL_DST}' not present. Run: archive-backupctl plug or plug-arm first."; exit 1; }
-
-  local what="${1:-}"
-  [[ -n "$what" ]] || { echo "Usage: archive-backupctl restore-force <share|backups|nextcloud-data|proxmox|immich-data|appdata|databases|all>" >&2; exit 2; }
-
-  case "$what" in
-    all)
-      _restore_one "${POOL_DST}/share" force
-      _restore_one "${POOL_DST}/backups" force
-      _restore_one "${POOL_DST}/nextcloud-data" force
-      _restore_one "${POOL_DST}/proxmox" force
-      _restore_one "${POOL_DST}/immich-data" force
-      _restore_one "${POOL_DST}/appdata" force
-      _restore_one "${POOL_DST}/databases" force
-      ;;
-    share) _restore_one "${POOL_DST}/share" force ;;
-    backups) _restore_one "${POOL_DST}/backups" force ;;
-    nextcloud-data) _restore_one "${POOL_DST}/nextcloud-data" force ;;
-    proxmox) _restore_one "${POOL_DST}/proxmox" force ;;
-    immich-data) _restore_one "${POOL_DST}/immich-data" force ;;
-    appdata) _restore_one "${POOL_DST}/appdata" force ;;
-    databases) _restore_one "${POOL_DST}/databases" force ;;
-    *) echo "Unknown restore target: $what" >&2; exit 2 ;;
-  esac
-
+  _cmd_restore_impl force "${1:-}" restore-force
   log "Restore (FORCE) complete."
 }
 
@@ -730,10 +876,11 @@ Commands:
   plug                Import pool, enable timer, and run replication now
   plug-arm            Import pool, lock/unmountable, enable timer (NO immediate run)
 
-  restore <target>        SAFE restore into new *-restore-YYYYMMDD-HHMMSS datasets,
-                          mounted under /mnt/restore/<target>/<timestamp>/
+  restore <target>        SAFE restore into new *-restore-YYYYMMDD-HHMMSS datasets
+                          ON THE SOURCE POOL (space cost lands there), mounted
+                          under /mnt/restore/<target>/<timestamp>/
   restore-force <target>  DESTRUCTIVE restore in place (zfs receive -F)
-                          targets: share|backups|nextcloud-data|proxmox|immich-data|appdata|databases|all
+                          targets: $(_restore_usage_targets)
 USAGE
 }
 
@@ -743,6 +890,7 @@ main() {
   shift || true
   case "$cmd" in
     run) cmd_run ;;
+    __run-one) cmd_run_one "${1:?dataset required}" ;;
     enable) cmd_enable ;;
     disable) cmd_disable ;;
     status) cmd_status ;;

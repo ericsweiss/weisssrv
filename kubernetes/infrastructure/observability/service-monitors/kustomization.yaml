@@ -3,9 +3,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - flux-system.yaml
-  # No gitlab.yaml: GitLab metrics scraping stays out of the cluster until
-  # `prometheus_monitoring['enable'] = true` is set in gitlab.rb on the VM
-  # (today /-/metrics serves the login page, not metrics). The previous
-  # Service + Endpoints + ServiceMonitor shape is in git history.
+  - gitlab.yaml
   - home-assistant.yaml
   - meilisearch.yaml

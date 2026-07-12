@@ -54,63 +54,33 @@ The k3s platform is deployed on Proxmox-hosted VMs with a layered architecture: 
 
 ## K3s Cluster Design
 
-### Current Deployment (9 Nodes: 3 Servers + 6 Agents)
+### Planned Topology (9 Nodes: 3 Servers + 6 Agents)
 
-| Node | IP | VMID | Proxmox Host | Role | Status |
-|------|-----|------|--------------|------|--------|
-| k3s-srv-nas-01 | 192.168.0.222 | 222 | pve-nas-01 | Server (etcd) | ACTIVE |
-| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | Server (etcd) | ACTIVE |
-| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | Server (etcd) | ACTIVE |
-| k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | ACTIVE |
-| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | ACTIVE |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | Ingress + general | ACTIVE |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | Ingress + general | ACTIVE |
-| k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | ACTIVE |
-| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | ACTIVE |
+The 9-node topology (3 etcd servers + 6 agents) was deployed as planned. The
+node/IP/VMID tables that used to live here duplicated the live topology and
+drifted; the **current** node roster lives in `docs/01-overview.md`
+(architecture diagram) and `docs/19-k3s-deployment.md` — consult those, not
+this page.
 
-### HA Implementation (COMPLETE)
+### HA Implementation (delivered as planned)
 
-The HA implementation covers both the k3s platform and critical base infrastructure:
+The HA plan covered both the k3s platform and critical base infrastructure,
+and both parts shipped:
 
-#### Part 1: K3s HA (9-Node Cluster)
+- **K3s HA**: 3-node etcd quorum (servers on the NAS, laptop, and Precision
+  hosts) + 6 agents; kube-vip API VIP (.161) with leader election.
+- **Proxmox HA**: automatic failover with ZFS replication for dns-01,
+  dns-02, smtp-relay, and home-assistant (services that run outside k3s).
 
-3-node etcd quorum with 6 agents:
-- k3s-srv-nas-01 (.222), k3s-srv-laptop-01 (.223), k3s-srv-prec-01 (.227) for etcd quorum
-- 6 agents across all compute nodes for capacity and workload distribution
-- kube-vip provides API VIP (.161) with leader election
-
-#### Part 2: Proxmox HA for Critical Infrastructure
-
-Automatic failover enabled for base infrastructure VMs/containers with ZFS replication:
-- **dns-01** (LXC, 192.168.0.150) - AdGuard Home primary
-- **dns-02** (LXC, 192.168.0.160) - AdGuard Home secondary
-- **smtp-relay** (LXC, 192.168.0.151) - Mail relay
-- **home-assistant** (VM, 192.168.0.154) - Home Assistant OS
-
-These services run outside k3s and use Proxmox-level HA for automatic recovery.
-
-See `docs/25-multi-node-expansion.md` for the expansion plan including IP/VMID allocation, Proxmox HA configuration, and ZFS replication setup.
+Current HA placement/replication state: `task proxmox:ha-status`; procedures
+in `docs/12-runbooks.md`. See `docs/25-multi-node-expansion.md` for the
+original expansion plan including IP/VMID allocation.
 
 ### Node Roles
 
-#### Servers (.22X range - control plane + etcd)
-
-| Node | IP | VMID | Proxmox Host | Resources | Status |
-|------|-----|------|--------------|-----------|--------|
-| k3s-srv-nas-01 | 192.168.0.222 | 222 | pve-nas-01 | 2 vCPU, 4GB RAM, 64GB disk | ACTIVE |
-| k3s-srv-laptop-01 | 192.168.0.223 | 223 | pve-laptop-01 | 2 vCPU, 4GB RAM, 64GB disk | ACTIVE |
-| k3s-srv-prec-01 | 192.168.0.227 | 227 | pve-prec-01 | 2 vCPU, 4GB RAM, 64GB disk | ACTIVE |
-
-#### Agents (.20X range - workers with specialized roles)
-
-| Node | IP | VMID | Proxmox Host | Role | Status |
-|------|-----|------|--------------|------|--------|
-| k3s-agt-nas-01 | 192.168.0.202 | 202 | pve-nas-01 | NAS workloads | ACTIVE |
-| k3s-agt-laptop-01 | 192.168.0.203 | 203 | pve-laptop-01 | Ingress + general | ACTIVE |
-| k3s-agt-opt-01 | 192.168.0.204 | 204 | pve-opt-01 | Ingress + general | ACTIVE |
-| k3s-agt-opt-02 | 192.168.0.205 | 205 | pve-opt-02 | Ingress + general | ACTIVE |
-| k3s-agt-opt-03 | 192.168.0.206 | 206 | pve-opt-03 | Ingress + general | ACTIVE |
-| k3s-agt-prec-01 | 192.168.0.207 | 207 | pve-prec-01 | Compute + general | ACTIVE |
+Per-node roles (NAS / ingress / compute / general), labels, and sizing were
+planned per host; the as-built roster is in `docs/01-overview.md` and
+`docs/19-k3s-deployment.md`.
 
 ### Scheduling Model (Labels/Taints)
 

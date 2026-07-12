@@ -37,3 +37,14 @@
         mkdir -p /root/.ansible/tmp
         chmod 700 /root/.ansible/tmp
       changed_when: false
+
+    # tasks/agent.yml reconciles K3S_TOKEN in this env file whenever it exists
+    # (in prod k3s-install.sh creates it on install). Pre-stage it holding the
+    # stale server token so verify.yml can assert the migration to the
+    # dedicated agent token.
+    - name: Pre-stage k3s-agent service env with a stale server token
+      ansible.builtin.raw: |
+        printf 'K3S_TOKEN=%s\n' 'test-token-for-molecule-agent-testing' \
+          > /etc/systemd/system/k3s-agent.service.env
+        chmod 600 /etc/systemd/system/k3s-agent.service.env
+      changed_when: false

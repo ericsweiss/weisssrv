@@ -46,3 +46,137 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+
+---
+# Default-deny egress. The scoped allows below cover the two pod classes that
+# exist here (ESO controllers and 1Password Connect); any future pod in this
+# namespace starts with no egress until it gets its own allow — fail-closed in
+# the namespace holding every ESO-synced Secret.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: external-secrets
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Scoped egress for the ESO controllers (controller, webhook, cert-controller —
+# all carry the chart's instance label): kube-dns, kube-apiserver, and the
+# same-namespace Connect API. No public egress — ESO only talks to Connect,
+# never to 1Password cloud directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-external-secrets
+  namespace: external-secrets
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: external-secrets
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # kube-apiserver: allowlist the real server IPs on 6443 (kube-proxy DNATs
+    # the in-cluster VIP before NetworkPolicy evaluation).
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.222/32
+        - ipBlock:
+            cidr: 192.168.0.223/32
+        - ipBlock:
+            cidr: 192.168.0.227/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    # 1Password Connect API (cluster-secret-store.yaml points at the
+    # same-namespace ClusterIP; DNAT to the pod happens before policy
+    # evaluation, so match the Connect pods directly). 8081 is the sync
+    # sidecar, mirrored from the ingress allow.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: onepassword-connect
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+
+---
+# Scoped egress for 1Password Connect: kube-dns plus public HTTPS for the
+# connect-sync container's pull from 1Password cloud. No LAN/apiserver paths.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-onepassword-connect
+  namespace: external-secrets
+spec:
+  podSelector:
+    matchLabels:
+      app: onepassword-connect
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public HTTPS: 1Password cloud (sync + events).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # Public-unicast only. EXCEPT every non-public / reserved IPv4 block
+            # so a compromised pod cannot reach the LAN, loopback,
+            # cloud-metadata, or other reserved space. Kept identical to the
+            # cloudflare-ddns, cert-manager and external-dns egress policies.
+            except:
+              # RFC1918 private LAN.
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              # "This network" / unspecified (RFC 1122).
+              - 0.0.0.0/8
+              # Loopback (RFC 1122).
+              - 127.0.0.0/8
+              # Link-local (RFC 3927) — incl. 169.254.169.254 cloud-metadata.
+              - 169.254.0.0/16
+              # Tailscale / CGNAT (RFC 6598) — same trust boundary as the LAN.
+              - 100.64.0.0/10
+              # IETF protocol assignments (RFC 6890).
+              - 192.0.0.0/24
+              # TEST-NET-1/2/3 documentation (RFC 5737).
+              - 192.0.2.0/24
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              # Benchmarking (RFC 2544).
+              - 198.18.0.0/15
+              # Multicast (RFC 5771) — HTTPS is unicast.
+              - 224.0.0.0/4
+              # Reserved / future use (RFC 1112) — incl. 255.255.255.255.
+              - 240.0.0.0/4
+      ports:
+        - protocol: TCP
+          port: 443

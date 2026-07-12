@@ -1,0 +1,20 @@
+---
+# Check-mode reachability guard, shared by plex.yml and gitlab.yml pre_tasks.
+# In check mode the guest may not exist yet (LXC/VM creation is skipped), so
+# probe connectivity first and end the play quietly instead of erroring.
+# Override reachable_check_timeout (seconds, default 5) per include.
+
+- name: Check if host is reachable (check mode safety)
+  ansible.builtin.wait_for_connection:
+    timeout: "{{ reachable_check_timeout | default(5) }}"
+  register: host_reachable
+  ignore_errors: true
+  ignore_unreachable: true
+  when: ansible_check_mode
+
+- name: Skip play if host unreachable in check mode
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - host_reachable is defined
+    - host_reachable is failed or host_reachable.unreachable | default(false)

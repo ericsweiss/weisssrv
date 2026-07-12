@@ -1,7 +1,9 @@
 ---
 # DNS Stack Integration Test - Prepare
-# - Initialize containers for reliable testing
-# - Configure systemd-resolved to not bind port 53
+# Shared container init, then configure systemd-resolved to not bind port 53
+
+- name: Import shared container prepare
+  ansible.builtin.import_playbook: ../../../_shared/prepare.yml
 
 - name: Prepare - DNS Stack Environment
   hosts: all
@@ -9,32 +11,6 @@
   gather_facts: false
 
   tasks:
-    - name: Wait for systemd to be ready
-      ansible.builtin.raw: |
-        for i in $(seq 1 30); do
-          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
-            exit 0
-          fi
-          sleep 1
-        done
-        systemctl status >/dev/null 2>&1 && exit 0
-        exit 1
-      changed_when: false
-      retries: 3
-      delay: 2
-      register: systemd_ready
-      until: systemd_ready.rc == 0
-
-    - name: Disable apt background services
-      ansible.builtin.raw: |
-        systemctl stop apt-daily.timer 2>/dev/null || true
-        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
-        systemctl stop unattended-upgrades.service 2>/dev/null || true
-        systemctl disable apt-daily.timer 2>/dev/null || true
-        systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
-        exit 0
-      changed_when: false
-
     - name: Create systemd-resolved config directory
       ansible.builtin.file:
         path: /etc/systemd/resolved.conf.d
@@ -71,11 +47,4 @@
     - name: Wait for system stability after systemd-resolved restart
       ansible.builtin.raw: |
         sleep 3
-      changed_when: false
-
-    # Create ansible temp directory to prevent "Failed to create temporary directory" errors
-    - name: Ensure ansible temp directory exists
-      ansible.builtin.raw: |
-        mkdir -p /root/.ansible/tmp
-        chmod 700 /root/.ansible/tmp
       changed_when: false

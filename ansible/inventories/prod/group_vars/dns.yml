@@ -22,7 +22,9 @@ adguard_dot_port: 853
 adguard_https_port: 443
 adguard_admin_user: eric
 # Password from 1Password; bcrypt hash is generated at deploy time by the adguard_home role
-adguard_admin_password: "{{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD') or undef(hint='ADGUARD_ADMIN_PASSWORD env var must be set (run via op run)') }}"
+adguard_admin_password: >-
+  {{ lookup('ansible.builtin.env', 'ADGUARD_ADMIN_PASSWORD')
+     or undef(hint='ADGUARD_ADMIN_PASSWORD env var must be set (run via op run)') }}
 
 # TLS/Encryption configuration
 # TLS enabled for DoT (853) and DoQ (853) - AdGuard Home handles these directly
@@ -209,8 +211,12 @@ adguard_dhcp_enabled: false
 # postfix_sasl_password, and mail_aliases are defined in all.yml.
 
 # dns-01 SSH key for certificate delivery to dns-02 and smtp-relay
-dns01_ssh_private_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY') or undef(hint='DNS01_SSH_PRIVATE_KEY env var must be set (run via op run)') }}"
-dns01_ssh_public_key: "{{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY') or undef(hint='DNS01_SSH_PUBLIC_KEY env var must be set (run via op run)') }}"
+dns01_ssh_private_key: >-
+  {{ lookup('ansible.builtin.env', 'DNS01_SSH_PRIVATE_KEY')
+     or undef(hint='DNS01_SSH_PRIVATE_KEY env var must be set (run via op run)') }}
+dns01_ssh_public_key: >-
+  {{ lookup('ansible.builtin.env', 'DNS01_SSH_PUBLIC_KEY')
+     or undef(hint='DNS01_SSH_PUBLIC_KEY env var must be set (run via op run)') }}
 
 # AdGuard Home Sync configuration (dns-01 -> dns-02).
 # URLs hit Traefik (192.168.0.101) which fronts each AdGuard instance
@@ -237,4 +243,7 @@ adguardhome_sync_features:
   services: true
   filters: true
   theme: true
-  tlsConfig: false  # Disabled - each host has its own TLS server name (dns-01 vs dns-02)
+  # Not synced: cert files/paths are host-local and TLS is reconciled per host
+  # by the adguard_home role (drift detection included) — syncing tlsConfig
+  # from dns-01 would fight the Ansible-managed config on dns-02.
+  tlsConfig: false

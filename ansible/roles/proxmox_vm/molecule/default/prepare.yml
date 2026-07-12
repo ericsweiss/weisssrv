@@ -53,7 +53,9 @@
           #!/bin/bash
           if [[ "$1 $2" == "get /cluster/resources" ]]; then
             if grep -q "^exists$" /tmp/molecule-stub-state/vm_exists_state 2>/dev/null; then
-              echo '[{"vmid": 999, "type": "qemu"}]'
+              # node = this molecule host so the role's reconcile tasks delegate
+              # back here (where qm is stubbed), exercising the HA-aware lookup.
+              echo '[{"vmid": 999, "type": "qemu", "node": "{{ inventory_hostname }}"}]'
             else
               echo '[]'
             fi

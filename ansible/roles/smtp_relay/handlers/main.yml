@@ -16,3 +16,7 @@
   ansible.builtin.service:
     name: postfix
     state: reloaded
+
+- name: Reload systemd for postfix queue collector
+  ansible.builtin.systemd:
+    daemon_reload: true

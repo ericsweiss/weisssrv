@@ -11,7 +11,8 @@ qol_packages:
   - ripgrep
   - fd-find
 
-# Oh My Zsh pinned commit (no release tags; pin to specific commit for reproducibility)
+# Oh My Zsh pinned commit — the framework clone is checked out at this commit
+# (no release tags upstream; pin for reproducibility).
 # Update by checking: https://github.com/ohmyzsh/ohmyzsh/commits/master
 omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
 
@@ -37,3 +38,8 @@ nvim_plugins:
   - tpope/vim-fugitive
   - sheerun/vim-polyglot
   - joshdick/onedark.vim
+
+# Must be provided by one of nvim_plugins (or be a built-in scheme). Applied
+# with `silent!` so overriding nvim_plugins without the matching colorscheme
+# plugin degrades to the default look instead of erroring at every start.
+nvim_colorscheme: onedark

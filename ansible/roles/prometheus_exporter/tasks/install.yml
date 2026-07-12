@@ -77,12 +77,13 @@
   loop: "{{ _prometheus_exporter_cleanup_paths }}"
   vars:
     _prometheus_exporter_archive: "{{ prometheus_exporter_tmp_dir }}/{{ prometheus_exporter_download_url | basename }}"
-    # The download is always removed. Tarballs additionally extract a
-    # directory (the binary's parent inside the archive) that must go too.
+    # The download is always removed. Tarballs additionally extract the
+    # member's top path component — a directory for archives that nest the
+    # binary (zfs_exporter-<ver>.linux-amd64/...) or the binary itself for a
+    # top-level member (adguardhome-sync) — which must go too.
     _prometheus_exporter_cleanup_paths: >-
       {{ [_prometheus_exporter_archive]
-         + ([(prometheus_exporter_tmp_dir ~ '/' ~ (prometheus_exporter_archive_member | dirname))]
+         + ([prometheus_exporter_tmp_dir ~ '/' ~ (prometheus_exporter_archive_member.split('/')[0])]
             if prometheus_exporter_artifact_type == 'tarball'
-            and (prometheus_exporter_archive_member | dirname) not in ['', '.']
             else []) }}
   when: prometheus_exporter_needs_install

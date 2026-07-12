@@ -13,31 +13,8 @@
     # Note: adguard_admin_password_hash is now generated automatically by the adguard_home role
     # from adguard_admin_password using password_hash('bcrypt'). No manual set_fact needed.
 
-    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    # Fix any interrupted dpkg state in Docker containers
-    - name: Fix any interrupted dpkg state
-      ansible.builtin.shell: |
-        dpkg --configure -a || true
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-      changed_when: false
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
     - name: Install required packages
       ansible.builtin.apt:
@@ -49,59 +26,41 @@
           - dnsutils  # For dig command in tests
         state: present
 
-    - name: Wait for systemd to be ready
-      ansible.builtin.wait_for:
-        path: /run/systemd/system
-        state: present
-        timeout: 30
-
   tasks:
-    # Deploy Unbound on all DNS servers
+    # Deploy Unbound on all DNS servers. Interface/port and the DoT forwarders
+    # all come from the molecule.yml group_vars (NOT an include_role `vars:`
+    # block) on purpose: adguard_home declares `dependencies: [unbound]`, so
+    # unbound is applied a SECOND time as that dependency. include_role `vars:`
+    # are include-scoped and would not reach the dependency, leaving the two
+    # applications with different forwarder lists (override vs role default) that
+    # overwrite each other every converge — a permanent idempotence failure.
+    # Group_vars are seen by both, so the config converges. verify.yml asserts
+    # the group-level forwarders render (and the role defaults do not).
     - name: Apply unbound role
       ansible.builtin.include_role:
         name: unbound
-      vars:
-        # Unbound listens on localhost for AdGuard Home
-        unbound_interface: "127.0.0.1"
-        unbound_port: 5335
-        # Use public DNS for upstream (DoT)
-        unbound_forward_zone:
-          - name: "."
-            forward_tls_upstream: "yes"
-            forward_addr:
-              - "1.1.1.1@853#cloudflare-dns.com"
-              - "8.8.8.8@853#dns.google"
 
-    # Deploy AdGuard Home on all DNS servers
-    # INTEGRATION TEST LIMITATION:
-    # The role completes the setup wizard automatically (POST to
-    # /control/install/configure), but the post-setup API configuration
-    # (api_base_config.yml / api_config.yml) is skipped here via
-    # skip_adguard_api_config, so upstreams, rewrites, and filtering rules
-    # are not applied.
+    # Deploy AdGuard Home on all DNS servers. The role completes the setup
+    # wizard (POST /control/install/configure), sets the admin password, then
+    # runs the FULL API path against the live instance:
+    #   - api_base_config.yml (upstream DNS, cache, ratelimit, ...) on both hosts
+    #   - api_config.yml (DNS-rewrite + filtering reconciliation) on dns-01 only
+    # This exercises the add/reconcile path against a real AdGuard — verify.yml
+    # asserts the codified adguard_rewrites (molecule.yml) actually landed.
     #
-    # What IS tested:
-    # - Binary installation and systemd service
-    # - Initial setup wizard completion (config file created)
-    # - Web UI accessibility on port 3000
-    # - adguardhome-sync service configuration and timer
-    #
-    # What is NOT tested (skip_adguard_api_config: true):
-    # - API-driven config: upstream DNS to Unbound, rewrites, filtering
-    # - DNS query resolution via AdGuard (tested via Unbound instead)
-    # - Full sync operation (sync config deployed, but API auth not exercised)
-    #
-    # Production validation: Use postflight.yml which tests real instances
+    # Still container-limited: AdGuard's own resolution path isn't representative
+    # because the resolv.conf switch is skipped (skip_resolv_conf_update: true),
+    # so DNS queries are validated via Unbound (AdGuard's upstream) instead.
+    # Full end-to-end AdGuard resolution is validated in production by
+    # postflight.yml.
     - name: Apply adguard_home role
       ansible.builtin.include_role:
         name: adguard_home
       vars:
         # Use local Unbound as upstream
-        adguard_dns_upstream_servers:
+        adguard_upstream_dns:
           - "127.0.0.1:5335"
-        # Skip post-setup API configuration (upstreams/rewrites/filtering)
-        skip_adguard_api_config: true
-        # Note: Other vars (ports, admin credentials) come from molecule.yml inventory
+        # Note: rewrites, ports, admin credentials come from molecule.yml inventory
 
     # Deploy AdGuard Sync on primary only (syncs TO replica)
     - name: Apply adguard_sync role

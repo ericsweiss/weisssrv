@@ -21,6 +21,7 @@ spec:
       # pve-exporter is a Python app on Alpine. Run as an explicit non-root UID
       # (nobody) and mount an emptyDir at /tmp so readOnlyRootFilesystem holds
       # (Python may scratch-write there). Creds come via PVE_TOKEN_* env, no mount.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

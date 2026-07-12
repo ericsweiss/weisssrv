@@ -3,7 +3,7 @@
 # URL: bar.esweiss.com / bar.ericsweiss.com
 # Docs: https://bar-assistant.github.io/docs/
 #
-# Fresh deployment following official Docker setup:
+# Layout follows the official Docker setup:
 # https://github.com/bar-assistant/docker
 #
 # Architecture:

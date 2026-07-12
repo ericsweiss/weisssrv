@@ -76,12 +76,17 @@ Each Proxmox host runs a null client that forwards all mail to the relay.
 
 ```ini
 myhostname = pve-nas-01.esweiss.com
-mydestination =
+mydestination = $myhostname, localhost.localdomain, localhost
 relayhost = [smtp-relay.esweiss.com]:587
 inet_interfaces = loopback-only
 smtp_sasl_auth_enable = yes
 smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
 ```
+
+`$myhostname` must stay in `mydestination` so the `/etc/aliases`
+root→admin_email rewrite applies (it only fires on locally delivered mail).
+The bare domain is deliberately absent — listing it would make every null
+client deliver/bounce `*@esweiss.com` locally instead of relaying it.
 
 ### Ansible Role
 

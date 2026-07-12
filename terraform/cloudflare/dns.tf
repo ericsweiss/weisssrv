@@ -19,11 +19,11 @@ resource "cloudflare_record" "root" {
   lifecycle {
     # Allow DDNS to update the IP without Terraform reverting it.
     # Only `content` (the IP) is DDNS-owned; `proxied`/`ttl` stay Terraform-owned.
-    # NOTE: the cloudflare-ddns CronJob PUTs a full body including `proxied` on
-    # every update (kubernetes/.../cloudflare-ddns/cronjob.yaml), so the literal
-    # proxied value there MUST stay in sync with the value above (root=true) or
-    # Terraform and DDNS will fight. DDNS preserves the existing ttl, so ttl is
-    # not a divergence risk.
+    # The cloudflare-ddns CronJob PUTs a full body but preserves the record's
+    # existing `proxied` and `ttl` on update (kubernetes/.../cloudflare-ddns/
+    # cronjob.yaml); its per-record literal only seeds record creation
+    # (Cloudflare defaults a fresh record to proxied=false), so there's no
+    # divergence risk with the values above.
     ignore_changes = [content]
   }
 }
@@ -130,8 +130,11 @@ resource "cloudflare_record" "dmarc" {
 # config (not service CNAMEs, so external-dns does not own them either):
 #   - null MX (0 .)                            — disables inbound mail
 #   - google-site-verification=... (apex TXT)  — Google Search Console ownership
-# Kept out of IaC so the verification token never lands in git and because the
-# null MX is a one-time dashboard setting; `terraform plan` will not touch them.
+# Both are set-once dashboard records that never change (and both values are
+# world-readable DNS data, so secrecy is not a factor); codifying them here
+# would require `terraform import` of the existing records just to manage two
+# static one-offs — not worth the state overhead. `terraform plan` will not
+# touch them.
 
 # =============================================================================
 # GitLab DNS Records
@@ -157,8 +160,9 @@ resource "cloudflare_record" "git" {
 
   lifecycle {
     # Allow DDNS to update the IP without Terraform reverting it.
-    # cloudflare-ddns co-owns `proxied` via its full-body PUT (git=false); keep
-    # the literal in the CronJob in sync with proxied below.
+    # The cloudflare-ddns CronJob preserves the record's existing `proxied` on
+    # update; its per-record literal only seeds record creation, so `proxied`
+    # below stays Terraform-owned.
     ignore_changes = [content]
   }
 }
@@ -174,7 +178,7 @@ resource "cloudflare_record" "git" {
 # Note: GitLab SSH now uses git.ericsweiss.com (also DNS-only) for a unified URL.
 #
 # Protection is provided by:
-# - Proxmox firewall restricts access (sg-gitlab, sg-k3s-workers security groups)
+# - Proxmox firewall restricts access (sg-gitlab on the GitLab VM, sg-k3s-ingress-pub on the Traefik ingress path)
 # - Only specific ports are open (443, 2222, 5050)
 # - Services require authentication (GitLab, Container Registry)
 resource "cloudflare_record" "direct" {
@@ -188,8 +192,9 @@ resource "cloudflare_record" "direct" {
 
   lifecycle {
     # Allow DDNS to update the IP without Terraform reverting it.
-    # cloudflare-ddns co-owns `proxied` via its full-body PUT (direct=false);
-    # keep the literal in the CronJob in sync with proxied below.
+    # The cloudflare-ddns CronJob preserves the record's existing `proxied` on
+    # update; its per-record literal only seeds record creation, so `proxied`
+    # below stays Terraform-owned.
     ignore_changes = [content]
   }
 }

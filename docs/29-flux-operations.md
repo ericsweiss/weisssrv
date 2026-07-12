@@ -11,8 +11,9 @@ Operator-facing guide for running the Flux GitOps system that reconciles every K
 5. [Suspending and Resuming](#suspending-and-resuming)
 6. [Rollback](#rollback)
 7. [Troubleshooting](#troubleshooting)
-8. [Webhook Setup](#webhook-setup)
-9. [References](#references)
+8. [Push-Triggered Reconciliation](#push-triggered-reconciliation)
+9. [Upgrading the Flux Distribution](#upgrading-the-flux-distribution)
+10. [References](#references)
 
 ---
 
@@ -35,13 +36,13 @@ Flux runs in the `flux-system` namespace. Four controllers:
 - **source-controller** — polls the Git repository, produces `GitRepository` artifacts for other controllers to read.
 - **kustomize-controller** — reconciles `Kustomization` CRs (server-side apply of rendered manifests, with drift correction and prune).
 - **helm-controller** — reconciles `HelmRelease` CRs (renders chart + values, installs/upgrades, tracks history).
-- **notification-controller** — receives GitLab webhooks, triggers on-demand reconciliation.
+- **notification-controller** — dispatches events/alerts and hosts webhook `Receiver`s (none deployed — push triggering comes from the GitLab agent instead, see [Push-Triggered Reconciliation](#push-triggered-reconciliation)).
 
-Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order:
+Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order. Each stage's `kustomization.yaml` is the authoritative membership list; the summaries below are indicative:
 
 1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + `cluster-versions` ConfigMap). No dependencies. No postBuild substitution (no placeholders).
-2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
-3. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
+2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
+3. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
 4. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions`.
 5. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, vm-ingress). `dependsOn: infrastructure-observability`. Substitutes image/chart versions from `cluster-versions`.
 
@@ -75,13 +76,13 @@ observability stack, so it should be done as its own change, not in-band.
 
 ### Reconciliation Cadence
 
-- **GitRepository poll**: 1 minute (source-controller checks GitLab for new commits).
+- **Push-triggered (live)**: the GitLab agent's Flux module triggers an immediate `GitRepository` reconcile on every push — see [Push-Triggered Reconciliation](#push-triggered-reconciliation).
+- **GitRepository poll**: 1 minute (source-controller checks GitLab for new commits — the fallback when the agent is down).
 - **Kustomization interval**: 10 minutes (forced full re-reconcile even without new commits — corrects drift from manual `kubectl apply` or cluster-side edits).
 - **HelmRelease interval**: 30 minutes (values re-render + chart upgrade check).
 - **ExternalSecret refreshInterval**: 24 hours (ESO re-reads 1Password and updates the k8s Secret if changed).
-- **Webhook-triggered**: sub-second on `git push` to any watched branch (once the webhook is registered — see [Webhook Setup](#webhook-setup)).
 
-Worst case (no webhook): a pushed change reaches the cluster inside ~1 minute (poll) + reconcile time.
+Worst case (agent down, poll fallback): a pushed change reaches the cluster inside ~1 minute (poll) + reconcile time.
 
 ---
 
@@ -93,7 +94,7 @@ The flow is always the same:
 
 1. Edit YAML in `kubernetes/`.
 2. `git commit` + `git push`.
-3. Wait ~1 minute (or a few seconds with webhook).
+3. Wait a few seconds (GitLab agent push trigger; worst case ~1 minute via the poll fallback).
 4. Verify.
 
 Example — bump the Authentik chart version:
@@ -181,7 +182,7 @@ Any change made via `dev-apply` that isn't committed is lost at the next reconci
 
 ### Secret Model
 
-- **Two manually-created bootstrap secrets**: `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace. Created once during initial setup (see `task flux:bootstrap-onepassword` for instructions). These authenticate the 1Password Connect server.
+- **Two manually-created bootstrap secrets**: `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace. Created once during initial setup — `task flux:bootstrap-onepassword` prints the procedure, and `task flux:bootstrap-onepassword-apply` executes it (requires `op` auth, a reachable cluster, and `./1password-credentials.json` from `op connect server create`; the Connect token is minted via `op connect token create` — deliberately not an `op read`, no vault item exists for it). These authenticate the 1Password Connect server.
 - **Everything else**: `ExternalSecret` CR → ESO reads from 1Password via Connect → writes a `Secret` into the app namespace → app consumes it normally.
 
 There are no other manually-created Secrets in the cluster. `op run -- kubectl create secret` is no longer part of the workflow.
@@ -308,8 +309,14 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    ├── ingress-route.yaml       # Traefik IngressRoute (if HTTP-exposed)
    ├── certificate.yaml         # cert-manager Certificate (wildcard is usually sufficient)
    ├── storage.yaml             # PVCs / PersistentVolumes (if stateful)
+   ├── networkpolicy.yaml       # default-deny + explicit allowlist (every app ships one)
+   ├── vpa.yaml                 # VerticalPodAutoscaler, Initial tier (see docs/33-autoscaling.md)
    └── kustomization.yaml       # Aggregates the above
    ```
+
+   Do not skip `networkpolicy.yaml` (a new app must not open its namespace)
+   or `vpa.yaml` (every app workload carries at least an Initial-tier VPA —
+   tier guidance in `docs/33-autoscaling.md`).
 
 2. **Wire it into the apps Kustomization**:
 
@@ -583,25 +590,68 @@ Kustomization will revert the patched URL on its next reconcile of
 `gotk-sync.yaml` — for a long outage, suspend it first
 (`task flux:suspend -- flux-system/kustomization/flux-system`).
 
-## Webhook Setup
+## Push-Triggered Reconciliation
 
-One-time setup to replace the default 1-minute GitRepository poll with sub-second push-triggered reconciliation.
+**Status: live — no setup required.** Push-triggered reconciliation comes
+from the GitLab agent (`kubernetes/apps/gitlab-agent/`), whose built-in
+**Flux module** watches for pushes to the project referenced by the
+`flux-system` `GitRepository` (over the agent's existing KAS connection) and
+triggers an immediate reconcile. Properties:
 
-**Status**: the Flux `Receiver` manifest and the IngressRoute exposing it are not yet deployed (planned follow-up). When they land (`kubernetes/infrastructure/configs/flux-receiver.yaml` and `kubernetes/apps/vm-ingress/flux-webhook.yaml`), the sequence is:
+- No inbound webhook endpoint, Flux `Receiver`, or `flux:webhook-register`
+  step exists or is needed — the agent's KAS connection is outbound-only.
+- If the agent is down (or before the `apps` stage first converges on a
+  fresh bootstrap), the 1-minute GitRepository poll is the fallback latency
+  floor.
+- Verify it's working: push a trivial commit and watch
+  `flux get source git -n flux-system` pick up the new revision within
+  seconds; the agent pod logs (`kubectl logs -n gitlab-agent deploy/weisssrv-k3s-gitlab-agent-v2`)
+  show the flux module's activity.
 
-1. Apply the Receiver manifest (via Flux, naturally — just push).
-2. The Receiver exposes a token-protected endpoint at `flux-webhook.ericsweiss.com`.
-3. Register the GitLab webhook:
+---
+
+## Upgrading the Flux Distribution
+
+The in-cluster Flux components are pinned by `flux_version` in `all.yml` and
+committed as `kubernetes/clusters/weisssrv/flux-system/gotk-components.yaml`.
+The CI `deploy-verify` job installs the matching CLI from a hardcoded
+version + tarball sha256 pin pair in `.gitlab-ci.yml` (a guard job fails the
+pipeline when the pin drifts from `versions-configmap.yaml`). Upgrade steps:
+
+1. Bump `flux_version` in `ansible/inventories/prod/group_vars/all.yml`, then
+   `task flux:sync-versions`.
+2. Update the `FLUX_VERSION="x.y.z"` + sha256 pin pair in `.gitlab-ci.yml`
+   (deploy-verify job) — fetch the new tarball checksum from the flux2
+   release's `*_checksums.txt`.
+3. Regenerate the components manifest with the **matching** CLI version:
 
    ```bash
-   task flux:webhook-register
+   flux install --export > kubernetes/clusters/weisssrv/flux-system/gotk-components.yaml
    ```
 
-   This task reads the Receiver's generated path + the `Flux Webhook Token` from 1Password and creates the GitLab project webhook via the API.
+4. Commit all four files together and push; Flux upgrades itself on
+   reconcile.
+5. Verify: `flux check` and `task flux:status`.
 
-4. Push a commit — GitLab hits the Receiver — source-controller refreshes immediately — Flux reconciles.
+## One-Time Cluster Patches
 
-Until webhook is live, the 1-minute poll is the latency floor. That's fine for day-to-day work.
+**Traefik NodePort de-allocation.** The Traefik Service sets
+`allocateLoadBalancerNodePorts: false` (MetalLB L2 announces the VIP
+directly; the default-allocated NodePorts were unused listeners on every
+node). Flipping that flag does **not** release NodePorts already allocated
+on an existing Service — neither Helm nor Flux SSA owns
+`spec.ports[*].nodePort` — so a one-time patch removing those fields is
+needed on a cluster that predates the flag:
+
+```bash
+# One json-patch "remove" per port entry that still has a nodePort:
+kubectl -n traefik patch svc traefik --type json \
+  -p '[{"op":"remove","path":"/spec/ports/0/nodePort"},{"op":"remove","path":"/spec/ports/1/nodePort"}]'
+kubectl -n traefik get svc traefik -o yaml | grep -c nodePort  # expect only healthCheckNodePort
+```
+
+The `healthCheckNodePort` stays — it is required by
+`externalTrafficPolicy: Local`.
 
 ---
 

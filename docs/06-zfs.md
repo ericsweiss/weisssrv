@@ -348,7 +348,15 @@ Regular scrubs verify data integrity and repair any errors.
 
 ### Current Schedule
 
-ZFS scrubs are scheduled via cron or systemd timers:
+- **NAS pools (tank/ssd/nvme/archive)**: the `nas_storage` role enables the
+  zfsutils-linux `zfs-scrub-<schedule>@<pool>.timer` template units per pool
+  (`zfs_scrub_schedule`, default `monthly`; gated on `zfs_scrub_enabled`).
+  The `archive` pool's timer is toggled by `archive-backupctl plug/unplug`
+  so an exported pool is never scrub-targeted.
+- **Compute `local-ssd` pools (5 hosts)**: deliberately rely on the
+  zfsutils-linux default second-Sunday scrub cron
+  (`/etc/cron.d/zfsutils-linux`) — no role manages scrub timers on compute
+  hosts.
 
 ```bash
 # Check scrub status (sudo on Proxmox hosts)
@@ -364,8 +372,7 @@ for pool in tank ssd nvme archive; do
 done
 ```
 
-Scrub scheduling is handled by Proxmox's built-in ZFS scrub systemd timers (typically monthly).
-Check current schedule with: `systemctl list-timers '*scrub*'`
+Check the active schedule with: `systemctl list-timers '*scrub*'`
 
 ## Snapshots
 
@@ -527,6 +534,14 @@ Proxmox VMs/LXCs back up nightly (`vzdump`, `all`) to:
   backed up via `ssd/appdata` → archive instead, not double-stored in the VM
   image (see `docs/17-disaster-recovery.md` "Backup Dedup").
 
+The Proxmox `storage.cfg` entry (`tank-proxmox`) and the nightly vzdump job
+are Ansible-managed by the `proxmox_backup` role (config in
+`host_vars/pve-nas-01.yml`). The codified storage entry mounts by hostname
+with `vers=4.2,xprtsec=tls`; migrating the legacy IP-based entry is a
+one-time supervised step (outside a backup window:
+`pvesh delete /storage/tank-proxmox` — config only, data untouched — then
+re-run the role). See `ansible/roles/proxmox_backup/README.md`.
+
 ## Ansible Management
 
 ZFS configuration is managed by the `nas_storage` role.
@@ -560,17 +575,24 @@ sudo zpool status tank
 
 ### High Memory Usage (ARC)
 
-ZFS ARC can use significant RAM:
+ZFS ARC can use significant RAM. On pve-nas-01 the cap is **codified**: the
+`nas_storage` role renders `/etc/modprobe.d/zfs.conf` from
+`zfs_arc_max_bytes` (`6711934976` ≈ 6.25 GiB in
+`host_vars/pve-nas-01.yml` — the host is memory-over-committed by its
+guests) and notifies an `update-initramfs` handler, because the data pools
+import from the initramfs at early boot and a bare modprobe.d write would
+only apply on the next module (re)load.
 
 ```bash
 # View ARC size
 awk '$1 ~ /^(c|c_max|size)$/' /proc/spl/kstat/zfs/arcstats
 
-# Limit ARC (temporary)
-echo 34359738368 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 32GB
+# Limit ARC (temporary, until reboot)
+echo 6711934976 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # ~6.25GiB
 
-# Permanent: add to /etc/modprobe.d/zfs.conf
-options zfs zfs_arc_max=34359738368
+# Permanent: set zfs_arc_max_bytes in host_vars and redeploy (renders
+# /etc/modprobe.d/zfs.conf + rebuilds the initramfs)
+task storage:deploy
 ```
 
 ### Slow Performance
@@ -656,7 +678,7 @@ the posture is explicit rather than assumed.
 | smtp-relay → Gmail | Yes | `smtp_tls_security_level: secure` (encrypts AND verifies Gmail's certificate against the system CA bundle). |
 | Unbound → upstream resolvers | Yes | DoT with `tls-cert-bundle`. |
 | LAN clients → AdGuard (port 53) | Partial | Plain UDP/TCP 53; DoT exposed but stub resolvers rarely use it. |
-| NFS exports | TLS for k3s; plaintext exceptions | NFSv4 over kernel-TLS via `tlshd` (`nfs_tls` role, `nfs_tls_enabled: true` on `pve-nas-01` + every k3s agent). The k3s client lines of `/export/{appdata,share,media}` **require TLS** (`xprtsec=tls` — plaintext rejected); the k3s PVs *mount* with `xprtsec=tls`, **by hostname** (`pve-nas-01.esweiss.com`, so the `*.esweiss.com` cert verifies — an IP mount fails the handshake). `xprtsec` is per-client, so the require-TLS k3s lines coexist with two documented plaintext exceptions: HAOS (.154) on `/export/media` — its Supervisor hardcodes NFS mount options and the appliance has no `tlshd`, so it can never request TLS (see docs/24); and the Proxmox `tank-proxmox` backup target (Proxmox-managed NFS storage, deferred). See `ansible/roles/nfs_tls/README.md` + `docs/16-next-steps.md`. |
+| NFS exports | TLS for k3s + Proxmox backup target; one plaintext exception | NFSv4 over kernel-TLS via `tlshd` (`nfs_tls` role, `nfs_tls_enabled: true` on every k3s agent and all six Proxmox hosts). The k3s client lines of `/export/{appdata,share,media}` **require TLS** (`xprtsec=tls` — plaintext rejected); the k3s PVs *mount* with `xprtsec=tls`, **by hostname** (`pve-nas-01.esweiss.com`, so the `*.esweiss.com` cert verifies — an IP mount fails the handshake). `xprtsec` is per-client, so the require-TLS k3s lines coexist with the one documented plaintext exception: HAOS (.154) on `/export/media` — its Supervisor hardcodes NFS mount options and the appliance has no `tlshd`, so it can never request TLS (see docs/24). The Proxmox `tank-proxmox` backup target is codified as hostname + `xprtsec=tls` via the `proxmox_backup` role (one-time migration of the legacy IP entry is a supervised post-merge step). See `ansible/roles/nfs_tls/README.md`. |
 | Samba | Yes | `smb encrypt = required` + `server min protocol = SMB3_00` in smb.conf — every SMB session is encrypted. |
 | Tailscale (admin remote access) | Yes | WireGuard. |
 | K3s API server | Yes | TLS, kube-vip + standard k3s API certs. |

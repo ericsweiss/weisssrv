@@ -8,7 +8,11 @@
 # Build + push:
 #   docker build -t registry.git.ericsweiss.com/eric/weisssrv/molecule-ci:latest docker/molecule-ci/
 #   docker push registry.git.ericsweiss.com/eric/weisssrv/molecule-ci:latest
-FROM python:3.11
+# Pinned by manifest-list digest (multi-arch index — this image builds for
+# amd64 + arm64) so the rolling `3.11` tag can't silently change the base.
+# Bump deliberately: resolve the new digest with
+#   docker buildx imagetools inspect python:3.11
+FROM python:3.11@sha256:9139edd4aa848a1aa1c63865cd5d11b3a6aaaf3fb410a3ac7b3914e44092fe4c
 
 # docker CLI for talking to the DinD sidecar. Install the static binary
 # directly — the Debian docker.io package on Trixie doesn't include the

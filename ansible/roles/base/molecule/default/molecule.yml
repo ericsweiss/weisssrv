@@ -19,13 +19,14 @@ platforms:
       - /run
       - /tmp
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   inventory:
     group_vars:
       all:
         admin_user: testuser
         admin_email: test@test.local
         timezone: America/Los_Angeles
-        skip_ssh_config: true
         skip_dns_config: true
         skip_sudoers_validation: true
         ssh_authorized_keys:

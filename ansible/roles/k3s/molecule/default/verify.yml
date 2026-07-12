@@ -29,34 +29,74 @@
         src: /etc/rancher/k3s/config.yaml
       register: k3s_config_content
 
+    - name: Decode k3s config
+      ansible.builtin.set_fact:
+        k3s_config_text: "{{ k3s_config_content.content | b64decode }}"
+
     - name: Verify k3s config contains expected settings
       ansible.builtin.assert:
         that:
-          - "'tls-san' in (k3s_config_content.content | b64decode)"
-          - "'192.168.0.161' in (k3s_config_content.content | b64decode)"
-          - "'cluster-cidr' in (k3s_config_content.content | b64decode)"
-          - "'service-cidr' in (k3s_config_content.content | b64decode)"
+          - "'tls-san' in k3s_config_text"
+          - "'192.168.0.161' in k3s_config_text"
+          - "'cluster-cidr' in k3s_config_text"
+          - "'service-cidr' in k3s_config_text"
         fail_msg: "k3s config file missing expected settings"
         success_msg: "k3s config file contains expected settings"
 
-    - name: Check if kube-vip manifest exists (first server only)
+    # Security-critical keys render unconditionally on every server.
+    - name: Verify hardening keys render in the server config
+      ansible.builtin.assert:
+        that:
+          - "'secrets-encryption: true' in k3s_config_text"
+          - "'agent-token:' in k3s_config_text"
+          - "'flannel-backend: \"wireguard-native\"' in k3s_config_text"
+        fail_msg: "k3s server config missing secrets-encryption/agent-token/flannel-backend"
+        success_msg: "secrets-encryption, agent-token, and wireguard-native flannel render"
+
+    - name: Verify the first server renders the bootstrap branch (cluster-init)
+      ansible.builtin.assert:
+        that:
+          - "'cluster-init: true' in k3s_config_text"
+          - "'server: \"https://192.168.0.161:6443\"' not in k3s_config_text"
+        fail_msg: "First server did not render cluster-init"
+        success_msg: "First server renders cluster-init (no join stanza)"
+      when: k3s_is_first_server
+
+    - name: Verify a joining server renders the join stanza (no cluster-init)
+      ansible.builtin.assert:
+        that:
+          - "'server: \"https://192.168.0.161:6443\"' in k3s_config_text"
+          - "'cluster-init' not in k3s_config_text"
+        fail_msg: "Joining server did not render the join stanza"
+        success_msg: "Joining server renders the join stanza (no cluster-init)"
+      when: not k3s_is_first_server
+
+    # kube-vip is deployed by the first server only.
+    - name: Check kube-vip manifest presence matches the first-server role
       ansible.builtin.stat:
         path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
       register: kube_vip_manifest
-      failed_when: not kube_vip_manifest.stat.exists
+      failed_when: kube_vip_manifest.stat.exists != (k3s_is_first_server | bool)
 
     - name: Read kube-vip manifest
       ansible.builtin.slurp:
         src: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
       register: kube_vip_content
+      when: k3s_is_first_server
 
     - name: Verify kube-vip manifest contains expected settings
       ansible.builtin.assert:
         that:
           - "'192.168.0.161' in (kube_vip_content.content | b64decode)"
           - "'kube-vip' in (kube_vip_content.content | b64decode)"
+          # Admin kubeconfig is mounted read-only; unused metrics listener is
+          # disabled via the flag (an empty env var would be ignored).
+          - "'readOnly: true' in (kube_vip_content.content | b64decode)"
+          - "'--prometheusHTTPServer=' in (kube_vip_content.content | b64decode)"
+          - "'prometheus_server' not in (kube_vip_content.content | b64decode)"
         fail_msg: "kube-vip manifest missing expected settings"
         success_msg: "kube-vip manifest contains expected settings"
+      when: k3s_is_first_server
 
     # Negative test recorded by converge: re-running the role with a NIC that
     # doesn't exist must fail at the kube-vip interface assert (else kube-vip
@@ -76,12 +116,63 @@
           a bad kube_vip_interface would deploy silently and never announce
           the API VIP. Check the assert in tasks/server.yml.
 
+    # Off-node etcd snapshot copy artifacts (k3s_etcd_snapshot_offnode_enabled:
+    # true in molecule.yml). The NFS mount + timer start are molecule-notest;
+    # here we assert the rendered script/service/timer.
+    - name: Stat the off-node snapshot copy script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+      register: etcd_copy_script
+      failed_when:
+        - not etcd_copy_script.stat.exists or etcd_copy_script.stat.mode != '0755'
+
+    - name: Read the off-node snapshot copy script
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+      register: etcd_copy_script_content
+
+    - name: Verify the copy script targets the snapshot dir with retention 5
+      ansible.builtin.assert:
+        that:
+          - "'/var/lib/rancher/k3s/server/db/snapshots' in (etcd_copy_script_content.content | b64decode)"
+          - "'RETENTION=5' in (etcd_copy_script_content.content | b64decode)"
+        fail_msg: "off-node copy script missing SNAP_DIR/RETENTION"
+        success_msg: "off-node copy script renders SNAP_DIR and RETENTION=5"
+
+    - name: Read the off-node snapshot copy service unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/k3s-etcd-snapshot-copy.service
+      register: etcd_copy_service_content
+
+    - name: Verify the copy service gates on the mount
+      ansible.builtin.assert:
+        that:
+          - "'RequiresMountsFor=/mnt/etcd-snapshots' in (etcd_copy_service_content.content | b64decode)"
+          - "'TimeoutStartSec=' in (etcd_copy_service_content.content | b64decode)"
+        fail_msg: "copy service missing RequiresMountsFor/TimeoutStartSec"
+        success_msg: "copy service gates on the mount with a start timeout"
+
+    - name: Read the off-node snapshot copy timer unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/k3s-etcd-snapshot-copy.timer
+      register: etcd_copy_timer_content
+
+    - name: Verify the copy timer schedule
+      ansible.builtin.assert:
+        that:
+          - "'OnCalendar=hourly' in (etcd_copy_timer_content.content | b64decode)"
+          - "'Persistent=true' in (etcd_copy_timer_content.content | b64decode)"
+        fail_msg: "copy timer missing OnCalendar/Persistent"
+        success_msg: "copy timer renders OnCalendar=hourly and Persistent=true"
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
           - "k3s config directory exists"
           - "k3s config file exists with correct permissions (0600)"
           - "k3s config contains tls-san, API VIP, cluster-cidr, and service-cidr"
-          - "kube-vip manifest deployed with correct VIP"
+          - "secrets-encryption, agent-token, and flannel backend render"
+          - "cluster-init vs join stanza matches k3s_is_first_server"
+          - "kube-vip manifest deployed on the first server only (VIP, readOnly kubeconfig)"
           - "kube-vip interface assert rejects a nonexistent NIC"
           - "(k3s binary install skipped in container testing)"

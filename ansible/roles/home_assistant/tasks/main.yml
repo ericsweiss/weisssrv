@@ -43,16 +43,20 @@
     state: present
   when: not (home_assistant_render_only | default(false))
 
-- name: Validate required SMTP relay credentials are set
+- name: Validate required SMTP relay credentials and admin email are set
   ansible.builtin.assert:
     that:
       - home_assistant_smtp_username | default('') | length > 0
       - home_assistant_smtp_password | default('') | length > 0
+      # admin_email feeds the notify recipient in configuration.yaml; a
+      # missing ADMIN_EMAIL env would render admin_email: "" and silently
+      # break notifications.
+      - home_assistant_admin_email | default('') | length > 0
     fail_msg: >-
-      SMTP relay credentials are not set. Ensure SMTP_RELAY_USER and
-      SMTP_RELAY_PASSWORD environment variables are provided via 'op run'.
+      SMTP relay credentials or admin email are not set. Ensure SMTP_RELAY_USER,
+      SMTP_RELAY_PASSWORD and ADMIN_EMAIL environment variables are provided via 'op run'.
       Run deployment with: task home-assistant:deploy-config (which injects 1Password secrets)
-    success_msg: "SMTP relay credentials are present"
+    success_msg: "SMTP relay credentials and admin email are present"
   no_log: true
 
 - name: Validate required OIDC credentials are set
@@ -78,6 +82,7 @@
   ansible.builtin.command:
     cmd: >
       ssh -p {{ home_assistant_ssh_port }}
+      -o BatchMode=yes -o ConnectTimeout=10
       -o StrictHostKeyChecking=yes
       root@{{ home_assistant_host }}
       'test -r /ssl/fullchain.pem && test -r /ssl/privkey.pem'
@@ -105,32 +110,53 @@
 
 - name: Deploy and validate Home Assistant configuration
   block:
+    # Render into a per-run private tempdir instead of fixed, predictable
+    # controller-side /tmp paths (mktemp/tempfile is the repo standard for
+    # this risk class — see the ansible.cfg staging in .gitlab-ci.yml). The
+    # molecule render-only scenario pins home_assistant_staging_dir=/tmp so
+    # verify.yml can assert on stable paths.
+    - name: Create private staging directory for rendered config
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ha-config.
+      register: ha_staging_tmp
+      when: home_assistant_staging_dir | length == 0
+
+    - name: Resolve the staging directory path
+      ansible.builtin.set_fact:
+        # The default() covers check mode, where tempfile is skipped and
+        # nothing is rendered anyway.
+        ha_staging_dir: >-
+          {{ home_assistant_staging_dir
+             if home_assistant_staging_dir | length > 0
+             else (ha_staging_tmp.path | default('/tmp')) }}
+
     - name: Generate Home Assistant configuration from template
       ansible.builtin.template:
         src: configuration.yaml.j2
-        dest: "/tmp/ha-configuration.yaml"
+        dest: "{{ ha_staging_dir }}/ha-configuration.yaml"
         mode: '0644'
 
     - name: Generate Home Assistant secrets from template
       ansible.builtin.template:
         src: secrets.yaml.j2
-        dest: "/tmp/ha-secrets.yaml"
+        dest: "{{ ha_staging_dir }}/ha-secrets.yaml"
         mode: '0600'
       no_log: true
 
     - name: Stage HA config and secrets to HAOS /tmp (single round trip)
       # Both files copied to remote /tmp first so the install step has
       # both staged before either is moved into /config. If the scp
-      # fails, /config keeps its prior state. (Previously the two
-      # files were scp'd directly into /config in two tasks; if the
-      # second scp failed, /config had updated configuration.yaml
-      # referencing !secret keys not yet in deployed secrets.yaml.)
+      # fails, /config keeps its prior state — staging both files first
+      # prevents a half-updated /config where configuration.yaml
+      # references !secret keys not yet in the deployed secrets.yaml.
       ansible.builtin.command:
         cmd: >
           scp -P {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
-          /tmp/ha-configuration.yaml
-          /tmp/ha-secrets.yaml
+          {{ ha_staging_dir }}/ha-configuration.yaml
+          {{ ha_staging_dir }}/ha-secrets.yaml
           root@{{ home_assistant_host }}:/tmp/
       changed_when: true
       no_log: true  # secrets.yaml content visible in command stdout on error
@@ -140,6 +166,7 @@
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'set -e;
@@ -162,6 +189,7 @@
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'mv /tmp/ha-secrets.yaml {{ home_assistant_config_path }}/secrets.yaml &&
@@ -173,6 +201,7 @@
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'ha core check'
@@ -193,6 +222,7 @@
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'rm -f {{ home_assistant_config_path }}/configuration.yaml.bak
@@ -226,6 +256,7 @@
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'set -e;
@@ -268,17 +299,25 @@
           Review the check/SSH output above.
 
   always:
-    - name: Clean up local temporary files
+    - name: Clean up the private staging directory
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ ha_staging_tmp.path }}"
+        state: absent
+      when: (ha_staging_tmp.path | default('')) | length > 0
+
+    - name: Clean up rendered files in a pinned staging directory
+      ansible.builtin.file:
+        path: "{{ home_assistant_staging_dir }}/{{ item }}"
         state: absent
       loop:
-        - /tmp/ha-configuration.yaml
-        - /tmp/ha-secrets.yaml
+        - ha-configuration.yaml
+        - ha-secrets.yaml
       # In render-only mode (molecule contract test) we leave the
       # rendered files in place so the verify play can slurp + assert
       # on their contents. Production deploys always reach the cleanup.
-      when: not (home_assistant_render_only | default(false))
+      when:
+        - not (home_assistant_render_only | default(false))
+        - home_assistant_staging_dir | length > 0
 
     - name: Clean up any leftover staged files on HAOS
       # If the play aborted between scp-stage and the atomic install
@@ -288,6 +327,7 @@
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
+          -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
           'rm -f /tmp/ha-configuration.yaml /tmp/ha-secrets.yaml'

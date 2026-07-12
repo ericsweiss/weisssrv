@@ -6,7 +6,8 @@ DNSSEC validations) to Prometheus.
 
 Talks to Unbound via `unbound-control` over its local Unix control socket
 (`/run/unbound.ctl`, `control-use-cert: no`). The `unbound` role provisions
-the socket and grants the `unbound-exporter` user access to it.
+the socket; the exporter unit runs as a DynamicUser with
+`SupplementaryGroups=unbound` for socket access.
 
 ## Deployment
 

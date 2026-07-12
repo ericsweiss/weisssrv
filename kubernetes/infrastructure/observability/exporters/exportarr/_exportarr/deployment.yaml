@@ -1,0 +1,69 @@
+---
+# Shared skeleton Deployment for the exportarr exporters. The placeholder
+# name/labels ("exportarr-arr"), subcommand, port, URL, and secret key are
+# overridden by each per-app overlay's patch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exportarr-arr
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: exportarr-arr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exportarr-arr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exportarr-arr
+    spec:
+      # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: exportarr
+          image: ghcr.io/onedr0p/exportarr:${exportarr_version}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          args: ["arr"]
+          env:
+            - name: PORT
+              value: "9707"
+            - name: URL
+              value: "http://arr.downloads.svc.cluster.local:8989"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observability-exporter-secrets
+                  key: arr-api-key
+          ports:
+            - name: metrics
+              containerPort: 9707
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi

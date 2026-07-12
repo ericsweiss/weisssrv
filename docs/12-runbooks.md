@@ -10,13 +10,15 @@ This document provides step-by-step procedures for common operational tasks.
 4. [Updating DNS Records](#updating-dns-records)
 5. [Certificate Renewal Issues](#certificate-renewal-issues)
 6. [Network Connectivity Issues](#network-connectivity-issues)
-7. [Ansible Deployment Failures](#ansible-deployment-failures)
-8. [Backup and Recovery](#backup-and-recovery)
-9. [Performance Investigation](#performance-investigation)
-10. [System Maintenance](#system-maintenance)
-11. [Understanding Skipped Tasks](#understanding-skipped-tasks)
-12. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
-13. [Observability Stack](#observability-stack)
+7. [NFS Server Recovery (pve-nas-01)](#nfs-server-recovery-pve-nas-01)
+8. [SMTP Relay (Postfix) Alerts](#smtp-relay-postfix-alerts)
+9. [Ansible Deployment Failures](#ansible-deployment-failures)
+10. [Backup and Recovery](#backup-and-recovery)
+11. [Performance Investigation](#performance-investigation)
+12. [System Maintenance](#system-maintenance)
+13. [Understanding Skipped Tasks](#understanding-skipped-tasks)
+14. [Proxmox HA Post-Failover Reconciliation](#proxmox-ha-post-failover-reconciliation)
+15. [Observability Stack](#observability-stack)
 
 ---
 
@@ -155,6 +157,26 @@ This document provides step-by-step procedures for common operational tasks.
 
 - ZFS pool shows DEGRADED status
 - Disk errors in `dmesg` or pool status
+
+**Related alerts** (SMART metrics come from the node_exporter_host textfile
+collector; all point here):
+
+- **SMARTDeviceUnhealthy** — a drive's overall SMART health assessment
+  failed. Treat as a failing disk: identify it (below) and plan replacement.
+- **SMARTReallocatedSectorsGrowing** — reallocated sector count is
+  increasing. The drive is remapping bad sectors; replace before it degrades
+  further.
+- **SMARTPendingSectors** — sectors awaiting reallocation (unreadable on
+  last access). Scrub the pool to force reads; if the count doesn't drop,
+  replace the drive.
+- **SMARTOfflineUncorrectable** — sectors the drive could not correct
+  offline. Same handling as pending sectors, higher urgency.
+- **SMARTMediaErrors** — NVMe media/data-integrity errors. Replace the
+  device.
+- **SMARTCollectorStale** — meta-alert: the SMART textfile collector is
+  stale or missing, so the alerts above are running on old (or no) data.
+  Check the collector timer/service on the affected host before trusting
+  disk state.
 
 ### Procedure
 
@@ -327,6 +349,13 @@ Certificate expired or not renewing automatically.
 
 ## Network Connectivity Issues
 
+**Related alerts**: **EndpointDown** (warning, any blackbox probe failing
+5m) and **EndpointDownCritical** (critical — the load-bearing three:
+`auth.esweiss.com` (SSO front door), `git.esweiss.com` (GitOps source),
+`home.esweiss.com`; pages email, and inhibits the matching EndpointDown).
+Work the checklist below against the probed URL in the alert's `instance`
+label.
+
 ### Cannot Reach Service
 
 1. **Verify Service Running**:
@@ -365,6 +394,91 @@ Certificate expired or not renewing automatically.
 
 ---
 
+## NFS Server Recovery (pve-nas-01)
+
+**Related alert**: **NFSServerDown** (critical) — `node_nfsd_server_threads`
+on 192.168.0.102 is 0 or absent for 5 minutes. Zero kernel nfsd threads
+means the server is not serving; metric absence means the NAS
+node-exporter-host itself is dark. Either way, every NFS-backed consumer
+(k3s PVs, Grafana storage, the HAOS media mount, the tank-proxmox backup
+target) is stalled.
+
+### Procedure
+
+1. **Check the service**:
+   ```bash
+   ssh pve-nas-01
+   sudo systemctl status nfs-server
+   cat /proc/fs/nfsd/threads   # 0 = not serving
+   ```
+
+2. **Recover from a stop-hang** (a documented failure mode after host
+   reboots — nfsd can hang in `deactivating` and leave the unit failed):
+   ```bash
+   sudo systemctl reset-failed nfs-server
+   sudo systemctl start nfs-server
+   sudo exportfs -v            # confirm exports are back
+   ```
+
+3. **Clean up stale client handles**: pods with established mounts may keep
+   getting `Stale file handle` after the server recovers. Delete the
+   affected pods so they remount (use `kubectl delete pod`, not `rollout
+   restart` — Flux-managed workloads drift-revert a rollout-restart
+   annotation):
+   ```bash
+   kubectl get pods -A -o wide | grep <affected-node-or-app>
+   kubectl delete pod -n <namespace> <pod>
+   ```
+
+---
+
+## SMTP Relay (Postfix) Alerts
+
+All alert email egress (Alertmanager email, host cron, backup notifications)
+flows through the single relay on smtp-relay (192.168.0.151). Metrics come
+from the postfix-queue textfile collector (smtp_relay role) scraped from
+`192.168.0.151:9101`. Config reference: [10-mail.md](10-mail.md).
+
+- **PostfixDown** (critical) — `postfix_up == 0` for 10m: the relay's
+  postfix service is not active. All alert email egress is down until it
+  recovers.
+- **PostfixQueueBacklog** (warning) — more than 5 messages queued for 30m.
+  The Gmail hop is likely wedged (expired app password, rate-limit); the
+  LXC and postfix look healthy while mail silently queues.
+- **PostfixQueueCollectorStale** (warning) — the queue collector is stale
+  (>15m) or absent, so the two alerts above are running on stale/no inputs.
+
+### Procedure
+
+1. **Service and queue state**:
+   ```bash
+   ssh eric@192.168.0.151
+   sudo systemctl status postfix
+   sudo postqueue -p            # inspect the deferred queue
+   sudo tail -50 /var/log/mail.log
+   ```
+
+2. **Wedged Gmail hop**: `SASL authentication failed` in mail.log usually
+   means the Gmail app password expired — rotate per
+   [15-credential-rotation.md](15-credential-rotation.md) (SMTP Passwords),
+   then flush:
+   ```bash
+   sudo postqueue -f
+   ```
+
+3. **Collector stale**:
+   ```bash
+   sudo systemctl status postfix-queue-collector.service
+   sudo journalctl -u postfix-queue-collector.service -n 50
+   systemctl list-timers | grep postfix-queue
+   ```
+
+4. **While smtp-relay is down**, the email leg of critical alerts is blind —
+   the Discord webhook is the only delivery path. Fix the relay promptly and
+   watch Discord in the meantime.
+
+---
+
 ## Ansible Deployment Failures
 
 ### Failed Task
@@ -398,6 +512,23 @@ Certificate expired or not renewing automatically.
 ---
 
 ## Backup and Recovery
+
+**Related alerts** (fed by a vzdump hookscript deployed to every Proxmox host
+by `node_exporter_host` — the cluster-wide job runs on each node for its local
+guests — that writes `vzdump_backup_last_run_success` /
+`_last_success_timestamp_seconds` to the node_exporter textfile dir; the nightly
+job itself is managed by the `proxmox_backup` role):
+
+- **VzdumpBackupFailed** — the nightly vzdump job (guest images →
+  tank-proxmox) did not complete successfully. Check the Proxmox task log
+  (`Datacenter → Tasks` or `journalctl -u pvescheduler` on pve-nas-01) and
+  the target storage's health/space.
+- **VzdumpBackupStale** — no successful vzdump in over 26 hours (one nightly
+  cycle + grace) on the named node, or the metric is absent on every Proxmox
+  host (hookscript not deployed anywhere). The metric is per-node, so a single
+  node_exporter being unreachable is covered by the node-down alerts, not this
+  one. Guest VM/LXC images are the DR path for the compute-node guests — treat
+  staleness as a real gap, not noise.
 
 ### Full System Backup
 
@@ -656,6 +787,36 @@ To upgrade an application:
 2. Update version number: `task maintenance:update-version SERVICE=<name>` (or edit `all.yml` manually)
 3. Deploy: `task maintenance:update-applications` or the appropriate deploy task
 
+#### Version Pinning Philosophy
+
+This is the canonical statement of the pinning policy (CLAUDE.md and
+`.cursorrules` point here):
+
+- **k3s, Authentik, Helm charts**: pinned to specific versions for stability
+- **Download/recipe containers**: pinned to specific stable tags (no
+  "latest") for reproducible deployments
+- **Bar Assistant / Salt Rim**: pinned to specific versions (check for
+  breaking changes on major bumps)
+- **Tailscale**: pinned to a specific apt version
+- **Plex**: pinned to a specific apt version (set to `"latest"` for
+  auto-update behavior)
+- **Home Assistant (HAOS)**: manual updates via its UI; documented version
+  only, not pinned in `all.yml`
+
+#### Silencing alerts around planned maintenance
+
+Deploys that stop/restart the HA-managed LXCs (dns-01/dns-02/smtp-relay) or
+the HAOS VM will fire **HAInfraGuestDown**. Silence it first:
+
+```bash
+task observability:silence ALERT=HAInfraGuestDown DURATION=1H
+```
+
+(`DURATION` uses BSD `date` units — S/M/H/d; the task runs on macOS.)
+Note that smtp-relay (lxc/151) downtime blinds the **email** leg of critical
+alerts for its duration — the Discord webhook is then the only delivery
+path.
+
 #### Update Schedule
 
 **Monthly Updates**:
@@ -816,8 +977,9 @@ flux get all -A             # Detailed view
 flux get hr -n traefik      # Watch specific release
 ```
 
-Flux typically reconciles within ~1 minute (planned GitLab webhook will
-shorten this to seconds -- see docs/29-flux-operations.md). Helm charts upgrade in-place; Deployments/StatefulSets roll with
+Reconciliation is push-triggered — the GitLab agent's Flux integration
+notifies Flux within seconds of a push, with the ~1-minute GitRepository poll
+as fallback (see docs/29-flux-operations.md). Helm charts upgrade in-place; Deployments/StatefulSets roll with
 the image tag from the substituted `${version}` placeholder. For fast local
 iteration without committing, `task flux:dev-apply -- kubernetes/apps/<app>`
 applies a rendered Kustomization; Flux will revert to the committed state on
@@ -1385,6 +1547,15 @@ host pool. Auto-snapshots are now disabled at the dataset level (see
    ```bash
    kubectl run -it --rm debug --image=busybox -- nc -zv 192.168.0.151 587
    ```
+
+**Dead-man's switch (Watchdog → healthchecks.io)**: the chart's `Watchdog`
+alert always fires and Alertmanager continuously POSTs it to a
+healthchecks.io check (ping URL from the `Healthchecks Watchdog` 1Password
+item via the alertmanager-config ExternalSecret). healthchecks.io alarms
+when the pings **stop** — i.e. when Prometheus/Alertmanager/delivery is down
+and no in-cluster alert could tell you. If healthchecks.io fires, debug the
+alerting pipeline itself (Prometheus up? Alertmanager up? egress blocked?),
+not a workload.
 
 ### Grafana OIDC Issues
 

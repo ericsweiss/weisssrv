@@ -9,11 +9,10 @@ K3s deployment is a three-phase approach:
 - **Phase 1 (Ansible)**: Provisions the 9 k3s VMs on Proxmox.
 - **Phase 2 (Ansible)**: Deploys k3s + kube-vip to servers/agents.
 - **Phase 3 (Flux bootstrap)**: Bootstraps Flux, which then reconciles every
-  platform component (MetalLB, Traefik, cert-manager, external-dns,
-  external-secrets, VPA, CoreDNS HelmChartConfig, DDNS, cluster-issuer,
-  IngressRoute middlewares — autoscaling details in docs/33-autoscaling.md) and
-  every application (Authentik, downloads, recipes, gitlab-*, vm-ingress) from
-  this repo.
+  platform component and every application from this repo — see
+  `docs/29-flux-operations.md` for the stage chain and each stage's
+  `kustomization.yaml` for the current membership (autoscaling details in
+  docs/33-autoscaling.md).
 
 **All Ansible tasks are idempotent** — safe to re-run at any time.
 
@@ -23,13 +22,14 @@ K3s deployment is a three-phase approach:
 |------|-----------|-----------|
 | `task k3s:provision-vms` | Debian VMs | Ansible + Proxmox API |
 | `task k3s:deploy` | K3s + kube-vip | Ansible (server, agents, node labels/taints) |
-| `task flux:bootstrap-onepassword` | `op-credentials` + `onepassword-connect-token` Secrets (bootstrap only) | Manual — see task output for instructions |
+| `task flux:bootstrap-onepassword` | `op-credentials` + `onepassword-connect-token` Secrets (bootstrap only) | Prints instructions; `flux:bootstrap-onepassword-apply` creates them |
 | `task flux:bootstrap` | Flux controllers committed to `kubernetes/clusters/weisssrv/flux-system/` | `flux bootstrap gitlab` |
 | (none — automatic) | All platform + apps reconcile from `kubernetes/infrastructure/` and `kubernetes/apps/` | Flux |
 
 Everything under `kubernetes/` is Flux-managed. To deploy or update a component,
-commit the YAML and push — Flux polls every ~1 minute (a planned webhook will
-reduce this to seconds). `task flux:reconcile` triggers a sync manually.
+commit the YAML and push — the GitLab agent's Flux module triggers an immediate
+reconcile on push (the ~1-minute GitRepository poll remains as the fallback).
+`task flux:reconcile` triggers a sync manually.
 
 ### Complete Command Sequence (Initial Install)
 
@@ -71,7 +71,8 @@ git add kubernetes/apps/authentik/release.yaml
 git commit -m "Authentik: increase worker replicas"
 git push
 
-# Flux reconciles within ~1 minute. Speed up:
+# The GitLab agent's Flux module triggers reconciliation on push (fallback:
+# ~1-minute poll). Force a sync manually:
 task flux:reconcile
 
 # For fast local iteration without committing:
@@ -138,20 +139,10 @@ Flux is itself idempotent — safe to run `task flux:reconcile` anytime.
 
 ## Overview
 
-Cluster topology (9 nodes: 3 servers + 6 agents):
-
-**Server Nodes** (etcd quorum):
-- **k3s-srv-nas-01** (192.168.0.222) - Server on pve-nas-01
-- **k3s-srv-laptop-01** (192.168.0.223) - Server on pve-laptop-01
-- **k3s-srv-prec-01** (192.168.0.227) - Server on pve-prec-01
-
-**Agent Nodes**:
-- **k3s-agt-nas-01** (192.168.0.202) - Agent on pve-nas-01 (NAS workloads)
-- **k3s-agt-laptop-01** (192.168.0.203) - Agent on pve-laptop-01 (ingress + general)
-- **k3s-agt-opt-01** (192.168.0.204) - Agent on pve-opt-01 (ingress + general)
-- **k3s-agt-opt-02** (192.168.0.205) - Agent on pve-opt-02 (ingress + general)
-- **k3s-agt-opt-03** (192.168.0.206) - Agent on pve-opt-03 (ingress + general)
-- **k3s-agt-prec-01** (192.168.0.207) - Agent on pve-prec-01 (general + compute)
+Cluster topology: 9 nodes — 3 servers (etcd quorum, .222/.223/.227) + 6 agents
+(.202-.207). The canonical node-by-node list with IPs, host placement, and
+roles lives in `docs/01-overview.md`; `ansible/inventories/prod/hosts.yml` is
+the machine-readable source.
 
 Cluster features:
 - **kube-vip** - API VIP at 192.168.0.161
@@ -328,9 +319,12 @@ ever created by `kubectl create secret`.
 # Print instructions for creating the bootstrap secrets
 task flux:bootstrap-onepassword
 
-# Then follow the printed instructions to create:
+# After `op connect server create` has produced ./1password-credentials.json,
+# create the token + both Secrets in one step:
+task flux:bootstrap-onepassword-apply
 #   op-credentials            — from 1password-credentials.json
-#   onepassword-connect-token — from Connect access token
+#   onepassword-connect-token — from Connect access token (minted via
+#                               `op connect token create`; no vault item exists)
 ```
 
 ### Step 7: Bootstrap Flux
@@ -351,23 +345,20 @@ This:
 5. Creates the `GitRepository` and top-level `Kustomization` CRs that watch this repo.
 
 After bootstrap, Flux reconciles five Kustomizations in `dependsOn` order:
+`infrastructure-sources` → `infrastructure-controllers` →
+`infrastructure-configs` → `infrastructure-observability` → `apps`. The
+canonical description of each stage's role and membership lives in
+`docs/29-flux-operations.md`; each stage's `kustomization.yaml` under
+`kubernetes/infrastructure/` and `kubernetes/apps/` is the current set.
 
-1. `infrastructure-sources` — HelmRepository CRs + `cluster-versions` ConfigMap (no deps).
-2. `infrastructure-controllers` — HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA (dependsOn sources; CRDs installed here).
-3. `infrastructure-configs` — ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS HelmChartConfig, DDNS CronJob, shared-cloudflare-secrets (dependsOn controllers; uses CRDs installed above).
-4. `infrastructure-observability` — kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress (dependsOn configs).
-5. `apps` — Authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper (leaked-pod reaper CronJob), gitlab-agent, vm-ingress (dependsOn infrastructure-observability).
+### Step 8: Push-Triggered Reconciliation (Already Live)
 
-### Step 8: Register the GitLab Webhook (Optional, Recommended)
-
-Flux polls the GitRepository source every 1 minute. A planned GitLab push webhook
-to Flux's `Receiver` will reduce reconciliation delay to seconds after push.
-
-**Note**: Requires the Flux Receiver manifest (planned follow-up; not part of this initial deployment). Skip until available.
-
-```bash
-task flux:webhook-register
-```
+Push-triggered reconciliation needs no separate setup: the GitLab agent
+(`kubernetes/apps/gitlab-agent/`, deployed by Flux in the `apps` stage) runs
+its Flux module, which triggers an immediate reconcile of the `GitRepository`
+on every push to the watched project. The 1-minute GitRepository poll remains
+as the fallback while the agent is down or before the `apps` stage first
+converges. No GitLab webhook or Flux `Receiver` is required.
 
 ### Step 9: Verify
 
@@ -641,6 +632,33 @@ kubectl get svc traefik -n traefik -o yaml
 # Verify LoadBalancer IP assignment
 kubectl describe svc traefik -n traefik
 ```
+
+## Rebuilding a Server Node
+
+To rebuild a lost or corrupted server VM (including the first server) while
+the rest of the cluster is healthy:
+
+```bash
+# 1. Wipe/recreate the VM (destroys the old guest if it still exists).
+task k3s:provision-vms -- --limit <server>   # e.g. k3s-srv-nas-01
+
+# 2. Re-run the deploy scoped to that server — it joins the existing cluster.
+task k3s:deploy -- --limit <server>
+
+# 3. Verify it rejoins the etcd quorum.
+task k3s:status
+```
+
+The role guards against the classic first-server rebuild footgun:
+`k3s_is_first_server` is pinned in `hosts.yml`, so a wiped first server would
+otherwise render `cluster-init: true` and bootstrap a NEW single-node etcd
+cluster (fresh CA) while the surviving servers still hold the old quorum. The
+role checks for local etcd data (`/var/lib/rancher/k3s/server/db/etcd`) and
+probes the API VIP; if the node has no etcd data but the VIP already serves a
+cluster, it renders the join stanza instead. `cluster-init` is only rendered
+on a genuine first bootstrap (no local data AND a dead VIP), so the scoped
+deploy above is safe for any server. If ALL three servers are lost, that is a
+cluster restore, not a node rebuild — see `docs/17-disaster-recovery.md`.
 
 ## Expanding Beyond 3 Server Nodes
 

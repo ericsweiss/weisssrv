@@ -77,6 +77,14 @@ backups, not by replication-grade HA. Recovery is restore-from-backup
 with the RTO that implies. Revisit if a second storage-capable node ever
 joins.
 
+A second accepted gap: **every backup copy is on-site** — `tank/proxmox`
+(vzdump) and the `archive` pool both live in the pve-nas-01 chassis, so a
+fire/theft/site loss takes the originals and every backup together. The
+archive's raw-encrypted streams and `plug`/`unplug` workflow are designed
+so the pool can be detached and rotated offsite, but no offsite copy
+exists today. Git-managed state (this repo) and 1Password are the only
+data that survives a total site loss.
+
 ## Backup Dedup: vzdump Exclusion of App-Data Zvols
 
 The app-data zvols (Authentik/Mealie PostgreSQL, Prometheus, Loki, GitLab
@@ -123,7 +131,11 @@ Import the pool first if it is detached (`archive-backupctl plug`), then:
 ```bash
 # SAFE (default): restore the latest snapshot into a NEW dataset
 #   <source>-restore-<timestamp>, mounted under /mnt/restore/<target>/<ts>/.
-# Non-destructive — the live dataset is untouched.
+# Non-destructive — the live dataset is untouched. The restore is received onto
+# the SOURCE pool (tank/ssd), so the space cost lands there, not on the archive;
+# check `zfs list -o avail <pool>` first for large targets. The tool resets the
+# received lockdown props (mountpoint, readonly) and attempts the mount itself;
+# encrypted (key-less) trees still need the load-key + mount steps below.
 sudo archive-backupctl restore <target>   # share|backups|nextcloud-data|proxmox|
                                           # immich-data|appdata|databases|all
 
@@ -162,6 +174,12 @@ sudo zfs get -H -o value -r keystatus <pool>/<target>-restore-<timestamp> \
 #      restarting consumers (`qm start`/`pct start`, re-enable exports).
 sudo archive-backupctl restore-force <target>
 ```
+
+After a force restore the tool automatically resets the lockdown props the
+stream carries from the archive (mountpoint back to `/mnt/<pool>/<dataset>`,
+`readonly` cleared) and remounts the tree — restored data no longer sits
+unmounted/read-only waiting for a manual `zfs inherit`. Re-run the storage
+deploy afterwards to re-assert the full `host_vars` property set.
 
 Never `zfs load-key` + mount an `archive/<dataset>` in place — it dirties the raw
 incremental chain and forces a full re-seed (docs/32). Always restore to a clone.
@@ -246,36 +264,38 @@ plus `task k3s:backup` for on-demand ones. Restore procedure: `k3s server
 --cluster-reset --cluster-reset-restore-path=<snapshot>` on one server, then
 rejoin the others.
 
-**Offsite copy — gap + planned implementation.** Snapshots currently live only
-on the server-node disks; losing all three servers (or the Proxmox hosts under
-them) loses etcd. This is the only backup class without an off-node copy
-(archive ZFS replication + the GitLab wrapper both copy off-host with a
-freshness metric + `*BackupStale` alert). It is **not yet implemented** because
-none of the clean transport paths exist today (verified 2026-06): the k3s
-server VMs have no NFS mount from `pve-nas-01`, no SSH host-key trust to it, and
-no host-side `node_exporter_host` textfile collector. Closing it therefore
-requires first establishing **one** transport, then a copy + metric + alert
-mirroring the archive/GitLab pattern:
+**Off-node copy — enabled.** Snapshots live on the server-node disks; losing all
+three servers (or the Proxmox hosts under them) would otherwise lose etcd — the
+only backup class without an off-node copy. Each server node runs a systemd timer
+that mounts an NFS export on `pve-nas-01` (by hostname over TLS, `xprtsec=tls`) and
+copies the newest snapshot there, writing an
+`etcd_snapshot_last_copy_timestamp_seconds` textfile metric consumed by the
+`EtcdSnapshotStale` PrometheusRule (fires when the newest off-node copy is >26h old
+— two 12h snapshot cycles — or the metric is absent), mirroring the
+`ArchiveBackupStale`/`GitLabBackupStale` pattern.
 
-- *Preferred — server-side push to a dedicated NFS export:* add a small
-  `tank/k3s-etcd` (or `archive/...`) export on `pve-nas-01`, mount it (via
-  `nfs_tls`, `xprtsec=tls`, by hostname) on the three server nodes only, and run
-  a `systemd` timer that copies the newest snapshot there after each k3s
-  snapshot, writing an `etcd_snapshot_last_copy_timestamp_seconds` textfile
-  metric. Then deploy `node_exporter_host` (or wire the in-cluster
-  node-exporter textfile collector) on the servers and add an
-  `EtcdSnapshotStale` PrometheusRule (fires if the newest off-node snapshot is
-  older than ~26h) alongside the existing `ArchiveBackupStale`/`GitLabBackupStale`
-  rules.
-- *Alternative — `k3s --etcd-s3`:* point k3s at an S3-compatible target
-  (a future in-cluster MinIO or an external bucket) via `--etcd-s3`,
-  `--etcd-s3-endpoint`, and an `--etcd-s3-*` credential set sourced from
-  1Password; k3s then uploads each snapshot natively.
+Enabled with `k3s_etcd_snapshot_offnode_enabled: true` (`group_vars/k3s.yml`); the
+companion pieces are all in-repo: the `/export/k3s-etcd` NFS export + `ssd/k3s-etcd`
+dataset on `pve-nas-01` (`host_vars/pve-nas-01.yml` — mounted **pseudo-root-relative
+as `/k3s-etcd`**, since the fsid=0 root is at `/export`), `nfs_tls` widened to the
+whole `k3s` group and ordered **before** the server play so tlshd is up first
+(`playbooks/k3s.yml`), `node_exporter_host` on `k3s_servers` (`playbooks/site.yml`)
+plus its scrape Endpoints, and the three servers listed as `/32`s in both the
+export and the fsid=0 pseudo-root. Defaults (paths, mount options, retention) are
+in `ansible/roles/k3s/defaults/main.yml`.
 
-**Interim manual mitigation:** periodically copy the newest
-`/var/lib/rancher/k3s/server/db/snapshots/` file off one server to the archive
-pool by hand (or via the collector host, which already has SSH to the servers).
-Tracked as the open item in docs/16.
+**Activation (operator, in order):** (1) **create the dataset first, encrypted** —
+`zfs create -o encryption=aes-256-gcm -o keyformat=passphrase -o keylocation=prompt
+-o mountpoint=/mnt/ssd/k3s-etcd ssd/k3s-etcd` on pve-nas-01 (passphrase from
+1Password "ZFS Pool ssd Passphrase"; the `ssd` pool root is plaintext, so the
+dataset needs its own encryption root — see docs/32 — and its name equals its
+encryptionroot so the `zfs-load-key@ssd` boot loop unlocks it automatically),
+because `nas_storage` does not create datasets and hard-fails `DATASET_MISSING`
+on the next NAS deploy otherwise; (2) deploy `nas_storage` (export + bind), `task k3s:deploy`
+(tlshd + the copy timer), and `node_exporter_host` on the servers
+(`site.yml --tags node_exporter_host --limit k3s_servers`); Flux reconciles the
+scrape Endpoints on merge. Verify with `systemctl status k3s-etcd-snapshot-copy.timer`
+on a server and `etcd_snapshot_last_copy_timestamp_seconds` in Prometheus.
 
 ## Observability plane is a single-NAS SPOF
 
@@ -285,17 +305,20 @@ nodeSelectors — a deliberate storage-locality tradeoff (local ZFS vs replicate
 storage). The consequence for DR: **a NAS-node outage takes the entire
 observability plane down**, and because Prometheus itself is then gone, the
 NAS-dependent alerts (ZFS/temperature, Loki, blackbox) cannot fire — the
-monitoring blind spot coincides exactly with the most likely incident. There is
-currently no out-of-band detection of a silent observability outage.
+monitoring blind spot coincides exactly with the most likely incident.
 
-Mitigation (recommended, not yet wired): the kube-prometheus-stack chart already
-ships the always-firing `Watchdog` alert. Route it through Alertmanager to an
-**external dead-man's-switch** (e.g. healthchecks.io / Dead Man's Snitch /
-PagerDuty heartbeat) whose URL is injected via an `ExternalSecret`; the external
-service then alarms when the heartbeat *stops* — i.e. when Prometheus/Alertmanager
-(and thus the NAS) are down. Optionally `remote_write` a thin critical-alerts
-shard to an off-NAS target. Pick a DMS provider, then wire the Watchdog route +
-secret. Until then, this SPOF is an accepted, documented tradeoff.
+Mitigation (wired): the kube-prometheus-stack chart's always-firing `Watchdog`
+alert is routed through Alertmanager to an **external dead-man's-switch**
+(healthchecks.io, `watchdog-heartbeat` receiver in
+`kubernetes/infrastructure/observability/kube-prometheus-stack/alertmanager-config.yaml`);
+the ping URL is injected via the alertmanager-config `ExternalSecret`. The
+external service alarms when the heartbeat *stops* — i.e. when Prometheus,
+Alertmanager, the NAS node, or notification egress is down. This is the only
+signal that survives a total observability-plane outage, including both DNS
+resolvers (on which the SMTP and Discord receivers depend). Remaining manual
+step: create the healthchecks.io check and the `Healthchecks Watchdog`
+1Password item (field `ping url`, see docs/15) so ESO can render the ping URL.
+Optionally `remote_write` a thin critical-alerts shard to an off-NAS target.
 
 ---
 
@@ -914,8 +937,13 @@ After the k3s cluster is healthy:
 task flux:install-cli
 
 # 2. Create the 1Password Connect bootstrap secrets (two hand-managed Secrets).
-#    See CLAUDE.md "Secrets Management" for the full bootstrap procedure.
+#    `flux:bootstrap-onepassword` prints the procedure; after `op connect server
+#    create` has produced ./1password-credentials.json, the executing sibling
+#    `flux:bootstrap-onepassword-apply` mints the Connect token (via `op connect
+#    token create` — no vault item exists for it) and creates both Secrets.
+#    See docs/29-flux-operations.md for details.
 task flux:bootstrap-onepassword
+task flux:bootstrap-onepassword-apply
 
 # 3. Optionally pre-delete pre-existing Secrets on a partial recovery.
 # If the cluster was rebuilt from scratch (fresh k3s install), nothing
@@ -938,20 +966,24 @@ task flux:verify
 ## k3s secrets-encryption status
 
 Encryption is enabled cluster-wide and the initial re-encrypt has completed
-(`reencrypt_finished`). For future key rotation, follow the staggered
-per-server procedure (one server at a time, verify status between steps):
+(`reencrypt_finished`). For future key rotation on this multi-server cluster
+(k3s >= v1.28, so `rotate-keys` does prepare/rotate/reencrypt in one pass),
+run the rotation on **one** server only, then restart k3s on the others —
+do NOT run the rotation commands independently on each server:
 
 ```bash
+# On ONE server only:
 ssh k3s-srv-nas-01
-sudo k3s secrets-encrypt status      # show current state and active key
-sudo k3s secrets-encrypt prepare     # serialize a new key
-sudo k3s secrets-encrypt rotate      # promote the new key
-sudo k3s secrets-encrypt reencrypt   # re-encrypt etcd contents with the new key
-sudo k3s secrets-encrypt status      # confirm "reencrypt_finished"
+sudo k3s secrets-encrypt status        # show current state and active key
+sudo k3s secrets-encrypt rotate-keys   # full rotation (prepare+rotate+reencrypt)
+sudo k3s secrets-encrypt status        # wait for "reencrypt_finished"
+
+# Then restart k3s on the OTHER servers, one at a time:
+ssh k3s-srv-laptop-01 sudo systemctl restart k3s
+ssh k3s-srv-prec-01 sudo systemctl restart k3s
 ```
 
-Repeat per server. See https://docs.k3s.io/cli/secrets-encrypt for the
-upstream guide.
+See https://docs.k3s.io/security/secrets-encryption for the upstream guide.
 
 ## Related Documentation
 
@@ -975,4 +1007,4 @@ If you need help during disaster recovery:
 
 ---
 
-**Last Updated**: 2026-06-11
+**Last Updated**: 2026-07-07

@@ -225,7 +225,11 @@ kind: VerticalPodAutoscaler
 metadata:
   name: prometheus
 spec:
-  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: prometheus-kube-prometheus-stack-prometheus}
+  # Target the Prometheus CR, not the operator-owned StatefulSet: the VPA
+  # requires a topmost scalable controller (the CRD exposes /scale), and
+  # targeting the StatefulSet leaves the VPA ConfigUnsupported with no
+  # recommendations recorded.
+  targetRef: {apiVersion: monitoring.coreos.com/v1, kind: Prometheus, name: kube-prometheus-stack-prometheus}
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:
@@ -239,7 +243,8 @@ kind: VerticalPodAutoscaler
 metadata:
   name: alertmanager
 spec:
-  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: alertmanager-kube-prometheus-stack-alertmanager}
+  # Topmost scalable controller, same as the Prometheus VPA above.
+  targetRef: {apiVersion: monitoring.coreos.com/v1, kind: Alertmanager, name: kube-prometheus-stack-alertmanager}
   updatePolicy: {updateMode: "Off"}
   resourcePolicy:
     containerPolicies:

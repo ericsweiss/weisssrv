@@ -4,7 +4,7 @@ Installs and configures GitLab EE (using CE features) via Omnibus package.
 
 ## Features
 
-- GitLab EE on Debian 12/13 (Bookworm/Trixie)
+- GitLab EE on Debian 13 (Trixie)
 - Authentik SAML SSO integration
 - Container Registry (registry.git.ericsweiss.com)
 - GitLab Pages (*.pages.git.ericsweiss.com)
@@ -14,7 +14,7 @@ Installs and configures GitLab EE (using CE features) via Omnibus package.
 
 ## Requirements
 
-- Debian 12+ (Trixie recommended)
+- Debian 13 (Trixie)
 - 6 vCPUs, 12GB RAM minimum
 - 100GB disk space
 - Network access to smtp-relay.esweiss.com:587
@@ -26,6 +26,7 @@ Installs and configures GitLab EE (using CE features) via Omnibus package.
 |------|--------|
 | **GitLab** | `root-password` |
 | **GitLab SSO** | `saml-cert-fingerprint` |
+| **GitLab API Token** | `credential` (admin PAT, `api` scope — drives the Web IDE Application Settings block) |
 | **SMTP Relay Auth** | `username`, `password` |
 
 ## Usage
@@ -57,7 +58,7 @@ HTTPS rather than plain :80.
 
 | Service | Internal Port | External URL |
 |---------|---------------|--------------|
-| Web UI | 443 (HTTPS) | https://git.esweiss.com |
+| Web UI | 443 (HTTPS) | https://git.ericsweiss.com |
 | Registry | 5050 (HTTPS) | https://registry.git.ericsweiss.com |
 | Pages | 8443 (HTTPS) | https://*.pages.git.ericsweiss.com |
 | SSH | 22 | git@git.ericsweiss.com:2222 |
@@ -78,7 +79,11 @@ gitlab_smtp_enabled: true
 
 GitLab backups run daily at 2:00 AM. The cron entry calls
 `/usr/local/sbin/gitlab-backup-run.sh` (deployed by this role), which runs
-`gitlab-backup create CRON=1`, copies `gitlab-secrets.json` + `gitlab.rb` into
+`gitlab-backup create CRON=1 SKIP=registry,artifacts` (the skip list is
+`gitlab_backup_skip`, default `registry,artifacts` — container images and CI
+artifacts are rebuildable and were the root cause of backup disk bloat; a
+restore therefore does not bring them back, see docs/27), copies
+`gitlab-secrets.json` + `gitlab.rb` into
 the backup path on success, and emits node_exporter textfile metrics
 (`gitlab_backup_last_run_success`, `..._last_run_duration_seconds`,
 `..._last_success_timestamp_seconds` preserved across failures, and
@@ -92,8 +97,9 @@ the `gitlab_servers` group is included in the node_exporter play in
 `kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`.
 
 ```bash
-# Manual backup
-ssh gitlab "sudo gitlab-backup create"
+# Manual backup (runs the same wrapper as the daily cron:
+# SKIP=registry,artifacts, secrets copy, and freshness metric)
+ssh gitlab "sudo /usr/local/sbin/gitlab-backup-run.sh"
 
 # List backups
 ssh gitlab "sudo ls -la /var/opt/gitlab/backups/"
@@ -116,3 +122,4 @@ ssh gitlab "sudo gitlab-ctl reconfigure"
 
 - `base` role (SSH, packages, users)
 - `postfix_null_client` role (local mail relay)
+- `apt_signed_repo` role (fingerprint-verified GitLab EE apt repo)

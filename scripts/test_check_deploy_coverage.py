@@ -215,6 +215,37 @@ def test_deleted_role_not_flagged(repo: Path):
     assert "widget" not in res.stderr
 
 
+def test_changes_paths_dict_form_credited(repo: Path):
+    """GitLab's `changes: {paths: [...]}` mapping form must confer the same
+    coverage credit as the plain list form."""
+    ci = (repo / ".gitlab-ci.yml").read_text() + textwrap.dedent(
+        """\
+
+        deploy-ansible-gadget:
+          stage: deploy
+          script:
+            - echo deploy
+          rules:
+            - if: '$CI_COMMIT_BRANCH == "main"'
+              changes:
+                paths:
+                  - ansible/roles/gadget/**/*
+        """
+    )
+    (repo / ".gitlab-ci.yml").write_text(ci)
+    _git(["commit", "-q", "-am", "map gadget via dict changes"], repo)
+
+    base = _base_sha(repo)
+    _write(repo, "ansible/roles/gadget/tasks/main.yml", "new role\n")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "add gadget"], repo)
+    res = _run_check(repo, base)
+    assert res.returncode == 0, (
+        f"dict-form changes: should credit coverage, got rc={res.returncode}: "
+        f"{res.stdout}\n{res.stderr}"
+    )
+
+
 def test_deleted_plus_added_unmapped_role_still_flags_addition(repo: Path):
     """Renames/replacements surface via their ADDED path: deleting widget while
     adding a different unmapped role (gadget) must still flag gadget — proves

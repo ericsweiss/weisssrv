@@ -9,9 +9,19 @@
 #
 # DRIFT DETECTION:
 # This role detects and corrects replication job drift:
-# 1. Target drift: Job exists but targets wrong node -> delete and recreate
+# 1. Target drift: the VMID's desired target SET differs from the live set
+#    -> delete and recreate the per-ID mismatches (only when the guest is
+#    local, so a job that can't be recreated here is never deleted).
+#    Proxmox permutes job-ID<->target pairings when a guest migrates, so
+#    equal sets with permuted IDs are NOT drift — deleting those jobs would
+#    force a full ZFS resync per target for nothing.
 # 2. Source drift: VM migrated, jobs still on old node -> flag for attention
 #    (Jobs must be on the node where the VM currently resides)
+#
+# CAVEAT: because Proxmox permutes job-ID<->target pairings on migration (see
+# above), a per-ID job's --comment may name a stale target node. Job comments
+# must NOT be trusted to identify a job's live target — read the job's actual
+# target from `pvesr list` instead.
 
 - name: Get current storage replication jobs
   ansible.builtin.shell: pvesr list --output-format json 2>/dev/null || echo '[]'
@@ -101,6 +111,37 @@
   tags: [proxmox_ha_replication]
 
 - name: Detect target drift for each desired job
+  vars:
+    _vmid: "{{ item.id.split('-')[0] }}"
+    # Desired vs live target SETS for this job's VMID. Proxmox reassigns
+    # job-ID<->target pairings when a guest migrates (IDs permute while the
+    # target set stays intact), so a per-ID mismatch is only real drift when
+    # the sets differ — otherwise delete+recreate would force a full ZFS
+    # resync per touched target for nothing.
+    _desired_vmid_targets: >-
+      {{
+        ((storage_replication_jobs | default([])
+          | selectattr('source_node', 'equalto', inventory_hostname)
+          | selectattr('enabled', 'defined')
+          | selectattr('enabled')
+          | list)
+         +
+         (storage_replication_jobs | default([])
+          | selectattr('source_node', 'equalto', inventory_hostname)
+          | rejectattr('enabled', 'defined')
+          | list))
+        | selectattr('id', 'match', _vmid ~ '-')
+        | map(attribute='target_node') | sort | list
+      }}
+    _current_vmid_targets: >-
+      {{
+        current_replication_jobs | default([])
+        | selectattr('id', 'match', _vmid ~ '-')
+        | selectattr('target', 'defined')
+        | map(attribute='target')
+        | map('regex_replace', '^.+/', '')
+        | sort | list
+      }}
   ansible.builtin.set_fact:
     drifted_job_ids: >-
       {{
@@ -109,9 +150,11 @@
             item.id in current_replication_job_ids and
             item.source_node == inventory_hostname and
             (item.enabled | default(true)) and
+            item.id.split('-')[0] in local_vmids and
             current_jobs_detail[item.id] is defined and
             current_jobs_detail[item.id].target is defined and
-            current_jobs_detail[item.id].target | regex_replace('^.+/', '') != item.target_node
+            current_jobs_detail[item.id].target | regex_replace('^.+/', '') != item.target_node and
+            _desired_vmid_targets != _current_vmid_targets
           ) else []
         )
       }}

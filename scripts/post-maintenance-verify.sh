@@ -37,15 +37,11 @@ ERRORS=0
 # emits weave.works/kured-reboot-in-progress. If it is ever turned off this returns
 # empty and every kured reboot looks like a hard failure here (loud, not silent).
 kured_rebooting_nodes() {
-  # A node is "actively rebooting" only if it is BOTH kured-annotated AND cordoned
-  # (unschedulable). kured writes the annotation BEFORE its block-check and does NOT
-  # clear it when blocked, so an annotated-but-still-schedulable node is stale/blocked,
-  # not mid-reboot — excusing it would mask a real problem. (Matches the same
-  # annotation+cordoned logic in _wait-no-kured-server-reboot.yml.) Emit name only
-  # when annotation is set ($2) AND unschedulable is true ($3).
+  # Thin kubectl wrapper: the annotated-AND-cordoned filter itself lives in
+  # maintenance-lib.sh (kured_rebooting_filter) so it is unit-testable.
   kubectl get nodes \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.weave\.works/kured-reboot-in-progress}{"\t"}{.spec.unschedulable}{"\n"}{end}' \
-    2>/dev/null | awk -F'\t' '$2 != "" && $3 == "true" {print $1}' || true
+    2>/dev/null | kured_rebooting_filter || true
 }
 
 echo "Checking k3s node status..."
@@ -62,20 +58,19 @@ elif [ -z "$NODE_OUTPUT" ]; then
 else
   # A node is not-ready if STATUS ($2) does not begin with "Ready" (so
   # "Ready,SchedulingDisabled" — cordoned-but-healthy — does NOT count). Classify
-  # each not-ready node by EXACT name: one kured is actively rebooting is an
+  # each not-ready node by EXACT name via classify_not_ready_nodes
+  # (maintenance-lib.sh, unit-tested): one kured is actively rebooting is an
   # expected transient (WARN, surfaced); anything else is a real ERROR.
   KURED_NOW=$(kured_rebooting_nodes)
   NOT_READY_NAMES=$(echo "$NODE_OUTPUT" | not_ready_node_names)
+  NODE_VERDICTS=$(printf '%s\n' "$NOT_READY_NAMES" | classify_not_ready_nodes "$KURED_NOW")
   # If anything is not-ready-and-unexcused, grace + re-read once: a node that JUST
   # finished a kured reboot can be briefly NotReady with its annotation already
   # cleared (so neither the live KURED_NOW nor the grace alone would excuse it).
-  if [ -n "$NOT_READY_NAMES" ]; then
-    needs_grace=false
-    while IFS= read -r n; do
-      [ -n "$n" ] || continue
-      printf '%s\n' "$KURED_NOW" | grep -qxF "$n" || needs_grace=true
-    done <<< "$NOT_READY_NAMES"
-    if [ "$needs_grace" = true ]; then
+  # Match on the captured verdicts, not `... | grep -q` — under pipefail grep -q's
+  # early exit can SIGPIPE the upstream and flip the pipeline status.
+  case "$NODE_VERDICTS" in
+    *error\ *)
       sleep 20
       # Only re-classify if the FRESH node query succeeds. Otherwise keep the
       # pre-grace snapshot + KURED_NOW: mixing a stale NODE_OUTPUT with a
@@ -85,19 +80,21 @@ else
         NODE_OUTPUT="$FRESH_NODES"
         KURED_NOW=$(kured_rebooting_nodes)
         NOT_READY_NAMES=$(echo "$NODE_OUTPUT" | not_ready_node_names)
+        NODE_VERDICTS=$(printf '%s\n' "$NOT_READY_NAMES" | classify_not_ready_nodes "$KURED_NOW")
       fi
-    fi
-  fi
+      ;;
+  esac
   node_errors=0
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    if printf '%s\n' "$KURED_NOW" | grep -qxF "$n"; then
+  while IFS= read -r verdict_line; do
+    [ -n "$verdict_line" ] || continue
+    n="${verdict_line#* }"
+    if [ "${verdict_line%% *}" = "excused" ]; then
       echo "WARNING: node $n NotReady (kured rebooting; verified next run)"
     else
       echo "ERROR: node $n not Ready"
       node_errors=$((node_errors + 1))
     fi
-  done <<< "$NOT_READY_NAMES"
+  done <<< "$NODE_VERDICTS"
   # Stuck-cordon detection: a node Ready,SchedulingDisabled but NOT currently
   # kured-rebooting may be a kured uncordon failure (kubereboot/kured #955) or a
   # left-over op-3 cordon. WARN (not ERROR — it can also be an intentional cordon).
@@ -373,10 +370,20 @@ ERRORS=$((ERRORS + job_errors))
 
 echo ""
 echo "Checking GitLab health..."
-if curl -sf --max-time 10 https://git.ericsweiss.com/-/readiness > /dev/null 2>&1; then
+# Internal chain first (DNS -> Traefik VIP -> GitLab nginx), falling back to the
+# external hostname ONLY on a connection-level failure ("000"/empty) — the same
+# transient-ingress false-000 collect-state's probe_gitlab_http guards against
+# (verify runs right after kured node reboots, peak ingress churn). A real HTTP
+# status (incl 4xx/5xx) means GitLab answered, so trust it rather than let an
+# external 200 mask an internal error.
+GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.esweiss.com/-/readiness 2>/dev/null || true)
+if [ -z "$GITLAB_CODE" ] || [ "$GITLAB_CODE" = "000" ]; then
+  GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.ericsweiss.com/-/readiness 2>/dev/null || true)
+fi
+if [ "$GITLAB_CODE" = "200" ]; then
   echo "GitLab: OK"
 else
-  echo "ERROR: GitLab health check failed"
+  echo "ERROR: GitLab health check failed (HTTP ${GITLAB_CODE:-000})"
   ERRORS=$((ERRORS + 1))
 fi
 

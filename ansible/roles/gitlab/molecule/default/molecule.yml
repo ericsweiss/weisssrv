@@ -19,6 +19,8 @@ platforms:
       - /run
       - /tmp
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   env:
     SMTP_RELAY_USER: testsmtp@example.com
     SMTP_RELAY_PASSWORD: testsmtppassword
@@ -30,7 +32,9 @@ provisioner:
         gitlab_version: 18.9.1-ee.0
         gitlab_external_url: https://git.test.local
         gitlab_ssh_host: git.test.local
-        gitlab_ssh_port: 22
+        # Prod default, so the NAT redirect tasks and fail2ban jail are
+        # exercised with the real 2222 -> 22 mapping.
+        gitlab_ssh_port: 2222
         gitlab_registry_enabled: true
         gitlab_registry_external_url: https://registry.git.test.local
         gitlab_pages_enabled: true

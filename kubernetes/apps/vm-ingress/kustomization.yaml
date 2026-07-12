@@ -1,7 +1,8 @@
 ---
 # vm-ingress: IngressRoutes for non-Kubernetes workloads (Plex LXC, HA VM,
-# AdGuard LXCs, Router, GitLab VM). Resources span `default` and `gitlab`
-# namespaces — the per-resource metadata.namespace is preserved verbatim.
+# AdGuard LXCs, Router, GitLab VM). Resources span the `default`, `gitlab`,
+# and `traefik` (middleware.yaml) namespaces — the per-resource
+# metadata.namespace is preserved verbatim.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

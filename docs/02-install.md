@@ -182,12 +182,25 @@ eval $(op signin)
 
 Create these items (if they don't exist):
 
-**Cloudflare DNS Token**:
+**Cloudflare DNS Token** (in-cluster ESO consumers + acme_certs; scope the
+token to Zone:Read + DNS:Edit only):
 ```
 Title: Cloudflare DNS Token
 Type: API Credential
 Fields:
   - credential: [your-cloudflare-api-token]
+  - username: [your-cloudflare-account-id]
+```
+
+**Cloudflare Terraform Token** (Terraform only — needs the extra Zone
+Settings:Edit scope because `terraform/cloudflare` manages
+`cloudflare_zone_settings_override`; kept separate so the in-cluster token
+cannot change zone-wide TLS posture):
+```
+Title: Cloudflare Terraform Token
+Type: API Credential
+Fields:
+  - credential: [token with Zone:Read + DNS:Edit + Zone Settings:Edit]
   - username: [your-cloudflare-account-id]
 ```
 
@@ -641,20 +654,24 @@ cat CLUSTER_STATUS.txt
 **Solutions**:
 1. **Check 1Password secret**:
    ```bash
-   op read "op://Homelab/Cloudflare DNS Token/credential"
+   op read "op://Homelab/Cloudflare Terraform Token/credential"
    ```
 
 2. **Export manually** (if not using `task terraform:plan`):
    ```bash
-   export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-   export CLOUDFLARE_ACCOUNT_ID=$(op read "op://Homelab/Cloudflare DNS Token/username")
+   export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+   export CLOUDFLARE_ACCOUNT_ID=$(op read "op://Homelab/Cloudflare Terraform Token/username")
    cd terraform/cloudflare
    terraform plan
    ```
 
-3. **Verify Cloudflare token permissions**:
+3. **Verify Cloudflare token permissions** (Terraform token):
    - Zone: DNS: Edit
    - Zone: Zone: Read
+   - Zone: Zone Settings: Edit (required for `cloudflare_zone_settings_override`)
+
+   The separate `Cloudflare DNS Token` item (in-cluster ESO consumers +
+   acme_certs) needs only DNS:Edit + Zone:Read.
 
 ### Deployment Changes Nothing
 

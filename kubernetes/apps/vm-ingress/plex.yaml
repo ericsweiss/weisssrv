@@ -14,8 +14,6 @@ spec:
     - match: Host(`plex.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -40,8 +38,6 @@ spec:
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
-          namespace: traefik
-        - name: strip-www
           namespace: traefik
         - name: hsts-header
           namespace: traefik

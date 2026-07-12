@@ -1,0 +1,63 @@
+---
+# One NAT chain's gitlab_ssh_port -> 22 REDIRECT rule, invariant: exactly the
+# single managed rule, nothing else matching. Included per chain from main.yml
+# (loop_var: gitlab_ssh_redirect — .chain plus optional .out_interface).
+#
+# Cleanup deletes matching rules by line number (not by re-executing rule text),
+# so drifted variants the fixed `iptables -C` check can never match — legacy
+# rules carrying `-m comment`, or an OUTPUT rule missing `-o lo` — are removed
+# instead of surviving forever (and flipping the play to changed on every run).
+# Deleting by number avoids shell re-expansion of comment text and surfaces any
+# per-rule delete failure instead of masking it.
+
+- name: Count SSH redirect rules in {{ gitlab_ssh_redirect.chain }}
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -t nat -S {{ gitlab_ssh_redirect.chain }} 2>/dev/null | grep -c -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22' || echo 0
+  args:
+    executable: /bin/bash
+  register: gitlab_ssh_redirect_count
+  changed_when: false
+
+- name: Check the managed SSH redirect rule in {{ gitlab_ssh_redirect.chain }}
+  ansible.builtin.command: >-
+    iptables -t nat -C {{ gitlab_ssh_redirect.chain }}
+    {% if gitlab_ssh_redirect.out_interface is defined %}-o {{ gitlab_ssh_redirect.out_interface }}{% endif %}
+    -p tcp --dport {{ gitlab_ssh_port }} -j REDIRECT --to-ports 22
+  register: gitlab_ssh_redirect_managed
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Remove drifted SSH redirect rules (re-added below) from {{ gitlab_ssh_redirect.chain }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    iptables -t nat -L {{ gitlab_ssh_redirect.chain }} --line-numbers -n 2>/dev/null \
+      | awk '/dpt:{{ gitlab_ssh_port }} / && /REDIR/ {print $1}' \
+      | sort -rn \
+      | while IFS= read -r n; do
+          iptables -t nat -D {{ gitlab_ssh_redirect.chain }} "$n" || exit 1
+        done
+  args:
+    executable: /bin/bash
+  when:
+    - not ansible_check_mode
+    - gitlab_ssh_redirect_count.stdout | int > 0
+    - >-
+      (gitlab_ssh_redirect_count.stdout | int > 1)
+      or (gitlab_ssh_redirect_managed.rc | default(1) != 0)
+  changed_when: true
+  notify: Save iptables rules
+
+- name: Add the managed GitLab SSH redirect rule to {{ gitlab_ssh_redirect.chain }}
+  ansible.builtin.iptables:
+    table: nat
+    chain: "{{ gitlab_ssh_redirect.chain }}"
+    protocol: tcp
+    destination_port: "{{ gitlab_ssh_port }}"
+    jump: REDIRECT
+    to_ports: "22"
+    out_interface: "{{ gitlab_ssh_redirect.out_interface | default(omit) }}"
+    state: present
+  when: not ansible_check_mode
+  notify: Save iptables rules

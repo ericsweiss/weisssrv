@@ -29,7 +29,10 @@ provisioner:
       stdout_callback: ansible.builtin.default
       result_format: yaml
   playbooks:
-    prepare: prepare.yml
+    # Shared prepare for every default scenario. Roles that need extra prep ship
+    # their own molecule/default/prepare.yml AND re-point playbooks.prepare at it
+    # (deep-merge: an unset prepare in a role's molecule.yml inherits this one).
+    prepare: ../../../../molecule/prepare-common.yml
     converge: converge.yml
     verify: verify.yml
 verifier:

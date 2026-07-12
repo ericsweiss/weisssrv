@@ -7,10 +7,10 @@ a Flux CR and never renders its chart, so the chart-specific keys inside
 free-form object. A typo in a values key (e.g. `prometheuss:` for `prometheus:`)
 therefore slips past lint and silently no-ops in-cluster.
 
-This closes that gap for the three value-heavy releases by extracting each
-release's `.spec.values`, substituting the `${...}` postBuild placeholders from
-the cluster-versions ConfigMap, and running `helm template` against the pinned
-chart version. That:
+This closes that gap for the value-heavy releases listed in RELEASES by
+extracting each release's `.spec.values`, substituting the `${...}` postBuild
+placeholders from the cluster-versions ConfigMap, and running `helm template`
+against the pinned chart version. That:
   - hard-fails on a typo'd key for charts that ship a values.schema.json
     (traefik does; helm validates values against it),
   - hard-fails on any values that produce an unrenderable template (all charts),

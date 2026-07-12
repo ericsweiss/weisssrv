@@ -21,35 +21,47 @@
     shell: /bin/zsh
   when: admin_user != 'root'
 
-- name: Check if Oh My Zsh is installed
+# Cloning the framework directly (instead of running tools/install.sh, which
+# clones master HEAD) is what actually pins Oh My Zsh to omz_commit. The
+# installer's other steps are covered by the role itself: .zshrc is templated
+# below and the login shell is set above.
+- name: Check for a legacy shallow Oh My Zsh clone
   ansible.builtin.stat:
-    path: "/home/{{ admin_user }}/.oh-my-zsh"
-  register: omz_installed
+    path: "/home/{{ admin_user }}/.oh-my-zsh/.git/shallow"
+  register: omz_shallow
   when: admin_user != 'root'
 
-- name: Download Oh My Zsh installer
-  ansible.builtin.get_url:
-    # Download to admin user's home with tight perms to avoid /tmp symlink/race risk
-    url: "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/{{ omz_commit }}/tools/install.sh"
-    dest: "/home/{{ admin_user }}/.omz_install.sh"
-    owner: "{{ admin_user }}"
-    group: "{{ admin_user }}"
-    mode: "0700"
-  when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
+# install.sh cloned with --depth=1, so the pinned commit may not be fetchable
+# in place; re-clone once.
+- name: Remove legacy shallow Oh My Zsh clone
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.oh-my-zsh"
+    state: absent
+  when:
+    - admin_user != 'root'
+    - omz_shallow.stat.exists | default(false)
 
-- name: Install Oh My Zsh from downloaded script
+# Short-circuit the network on converged hosts: only clone/fetch when the repo
+# is missing (empty stdout) or not at the pin. Keeps qol offline-safe after
+# first install; a pin bump (HEAD != omz_commit) re-triggers the fetch+checkout.
+- name: Record current Oh My Zsh commit  # noqa: command-instead-of-module
   ansible.builtin.command:
-    cmd: "sh /home/{{ admin_user }}/.omz_install.sh --unattended"
-    creates: "/home/{{ admin_user }}/.oh-my-zsh"
+    cmd: "git -C /home/{{ admin_user }}/.oh-my-zsh rev-parse HEAD"
+  register: omz_head
+  changed_when: false
+  failed_when: false
+  when: admin_user != 'root'
+
+- name: Install Oh My Zsh at the pinned commit
+  ansible.builtin.git:
+    repo: https://github.com/ohmyzsh/ohmyzsh.git
+    dest: "/home/{{ admin_user }}/.oh-my-zsh"
+    version: "{{ omz_commit }}"
   become: true
   become_user: "{{ admin_user }}"
-  when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
-
-- name: Remove Oh My Zsh installer
-  ansible.builtin.file:
-    path: "/home/{{ admin_user }}/.omz_install.sh"
-    state: absent
-  when: admin_user != 'root' and not omz_installed.stat.exists | default(false)
+  when:
+    - admin_user != 'root'
+    - (omz_head.stdout | default('')) != omz_commit
 
 - name: Deploy .zshrc configuration
   ansible.builtin.template:

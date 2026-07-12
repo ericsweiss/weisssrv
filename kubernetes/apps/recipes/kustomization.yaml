@@ -6,7 +6,6 @@ namespace: recipes
 resources:
   - namespace.yaml
   - externalsecret.yaml
-  - externalsecret-openai.yaml
   - storage.yaml
   - mealie.yaml
   - bar-assistant.yaml

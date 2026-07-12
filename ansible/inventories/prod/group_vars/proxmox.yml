@@ -46,3 +46,11 @@ nic_tuning_ip_forward: true
 # and the OUT DROP rule logged zero legitimate drops. FORWARDed guest/subnet
 # traffic is unaffected (host.fw OUT rules are host-originated only).
 proxmox_firewall_egress_filtering: true
+
+# NFSv4-over-TLS handshake daemon on every Proxmox host: prerequisite for the
+# tank-proxmox storage.cfg target moving to hostname + xprtsec=tls (the
+# proxmox_backup role's codified shape — storage.cfg is clustered, so EVERY
+# node mounts it and needs tlshd). Client mode only: hosts need just the
+# system CA truststore, no cert/key (pve-nas-01 overrides nfs_tls_is_server
+# in host_vars — it is the NFS server).
+nfs_tls_enabled: true

@@ -4,8 +4,9 @@
 # Grafana's SQLite database (service accounts, user preferences).
 # NFS allows Grafana to float to any node in the cluster.
 #
-# Prerequisite: create the NFS directory on the NAS before deploying:
-#   ssh eric@192.168.0.102 "sudo mkdir -p /mnt/ssd/appdata/grafana && sudo chown 1000:2000 /mnt/ssd/appdata/grafana"
+# The NAS-side directory (/mnt/ssd/appdata/grafana, owner 1000:2000) is
+# provisioned by the nas_storage role's per-app appdata directory tasks —
+# a from-scratch NAS build needs `task storage:deploy`, not a manual mkdir.
 # Grafana runs as UID 472 in the container, but the NFS export uses
 # all_squash,anonuid=1000,anongid=2000 — all NFS operations are mapped
 # to 1000:2000 regardless of client UID. The directory must be owned by

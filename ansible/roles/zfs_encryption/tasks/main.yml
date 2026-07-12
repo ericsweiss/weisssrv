@@ -163,10 +163,12 @@
   ansible.builtin.meta: flush_handlers
 
 # Footgun guard: if a listed pool isn't actually encrypted yet, the
-# zfs-load-key@<pool>.service would fail at next boot trying to load a
-# key on a plaintext pool, and RequiredBy=zfs-mount.service would drag
-# zfs-mount down with it. Check each pool's encryption property up front
-# and fail the play loudly with a pointer to the per-pool encryption
+# zfs-load-key@<pool>.service would fail forever at next boot trying to
+# load a key on a plaintext pool, keeping zfs-mount-encrypted.service
+# 'activating' and its dependents (nfsd, the gated guests) queued — boot
+# itself is unaffected, these are off the critical path, but the anchor
+# never converges. Check each pool's encryption property up front and
+# fail the play loudly with a pointer to the per-pool encryption
 # procedure in docs/32.
 # Recursive check (-r) so this works for both encryption models docs/32
 # documents:
@@ -204,6 +206,9 @@
   register: zfs_encryption_pool_states
   changed_when: false
   failed_when: false
+  # Read-only probe — must run under --check too, or the registered results
+  # carry no rc and the assert below errors instead of validating.
+  check_mode: false
   loop: "{{ zfs_encryption_pools }}"
   loop_control:
     label: "{{ item.name }}"

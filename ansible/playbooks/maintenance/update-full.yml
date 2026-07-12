@@ -6,10 +6,11 @@
 # Phase 1: OS packages (rolling, one host at a time)
 # Phase 2-5: Applications (imported from update-applications.yml)
 
-# NOTE: Ansible processes hosts in inventory order within each group.
-# For safety, pve-nas-01 (runs GitLab) and pve-prec-01 (often hosts the CI runner)
-# should be listed last in the inventory so they are updated after other nodes.
-# This reduces the chance of the CI job terminating itself mid-run.
+# NOTE: Inventory order is NOT a safety mechanism here. The reboot protections
+# live in _reboot-if-needed.yml: pve-nas-01 sets proxmox_self_reboot_safe: false
+# so its reboot is always DEFERRED to an operator, and the CI executor
+# self-host detection defers/detaches the reboot of whichever host runs the
+# executor VM (covering pve-prec-01 when it hosts the runner).
 - name: Full system update - OS packages (rolling)
   hosts: base_managed
   become: true

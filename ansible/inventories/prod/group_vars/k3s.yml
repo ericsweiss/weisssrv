@@ -77,11 +77,26 @@ k3s_kubelet_args:
 # *.esweiss.com cert verifies). Set
 # group-wide rather than per-agent because the NFS-backed PVs (grafana,
 # *arr, recipes, downloads data) float across the cluster. The nfs_tls role
-# only runs on k3s_agents (playbooks/k3s.yml); on k3s servers this var is
-# unused. Each agent needs the wildcard cert at /etc/ssl/private/ first —
-# distributed via cert_distribution_targets in host_vars/dns-01.yml. The
-# role asserts the cert exists and fails loud if a target was missed.
+# runs on the whole k3s group (playbooks/k3s.yml): agents mount the NAS-backed
+# PVs, and the servers mount the off-node etcd-snapshot export (see
+# k3s_etcd_snapshot_offnode_enabled below). Both are pure TLS clients: they need
+# only the system CA truststore (ca-certificates) to verify pve-nas-01's cert
+# and present no cert/key of their own — only pve-nas-01 (the server side) holds
+# the wildcard cert+key. Do NOT re-add k3s nodes to cert_distribution_targets in
+# host_vars/dns-01.yml; the nfs_tls role scrubs stale cert/key material from
+# client-only nodes (least privilege, see docs/16).
 nfs_tls_enabled: true
+
+# Off-node etcd snapshot copy (servers only; docs/17). Each server's systemd
+# timer copies its newest local etcd snapshot to the NAS (/export/k3s-etcd over
+# xprtsec=tls) and emits etcd_snapshot_last_copy_timestamp_seconds for the
+# EtcdSnapshotStale alert. Companion changes that make this work (all present in
+# this repo): the /export/k3s-etcd NFS export + ssd/k3s-etcd dataset
+# (host_vars/pve-nas-01; the dataset must be `zfs create`d manually first),
+# nfs_tls widened to the servers (playbooks/k3s.yml), node_exporter_host on
+# k3s_servers (playbooks/site.yml) + its scrape Endpoints (kubernetes
+# observability), and the servers already in the nfs_clients ipset.
+k3s_etcd_snapshot_offnode_enabled: true
 
 # MetalLB IP ranges
 metallb_public_range: "192.168.0.100-192.168.0.100"

@@ -71,6 +71,41 @@
         fail_msg: "Config file missing expected configuration"
         success_msg: "Config file has correct configuration"
 
+    # Negative-path artifact: the https-without-creds role run in converge
+    # post_tasks must have been blocked by the credentials assert.
+    - name: Read credentials assert artifact
+      ansible.builtin.slurp:
+        src: /tmp/alloy-creds-assert.json
+      register: creds_assert_raw
+
+    - name: Assert the empty-credentials https run was rejected
+      ansible.builtin.assert:
+        that:
+          - (creds_assert_raw.content | b64decode | from_json).failed
+        fail_msg: >-
+          The role accepted an https Loki URL with empty push credentials —
+          the deploy-time assert guarding the 401-silent-drop regression is
+          broken.
+        success_msg: "Empty-credentials https run correctly rejected"
+
+    # Positive-path render from converge post_tasks: the production
+    # https+basic_auth branch of config.alloy.j2.
+    - name: Read https render artifact
+      ansible.builtin.slurp:
+        src: /tmp/alloy-https-render.alloy
+      register: https_render
+
+    - name: Assert https render contains the basic_auth production config
+      ansible.builtin.assert:
+        that:
+          - "'https://loki.test.local/loki/api/v1/push' in (https_render.content | b64decode)"
+          - "'basic_auth' in (https_render.content | b64decode)"
+          - "'username = \"test-push-user\"' in (https_render.content | b64decode)"
+          - "'password = \"test-push-password\"' in (https_render.content | b64decode)"
+          - "'wal {' in (https_render.content | b64decode)"
+        fail_msg: "https render is missing the basic_auth/wal production config"
+        success_msg: "https render contains basic_auth with expected creds"
+
     # Verify service is enabled (may not be actively running in Docker)
     - name: Check service status
       ansible.builtin.systemd:

@@ -4,7 +4,9 @@
 # Two preconditions the role expects from the host:
 #   1. /etc/ssl/private/{fullchain,privkey}.pem exist (acme_certs would
 #      have distributed these in production). The role asserts they
-#      exist before rendering tlshd.conf, so we touch synthetic files.
+#      exist before rendering tlshd.conf on the SERVER host; on the
+#      client-only host they simulate a stale pre-least-privilege rollout
+#      that the cleanup task must remove (verify.yml asserts both sides).
 #   2. tlshd.service must accept a `state: started` request, but the
 #      container lacks the AF_TLSH netlink subsystem the real binary
 #      needs. We pre-install ktls-utils and drop in a unit override
@@ -123,3 +125,27 @@
     - name: Reload systemd to pick up the drop-in
       ansible.builtin.systemd:
         daemon_reload: true
+
+    # Opted-out host precondition: simulate a host that WAS running NFS-TLS
+    # before nfs_tls_enabled flipped false. Stage the enabled unit + a stale
+    # /etc/tlshd.conf so the role's de-list reconcile has something to undo.
+    # Gated on the opted-out host only (nfs_tls_enabled: false in host_vars).
+    - name: Stage opted-out precondition (enabled tlshd + stale config)
+      when: not (nfs_tls_enabled | default(true))
+      block:
+        - name: Enable and start tlshd on the opted-out host
+          ansible.builtin.systemd:
+            name: tlshd.service
+            enabled: true
+            state: started
+
+        - name: Write a stale /etc/tlshd.conf on the opted-out host
+          ansible.builtin.copy:
+            dest: /etc/tlshd.conf
+            content: |
+              # Stale pre-opt-out config; the role's reconcile must remove this.
+              [authenticate.client]
+              x509.truststore = /etc/ssl/certs/ca-certificates.crt
+            owner: root
+            group: root
+            mode: "0644"

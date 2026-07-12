@@ -24,12 +24,14 @@ expects in the **Homelab** vault. CLAUDE.md, `docs/02-install.md`,
 `docs/13-ci-cd.md`, and `docs/28-gitlab-migration.md` all point here; update
 this list (not those files) when an item is added or its fields change.
 
-- **Cloudflare DNS Token** - API token (credential) + account ID (username field)
+- **Cloudflare DNS Token** - API token (credential, scoped DNS:Edit + Zone:Read only) + account ID (username field); consumed by the in-cluster ESO trio (cert-manager, external-dns, cloudflare-ddns) and acme_certs
+- **Cloudflare Terraform Token** - API token (credential, scoped Zone:Read + DNS:Edit + **Zone Settings:Edit** — Terraform manages `cloudflare_zone_settings_override`) + account ID (username field); Terraform via Taskfile + the terraform-plan/deploy-terraform CI jobs only
 - **SMTP Relay Gmail** - username + app password
 - **SMTP Relay Auth** - username + password (for null client auth to smtp-relay)
 - **Email Config** - root_alias (ericsweiss1@gmail.com)
 - **AdGuard Home** - admin username + password (the `adguard_home` role generates the bcrypt hash in `AdGuardHome.yaml` from this plaintext password at deploy time; no `password_hash` field is injected or consumed)
 - **Tailscale Auth Key** - auth key
+- **Tailscale OAuth** - client id + credential (OAuth client scoped `acl` write; used by `terraform/tailscale` to manage the tailnet ACL policy — see that module's README)
 - **SSH Key** - public + private key
 - **Samba NAS User** - nas user password
 - **DNS-01 SSH Key** - private + public key (for cert distribution)
@@ -42,11 +44,11 @@ this list (not those files) when an item is added or its fields change.
 - **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **Bar Assistant Secrets** - meilisearch-master-key
 - **Bar Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC, REQUIRED - password login disabled)
-- **OpenAI API Key** - api-key (for Mealie recipe parsing, optional)
+- **OpenAI API Key** - api-key (for Mealie recipe parsing, optional). No longer ESO-synced into the cluster — the key is entered in Mealie's UI (Settings > AI), so rotation is a manual in-app update there
 - **Home Assistant SSO** - authentik-client-id, authentik-client-secret (Authentik OIDC via hass-openid)
 - **Home Assistant API Token** - token (long-lived access token for Prometheus /api/prometheus endpoint)
 - **GitLab** - root-password (initial GitLab root user password)
-- **GitLab API Token** - credential (personal access token for PR-Agent AI code review)
+- **GitLab API Token** - credential (admin personal access token, `api` scope; used by PR-Agent AI code review and hard-asserted by `task gitlab:deploy` for the Web IDE Application Settings block)
 - **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
 - **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
 - **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
@@ -56,13 +58,14 @@ this list (not those files) when an item is added or its fields change.
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
 - **Service Account Auth Token weisssrv** - 1Password Service Account token used by CI (`OP_SERVICE_ACCOUNT_TOKEN` in `.gitlab-ci.yml`)
 - **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
-- **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and the Flux Receiver for push-triggered reconciliation
+- **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and a Flux `Receiver` (reserved for the optional Receiver-based webhook path; day-to-day push-triggered reconciliation comes from the GitLab agent's Flux integration — see docs/29)
 - **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
 - **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General)
 - **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
 - **Loki Push Auth** - htpasswd (bcrypt users file for the Loki push IngressRoute basicAuth middleware)
 - **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)
 - **Discord Alert Webhook** - url (Discord channel webhook for Alertmanager notifications)
+- **Healthchecks Watchdog** - ping url (healthchecks.io check pinged by Alertmanager's always-firing Watchdog dead-man's switch; consumed by the alertmanager-config ExternalSecret)
 - **ZFS Encryption Connect Token** - credential (Connect access token used by Proxmox hosts to fetch ZFS pool passphrases at boot; created via `op connect token create weisssrv-zfs --server <id> --vaults Homelab`)
 - **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
 - **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
@@ -134,7 +137,11 @@ ssh eric@192.168.0.102 "echo 'Test' | mail -s 'Rotation Test' root"
 
 **What Happens**:
 - Gmail password: `/etc/postfix/sasl_passwd` updated on smtp-relay, postmap rebuilds hash
-- Relay user password: SASL database (`/etc/sasldb2`) updated on smtp-relay
+- Relay user password: SASL database (`/etc/sasldb2`) updated on smtp-relay.
+  `saslpasswd2` reruns on every deploy, but it reports changed (and reloads
+  postfix) only on an actual rotation — sasldb stores no recoverable
+  plaintext, so the role detects rotation via a sha256 fingerprint sentinel
+  at `/etc/postfix/.sasl_relay_user.sha256` (root:root, 0600)
 - Null client passwords: `/etc/postfix/sasl_passwd` updated on all Proxmox hosts and DNS LXCs
 - Postfix reloads on all affected hosts
 
@@ -185,7 +192,7 @@ ssh-add ~/.ssh/id_ed25519
 
 ---
 
-### Cloudflare API Token
+### Cloudflare DNS Token (in-cluster + acme_certs)
 
 **Location**: 1Password → Homelab vault → Cloudflare DNS Token
 
@@ -193,23 +200,17 @@ ssh-add ~/.ssh/id_ed25519
 
 ```bash
 # 1. Generate new token in Cloudflare dashboard
-# Settings: Zone:DNS:Edit, Zone:Zone:Read
+# Scope: Zone:DNS:Edit, Zone:Zone:Read (nothing more — this item is
+# deliberately unable to touch zone-wide settings)
 
 # 2. Update in 1Password
 # Update both credential and username (account ID) if needed
 
 # 3. Verify new token is readable
 op read "op://Homelab/Cloudflare DNS Token/credential"
-
-# 4. Test with Terraform
-task terraform:plan
-
-# 5. If plan succeeds, token is valid
-# No deployment needed - Terraform reads at runtime
 ```
 
 **What Happens**:
-- Terraform reads token directly from 1Password at runtime.
 - In-cluster consumers (cert-manager DNS-01, external-dns, cloudflare-ddns)
   pick up the new token on the next ESO refresh (default: 24h). To rotate
   immediately across all three namespaces, force refresh each ExternalSecret:
@@ -218,10 +219,41 @@ task terraform:plan
   task flux:refresh-secret -- external-dns/cloudflare-api-token
   task flux:refresh-secret -- cloudflare-ddns/cloudflare-api-token
   ```
+- acme.sh on dns-01 reads it at issue/renew time (`CF_Token`).
 - Old token can be revoked in Cloudflare after verification.
 
-**Affected Systems**: Terraform (local laptop), cert-manager, external-dns,
-cloudflare-ddns (all three read it via ESO from 1Password).
+**Affected Systems**: cert-manager, external-dns, cloudflare-ddns (all three
+read it via ESO from 1Password), plus acme_certs on dns-01. Terraform is
+**not** affected — it uses the separate token below.
+
+---
+
+### Cloudflare Terraform Token
+
+**Location**: 1Password → Homelab vault → Cloudflare Terraform Token
+
+**Rotation Procedure**:
+
+```bash
+# 1. Generate new token in Cloudflare dashboard
+# Scope: Zone:Zone:Read, Zone:DNS:Edit, Zone:Zone Settings:Edit
+# (Zone Settings:Edit is required for cloudflare_zone_settings_override)
+
+# 2. Update in 1Password (credential; username holds the account ID)
+
+# 3. Verify new token is readable
+op read "op://Homelab/Cloudflare Terraform Token/credential"
+
+# 4. Test with Terraform
+task terraform:plan
+
+# 5. If plan succeeds, token is valid
+# No deployment needed - Terraform reads at runtime
+```
+
+**Affected Systems**: Terraform only — the Taskfile `terraform:*` wrappers
+and the `terraform-plan` / `deploy-terraform` CI jobs. No in-cluster or
+host-side consumer reads this item.
 
 ---
 
@@ -493,7 +525,7 @@ eval $(op signin)
 task terraform:plan
 
 # Or manually export and retry
-# export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credential")
+# export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
 # cd terraform/cloudflare && terraform plan
 ```
 

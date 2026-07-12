@@ -1,4 +1,8 @@
 ---
+# targetRef.name is the chart-generated Deployment name and is chart-version
+# coupled (the v1->v2 chart bump renamed it). If a chart upgrade renames the
+# workload again, this VPA silently orphans (no error surfaced) — re-check the
+# name after gitlab-agent chart bumps.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:

@@ -14,8 +14,6 @@ spec:
     - match: Host(`home.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: home-assistant-headers
           namespace: traefik
         - name: hsts-header
@@ -42,8 +40,6 @@ spec:
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
-          namespace: traefik
-        - name: strip-www
           namespace: traefik
         - name: home-assistant-headers
           namespace: traefik

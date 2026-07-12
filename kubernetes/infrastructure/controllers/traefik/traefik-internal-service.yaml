@@ -16,6 +16,9 @@ metadata:
 spec:
   type: LoadBalancer
   externalTrafficPolicy: Local  # Preserve source IP for IP allowlist middleware
+  # MetalLB L2 announces the VIP directly — NodePorts would be unused listeners
+  # on every node (the healthCheckNodePort required by eTP: Local remains).
+  allocateLoadBalancerNodePorts: false
   selector:
     app.kubernetes.io/name: traefik
     # Traefik chart instance label = <releaseName>-<namespace> ("traefik"-"traefik"); update if either changes

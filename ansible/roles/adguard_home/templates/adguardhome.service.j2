@@ -2,8 +2,10 @@
 [Unit]
 Description=AdGuard Home: Network-level blocker
 ConditionFileIsExecutable={{ adguard_install_path }}/AdGuardHome
-After=syslog.target network-online.target
-Wants=network-online.target
+# unbound is the sole upstream (127.0.0.1:5335); order after it so AdGuard
+# doesn't SERVFAIL during boot. Wants= tolerates hosts without the unit.
+After=network-online.target unbound.service
+Wants=network-online.target unbound.service
 
 # systemd honors the start-rate limit only in [Unit]; in [Service] it is
 # ignored (logged as a warning). With RestartSec=10 below, allow up to 5
@@ -42,7 +44,6 @@ StandardError=journal
 
 Restart=always
 RestartSec=10
-EnvironmentFile=-/etc/sysconfig/AdGuardHome
 
 [Install]
 WantedBy=multi-user.target

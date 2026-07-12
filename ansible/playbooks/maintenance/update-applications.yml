@@ -66,25 +66,16 @@
           changed_when: false
           failed_when: false
 
-        - name: Configure temporary DNS to use dns-02 (dns-01 only)
+        - name: Configure temporary DNS to use the peer DNS server
+          vars:
+            dns_peer: "{{ groups['dns'] | difference([inventory_hostname]) | first }}"
           ansible.builtin.copy:
             content: |
               # Temporary DNS configuration during AdGuard upgrade
-              # Using dns-02 for resolution while dns-01's AdGuard is stopped
-              nameserver 192.168.0.160
+              # Using {{ dns_peer }} for resolution while {{ inventory_hostname }}'s AdGuard is stopped
+              nameserver {{ hostvars[dns_peer].ansible_host }}
             dest: /etc/resolv.conf
             mode: "0644"
-          when: inventory_hostname == 'dns-01'
-
-        - name: Configure temporary DNS to use dns-01 (dns-02 only)
-          ansible.builtin.copy:
-            content: |
-              # Temporary DNS configuration during AdGuard upgrade
-              # Using dns-01 for resolution while dns-02's AdGuard is stopped
-              nameserver 192.168.0.150
-            dest: /etc/resolv.conf
-            mode: "0644"
-          when: inventory_hostname == 'dns-02'
 
         - name: Stop AdGuard Home for upgrade
           ansible.builtin.service:

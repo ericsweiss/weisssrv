@@ -21,3 +21,28 @@
 
   roles:
     - role: k3s
+
+  post_tasks:
+    # Negative test for the agent-token assert (agent.yml): with an empty
+    # k3s_agent_token the role MUST fail loudly rather than render a config
+    # that joins with an empty credential. Mirrors the kube-vip interface
+    # negative test in the default scenario.
+    - name: Re-run k3s with an empty agent token (expect failure)
+      block:
+        - name: Include k3s with an empty agent token
+          ansible.builtin.include_role:
+            name: k3s
+          vars:
+            k3s_agent_token: ''
+        - name: Agent-token assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/k3s-agent-token-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Agent-token assert correctly rejected an empty token
+          ansible.builtin.copy:
+            dest: /tmp/k3s-agent-token-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}

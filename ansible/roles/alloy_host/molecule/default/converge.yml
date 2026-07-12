@@ -38,3 +38,49 @@
 
   roles:
     - role: alloy_host
+
+  post_tasks:
+    # Negative test for the Loki credentials assert (the role's first task):
+    # an https push URL without creds MUST fail fast — the regression this
+    # guards is a rendered config shipping 401s that silently drop the
+    # fleet's journals. The assert runs before anything mutates, so the
+    # rescued failure leaves the converged state untouched.
+    - name: Re-run alloy_host with https URL and empty creds (expect failure)
+      block:
+        - name: Include alloy_host with https URL and no credentials
+          ansible.builtin.include_role:
+            name: alloy_host
+          vars:
+            alloy_host_loki_url: https://loki.test.local/loki/api/v1/push
+            alloy_host_loki_user: ""
+            alloy_host_loki_password: ""
+
+        - name: Credentials assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/alloy-creds-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Credentials assert correctly rejected empty creds
+          ansible.builtin.copy:
+            dest: /tmp/alloy-creds-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+
+    # Positive render of the production path (https + basic_auth). A full
+    # role re-run with an https URL would overwrite /etc/alloy/config.alloy
+    # (breaking verify's NodePort assert) and flip the file between converge
+    # runs (breaking idempotence), so render the template directly to a
+    # scratch path instead.
+    - name: Render config.alloy with https URL and creds (production path)
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../../templates/config.alloy.j2') }}"
+        dest: /tmp/alloy-https-render.alloy
+        mode: "0644"
+      vars:
+        alloy_host_loki_url: https://loki.test.local/loki/api/v1/push
+        alloy_host_loki_user: test-push-user
+        alloy_host_loki_password: test-push-password
+        alloy_host_wal_enabled: true
+        alloy_host_wal_max_segment_age: "1h"

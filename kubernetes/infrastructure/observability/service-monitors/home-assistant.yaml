@@ -42,9 +42,11 @@ spec:
     - port: metrics
       interval: 60s
       path: /api/prometheus
-      bearerTokenSecret:
-        name: observability-exporter-secrets
-        key: ha-api-token
+      authorization:
+        type: Bearer
+        credentials:
+          name: observability-exporter-secrets
+          key: ha-api-token
       # HAOS is HTTPS-only after the SSL config landed (acme_certs distributes
       # the wildcard cert to /ssl/{fullchain,privkey}.pem and configuration.yaml
       # sets ssl_certificate/ssl_key under http:). Plain-HTTP scrape now

@@ -181,16 +181,16 @@ https://bar\.(es|ericsweiss)\.com/oauth/callback$
 
 ## Part 7: Trigger ExternalSecret Refresh
 
-Recipe secrets are split across two ExternalSecrets in
+Recipe secrets live in the single ExternalSecret in
 `kubernetes/apps/recipes/`:
 
 - **`externalsecret.yaml`** (`recipes-secrets`) -- required credentials: DB
   password, SSO client IDs/secrets, meilisearch master key, and SMTP relay
   auth (username + password from the "SMTP Relay Auth" 1Password item).
-- **`externalsecret-openai.yaml`** (`recipes-openai`) -- optional OpenAI API
-  key, isolated so a missing key does not block the required secrets above.
 
-See `docs/22-recipes-deployment.md` for the full field-by-field breakdown.
+The OpenAI key is NOT ESO-synced — it is configured in the Mealie UI under
+Settings > AI (see Part 8). See `docs/22-recipes-deployment.md` for the full
+field-by-field breakdown.
 
 Once the values above are in 1Password, there's no kubectl or helm step — just
 trigger ESO to pick them up (otherwise it refreshes on its own 24h interval):
@@ -200,7 +200,6 @@ trigger ESO to pick them up (otherwise it refreshes on its own 24h interval):
 eval $(op signin)
 op read 'op://Homelab/Mealie SSO/oidc-client-id'
 op read 'op://Homelab/Mealie SSO/oidc-client-secret'
-op read 'op://Homelab/OpenAI API Key/api-key'
 op read 'op://Homelab/Bar Assistant SSO/authentik-client-id'
 op read 'op://Homelab/Bar Assistant SSO/authentik-client-secret'
 
@@ -209,7 +208,7 @@ task flux:rotate-secret -- recipes
 ```
 
 This:
-1. Triggers both `ExternalSecret/recipes-secrets` and `ExternalSecret/recipes-openai` to re-sync from 1Password
+1. Triggers `ExternalSecret/recipes-secrets` to re-sync from 1Password
 2. Waits for `SecretSynced: True`
 3. Restarts Mealie and Bar Assistant Deployments so they read the new env values
 
@@ -272,7 +271,16 @@ kubectl exec -n recipes deployment/bar-assistant -- env | grep AUTHENTIK
 # - "Invalid client" → Verify client ID/secret in 1Password and secrets
 ```
 
-### Test Mealie OpenAI Integration
+### Configure + Test Mealie OpenAI Integration
+
+Since Mealie 3.x, AI provider config lives in the Mealie database, not env
+vars. Set the key in-app first:
+
+1. Log into Mealie as an admin
+2. Go to **Settings > AI** and add an OpenAI provider with the API key from
+   the 1Password item `OpenAI API Key` (field `api-key`)
+
+Then test:
 
 1. Log into Mealie
 2. **Test URL Import:**
@@ -292,11 +300,9 @@ kubectl exec -n recipes deployment/bar-assistant -- env | grep AUTHENTIK
 # Check Mealie logs for OpenAI errors
 task recipes:logs APP=mealie | grep -i openai
 
-# Verify API key is set
-kubectl exec -n recipes deployment/mealie -- env | grep OPENAI
-
 # Common issues:
-# - "Invalid API key" → Check 1Password item and redeploy
+# - "Invalid API key" → Re-enter the key under Settings > AI (compare against
+#   the 1Password item); OPENAI_* env vars are ignored by Mealie 3.x
 # - "Insufficient quota" → Add more credits to OpenAI account
 # - "Rate limit exceeded" → Wait or upgrade OpenAI tier
 ```
@@ -343,9 +349,10 @@ sudo journalctl -u postfix -f
 | `OIDC_ADMIN_GROUP` | `mealie-admins` | Static |
 | `OIDC_AUTO_REDIRECT` | `false` | Static |
 | `OIDC_REMEMBER_ME` | `true` | Static |
-| `OPENAI_API_KEY` | (from secret) | 1Password: `OpenAI API Key/api-key` |
-| `OPENAI_ENABLE_IMAGE_SERVICES` | `true` | Static |
-| `OPENAI_SEND_DATABASE_DATA` | `true` | Static |
+
+OpenAI is **not** configured via env vars: Mealie 3.x ignores the legacy
+`OPENAI_*` variables and reads AI provider config from its database. Set the
+key in-app under Settings > AI (stored in 1Password item `OpenAI API Key`).
 
 ### Bar Assistant Environment Variables (Configured)
 
@@ -382,7 +389,7 @@ Mealie's OpenAI integration uses the following features:
 - Start with image services enabled to test
 - Monitor usage at https://platform.openai.com/usage
 - Set usage limits in OpenAI account settings
-- If costs are too high, disable `OPENAI_ENABLE_IMAGE_SERVICES` by editing `mealie.yaml` and redeploying
+- If costs are too high, disable image services in the Mealie UI (Settings > AI)
 
 **Example monthly costs:**
 - 20 URL imports/month: ~$0.20-1.00
@@ -424,10 +431,9 @@ If you need to rotate the OpenAI API key:
    - Update `OpenAI API Key/api-key` field
    - Save the item
 
-3. **Refresh ExternalSecret + restart Mealie:**
-   ```bash
-   task flux:rotate-secret -- recipes
-   ```
+3. **In Mealie:**
+   - Settings > AI — replace the key on the OpenAI provider (the key is read
+     from the Mealie database, not from a Kubernetes Secret)
 
 ---
 

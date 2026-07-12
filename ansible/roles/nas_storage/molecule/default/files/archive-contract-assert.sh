@@ -5,6 +5,11 @@
 # quotes do not trip Ansible's argument splitter. These are STRUCTURAL checks —
 # the container has no ZFS, so the actual zvol-vs-filesystem receive (which -o
 # options ZFS accepts) is not exercised; that needs a privileged loopback pool.
+#
+# MAP/RMAP, the lock list, and the restore targets are all DERIVED from
+# SRC_LIST inside the script (duplicates fail loudly at startup), so the only
+# list-level contracts left to pin are SRC_LIST membership and the
+# root-is-a-filesystem allow-list.
 set -euo pipefail
 
 s="${1:-/usr/local/sbin/archive-backupctl}"
@@ -15,18 +20,16 @@ s="${1:-/usr/local/sbin/archive-backupctl}"
 bash -n "$s"
 
 # SRC_LIST entries (full paths) — array-element lines only, so a future quoted
-# token inside an in-block comment is not mis-parsed as a dataset. Basenames (bn)
-# are the restore-case labels; the full paths are kept for the membership check.
+# token inside an in-block comment is not mis-parsed as a dataset.
 src_list="$(awk '/^SRC_LIST=\(/{f=1; next} f && /^\)/{f=0} f' "$s" \
   | grep -E '^[[:space:]]*"' | grep -oE '"[^"]+"' | tr -d '"')"
 bn="$(printf '%s\n' "$src_list" | sed 's#.*/##')"
 [ "$(printf '%s\n' "$bn" | grep -c .)" -ge 1 ] || { echo >&2 "no SRC_LIST datasets parsed"; exit 1; }
 
 # The new dataset must be in SRC_LIST ITSELF — cmd_run iterates SRC_LIST to
-# replicate, so a dataset present only in MAP/RMAP/restore/lock is silently never
-# backed up. Match the FULL path (not just basename immich-data, which a wrong
-# pool like ssd/immich-data would also satisfy) against the SRC_LIST entries —
-# not a free-floating substring the MAP key + RMAP value would also satisfy.
+# replicate, and every other structure is derived from it. Match the FULL path
+# (not just basename immich-data, which a wrong pool like ssd/immich-data would
+# also satisfy).
 printf '%s\n' "$src_list" | grep -qx 'tank/immich-data' || { echo >&2 "tank/immich-data missing from SRC_LIST"; exit 1; }
 
 # Enforce the SRC_LIST-root-is-a-filesystem invariant (documented at the SRC_LIST
@@ -44,30 +47,11 @@ while IFS= read -r root; do
   esac
 done <<< "$src_list"
 
-# Restore labels are basenames, so they must be unique across SRC_LIST (a leaf
-# collision like tank/proxmox + ssd/proxmox would make a restore case ambiguous).
+# Restore labels are basenames, so they must be unique across SRC_LIST (the
+# script fails loudly at startup on a collision, but that runtime check can't
+# execute in this ZFS-less container — pin it statically too).
 dup="$(printf '%s\n' "$bn" | sort | uniq -d)"
-[ -z "$dup" ] || { echo >&2 "duplicate SRC_LIST basenames (ambiguous restore case): $dup"; exit 1; }
-
-# The lock-list block — the one parallel list with NO runtime self-protection
-# (MAP/RMAP fail loudly under set -u; a dataset missing from the lock list is
-# silently skipped by lock_backup_tree, leaving its archive copy writable).
-locklist="$(awk '/^_lock_existing_backup_datasets\(\)/{f=1} f && /for dst in/{g=1; next} g && /^[[:space:]]*do$/{g=0; f=0} g' "$s")"
-
-# Every dataset must be restorable individually AND via `restore all` AND locked.
-miss=0
-while IFS= read -r d; do
-  [ -n "$d" ] || continue
-  for mode in safe force; do
-    grep -qF "${d}) _restore_one \"\${POOL_DST}/${d}\" ${mode}" "$s" \
-      || { echo >&2 "no per-target ${mode} restore case: $d"; miss=1; }
-    [ "$(grep -cF "_restore_one \"\${POOL_DST}/${d}\" ${mode}" "$s")" -ge 2 ] \
-      || { echo >&2 "missing all) ${mode} entry: $d"; miss=1; }
-  done
-  printf '%s\n' "$locklist" | grep -qF "\"\${POOL_DST}/${d}\"" \
-    || { echo >&2 "missing lock-list entry: $d"; miss=1; }
-done <<< "$bn"
-[ "$miss" -eq 0 ] || exit 1
+[ -z "$dup" ] || { echo >&2 "duplicate SRC_LIST basenames (ambiguous restore/backup target): $dup"; exit 1; }
 
 # Re-seed type->arm coupling. The dtype capture, fail-loud abort, and receive all
 # live in the per-dataset re-seed while-loop; scope their pins to that loop body

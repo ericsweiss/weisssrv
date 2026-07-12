@@ -3,6 +3,12 @@
 
 pve_firewall_enabled: true
 
+# host.fw inbound drop logging. policy_in is DROP, so flipping this to "info"
+# (per host_vars or globally) makes dropped-inbound packets visible in the
+# kernel log for triage — pve-firewall rate-limits its own logging
+# (log_ratelimit), so "info" is safe to leave on during an incident.
+pve_firewall_log_level_in: nolog
+
 # Host-originated egress filtering (default-deny OUT on the node itself, NOT
 # guests). OFF by default because a missing allowlist entry breaks the host
 # (and possibly remote access). When enabled, host.fw applies the sg-host-egress

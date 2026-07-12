@@ -7,17 +7,18 @@ This document describes the Molecule-based testing infrastructure for weisssrv A
 Molecule tests run each role inside a Docker container (Debian Trixie with systemd) to verify
 that tasks execute correctly, configurations are deployed as expected, and services start properly.
 
-**Tested roles (27 roles, 28 scenarios):**
+**Tested roles (30 roles, 32 scenarios):**
 
 | Role | Scenarios | What it tests | Container notes |
 |------|-----------|--------------|-----------------|
-| base | default | Package install, user/sudoers, authorized_keys, timezone, DNS template | Skips SSH/DNS config in containers |
+| base | default | Package install, user/sudoers, authorized_keys, timezone, DNS template, SSH hardening (`sshd -T` asserted against a seeded conflicting `50-cloud-init.conf`) | Skips DNS config in containers; SSH hardening IS exercised |
 | qol | default | Oh My Zsh, neovim/Vundle, zsh plugins, shell change | Plugin config validated |
 | adguard_home | default | Binary install, systemd service, user/group, HTTP port, config content | Architecture-aware download |
 | adguard_sync | default | Binary download, systemd timer, config generation | Binary may not run on ARM hosts |
 | acme_certs | default | acme.sh install, SSH keys, cert reload script | Pre-installs via git |
 | alloy_host | default | Grafana Alloy install, config render, systemd service, journald scrape config | Loki endpoint is mocked |
 | tailscale | default | Apt repo, package install, systemd service | Uses test version from molecule.yml |
+| apt_signed_repo | default | Shared signed-apt pipeline: stat→download→verify-fingerprint→dearmor→add-repo | GPG fingerprint accept/reject contract; no live apt fetch |
 | nas_storage | default | NFS exports, Samba config, SMART monitoring | Mock ZFS mount points |
 | k3s | default, agent | Server/agent config, kube-vip manifest, labels/taints | Skips binary install |
 | plex | default | Apt repo, package, systemd override, user groups | Skips GPU drivers and service |
@@ -32,11 +33,13 @@ that tasks execute correctly, configurations are deployed as expected, and servi
 | node_exporter_host | default | node_exporter binary install, systemd unit, port 9101 binding, corosync-health-collector script + service + timer deploy + .prom emission | Skips hardware-only collectors. Test host placed in `proxmox` group so the gated corosync collector tasks run and can be verified |
 | resolv_conf | default | `/etc/resolv.conf` template render with operator-mode toggle (populated `resolv_conf_search_domains`) | Helper role; also exercised transitively by base + adguard_home |
 | resolv_conf | empty-search | Verifies `resolv_conf_search_domains: []` emits neither a `search` nor a `domain` line (k3s VM contract) | Covers the empty-list branch that the default scenario doesn't exercise |
+| prometheus_exporter | default | Shared exporter install pipeline (probe → conditional download → install → enable/start → health) for both `tarball` and `deb` artifact branches | Contract test on the skip path; backs the zfs_exporter + unbound_exporter wrappers |
 | zfs_exporter | default | zfs_exporter binary install, systemd unit, port 9134 | No ZFS module in container; exporter starts but reports no pools |
 | unbound_exporter | default | unbound_exporter binary install, systemd unit, port 9167 | Connects to local unbound only if running |
 | proxmox_firewall | default | IPSet + security-group + cluster.fw render under `/etc/pve/firewall/` (mocked path) | `pve-firewall` CLI not present; tests file render + structure only |
 | proxmox_vm | default | qm config render, cloud-init snippet generation, autostart hook | `qm` CLI not present; verifies generated configs only |
 | proxmox_lxc | default | pct config render, autostart hook, mountpoint definitions | `pct` CLI not present; verifies generated configs only |
+| proxmox_backup | default | storage.cfg + vzdump job reconciliation against stub `pvesh`/`pvesm` CLIs | Real Proxmox state absent; tests drift logic + create-fixed fail-loud against stubs |
 | proxmox_ha | default | **Smoke test only**: role completes end-to-end against stub Proxmox CLIs with empty desired-state lists (no rules / resources / replication jobs) | Real drift-detection branches (rule add/update, resource add, replication job add) need real Proxmox state to validate end-to-end and are exercised in production runs only. CI only proves the role exits cleanly + parses pvecm output |
 | zfs_encryption | default | Connect token file (0400 root:root), per-pool env file, `zfs-load-key.sh` (set -euo pipefail, `-H @-` stdin token, exit-code taxonomy), `zfs-load-key@.service` ordering (After zfs-import.target / Before+RequiredBy zfs-mount.service), per-pool service enabled | No ZFS kernel module in container — `zfs load-key` not exercised. No live Connect endpoint — token + env file are mocked |
 
@@ -143,7 +146,7 @@ These variables control container-specific behavior in roles:
 
 | Variable | Role | Effect |
 |----------|------|--------|
-| `skip_ssh_config` | base | Skips SSH hardening tasks |
+| `skip_ssh_config` | base | Skips SSH hardening tasks. NOT set in the base role's own default scenario (which now asserts `sshd -T` against a seeded conflicting `50-cloud-init.conf`), so hardening IS exercised there. Several other scenarios still carry the flag: the base-infrastructure integration test genuinely skips hardening, while storage-stack and the standalone role scenarios (adguard_home, gitlab, k3s, nas_storage, plex, qol) set it defensively even though they don't apply the base role |
 | `skip_dns_config` | base | Skips DNS resolver configuration |
 | `skip_timezone_config` | base | Skips timezone configuration entirely |
 | `skip_k3s_install` | k3s | Skips binary install, service start, and node labeling |
@@ -185,7 +188,7 @@ driver:
   name: docker
 platforms:
   - name: <role>-test
-    image: ghcr.io/hifis-net/debian-systemd:trixie  # Systemd-enabled Debian
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest  # Systemd-enabled Debian (docker/molecule-test)
     pre_build_image: true
     privileged: true      # Required for systemd
     volumes:
@@ -251,9 +254,9 @@ python3 -m molecule destroy   # Cleanup
 - **Verify configuration, not runtime**: Focus assertions on file content, permissions,
   and service state rather than functional behavior (DNS resolution, mail delivery).
 
-## Roles NOT tested (and why)
+## Partial-coverage roles (and why)
 
-All 27 roles now have at least one Molecule scenario. Several are partial-coverage
+All 30 roles have at least one Molecule scenario. Several are partial-coverage
 "contract" tests by necessity rather than choice:
 
 | Role | Scope limit | Why |
@@ -469,84 +472,17 @@ curl -k https://192.168.0.161:6443     # API VIP
 **NAS:**
 ```bash
 showmount -e pve-nas-01                # NFS exports
-smbclient -L //pve-nas-01 -N          # Samba shares
-df -h /tank/media/unified             # Mergerfs mount
+smbclient -L //pve-nas-01 -U nas       # Samba shares (anonymous listing is hardened off)
+df -h /mnt/media                       # Mergerfs mount
 ```
 
 ## CI/CD Integration
 
-### GitHub Actions Workflows (DISABLED — historical reference only)
-
-> **Status**: GitLab is now the canonical CI/CD. `.github/workflows/*.yml`
-> files are retained in the repo but disabled. See `.gitlab-ci.yml` for the
-> active pipeline definitions and `docs/13-ci-cd.md` for the current jobs
-> and rules. This section is kept for anyone investigating the legacy
-> GitHub Actions setup.
-
-The legacy workflows were:
-
-| Workflow | File | Purpose |
-|----------|------|---------|
-| Lint | `.github/workflows/lint.yml` | Ansible syntax, ansible-lint, terraform fmt, yamllint |
-| Molecule | `.github/workflows/molecule.yml` | Molecule tests for changed roles (matrix-based) |
-| Integration Tests | `.github/workflows/integration-tests.yml` | Multi-role integration tests (triggered by role changes) |
-| Terraform | `.github/workflows/terraform.yml` | Terraform format, init, validate |
-| Kubernetes | `.github/workflows/kubernetes.yml` | kubeconform validation, Helm values linting |
-
-### Molecule CI Workflow
-
-The `molecule.yml` workflow uses smart change detection to only test roles that have changed:
-
-```yaml
-# Only tests roles with changes in their directory
-filters: |
-  base: 'ansible/roles/base/**'
-  k3s: 'ansible/roles/k3s/**'
-  # ...
-```
-
-Features:
-- Matrix-based parallel testing (one job per role)
-- Change detection via `dorny/paths-filter`
-- Manual trigger via `workflow_dispatch` tests all roles
-- K3s has both `default` and `agent` scenarios in matrix
-
-### Integration Tests CI Workflow
-
-The `integration-tests.yml` workflow runs multi-role integration tests when relevant roles change:
-
-```yaml
-# Triggers integration tests based on role changes
-filters:
-  dns-stack:
-    - 'ansible/roles/unbound/**'
-    - 'ansible/roles/adguard_home/**'
-    - 'ansible/roles/adguard_sync/**'
-  mail-stack:
-    - 'ansible/roles/smtp_relay/**'
-    - 'ansible/roles/postfix_null_client/**'
-  # ...
-```
-
-Features:
-- Smart change detection - only runs affected integration tests
-- Matrix-based parallel execution
-- Manual trigger via `workflow_dispatch` runs all integration tests
-- Tests multi-container scenarios with Docker networks
-- Validates cross-role configuration and service dependencies
-
-### Kubernetes Validation Workflow
-
-The `kubernetes.yml` workflow validates Kubernetes manifests and Helm values:
-
-1. **kubeconform**: Validates YAML against Kubernetes API schemas
-   - Includes CRD schemas from datreeio/CRDs-catalog
-   - Ignores values.yaml and kustomization.yaml files
-
-2. **Helm template**: Validates Helm values render correctly
-   - Tests Traefik, MetalLB, cert-manager, Authentik values
-
-3. **yamllint**: Basic YAML syntax validation
+GitLab CI is the canonical pipeline: the `molecule-tests` matrix runs every
+role/scenario combo on role changes, and per-stack integration-test jobs run
+on their roles' changes. See `.gitlab-ci.yml` for the job definitions and
+`docs/13-ci-cd.md` for the pipeline overview. (`.github/workflows/*.yml` are
+disabled legacy GitHub Actions files, retained only in git history/context.)
 
 ## Kubernetes Testing
 
@@ -641,7 +577,7 @@ The testing strategy follows a pyramid structure:
                / Integr.  \      <- Multi-role integration tests (5 scenarios)
               /------------\
              /              \
-            /   Unit Tests   \   <- Individual role molecule tests (27 roles, 28 scenarios)
+            /   Unit Tests   \   <- Individual role molecule tests (30 roles, 32 scenarios)
            /------------------\
           /                    \
          /    Static Analysis   \  <- ansible-lint, kubeconform, terraform validate
@@ -650,7 +586,7 @@ The testing strategy follows a pyramid structure:
 
 **Test Coverage:**
 - **Static Analysis:** ansible-lint, yamllint, kubeconform, terraform validate
-- **Unit Tests:** 27 roles with 28 Molecule scenarios (including idempotency)
+- **Unit Tests:** 30 roles with 32 Molecule scenarios (including idempotency)
 - **Integration Tests:** 5 multi-role scenarios testing cross-service interactions
 - **E2E Tests:** Production verification via postflight.yml playbook
 
@@ -660,4 +596,3 @@ The testing strategy follows a pyramid structure:
 - [molecule-docker Plugin](https://github.com/ansible-community/molecule-plugins)
 - [Jeff Geerling - Testing Ansible Roles](https://www.jeffgeerling.com/blog/2018/testing-your-ansible-roles-molecule)
 - [kubeconform](https://github.com/yannh/kubeconform)
-- [GitHub Actions Workflow Syntax](https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions)

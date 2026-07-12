@@ -29,10 +29,15 @@ Manages AdGuard Home DNS filtering and ad-blocking server.
 
 **Sync**: dns-02 automatically syncs from dns-01 via `adguardhome-sync` (every 5 minutes)
 
-### Via File Edit (Legacy, Risky)
+### Via File Edit (Upstream Limitation)
 
-- Admin password hash (lineinfile on AdGuardHome.yaml) -- legacy, needs migration
-  - **TODO**: Migrate to API-based password management
+- Admin password hash (lineinfile on AdGuardHome.yaml). This is AdGuard
+  Home's only supported post-setup password-change mechanism — its API has
+  no password endpoint (`/control/profile/update` accepts only
+  name/language/theme), so an API migration is not possible unless upstream
+  adds one. The fragility is mitigated in-role (hash pre-verification,
+  last-match-aligned read, bcrypt-format assert), and the same file edit is
+  the documented rotation procedure in `docs/15-credential-rotation.md`.
 
 ### Not Managed (AdGuard Defaults)
 

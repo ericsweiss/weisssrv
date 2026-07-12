@@ -23,3 +23,10 @@
     name: zpool-status-collector.timer
     daemon_reload: true
     state: restarted
+
+# Same restarted-not-started rationale as the corosync handler above.
+- name: Reload systemd for smartmon collector
+  ansible.builtin.systemd:
+    name: smartmon-collector.timer
+    daemon_reload: true
+    state: restarted

@@ -58,6 +58,8 @@ Internet
         +-- k3s-agt-prec-01   (.207) - Agent (compute)
 ```
 
+Canonical host/node/VIP topology reference: [docs/01-overview.md](docs/01-overview.md).
+
 ## Quick Start
 
 ### Prerequisites
@@ -95,125 +97,49 @@ task ansible:ping
 
 ### One-time pre-deploy: pin SSH host keys
 
-Both cert distribution (via dns-01) and Home Assistant config deploys
-use `StrictHostKeyChecking=yes` against pinned host keys in inventory.
-The entries are committed empty; each role fails loudly with a
-remediation message until populated. The two workflows are independent
-and have separate capture + validate commands.
-
-#### Cert distribution host-key bootstrap
-
-Targets: dns-02, smtp-relay, gitlab, pve-nas-01, plex,
-home. (`task certs:show-host-keys` enumerates from
-`cert_distribution_targets` in `host_vars/dns-01.yml`, so its output
-is the authoritative list — keep this paragraph aligned with the
-inventory if you add or remove targets.) Note that the `home` target
-uses SSH port 22222; the helper handles the per-target `ssh_port` field
-automatically.
-
-1. Capture host keys via the helper task:
-
-   ```bash
-   task certs:show-host-keys
-   ```
-
-2. Paste each algorithm-and-key value (without the leading hostname/IP)
-   into the matching entry under `cert_distribution_targets[*].host_key`
-   in `host_vars/dns-01.yml`. Commit.
-
-3. Validate the inventory parses + the role sees the new keys with a
-   dry-run:
-
-   ```bash
-   task dns:deploy -- --check
-   ```
-
-4. Then run `task dns:deploy` for real.
-
-Same workflow rotates a key after a target rebuild.
-
-#### Home Assistant host-key bootstrap
-
-HAOS runs sshd on port 22222 (SSH add-on), not the standard 22.
-
-1. Capture the HAOS ed25519 host key:
-
-   ```bash
-   ssh-keyscan -t ed25519 -p 22222 192.168.0.154
-   ```
-
-2. Paste the value (without the leading hostname/IP) into
-   `home_assistant_host_key` in `host_vars/home.yml`. Commit.
-
-3. Validate with a dry-run of the Home Assistant config deploy
-   (`task home-assistant:deploy-config` doesn't forward extra flags
-   to ansible-playbook, so dry-run via ansible-playbook directly):
-
-   ```bash
-   cd ansible && op run -- ansible-playbook -i inventories/prod \
-     -e ansible_become=false playbooks/home-assistant.yml --check
-   ```
-
-4. Then run `task home-assistant:deploy-config` for real.
+Cert distribution and Home Assistant config deploys use
+`StrictHostKeyChecking=yes` against host keys pinned in inventory
+(`cert_distribution_targets[*].host_key` in `host_vars/dns-01.yml`, captured
+via `task certs:show-host-keys`; `haos_ssh_host_key` in `group_vars/all.yml`
+for HAOS on port 22222) — entries ship empty and each role fails loudly until
+populated. Bootstrap and rotation procedures live in
+[ansible/roles/acme_certs/README.md](ansible/roles/acme_certs/README.md) and
+[ansible/roles/home_assistant/README.md](ansible/roles/home_assistant/README.md).
 
 ### Common Operations
+
+`task --list` is the authoritative task reference — the essentials:
 
 ```bash
 task --list                    # List all available tasks
 
 # Validation and linting
-task lint                      # Lint everything (Ansible, Terraform, Kubernetes)
+task lint                      # Lint everything (Ansible, Terraform, Kubernetes, scripts)
 task infra:check               # Dry-run base infrastructure deployment
 task ansible:test              # Run Molecule unit tests
 
-# Base infrastructure deployment
+# Base infrastructure deployment (Ansible)
 task infra:deploy              # Deploy all base infrastructure
 task infra:verify              # Verify deployment status
-task dns:deploy                # Deploy DNS stack
-task storage:deploy            # Deploy storage services
 
-# Application deployments
-task plex:deploy               # Deploy Plex Media Server (LXC)
-task gitlab:deploy             # Deploy GitLab (VM + application)
-task home-assistant:deploy-config # Deploy Home Assistant config (ingress is Flux-managed)
-
-# K3s cluster operations (Ansible - cluster infrastructure)
-task k3s:deploy                # Deploy/update k3s cluster (Ansible)
+# K3s cluster operations (Ansible - node layer)
+task k3s:deploy                # Deploy/update k3s cluster
 task k3s:status                # Show cluster and workload status
-task k3s:backup                # Create etcd snapshot
 
 # Flux GitOps (all Kubernetes workloads deploy via git push)
 task flux:status               # Concise health summary
-task flux:verify               # flux check + get all -A
 task flux:reconcile            # Force reconciliation
-task flux:rotate-secret -- <app>  # Refresh ExternalSecret + restart consumers
 task flux:sync-versions        # Regenerate versions-configmap from all.yml
-
-# Operational tasks (non-deploy)
-task downloads:status          # Check downloads namespace status
-task downloads:vpn-status      # Verify VPN connection and public IP
-task recipes:status            # Check recipes namespace status
-task authentik:status          # Check Authentik status
-
-# GitLab operations
-task gitlab:status             # Show GitLab and runner status
-task gitlab:verify             # Run GitLab smoke tests
-
-# Terraform (Cloudflare DNS)
-task terraform:plan            # Plan Cloudflare DNS changes
-task terraform:apply           # Apply Cloudflare DNS changes
 
 # Maintenance
 task maintenance:check-versions       # Check all services for updates
-task maintenance:update-full          # Full base infrastructure update (interactive)
-task maintenance:update-k3s-nodes     # Rolling k3s node upgrades
 task collect-state                    # Generate cluster state snapshot
 ```
 
 > **Kubernetes deploys use Flux**: changes to `kubernetes/apps/<component>/` or
-> `kubernetes/infrastructure/` are reconciled automatically after `git push`.
-> Flux polls git every ~1 minute (a planned webhook will reduce this to seconds).
-> `task flux:reconcile` forces a sync.
+> `kubernetes/infrastructure/` are reconciled automatically after `git push` —
+> push-triggered via the GitLab agent's Flux module, with the ~1-minute git
+> poll as fallback. `task flux:reconcile` forces a sync.
 > Helm chart versions and container image tags flow through `ansible/inventories/prod/group_vars/all.yml`
 > into the `cluster-versions` ConfigMap via `task flux:sync-versions`.
 
@@ -228,7 +154,9 @@ weisssrv/
 │   │   └── group_vars/       # Group variables (all.yml: single source of truth for versions)
 │   ├── roles/                # Ansible roles (base, k3s, gitlab, nic_tuning, etc.)
 │   └── playbooks/            # Deployment playbooks
-├── terraform/cloudflare/     # Cloudflare DNS management
+├── terraform/
+│   ├── cloudflare/           # Cloudflare DNS management
+│   └── tailscale/            # Tailnet ACL policy-as-code (SSH rules, subnet-route auto-approval)
 ├── kubernetes/               # Flux-managed cluster state
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
 │   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
@@ -256,6 +184,7 @@ weisssrv/
 | proxmox_vm | VM provisioning with cloud-init and autostart |
 | proxmox_lxc | LXC container provisioning with autostart |
 | proxmox_ha | Proxmox HA rules, resources, and ZFS replication |
+| proxmox_backup | Declarative Proxmox backup config (storage.cfg entries + nightly vzdump jobs) |
 | nas_storage | ZFS, NFS, Samba, MergerFS, SMART monitoring |
 | unbound | DoT recursive resolver (port 5335) |
 | adguard_home | DNS filtering (non-root, port 53) |
@@ -268,6 +197,7 @@ weisssrv/
 | gitlab | GitLab EE installation and configuration |
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
+| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex) |
 | nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in) |
 | prometheus_exporter | Shared install pipeline for download-based exporters (tarball/.deb); backs zfs_exporter + unbound_exporter |
 | zfs_exporter | Prometheus ZFS exporter (pool health, scrub status) on the NAS; thin wrapper over prometheus_exporter |
@@ -288,9 +218,10 @@ secrets:
 ```
 
 In-cluster Kubernetes Secrets are produced by External Secrets Operator from
-`ExternalSecret` manifests. See the Secrets Management section of `CLAUDE.md`
-for the canonical 1Password consumer details and the `remoteRef` key/property
-format (not duplicated here).
+`ExternalSecret` manifests. The `remoteRef` key/property format is specified in
+[docs/29-flux-operations.md](docs/29-flux-operations.md) ("1Password Connect
+Provider Reference Format"); the multi-consumer overview (Ansible/Terraform,
+ESO, CI) lives in the Secrets Management section of `CLAUDE.md`.
 
 **Never commit secrets to git.**
 
@@ -311,6 +242,7 @@ Split-horizon DNS:
 - **Authentik**: SSO/OIDC identity provider (auth.esweiss.com)
 - **Flux**: Reconciles all Kubernetes manifests from this repo
 - **External Secrets Operator**: Syncs k8s Secrets from 1Password (Connect provider, vault `Homelab`)
+- **Autoscaling + node ops**: VPA, Reloader, kured (coordinated reboots) — full controller set in `kubernetes/infrastructure/controllers/kustomization.yaml`
 
 See [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md) for deployment guide.
 See also [docs/29-flux-operations.md](docs/29-flux-operations.md) (operator guide)
@@ -328,7 +260,7 @@ Identity provider for Single Sign-On across all applications:
   - OIDC/OAuth2 provider for Mealie, Bar Assistant, Home Assistant
   - SAML provider for GitLab
   - PostgreSQL data on persistent ZFS zvol
-- **Documentation**: [docs/19-k3s-deployment.md](docs/19-k3s-deployment.md)
+- **Documentation**: [kubernetes/apps/authentik/README.md](kubernetes/apps/authentik/README.md)
 
 ### Plex Media Server
 
@@ -437,7 +369,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 |----------|-------------|
 | [12-runbooks](docs/12-runbooks.md) | Operational procedures |
 | [13-ci-cd](docs/13-ci-cd.md) | CI/CD pipelines (GitLab CI) |
-| [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning |
+| [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning (superseded — historical record) |
 | [15-credential-rotation](docs/15-credential-rotation.md) | Credential rotation procedures |
 | [16-next-steps](docs/16-next-steps.md) | TODO and feature roadmap |
 | [17-disaster-recovery](docs/17-disaster-recovery.md) | Disaster recovery and backup procedures |
@@ -449,7 +381,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration |
 | [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
 | [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA |
-| [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation |
+| [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation (completed — retained for rebuild reference) |
 | [27-gitlab-deployment](docs/27-gitlab-deployment.md) | GitLab EE deployment (VM, registry, pages, runners) |
 | [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
 | [29-flux-operations](docs/29-flux-operations.md) | Flux operator guide (bootstrap, adopt, rotate, add app, troubleshoot) |
@@ -457,6 +389,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [31-observability](docs/31-observability.md) | Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting) |
 | [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
 | [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
+| [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
 
 ## User Management
 

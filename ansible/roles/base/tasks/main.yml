@@ -1,9 +1,16 @@
 ---
 # Base role: common packages, SSH hardening, and user setup
 
-# Configure Proxmox repositories first (disable enterprise, enable community)
+# Configure Proxmox repositories first (disable enterprise, enable community).
+# All include_tasks below use apply: — tags on the include line alone do not
+# propagate to the included (untagged) tasks, so a tag-subset run like
+# `--tags ssh` would execute only the include and silently skip everything
+# inside the file.
 - name: Configure Proxmox repositories
-  ansible.builtin.include_tasks: proxmox-repos.yml
+  ansible.builtin.include_tasks:
+    file: proxmox-repos.yml
+    apply:
+      tags: [packages, base, proxmox-repos]
   tags: [packages, base, proxmox-repos]
 
 - name: Update apt cache
@@ -21,10 +28,15 @@
   when: ansible_facts['os_family'] == "Debian"
   tags: [packages, base]
 
-# Downstream tasks gate on this fact — it must exist for any --tags subset.
+# Downstream tasks gate on these facts — they must exist for any --tags subset.
 - name: Detect if running in a VM
   ansible.builtin.set_fact:
     is_virtual_machine: "{{ ansible_facts['virtualization_role'] == 'guest' and ansible_facts['virtualization_type'] == 'kvm' }}"
+  tags: [always]
+
+- name: Detect if running in a container (no hwclock access)
+  ansible.builtin.set_fact:
+    is_container: "{{ ansible_facts['virtualization_type'] | default('') in ['docker', 'lxc', 'container', 'podman'] }}"
   tags: [always]
 
 - name: Install VM-specific packages
@@ -46,13 +58,14 @@
     - is_virtual_machine | bool
   tags: [packages, base]
 
-# Disable unattended-upgrades on VMs to prevent unexpected updates/reboots
-# We manage updates via controlled Task/Ansible workflows instead
+# Disable unattended-upgrades on VMs and containers to prevent unexpected
+# updates/reboots. We manage updates via controlled Task/Ansible workflows
+# instead.
 - name: Check if unattended-upgrades is installed
   ansible.builtin.stat:
     path: /etc/apt/apt.conf.d/20auto-upgrades
   register: auto_upgrades_config
-  when: is_virtual_machine | bool
+  when: (is_virtual_machine | bool) or (is_container | bool)
   tags: [config, base]
 
 - name: Disable unattended-upgrades auto-update
@@ -69,7 +82,7 @@
     owner: root
     group: root
   when:
-    - is_virtual_machine | bool
+    - (is_virtual_machine | bool) or (is_container | bool)
     - auto_upgrades_config.stat.exists | default(false)
   tags: [config, base]
 
@@ -79,7 +92,7 @@
     enabled: false
     state: stopped
   failed_when: false  # Service may not exist on all systems
-  when: is_virtual_machine | bool
+  when: (is_virtual_machine | bool) or (is_container | bool)
   tags: [config, base]
 
 # OpenIPMI ships an LSB init script that tries to load IPMI drivers at boot.
@@ -163,16 +176,12 @@
   tags: [ssh, users, security, base]
 
 - name: Include SSH hardening tasks
-  ansible.builtin.include_tasks: ssh.yml
+  ansible.builtin.include_tasks:
+    file: ssh.yml
+    apply:
+      tags: [ssh, security, base]
   when: not (skip_ssh_config | default(false))
   tags: [ssh, security, base]
-
-# Downstream tasks (timezone, fail2ban template) gate on this fact — it
-# must exist for any --tags subset.
-- name: Detect if running in a container (no hwclock access)
-  ansible.builtin.set_fact:
-    is_container: "{{ ansible_facts['virtualization_type'] | default('') in ['docker', 'lxc', 'container', 'podman'] }}"
-  tags: [always]
 
 - name: Set timezone (physical/VM - with hwclock)
   community.general.timezone:
@@ -197,7 +206,10 @@
   tags: [config, base]
 
 - name: Configure DNS servers
-  ansible.builtin.include_tasks: dns.yml
+  ansible.builtin.include_tasks:
+    file: dns.yml
+    apply:
+      tags: [dns, networking, base]
   when: not (skip_dns_config | default(false))
   tags: [dns, networking, base]
 
@@ -320,6 +332,9 @@
 # Whitelists internal LAN (192.168.0.0/24) and Tailscale (100.64.0.0/10)
 
 - name: Include fail2ban tasks
-  ansible.builtin.include_tasks: fail2ban.yml
+  ansible.builtin.include_tasks:
+    file: fail2ban.yml
+    apply:
+      tags: [security, fail2ban, base]
   when: fail2ban_enabled | default(true)
   tags: [security, fail2ban, base]

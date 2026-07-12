@@ -189,3 +189,113 @@
         that:
           - "'zfs_pool_status_collector_last_success_seconds ' in (zpool_prom_content.content | b64decode)"
         fail_msg: "zfs_pool_status.prom missing the collector sentinel"
+
+    # ── smartmon collector (proxmox-group-only) ───────────────────────────
+    # Same deploy-contract checks as the collectors above. The CI container
+    # has no SMART-capable devices, so the end-to-end invocation exercises
+    # the degraded path: only the last_success sentinel is required.
+
+    - name: Verify smartmon collector script is present and executable
+      ansible.builtin.stat:
+        path: /usr/local/sbin/smartmon-collector.sh
+      register: smartmon_script
+
+    - name: Assert smartmon collector script is mode 0755 root:root
+      ansible.builtin.assert:
+        that:
+          - smartmon_script.stat.exists
+          - smartmon_script.stat.mode == "0755"
+          - smartmon_script.stat.pw_name == "root"
+          - smartmon_script.stat.gr_name == "root"
+        fail_msg: "smartmon-collector.sh missing or has wrong perms"
+
+    - name: Verify smartmon collector service unit is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/smartmon-collector.service
+      register: smartmon_svc
+
+    - name: Assert smartmon collector service unit is mode 0644
+      ansible.builtin.assert:
+        that:
+          - smartmon_svc.stat.exists
+          - smartmon_svc.stat.mode == "0644"
+        fail_msg: "smartmon-collector.service missing or has wrong perms"
+
+    - name: Verify smartmon collector timer unit is present
+      ansible.builtin.stat:
+        path: /etc/systemd/system/smartmon-collector.timer
+      register: smartmon_timer
+
+    - name: Assert smartmon collector timer unit is mode 0644
+      ansible.builtin.assert:
+        that:
+          - smartmon_timer.stat.exists
+          - smartmon_timer.stat.mode == "0644"
+        fail_msg: "smartmon-collector.timer missing or has wrong perms"
+
+    - name: Invoke smartmon collector once to produce textfile metric
+      ansible.builtin.command: /usr/local/sbin/smartmon-collector.sh
+      changed_when: false
+
+    - name: Read smartmon .prom file
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/smartmon.prom
+      register: smartmon_prom_content
+
+    - name: Assert smartmon .prom emits the sentinel
+      ansible.builtin.assert:
+        that:
+          - "'smartmon_collector_last_success_seconds ' in (smartmon_prom_content.content | b64decode)"
+        fail_msg: "smartmon.prom missing the collector sentinel"
+
+    # ── vzdump backup metrics hookscript (proxmox-group-only) ─────────────
+    # A cluster-wide vzdump job runs on every node, so the hook must be present
+    # fleet-wide; verify deployment plus the job-end / backup-abort verdict.
+    - name: Verify vzdump metrics hookscript is present and executable
+      ansible.builtin.stat:
+        path: /usr/local/bin/vzdump-metrics-hook.sh
+      register: vzdump_hook
+
+    - name: Assert vzdump hookscript is mode 0755 root:root
+      ansible.builtin.assert:
+        that:
+          - vzdump_hook.stat.exists
+          - vzdump_hook.stat.mode == "0755"
+        fail_msg: "vzdump-metrics-hook.sh missing or has wrong perms"
+
+    - name: Invoke hookscript job-end (clean run)
+      ansible.builtin.command: /usr/local/bin/vzdump-metrics-hook.sh job-end
+      changed_when: false
+      environment:
+        VZDUMP_JOBID: molecule-clean
+
+    - name: Read vzdump_backup.prom after clean run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/vzdump_backup.prom
+      register: vzdump_prom_clean
+
+    - name: Assert a clean job-end reports success
+      ansible.builtin.assert:
+        that:
+          - "'vzdump_backup_last_run_success 1' in (vzdump_prom_clean.content | b64decode)"
+        fail_msg: "clean job-end did not report vzdump_backup_last_run_success 1"
+
+    - name: Invoke hookscript backup-abort then job-end (guest failed)
+      ansible.builtin.command: "/usr/local/bin/vzdump-metrics-hook.sh {{ item }}"
+      changed_when: false
+      environment:
+        VZDUMP_JOBID: molecule-fail
+      loop:
+        - backup-abort
+        - job-end
+
+    - name: Read vzdump_backup.prom after failed run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/vzdump_backup.prom
+      register: vzdump_prom_fail
+
+    - name: Assert a per-guest backup-abort downgrades job-end to failure
+      ansible.builtin.assert:
+        that:
+          - "'vzdump_backup_last_run_success 0' in (vzdump_prom_fail.content | b64decode)"
+        fail_msg: "backup-abort did not downgrade job-end to vzdump_backup_last_run_success 0"

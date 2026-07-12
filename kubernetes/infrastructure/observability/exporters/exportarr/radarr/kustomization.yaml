@@ -1,0 +1,66 @@
+---
+# Exportarr for Radarr (metrics :9708). Per-app overlay over the shared
+# _exportarr component: only name/labels, subcommand, port, URL, and secret
+# key differ from the skeleton.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+components:
+  - ../_exportarr
+patches:
+  - target:
+      kind: Deployment
+      name: exportarr-arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: exportarr-radarr
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: exportarr-radarr
+      - op: replace
+        path: /spec/selector/matchLabels/app.kubernetes.io~1name
+        value: exportarr-radarr
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1name
+        value: exportarr-radarr
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: radarr
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "9708"
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: http://radarr.downloads.svc.cluster.local:7878
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/valueFrom/secretKeyRef/key
+        value: radarr-api-key
+      - op: replace
+        path: /spec/template/spec/containers/0/ports/0/containerPort
+        value: 9708
+  - target:
+      kind: Service
+      name: exportarr-arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: exportarr-radarr
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: exportarr-radarr
+      - op: replace
+        path: /spec/selector/app.kubernetes.io~1name
+        value: exportarr-radarr
+      - op: replace
+        path: /spec/ports/0/port
+        value: 9708
+  - target:
+      kind: ServiceMonitor
+      name: exportarr-arr
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: exportarr-radarr
+      - op: replace
+        path: /spec/selector/matchLabels/app.kubernetes.io~1name
+        value: exportarr-radarr

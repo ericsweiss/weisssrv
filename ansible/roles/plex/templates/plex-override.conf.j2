@@ -2,12 +2,38 @@
 # Plex Media Server systemd override
 
 [Unit]
-# Ensure Plex starts after network is fully available
+# Order after (and pull in) each dependency so Plex starts once the
+# network is fully available — After= alone doesn't add
+# network-online.target to the transaction (systemd.special(7)).
 {% for after_target in plex_service_after %}
+Wants={{ after_target }}
 After={{ after_target }}
 {% endfor %}
 
 [Service]
+# Run Plex with the media group as its PRIMARY group (the packaged unit forces
+# Group=plex). /media is a mergerfs FUSE mount with default_permissions, and
+# FUSE only honors the primary GID — so plex's supplementary media membership
+# is ignored there and it can't write (e.g. DVR recordings). Group=media makes
+# the primary GID match /media's group so DVR can write.
+#
+# Overriding Group= REPLACES plex's primary group (from /etc/passwd) and does
+# NOT re-add it as a supplementary group — the process otherwise loses the
+# `plex` group entirely. That group owns the TLS cert bundle acme_certs drops at
+# /etc/ssl/plex (0640 root:plex), so without it Plex can't read plex.pfx, logs
+# "[CERT] Found a user-provided certificate, but couldn't install it", and
+# silently serves its plex.direct fallback cert (breaking plex-exporter's TLS
+# verify and Traefik's upstream check). SupplementaryGroups restores `plex`;
+# the video/kvm/render groups Plex needs for GPU transcode still come from the
+# plex user's own memberships (systemd's initgroups adds them). UMask 0002 keeps
+# new DVR files/folders group-writable so the setgid media tree stays writable by
+# the group. NOTE: existing library dirs must also be group-writable — one-time
+# `chmod -R g+w` on the DVR destination on the NAS host (not the LXC —
+# unprivileged root there can't chmod uid-1000 files); see the role README.
+Group={{ media_group }}
+SupplementaryGroups={{ plex_user }}
+UMask=0002
+
 # Plex directories - override default paths
 Environment="PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR={{ plex_config_dir }}/Library/Application Support"
 

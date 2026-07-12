@@ -63,6 +63,40 @@
         fail_msg: "Agent config missing expected node taints"
         success_msg: "Agent config has correct node taints"
 
+    # Token migration: prepare.yml pre-stages the env file with the stale
+    # server token; the reconcile lineinfile in tasks/agent.yml must rewrite
+    # it to the dedicated agent token.
+    - name: Read the k3s-agent service env
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/k3s-agent.service.env
+      register: k3s_agent_env
+
+    - name: Assert the stale server token was migrated to the agent token
+      ansible.builtin.assert:
+        that:
+          - "'K3S_TOKEN=test-agent-token-for-molecule' in (k3s_agent_env.content | b64decode)"
+          - "'test-token-for-molecule-agent-testing' not in (k3s_agent_env.content | b64decode)"
+        fail_msg: >-
+          k3s-agent.service.env still holds the server token — the agent-token
+          migration lineinfile in tasks/agent.yml did not reconcile it.
+        success_msg: "Agent env token migrated to the dedicated agent token"
+
+    # Negative test recorded by converge: an empty k3s_agent_token must fail
+    # the role at the validation assert.
+    - name: Read agent-token negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/k3s-agent-token-assert.json
+      register: k3s_agent_token_assert
+
+    - name: Assert an empty agent token fails the role
+      ansible.builtin.assert:
+        that:
+          - (k3s_agent_token_assert.content | b64decode | from_json).failed
+        fail_msg: >-
+          The agent-token assert did not reject an empty token — an agent
+          would try to join with an empty credential instead of failing
+          loudly. Check the validation assert in tasks/agent.yml.
+
     # Verify kube-vip manifest does NOT exist for agents
     - name: Check kube-vip manifest does NOT exist
       ansible.builtin.stat:
@@ -87,4 +121,6 @@
           - "  - Node labels: node-type=general, workload=media"
           - "  - Node taints: node.kubernetes.io/ingress=true:NoSchedule"
           - "  - kube-vip NOT deployed (correct for agent)"
+          - "  - Agent token migrated in k3s-agent.service.env"
+          - "  - Empty agent token rejected by the validation assert"
           - "(k3s binary install skipped in container testing)"

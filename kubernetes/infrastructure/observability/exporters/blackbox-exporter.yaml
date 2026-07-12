@@ -56,6 +56,9 @@ spec:
         icmp_ping:
           prober: icmp
           timeout: 5s
+        tcp_connect:
+          prober: tcp
+          timeout: 5s
     serviceMonitor:
       enabled: true
       defaults:
@@ -103,12 +106,35 @@ spec:
         - name: gitlab
           url: https://git.esweiss.com
           module: http_2xx
+        - name: pulsarr
+          url: https://pulsarr.esweiss.com
+          module: http_sso
+        # Host-side Alloy's log-shipping path: loki-push-auth returns 401
+        # without credentials, which http_sso accepts — the probe verifies the
+        # ingress + TLS + Loki hop, not auth.
+        - name: loki-push
+          url: https://loki.esweiss.com
+          module: http_sso
         - name: dns-01
           url: 192.168.0.150:53
           module: dns_resolution
         - name: dns-02
           url: 192.168.0.160:53
           module: dns_resolution
+        - name: smtp-relay
+          url: smtp-relay.esweiss.com:587
+          module: tcp_connect
+        - name: k3s-api-vip
+          url: 192.168.0.161:6443
+          module: tcp_connect
+        # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS
+        # drift and public-ingress breakage that the internal probes can't see.
+        - name: home-assistant-external
+          url: https://home.ericsweiss.com
+          module: http_2xx
+        - name: gitlab-external
+          url: https://git.ericsweiss.com
+          module: http_2xx
     resources:
       requests:
         cpu: 25m

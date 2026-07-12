@@ -1,0 +1,59 @@
+---
+# nas_storage role defaults.
+
+# ---------------------------------------------------------------------------
+# ZFS ARC cap (module parameter)
+# ---------------------------------------------------------------------------
+# When set to a byte count, rendered into /etc/modprobe.d/zfs.conf as
+# `options zfs zfs_arc_max=<bytes>` and baked into the initramfs (an
+# update-initramfs handler runs so the cap applies at EARLY boot, before the
+# pools import and the ARC would grow to the ~half-RAM default). Empty (the
+# default) leaves ARC at the ZFS default and does not manage the file at all.
+# The memory-over-committed NAS pins this in host_vars; compute hosts leave it
+# unset.
+zfs_arc_max_bytes: ""
+
+# ---------------------------------------------------------------------------
+# Media-mover load-shaping
+# ---------------------------------------------------------------------------
+# The nvme->tank mover runs in the nightly window alongside vzdump/scrub/smartd,
+# so it is deliberately deferential — it yields CPU and disk under contention
+# rather than adding to the fleet-wide load spike. Nice + ionice set absolute
+# priority; the cgroup-v2 CPUWeight/IOWeight (below the 100 default)
+# proportionally deprioritize it only when something else competes (a no-op on
+# an idle NAS). media_mover_bwlimit is an optional hard rsync throughput cap
+# (empty = unlimited); media_mover_schedule (timer) is set per host.
+media_mover_nice: 10
+media_mover_io_class: best-effort
+media_mover_io_priority: 7
+media_mover_cpu_weight: 20
+media_mover_io_weight: 20
+media_mover_bwlimit: ""
+
+# ---------------------------------------------------------------------------
+# Per-app appdata directories (NFS export /export/appdata -> /mnt/ssd/appdata)
+# ---------------------------------------------------------------------------
+# The k3s apps that persist config on the appdata NFS export need their
+# subdirectory to exist and be writable before their first write. The export
+# uses all_squash,anonuid=1000,anongid=2000, so every client write maps to
+# 1000:2000 regardless of the in-container UID (e.g. Grafana's 472) — the
+# directory must therefore be owned 1000:2000. nfs.yml creates these AFTER the
+# mounted-dataset guard so a locked/unmounted ssd pool can never have them
+# mkdir'd onto its bare mountpoint. Datasets that live on their own zvol
+# (authentik/mealie postgres, prometheus, loki) are NOT here — those are
+# separate ext4-on-zvol mounts, not NFS subdirectories.
+nas_appdata_base: /mnt/ssd/appdata
+nas_appdata_owner: 1000
+nas_appdata_group: 2000
+nas_appdata_mode: "0775"
+nas_appdata_dirs:
+  - grafana
+  - sonarr
+  - radarr
+  - lidarr
+  - prowlarr
+  - qbittorrent
+  - nzbget
+  - pulsarr
+  - mealie
+  - bar-assistant

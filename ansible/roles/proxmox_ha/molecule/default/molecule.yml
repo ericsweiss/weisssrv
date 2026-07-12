@@ -20,13 +20,14 @@ platforms:
     groups:
       - proxmox
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   inventory:
     group_vars:
       all:
         ha_rules: []
         storage_replication_jobs: []
         ha_resources: []
-        ha_groups: []
   config_options:
     defaults:
       remote_tmp: /tmp/ansible-tmp

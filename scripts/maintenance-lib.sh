@@ -20,6 +20,35 @@ not_ready_node_names() {
   awk '$2 !~ /^Ready/ {print $1}'
 }
 
+# kured_rebooting_filter: read `node<TAB>annotation<TAB>unschedulable` rows
+# (jsonpath output) on stdin and print the names of nodes kured is ACTIVELY
+# rebooting. A node qualifies only if it is BOTH kured-annotated AND cordoned
+# (unschedulable): kured writes the annotation BEFORE its block-check and does
+# NOT clear it when blocked, so an annotated-but-still-schedulable node is
+# stale/blocked, not mid-reboot — excusing it would mask a real problem.
+# (Matches the annotation+cordoned logic in _wait-no-kured-server-reboot.yml.)
+kured_rebooting_filter() {
+  awk -F'\t' '$2 != "" && $3 == "true" {print $1}'
+}
+
+# classify_not_ready_nodes <kured_names>: read not-ready node names on stdin
+# and print one verdict line per node — "excused <name>" when the node appears
+# (exact match) in the newline-separated <kured_names> list, "error <name>"
+# otherwise. The verify WARNs excused nodes (kured rebooting, verified next
+# run) and ERRORs the rest; any "error" line also means the grace re-read is
+# warranted.
+classify_not_ready_nodes() {
+  local kured_names="$1" n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if printf '%s\n' "$kured_names" | grep -qxF "$n"; then
+      echo "excused $n"
+    else
+      echo "error $n"
+    fi
+  done
+}
+
 # list_unhealthy_pods: read `kubectl get pods -A --no-headers` on stdin, print
 # the rows for pods that are genuinely unhealthy. Terminal BATCH outcomes are
 # skipped — Completed/Succeeded, AND Error/Failed: those statuses only occur for
@@ -66,6 +95,32 @@ deployment_replicas_ok() {
 # for coredns) whose pods would otherwise match a plain name-prefix.
 deployment_pod_nodes() {
   awk -F'\t' -v d="$1" '$1 ~ "^"d"-[b-df-hj-np-tv-z2-9]+-" {print ($2 == "" ? "<unscheduled>" : $2)}'
+}
+
+# --- maintenance-rearm-self-reboot.sh helpers ------------------------------
+
+# rearm_marker_host: read a self-host marker file's content on stdin and print
+# the target hostname (first line, all whitespace stripped). Prints nothing
+# for a blank/whitespace-only marker so the caller treats it as "nothing to
+# re-arm" instead of running ansible against an empty host pattern.
+rearm_marker_host() {
+  head -n1 | tr -d '[:space:]'
+}
+
+# rearm_remote_command <prompt_delay_secs>: print the remote shell snippet that
+# re-arms the prompt self-reboot. ORDER MATTERS for the safety guarantee: arm a
+# SEPARATE prompt unit (maintenance-self-reboot-prompt) FIRST, and only AFTER
+# systemd-run succeeds (the && gate) tear down the long fallback timer
+# (maintenance-self-reboot, armed during the run). If the prompt arm fails, the
+# && short-circuits so the fallback is left INTACT — the host still reboots on
+# it, just later. (An earlier design reused the fallback's own --unit name and
+# stopped it BEFORE arming; a systemd-run failure after that stop left NO timer
+# at all, silently stranding the host despite the "still reboots" log.) The
+# leading reset-failed/stop targets the PROMPT unit only (clearing any stale
+# prompt from a prior after_script), never the fallback.
+rearm_remote_command() {
+  local delay="${1:-60}"
+  printf '%s' "systemctl reset-failed maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemctl stop maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemd-run --no-block --collect --on-active=${delay}s --unit=maintenance-self-reboot-prompt systemctl reboot && { systemctl reset-failed maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; systemctl stop maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; }"
 }
 
 # --- maintenance-ha-restart.sh parsers -------------------------------------

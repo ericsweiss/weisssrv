@@ -62,6 +62,46 @@
           - ha.d_update == 0
         fail_msg: "Expected create=1/update=0 for absent job, got create={{ ha.d_create }}/update={{ ha.d_update }}"
 
+    # (j) REAL target drift (desired target set differs) with the VM local:
+    #     the stale job is deleted and recreated on the correct target.
+    - name: J — target drift with VM local triggers exactly one delete + one create
+      ansible.builtin.assert:
+        that:
+          - ha.j_delete == 1
+          - ha.j_create == 1
+        fail_msg: "Expected delete=1/create=1 for target drift (VM local), got delete={{ ha.j_delete }}/create={{ ha.j_create }}"
+
+    # (k) Target drift with the VM NOT local: the live job must never be
+    #     deleted (recreation is impossible here — deleting would silently
+    #     drop a replication target). Warning only.
+    - name: K — target drift with VM not local triggers NO delete and NO create
+      ansible.builtin.assert:
+        that:
+          - ha.k_delete == 0
+          - ha.k_create == 0
+        fail_msg: "Expected delete=0/create=0 for target drift (VM not local), got delete={{ ha.k_delete }}/create={{ ha.k_create }}"
+
+    # (l) Permuted job-ID<->target assignments with an identical target set
+    #     (post-migration state) are NOT drift: zero mutations, or every
+    #     `task proxmox:ha` run would force full ZFS resyncs.
+    - name: L — permuted IDs with matching target set trigger NO mutations
+      ansible.builtin.assert:
+        that:
+          - ha.l_delete == 0
+          - ha.l_create == 0
+          - ha.l_update == 0
+        fail_msg: "Expected delete=0/create=0/update=0 for permuted target set, got delete={{ ha.l_delete }}/create={{ ha.l_create }}/update={{ ha.l_update }}"
+
+    # (m) An orphaned job (on this node but absent from config) is warned
+    #     about, never deleted — orphan cleanup is deliberately manual.
+    - name: M — orphaned job triggers warning only, NO mutations
+      ansible.builtin.assert:
+        that:
+          - ha.m_delete == 0
+          - ha.m_create == 0
+          - ha.m_update == 0
+        fail_msg: "Expected delete=0/create=0/update=0 with an orphan present, got delete={{ ha.m_delete }}/create={{ ha.m_create }}/update={{ ha.m_update }}"
+
     # (e) An already-correct node-affinity rule is the rule idempotency contract:
     #     PVE9 returns nodes/resources as hashes, so the drift comparison must
     #     normalise them — no `rules set` (and no `rules add`, it already exists).

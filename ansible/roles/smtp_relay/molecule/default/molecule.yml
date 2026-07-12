@@ -19,9 +19,6 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  env:
-    SMTP_RELAY_USER: testrelay
-    SMTP_RELAY_PASSWORD: testrelaypass
   inventory:
     group_vars:
       all:
@@ -29,6 +26,8 @@ provisioner:
         admin_email: test@test.local
         smtp_gmail_user: testgmail@gmail.com
         smtp_gmail_password: testgmailpass
+        postfix_sasl_user: testrelay
+        postfix_sasl_password: testrelaypass
         smtp_tls_cert_dir: /etc/postfix/tls
         smtp_relay_config:
           myhostname: smtp-relay.test.local
@@ -45,7 +44,7 @@ provisioner:
           smtpd_tls_received_header: 'yes'
           smtpd_tls_protocols: '!SSLv2, !SSLv3, !TLSv1, !TLSv1.1'
           smtpd_tls_mandatory_protocols: '!SSLv2, !SSLv3, !TLSv1, !TLSv1.1'
-          smtp_tls_security_level: encrypt
+          smtp_tls_security_level: secure
           smtp_tls_CAfile: /etc/ssl/certs/ca-certificates.crt
           smtp_tls_protocols: '!SSLv2, !SSLv3, !TLSv1, !TLSv1.1'
           smtp_sasl_auth_enable: 'yes'
@@ -54,7 +53,10 @@ provisioner:
           smtp_sasl_tls_security_options: noanonymous
           smtpd_sasl_type: cyrus
           smtpd_sasl_path: smtpd
-          smtpd_sasl_auth_enable: 'yes'
+          # Prod posture (mail.yml): port-25 AUTH off, submission re-enables
+          # it per-service behind mandatory TLS.
+          smtpd_sasl_auth_enable: 'no'
+          smtpd_tls_auth_only: 'yes'
           smtpd_sasl_security_options: noanonymous
           smtpd_sasl_local_domain: smtp-relay.test.local
           broken_sasl_auth_clients: 'yes'

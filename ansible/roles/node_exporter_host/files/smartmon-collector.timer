@@ -1,0 +1,17 @@
+# Managed by Ansible node_exporter_host role.
+# Fires the SMART collector every 5 minutes — SMART attributes move
+# slowly and each cycle probes every device (17 drives on the NAS), so
+# the zpool collector's 1-minute cadence would be needless I/O. Same
+# OnUnitInactiveSec rationale as the sibling collectors (survives
+# oneshot failures; alert staleness thresholds are far larger).
+[Unit]
+Description=Periodically sample SMART device health
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=smartmon-collector.service
+
+[Install]
+WantedBy=timers.target

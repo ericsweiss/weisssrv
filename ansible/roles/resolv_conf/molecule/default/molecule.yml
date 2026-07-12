@@ -19,6 +19,12 @@ platforms:
       - /run
       - /tmp
 provisioner:
+  playbooks:
+    prepare: prepare.yml
+    # In a privileged container chattr +i sticks on the bind-mounted
+    # /etc/resolv.conf; cleanup.yml strips it before destroy so docker rm
+    # doesn't fail with EPERM.
+    cleanup: cleanup.yml
   inventory:
     group_vars:
       all:
@@ -27,3 +33,9 @@ provisioner:
           - 192.168.0.160
         internal_domain: esweiss.com
         resolv_conf_unsafe_writes: true
+        # Exercises the immutable-flag wrap (strip -> write -> chattr +i). This
+        # container is privileged, so unlike an unprivileged LXC guest chattr +i
+        # actually sticks here; cleanup.yml removes it before destroy so docker
+        # rm can succeed. (The host is detected as a container, so the assert is
+        # skipped — the warning path is not reachable when +i sticks.)
+        resolv_conf_immutable: true

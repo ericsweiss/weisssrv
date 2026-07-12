@@ -45,6 +45,8 @@ spec:
         options:
           - name: ndots
             value: "1"
+          # ClusterFirst pod on the DNAT'd kube-dns path — fresh socket for the
+          # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
       containers:
         # Version managed in ansible/inventories/prod/group_vars/all.yml

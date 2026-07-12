@@ -110,14 +110,27 @@ for role in "${ROLES_TO_TEST[@]}"; do
 
     pushd "${role_path}" >/dev/null
 
-    # shellcheck disable=SC2086
-    if ${MOLECULE_CMD} -c "${BASE_CONFIG}" test ${MOLECULE_OPTS} 2>&1; then
-        echo -e "${GREEN}PASS${NC} ${role}"
-        PASSED+=("${role}")
-    else
-        echo -e "${RED}FAIL${NC} ${role}"
-        FAILED+=("${role}")
-    fi
+    # Run every scenario the role defines (default + extras like k3s/agent and
+    # resolv_conf/empty-search) so local runs match the CI matrix. The shared
+    # base config applies to default scenarios only, mirroring CI's base_opt —
+    # non-default scenarios are self-contained.
+    for scenario_file in molecule/*/molecule.yml; do
+        [[ -f "${scenario_file}" ]] || continue
+        scenario="$(basename "$(dirname "${scenario_file}")")"
+        base_opt=()
+        if [[ "${scenario}" == "default" ]]; then
+            base_opt=(-c "${BASE_CONFIG}")
+        fi
+        echo "--- scenario: ${scenario}"
+        # shellcheck disable=SC2086
+        if ${MOLECULE_CMD} ${base_opt[@]+"${base_opt[@]}"} test -s "${scenario}" ${MOLECULE_OPTS} 2>&1; then
+            echo -e "${GREEN}PASS${NC} ${role} (${scenario})"
+            PASSED+=("${role}/${scenario}")
+        else
+            echo -e "${RED}FAIL${NC} ${role} (${scenario})"
+            FAILED+=("${role}/${scenario}")
+        fi
+    done
 
     popd >/dev/null
     echo ""

@@ -7,6 +7,11 @@ Tailscale provides secure remote access to the homelab via a WireGuard-based mes
 Tailscale is installed on all Proxmox hosts to enable secure remote administration from anywhere.
 
 - **Network**: `100.64.0.0/10` (CGNAT range used by Tailscale)
+- **Subnet routing**: all six Proxmox hosts advertise `192.168.0.0/24`, so any
+  one of them can carry LAN access for remote clients (real failover, not a
+  single-host SPOF)
+- **ACL policy as code**: the tailnet ACL (access rules, Tailscale SSH rules,
+  route auto-approvers) is managed in `terraform/tailscale/` — see below
 - **Firewall**: `admin_ts` IP Set allows Tailscale network access
 - **DNS**: Tailscale DNS is disabled; internal AdGuard DNS is used instead
 
@@ -42,34 +47,80 @@ sudo apt install tailscale
 After installation, authenticate each host:
 
 ```bash
-# Connect to Tailscale with specific flags
+# Connect to Tailscale with specific flags (what the role runs on Proxmox hosts)
 sudo tailscale up \
   --ssh \
   --operator=eric \
   --accept-dns=false \
-  --advertise-exit-node=false
+  --accept-routes=false \
+  --advertise-routes=192.168.0.0/24
 ```
 
 **Flags explained:**
 - `--ssh`: Enable Tailscale SSH for secure access
 - `--operator=eric`: Allow user `eric` to manage Tailscale
 - `--accept-dns=false`: Use internal AdGuard DNS instead of Tailscale DNS
-- `--advertise-exit-node=false`: Do not advertise as exit node
+- `--accept-routes=false`: Subnet routers must NOT accept routes from other
+  peers — prevents routing loops where a host routes its own LAN traffic
+  through Tailscale
+- `--advertise-routes=192.168.0.0/24`: Advertise the internal LAN so remote
+  clients can reach it via any Proxmox host
 
-**Note**: `--accept-routes` is intentionally omitted to prevent routing loops. Hosts should not accept routes from other Tailscale nodes.
+The role only runs `tailscale up` for the initial authentication; on
+already-running nodes it reconciles preferences every run with
+`tailscale set` (idempotent, no re-auth).
 
 ### Ansible Variables
 
-Tailscale configuration is managed in `group_vars/all.yml`:
+Defaults live in `group_vars/all.yml`; the Proxmox hosts opt into subnet
+routing in `group_vars/proxmox.yml`:
 
 ```yaml
+# group_vars/all.yml
 tailscale_enabled: true
 tailscale_accept_routes: false  # Prevents routing loops; hosts should not accept routes
 tailscale_accept_dns: false  # We use our own DNS
+tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) advertise routes
 
 secrets:
   tailscale_auth_key: "op://Homelab/Tailscale Auth Key/credential"
+
+# group_vars/proxmox.yml
+tailscale_advertise_routes:
+  - "192.168.0.0/24"
+tailscale_additional_flags:
+  - "--operator=eric"
+  - "--ssh"
 ```
+
+## Subnet Routing
+
+All six Proxmox hosts advertise `192.168.0.0/24`. The role enables the
+required IP forwarding via a role-owned sysctl drop-in
+(`/etc/sysctl.d/99-tailscale-ip-forward.conf`) plus a tailscaled systemd
+drop-in (`ExecStartPost` re-applies `net.ipv4.ip_forward=1`, since Proxmox
+bridge/network init can reset it after systemd-sysctl at boot). When
+`tailscale_advertise_routes` is empty the role removes both drop-ins.
+
+An advertised route is only usable once **approved** in the tailnet. The
+`autoApprovers` block in `terraform/tailscale/policy.hujson` auto-approves any
+owner-advertised `192.168.0.0/24` route, which is what makes subnet-router
+failover across the six hosts real instead of a per-host manual approval.
+
+## Tailnet ACL Policy as Code (terraform/tailscale)
+
+`terraform/tailscale/` manages the tailnet **ACL policy** — access rules,
+Tailscale SSH rules, and subnet-route auto-approvers — as `policy.hujson`,
+mirroring the `terraform/cloudflare` pattern (GitLab HTTP state backend,
+1Password-injected credentials).
+
+- **Credentials**: the `Tailscale OAuth` 1Password item (fields `client id`
+  and `credential`) holds an OAuth client scoped to `acl` (write). See
+  `docs/15-credential-rotation.md` for the item inventory.
+- **Apply is supervised**: a wrong policy can sever tailnet connectivity and
+  Tailscale SSH, so `terraform apply` here is a deliberate operator step (a
+  read-only drift `plan` in CI is fine). Follow the runbook in
+  `terraform/tailscale/README.md`.
 
 ## Usage
 
@@ -157,9 +208,13 @@ If DNS resolution doesn't work over Tailscale:
 ## Security Considerations
 
 - **Auth Keys**: Use ephemeral or reusable auth keys from Tailscale admin console
-- **SSH Access**: Tailscale SSH provides additional security layer
+- **SSH Access**: Tailscale SSH provides additional security layer; SSH
+  authorization is governed by the tailnet ACL, now versioned in
+  `terraform/tailscale/policy.hujson`
 - **Operator User**: Only `eric` user can manage Tailscale on each host
 - **No Exit Node**: Hosts do not route internet traffic through the homelab
+- **ACL changes**: review `policy.hujson` against the live Admin-console ACL
+  before any supervised apply (see `terraform/tailscale/README.md`)
 
 ## References
 

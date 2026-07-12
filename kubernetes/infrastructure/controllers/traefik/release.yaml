@@ -36,7 +36,7 @@ spec:
       enabled: true
       minAvailable: 1
 
-    # Horizontal autoscaling via the chart's own autoscaling (min 2 / max 4 on
+    # Horizontal autoscaling via the chart's own autoscaling (min 2 / max 6 on
     # ~70% CPU). Using the chart's `autoscaling.enabled` (rather than a separate
     # HorizontalPodAutoscaler) makes the chart omit `.spec.replicas` from the
     # Deployment entirely — a standalone HPA would leave the chart re-asserting
@@ -47,7 +47,7 @@ spec:
     autoscaling:
       enabled: true
       minReplicas: 2
-      maxReplicas: 4
+      maxReplicas: 6
       metrics:
         - type: Resource
           resource:
@@ -74,8 +74,16 @@ spec:
       # only announces the VIP from a node with a Ready Traefik endpoint, so the
       # single-IP public pool cannot blackhole while at least one Traefik pod is
       # Ready (it runs on every esweiss.com/ingress node, spread by anti-affinity).
+      #
+      # No NodePorts: MetalLB L2 announces the VIP directly and never uses them,
+      # so the default-allocated ports were unused listeners on every node. The
+      # healthCheckNodePort stays — required by externalTrafficPolicy: Local.
+      # Flipping this flag does not release already-allocated NodePorts: neither
+      # Helm nor Flux SSA owns spec.ports[*].nodePort, so a one-time kubectl
+      # patch removing those fields is needed on existing Services.
       spec:
         externalTrafficPolicy: Local
+        allocateLoadBalancerNodePorts: false
 
     # Enable dashboard (LAN/Tailscale-only)
     ingressRoute:
@@ -86,6 +94,8 @@ spec:
           - websecure
         middlewares:
           - name: lan-tailscale-only
+            namespace: traefik
+          - name: hsts-header
             namespace: traefik
 
     # Logging (chart 41.x renamed logs.general -> log, logs.access -> accessLog)
@@ -155,10 +165,15 @@ spec:
     # Tolerations for scheduling
     tolerations: []
 
-    # Resource limits
+    # Resource limits. CPU request sized against observed per-pod bursts
+    # (p95 ~490m): at 100m the HPA's 70% target sat at 70m — noise level —
+    # so every traffic burst pinned the HPA at maxReplicas and fired
+    # KubeHpaMaxedOut. 250m puts idle at ~3% and bursts around 200%, and
+    # scaling reacts to real load instead of jitter (per docs/33: raise the
+    # request, not the threshold). The VPA controls memory only.
     resources:
       requests:
-        cpu: 100m
+        cpu: 250m
         memory: 128Mi
       limits:
         memory: 512Mi

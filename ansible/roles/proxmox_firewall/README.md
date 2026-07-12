@@ -1,89 +1,82 @@
 # Proxmox Firewall Role
 
-Manages Proxmox VE firewall at cluster, host, and guest levels. Configures IPSets for network groupings and Security Groups for reusable rule templates.
+Manages Proxmox VE firewall at cluster, host, and guest levels. Configures IPSets for network groupings and Security Groups for reusable rule templates, plus the `monitoring@pve` user/ACL/API-token used by the Prometheus exporters.
 
 ## What This Role Manages
 
 ### Cluster Firewall (/etc/pve/firewall/cluster.fw)
-- Global firewall options
-- IPSet definitions (admin_lan, admin_ts, core-cluster, k3s_nodes, pve_hosts, nfs_clients, smb_clients)
-- Security Group definitions (sg-vm-admin, sg-dns, sg-smtp-relay, sg-plex, sg-k3s-*)
-- Cluster-wide rules
+- Global firewall options (`policy_in: DROP`, `policy_out: ACCEPT`)
+- IPSet definitions: `admin_lan`, `admin_ts`, `smb_clients` are static in
+  `templates/cluster.fw.j2`; the rest (`core-cluster`, `k3s_nodes`,
+  `pve_hosts`, `nfs_clients`, …) are rendered from inventory (see below)
+- Security Group definitions — **edited directly in `templates/cluster.fw.j2`**,
+  not driven by a variable. The full group inventory with per-rule rationale is
+  documented in `docs/11-firewall.md`
+- Cluster-wide rules (`pve_firewall_cluster_rules`, default empty)
 
 ### Host Firewall (/etc/pve/nodes/{node}/host.fw)
-- Per-host firewall configuration
-- Enable/disable host firewall
-- Host-specific rules (SSH, web UI, clustering, storage)
+- Per-host firewall enable + base group references (sg-pve-cluster,
+  sg-host-admin, sg-metrics; NAS hosts add sg-nfs-server/sg-smb-server)
+- Optional host egress allowlist + trailing OUT DROP (see "Egress filtering")
+- Inbound drop logging via `pve_firewall_log_level_in` (default `nolog`; flip
+  to `info` for triage of dropped inbound traffic — policy_in is DROP)
+- Host-specific extra rules (`pve_firewall_host_rules`, default empty)
 
 ### Guest Firewall (/etc/pve/firewall/{vmid}.fw)
-- Per-VM/LXC firewall configuration
-- IPSet assignments
-- Security Group assignments
-- Enable/disable per-guest firewall
+- Per-VM/LXC firewall configuration: `enable: 1` + one `GROUP <sg>` line per
+  entry in the guest's `guest_security_groups`
+- Optional `policy_out` (`guest_firewall_policy_out`, e.g. `DROP` to turn a
+  group's OUT ACCEPT rules into an enforced egress allowlist)
+
+### Monitoring user and API token (pveum)
+- Creates the `monitoring@pve` user, grants `PVEAuditor` at `/`, and creates
+  the `monitoring@pve!exporter` API token (`--privsep 0`) — run once per
+  invocation, cluster-wide. The token secret is only printed at creation; the
+  role discards it (`no_log`) and tells the operator how to recover/rotate it
+  (`/etc/pve/priv/token.cfg`, or token remove + add) into the
+  "Proxmox API Token" 1Password item.
 
 ## Configuration
 
-### IPSets (Network Groups)
+There is no `security_groups` variable and no dict-style `firewall_ipsets`
+map — groups live in the template, and IPSet membership is declared per host:
 
 ```yaml
-# Defined in group_vars or host_vars
-firewall_ipsets:
-  admin_lan:
-    - 192.168.0.0/24
-  admin_ts:
-    - 100.64.0.0/10  # Tailscale
-  core-cluster:
-    - 192.168.0.102-107  # Proxmox hosts
-    - 192.168.0.150-155  # Services
-    # ... (dynamically built from inventory)
+# In hosts.yml — per-HOST membership list: each named IPSet gains this
+# host's ansible_host IP. templates/ipsets.j2 renders every discovered set.
+dns-01:
+  firewall_ipsets:
+    - core-cluster
+  guest_security_groups:   # rendered into /etc/pve/firewall/<vmid>.fw
+    - sg-vm-admin
+    - sg-dns
+
+# In group_vars/all.yml — non-host entries (VIPs etc.) per IPSet:
+firewall_ipset_special_entries:
   k3s_nodes:
-    - 192.168.0.161  # API VIP
-    # ... (dynamically built)
-  pve_hosts:
-    - 192.168.0.102-107
-  nfs_clients:
-    # Hosts allowed to mount NFS
-  smb_clients:
-    - 192.168.0.0/24
+    - ip: 192.168.0.161
+      comment: k3s API VIP
 ```
 
-### Security Groups (Rule Templates)
+Named aliases (`pve_firewall_aliases`) and the log level
+(`pve_firewall_log_level_in`) are defined in `defaults/main.yml`.
 
-```yaml
-security_groups:
-  sg-vm-admin:  # SSH and ping
-  sg-dns:  # DNS, DoT, DoH, web UI
-  sg-smtp-relay:  # SMTP submission
-  sg-plex:  # Plex Media Server
-  sg-k3s-core:  # Kubernetes API, kubelet
-  sg-k3s-ingress-int:  # Internal ingress
-  sg-k3s-ingress-pub:  # Public ingress
-```
-
-### Guest Configuration
-
-```yaml
-# In hosts.yml
-hosts:
-  dns-01:
-    firewall_ipsets:
-      - core-cluster
-    guest_security_groups:
-      - sg-vm-admin
-      - sg-dns
-```
+To add or change a **security group**, edit `templates/cluster.fw.j2` and keep
+`docs/11-firewall.md` in sync — that doc is the canonical group inventory.
 
 ## Deployment
 
+The role is tagged `proxmox_firewall` in the playbooks:
+
 ```bash
-# Deploy firewall to all hosts
-ansible-playbook ansible/playbooks/site.yml --tags firewall
+# Deploy firewall everywhere it applies
+ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall
 
 # Deploy to Proxmox hosts only
-ansible-playbook ansible/playbooks/site.yml --limit proxmox
+ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall --limit proxmox
 
-# Deploy guest firewall rules
-ansible-playbook ansible/playbooks/site.yml --tags firewall --limit dns
+# Deploy guest firewall rules for the DNS containers
+ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall --limit dns
 ```
 
 ## Architecture
@@ -101,11 +94,12 @@ Proxmox Cluster Firewall
 
 ## Files
 
-- `tasks/main.yml` - Main orchestration
+- `tasks/main.yml` - Main orchestration (firewall configs + pveum monitoring user/token)
+- `tasks/guest.yml` - Per-guest firewall deployment (included when `vmid` is set)
 - `templates/cluster.fw.j2` - Cluster firewall with IPSets and Security Groups
 - `templates/host.fw.j2` - Per-host firewall rules
 - `templates/guest.fw.j2` - Per-guest firewall rules
-- `templates/ipsets.j2` - IPSet generation
+- `templates/ipsets.j2` - IPSet generation from inventory membership lists
 
 ## Dependencies
 
@@ -118,20 +112,25 @@ None - foundational role
 - Service-specific Security Groups
 - Per-guest isolation with opt-in networking
 
-## Egress filtering (opt-in)
+## Egress filtering
 
-Inbound is default-deny; host-originated **egress** is `ACCEPT` by default.
-`proxmox_firewall_egress_filtering` (default `false`) applies the
+Inbound is default-deny; host-originated **egress** is `ACCEPT` unless
+`proxmox_firewall_egress_filtering` is set (role default `false`; **production
+enables it for all six Proxmox hosts** via `group_vars/proxmox.yml`). When
+enabled it applies the
 `sg-host-egress` allowlist (DNS/NTP/HTTP(S)/Tailscale/corosync/SSH/NFS/SMTP/
 migration) and appends an explicit trailing `OUT DROP` rule in `host.fw`.
 `pve-firewall` honours OUT *rules* in `host.fw` but **ignores** the host-level
 `policy_out` option (that key is only effective in `cluster.fw`), so the trailing
 `OUT DROP` rule — not a policy setting — is what enforces default-deny. Guest
-traffic is unaffected.
+traffic is unaffected by the host rules; guests opt in separately via
+`guest_firewall_policy_out: "DROP"` (smtp-relay does, turning its
+`sg-smtp-relay` OUT rules into an enforced egress allowlist).
 
-Enable carefully — a missing allowlist entry can break a node or remote access:
+Rolling out to a new host (or re-enabling after an opt-out) — a missing
+allowlist entry can break a node or remote access:
 
-1. Set `proxmox_firewall_egress_filtering: true` in **one** host's `host_vars`
+1. Set `proxmox_firewall_egress_filtering: true` in the host's `host_vars`
    (start with a non-critical compute node), deploy, then validate with
    `pve-firewall compile` and confirm the node stays reachable, joins the cluster
    (`pvecm status`), and can reach apt/Tailscale.

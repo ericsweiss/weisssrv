@@ -82,17 +82,20 @@ provisioner:
   playbooks:
     create: create.yml
     destroy: destroy.yml
+    prepare: ../../../_shared/prepare.yml
     converge: converge.yml
     verify: verify.yml
   inventory:
     group_vars:
       nas_servers:
-        # Base role configuration (applied by converge)
-        skip_ssh_config: true  # SSH doesn't work in containers
+        # Base role configuration (applied by converge). SSH hardening is
+        # exercised by the base role's own molecule scenario; skip it here to
+        # keep this integration test focused on the NFS/Samba storage path.
+        skip_ssh_config: true
         skip_dns_config: true  # DNS resolver needs real network
 
         # NAS storage configuration - skip operations that don't work in containers
-        skip_zfs_config: true      # ZFS requires kernel modules
+        skip_zfs_operations: true  # ZFS requires kernel modules (also bypasses the bind-source mountpoint guard)
         skip_nfs_reload: true      # exportfs -ra fails without NFS kernel support
         skip_smartd_service: true  # No block devices in container
 
@@ -106,6 +109,20 @@ provisioner:
             clients:
               - spec: "172.16.0.0/12"
                 options: "rw,sync,no_subtree_check,no_root_squash"
+          # Prod-shaped export mirroring host_vars/pve-nas-01.yml
+          # (/export/appdata): bind_source under /mnt/tank (exercises the
+          # ZFS-anchored fstab bind path), export-level xprtsec=tls, fsid, and
+          # all_squash uid/gid mapping. verify.yml asserts the rendered
+          # /etc/exports line (server-side render only; no TLS mount needed).
+          - path: /export/appdata
+            bind_source: /mnt/tank/appdata
+            owner: 1000
+            group: 2000
+            mode: "02775"
+            xprtsec: "tls"
+            clients:
+              - spec: "172.16.0.0/12"
+                options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
         # Samba shares configuration (Samba DOES work in containers)
         samba_shares:
@@ -131,9 +148,9 @@ provisioner:
           - /tank/media
           - /tank/share
 
-        # SMART monitoring (no real devices in container)
+        # SMART monitoring (no real devices in container; the smartd_*_disks
+        # lists the role consumes default to empty)
         smartd_enabled: true
-        smartd_devices: []
 
       smb_clients:
         # Samba client configuration

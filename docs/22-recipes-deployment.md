@@ -76,18 +76,14 @@ This guide covers deploying the recipe management stack including Mealie (food r
 
 ### 1. NFS Storage Preparation
 
-The NFS exports should already be configured. Create the appdata directories:
+The NFS exports and per-app appdata directories are provisioned by the
+`nas_storage` role: `mealie` and `bar-assistant` are in the role's
+`nas_appdata_dirs` list, so `/mnt/ssd/appdata/{mealie,bar-assistant}` are
+created (owned `1000:2000`) by `task storage:deploy` — no manual `mkdir`
+needed (Meilisearch uses a `subPath` within the Bar Assistant mount). Verify:
 
 ```bash
-# Create directories for Mealie (app data only - PostgreSQL uses a dedicated ZFS zvol)
-ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/mealie"
-ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/mealie"
-ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/mealie"
-
-# Create directories for Bar Assistant (Meilisearch uses subPath within the NFS mount)
-ssh pve-nas-01 "sudo mkdir -p /mnt/ssd/appdata/bar-assistant/meilisearch"
-ssh pve-nas-01 "sudo chown -R 1000:2000 /mnt/ssd/appdata/bar-assistant"
-ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/bar-assistant"
+ssh pve-nas-01 "ls -la /mnt/ssd/appdata/mealie /mnt/ssd/appdata/bar-assistant"
 ```
 
 **Note**: Mealie PostgreSQL uses a dedicated ZFS zvol (`ssd/appdata/mealie/postgres`) attached to k3s-agt-nas-01 as a SCSI disk and mounted at `/mnt/mealie-postgres-data`. This provides persistent storage that survives VM recreation. The zvol is managed by the `proxmox_vm` role via `vm_additional_disks` in `hosts.yml` and exposed to Kubernetes as a hostPath PV.
@@ -96,7 +92,7 @@ ssh pve-nas-01 "sudo chmod -R 2775 /mnt/ssd/appdata/bar-assistant"
 
 Create the following items in your **Homelab** vault before deploying. Secrets are managed by External Secrets Operator (ESO), which syncs credentials from 1Password into Kubernetes Secrets every 24 hours. To rotate credentials, update the value in 1Password and run `task flux:rotate-secret -- recipes` to force an immediate refresh and pod restart.
 
-**IMPORTANT**: All secrets must exist in 1Password before deployment. If a required 1Password item is missing, the ExternalSecret enters a non-Ready state and the consuming pods will fail to start. Optional secrets (like the OpenAI API key) are isolated in a separate ExternalSecret so their absence does not block the required credentials.
+**IMPORTANT**: All secrets must exist in 1Password before deployment. If a required 1Password item is missing, the ExternalSecret enters a non-Ready state and the consuming pods will fail to start.
 
 **Required Items (deployment fails without these):**
 
@@ -131,9 +127,12 @@ Then create in 1Password:
 
 | 1Password Item | Field | Purpose |
 |----------------|-------|---------|
-| **OpenAI API Key** | `api-key` | OpenAI API key for Mealie recipe parsing from images |
+| **OpenAI API Key** | `api-key` | OpenAI API key for Mealie recipe parsing (configured in-app, not ESO-synced) |
 
-The deployment proceeds with a note if the OpenAI API key is missing - this feature is optional.
+Since Mealie 3.x the OpenAI key is configured **in the Mealie UI** under
+Settings > AI (the legacy `OPENAI_*` env vars are no longer read at runtime —
+config lives in the `ai_providers` DB table). The 1Password item is just the
+key's storage location; deployment does not depend on it.
 
 ### 3. DNS Configuration
 
@@ -170,7 +169,6 @@ The recipes stack is Flux-managed. All files live under `kubernetes/apps/recipes
 kubernetes/apps/recipes/
 ├── namespace.yaml
 ├── externalsecret.yaml     # Required secrets: DB, SSO, meilisearch, SMTP creds (recipes-secrets)
-├── externalsecret-openai.yaml  # Optional: OpenAI API key (recipes-openai, isolated so failure doesn't block required secrets)
 ├── storage.yaml            # PVCs + PVs (NFS for appdata, hostPath PV for Mealie PG zvol)
 ├── mealie.yaml             # Deployment + Service (Mealie, Mealie Postgres)
 ├── bar-assistant.yaml      # Deployment + Service (Bar Assistant, Redis, Meilisearch, Salt Rim)
@@ -186,7 +184,8 @@ kubernetes/apps/recipes/
 
 1. Edit the appropriate YAML under `kubernetes/apps/recipes/`.
 2. Commit and push.
-3. Flux reconciles within ~1 minute.
+3. The GitLab agent's Flux module triggers reconciliation on push (fallback:
+   ~1-minute poll).
 
 For image-version bumps:
 
@@ -195,15 +194,14 @@ task maintenance:update-version SERVICE=mealie
 task flux:sync-versions
 git add ansible/inventories/prod/group_vars/all.yml kubernetes/infrastructure/sources/versions-configmap.yaml
 git commit -m "Bump mealie" && git push
-task flux:reconcile  # optional: skip the 1-min poll
+task flux:reconcile  # optional: force reconciliation immediately
 ```
 
 ### Secrets (ExternalSecrets)
 
-Recipe secrets are split across two ExternalSecrets so that a missing optional
-key (OpenAI) does not block the required credentials (database, SSO, search,
-SMTP). Both reference 1Password items by title (`key`) and field name
-(`property`) via the Connect provider.
+Recipe secrets live in the single `recipes-secrets` ExternalSecret, which
+references 1Password items by title (`key`) and field name (`property`) via
+the Connect provider.
 
 #### `recipes-secrets` (required)
 
@@ -226,18 +224,12 @@ Secret will not be created. See `docs/23-recipes-sso-setup.md` for how to create
 the SSO items from Authentik. See `docs/29-flux-operations.md` for the
 `key: <item-title>` / `property: <field-name>` format.
 
-#### `recipes-openai` (optional)
+#### OpenAI key (in-app, not ESO-synced)
 
-Contains the OpenAI API key used by Mealie for recipe parsing from images:
-
-| secretKey | 1Password Item | Field |
-|-----------|---------------|-------|
-| `api-key` | OpenAI API Key | `api-key` |
-
-Because this is a separate ExternalSecret, a missing or invalid OpenAI key
-does not prevent `recipes-secrets` from syncing. Mealie starts without
-OpenAI -- image-based recipe parsing is simply unavailable until the key is
-provided.
+The OpenAI API key used by Mealie for recipe parsing is configured in the
+Mealie UI under Settings > AI (the key itself is stored in the 1Password item
+`OpenAI API Key`, field `api-key`). There is no OpenAI ExternalSecret — Mealie
+3.x stores AI provider config in its database, not env vars.
 
 #### Rotating secrets
 
@@ -245,14 +237,13 @@ Change the value in 1Password, then either wait 24h or force a refresh:
 
 ```bash
 task flux:rotate-secret -- recipes
-# (forces both ExternalSecrets to refresh and restarts all Deployments in the recipes namespace)
+# (forces the ExternalSecret to refresh and restarts all Deployments in the recipes namespace)
 ```
 
-To refresh a single ExternalSecret without restarting pods:
+To refresh the ExternalSecret without restarting pods:
 
 ```bash
 task flux:refresh-secret -- recipes/recipes-secrets
-task flux:refresh-secret -- recipes/recipes-openai
 ```
 
 ### Verify Deployment

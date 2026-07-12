@@ -55,11 +55,6 @@
   when: ha_rules is defined and ha_rules | length > 0
   tags: [proxmox_ha, proxmox_ha_rules]
 
-- name: Manage HA groups
-  ansible.builtin.include_tasks: groups.yml
-  when: ha_groups is defined and ha_groups | length > 0
-  tags: [proxmox_ha, proxmox_ha_groups]
-
 - name: Manage HA resources
   ansible.builtin.include_tasks: resources.yml
   when: ha_resources is defined and ha_resources | length > 0

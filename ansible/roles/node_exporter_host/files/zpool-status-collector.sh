@@ -14,12 +14,15 @@
 #   zfs_pool_status_errors_total{pool,type=read|write|cksum}  summed vdev counters
 #   zfs_pool_status_data_errors{pool}    count of entries in the permanent-error list
 #   zfs_pool_status_last_scrub_seconds{pool}  unix time scrub last completed (0 = never)
+#   zfs_pool_status_allocated_bytes{pool}  allocated bytes (zpool list -Hp alloc)
+#   zfs_pool_status_size_bytes{pool}       total pool size in bytes (zpool list -Hp size)
 # Plus the collector sentinel:
 #   zfs_pool_status_collector_last_success_seconds
 #
 # Companion alerts live in kubernetes/.../kube-prometheus-stack/release.yaml
-# (homelab.storage group): ZFSPoolDeviceErrors, ZFSPoolNotOnline,
-# ZFSPoolScrubStale, ZFSPoolCollectorStale.
+# (homelab.monitoring group): ZFSPoolDeviceErrors, ZFSPoolDataErrors,
+# ZFSPoolNotOnline, ZFSPoolScrubStale, ZFSPoolCollectorStale,
+# ZFSPoolSpaceWarning, ZFSPoolSpaceCritical.
 #
 # Hosts without ZFS (no zpool binary or no imported pools) emit only the
 # sentinel — the per-pool alerts key off pool-labelled series, so absent
@@ -49,6 +52,10 @@ mkdir -p "$OUT_DIR"
     printf '# TYPE zfs_pool_status_data_errors gauge\n'
     printf '# HELP zfs_pool_status_last_scrub_seconds Unix time the last scrub completed (0 = no completed scrub recorded).\n'
     printf '# TYPE zfs_pool_status_last_scrub_seconds gauge\n'
+    printf '# HELP zfs_pool_status_allocated_bytes Allocated space in the pool in bytes (zpool list -Hp alloc).\n'
+    printf '# TYPE zfs_pool_status_allocated_bytes gauge\n'
+    printf '# HELP zfs_pool_status_size_bytes Total pool size in bytes (zpool list -Hp size).\n'
+    printf '# TYPE zfs_pool_status_size_bytes gauge\n'
 
     if command -v zpool >/dev/null 2>&1; then
         for pool in $(zpool list -H -o name 2>/dev/null); do
@@ -126,12 +133,32 @@ mkdir -p "$OUT_DIR"
                 scrub_ts=$(date +%s)
             fi
 
+            # Capacity gauges from parsable (exact-byte) list output. `-Hp`
+            # prints raw bytes (no K/M/G rounding) so the alloc/size ratio the
+            # ZFSPoolSpace rule computes is accurate. Same `set +e` guard as
+            # above: a pool yanked mid-loop must not kill the run. Emitted only
+            # when the pool reports a real size — a faulted pool printing "-"
+            # would otherwise feed a 0 size into the rule's ratio (div-by-zero).
+            set +e
+            cap=$(zpool list -Hpo alloc,size "$pool" 2>/dev/null)
+            set -e
+            # Intentional word-splitting of two integers:
+            # shellcheck disable=SC2086
+            set -- $cap
+            alloc_bytes=${1:-0}; size_bytes=${2:-0}
+            case "$alloc_bytes" in ''|*[!0-9]*) alloc_bytes=0 ;; esac
+            case "$size_bytes" in ''|*[!0-9]*) size_bytes=0 ;; esac
+
             printf 'zfs_pool_status_health_code{pool="%s"} %d\n' "$pool" "$code"
             printf 'zfs_pool_status_errors_total{pool="%s",type="read"} %d\n' "$pool" "$read_e"
             printf 'zfs_pool_status_errors_total{pool="%s",type="write"} %d\n' "$pool" "$write_e"
             printf 'zfs_pool_status_errors_total{pool="%s",type="cksum"} %d\n' "$pool" "$cksum_e"
             printf 'zfs_pool_status_data_errors{pool="%s"} %d\n' "$pool" "$data_errors"
             printf 'zfs_pool_status_last_scrub_seconds{pool="%s"} %d\n' "$pool" "$scrub_ts"
+            if [ "$size_bytes" -gt 0 ]; then
+                printf 'zfs_pool_status_allocated_bytes{pool="%s"} %d\n' "$pool" "$alloc_bytes"
+                printf 'zfs_pool_status_size_bytes{pool="%s"} %d\n' "$pool" "$size_bytes"
+            fi
         done
     fi
 

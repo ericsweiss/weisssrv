@@ -17,9 +17,11 @@ spec:
     spec:
       # Pod-level DNS fallback: primary + secondary internal resolvers.
       # When Gluetun is enabled, Gluetun's own DNS_ADDRESS (set on the gluetun
-      # sidecar) takes precedence inside the tunnel; if the gluetun container is
-      # crashed or the VPN is disabled, the app falls back to these nameservers.
-      # dns-01/dns-02 are the AdGuard HA VIPs.
+      # sidecar) takes precedence; if the gluetun container is crashed or the
+      # VPN is disabled, the app falls back to these nameservers.
+      # dns-01/dns-02 are the AdGuard HA VIPs. Either way DNS goes to the LAN
+      # resolvers outside the tunnel (FIREWALL_OUTBOUND_SUBNETS below routes
+      # them via eth0); upstream privacy comes from Unbound's DoT, not the VPN.
       dnsPolicy: None
       dnsConfig:
         nameservers:
@@ -28,7 +30,6 @@ spec:
         options:
           - name: ndots
             value: "1"
-          - name: single-request-reopen
       # Init container verifies VPN prerequisites when VPN is enabled
       initContainers:
         - name: check-vpn-config
@@ -106,25 +107,37 @@ spec:
                   name: placeholder-vpn-config
                   key: server_countries
                   optional: true
+            # Killswitch escape hatch, kept as narrow as the NetworkPolicy
+            # intent: pod/service CIDRs (Traefik ingress, kubelet probes,
+            # exporter scrapes) + the two DNS resolvers. Everything else
+            # non-tunnel is dropped by gluetun's own firewall.
             - name: FIREWALL_OUTBOUND_SUBNETS
-              value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+              value: "10.42.0.0/16,10.43.0.0/16,192.168.0.150/32,192.168.0.160/32"
+            # Health + control servers bind loopback only: every consumer (the
+            # exec probes below, the gluetun-exporter sidecar) shares the pod
+            # network namespace, and the control API is unauthenticated.
             - name: HEALTH_SERVER_ADDRESS
-              value: ":8000"
+              value: "127.0.0.1:8000"
             - name: HEALTH_VPN_DURATION_INITIAL
               value: "30s"
             - name: HTTP_CONTROL_SERVER_ADDRESS
-              value: ":8001"
+              value: "127.0.0.1:8001"
             - name: DNS_ADDRESS
               # Gluetun v3.41 rejects comma-separated values (only a single
-              # address is accepted) — a single-resolver dependency on dns-01
-              # INSIDE the tunnel. Pod-level dnsConfig.nameservers above covers
-              # dns-02 as a fallback only when Gluetun is disabled or crashed.
+              # address is accepted) — a single-resolver dependency on dns-01.
+              # Queries route OUTSIDE the tunnel via eth0 (dns-01 is in
+              # FIREWALL_OUTBOUND_SUBNETS); Unbound's DoT covers upstream
+              # privacy. Pod-level dnsConfig.nameservers above covers dns-02
+              # as a fallback only when Gluetun is disabled or crashed.
               value: "192.168.0.150"
             - name: TZ
               value: America/Los_Angeles
             - name: LOG_LEVEL
               value: info
           ports:
+            # Informational only — the health server binds 127.0.0.1, so this
+            # port is never reachable on the pod IP. Overlays append the
+            # app-facing ports to this list.
             - name: health
               containerPort: 8000
               protocol: TCP
@@ -140,7 +153,7 @@ spec:
                   if [ "$VPN_ENABLED" != "true" ]; then
                     exit 0
                   fi
-                  wget -q -O /dev/null http://localhost:8000/ || exit 1
+                  wget -q -O /dev/null http://127.0.0.1:8000/ || exit 1
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10
@@ -155,7 +168,7 @@ spec:
                   if [ "$VPN_ENABLED" != "true" ]; then
                     exit 0
                   fi
-                  wget -q -O /dev/null http://localhost:8000/ || exit 1
+                  wget -q -O /dev/null http://127.0.0.1:8000/ || exit 1
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5

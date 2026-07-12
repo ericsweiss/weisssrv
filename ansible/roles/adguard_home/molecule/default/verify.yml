@@ -101,7 +101,6 @@
       register: adguard_dir_perms
       failed_when: adguard_dir_perms.stat.pw_name != 'adguard'
 
-    # Verify directory permissions
     - name: Check data directory exists and has correct permissions
       ansible.builtin.stat:
         path: /opt/AdGuardHome/data
@@ -117,7 +116,6 @@
         fail_msg: "Data directory has incorrect permissions"
         success_msg: "Data directory has correct restrictive permissions (0700)"
 
-    # Verify certs directory
     - name: Check certs directory exists
       ansible.builtin.stat:
         path: /opt/AdGuardHome/certs
@@ -132,7 +130,6 @@
         fail_msg: "Certs directory has incorrect permissions"
         success_msg: "Certs directory has correct permissions for cert distribution"
 
-    # Verify AdGuard Home config file
     - name: Check if AdGuardHome.yaml exists
       ansible.builtin.stat:
         path: /opt/AdGuardHome/AdGuardHome.yaml

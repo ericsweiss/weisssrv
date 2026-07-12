@@ -152,7 +152,7 @@ The service account needs read access to these items in the "Homelab" vault. The
 | Item Name | Required Fields | Used By |
 |-----------|----------------|---------|
 | SSH Key | `private key` | Ansible deployments |
-| Cloudflare DNS Token | `credential`, `username` | Terraform `deploy-terraform` |
+| Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
 | GitLab API Token | `credential` | AI code review (PR-Agent) |
 | OpenAI API Key | `api-key` | AI code review (PR-Agent) |
 
@@ -242,13 +242,19 @@ The weisssrv `.gitlab-ci.yml` has `default: tags: [infrastructure]` so all jobs 
    - **Value**: (paste the `glrt-...` token)
 3. Save the item
 
-### Step 4.3: Create Infrastructure Runner Token
+### Step 4.3: Create Infrastructure Runner Token (PROJECT runner)
 
-1. Navigate to **Admin Area** > **CI/CD** > **Runners**
-2. Click **New instance runner** again
+The privileged runner must be a **project runner locked to the weisssrv
+project — never an instance runner** (tags are cooperative routing; the
+registration scope is what keeps other projects' jobs away from root+DinD —
+see `docs/27-gitlab-deployment.md` § Step 8).
+
+1. In the **weisssrv project**, navigate to **Settings** > **CI/CD** > **Runners**
+2. Click **New project runner**
 3. Configure:
    - **Tags**: `infrastructure`
    - **Run untagged jobs**: No
+   - **Lock to current projects**: Yes
 4. Click **Create runner**
 5. **Copy the runner token** (format: `glrt-...`)
 

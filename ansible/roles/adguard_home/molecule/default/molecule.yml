@@ -25,7 +25,7 @@ provisioner:
   inventory:
     group_vars:
       all:
-        adguard_home_version: 0.107.71
+        adguard_home_version: 0.107.77
         adguard_user: adguard
         adguard_group: adguard
         adguard_install_path: /opt/AdGuardHome
@@ -40,7 +40,11 @@ provisioner:
         internal_domain: test.local
         skip_ssh_config: true
         skip_dns_config: true
-        skip_adguard_api_config: true
+        # api_base_config.yml runs here (password management + /control/dns_config
+        # against the live instance; unbound converges as a meta dependency, so
+        # the 127.0.0.1:5335 upstream is real). TLS config still skips itself —
+        # no certs are deployed in the container. The dns-01-gated api_config.yml
+        # (rewrites) is only covered by the dns-stack integration scenario.
         skip_resolv_conf_update: true
         adguard_use_private_tmp: false
         adguard_use_protect_system: false

@@ -14,8 +14,6 @@ spec:
     - match: Host(`auth.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -40,50 +38,7 @@ spec:
       middlewares:
         - name: lan-tailscale-only
           namespace: traefik
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
-          namespace: traefik
-      services:
-        - name: authentik-server
-          port: 80
-  tls:
-    secretName: authentik-esweiss-tls
-
----
-# Forward auth endpoint for protected services (external)
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: authentik-outpost
-  namespace: authentik
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - match: Host(`auth.ericsweiss.com`) && PathPrefix(`/outpost.goauthentik.io/`)
-      kind: Rule
-      services:
-        - name: authentik-server
-          port: 80
-  tls:
-    secretName: authentik-ericsweiss-tls
-
----
-# Forward auth endpoint for protected services (internal)
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: authentik-outpost-internal
-  namespace: authentik
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - match: Host(`auth.esweiss.com`) && PathPrefix(`/outpost.goauthentik.io/`)
-      kind: Rule
-      middlewares:
-        - name: lan-tailscale-only
           namespace: traefik
       services:
         - name: authentik-server

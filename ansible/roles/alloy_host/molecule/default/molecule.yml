@@ -22,4 +22,5 @@ provisioner:
   inventory:
     group_vars:
       all:
+        alloy_host_version: "1.17.1-1"
         alloy_host_loki_url: http://127.0.0.1:31100/loki/api/v1/push

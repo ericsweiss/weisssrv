@@ -1,11 +1,12 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Replicate ZFS datasets to archive pool
-# Ordered after ZFS mounts so source datasets (tank/*, ssd/*) are settled
-# before replication runs; archive-backupctl additionally probes each
-# source for presence, so a still-importing source is skipped, not replicated
-# from an empty mountpoint dir.
-After=zfs-mount.service
+# Ordered after both ZFS mount passes — the early zfs-mount.service and the
+# late zfs-mount-encrypted.service (every SRC_LIST source is encrypted and
+# mounts only after its key loads). Best-effort tidiness, not correctness:
+# raw `zfs send -w` needs neither key nor mount, and archive-backupctl probes
+# each source dataset for presence before replicating.
+After=zfs-mount.service zfs-mount-encrypted.service
 
 [Service]
 Type=oneshot

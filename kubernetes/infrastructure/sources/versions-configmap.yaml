@@ -7,27 +7,28 @@ data:
   adguard_exporter_version: v1.2.1
   adguard_home_version: 0.107.77
   adguardhome_sync_version: 0.9.2
-  authentik_version: 2026.5.3
-  bar_assistant_version: 5.15.2
+  alloy_host_version: 1.17.1-1
+  authentik_version: 2026.5.4
+  bar_assistant_version: 5.15.3
   busybox_version: '1.38'
   debian_version: '13'
   exportarr_version: v2.3.0
   flux_version: 2.9.0
   gitlab_agent_helm_version: 2.28.0
   gitlab_runner_helm_version: 0.90.1
-  gitlab_version: 19.1.1-ee.0
+  gitlab_version: 19.1.2-ee.0
   gluetun_version: v3.41.1
-  helm_chart_versions_alloy: 1.10.0
-  helm_chart_versions_cert_manager: v1.20.3
+  helm_chart_versions_alloy: 1.10.1
+  helm_chart_versions_cert_manager: v1.21.0
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.7.0
-  helm_chart_versions_kube_prometheus_stack: 87.10.1
-  helm_chart_versions_kured: 6.0.0
-  helm_chart_versions_loki: 18.4.0
+  helm_chart_versions_kube_prometheus_stack: 87.15.1
+  helm_chart_versions_kured: 6.1.0
+  helm_chart_versions_loki: 18.4.4
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.15.1
-  helm_chart_versions_reloader: 2.2.12
+  helm_chart_versions_reloader: 2.2.14
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
   k3s_version: v1.36.2+k3s1
@@ -41,8 +42,8 @@ data:
   postgresql_version: 18.4-trixie
   prowlarr_version: 2.4.0.5397
   proxmox_exporter_version: 3.9.0
-  pulsarr_version: 0.17.2
-  qbittorrent_version: 5.2.2
+  pulsarr_version: 0.17.3
+  qbittorrent_version: 5.2.3
   radarr_version: 6.2.1.10461
   redis_exporter_version: v1.86.0
   redis_version: 8.8.0-alpine

@@ -82,7 +82,6 @@
       register: zvol_loop_device
       changed_when: false
 
-    # Create the /dev/disk/by-id/ directory and symlink
     # This simulates what QEMU/Proxmox creates for SCSI-attached disks
     - name: Create /dev/disk/by-id directory
       ansible.builtin.file:

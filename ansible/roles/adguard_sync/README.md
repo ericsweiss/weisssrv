@@ -19,8 +19,8 @@ Configures one-way sync of AdGuard Home settings from dns-01 (primary) to dns-02
 
 ### Service Management
 - Systemd timer enabled and started
-- Home directory creation (/var/lib/adguardhome-sync)
-- Configuration secured (mode 0600)
+- Sandboxed DynamicUser oneshot (state under /var/lib/private/adguardhome-sync)
+- Configuration secured (mode 0600, passed to the service via LoadCredential)
 - Version pinning from group_vars
 
 ## Configuration
@@ -28,8 +28,8 @@ Configures one-way sync of AdGuard Home settings from dns-01 (primary) to dns-02
 ### Required Variables
 
 ```yaml
-# Version (from group_vars/all.yml)
-adguardhome_sync_version: "0.8.2"
+# Version pin (group_vars/all.yml is the source of truth)
+adguardhome_sync_version: "..."
 
 # AdGuard Home instances. The URLs target the Traefik-fronted
 # `dns-{01,02}.esweiss.com` hostnames (TLS-terminated by Traefik,
@@ -38,7 +38,7 @@ adguardhome_sync_version: "0.8.2"
 adguardhome_sync_origin: "https://dns-01.{{ internal_domain }}"
 adguardhome_sync_replica: "https://dns-02.{{ internal_domain }}"
 
-# Sync settings (group_vars/dns.yml)
+# Sync settings (group_vars/dns.yml is the source of truth — this mirrors it)
 adguardhome_sync_features:
   dns:
     accessLists: true
@@ -51,6 +51,10 @@ adguardhome_sync_features:
   queryLogConfig: true
   statsConfig: true
   clientSettings: true
+  services: true
+  filters: true
+  theme: true
+  tlsConfig: false  # cert files/paths are host-local and reconciled per host by adguard_home; syncing them would fight Ansible
 ```
 
 ### 1Password Secrets
@@ -111,25 +115,27 @@ rewrite / blocklist edit on both UIs) so drift never opens up.
 - Custom filtering rules
 - Client configurations
 - Service settings
+- DHCP configuration and static leases (synced even though the DHCP
+  server itself is disabled — the router handles DHCP)
 
 **What Doesn't Get Synced**:
 - Admin password (managed by Ansible)
-- TLS certificates (managed by acme_certs role)
-- DHCP settings (disabled)
+- TLS configuration/certificates (`tlsConfig: false` — cert files/paths are
+  host-local and reconciled per host by the adguard_home/acme_certs roles;
+  syncing them would fight Ansible)
 
 ## Task Flow
 
 ```
-1. Check if adguardhome-sync binary exists
-2. Download binary from GitHub releases (if not present)
-3. Extract tarball
-4. Install binary to /usr/local/bin/adguardhome-sync
-5. Cleanup download files
-6. Create home directory (/var/lib/adguardhome-sync)
-7. Deploy configuration file (/etc/adguardhome-sync.yaml)
-8. Deploy systemd service unit
-9. Deploy systemd timer unit (OnCalendar=*:0/5, Persistent=true)
-10. Enable and start timer
+1. Install binary via the shared prometheus_exporter install pipeline
+   (version probe -> conditional download with checksums.txt verification ->
+   extract -> install to /usr/local/bin/adguardhome-sync)
+2. Remove legacy root-owned /var/lib/adguardhome-sync (systemd manages the
+   state directory now)
+3. Deploy configuration file (/etc/adguardhome-sync.yaml)
+4. Deploy systemd service unit (sandboxed DynamicUser oneshot)
+5. Deploy systemd timer unit (OnCalendar=*:0/5, Persistent=true)
+6. Enable and start timer
 ```
 
 ## Files
@@ -147,7 +153,11 @@ rewrite / blocklist edit on both UIs) so drift never opens up.
 
 ## Security
 
-- Configuration file mode 0600 (admin password included)
+- Configuration file mode 0600 (admin password included), handed to the
+  unprivileged service via systemd LoadCredential
+- Service runs as a DynamicUser with the standard sandbox block
+  (NoNewPrivileges, ProtectSystem=strict, ProtectHome, PrivateTmp, restricted
+  address families) — same posture as the unbound/zfs exporter units
 - Credentials from 1Password (never in git)
 - Operations use `no_log: true` for secrets
 - Only runs on dns-01 (never on dns-02)
@@ -188,13 +198,7 @@ sudo journalctl -u adguardhome-sync.service -f
 
 ### Version Updates
 
-Update version in `group_vars/all.yml`:
-
-```yaml
-adguardhome_sync_version: "0.8.2"
-```
-
-Then run:
+Update `adguardhome_sync_version` in `group_vars/all.yml`:
 
 ```bash
 task maintenance:update-version SERVICE=adguardhome-sync
@@ -246,8 +250,9 @@ curl -u eric:password https://dns-02.esweiss.com/control/dns_info
 # Stop timer
 systemctl stop adguardhome-sync.timer
 
-# Clear any lock files
-rm -rf /var/lib/adguardhome-sync/*
+# Clear any lock files (DynamicUser state dir lives under /var/lib/private;
+# /var/lib/adguardhome-sync is the systemd-managed symlink to it)
+rm -rf /var/lib/private/adguardhome-sync/*
 
 # Trigger manual sync
 systemctl start adguardhome-sync.service

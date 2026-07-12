@@ -17,9 +17,11 @@ Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform,
 weisssrv/
 ├── ansible/                    # Configuration management
 │   ├── inventories/prod/       # Production inventory + vars
-│   ├── roles/                  # 28 roles for all services
+│   ├── roles/                  # one role per service — see the README roles table
 │   └── playbooks/              # Deployment playbooks
-├── terraform/cloudflare/       # External DNS management
+├── terraform/
+│   ├── cloudflare/             # External DNS management
+│   └── tailscale/              # Tailnet ACL policy-as-code
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order; together with apps/ they form a five-stage Flux Kustomization chain (sources -> controllers -> configs -> observability -> apps)
@@ -32,7 +34,7 @@ weisssrv/
 ├── scripts/                    # Utility scripts
 ├── docker/                     # Molecule test/CI container images
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
-└── .github/workflows/          # Legacy workflows (disabled)
+└── .github/workflows/          # Single inert stub (ci-disabled.yml) — CI runs on GitLab
 ```
 
 ## Architecture
@@ -61,42 +63,43 @@ list with IPs and host placement lives in the README architecture diagram and
 1. **Ansible** (`task k3s:deploy`): VMs, k3s, kube-vip (API VIP .161). One-off and idempotent.
 2. **Flux GitOps**: Everything in-cluster (platform controllers + apps) is reconciled by Flux from `kubernetes/` on every push to `main`. Local iteration uses `task flux:dev-apply -- <path>` (changes are reverted on next reconcile cycle unless committed).
 
-Ansible tasks remain idempotent - safe to re-run. Flux reconciles automatically within ~1 minute of a push; use `task flux:reconcile` to force immediately. See `docs/19-k3s-deployment.md` for the k3s layer and `docs/29-flux-operations.md` for Flux day-2 operations.
+Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-triggered via the GitLab agent's Flux module (the ~1-minute git poll is the fallback); use `task flux:reconcile` to force immediately. See `docs/19-k3s-deployment.md` for the k3s layer and `docs/29-flux-operations.md` for Flux day-2 operations.
 
 **Features**:
 - kube-vip (API VIP .161), MetalLB (VIPs .100/.101)
 - Traefik ingress, external-dns (Cloudflare)
 - 3-node etcd quorum (tolerates 1 server failure)
 - Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password Connect backend
-- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting); k3s-irrelevant components disabled (kubeProxy, kubeScheduler, kubeControllerManager, kubeEtcd); alertmanager config uses ExternalSecret template for webhook injection
+- Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting); k3s-irrelevant components disabled (kubeProxy, kubeScheduler, kubeControllerManager); alertmanager config uses ExternalSecret template for webhook injection
 - Autoscaling: VPA (Auto/Initial/Off tiers per workload class) + CoreDNS HPA pin — see docs/33-autoscaling.md
+- Node/workload ops: kured (coordinated reboots), Reloader (restarts on ConfigMap/Secret change) — full controller set in `kubernetes/infrastructure/controllers/kustomization.yaml`
 
 **Applications** (deployment details live in the per-app docs):
 - Authentik SSO (auth.esweiss.com) — identity provider for OIDC/SAML; PostgreSQL on a dedicated zvol
 - Plex Media Server (plex.esweiss.com) — LXC container with Traefik ingress (docs/20)
 - Download/media stack, `downloads` namespace (docs/21): Gluetun VPN gateway with killswitch, NZBGet (nzbget.\*), qBittorrent (qbittorrent.\*), Prowlarr (prowlarr.\*), Sonarr (tv.\*), Radarr (movies.\*), Lidarr (music.\*), Pulsarr (pulsarr.\*, NAS-pinned/AVX)
 - Recipes stack, `recipes` namespace (docs/22-23): Mealie (food.\*, PostgreSQL on zvol, OpenAI parsing), Bar Assistant (bar.\*); both behind Authentik OIDC
-- Home Assistant (home.esweiss.com / home.ericsweiss.com, docs/24): HAOS VM (.154, Proxmox-HA-managed), websocket ingress, hass-openid SSO, \*arr API bypass routes, read-only NFS media mount
+- Home Assistant (home.esweiss.com / home.ericsweiss.com, docs/24): HAOS VM (.154, Proxmox-HA-managed), websocket ingress, hass-openid SSO, full-host SSO bypass routes for the \*arr integrations scoped to HA's IP, read-only NFS media mount
 - GitLab (git.esweiss.com / git.ericsweiss.com, docs/27): EE omnibus VM on pve-nas-01 (.153), repos on 200GB zvol, Container Registry, Pages, Web IDE extension host (CVE-2026-5816 SOP isolation), k3s CI runners (infrastructure + shared), SAML SSO, SSH 22/2222
 - Grafana (grafana.esweiss.com, docs/31): community + custom dashboards via `grafana_dashboard` ConfigMap sidecar, Authentik OIDC, Loki datasource
 
-**Planned** (not yet created):
+**Planned** (not yet created) — roadmap source of truth is `docs/16-next-steps.md`:
 - Apps: Immich, Nextcloud
-- `weisssrv-project-template` GitLab template project for tenant-side scaffold — does not exist yet; the multi-repo onboarding flow in `docs/30-multi-repo-onboarding.md` depends on it (tracked in `docs/16-next-steps.md`)
+- `weisssrv-project-template` GitLab template project for tenant-side scaffold — does not exist yet; the multi-repo onboarding flow in `docs/30-multi-repo-onboarding.md` depends on it
 
 ## Common Development Commands
 
 ### Task Runner
 
 All operations use `Taskfile.yml`. Run `task --list` for the full, current set
-(grouped by namespace: `ansible:*`, `infra:*`, `dns:*`, `storage:*`, `plex:*`,
-`proxmox:*`, `zfs:*`, `k3s:*`, `flux:*`, `downloads:*`,
-`recipes:*`, `authentik:*`, `observability:*`, `home-assistant:*`, `gitlab:*`,
-`maintenance:*`, `terraform:*`, plus top-level `lint` and `collect-state`). The
-Taskfile is the source of truth — do not maintain a copy of the task list here.
+(grouped by namespace). The Taskfile is the source of truth — do not maintain
+a copy of the task list here.
 
 Workflow facts an agent must know (not obvious from `task --list`):
 
+- **Never push to `main`.** Every change — even a one-line hotfix — ships via
+  a feature branch + merge request on GitLab. Flux and CI act on `main` after
+  merge.
 - **Two lifecycles.** Base infra + the k3s layer are deployed by Ansible
   (`task infra:*`, `task k3s:*`); everything *inside* the cluster (platform
   controllers + apps) is reconciled by **Flux** from `kubernetes/` on every push
@@ -159,30 +162,11 @@ Two consumers pull from the same 1Password "Homelab" vault:
      # Item names with spaces are fine here — `op run` parses the full path.
    ```
 
-2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password Connect provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect runs in-cluster (no calls to 1Password cloud). `ExternalSecret.spec.data[].remoteRef.key` is the **1Password item title**, and `remoteRef.property` is the **field name**:
-   ```yaml
-   remoteRef:
-     key: <1Password item title>
-     property: <field name>
-   ```
+2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password Connect provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect runs in-cluster (no calls to 1Password cloud). `remoteRef.key` is the **1Password item title** and `remoteRef.property` is the **field name** — canonical format reference in `docs/29-flux-operations.md` ("1Password Connect Provider Reference Format").
 
 3. **CI pipelines** — `.gitlab-ci.yml` uses `op run` / `op read` with `OP_SERVICE_ACCOUNT_TOKEN` to inject secrets at runtime. This is separate from Connect and unchanged by the migration.
 
-The bootstrap Secrets `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace are the **only manually created** Kubernetes Secrets. Every other in-cluster Secret is produced by ESO from `ExternalSecret` manifests reconciled by Flux.
-
-```bash
-# Create Connect server (generates 1password-credentials.json in current dir)
-op connect server create weisssrv-connect --vaults Homelab
-
-# Create access token
-op connect token create weisssrv-eso --server <server-id> --vaults Homelab
-
-# Create bootstrap secrets in cluster
-kubectl -n external-secrets create secret generic op-credentials \
-  --from-file=1password-credentials.json=./1password-credentials.json
-kubectl -n external-secrets create secret generic onepassword-connect-token \
-  --from-literal=token=<TOKEN>
-```
+The bootstrap Secrets `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace are the **only manually created** Kubernetes Secrets — created via `task flux:bootstrap-onepassword` (procedure in `docs/29-flux-operations.md`). Every other in-cluster Secret is produced by ESO from `ExternalSecret` manifests reconciled by Flux.
 
 **NEVER commit secrets to git**. All sensitive values use 1Password references (`op://` for host-side tooling, item titles in ExternalSecrets for in-cluster).
 
@@ -230,7 +214,7 @@ Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
 
 ## Ansible Roles
 
-The 28 roles and their one-line purposes are listed in the **Ansible Roles**
+The roles and their one-line purposes are listed in the **Ansible Roles**
 table in `README.md` (source of truth). A few carry editing constraints worth
 knowing up front:
 
@@ -253,7 +237,7 @@ knowing up front:
   sole consumer of the shared Connect token at `/etc/onepassword-connect/token`,
   gated on `zfs_encryption_pools` (no token on compute hosts with empty lists).
   Runbooks in `docs/32-zfs-encryption.md`.
-- **nfs_tls** (`nfs_tls_enabled`) runs tlshd on `pve-nas-01` + every k3s
+- **nfs_tls** (`nfs_tls_enabled`) runs tlshd on all six Proxmox hosts + every k3s
   agent. The `nas_storage` k3s export lines require TLS (`xprtsec: tls`,
   plaintext rejected); the k3s NFS PVs *mount* with `xprtsec=tls` — **by
   hostname** (`server: pve-nas-01.esweiss.com`, since the `*.esweiss.com` cert
@@ -305,12 +289,12 @@ Everything in `kubernetes/` is reconciled by Flux. There is no `kubectl apply` o
    task flux:dev-apply -- kubernetes/apps/<app>   # Optional: preview change in-cluster (reverted on next reconcile)
    ```
 
-2. **Ship**:
+2. **Ship** (via feature branch + MR — never push to `main` directly):
    ```bash
    git add kubernetes/...
    git commit
-   git push                   # Flux polls every ~1 min; planned webhook will make this sub-second
-   task flux:reconcile        # Optional: force immediate reconcile
+   git push -u origin <branch>   # open an MR; on merge, the GitLab agent's Flux module triggers reconcile (~1-min poll fallback)
+   task flux:reconcile           # Optional: force immediate reconcile
    ```
 
 3. **Verify**:
@@ -323,27 +307,14 @@ See `docs/29-flux-operations.md` for day-2 operations including secret rotation,
 
 ## Version Management
 
-Application versions are centralized in `ansible/inventories/prod/group_vars/all.yml`. See that file for current version pins — they include base infrastructure (k3s, kube-vip, Authentik, Plex, GitLab), Helm charts (MetalLB, Traefik, cert-manager, external-dns), download clients (Gluetun, NZBGet, qBittorrent, Prowlarr, Sonarr, Radarr, Lidarr, Pulsarr), recipe stack (Mealie, Bar Assistant, Salt Rim), and PostgreSQL versions. Home Assistant (HAOS) is updated manually via its UI and is not version-pinned in all.yml.
-
-**Automated version discovery** (`scripts/check-versions.py`):
-- Checks every managed service across GitHub releases, Docker Hub, LinuxServer.io, and Helm repos (registry in `SERVICE_REGISTRY`)
-- Run `task maintenance:check-versions` to see available updates
-- Run `task maintenance:update-version SERVICE=<name>` to update a single version in all.yml
-- Run `task maintenance:update-all-versions` to update all outdated versions
-- Results cached for 1 hour in `.version-cache/`; set `GITHUB_TOKEN` for higher API rate limits
-
-**Update strategy:**
-1. **Check for updates:** `task maintenance:check-versions`
-2. **Update versions in all.yml:** `task maintenance:update-version SERVICE=<name>` or `task maintenance:update-all-versions`
-3. **Deploy:** Run appropriate task (see `docs/12-runbooks.md` for update workflow)
-
-**Version pinning philosophy:**
-- k3s, Authentik, Helm charts: Pinned to specific versions for stability
-- Download/recipe containers: Pinned to specific stable tags (no "latest") for reproducible deployments
-- Bar Assistant / Salt Rim: Pinned to specific versions (check for breaking changes on major bumps)
-- Tailscale: Pinned to specific apt version
-- Plex: Pinned to specific apt version (set to "latest" for auto-update behavior)
-- Home Assistant: Manual updates via HAOS UI (documented version only)
+All application, Helm chart, and container image versions are pinned centrally
+in `ansible/inventories/prod/group_vars/all.yml` (Home Assistant OS is the
+exception — updated manually via its UI). After editing a version pin, run
+`task flux:sync-versions`, then commit + push so Flux reconciles the
+`cluster-versions` ConfigMap. The version-discovery/update tasks
+(`task maintenance:check-versions`, `maintenance:update-version`,
+`maintenance:update-all-versions`) and the pinning philosophy are documented
+in `docs/12-runbooks.md` (update workflow).
 
 ## Storage Architecture
 
@@ -356,13 +327,9 @@ from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →
 
 ### NAS Node (pve-nas-01) - Specialized ZFS Pools
 
-**ZFS Pools**:
-- `tank` - 6x 22TB raidz2 (~88TB usable, 132TB raw) - Media and bulk storage
-- `ssd` - 3x 4TB raidz1 (~8TB usable / 10.9TB raw) - App data, databases, and containers
-- `nvme` - 1x 4TB NVMe (~2.27TB) - Hot downloads and fast scratch
-- `archive` - 4x 6TB raidz1 (~18TB usable, 3x 6TB data) - Cold storage and backups
-
-**Key Datasets**: tank/media, tank/share, ssd/appdata, nvme/media, nvme/fast
+**ZFS Pools**: `tank` (bulk media), `ssd` (app data), `nvme` (hot
+downloads/scratch), `archive` (cold storage/backups). Geometry, capacities,
+and datasets: `docs/06-zfs.md`.
 
 **Persistent Storage (ZFS zvols)**: per-app zvols under `ssd/appdata/*`
 (Authentik/Mealie Postgres, GitLab repos, Prometheus, Loki) plus the Grafana

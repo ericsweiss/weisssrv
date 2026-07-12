@@ -1,6 +1,11 @@
-# Multi-Node Implementation Plan
+# Multi-Node Implementation Plan (Completed)
 
-This document provides step-by-step instructions for integrating 4 new Proxmox hosts, forming a 6-node Proxmox cluster, and expanding the k3s cluster from 3 to 9 nodes.
+> **Status: completed — retained for rebuild reference.** This document was
+> the step-by-step plan for integrating 4 new Proxmox hosts, forming the
+> 6-node Proxmox cluster, and expanding the k3s cluster from 3 to 9 nodes.
+> The expansion is done; the procedures below remain useful for bootstrapping
+> replacement hardware. For the current topology see `docs/01-overview.md`;
+> for current HA operations see `docs/25-multi-node-expansion.md`.
 
 ## Table of Contents
 
@@ -17,31 +22,17 @@ This document provides step-by-step instructions for integrating 4 new Proxmox h
 
 ## Overview
 
-### Current State (6-Node Cluster)
+### Resulting State (6-Node Cluster)
 
-> **Note**: This document was originally written as a planning guide for expanding
-> from 2 nodes to 6 nodes. The expansion has been completed and all 6 nodes are
-> now active members of the Proxmox cluster. The step-by-step instructions below
-> are retained for reference and for bootstrapping replacement hardware.
-
-**Active Proxmox hosts** (all 6 nodes are now in the `weisssrv` cluster):
-- pve-nas-01 (192.168.0.102) - NAS + storage, ZFS pools (ssd/tank/nvme/archive)
-- pve-laptop-01 (192.168.0.103) - Compute, local-ssd ZFS pool
-- pve-opt-01 (192.168.0.104) - Compute, local-ssd ZFS pool
-- pve-opt-02 (192.168.0.105) - Compute, local-ssd ZFS pool
-- pve-opt-03 (192.168.0.106) - Compute, local-ssd ZFS pool
-- pve-prec-01 (192.168.0.107) - Compute, local-ssd ZFS pool
+All 6 Proxmox hosts (`weisssrv` cluster, quorate) and all 9 k3s nodes
+(3 servers + 6 agents) are active. The canonical host-by-host and
+node-by-node topology lives in `docs/01-overview.md`.
 
 ### Architecture
 
 **6-node Proxmox cluster** (`weisssrv`) with quorum (4+ nodes required for majority):
-- All nodes with ZFS pools for HA replication:
-  - pve-nas-01: Uses `ssd` pool (3x 4TB raidz1)
-  - All other hosts: Use `local-ssd` pool (1TB per host)
-
-**9-node k3s cluster**:
-- 3 server nodes (etcd quorum): k3s-srv-nas-01, k3s-srv-laptop-01, k3s-srv-prec-01
-- 6 agent nodes: k3s-agt-nas-01, k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03, k3s-agt-prec-01
+- All nodes carry ZFS pools for HA replication: pve-nas-01 uses `ssd`, the
+  five compute hosts use `local-ssd` (see `docs/06-zfs.md` for pool details)
 
 ---
 
@@ -485,12 +476,12 @@ Uncomment and update the k3s node definitions in `hosts.yml`:
               fstype: ext4
               scsi_slot: 4
               vzdump_backup: false
-          # NOTE: the four data zvols live on the ENCRYPTED ssd pool, so on the
-          # live host k3s-agt-nas-01 sets proxmox_autostart_enabled: false and is
+          # NOTE: the four data zvols live on the ENCRYPTED ssd pool, so
+          # k3s-agt-nas-01 sets proxmox_autostart_enabled: false and is
           # started by pve-start-encrypted-guests.service after the pool unlocks
           # (see hosts.yml + docs/32-zfs-encryption.md). hosts.yml is the source
           # of truth for this host — keep these disks in sync with it.
-          proxmox_autostart_enabled: true
+          proxmox_autostart_enabled: false
           proxmox_startup_order: 40
           proxmox_startup_delay: 10
           k3s_labels:
@@ -766,7 +757,7 @@ HA configuration is managed by Ansible via the `proxmox_ha` role. This automates
 ### Step 4.1: Deploy HA Configuration via Ansible
 
 The HA configuration is defined in `ansible/inventories/prod/group_vars/all.yml`:
-- `ha_rules`: Node-affinity rules to exclude pve-nas-01 (avoid I/O contention with NAS workloads)
+- `ha_rules`: Per-service node-affinity rules (`affinity-*`) — each service gets a home node (priority 2) plus fallbacks; pve-nas-01 is never listed (avoid I/O contention with NAS workloads)
 - `ha_resources`: VMs/CTs to be managed by HA (dns-01, dns-02, smtp-relay, home-assistant)
 - `storage_replication_jobs`: Multi-target replication (each service replicates to all 4 other nodes)
 
@@ -783,10 +774,12 @@ task proxmox:ha-status
 
 ### Step 4.2: What Gets Configured
 
-**Node-Affinity Rule** (`critical-services-no-nas`):
-- Excludes pve-nas-01 from running critical services
-- Services can float freely among 5 local-ssd nodes
-- `strict: false` allows NAS only if ALL other nodes unavailable
+**Node-Affinity Rules** (per-service `affinity-*` rules — see
+`docs/25-multi-node-expansion.md` and `ha_rules` in `group_vars/all.yml`):
+- One rule per service: a home node at priority 2 (fails back when available)
+  plus the other local-ssd nodes at priority 1
+- pve-nas-01 is never listed; `strict: false` allows it only if ALL listed
+  nodes are unavailable
 
 **HA Resources**:
 - `ct:150` (dns-01) - AdGuard Home primary
@@ -966,7 +959,9 @@ sudo ha-manager remove vm:154
 # List current rules first to see what exists
 sudo ha-manager rules list
 # Remove rules by name (check ha_rules in group_vars/all.yml for current rule names)
-sudo ha-manager rules remove critical-services-no-nas || true
+for r in affinity-dns-01 affinity-smtp-relay affinity-dns-02 affinity-home-assistant; do
+  sudo ha-manager rules remove "$r" || true
+done
 EOF
 ```
 

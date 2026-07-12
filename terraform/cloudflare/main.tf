@@ -9,7 +9,10 @@ data "cloudflare_zone" "external" {
   name       = var.external_domain
 }
 
-# Zone-wide TLS/perf/caching settings (HSTS + Always Use HTTPS enforced)
+# Zone-wide TLS/perf/caching settings (HSTS + Always Use HTTPS enforced).
+# This resource is why the Terraform token carries Zone Settings:Edit — a scope
+# deliberately absent from the "Cloudflare DNS Token" item shared with the
+# in-cluster ESO consumers (see variables.tf).
 resource "cloudflare_zone_settings_override" "external" {
   zone_id = data.cloudflare_zone.external.id
 

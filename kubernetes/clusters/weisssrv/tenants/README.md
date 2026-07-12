@@ -96,12 +96,17 @@ spec:
 ---
 # Tenant reconciliation runs under a namespace-scoped ServiceAccount —
 # without serviceAccountName, kustomize-controller applies tenant manifests
-# with its own cluster-admin credentials.
+# with its own cluster-admin credentials. The SA must live in the
+# Kustomization's OWN namespace (flux-system): kustomize-controller
+# impersonates system:serviceaccount:<Kustomization namespace>:<name>, so an
+# SA created in the tenant namespace would never be used. The RoleBinding in
+# the tenant namespace then grants that flux-system SA admin there and
+# nowhere else.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: example-app-flux
-  namespace: example-app
+  namespace: flux-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -111,7 +116,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: example-app-flux
-    namespace: example-app
+    namespace: flux-system
 roleRef:
   kind: ClusterRole
   name: admin
@@ -192,6 +197,15 @@ spec:
 > Connect server and vault. Namespace-level enforcement is cooperative today — a
 > future admission controller (Kyverno/OPA) could restrict which stores a namespace
 > may reference.
+>
+> **Before onboarding the first tenant**: the Traefik CRD provider currently runs
+> with `allowCrossNamespace: true` (see the accepted-risk comment in
+> `kubernetes/infrastructure/controllers/traefik/release.yaml`), which lets any
+> IngressRoute reference middlewares/services in other namespaces. Fine while
+> every route is operator-authored; a tenant-authored IngressRoute could pull
+> platform middlewares or another namespace's Service. Guard it first — scope the
+> provider per-tenant, add a validating policy pinning `@namespace` refs, or
+> revert to `allowCrossNamespace: false`.
 
 ## Namespace ownership
 

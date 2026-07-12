@@ -4,6 +4,10 @@
 # targetNamespace). Chart version substituted from cluster-versions ConfigMap.
 # Runner token sourced via ExternalSecret (externalsecret.yaml); the chart
 # reads it from the Secret named `gitlab-runner-token` via runners.secret.
+#
+# Shared values (gitlabUrl/clone_url, replicas, checkInterval, rbac,
+# manager resources, affinity, tolerations) are duplicated in
+# ../gitlab-runner-privileged/release.yaml — mirror edits there.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -34,8 +38,13 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
-    gitlabUrl: https://git.ericsweiss.com
+    # GitLab instance URL. git.esweiss.com resolves in-cluster (CoreDNS forwards
+    # to AdGuard, which rewrites it to the internal Traefik VIP .101), keeping
+    # runner<->GitLab traffic on the LAN instead of hairpinning through the WAN
+    # record for git.ericsweiss.com. clone_url (in runners.config) must match:
+    # GitLab's external_url stays git.ericsweiss.com, so clone URLs would not
+    # follow gitlabUrl alone.
+    gitlabUrl: https://git.esweiss.com
 
     # Single runner controller pod — concurrent (below) controls actual job
     # parallelism. Pinning to 1 here so that an out-of-band `kubectl scale
@@ -88,6 +97,9 @@ spec:
       # Kubernetes executor config
       config: |
         [[runners]]
+          # Keep clones on the LAN path too (see gitlabUrl above).
+          clone_url = "https://git.esweiss.com"
+
           # Environment variables for all job containers
           # When running as non-root (UID 1000), containers may lack /etc/passwd entry,
           # causing HOME to be unset. Git then tries to write to //.gitconfig which fails.
@@ -103,7 +115,10 @@ spec:
           # volume table. Scalars first, sub-tables last.
           [runners.kubernetes]
             namespace = "gitlab-runner"
-            image = "debian:trixie"
+            # Default CI job image, digest-pinned for reproducibility (the
+            # tag is retained for readability; the digest is authoritative).
+            # Refresh with: docker buildx imagetools inspect debian:trixie
+            image = "debian:trixie@sha256:d07d1b51c39f51188e60be9b64e6bf769fa94e187f092bc32b91305cfa34ba5a"
             privileged = false
 
             # CPU/Memory limits for job pods
@@ -112,8 +127,10 @@ spec:
             memory_limit = "4Gi"
             memory_request = "1Gi"
 
-            # Service account
-            service_account = "gitlab-runner"
+            # Job-pod service account: token-less, no RBAC (serviceaccount.yaml)
+            # — NOT the manager SA, whose Role could read the runner token and
+            # exec into concurrent jobs.
+            service_account = "gitlab-runner-jobs"
 
             # Pull policy
             pull_policy = ["if-not-present"]
@@ -150,7 +167,8 @@ spec:
               name = "home"
               mount_path = "/home/gitlab-runner"
 
-    # RBAC configuration
+    # RBAC configuration — bound ONLY to the manager SA below; job pods run as
+    # the unprivileged gitlab-runner-jobs SA (serviceaccount.yaml).
     # clusterWideAccess: false restricts the runner to only manage resources in its own namespace.
     # This is appropriate for the shared runner - job pods are created in the gitlab-runner namespace.
     # CI jobs that need to deploy to other namespaces should use a kubeconfig with appropriate

@@ -14,10 +14,21 @@ k3s_registry_host_pins:
   - name: "registry.git.{{ external_domain | default('ericsweiss.com') }}"
     ip: "192.168.0.101"
 
+# Pin the NAS hostname used by the NFS-over-TLS PVs. The PVs mount by name
+# (server: pve-nas-01.esweiss.com — the *.esweiss.com cert has no IP SAN), which
+# otherwise puts AdGuard on the storage-mount critical path: a remount or pod
+# reschedule while both DNS servers are down cannot resolve the NAS and the PVs
+# fail to mount. The pin only moves resolution to /etc/hosts (files precede dns
+# in nsswitch); the mounted name — and therefore TLS cert validation — is
+# unchanged. Empty list removes the pin.
+k3s_storage_host_pins:
+  - name: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
+    ip: "192.168.0.102"
+
 # K3s version and installation
 # Note: Version should be set in group_vars/k3s.yml or all.yml
 # This is a fallback default
-k3s_version: "v1.35.3+k3s1"
+k3s_version: "v1.36.2+k3s1"
 
 # Agent (worker) join token, used for agent installs and the server config's
 # `agent-token`. Defaults to the server token so the role is self-contained
@@ -66,5 +77,58 @@ k3s_taints: []
 # Note: Version should be set in group_vars/k3s.yml or all.yml (all.yml pins the
 # live value). Keep this default aligned with all.yml's kube_vip_version so a
 # standalone run or a dropped group_var does not silently regress the API VIP.
-kube_vip_version: "v1.2.0"
+kube_vip_version: "v1.2.1"
 kube_vip_interface: "eth0"
+
+# ---------------------------------------------------------------------------
+# Off-node etcd snapshot copy (docs/17 "etcd Snapshots")
+# ---------------------------------------------------------------------------
+# k3s writes scheduled etcd snapshots to k3s_etcd_snapshot_dir on each server's
+# LOCAL disk only; losing all three servers (or the Proxmox hosts under them)
+# loses etcd — the only backup class without an off-node copy. When enabled, a
+# systemd timer on the server nodes mounts an NFS export on pve-nas-01 (by
+# hostname over TLS — the *.esweiss.com cert has no IP SAN, so an IP mount fails
+# the handshake) and copies the newest snapshot there, writing an
+# etcd_snapshot_last_copy_timestamp_seconds textfile metric consumed by the
+# EtcdSnapshotStale alert.
+#
+# OFF BY DEFAULT: activating it requires companion changes outside this role —
+# the NFS export on pve-nas-01 (nas_storage: /export/k3s-etcd, bind to a
+# dedicated dataset, clients = the 3 server IPs, xprtsec=tls),
+# node_exporter_host on the k3s_servers group (site.yml) to scrape the textfile
+# metric, the firewall :2049 path the other NFS-over-TLS mounts already use, and
+# tlshd (ktls-utils) running on the k3s_servers via the nfs_tls role — the
+# xprtsec=tls mount hangs without the kernel TLS handshake daemon (TLS-only
+# clients need no cert/key per that role's preflight, so widen the nfs_tls play
+# to the k3s group before flipping this flag).
+# Flip this to true in group_vars/k3s.yml once those exist.
+k3s_etcd_snapshot_offnode_enabled: false
+
+# Local directory k3s writes its scheduled/on-demand etcd snapshots to.
+k3s_etcd_snapshot_dir: /var/lib/rancher/k3s/server/db/snapshots
+
+# NFS mount for the off-node copies. Mounted by hostname so the *.esweiss.com
+# server cert verifies under xprtsec=tls. The client dirpath is
+# PSEUDO-ROOT-RELATIVE ('/k3s-etcd', NOT '/export/k3s-etcd'): pve-nas-01 has an
+# explicit fsid=0 export at /export, so NFSv4 clients resolve paths from that
+# root — same as the /media and /appdata/* PVs and the /tank-proxmox backup
+# target. The on-disk export directory is /export/k3s-etcd (host_vars
+# nfs_exports); only the client-side lookup path is root-relative.
+k3s_etcd_snapshot_nfs_server: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
+k3s_etcd_snapshot_nfs_export: /k3s-etcd
+k3s_etcd_snapshot_mountpoint: /mnt/etcd-snapshots
+# xprtsec=tls (require TLS). noauto+nofail keep this backup-only mount off the
+# boot path entirely: it is started on demand by k3s-etcd-snapshot-copy.service
+# (RequiresMountsFor=) on each timer fire, so a NAS-down boot never blocks or
+# degrades remote-fs.target. _netdev orders it after the network when it does
+# mount. Mirrors the k3s NFS PV mount options.
+k3s_etcd_snapshot_nfs_options: "vers=4.2,xprtsec=tls,_netdev,noauto,nofail"
+
+# node_exporter textfile dir (shared with node_exporter_host, which must run on
+# the servers for the metric to be scraped).
+k3s_etcd_snapshot_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+
+# How often the copy timer fires and how many copies to retain per server on the
+# export (matches k3s's own snapshot retention of 5).
+k3s_etcd_snapshot_copy_oncalendar: "hourly"
+k3s_etcd_snapshot_retention: 5

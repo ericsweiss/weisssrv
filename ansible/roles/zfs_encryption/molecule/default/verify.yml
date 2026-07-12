@@ -256,6 +256,59 @@
           caused the documented boot-hang incident.
 
     # ========================================================================
+    # 7. Encrypted-storage guest-start cohort (pve-start-encrypted-guests)
+    # ========================================================================
+    - name: Read the guest-start script
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/zfs-start-encrypted-guests.sh
+      register: guest_script_content
+
+    - name: Assert the guest-start script renders the configured VM cohort
+      ansible.builtin.assert:
+        that:
+          - (guest_script_content.content | b64decode) is search('VMIDS=\(999\)')
+        fail_msg: "zfs-start-encrypted-guests.sh does not render zfs_encryption_guest_vmids (expected VMIDS=(999))"
+
+    - name: Check pve-start-encrypted-guests.service enabled state  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-enabled pve-start-encrypted-guests.service
+      register: guest_unit_enabled
+      changed_when: false
+      failed_when: guest_unit_enabled.rc != 0
+
+    - name: Assert guest-start unit is enabled (host has an encrypted-storage cohort)
+      ansible.builtin.assert:
+        that:
+          - guest_unit_enabled.stdout | trim == 'enabled'
+        fail_msg: "Expected pve-start-encrypted-guests.service to be 'enabled', got '{{ guest_unit_enabled.stdout | trim }}'"
+
+    # ========================================================================
+    # 8. Reconciliation of de-listed pools (prepare.yml staged stalepool
+    #    artifacts; converge must have removed both)
+    # ========================================================================
+    - name: Stat the stale pool env file
+      ansible.builtin.stat:
+        path: /etc/zfs/encryption/pools/stalepool.conf
+      register: stale_conf
+
+    - name: Stat the stale wants-symlink
+      ansible.builtin.stat:
+        path: /etc/systemd/system/zfs-mount-encrypted.service.wants/zfs-load-key@stalepool.service
+      register: stale_link
+
+    - name: Assert de-listed pool artifacts were reconciled away
+      ansible.builtin.assert:
+        that:
+          - not stale_conf.stat.exists
+          - not stale_link.stat.exists
+        fail_msg: >-
+          Stale artifacts for a de-listed pool survived converge
+          (conf exists={{ stale_conf.stat.exists }},
+          wants-link exists={{ stale_link.stat.exists }}) — the reconcile
+          tasks (Remove stale pool env files / Disable stale per-pool
+          zfs-load-key services) regressed.
+
+    # ========================================================================
     # Summary
     # ========================================================================
     - name: Display test results
@@ -269,4 +322,6 @@
           - "zfs-load-key@testpool.service enabled"
           - "zfs-mount-encrypted.service deployed, enabled, until-loop, off the boot-critical path"
           - "per-pool unit wired into the anchor's .wants, not zfs-mount.service.requires"
+          - "pve-start-encrypted-guests enabled with the rendered VM cohort"
+          - "stale (de-listed) pool env file + wants-symlink reconciled away"
           - "All zfs_encryption role verifications passed"

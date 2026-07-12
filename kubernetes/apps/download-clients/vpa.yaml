@@ -20,7 +20,8 @@ spec:
         maxAllowed: {cpu: 200m, memory: 256Mi}
         controlledResources: [cpu, memory]
         controlledValues: RequestsOnly
-      # maxAllowed caps the request at the nzbget container's 4Gi/2cpu limit;
+      # maxAllowed caps the memory request at the nzbget container's 4Gi limit
+      # and cpu at 2 cores (the container deliberately has no cpu limit);
       # RequestsOnly leaves the limit at the manifest value so it can't balloon
       # past the cap (RequestsAndLimits would scale it by the 1:8 req:limit ratio).
       - containerName: "*"
@@ -67,10 +68,15 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly is required here: the prowlarr manifest sets memory
+      # request == limit (512Mi), so the default RequestsAndLimits would
+      # rewrite the limit down 1:1 with the request, leaving zero burst
+      # headroom (observed as OOMKills on search/backup spikes).
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 512Mi}
         controlledResources: [cpu, memory]
+        controlledValues: RequestsOnly
 ---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler

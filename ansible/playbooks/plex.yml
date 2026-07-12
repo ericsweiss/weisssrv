@@ -23,33 +23,16 @@
 - name: Deploy Plex Media Server
   hosts: plex
   become: true
-  # In check mode, the container may not exist (LXC creation is skipped)
-  # We need to verify the host is reachable before attempting configuration
+  gather_facts: false
+  # In check mode, the container may not exist (LXC creation is skipped).
+  # gather_facts is deferred until after the guard so a missing container
+  # ends the host cleanly instead of failing the play UNREACHABLE up front.
   pre_tasks:
-    - name: Check if host is reachable (check mode safety)
-      ansible.builtin.wait_for_connection:
-        timeout: 5
-      register: host_reachable
-      ignore_errors: true
-      ignore_unreachable: true
-      when: ansible_check_mode
+    - name: Guard against unreachable host in check mode
+      ansible.builtin.include_tasks: tasks/_check-mode-reachable.yml
 
-    - name: Skip play if host unreachable in check mode
-      ansible.builtin.meta: end_host
-      when:
-        - ansible_check_mode
-        - host_reachable is defined
-        - host_reachable is failed or host_reachable.unreachable | default(false)
-
-    - name: Clean up conflicting Plex repository configurations
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/apt/sources.list.d/plexmediaserver.list
-        - /etc/apt/sources.list.d/plexmediaserver.sources
-        - /etc/apt/apt.conf.d/99allow-plex-sha1
-      when: not ansible_check_mode
+    - name: Gather facts after connection is established
+      ansible.builtin.setup:
 
   roles:
     - base

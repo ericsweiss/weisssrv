@@ -21,7 +21,12 @@ policy_out: ACCEPT
 
 [IPSET admin_ts]
 
-# Admin Tailscale network
+# Admin Tailscale network — deliberately the full CGNAT range, not per-device
+# 100.x pins. Accepted risk: this is a single-owner tailnet (docs/05-tailscale.md)
+# and per-device pins are brittle (onboarding/DR lockout) and partly moot —
+# subnet-router SNAT means tailnet traffic to guests arrives as admin_lan anyway.
+# Tailnet-side ACL tightening is codified in terraform/tailscale (staged apply,
+# docs/16-next-steps.md). Revisit if the tailnet ever gains non-admin members.
 100.64.0.0/10
 
 {% include 'ipsets.j2' %}
@@ -112,6 +117,7 @@ IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
 [group sg-k3s-core]
 
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2381 -log nolog  # etcd metrics (kubeEtcd scrape)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog
 # Flannel wireguard-native backend (pod-to-pod encrypted). Migrated
 # 2026-06-11; the VXLAN/8472 rollback rule was removed once every node
@@ -195,12 +201,21 @@ IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
 IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
 # SMTP relay from core cluster
 IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
-# Outbound DNS and SMTP (for upstream relay to Gmail)
+# Outbound egress allowlist. Only enforced when the guest's .fw sets
+# policy_out: DROP (guest_firewall_policy_out in the guest's inventory entry) —
+# Proxmox's guest default is policy_out ACCEPT, which makes these OUT ACCEPTs
+# no-ops. conntrack auto-allows replies to inbound 25/587.
+# DNS and SMTP submission (upstream relay to Gmail)
 OUT ACCEPT -p udp -dport 853 -log nolog
 OUT ACCEPT -p tcp -dport 853 -log nolog
 OUT ACCEPT -p udp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 587 -log nolog
+# apt (the base role runs apt inside the LXC) + ICMP diagnostics
+OUT ACCEPT -p tcp -dport 80 -log nolog
+OUT ACCEPT -p tcp -dport 443 -log nolog
+OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
+OUT ACCEPT -p icmp -log nolog
 
 [group sg-windows]
 
@@ -232,6 +247,7 @@ OUT ACCEPT -p tcp -dport 25 -log nolog          # SMTP relay
 OUT ACCEPT -p tcp -dport 2049 -log nolog        # NFS (backup target / shares)
 OUT ACCEPT -p tcp -dport 111 -log nolog         # rpcbind (NFS)
 OUT ACCEPT -p udp -dport 111 -log nolog         # rpcbind (NFS)
+OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
 OUT ACCEPT -p udp -dport 5404:5412 -log nolog   # corosync cluster membership
 OUT ACCEPT -p tcp -dport 8006 -log nolog        # Proxmox API (cluster/migration)
 OUT ACCEPT -p tcp -dport 60000:60050 -log nolog # Proxmox live migration (insecure channel)

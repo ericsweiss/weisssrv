@@ -46,7 +46,10 @@ node-taint:
 # group_vars/k3s.yml for the full rationale and rollout caveats.
 flannel-backend: "{{ k3s_flannel_backend }}"
 
-{% if k3s_is_first_server | default(false) %}
+{# k3s_join_existing is set by server.yml when a wiped/rebuilt first server   #}
+{# finds the API VIP already serving a cluster: it must REJOIN the surviving #}
+{# quorum, not bootstrap a new one.                                          #}
+{% if (k3s_is_first_server | default(false)) and not (k3s_join_existing | default(false)) %}
 # Enable embedded etcd for HA (first server initializes the cluster)
 cluster-init: true
 {% else %}
@@ -66,6 +69,14 @@ agent-token: "{{ k3s_agent_token }}"
 # For existing clusters: after enabling, run on a server node:
 #   k3s secrets-encrypt reencrypt
 secrets-encryption: true
+
+# Serve etcd's Prometheus metrics on :2381 (0.0.0.0, unauthenticated HTTP) so
+# kube-prometheus-stack's kubeEtcd target can scrape the 3 server nodes. Exposure
+# is gated solely by the Proxmox firewall, which restricts :2381 to the
+# monitoring/k3s_nodes IP sets (see docs/11-firewall.md) — same trust model as the
+# apiserver bind above. Without this the kube-etcd targets stay down and
+# etcdMembersDown/TargetDown fire.
+etcd-expose-metrics: true
 
 {% if k3s_kubelet_args | default([]) | length > 0 %}
 kubelet-arg:

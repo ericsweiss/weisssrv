@@ -72,6 +72,8 @@ provisioner:
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
+  playbooks:
+    prepare: ../../../_shared/prepare.yml
   inventory:
     group_vars:
       cert_stack:
@@ -81,13 +83,13 @@ provisioner:
       cert_servers:
         # acme.sh configuration
         acme_email: test@example.com
-        acme_dns_provider: dns_cf
         acme_cloudflare_token: test_cloudflare_token_not_real
-        acme_domains:
+        # Test-local list driving the mock cert fixtures in converge/verify —
+        # NOT a role knob (acme_certs issues internal_domain + wildcard
+        # directly and reads no domain-list variable).
+        mock_cert_domains:
           - domain: "*.esweiss.com"
-            dns_provider: dns_cf
           - domain: esweiss.com
-            dns_provider: dns_cf
 
         # SSH keys (dns01_ssh_private_key, dns01_ssh_public_key) are generated
         # at runtime in converge.yml and injected onto dns-01's hostvars via

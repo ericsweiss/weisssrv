@@ -1,9 +1,9 @@
 ---
 # Alertmanager configuration via ExternalSecret template.
-# Pulls Discord webhook URL and SMTP password from 1Password and renders
-# them into alertmanager.yaml. Uses webhook_url (not webhook_url_file)
-# because the Prometheus Operator's config parser does not support the
-# _file suffix for discord_configs.
+# Pulls the Discord webhook URL, SMTP password, and healthchecks.io ping
+# URL from 1Password and renders them into alertmanager.yaml. Uses
+# webhook_url (not webhook_url_file) because the Prometheus Operator's
+# config parser does not support the _file suffix for discord_configs.
 # Secret values are rendered through the `quote` template function so a
 # rotated password or webhook URL with any special characters stays valid.
 apiVersion: external-secrets.io/v1
@@ -78,6 +78,13 @@ spec:
               equal:
                 - instance
                 - mountpoint
+            - source_matchers:
+                - alertname="InodeUsageCritical"
+              target_matchers:
+                - alertname="InodeUsageWarning"
+              equal:
+                - instance
+                - mountpoint
             # Same pattern for the other warning/critical pairs that use
             # distinct alertnames and carry no component label, so neither
             # generic rule above matches them. Pair each on its own identity
@@ -89,11 +96,16 @@ spec:
               equal:
                 - namespace
                 - persistentvolumeclaim
+            # instance + pool: the space alerts are fed by the per-host
+            # textfile collector and all five compute hosts name their pool
+            # local-ssd — pool alone would let one host's critical silence
+            # another host's warning.
             - source_matchers:
                 - alertname="ZFSPoolSpaceCritical"
               target_matchers:
                 - alertname="ZFSPoolSpaceWarning"
               equal:
+                - instance
                 - pool
             - source_matchers:
                 - alertname="CertExpiringCritical"
@@ -102,6 +114,25 @@ spec:
               equal:
                 - namespace
                 - name
+            # The textfile cert metric carries instance, not namespace/name.
+            - source_matchers:
+                - alertname="CertExpiringSoonCritical"
+              target_matchers:
+                - alertname="CertExpiringSoon"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="GitLabBackupStaleCritical"
+              target_matchers:
+                - alertname="GitLabBackupStale"
+              equal:
+                - instance
+            - source_matchers:
+                - alertname="EndpointDownCritical"
+              target_matchers:
+                - alertname="EndpointDown"
+              equal:
+                - instance
             - source_matchers:
                 - alertname="InfoInhibitor"
               target_matchers:
@@ -139,6 +170,21 @@ spec:
             group_interval: 10m
             repeat_interval: 4h
             routes:
+              # Dead-man's switch (docs/17): the chart's Watchdog alert always
+              # fires; healthchecks.io alarms when the pings STOP — i.e. when
+              # Prometheus, Alertmanager, the NAS node, or notification egress
+              # is down. This is the only signal that survives a total
+              # observability-plane outage (including both DNS resolvers, on
+              # which the SMTP and Discord receivers depend for name
+              # resolution). Must precede the severity=none null route:
+              # Watchdog carries severity=none, and InfoInhibitor (also
+              # severity=none) must stay null-routed.
+              - receiver: watchdog-heartbeat
+                matchers:
+                  - alertname="Watchdog"
+                group_wait: 0s
+                group_interval: 1m
+                repeat_interval: 1m
               - receiver: "null"
                 matchers:
                   - severity="none"
@@ -152,6 +198,12 @@ spec:
 
           receivers:
             - name: "null"
+            # Any POST counts as a ping; send_resolved false because Watchdog
+            # never resolves (the DMS pages on silence, not on content).
+            - name: watchdog-heartbeat
+              webhook_configs:
+                - url: {{ .healthchecksPingUrl | quote }}
+                  send_resolved: false
             - name: discord-default
               discord_configs:
                 - webhook_url: {{ .discordWebhookUrl | quote }}
@@ -172,3 +224,11 @@ spec:
       remoteRef:
         key: SMTP Relay Auth
         property: password
+    # healthchecks.io check ping URL for the Watchdog dead-man's switch.
+    # Until the 1Password item exists, ESO keeps serving the last rendered
+    # Secret and ExternalSecretSyncFailure fires — create the item promptly
+    # after merge (docs/15).
+    - secretKey: healthchecksPingUrl
+      remoteRef:
+        key: Healthchecks Watchdog
+        property: ping url

@@ -242,6 +242,16 @@ task gitlab:deploy
 task gitlab:deploy-check
 ```
 
+> **Initial bring-up before the first cert distribution:** GitLab's nginx
+> terminates TLS with the wildcard cert distributed by `acme_certs`, and the
+> role asserts the cert + key exist before `gitlab-ctl reconfigure`. For a
+> certless first deploy you must set **all three** of
+> `gitlab_nginx_listen_https`, `gitlab_registry_enabled`, and
+> `gitlab_pages_enabled` to `false` — the registry and pages nginx vhosts
+> always terminate TLS with the same cert, so disabling only the web listener
+> still fails. Re-enable them after the first cert distribution and re-run
+> `task gitlab:deploy`.
+
 ### Step 6: Traefik IngressRoutes (Flux-managed)
 
 The Traefik IngressRoutes for `git.ericsweiss.com` (web + SSH port 2222),
@@ -249,7 +259,8 @@ The Traefik IngressRoutes for `git.ericsweiss.com` (web + SSH port 2222),
 `kubernetes/apps/vm-ingress/gitlab.yaml`, with ExternalName Services in
 `services-gitlab.yaml` and certificates in `gitlab-certificate.yaml`. Flux
 reconciles them from the `apps` Kustomization. To change them, edit the
-YAML + commit + push; the change is live within ~1 minute.
+YAML + commit + push; the GitLab agent's Flux module reconciles on push
+(fallback: ~1-minute poll).
 
 ### Step 7: Verify Deployment
 
@@ -271,7 +282,7 @@ Two runners are needed:
 
 The weisssrv `.gitlab-ci.yml` sets `default: tags: [infrastructure]` so all its jobs route to the infrastructure runner.
 
-**Runner 1 (Shared - Non-privileged):**
+**Runner 1 (Shared - Non-privileged, instance runner):**
 1. Log into GitLab as root (use password from 1Password)
 2. Navigate to **Admin Area → CI/CD → Runners**
 3. Click **New instance runner**
@@ -279,11 +290,25 @@ The weisssrv `.gitlab-ci.yml` sets `default: tags: [infrastructure]` so all its 
 5. Click **Create runner** and copy the `glrt-*` token
 6. Update 1Password `GitLab Runner` item with this token as `runner-token`
 
-**Runner 2 (Infrastructure - Privileged):**
-1. Click **New instance runner** again
-2. Configure: Tags = `infrastructure`, Run untagged jobs = **No**
-3. Click **Create runner** and copy the `glrt-*` token
-4. Create 1Password item `GitLab Runner Privileged` with this token as `runner-token`
+**Runner 2 (Infrastructure - Privileged, PROJECT runner):**
+
+The privileged runner must be registered as a **project runner locked to the
+weisssrv project — never an instance runner**. Tags are cooperative routing
+(any project could declare `tags: [infrastructure]`), so the registration
+scope is the isolation boundary that keeps other projects' jobs away from
+root+DinD execution.
+
+1. In the **weisssrv project**, navigate to **Settings → CI/CD → Runners**
+2. Click **New project runner**
+3. Configure: Tags = `infrastructure`, Run untagged jobs = **No**, Lock to
+   current projects = **Yes**
+4. Click **Create runner** and copy the `glrt-*` token
+5. Create 1Password item `GitLab Runner Privileged` with this token as `runner-token`
+
+Both runner managers connect and clone via `https://git.esweiss.com`
+(`gitlabUrl` + `clone_url` in the HelmRelease values) — the LAN path via the
+AdGuard rewrite to the internal Traefik VIP (.101) — instead of
+`git.ericsweiss.com`, keeping runner traffic off the WAN/hairpin path.
 
 > **Security note on privileged runner:** The infrastructure runner (`gitlab-runner-privileged`)
 > has `privileged = true` and `protected = false`, meaning it can run jobs from unprotected
@@ -306,7 +331,7 @@ Both runners (shared and privileged) are Flux `HelmRelease`s under
 Their runner tokens flow from 1Password through `ExternalSecret`s. To deploy
 or update them, edit the relevant `release.yaml` (or bump
 `gitlab_runner_helm_version` in `all.yml` + run `task flux:sync-versions`)
-and push. Flux reconciles the HelmRelease within ~1 minute.
+and push. Flux reconciles the HelmRelease on push (fallback: ~1-minute poll).
 
 See `docs/29-flux-operations.md` for the full workflow (rotating runner
 tokens, bumping chart versions, troubleshooting stuck releases).
@@ -352,6 +377,17 @@ runs `gitlab-backup create CRON=1`, copies `gitlab-secrets.json` + `gitlab.rb`
 into the backup path on success (a restore needs them to decrypt CI variables,
 2FA, and runner tokens), and emits backup-freshness metrics.
 
+**Backup scope — registry and artifacts are SKIPPED.** The nightly tarball
+excludes the container registry (rebuildable CI images, by far the largest
+component) and CI artifacts (ephemeral job output) via
+`gitlab_backup_skip: "registry,artifacts"`, so a backup is DB + repos +
+config, not multi-GB. **Restore caveat:** `gitlab-backup restore` from these
+tarballs does NOT bring back registry images or artifacts — registry data
+lives at the Omnibus default path on the VM's OS disk (covered by the nightly
+vzdump of the VM) and is re-pushable from CI; artifacts regenerate on the
+next pipeline run. For a registry-inclusive restore, restore the VM from
+vzdump instead (docs/17).
+
 ```bash
 # Manual backup (also re-seeds the freshness metric)
 task gitlab:backup
@@ -359,7 +395,7 @@ task gitlab:backup
 # List backups
 ssh gitlab "sudo ls -la /var/opt/gitlab/backups/"
 
-# Restore from backup
+# Restore from backup (DB + repos + config; NOT registry/artifacts — see above)
 ssh gitlab "sudo gitlab-backup restore BACKUP=<timestamp>"
 ```
 
@@ -465,11 +501,10 @@ ssh gitlab "sudo gitlab-ctl tail gitlab-pages"
 
 ### Runner Not Connecting
 
-**Important**: The runner must use the external URL `https://git.ericsweiss.com` because
-while k3s nodes are configured to use AdGuard DNS (192.168.0.150/160), the internal
-`*.esweiss.com` domains may not be reliably resolvable from within pods if CoreDNS
-configuration differs or caching causes issues. Using the external domain ensures
-consistent connectivity regardless of DNS configuration.
+Both runners use `https://git.esweiss.com` for `gitlabUrl` and `clone_url` —
+the LAN path via the AdGuard rewrite to the internal Traefik VIP (.101). If a
+runner cannot connect, verify pods resolve `git.esweiss.com` to 192.168.0.101
+(CoreDNS forwards to AdGuard on the k3s nodes' resolvers).
 
 ```bash
 # Check runner pod status
@@ -478,8 +513,11 @@ kubectl get pods -n gitlab-runner
 # Check runner logs
 kubectl logs -n gitlab-runner -l app=gitlab-runner
 
-# Verify CI_SERVER_URL is using external domain
+# Verify CI_SERVER_URL is using the LAN URL
 kubectl get deploy gitlab-runner -n gitlab-runner -o yaml | grep CI_SERVER_URL
+
+# Verify DNS from inside the cluster
+kubectl run -it --rm --image=alpine dns-test -- nslookup git.esweiss.com
 
 # Verify registration token
 kubectl get secret -n gitlab-runner
@@ -646,11 +684,18 @@ Pages are available at:
    - View banned IPs: `sudo fail2ban-client get gitlab-ssh banned`
    - Test filter: `sudo fail2ban-regex systemd-journal /etc/fail2ban/filter.d/sshd.conf`
 3. **SAML authentication**: Consider disabling password auth after confirming SSO works
-4. **Firewall**: The `sg-gitlab` security group has differentiated access:
+4. **Firewall + sshd login restriction**: The `sg-gitlab` security group has differentiated access:
    - Port 2222 (Git SSH): Open to WAN for external collaborators
    - Port 22 (Admin SSH + LAN Git): Restricted to admin networks (LAN + Tailscale)
    - Port 443 (GitLab Web, TLS): k3s nodes + admin networks; port 80 stays open to admin sources for the HTTP→HTTPS redirect
    - Ports 5050/8443 (Registry/Pages, both TLS via the distributed wildcard cert): Restricted to k3s nodes only (routed via Traefik)
+
+   Because the WAN-exposed 2222 redirects into the same system sshd as port 22,
+   the admin-only intent is additionally **enforced in sshd itself** via an
+   `AllowUsers` drop-in (`gitlab_ssh_allowusers_enabled`, on by default):
+   `git` may log in from anywhere, the admin user only from `192.168.0.0/24`
+   and `100.64.0.0/10` (the full Tailscale CGNAT range). Without it, every
+   local account would accept internet pubkey auth attempts via 2222.
 5. **Secrets**: All credentials via 1Password; never committed to git
 
 ## Related Documentation

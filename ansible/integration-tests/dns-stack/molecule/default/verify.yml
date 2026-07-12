@@ -54,6 +54,31 @@
       ansible.builtin.debug:
         msg: "Unbound query result: {{ unbound_query.stdout_lines }}"
 
+    # Dead-var guard: prove converge's unbound_forwarders override was actually
+    # consumed by the template. The two positive checks alone can't do this —
+    # converge's values (1.1.1.1#cloudflare-dns.com, 8.8.8.8#dns.google) are also
+    # members of the role's 6-entry default, so if the variable were renamed the
+    # role would fall back to the default and still render both, passing silently.
+    # The negative check closes that: 9.9.9.9#dns.quad9.net is in the default but
+    # NOT in converge's override, so it renders ONLY on a default fallback —
+    # asserting its absence makes the guard fail on the exact ignored/renamed
+    # regression it names, without adding a dead forwarder that could flake the
+    # live-resolution assert below.
+    - name: Read rendered unbound config
+      ansible.builtin.command: cat /etc/unbound/unbound.conf.d/weisssrv.conf
+      register: unbound_rendered
+      changed_when: false
+
+    - name: Assert converge's forwarders (and only those) rendered into the forward-zone
+      ansible.builtin.assert:
+        that:
+          - "'forward-addr: 1.1.1.1@853#cloudflare-dns.com' in unbound_rendered.stdout"
+          - "'forward-addr: 8.8.8.8@853#dns.google' in unbound_rendered.stdout"
+          # default-only entry — present ⇒ the override was ignored and defaults rendered
+          - "'forward-addr: 9.9.9.9@853#dns.quad9.net' not in unbound_rendered.stdout"
+        fail_msg: "unbound_forwarders from converge did not render (default forwarders present) — variable ignored/renamed?"
+        success_msg: "Custom unbound forwarders rendered (defaults not present)"
+
     # ============================================
     # AdGuard Home Verification
     # ============================================
@@ -77,19 +102,19 @@
         seconds: 10
 
     # INTEGRATION TEST LIMITATION - DNS queries via AdGuard:
-    # The role completes the setup wizard automatically, but converge skips
-    # the post-setup API configuration (skip_adguard_api_config), so AdGuard
-    # is not pointed at Unbound and its resolution path is not representative.
-    #
-    # We test DNS resolution via Unbound (AdGuard's upstream) which validates:
+    # AdGuard's API config (upstream, rewrites, filtering) DOES run now, but its
+    # own resolution path still isn't representative in-container: the role skips
+    # the resolv.conf switch (skip_resolv_conf_update), so we validate DNS
+    # resolution via Unbound (AdGuard's upstream) instead:
     # - Unbound DoT recursive resolution works
     # - The DNS chain is properly configured
     #
-    # Full AdGuard functionality is validated in production via postflight.yml
+    # The rewrite reconciliation IS asserted below (dns-01). Full AdGuard
+    # resolution is validated in production via postflight.yml
 
     - name: Check AdGuard Home web UI is accessible
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ adguard_home_port | default(3000) }}/control/status"
+        url: "http://127.0.0.1:{{ adguard_http_port | default(3000) }}/control/status"
         method: GET
         status_code: [200, 401, 403]  # May require auth
         timeout: 10
@@ -102,6 +127,37 @@
 
     # We verify the service is running and web UI is accessible;
     # DNS resolution is tested via Unbound (which is AdGuard's upstream)
+
+    # ============================================
+    # AdGuard rewrite reconciliation (dns-01 only)
+    # api_config.yml is gated on inventory_hostname == 'dns-01', so the rewrite
+    # add/reconcile path runs there; dns-02 would receive them via sync (not
+    # exercised here). Proves the codified adguard_rewrites reached the live
+    # instance through the role's API path.
+    # ============================================
+    - name: Fetch live DNS rewrites from AdGuard (dns-01)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ adguard_http_port | default(3000) }}/control/rewrite/list"
+        method: GET
+        user: "{{ adguard_admin_user }}"
+        password: "{{ adguard_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: live_rewrites
+      when: "'dns_primary' in group_names"
+      no_log: true
+
+    - name: Assert each codified rewrite was reconciled onto dns-01
+      ansible.builtin.assert:
+        that:
+          - live_rewrites.json | selectattr('domain', 'equalto', item.domain) |
+            selectattr('answer', 'equalto', item.answer) | list | length == 1
+        fail_msg: "Codified rewrite {{ item.domain }} -> {{ item.answer }} missing from live AdGuard"
+        success_msg: "Rewrite {{ item.domain }} reconciled onto dns-01"
+      loop: "{{ adguard_rewrites }}"
+      loop_control:
+        label: "{{ item.domain }}"
+      when: "'dns_primary' in group_names"
 
     # ============================================
     # AdGuard Sync Verification (primary only - dns-01)

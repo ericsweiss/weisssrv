@@ -1,4 +1,15 @@
 ---
+# Wrap the write in immutable-flag (chattr) handling: drop the flag before
+# writing, re-set it afterwards, and verify it stuck. Consumers that want
+# /etc/resolv.conf protected from DHCP/systemd overwrites (base, adguard_home)
+# set this true.
+resolv_conf_immutable: false
+
+# chattr +i needs CAP_LINUX_IMMUTABLE in the owning user namespace, which
+# unprivileged containers (LXC guests, molecule docker) lack — there the role
+# warns about the missing protection instead of failing.
+resolv_conf_is_container: "{{ ansible_facts['virtualization_type'] | default('') in ['docker', 'lxc', 'container', 'podman'] }}"
+
 # Default search domains. Empty list = no `search` line is written.
 #
 # Default keeps current behaviour for Proxmox hosts and admin shells

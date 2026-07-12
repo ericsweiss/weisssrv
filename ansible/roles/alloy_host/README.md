@@ -24,6 +24,11 @@ Both ingesters write to the same Loki backend; labels distinguish source.
 
 ## Configuration
 
+The apt package is pinned via `alloy_host_version` in
+`group_vars/all.yml` and held (`dpkg hold`) so a manual `apt upgrade`
+can't move it — mirroring the tailscale/plex host-side pins. This is
+distinct from the in-cluster `helm_chart_versions.alloy` chart pin.
+
 The Loki push endpoint defaults to the Traefik-fronted internal
 hostname (the cert is the wildcard `*.esweiss.com`, trusted via the
 system CA bundle on every host):
@@ -46,7 +51,8 @@ ansible-playbook ansible/playbooks/site.yml --tags alloy_host
 
 ## Files
 
-- `tasks/main.yml` — installs Alloy via apt and manages `CUSTOM_ARGS` in
+- `tasks/main.yml` — adds the Grafana apt repo (fingerprint-verified, via the
+  shared `apt_signed_repo` role), installs Alloy, and manages `CUSTOM_ARGS` in
   `/etc/default/alloy` plus the config file; relies on the packaged systemd
   unit (the role does not template a `.service` unit)
 - `templates/config.alloy.j2` — Alloy River config (journald → Loki)

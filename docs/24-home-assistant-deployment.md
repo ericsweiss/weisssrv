@@ -197,7 +197,7 @@ git add kubernetes/apps/vm-ingress/home-assistant.yaml
 git commit -m "Update Home Assistant ingress"
 git push
 
-# Flux reconciles within ~1 minute; force immediately:
+# Flux reconciles on push (fallback: ~1-minute poll); force immediately:
 task flux:reconcile
 
 # Verify (resources are in the `default` namespace, NOT `vm-ingress`)
@@ -356,6 +356,12 @@ This will:
 3. Deploy via SCP to Home Assistant VM (192.168.0.154:22222)
 4. Validate configuration using `ha core check`
 5. Clean up temporary files
+
+The role verifies the HAOS SSH host key against the pin in
+`ansible/inventories/prod/host_vars/home.yml` (`home_assistant_host_key`)
+with `StrictHostKeyChecking=yes` — a first deploy or HAOS rebuild requires
+capturing/rotating the pin. The `home_assistant` role README is the source of
+truth for the capture and rotation procedures.
 
 **How secrets work:**
 - Task defines environment variables with 1Password references

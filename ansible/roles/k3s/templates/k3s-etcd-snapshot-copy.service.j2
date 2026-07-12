@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Copy newest k3s etcd snapshot to the off-node NFS export
+Documentation=https://git.esweiss.com/eric/weisssrv/-/blob/main/docs/17-disaster-recovery.md
+# Gate on the NFS export being mounted; systemd pulls in and orders after the
+# generated .mount unit so the copy never runs against an unmounted target.
+RequiresMountsFor={{ k3s_etcd_snapshot_mountpoint }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# oneshot units default TimeoutStartSec=infinity; a cp hung on a wedged NFS mount
+# would then stop all future off-node copies. Cap it so systemd reaps the blocked
+# cp (hard-NFS waits are SIGKILL-able) and the next hourly timer retries.
+TimeoutStartSec=10min
+ExecStart=/usr/local/sbin/k3s-etcd-snapshot-copy.sh

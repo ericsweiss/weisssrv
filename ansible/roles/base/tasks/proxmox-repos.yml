@@ -31,6 +31,11 @@
     state: absent
   when: pve_check.stat.exists
 
+# Signed-By pins trust to the Proxmox archive keyring (matches the upstream
+# PVE 9 stanza) instead of falling back to everything in trusted.gpg.d.
+# The URI stays http:// deliberately — download.proxmox.com's TLS cert covers
+# only the cdn/enterprise hostnames, so apt over https fails hostname
+# verification; apt's GPG signature check protects integrity.
 - name: Enable Proxmox no-subscription (community) repository (.sources format)
   ansible.builtin.copy:
     dest: /etc/apt/sources.list.d/pve-no-subscription.sources
@@ -39,6 +44,7 @@
       URIs: http://download.proxmox.com/debian/pve
       Suites: {{ ansible_facts['distribution_release'] }}
       Components: pve-no-subscription
+      Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
     mode: '0644'
   when:
     - pve_check.stat.exists

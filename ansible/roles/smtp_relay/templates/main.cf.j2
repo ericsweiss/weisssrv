@@ -9,7 +9,7 @@ append_dot_mydomain = no
 
 alias_maps = hash:/etc/aliases
 alias_database = hash:/etc/aliases
-mydestination = $myhostname, localhost.$mydomain, localhost
+mydestination = {{ smtp_relay_config.mydestination | default('$myhostname, localhost.$mydomain, localhost') }}
 relayhost = {{ smtp_relay_config.relayhost }}
 mynetworks = {{ smtp_relay_config.mynetworks }}
 inet_interfaces = {{ smtp_relay_config.inet_interfaces }}

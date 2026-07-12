@@ -42,7 +42,6 @@
           - sudo
           - curl
           - openssl
-          - git
         state: present
       when: ansible_os_family == "Debian"
 
@@ -60,21 +59,6 @@
         owner: root
         group: root
         mode: "0755"
-
-    # Pre-install acme.sh using git method to avoid shell compatibility issues
-    # The role's installer doesn't work well with dash (sh) in containers
-    - name: Clone acme.sh repository
-      ansible.builtin.git:
-        repo: https://github.com/acmesh-official/acme.sh.git
-        dest: /tmp/acme.sh
-        depth: 1
-        version: master
-
-    - name: Install acme.sh via bash (avoiding dash shell issues)
-      ansible.builtin.shell: |
-        cd /tmp/acme.sh && bash acme.sh --install --nocron --home /root/.acme.sh --accountemail test@test.local
-      args:
-        creates: /root/.acme.sh/acme.sh
 
   roles:
     - role: acme_certs

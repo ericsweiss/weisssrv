@@ -1,0 +1,32 @@
+---
+# Shared `always:` tail for update-k3s-nodes.yml: uncordon the just-upgraded
+# node (retrying while the API settles) and block until it reports Ready, so a
+# failed upgrade never leaves the node unschedulable. Expects the calling
+# play's k3s_delegate_server var (a server other than the node being upgraded).
+
+- name: Uncordon node after upgrade (always runs, retries for API availability)
+  ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+  changed_when: true
+  delegate_to: "{{ k3s_delegate_server }}"
+  register: uncordon_result
+  retries: 12
+  delay: 10
+  until: uncordon_result.rc == 0
+  failed_when: false
+
+- name: Fail if uncordon failed after retries
+  ansible.builtin.fail:
+    msg: >-
+      Failed to uncordon {{ inventory_hostname }} after {{ uncordon_result.attempts }} attempts.
+      Node may remain unschedulable. Run manually: kubectl uncordon {{ inventory_hostname }}
+  when: uncordon_result.rc | default(0) != 0
+
+- name: Wait for node to be Ready
+  ansible.builtin.command: >
+    k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: node_ready
+  retries: 30
+  delay: 5
+  until: node_ready.stdout == "True"
+  changed_when: false
+  delegate_to: "{{ k3s_delegate_server }}"

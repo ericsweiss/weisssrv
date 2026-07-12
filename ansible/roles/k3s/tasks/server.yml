@@ -27,6 +27,47 @@
       - "Config will be written to: /etc/rancher/k3s/config.yaml"
   tags: [debug]
 
+# Rebuild guard: k3s_is_first_server is pinned in hosts.yml, so a wiped/rebuilt
+# first server would otherwise render `cluster-init: true` and bootstrap a NEW
+# single-node etcd cluster (fresh CA) while the surviving servers still hold the
+# old quorum — with both sides' kube-vip contending for the API VIP. If this
+# node has no local etcd data but the VIP already serves a cluster, render the
+# join stanza instead. A healthy first server keeps cluster-init (etcd data
+# present, so the probe is skipped; the flag is a no-op on an initialized
+# datastore), and a genuine first bootstrap (no data, dead VIP) still inits.
+- name: Check for existing local etcd data
+  ansible.builtin.stat:
+    path: /var/lib/rancher/k3s/server/db/etcd
+  register: k3s_local_etcd
+
+- name: Probe the API VIP for an existing cluster (rebuilt first-server guard)
+  ansible.builtin.uri:
+    url: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}/ping"
+    validate_certs: false
+    timeout: 5
+  register: k3s_vip_probe
+  # Any HTTP response (status != -1) proves an apiserver holds the VIP; a
+  # connection failure (fresh bootstrap) is the expected negative, not an error.
+  failed_when: false
+  check_mode: false
+  # Retry so a single transient VIP blip during a rebuild cannot mis-select
+  # cluster-init and split-brain. until-exhaustion (VIP dead across ~21s) marks
+  # the task failed even with failed_when:false, so ignore_errors keeps that
+  # legitimate fresh-bootstrap negative from aborting the play.
+  retries: 3
+  delay: 3
+  until: (k3s_vip_probe.status | default(-1)) != -1
+  ignore_errors: true
+  when:
+    - k3s_is_first_server | default(false)
+    - not k3s_local_etcd.stat.exists
+    - not (skip_k3s_install | default(false))
+
+- name: Force join mode when the cluster already exists elsewhere
+  ansible.builtin.set_fact:
+    k3s_join_existing: "{{ (k3s_vip_probe.status | default(-1)) != -1 }}"
+  when: k3s_vip_probe is not skipped
+
 - name: Deploy k3s server config
   ansible.builtin.template:
     src: k3s-server-config.yaml.j2
@@ -70,7 +111,7 @@
     fail_msg: >-
       kube_vip_interface '{{ kube_vip_interface }}' is not a NIC on
       {{ inventory_hostname }} (have:
-      {{ ansible_facts.interfaces | default([]) | join(', ') }}). The API VIP
+      {{ ansible_facts.interfaces | default([]) | sort | join(', ') }}). The API VIP
       ({{ k3s_api_vip | default('?') }}) would silently fail to announce. Set
       kube_vip_interface in group_vars/k3s.yml or host_vars to the right interface.
     success_msg: "kube-vip interface {{ kube_vip_interface }} present"
@@ -92,7 +133,7 @@
     K3S_TOKEN: "{{ k3s_token }}"
     INSTALL_K3S_VERSION: "{{ k3s_version }}"
   when:
-    - k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version
+    - k3s_needs_install | bool
     - not (skip_k3s_install | default(false))
   notify:
     - Restart k3s
@@ -143,3 +184,15 @@
   changed_when: >-
     ('tainted' in (k3s_taint_result.stdout | default('')))
     or ('modified' in (k3s_taint_result.stdout | default('')))
+
+# Off-node etcd snapshot copy (docs/17). Server nodes hold the etcd snapshots on
+# local disk only; this copies the newest one to pve-nas-01 so losing all three
+# servers (or their Proxmox hosts) does not lose etcd. Opt-in — off by default
+# until the companion NFS export + node_exporter_host exist (see defaults).
+# No skip_k3s_install gate: the container-hostile steps inside (NFS mount, tlshd
+# assert, timer enable+start) are molecule-notest-tagged, and the rest are pure
+# file/template ops that don't need k3s installed — so molecule can render and
+# assert the artifacts. Prod never sets skip_k3s_install.
+- name: Configure off-node etcd snapshot copy
+  ansible.builtin.include_tasks: etcd-snapshot-offnode.yml
+  when: k3s_etcd_snapshot_offnode_enabled | bool

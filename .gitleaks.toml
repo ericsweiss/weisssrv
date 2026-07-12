@@ -34,9 +34,6 @@ regexes = [
   # Test/fixture tokens — anchored at start of token so a real secret prefixed
   # with "prodtestkey_…" or similar can't be silenced.
   '''^(test|fake|dummy|example)[-_]?(password|token|key|secret)[A-Za-z0-9_-]*''',
-  # acme_certs molecule generates a throwaway ed25519 keypair labelled
-  # "kest-ssh-key-for-molecule-testing"; allow the comment marker.
-  '''kest-ssh-key-for-molecule-testing''',
 ]
 
 paths = [

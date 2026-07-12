@@ -2,10 +2,16 @@
 # Configure autostart and boot order for existing VMs and LXC containers
 # This is a one-time setup task for existing infrastructure
 # New VMs/containers will have autostart configured during provisioning
+#
+# HAOS (vm 154) is deliberately not covered: it is Proxmox-HA-managed, so HA
+# starts it and onboot is moot.
 
 - name: Configure autostart and boot order for LXC containers
   hosts: lxc_containers
   gather_facts: false
+  vars:
+    desired_onboot: "onboot: {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}"
+    desired_startup: "startup: order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}"
   tasks:
     - name: Determine container ID
       ansible.builtin.set_fact:
@@ -30,15 +36,27 @@
         - item.rc == 0
         - "'found' in item.stdout"
 
+    - name: Read current container config
+      delegate_to: "{{ container_pve_host }}"
+      ansible.builtin.command: pct config {{ container_id }}
+      register: current_config
+      changed_when: false
+      when: container_pve_host is defined
+
+    # Only write (and report changed) when the config actually differs.
+    # An unset onboot/startup key never matches the desired line, so the
+    # first run converges it; subsequent runs are no-ops.
     - name: Configure autostart and boot order for LXC container
       delegate_to: "{{ container_pve_host }}"
-      ansible.builtin.shell: |
-        pct set {{ container_id }} \
-          --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
-          --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
-      register: result
-      changed_when: result.rc == 0
-      when: container_pve_host is defined
+      ansible.builtin.command: >-
+        pct set {{ container_id }}
+        --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}
+        --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+      changed_when: true
+      when:
+        - container_pve_host is defined
+        - desired_onboot not in current_config.stdout_lines
+          or desired_startup not in current_config.stdout_lines
 
     - name: Display configuration
       ansible.builtin.debug:
@@ -48,9 +66,12 @@
           ', delay=' + (proxmox_startup_delay | default(0) | string) + 's'
           if container_pve_host is defined else 'not found on any Proxmox host' }}
 
-- name: Configure autostart and boot order for k3s VMs
-  hosts: k3s
+- name: Configure autostart and boot order for VMs (k3s + gitlab)
+  hosts: k3s:gitlab_servers
   gather_facts: false
+  vars:
+    desired_onboot: "onboot: {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}"
+    desired_startup: "startup: order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}"
   tasks:
     - name: Determine VM ID
       ansible.builtin.set_fact:
@@ -65,17 +86,27 @@
       changed_when: false
       when: proxmox_host is defined
 
-    - name: Configure autostart and boot order for VM
+    - name: Read current VM config
       delegate_to: "{{ proxmox_host }}"
-      ansible.builtin.shell: |
-        qm set {{ vm_id }} \
-          --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
-          --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
-      register: result
-      changed_when: result.rc == 0
+      ansible.builtin.command: qm config {{ vm_id }}
+      register: current_config
+      changed_when: false
       when:
         - proxmox_host is defined
         - vm_check.rc == 0
+
+    - name: Configure autostart and boot order for VM
+      delegate_to: "{{ proxmox_host }}"
+      ansible.builtin.command: >-
+        qm set {{ vm_id }}
+        --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}
+        --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+      changed_when: true
+      when:
+        - proxmox_host is defined
+        - vm_check.rc == 0
+        - desired_onboot not in current_config.stdout_lines
+          or desired_startup not in current_config.stdout_lines
 
     - name: Display configuration
       ansible.builtin.debug:

@@ -21,9 +21,21 @@ set -euo pipefail
 #     VMs/GitLab — HAOS is probed separately and not in the counters)
 #     while --json healthy only counts the 6 Proxmox hosts — regular is
 #     strictly stricter, never the reverse.
-# When adding a signal to one mode, mirror it in the other.
+# When adding a signal to one mode, mirror it in the other. The verdict
+# logic itself (classify_regular / classify_json) and the redaction
+# patterns live in collect-state-lib.sh so they can be unit-tested
+# (scripts/test_collect_state_lib.py).
 
-PVE_HOSTS=(pve-nas-01 pve-laptop-01 pve-opt-01 pve-opt-02 pve-opt-03 pve-prec-01)
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/collect-state-lib.sh
+. "$_SCRIPT_DIR/collect-state-lib.sh"
+# Host/IP roster, generated from ansible/inventories/prod/hosts.yml.
+# shellcheck source=scripts/hosts.env
+. "$_SCRIPT_DIR/hosts.env"
+
+# Proxmox hosts by Tailscale/LAN hostname (PVE_HOSTS in hosts.env); split the
+# sourced space-joined scalar into the array this script uses.
+read -ra PVE_HOSTS <<< "$PVE_HOSTS"
 
 # SSH option sets, defined once (DUP-12). Distinct ConnectTimeout values are
 # deliberately kept separate: a short timeout for quick LAN reachability
@@ -37,11 +49,10 @@ SSH_OPTS_PROBE=(-o ConnectTimeout=3 -o BatchMode=yes)   # quick reachability pro
 # feed their (separate) classifiers from identical signals. Per-call-site
 # differences that must be preserved are passed as arguments:
 #   - the kubectl probes take extra kubectl args via "$@" (regular mode
-#     passes --request-timeout=5s; the --json branch passes none — matching
-#     the prior inline behavior of each call site exactly);
+#     passes --request-timeout=5s; the --json branch passes none);
 #   - probe_zfs_degraded takes "detail" to additionally build the pool JSON
 #     the --json output needs (regular mode omits it, fetching only
-#     name,health exactly as before).
+#     name,health).
 # Probes tolerate failure (unreachable kubectl/ssh, malformed output) and
 # fall back to 0 / false so an operator-side issue never falsely promotes a
 # run's health verdict.
@@ -110,8 +121,12 @@ probe_flux_not_ready() {
 # (NAS + servers), so keying off those would defeat the exclusion entirely.
 probe_warning_events() {
     local out=0 json
+    # Timestamp is coalesced: events emitted via the newer Events API often
+    # carry only eventTime (lastTimestamp null), and jq's `null >= $cutoff` is
+    # false — filtering on lastTimestamp alone silently drops them (e.g.
+    # scheduler FailedScheduling).
     if json=$(kubectl "$@" get events -A --field-selector type=Warning -o json 2>/dev/null); then
-        out=$(echo "$json" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(.lastTimestamp >= $cutoff) | select((.reason == "FailedScheduling" and ((.metadata.namespace // "") | test("^gitlab-runner")) and ((.message // "") | test("Insufficient (cpu|memory)"; "i")) and (((.message // "") | test("persistentvolumeclaim|exceeded quota|volume node affinity conflict"; "i")) | not)) | not)] | length' 2>/dev/null || echo 0)
+        out=$(echo "$json" | jq --arg cutoff "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)" '[.items[] | select(((.lastTimestamp // .eventTime // .metadata.creationTimestamp) // "") >= $cutoff) | select((.reason == "FailedScheduling" and ((.metadata.namespace // "") | test("^gitlab-runner")) and ((.message // "") | test("Insufficient (cpu|memory)"; "i")) and (((.message // "") | test("persistentvolumeclaim|exceeded quota|volume node affinity conflict"; "i")) | not)) | not)] | length' 2>/dev/null || echo 0)
     fi
     echo "$out"
 }
@@ -228,12 +243,13 @@ if [ "${1:-}" = "--json" ]; then
     CTX_GIT_SHA=$(git -C "$(dirname "$0")/.." rev-parse --short=12 HEAD 2>/dev/null || true)
     CTX_GIT_SHA="${CTX_GIT_SHA:-unknown}"
 
-    # Tri-state (mutually exclusive): healthy = green (strict: full
-    # Proxmox coverage, zero Flux/ZFS imperfections; Warning events are
-    # advisory and do not gate green); degraded = yellow (any imperfection
-    # with core infra still up — the gate keeps a fully-down cluster from
-    # reading as merely degraded); neither = red/catastrophic.
+    # Tri-state (mutually exclusive): healthy / degraded / catastrophic,
+    # decided by classify_json (collect-state-lib.sh, unit-tested); Warning
+    # events are advisory and do not gate green.
+    JSON_VERDICT=$(classify_json "$PVE_UP" "$PVE_TOTAL" "$K3S_API_OK" \
+        "$K3S_READY" "$K3S_TOTAL" "$FLUX_NOT_READY" "$ZFS_DEGRADED" "$GITLAB_OK")
     jq -n \
+        --arg verdict "$JSON_VERDICT" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson pve_up "$PVE_UP" \
         --argjson pve_total "$PVE_TOTAL" \
@@ -256,21 +272,8 @@ if [ "${1:-}" = "--json" ]; then
         --arg ctx_git_sha "$CTX_GIT_SHA" \
         '{
             timestamp: $ts,
-            healthy: (($pve_up > 0)
-                     and ($pve_up == $pve_total)
-                     and ($k3s_total > 0)
-                     and ($k3s_ready == $k3s_total)
-                     and ($flux_not_ready == 0)
-                     and ($zfs_degraded == 0)
-                     and ($gitlab_ok == 1)),
-            degraded: ((($pve_up < $pve_total)
-                       or ($k3s_ready < $k3s_total)
-                       or ($k3s_api_ok | not)
-                       or ($flux_not_ready > 0)
-                       or ($zfs_degraded > 0)
-                       or ($gitlab_ok == 0))
-                      and ($pve_up > 0)
-                      and (($k3s_api_ok | not) or ($k3s_ready > 0))),
+            healthy: ($verdict == "healthy"),
+            degraded: ($verdict == "degraded"),
             proxmox: { reachable: $pve_up, total: $pve_total },
             k3s: { nodes_ready: $k3s_ready, nodes_total: $k3s_total, api_reachable: $k3s_api_ok, version: $k3s_version, pods_running: $pod_running, pods_total: $pod_total },
             zfs: { pools: $zfs_pools, degraded_count: $zfs_degraded },
@@ -301,16 +304,18 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Hosts to collect from
 PROXMOX_HOSTS=("${PVE_HOSTS[@]}")
-DNS_HOSTS=("192.168.0.150" "192.168.0.160")  # dns-01, dns-02 (use IPs since hostnames resolve to VIP)
 # Non-Proxmox hosts are addressed by IP, not bare hostname: only the 6 Proxmox
 # hosts are on Tailscale (MagicDNS), so bare k3s/smtp/gitlab names resolve only
 # on-LAN. Using IPs lets a remote/--json run reach them over the tailnet subnet
 # route instead of false-failing the coverage gate on "could not resolve host".
-MAIL_HOSTS=("192.168.0.151")  # smtp-relay
-GITLAB_HOST="192.168.0.153"  # gitlab VM on pve-nas-01
-# 9-node k3s cluster (3 servers + 6 agents): srv nas/laptop/prec = .222/.223/.227, agt nas/laptop/opt-01/02/03/prec = .202-.207
-K3S_HOSTS=("192.168.0.222" "192.168.0.223" "192.168.0.227" "192.168.0.202" "192.168.0.203" "192.168.0.204" "192.168.0.205" "192.168.0.206" "192.168.0.207")
-HOME_ASSISTANT_HOST="192.168.0.154"  # home (HAOS VM)
+# All rosters below are sourced from hosts.env (generated from hosts.yml).
+read -ra DNS_HOSTS <<< "$DNS_IPS"   # dns-01, dns-02
+read -ra MAIL_HOSTS <<< "$MAIL_IPS"  # smtp-relay
+GITLAB_HOST="$GITLAB_IP"  # gitlab VM on pve-nas-01
+PLEX_HOST="$PLEX_IP"  # plex LXC (addressed by IP; short name hits the Traefik VIP)
+# 9-node k3s cluster (3 servers + 6 agents), servers first then agents.
+read -ra K3S_HOSTS <<< "$K3S_SERVERS $K3S_AGENTS"
+HOME_ASSISTANT_HOST="$HOME_ASSISTANT_IP"  # home (HAOS VM)
 
 # Flag to avoid collecting cluster-wide k3s data multiple times (runs on first server node only)
 K3S_CLUSTER_COLLECTED=false
@@ -326,67 +331,8 @@ HOSTS_OK=0        # number of host SSHes that returned rc=0
 K3S_API_OK=false  # set true if `kubectl get nodes` succeeds locally
 COVERAGE_FLOOR_PCT=50  # below this, the run is FAILED and CLUSTER_STATUS.txt is NOT overwritten
 
-# Redaction patterns using POSIX-compatible character classes
-# Note: Use [[:space:]] instead of \s and [^[:space:]] instead of \S for portability
-# across BSD sed (macOS) and GNU sed (Linux)
-# SECURITY: Patterns use (^|[^[:alnum:]]) to match at line start OR after non-alphanumeric
-# This ensures patterns like "token: secret123" match even at the start of a line
-# shellcheck disable=SC2016 # All patterns are sed-quoted regexes; $-escapes are intentional literals
-REDACT_PATTERNS=(
-    's/password[[:space:]]*[:=][[:space:]]*[^[:space:]]+/password: <REDACTED>/gi'
-    's/(^|[^[:alnum:]])token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1token: <REDACTED>/gi'
-    's/access_token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/access_token: <REDACTED>/gi'
-    's/refresh_token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/refresh_token: <REDACTED>/gi'
-    's/id_token[[:space:]]*[:=][[:space:]]*[^[:space:]]+/id_token: <REDACTED>/gi'
-    's/bearer[[:space:]]+[A-Za-z0-9._~+\/=-]+/Bearer <REDACTED>/gi'
-    's/(^|[^[:alnum:]])secret[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1secret: <REDACTED>/gi'
-    's/CF_Token=[^[:space:]]+/CF_Token=<REDACTED>/g'
-    's/CF_Account_ID=[^[:space:]]+/CF_Account_ID=<REDACTED>/g'
-    's/SAVED_CF_Token=[^[:space:]]+/SAVED_CF_Token=<REDACTED>/g'
-    's/SAVED_CF_Account_ID=[^[:space:]]+/SAVED_CF_Account_ID=<REDACTED>/g'
-    's/\$2[aby]\$[0-9]+\$[A-Za-z0-9.\/]+/<BCRYPT_HASH>/g'
-    's/client-certificate-data:[[:space:]]*[^[:space:]]+/client-certificate-data: <REDACTED>/g'
-    's/client-key-data:[[:space:]]*[^[:space:]]+/client-key-data: <REDACTED>/g'
-    's/certificate-authority-data:[[:space:]]*[^[:space:]]+/certificate-authority-data: <REDACTED>/g'
-    's/OPENVPN_USER=[^[:space:]]+/OPENVPN_USER=<REDACTED>/g'
-    's/OPENVPN_PASSWORD=[^[:space:]]+/OPENVPN_PASSWORD=<REDACTED>/g'
-    's/openvpn-user:[[:space:]]*[^[:space:]]+/openvpn-user: <REDACTED>/g'
-    's/openvpn-password:[[:space:]]*[^[:space:]]+/openvpn-password: <REDACTED>/g'
-    's/api-token:[[:space:]]*[^[:space:]]+/api-token: <REDACTED>/g'
-    's/oidc_client_id:[[:space:]]*[^[:space:]]+/oidc_client_id: <REDACTED>/g'
-    's/oidc_client_secret:[[:space:]]*[^[:space:]]+/oidc_client_secret: <REDACTED>/g'
-    's/client_id:[[:space:]]*[^[:space:]]+/client_id: <REDACTED>/g'
-    's/client_secret:[[:space:]]*[^[:space:]]+/client_secret: <REDACTED>/g'
-    's/glrt-[A-Za-z0-9_-]+/<GITLAB_RUNNER_TOKEN>/g'
-    's/gh[oprsu]_[A-Za-z0-9]{30,}/<GITHUB_TOKEN>/g'
-    's/ops_[A-Za-z0-9_.-]{40,}/<OP_SA_TOKEN>/g'
-    's/xox[abprs]-[A-Za-z0-9-]{10,}/<SLACK_TOKEN>/g'
-    's/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/<JWT>/g'
-    's|https://discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+|https://discord.com/api/webhooks/<REDACTED>|g'
-)
-
-redact_file() {
-    local infile="$1"
-    local outfile="$2"
-    local sed_args=()
-    for pattern in "${REDACT_PATTERNS[@]}"; do
-        sed_args+=(-e "$pattern")
-    done
-    # Defensive multi-line redaction for PEM private-key blocks. No current
-    # collector cats key material, so this is fail-safe insurance: if a future
-    # probe ever emits a `-----BEGIN ... PRIVATE KEY-----` block, the whole
-    # block (which the single-line s/// patterns above can't catch) is collapsed
-    # to a marker. Done as a separate awk pass so the range logic stays portable
-    # across BSD (macOS) and GNU sed/awk (Linux) — `sed` range-change syntax
-    # differs between the two, awk does not.
-    sed -E "${sed_args[@]}" "$infile" \
-        | awk '
-            /-----BEGIN [A-Z ]*PRIVATE KEY-----/ { print "<PRIVATE_KEY_REDACTED>"; inkey=1; next }
-            /-----END [A-Z ]*PRIVATE KEY-----/   { inkey=0; next }
-            inkey { next }
-            { print }
-        ' > "$outfile"
-}
+# Redaction (REDACT_PATTERNS + redact_file) is sourced from
+# collect-state-lib.sh so the secret-leak guard has unit tests.
 
 collect_host() {
     local host=$1
@@ -491,17 +437,32 @@ echo ""
 echo "--- ZFS Datasets ---"
 zfs list -o name,mountpoint,used,avail 2>/dev/null | head -50 || echo "No ZFS"
 echo ""
-echo "--- ZFS Encryption Keystatus ---"
-zfs get -H -o name,value keystatus 2>/dev/null | awk '$2 == "available" || $2 == "unavailable"' | head -20
+echo "--- ZFS Encryption Keystatus (encryption roots) ---"
+# Report only encryption roots — the boot-safety signal zfs-mount-encrypted.sh
+# gates on. A raw dataset dump drowns the tank/ssd rows in snapshot noise.
+zfs list -H -o name,encryptionroot,keystatus -t filesystem,volume 2>/dev/null \
+    | awk -F'\t' '$2 != "-" && $2 != "" && $1 == $2 {print "  " $1 ": " $3}' | head -20
+echo "  (archive/* keystatus=unavailable is expected: raw zfs send -w backup targets — docs/32)"
 echo ""
 echo "--- SMART Status ---"
 sudo systemctl is-active smartd 2>/dev/null || echo "smartd not active"
 echo ""
-echo "--- SMART Pending/Reallocated Sectors (SATA) ---"
+echo "--- SMART Health + Pending/Reallocated Sectors (SATA) ---"
 for d in /dev/sd?; do
     [ -b "$d" ] || continue
+    h=$(sudo smartctl -H "$d" 2>/dev/null | grep -Eo 'PASSED|FAILED' | head -1)
     v=$(sudo smartctl -A "$d" 2>/dev/null | awk '/Reallocated_Sector_Ct|Current_Pending_Sector/ {printf "%s=%s ", $2, $10}')
-    [ -n "$v" ] && echo "  $d: $v"
+    [ -n "$h$v" ] && echo "  $d: ${h:-no-verdict} $v"
+done
+echo ""
+echo "--- SMART Health (NVMe) ---"
+# The ATA attribute awk above matches nothing in NVMe output; pull the
+# NVMe health-log fields instead.
+for d in /dev/nvme[0-9]n1; do
+    [ -b "$d" ] || continue
+    h=$(sudo smartctl -H "$d" 2>/dev/null | grep -Eo 'PASSED|FAILED' | head -1)
+    v=$(sudo smartctl -A "$d" 2>/dev/null | awk -F': *' '/Critical Warning|Percentage Used|Media and Data Integrity Errors/ {printf "%s=%s ", $1, $2}')
+    [ -n "$h$v" ] && echo "  $d: ${h:-no-verdict} $v"
 done
 echo ""
 echo "--- Boot-time Unlock Units (ZFS native key-load) ---"
@@ -581,7 +542,7 @@ echo "--- LXC Containers ---"
 sudo pct list 2>/dev/null || echo "No LXC containers"
 echo ""
 echo "--- VM List ---"
-qm list 2>/dev/null || echo 'Cannot list VMs'
+sudo qm list 2>/dev/null || echo 'Cannot list VMs'
 echo ""
 echo "--- Plex LXC Status (VMID 152) ---"
 # Query cluster to find which node hosts LXC 152
@@ -667,6 +628,26 @@ echo "--- Storage Replication ---"
 sudo pvesr list 2>/dev/null || echo "No replication jobs"
 sudo pvesr status 2>/dev/null | head -10 || true
 echo ""
+echo "--- Backup Freshness (NAS only: vzdump + archive replication) ---"
+if [ -d /mnt/tank/proxmox/dump ]; then
+    echo "Newest vzdump archives:"
+    # Glob must expand under root (the dump dir is not eric-readable), and the
+    # `|| echo` fallback would be dead after a pipeline ending in head — capture
+    # and test instead.
+    vzdump_list=$(sudo sh -c 'ls -lt /mnt/tank/proxmox/dump/*.zst 2>/dev/null' | head -5)
+    if [ -n "$vzdump_list" ]; then
+        echo "$vzdump_list"
+    else
+        echo "  No vzdump archives found"
+    fi
+    echo "archive-backup timer:"
+    systemctl list-timers archive-backup.timer --no-pager 2>/dev/null | head -3 || echo "  No archive-backup timer"
+    echo "archive-backup metrics:"
+    cat /var/lib/node_exporter/archive_backup.prom 2>/dev/null || echo "  No archive-backup metrics"
+else
+    echo "Not the NAS (no /mnt/tank/proxmox/dump); skipped"
+fi
+echo ""
 EOF
 }
 
@@ -702,6 +683,7 @@ echo ""
 echo "--- Cert Files ---"
 sudo ls -la /opt/AdGuardHome/certs/ 2>/dev/null || echo "No certs"
 sudo stat /opt/AdGuardHome/certs/*.pem 2>/dev/null | grep -E 'File:|Modify:' || true
+sudo openssl x509 -enddate -noout -in /opt/AdGuardHome/certs/fullchain.pem 2>/dev/null || echo "Cannot read cert notAfter"
 echo ""
 echo "--- acme.sh Status (dns-01 only) ---"
 if [ "$(hostname)" = "dns-01" ]; then
@@ -732,6 +714,7 @@ ss -lntp | grep -E ':25|:587'
 echo ""
 echo "--- TLS Certs ---"
 ls -la /etc/postfix/tls/ 2>/dev/null || echo "No TLS dir"
+sudo openssl x509 -enddate -noout -in /etc/postfix/tls/fullchain.pem 2>/dev/null || echo "Cannot read cert notAfter"
 echo ""
 echo "--- Mail Queue ---"
 sudo postqueue -p 2>/dev/null | tail -1 || echo 'Cannot check mail queue'
@@ -805,10 +788,20 @@ if systemctl is-active k3s &>/dev/null; then
     sudo k3s kubectl get nodes -o wide 2>/dev/null || echo "Cannot get nodes"
     echo ""
     echo "--- Pod Status ---"
-    sudo k3s kubectl get pods -A 2>/dev/null | head -60 || echo "Cannot get pods"
+    # Uncapped: a head cap silently cut namespaces (reloader, vpa-system)
+    # that appear in no later per-namespace section.
+    sudo k3s kubectl get pods -A 2>/dev/null || echo "Cannot get pods"
+    echo ""
+    echo "--- Pods not Running/Completed ---"
+    unhealthy_pods=$(sudo k3s kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Running" && $4 != "Completed"')
+    if [ -n "$unhealthy_pods" ]; then
+        echo "$unhealthy_pods"
+    else
+        echo "  none"
+    fi
     echo ""
     echo "--- Services ---"
-    sudo k3s kubectl get svc -A 2>/dev/null | head -40 || echo "Cannot get services"
+    sudo k3s kubectl get svc -A 2>/dev/null || echo "Cannot get services"
     echo ""
     echo "--- kube-vip Status ---"
     sudo k3s kubectl get pods -n kube-system 2>/dev/null | grep kube-vip || echo "kube-vip not found"
@@ -912,7 +905,7 @@ if systemctl is-active k3s &>/dev/null; then
     echo ""
     echo "--- cert-manager ---"
     sudo k3s kubectl get clusterissuer 2>/dev/null || echo "Cannot get ClusterIssuers"
-    sudo k3s kubectl get certificate -A 2>/dev/null || echo "Cannot get certificates"
+    sudo k3s kubectl get certificate -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,NOTAFTER:.status.notAfter' 2>/dev/null || echo "Cannot get certificates"
     echo ""
     echo "--- MetalLB Configuration ---"
     sudo k3s kubectl get ipaddresspool -n metallb-system 2>/dev/null || echo "Cannot get IP pools"
@@ -986,13 +979,12 @@ EOF
 
 # Alloy log-shipper status across all hosts, checked from the collector
 # machine (the k3s nodes have no SSH keys to other hosts, so this cannot
-# run nested inside collect_k3s — it previously reported every host
-# "unreachable" for that reason).
+# run nested inside collect_k3s).
 collect_alloy_status() {
     echo "=== Alloy host log shippers ==="
     # plex by IP: the short name resolves through the AdGuard rewrite to the
     # Traefik VIP, not the LXC (same trap as DNS_HOSTS).
-    for host in "${PVE_HOSTS[@]}" "${DNS_HOSTS[@]}" "${MAIL_HOSTS[@]}" "$GITLAB_HOST" 192.168.0.152 "${K3S_HOSTS[@]}"; do
+    for host in "${PVE_HOSTS[@]}" "${DNS_HOSTS[@]}" "${MAIL_HOSTS[@]}" "$GITLAB_HOST" "$PLEX_HOST" "${K3S_HOSTS[@]}"; do
         local status
         status=$(ssh "${SSH_OPTS_PROBE[@]}" "eric@${host}" 'systemctl is-active alloy 2>/dev/null' 2>/dev/null) || true
         echo "  $host: ${status:-unreachable}"
@@ -1077,13 +1069,25 @@ if command -v curl &>/dev/null; then
     code=$(curl -s --resolve git.esweiss.com:443:127.0.0.1 -o /dev/null -w '%{http_code}' --connect-timeout 5 https://git.esweiss.com/-/health 2>/dev/null)
     echo "Health endpoint (https://git.esweiss.com/-/health via 127.0.0.1): HTTP ${code:-unreachable}"
 fi
+sudo openssl x509 -enddate -noout -in /etc/gitlab/ssl/fullchain.pem 2>/dev/null || echo "Cannot read cert notAfter"
 echo ""
 echo "--- GitLab Disk Usage ---"
 echo "Repository storage:"
 sudo du -sh /mnt/gitlab-repos/git-data 2>/dev/null || echo "  External storage not configured or inaccessible"
 echo "Backups:"
 sudo du -sh /var/opt/gitlab/backups 2>/dev/null || echo "  Backup dir inaccessible"
-ls -la /var/opt/gitlab/backups/*.tar 2>/dev/null | tail -3 || echo "  No backup files found"
+# The backups dir is 0700 git:git, so both the glob expansion and the ls must
+# run under root (an unprivileged glob passes the literal pattern through and
+# ls fails); capture-and-test because a `|| echo` after a pipeline ending in
+# head never fires (the pipeline exits with head's 0).
+backup_list=$(sudo sh -c 'ls -lt /var/opt/gitlab/backups/*_gitlab_backup.tar 2>/dev/null' | head -3)
+if [ -n "$backup_list" ]; then
+    echo "$backup_list"
+else
+    echo "  No backup files found"
+fi
+echo "Backup metrics (gitlab_backup.prom):"
+cat /var/lib/node_exporter/gitlab_backup.prom 2>/dev/null || echo "  No backup metrics"
 echo ""
 echo "--- Container Registry ---"
 if [ -f /etc/gitlab/gitlab.rb ]; then
@@ -1256,43 +1260,18 @@ fi
 
 # Mirrors --json mode's healthy/degraded/catastrophic traffic-light states.
 # The legacy names OK/PARTIAL/FAILED are preserved for backward compatibility
-# but the *conditions* now match the --json branch on the catastrophic
-# signal specifically: FAILED ⇔ no Proxmox host reachable OR (the K3s
-# API was reachable AND no node is Ready). The host-coverage-floor band
-# stays as a stricter coverage gate.
-#   FAILED  (red)    catastrophic — no Proxmox host reachable, OR K3s API
-#                    reachable but zero nodes Ready, OR coverage below floor;
-#                    CLUSTER_STATUS.txt is NOT overwritten.
-#   OK      (green)  full host coverage, zero Flux not-ready, zero non-ONLINE
-#                    ZFS pools, GitLab healthy. Recent Warning events are
-#                    reported in the header but advisory only — they do not
-#                    block OK (transient warnings are common).
-#   PARTIAL (yellow) anything else with core infra still up — e.g. one host
-#                    unreachable, a Flux release stuck, OR the local kubectl
-#                    can't reach the cluster while SSH collection succeeded
-#                    (collector-side problem, not catastrophic cluster
-#                    failure).
-# Note: PVE_REACHABLE_REG and K3S_NODES_READY_REG mirror --json's `pve_up`
-# and `k3s_ready` exactly. The K3s catastrophic check is gated on
-# $K3S_API_OK so a missing/misconfigured local kubeconfig produces PARTIAL
-# (visibly degraded) rather than a false FAILED that hides the per-host
-# SSH collection — the JSON branch distinguishes the same case via
-# `collector_context`.
-if [ "$PVE_REACHABLE_REG" -eq 0 ] \
-   || { [ "$K3S_API_OK" = true ] && [ "$K3S_NODES_READY_REG" -eq 0 ]; } \
-   || [ "$HOST_COVERAGE_PCT" -lt "$COVERAGE_FLOOR_PCT" ]; then
-    STATUS="FAILED"
-elif [ "$HOSTS_OK" -eq "$HOSTS_TOTAL" ] \
-     && [ "$K3S_API_OK" = true ] \
-     && [ "$K3S_NODES_TOTAL_REG" -gt 0 ] \
-     && [ "$K3S_NODES_READY_REG" -eq "$K3S_NODES_TOTAL_REG" ] \
-     && [ "$FLUX_NOT_READY_REG" -eq 0 ] \
-     && [ "$ZFS_DEGRADED_REG" -eq 0 ] \
-     && [ "$GITLAB_OK_REG" -eq 1 ]; then
-    STATUS="OK"
-else
-    STATUS="PARTIAL"
-fi
+# but the *conditions* match the --json branch on the catastrophic signal
+# specifically (the host-coverage-floor band stays as a stricter,
+# regular-only coverage gate). The verdict conditions live in
+# classify_regular (collect-state-lib.sh, unit-tested); Warning events are
+# reported in the header but advisory only — they do not block OK.
+# PVE_REACHABLE_REG and K3S_NODES_READY_REG mirror --json's `pve_up` and
+# `k3s_ready` exactly; the JSON branch distinguishes the collector-side
+# kubectl-misconfigured case via `collector_context`.
+STATUS=$(classify_regular "$PVE_REACHABLE_REG" "$K3S_API_OK" \
+    "$K3S_NODES_READY_REG" "$K3S_NODES_TOTAL_REG" \
+    "$HOSTS_OK" "$HOSTS_TOTAL" "$HOST_COVERAGE_PCT" "$COVERAGE_FLOOR_PCT" \
+    "$FLUX_NOT_READY_REG" "$ZFS_DEGRADED_REG" "$GITLAB_OK_REG")
 
 # Render final output: status header + raw collection, redaction
 # applied to the combined stream.

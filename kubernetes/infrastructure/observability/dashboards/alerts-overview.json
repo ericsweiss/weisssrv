@@ -558,7 +558,7 @@
       "id": 21,
       "type": "table",
       "title": "Most-fired alerts (last 7d)",
-      "description": "Top alerts by total time spent firing in the past 7 days. Approximation: count_over_time samples are multiplied by 60 to convert to seconds, which assumes the Prometheus evaluation interval is 60s. Our cluster runs the operator default (30s eval interval) so this metric currently over-reports by ~2x; treat as a relative ranking rather than an absolute duration.",
+      "description": "Top alerts by total time spent firing in the past 7 days. count_over_time samples are multiplied by 30 (the Prometheus evaluation interval in seconds); the factor must track that interval.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 28 },
       "options": {
@@ -594,7 +594,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "topk(15, sum by (alertname, severity) (count_over_time(ALERTS{alertstate=\"firing\"}[7d])) * 60)",
+          "expr": "topk(15, sum by (alertname, severity) (count_over_time(ALERTS{alertstate=\"firing\"}[7d])) * 30)",
           "instant": true,
           "refId": "A",
           "format": "table"

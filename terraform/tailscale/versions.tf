@@ -23,8 +23,8 @@ terraform {
 }
 
 provider "tailscale" {
-  # OAuth client credentials (scope: acl write) from the "Tailscale Terraform
-  # OAuth" 1Password item; injected as TF_VAR_* by the operator (see README).
+  # OAuth client credentials (scope: acl write) from the "Tailscale OAuth"
+  # 1Password item; injected as TF_VAR_* by the operator (see README).
   oauth_client_id     = var.tailscale_oauth_client_id
   oauth_client_secret = var.tailscale_oauth_client_secret
   scopes              = ["acl"]

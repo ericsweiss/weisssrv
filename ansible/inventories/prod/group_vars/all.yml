@@ -130,6 +130,9 @@ tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should adv
 # Application version pins
 adguard_home_version: "0.107.77"
 adguardhome_sync_version: "0.9.2"
+# Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
+# helm_chart_versions.alloy chart pin below).
+alloy_host_version: "1.17.1-1"
 tailscale_version: "1.98.8"
 debian_version: "13"
 k3s_version: "v1.36.2+k3s1"
@@ -147,7 +150,7 @@ kube_vip_version: "v1.2.1"
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.5.3"
+authentik_version: "2026.5.4"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
@@ -171,12 +174,12 @@ mealie_postgresql_version: "18.4-alpine"
 busybox_version: "1.38"
 gluetun_version: "v3.41.1"
 nzbget_version: "26.2"
-qbittorrent_version: "5.2.2"
+qbittorrent_version: "5.2.3"
 prowlarr_version: "2.4.0.5397"
 sonarr_version: "4.0.19.2979"
 radarr_version: "6.2.1.10461"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.17.2"
+pulsarr_version: "0.17.3"
 
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
@@ -185,7 +188,7 @@ pulsarr_version: "0.17.2"
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
 mealie_version: "v3.20.1"
-bar_assistant_version: "5.15.2"
+bar_assistant_version: "5.15.3"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
 redis_version: "8.8.0-alpine"
@@ -195,7 +198,11 @@ plex_version: "1.43.2.10687-563d026ea"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-gitlab_version: "19.1.1-ee.0"  # 19.1.x line (incl. CVE-2026-5816 Web IDE single-origin fix); 19.1.1 = latest patch. Applied via apt on the gitlab VM by maintenance-run-all (omnibus reconfigure).
+# 19.1.x line (incl. CVE-2026-5816 Web IDE single-origin fix); 19.1.1 = latest
+# patch. Applied by task gitlab:deploy / the deploy-gitlab CI job (triggered on
+# all.yml changes); maintenance apt-upgrade honors the gitlab-ee package hold
+# and will not bump it.
+gitlab_version: "19.1.2-ee.0"
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
@@ -252,17 +259,17 @@ helm_chart_versions:
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
   traefik: "41.0.2"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
-  cert_manager: "v1.20.3"
+  cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.7.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.10.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
-  loki: "18.4.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
-  alloy: "1.10.0"
+  kube_prometheus_stack: "87.15.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  loki: "18.4.4"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  alloy: "1.10.1"
   prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"
   vpa: "4.12.3"
-  kured: "6.0.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
-  reloader: "2.2.12"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap/Secret change
+  kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
+  reloader: "2.2.14"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap/Secret change
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs
@@ -290,8 +297,8 @@ firewall_ipset_special_entries:
 # returns instead of stranding on the failover node — the placement drift the
 # storage_replication_jobs source-node warnings flag. Replaces the old flat
 # critical-services-no-nas rule (kept off nas but had no per-service home
-# preference). Homes match the storage_replication_jobs primary layout above,
-# EXCEPT dns-01 (ct:150): its home is temporarily pve-opt-01 (not pve-laptop-01)
+# preference). Homes match the storage_replication_jobs primary layout below.
+# dns-01 (ct:150) is temporarily homed on pve-opt-01 (not pve-laptop-01)
 # because pve-laptop-01 has bad RAM — restore to pve-laptop-01 after the DIMM is
 # replaced + re-tested (see the laptop-ssd-watch memory).
 ha_rules:
@@ -357,24 +364,6 @@ ha_rules:
     comment: "home-assistant home pve-prec-01 (fails back when available); never pve-nas-01"
     enabled: true
 
-  # Superseded by the per-service affinity rules above. Kept (disabled) for one
-  # deploy so the role's remove step deletes the live rule; safe to drop afterward.
-  - name: critical-services-no-nas
-    type: node-affinity
-    resources:
-      - ct:150
-      - ct:151
-      - ct:160
-      - vm:154
-    nodes:
-      - pve-laptop-01
-      - pve-opt-01
-      - pve-opt-02
-      - pve-opt-03
-      - pve-prec-01
-    strict: false
-    enabled: false
-
 # HA resources define which VMs/containers are managed by HA
 # These will automatically restart/relocate on node failure
 ha_resources:
@@ -414,37 +403,41 @@ ha_resources:
 # - pve-nas-01 excluded: no local-ssd storage, services migrated OFF for I/O contention
 #
 # Node layout (primary locations):
-# - pve-laptop-01: dns-01 (150)
-# - pve-opt-01: smtp-relay (151)
+# - pve-laptop-01: (no primary services while its bad RAM awaits a DIMM swap —
+#   fallback/backup target only)
+# - pve-opt-01: smtp-relay (151), dns-01 (150 — temporary home, see ha_rules)
 # - pve-opt-02: (no primary services - backup only)
 # - pve-opt-03: dns-02 (160)
 # - pve-prec-01: home-assistant (154)
 #
 storage_replication_jobs:
-  # dns-01 (VMID 150) - Primary on pve-laptop-01
+  # dns-01 (VMID 150) - Primary TEMPORARILY on pve-opt-01 (matches the
+  # affinity-dns-01 home above; source_node must track the HA home or
+  # proxmox_ha/replication.yml cannot manage these jobs). Revert source/targets
+  # to the pve-laptop-01 layout when the home moves back after the DIMM swap.
   # Replicate to all other local-ssd nodes
   # Staggered: offset 0 (explicit times instead of */15 so the four
   # services' offsets stay deterministic)
   - id: "150-0"
-    source_node: pve-laptop-01
-    target_node: pve-opt-01
+    source_node: pve-opt-01
+    target_node: pve-laptop-01
     schedule: "0,15,30,45"
-    comment: "dns-01 -> pve-opt-01"
+    comment: "dns-01 -> pve-laptop-01"
     enabled: true
   - id: "150-1"
-    source_node: pve-laptop-01
+    source_node: pve-opt-01
     target_node: pve-opt-02
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-02"
     enabled: true
   - id: "150-2"
-    source_node: pve-laptop-01
+    source_node: pve-opt-01
     target_node: pve-opt-03
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-03"
     enabled: true
   - id: "150-3"
-    source_node: pve-laptop-01
+    source_node: pve-opt-01
     target_node: pve-prec-01
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-prec-01"

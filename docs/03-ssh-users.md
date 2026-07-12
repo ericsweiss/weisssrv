@@ -133,7 +133,12 @@ dns:
 
 ### SSH Daemon Configuration
 
-Applied by the `base` role via direct modification of `/etc/ssh/sshd_config` using `lineinfile`. This approach ensures compatibility across Debian versions and validates the configuration before applying changes.
+Applied by the `base` role as a **drop-in** at
+`/etc/ssh/sshd_config.d/00-hardening.conf` — the monolithic
+`/etc/ssh/sshd_config` is not edited. On Debian trixie `sshd_config` starts
+with `Include /etc/ssh/sshd_config.d/*.conf` and sshd resolves directives
+first-match-wins, so the `00-` prefix sorts (and therefore wins) ahead of any
+cloud-init drop-in (e.g. `50-cloud-init.conf`).
 
 Settings applied:
 
@@ -154,7 +159,13 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 ```
 
-**Note**: The role uses `lineinfile` with `validate: "sshd -t -f %s"` to ensure the SSH config remains valid before applying changes. Settings can be customized via variables in `ansible/roles/base/defaults/main.yml`.
+**Validation**: the role renders a candidate drop-in into a temp dir,
+assembles the full merged config there, and runs `sshd -t` against it
+*before* installing — a bad value never lands on disk to break the next sshd
+restart. After install, an `sshd -T` assert confirms the key directives
+(password auth, root login, exactly one `Port`) are effective in the merged
+config regardless of what other drop-ins exist. Settings can be customized
+via variables in `ansible/roles/base/defaults/main.yml`.
 
 ### Sudo Configuration
 

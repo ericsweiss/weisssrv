@@ -15,4 +15,8 @@ plugins=(
 {% endfor %}
 )
 
+# The install is pinned to a commit by Ansible (qol role, omz_commit);
+# disable self-update so hosts don't drift from the pin.
+zstyle ':omz:update' mode disabled
+
 source $ZSH/oh-my-zsh.sh

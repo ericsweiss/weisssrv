@@ -30,6 +30,7 @@ spec:
         app.kubernetes.io/instance: dns-01
     spec:
       # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -121,6 +122,7 @@ spec:
         app.kubernetes.io/instance: dns-02
     spec:
       # Distroless static binary (USER 65532, FROM scratch); no runtime writes.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

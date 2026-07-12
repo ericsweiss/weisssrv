@@ -149,9 +149,8 @@ spec:
                 values: [sonarr, radarr, lidarr, prowlarr, pulsarr, qbittorrent, nzbget]
 
 ---
-# 5. DNS egress. All downloads pods set `dnsPolicy: None` with explicit
-#    nameservers 192.168.0.150 / .160 (or fall back to those IPs when Gluetun
-#    is enabled and crashes). The *arr pods that omit dnsPolicy still use
+# 5. DNS egress. nzbget/qbittorrent (VPN-sidecar pods) set `dnsPolicy: None`
+#    with explicit nameservers 192.168.0.150 / .160; the *arr pods use
 #    kube-dns in the kube-system namespace. Allow both paths so behavior is
 #    correct regardless of which mode a pod is in.
 apiVersion: networking.k8s.io/v1
@@ -251,12 +250,15 @@ spec:
 
 ---
 # 7b. Egress for NZBGet in direct mode (vpn_enabled: "false" in
-#     nzbget-vpn-config). NZBGet talks NNTPS (TCP 563) and unencrypted NNTP
-#     (TCP 119) to external Usenet providers. The VPN-egress rule above only
-#     opens 1194/443/51820 — which would silently kill all Usenet
-#     downloads in direct mode. When the ConfigMap is flipped to VPN mode,
-#     this rule is harmless (Gluetun owns the network namespace and rejects
-#     non-tunnel traffic) but keeps the policy intent explicit.
+#     nzbget-vpn-config). NZBGet talks NNTPS (TCP 563) to external Usenet
+#     providers. The VPN-egress rule above only opens 1194/443/51820 — which
+#     would silently kill all Usenet downloads in direct mode. When the
+#     ConfigMap is flipped to VPN mode, this rule is harmless (Gluetun owns
+#     the network namespace and rejects non-tunnel traffic) but keeps the
+#     policy intent explicit. Plaintext NNTP (TCP 119) is deliberately NOT
+#     allowed — the policy layer forces TLS, matching the repo's
+#     encryption-in-transit posture; re-add it only for a provider that
+#     genuinely requires plaintext.
 #     RFC1918 excluded — same defense-in-depth as the *arr rule.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -280,7 +282,6 @@ spec:
               - 169.254.0.0/16
       ports:
         - { protocol: TCP, port: 563 }   # NNTPS (TLS)
-        - { protocol: TCP, port: 119 }   # NNTP (plaintext fallback)
 
 ---
 # qBittorrent direct-mode egress. Only takes effect when

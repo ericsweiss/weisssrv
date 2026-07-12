@@ -1,12 +1,12 @@
 # Plex Role
 
-Installs and configures Plex Media Server in an LXC container with GPU transcoding, bind-mounted media library, and Traefik ingress.
+Installs and configures Plex Media Server in an LXC container with GPU transcoding, a bind-mounted media library, and a TLS custom-certificate hook. The Traefik ingress is Flux-managed, not deployed by this role.
 
 ## What This Role Manages
 
 ### Installation
-- Plex apt repository configuration
-- GPG key installation
+- Plex apt repository + fingerprint-verified GPG key (Plex v2 signing key)
+  via the shared `apt_signed_repo` role
 - Plex Media Server package installation (pinned version)
 - Service enablement and start
 
@@ -16,16 +16,16 @@ Installs and configures Plex Media Server in an LXC container with GPU transcodi
 - Systemd service override (Restart=on-failure)
 - TLS custom-certificate hook (plex-cert-reload.sh)
 
-### Traefik Ingress
-- IngressRoute deployment for external access
-- HTTPS with Let's Encrypt certificates
-- Domain: plex.esweiss.com
+### Traefik Ingress (not managed here)
+The IngressRoute for plex.esweiss.com is Flux-managed at
+`kubernetes/apps/vm-ingress/plex.yaml` — mirroring the home_assistant
+split: Ansible manages the guest, Flux manages the ingress.
 
 ## Configuration
 
 ```yaml
-# Version (from group_vars/all.yml)
-plex_version: "1.42.2.10156-f737b826c"  # Or "latest" for auto-update
+# Version (pinned in group_vars/all.yml — see it for the current value)
+plex_version: "1.43.2.10687-563d026ea"  # Or "latest" for auto-update
 
 # LXC configuration (host_vars/plex.yml)
 plex:
@@ -44,7 +44,7 @@ plex:
 ## Deployment
 
 ```bash
-# Full Plex deployment (LXC + Plex + ingress)
+# Full Plex deployment (LXC + Plex)
 task plex:deploy
 
 # Plex installation only (assumes LXC exists)
@@ -64,29 +64,28 @@ Plex LXC (192.168.0.152)
 │  ├─ /mnt/nvme/fast/plex-transcode  → /transcode
 │  └─ /mnt/media (mergerfs)          → /media (read-write for metadata)
 ├─ GPU: /dev/dri (Intel/AMD transcoding)
-└─ Traefik Ingress
+└─ Traefik IngressRoute (Flux-managed: kubernetes/apps/vm-ingress/plex.yaml)
    └─ plex.esweiss.com → 192.168.0.152:32400
 ```
 
 ## Task Flow
 
 ```
-1. Check if Plex GPG key exists
-2. Download + verify Plex GPG key (if needed)
-3. Add Plex apt repository
-4. Install Plex Media Server (pinned version or latest); hold the pinned version
-5. Add plex user to media/video/render groups
-6. Deploy TLS cert-reload hook (plex-cert-reload.sh + PFX passphrase)
-7. Deploy systemd override (Restart=on-failure)
-8. Reload systemd daemon
-9. Ensure Plex service is enabled and running
-10. Wait for Plex to be ready (port 32400)
+1. Install the Plex apt repo (fingerprint-verified GPG key, signed-by
+   keyring) via the shared apt_signed_repo role
+2. Install Plex Media Server (pinned version or latest); hold the pinned version
+3. Add plex user to media/video/render groups
+4. Deploy TLS cert-reload hook (plex-cert-reload.sh + PFX passphrase)
+5. Deploy systemd override (Restart=on-failure)
+6. Reload systemd daemon
+7. Ensure Plex service is enabled and running
+8. Wait for Plex to be ready (port 32400)
 ```
 
 ## Files
 
 - `tasks/main.yml` - Main orchestration (includes install/configure/service)
-- `tasks/install.yml` - apt repo, GPG key, package install + version hold
+- `tasks/install.yml` - apt repo via `apt_signed_repo`, package install + version hold
 - `tasks/configure.yml` - groups, TLS cert-reload hook, bind-mount checks, systemd override
 - `tasks/service.yml` - daemon-reload, enable/start, health check
 - `handlers/main.yml` - Restart plex / reload systemd handlers
@@ -99,7 +98,10 @@ Plex LXC (192.168.0.152)
 acme_certs (on dns-01) distributes the wildcard cert to `/etc/ssl/plex`.
 `plex-cert-reload.sh` (deployed by this role at `/usr/local/sbin`, root:root 0750)
 converts the PEM pair into the PKCS#12 (`.pfx`) bundle Plex's "Custom certificate
-location" requires, verifies it, swaps it in atomically, and restarts Plex. The
+location" requires, verifies it, swaps it in atomically, restarts Plex, and
+confirms port 32400 actually serves the pushed cert (Plex silently falls back to
+its plex.direct cert on a PFX parse failure) — reverting to the previous bundle
+on any failure. The
 PFX passphrase comes from 1Password (`PLEX_PFX_PASSPHRASE`, item "Plex Custom
 Certificate") and must match the value set under Plex Settings -> Network ->
 "Custom certificate encryption key".
@@ -108,6 +110,7 @@ Certificate") and must match the value set under Plex Settings -> Network ->
 
 - `proxmox_lxc` role (creates container with GPU and bind mounts)
 - `base` role (networking, packages)
+- `apt_signed_repo` role (fingerprint-verified Plex apt repo)
 - NAS storage (pve-nas-01:/mnt/media via mergerfs)
 
 ## Initial Setup
@@ -119,12 +122,16 @@ After deployment, complete setup in browser:
 3. Claim server
 4. Add library pointing to /mnt/media
 
+If a `PLEX_CLAIM` token was used for claiming, re-run the role without the
+env var afterwards — the token is rendered into the systemd override only
+while `plex_claim` is non-empty, so the re-run removes it.
+
 ## Version Management
 
 ### Pinned Version
 
 ```yaml
-plex_version: "1.42.2.10156-f737b826c"
+plex_version: "1.43.2.10687-563d026ea"   # current pin — see group_vars/all.yml
 ```
 
 Updates via:

@@ -5,13 +5,17 @@ Installs and configures Tailscale VPN on managed hosts. Handles apt repository s
 ## What This Role Manages
 
 ### Installation
-- Tailscale GPG key download and verification
+- Tailscale GPG key download to a staging path, fingerprint verification, then
+  install into `/usr/share/keyrings/`
 - Tailscale apt repository configuration
 - Pinned version installation (from group_vars)
 - Tailscaled daemon enablement and start
 
 ### Network Configuration
-- IP forwarding enablement (for subnet routers only)
+- IP forwarding enablement for subnet routers, persisted in
+  `/etc/sysctl.d/99-tailscale-ip-forward.conf` plus a tailscaled
+  `ExecStartPost` drop-in (Proxmox bridge init can reset the value after
+  systemd-sysctl at boot)
 - Automatic status checking
 - Authentication with auth key from 1Password
 - Route advertisement (optional)
@@ -20,7 +24,10 @@ Installs and configures Tailscale VPN on managed hosts. Handles apt repository s
 ### Authentication
 - Automatic `tailscale up` with auth key
 - Idempotent (only authenticates if not already running)
-- Support for additional flags (--operator, --ssh, etc.)
+- Preference reconciliation on every run via `tailscale set` (accept-routes,
+  accept-dns, advertise-routes) for already-authenticated nodes
+- Support for additional flags (--operator, --ssh, etc.) — applied only by the
+  initial `tailscale up`
 - Manual authentication fallback with helpful command output
 
 ## Configuration
@@ -31,8 +38,8 @@ Installs and configures Tailscale VPN on managed hosts. Handles apt repository s
 # Enable Tailscale
 tailscale_enabled: true
 
-# Version pinning (from group_vars/all.yml)
-tailscale_version: "1.94.1"
+# Version pinning (from group_vars/all.yml — see it for the current value)
+tailscale_version: "1.98.8"
 
 # Route acceptance (CRITICAL: false prevents routing loops)
 tailscale_accept_routes: false
@@ -95,19 +102,22 @@ sudo tailscale up --accept-routes=false --accept-dns=false
 
 ### Subnet Router Model
 
-Proxmox hosts advertise the homelab network (192.168.0.0/24) to Tailscale:
+All six Proxmox hosts advertise the homelab network (192.168.0.0/24) to
+Tailscale (`tailscale_advertise_routes` in `group_vars/proxmox.yml`), so any
+one of them can carry remote access — real failover, not a single-host SPOF:
 
 ```
 Tailscale Network (100.64.0.0/10)
         │
-        ├─ pve-nas-01 (subnet router)
-        │  └─ Advertises: 192.168.0.0/24
-        │
-        ├─ pve-opt-03 (subnet router)
-        │  └─ Advertises: 192.168.0.0/24
+        ├─ pve-nas-01 ─┐
+        ├─ pve-opt-01  │
+        ├─ pve-opt-02  ├─ subnet routers, each advertising 192.168.0.0/24
+        ├─ pve-opt-03  │  (auto-approved via terraform/tailscale autoApprovers)
+        ├─ pve-prec-01 │
+        ├─ pve-laptop-01 ┘
         │
         └─ External devices
-           └─ Can reach homelab via subnet routers
+           └─ Can reach homelab via any subnet router
 ```
 
 ### Critical Configuration
@@ -127,12 +137,14 @@ With this setting:
 
 ```
 1. Create /usr/share/keyrings directory
-2. Check if Tailscale GPG key exists
-3. Download GPG key (if not present)
+2. Download GPG key to a staging file (re-fetched every run)
+3. Verify the primary key fingerprint, then install into /usr/share/keyrings
 4. Add Tailscale apt repository
 5. Install Tailscale (pinned version)
 6. Enable and start tailscaled service
-7. Enable IP forwarding (if advertising routes)
+7. Enable IP forwarding (if advertising routes):
+   ├─ sysctl.d drop-in (99-tailscale-ip-forward.conf)
+   └─ tailscaled ExecStartPost drop-in (re-asserts after boot bridge init)
 8. Check Tailscale status (JSON)
 9. Authenticate with tailscale up (if needed):
    ├─ Use auth key from environment (1Password)
@@ -140,13 +152,15 @@ With this setting:
    ├─ Set --accept-dns flag
    ├─ Set --advertise-routes (if configured)
    └─ Add additional flags (if configured)
-10. Display authentication status
+10. Reconcile preferences on already-running nodes (tailscale set)
+11. Display authentication status
 ```
 
 ## Files
 
 - `tasks/main.yml` - Main task orchestration
 - `defaults/main.yml` - Default variables
+- `handlers/main.yml` - tailscaled reload/restart handler
 
 ## Dependencies
 
@@ -154,7 +168,8 @@ None - runs independently.
 
 ## Security
 
-- GPG key verified before repository use
+- GPG key fingerprint-verified in a staging path before it is installed into
+  the trusted keyring location (a tampered download never becomes trusted)
 - Auth key stored in 1Password (never in git)
 - Auth key not logged (`no_log: true`)
 - Pinned version prevents unexpected updates
@@ -162,10 +177,12 @@ None - runs independently.
 
 ## Idempotency
 
-- GPG key download checks for existence first
+- GPG key is re-downloaded and verified every run (picks up upstream key
+  rotation); the keyring file only reports changed when its content changes
 - Repository addition is idempotent
 - Package installation allows downgrades (version pinning)
-- Authentication only runs if BackendState != "Running"
+- Authentication only runs if BackendState != "Running"; `tailscale set`
+  reconciles preference drift on every run
 - IP forwarding only enabled if advertising routes
 
 ## Operational Notes
@@ -175,7 +192,7 @@ None - runs independently.
 Update version in `group_vars/all.yml`:
 
 ```yaml
-tailscale_version: "1.94.1"
+tailscale_version: "1.98.8"   # current pin — see group_vars/all.yml
 ```
 
 Then run:
@@ -216,11 +233,10 @@ To make a Proxmox host a subnet router:
 
 2. Run the role (IP forwarding will be enabled automatically)
 
-3. Approve route in Tailscale admin console:
-   - Go to https://login.tailscale.com/admin/machines
-   - Find the machine
-   - Click "Review route settings"
-   - Approve the advertised routes
+3. Route approval: `192.168.0.0/24` advertisements auto-approve via the
+   `autoApprovers` block in the tailnet ACL managed in `terraform/tailscale`
+   (see that module's README). Routes outside the auto-approved set still
+   need manual approval at https://login.tailscale.com/admin/machines.
 
 ### Troubleshooting
 

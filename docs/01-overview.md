@@ -137,52 +137,7 @@ Hot Tier (NVMe)                 Cold Tier (HDD)
 
 ## Implementation Status
 
-### Base Infrastructure (Complete)
-
-The base infrastructure automation is complete and production-ready:
-
-**Core Infrastructure**:
-- Proxmox cluster (6 nodes: pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01)
-- LXC containers (dns-01, dns-02, smtp-relay)
-- ZFS storage pools (tank, ssd, nvme, archive on NAS; local-ssd on compute nodes)
-- Network configuration and firewall rules
-
-**Services Configured**:
-- DNS: AdGuard Home + Unbound (HA pair on dns-01, dns-02)
-- Certificates: Let's Encrypt via acme.sh with automated distribution
-- Mail: SMTP relay (Gmail) with null clients on all hosts
-- Storage: ZFS + NFS + Samba + MergerFS with automated media mover
-- Security: Proxmox firewall with IPSets and Tailscale VPN
-- Monitoring: SMART disk health monitoring and backup jobs
-
-**Automation**:
-- Ansible roles covering all infrastructure services (`ansible/roles/`)
-- Terraform for Cloudflare DNS (*.ericsweiss.com)
-- 1Password integration for secrets (no secrets in git)
-- Update playbooks with rolling deployments
-- Post-deployment verification checks
-
-**Documentation**:
-- Operational runbooks covering common procedures (`docs/12-runbooks.md`)
-- Disaster recovery procedures (`docs/17-disaster-recovery.md`)
-- Maintenance and update strategies
-
-### K3s Platform (Active)
-
-9-node K3s cluster with full platform services:
-
-- [x] K3s cluster (3 servers + 6 agents) with etcd quorum
-- [x] kube-vip for API HA (192.168.0.161)
-- [x] MetalLB for LoadBalancer services
-- [x] Traefik ingress, cert-manager, external-dns
-- [x] External Secrets Operator with 1Password Connect
-- [x] Observability stack (Prometheus + Grafana + Loki + Alloy, see [31-observability.md](31-observability.md))
-- [x] Authentik SSO identity provider
-- [x] Application workloads (*arr stack, Mealie, Bar Assistant)
-- [x] Plex Media Server (LXC container with Traefik ingress)
-- [x] GitLab EE with container registry and CI/CD runners
-- [x] Home Assistant with Traefik ingress and SSO
-- [x] GitOps with Flux (deployed)
-- [ ] Future apps: Immich, Nextcloud
-
-See [16-next-steps.md](16-next-steps.md) for the detailed roadmap.
+Base infrastructure, the 9-node k3s platform, and the application stacks are
+all deployed and production-ready. Status checklists and the roadmap
+(including planned apps) live in [16-next-steps.md](16-next-steps.md) — the
+canonical home for implementation status.

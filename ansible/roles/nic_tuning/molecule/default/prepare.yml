@@ -1,17 +1,20 @@
 ---
 # Install ethtool + iproute2 in the test container so the role's Apply-ethtool
 # task has a binary to exec. `logger` comes from bsdutils, which is already
-# present on Debian base images (but installed defensively).
+# present on Debian base images (but installed defensively). ifupdown2 is the
+# parser Proxmox uses at boot — verify runs it against the rendered drop-in so
+# a stanza it rejects ("error processing line") fails the test.
 - name: Prepare
   hosts: all
   gather_facts: false
   tasks:
-    - name: Install ethtool, iproute2, and bsdutils (logger)
+    - name: Install ethtool, iproute2, bsdutils (logger), and ifupdown2
       ansible.builtin.apt:
         name:
           - ethtool
           - iproute2
           - bsdutils
+          - ifupdown2
         state: present
         update_cache: true
 
@@ -22,6 +25,25 @@
         owner: root
         group: root
         mode: "0755"
+
+    # ifupdown2 only reads drop-ins reachable from /etc/network/interfaces via
+    # `source` — mirror the Proxmox default so ifquery sees the role's output.
+    # The bond0 stanza with `bond-all_slaves_active 1` seeds the MAC-flap guard
+    # test: verify.yml asserts the role rewrites it to 0 (surgical, in place).
+    - name: Write /etc/network/interfaces sourcing interfaces.d
+      ansible.builtin.copy:
+        dest: /etc/network/interfaces
+        content: |
+          source /etc/network/interfaces.d/*
+
+          auto bond0
+          iface bond0 inet manual
+              bond-slaves nic0 nic1
+              bond-mode active-backup
+              bond-all_slaves_active 1
+        owner: root
+        group: root
+        mode: "0644"
 
     - name: Seed stale NIC tuning drop-in for cleanup test
       ansible.builtin.copy:

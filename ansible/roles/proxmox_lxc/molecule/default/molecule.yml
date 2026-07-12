@@ -18,6 +18,8 @@ platforms:
     tmpfs:
       - /run
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   env:
     SSH_PUBLIC_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYDONOTUSE molecule@test
   inventory:

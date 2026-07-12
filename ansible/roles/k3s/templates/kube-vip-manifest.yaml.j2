@@ -71,6 +71,11 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - manager
+        # Nothing scrapes kube-vip metrics (no ServiceMonitor, and the Proxmox
+        # VM firewall filters 2112), so disable the listener. Must be the flag:
+        # kube-vip ignores the equivalent env var when set empty and falls back
+        # to the :2112 flag default.
+        - --prometheusHTTPServer=
         env:
         - name: KUBERNETES_SERVICE_HOST
           value: "127.0.0.1"
@@ -106,8 +111,6 @@ spec:
           value: "10"
         - name: address
           value: "{{ k3s_api_vip }}"
-        - name: prometheus_server
-          value: ":2112"
         securityContext:
           capabilities:
             add:
@@ -116,6 +119,9 @@ spec:
         volumeMounts:
         - name: kubeconfig
           mountPath: /etc/kubernetes/admin.conf
+          # The hostPath is the node's cluster-admin kubeconfig; kube-vip only
+          # reads it.
+          readOnly: true
       volumes:
       - name: kubeconfig
         hostPath:

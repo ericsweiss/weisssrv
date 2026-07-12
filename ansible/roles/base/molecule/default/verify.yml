@@ -140,40 +140,50 @@
         fail_msg: "testuser home directory has incorrect ownership"
         success_msg: "testuser home directory has correct ownership"
 
-    # Test DNS template rendering (verify template syntax without writing to /etc/resolv.conf)
-    # Create a mock DNS config manually to avoid template dependency on groups['dns']
-    - name: Create test DNS config
-      ansible.builtin.copy:
-        dest: /tmp/resolv.conf.test
-        content: |
-          # Test DNS config
-          nameserver 192.168.0.150
-          nameserver 192.168.0.160
-          domain test.local
-          search test.local
-          options timeout:2
-          options attempts:2
-        mode: "0644"
+    # resolv.conf template coverage lives in the resolv_conf role's own
+    # molecule scenarios (default, empty-search); dns.yml is skipped here
+    # because /etc/resolv.conf is a docker bind mount.
 
-    - name: Read test DNS config
-      ansible.builtin.slurp:
-        src: /tmp/resolv.conf.test
-      register: dns_config_content
+    # ========================================================================
+    # SSH hardening verification
+    # ========================================================================
+    - name: Check the SSH hardening drop-in exists
+      ansible.builtin.stat:
+        path: /etc/ssh/sshd_config.d/00-hardening.conf
+      register: hardening_dropin
+      failed_when: not hardening_dropin.stat.exists or hardening_dropin.stat.mode != '0644'
 
-    - name: Verify DNS config structure is correct
+    - name: Read effective sshd configuration
+      ansible.builtin.command: sshd -T
+      register: sshd_effective
+      changed_when: false
+
+    # The prepare step seeds a conflicting 50-cloud-init.conf
+    # (PasswordAuthentication yes); 00-hardening.conf must win under sshd's
+    # first-match-wins precedence.
+    - name: Verify hardening directives are effective despite the seeded conflict
       ansible.builtin.assert:
         that:
-          - "'nameserver 192.168.0.150' in (dns_config_content.content | b64decode)"
-          - "'nameserver 192.168.0.160' in (dns_config_content.content | b64decode)"
-          - "'domain test.local' in (dns_config_content.content | b64decode)"
-          - "'search test.local' in (dns_config_content.content | b64decode)"
-        fail_msg: "DNS config structure check failed"
-        success_msg: "DNS config structure verified (template pattern validated)"
+          - sshd_effective.stdout | lower is search('(?m)^passwordauthentication no$')
+          - sshd_effective.stdout | lower is search('(?m)^permitrootlogin no$')
+          - sshd_effective.stdout | lower is search('(?m)^port 22$')
+        fail_msg: >-
+          sshd -T does not reflect the hardening drop-in — the seeded
+          50-cloud-init.conf conflict may have won over 00-hardening.conf
+        success_msg: "SSH hardening effective (00-hardening.conf wins over 50-cloud-init.conf)"
 
-    - name: Cleanup temp DNS config
-      ansible.builtin.file:
-        path: /tmp/resolv.conf.test
-        state: absent
+    - name: Check SSH service is running
+      ansible.builtin.systemd:
+        name: ssh
+      register: ssh_service_status
+
+    - name: Verify SSH service state
+      ansible.builtin.assert:
+        that:
+          - ssh_service_status.status.ActiveState == 'active'
+          - ssh_service_status.status.UnitFileState == 'enabled'
+        fail_msg: "ssh service is not active/enabled"
+        success_msg: "ssh service is active and enabled"
 
     # ========================================================================
     # Fail2ban verification
@@ -211,13 +221,12 @@
       changed_when: false
       failed_when: false
 
-    - name: Verify fail2ban is running (if systemd is functional)
+    - name: Verify fail2ban is running
       ansible.builtin.assert:
         that:
           - fail2ban_status.rc == 0
         fail_msg: "fail2ban is not running"
         success_msg: "fail2ban is running"
-      when: fail2ban_status.rc == 0
 
     - name: Check fail2ban sshd jail status
       ansible.builtin.command: fail2ban-client status sshd
@@ -229,20 +238,3 @@
       ansible.builtin.debug:
         msg: "{{ sshd_jail_status.stdout_lines | default(['sshd jail status not available']) }}"
       when: sshd_jail_status.rc == 0
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "Common packages installed successfully (15 packages)"
-          - "testuser created with sudo group membership"
-          - "testuser home directory exists with correct ownership"
-          - ".ssh directory created with correct permissions (0700)"
-          - "authorized_keys deployed with test SSH key"
-          - "Passwordless sudo configured via /etc/sudoers.d/testuser"
-          - "Sudoers file has valid syntax (visudo check)"
-          - "Timezone set correctly (container symlink method)"
-          - "VM packages correctly skipped (docker != KVM)"
-          - "DNS template renders correctly (tested to temp file)"
-          - "SSH hardening skipped (skip_ssh_config=true)"
-          - "DNS configuration skipped (skip_dns_config=true, but template tested)"
-          - "Fail2ban installed and configured with sshd jail"

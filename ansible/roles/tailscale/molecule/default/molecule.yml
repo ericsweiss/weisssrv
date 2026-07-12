@@ -19,6 +19,8 @@ platforms:
       - /run
       - /tmp
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   env:
     TAILSCALE_AUTH_KEY: ''
   inventory:

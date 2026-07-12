@@ -3,14 +3,16 @@
 Installs Prometheus node_exporter on bare-metal Proxmox hosts for hardware
 metrics (thermals via hwmon/thermal_zone, disk I/O, NIC counters). Listens on
 **port 9101** to avoid conflicting with the k3s in-cluster node-exporter
-DaemonSet on 9100. SMART health is **not** exported here — `smartmontools` is
-installed only for the `smartctl` binary used out-of-band (smartd /
-`nas_storage`); SATA temperatures surface via the drivetemp/hwmon path.
+DaemonSet on 9100. `smartmontools` is installed on the bare-metal Proxmox
+hosts only (the `smartctl` binary feeds the smartmon collector below plus
+out-of-band use: smartd / `nas_storage`, collect-state.sh, postflight); SATA
+temperatures also surface via the drivetemp/hwmon path.
 
-Also runs on the DNS LXCs (dns-01/dns-02) and the GitLab VM (`gitlab_servers`)
-for their textfile collectors (cert renewal on DNS; backup freshness on GitLab).
-The Proxmox-only collectors below are gated on `groups['proxmox']`, so those
-hosts install only the package + 9101 override + textfile collector directory.
+Also runs on the DNS LXCs (dns-01/dns-02), the smtp-relay LXC, and the GitLab
+VM (`gitlab_servers`) for their textfile collectors (cert renewal on DNS;
+backup freshness on GitLab). The Proxmox-only pieces below — smartmontools and
+the collectors — are gated on `groups['proxmox']`, so those hosts install only
+the node-exporter package + 9101 override + textfile collector directory.
 
 ## Textfile collector
 
@@ -24,6 +26,7 @@ populated by:
   GitLab VM (consumed by `GitLabBackupFailed`/`GitLabBackupStale` PrometheusRules)
 - This role's own corosync + pmxcfs health collector (see below)
 - This role's own zpool-status collector (see below)
+- This role's own smartmon collector (see below)
 
 ## zpool-status collector (hosts with ZFS pools)
 
@@ -47,13 +50,49 @@ Emitted metrics (in `/var/lib/node_exporter/zfs_pool_status.prom`):
 | `zfs_pool_status_errors_total{pool,type}` | Summed per-vdev READ/WRITE/CKSUM counters; non-zero while still ONLINE is the silent-corruption signature. |
 | `zfs_pool_status_data_errors{pool}` | Entries in the `zpool status -v` permanent-error list. |
 | `zfs_pool_status_last_scrub_seconds{pool}` | Unix time the last scrub completed (an in-progress scrub counts as fresh; `0` = never). |
+| `zfs_pool_status_allocated_bytes{pool}` | Allocated bytes (`zpool list -Hp alloc`). |
+| `zfs_pool_status_size_bytes{pool}` | Total pool size in bytes (`zpool list -Hp size`) — emitted only when the pool reports a real size, so a faulted pool can't feed a `0` into the capacity ratio. |
 | `zfs_pool_status_collector_last_success_seconds` | Sentinel — staleness means the collector itself is broken. |
 
 Hosts without ZFS emit only the sentinel. Companion alerts live in the
-`homelab.storage` group of
+`homelab.monitoring` group of
 `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`:
-`ZFSPoolDeviceErrors`, `ZFSPoolNotOnline`, `ZFSPoolScrubStale`,
-`ZFSPoolCollectorStale`.
+`ZFSPoolDeviceErrors`, `ZFSPoolDataErrors`, `ZFSPoolNotOnline`,
+`ZFSPoolScrubStale`, `ZFSPoolCollectorStale`, and the capacity pair
+`ZFSPoolSpaceWarning` (>80%) / `ZFSPoolSpaceCritical` (>90%).
+
+## smartmon collector (Proxmox hosts only)
+
+Exports per-device SMART health to Prometheus every 5 minutes. smartd on
+pve-nas-01 keeps the attribute-level **email** path, but before this
+collector no SMART data reached Prometheus at all — Grafana/Alertmanager
+could not alert on failing drives, and ZFS error events (e.g. the archive
+pool's device errors) could not be attributed to a disk.
+
+- `/usr/local/sbin/smartmon-collector.sh` — oneshot script; probes every
+  `smartctl --scan` device with `-n standby` so it **never wakes a sleeping
+  drive or aborts a long self-test** (the documented reason DEVICESCAN was
+  removed from smartd.conf). Writes `smartmon.prom` atomically.
+- `smartmon-collector.service` + `.timer` — oneshot unit fired every 5 min.
+
+Emitted metrics (in `/var/lib/node_exporter/smartmon.prom`):
+
+| Metric | Meaning |
+|--------|---------|
+| `smartmon_device_info{device,model,serial,interface}` | Static identity (always `1`). |
+| `smartmon_device_active{device}` | `0` = drive was in standby this cycle (attribute series absent until it wakes — alert expressions should tolerate gaps). |
+| `smartmon_device_smart_healthy{device}` | Overall self-assessment: `1`=PASSED/OK, `0`=failing. |
+| `smartmon_temperature_celsius{device}` | SMART-reported temperature. |
+| `smartmon_reallocated_sector_count{device}` | ATA attr 5 raw. |
+| `smartmon_current_pending_sector_count{device}` | ATA attr 197 raw. |
+| `smartmon_offline_uncorrectable_count{device}` | ATA attr 198 raw. |
+| `smartmon_media_errors_count{device}` | NVMe media/data-integrity errors. |
+| `smartmon_collector_last_success_seconds` | Sentinel — staleness means the collector itself is broken. |
+
+Companion alerts live in the `homelab.storage` group of
+`kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml`:
+`SMARTDeviceUnhealthy`, `SMARTReallocatedSectorsGrowing`, `SMARTPendingSectors`,
+`SMARTOfflineUncorrectable`, `SMARTMediaErrors`, `SMARTCollectorStale`.
 
 ## Corosync + pmxcfs health collector (Proxmox hosts only)
 

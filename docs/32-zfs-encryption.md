@@ -54,6 +54,9 @@ reference, and NFS export path — are unchanged by encryption.
   - `ssd/databases` — migrated.
   - `ssd/pve` (`vm-153-disk-0` + `vm-153-cloudinit`, the GitLab VM disks) —
     migrated; the Proxmox storage `ssd` reference is unchanged.
+  - `ssd/k3s-etcd` — own root; holds the off-node k3s etcd snapshot copies
+    (docs/17). Created encrypted at activation (the copies are full cluster
+    state, so they must not land plaintext on the NAS).
 
   GitLab's backup tarball lives on the VM's root disk
   (`/var/opt/gitlab/backups`) and is out of scope for ZFS encryption;

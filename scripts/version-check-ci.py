@@ -56,7 +56,7 @@ def _services(data: dict) -> list:
 
 
 def main():
-    # Run version check once with --json. check-versions checks ~45 services
+    # Run version check once with --json. check-versions checks ~50 services
     # sequentially, each with its own request timeout + bounded retries, so a few
     # slow/unreachable endpoints under a partial outage can take minutes. Give
     # generous headroom (env-tunable) so that doesn't SIGKILL the run and report

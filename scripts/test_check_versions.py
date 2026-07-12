@@ -15,6 +15,7 @@ Note: pytest is preferred for better output formatting and fixtures, but
 unittest fallback is provided for environments where pytest is not installed.
 """
 
+import re
 import socket
 import unittest
 import urllib.error
@@ -42,13 +43,13 @@ version_greater = check_versions.version_greater
 fetch_plex_version = check_versions.fetch_plex_version
 fetch_gitlab_version = check_versions.fetch_gitlab_version
 fetch_apt_packages = check_versions.fetch_apt_packages
-read_ci_image_versions = check_versions.read_ci_image_versions
+read_pinned_image_versions = check_versions.read_pinned_image_versions
 update_version_in_file = check_versions.update_version_in_file
 SERVICE_REGISTRY = check_versions.SERVICE_REGISTRY
 
 
-class TestCiImageVersionTracking(unittest.TestCase):
-    """pr-agent (and other CI-pinned images) tracked from .gitlab-ci.yml."""
+class TestPinnedImageVersionTracking(unittest.TestCase):
+    """Digest-locked image pins tracked from .gitlab-ci.yml and kubernetes/."""
 
     def test_pr_agent_in_registry(self):
         entry = next(
@@ -61,13 +62,53 @@ class TestCiImageVersionTracking(unittest.TestCase):
 
     def test_reads_pr_agent_tag_from_gitlab_ci(self):
         # Reads the real .gitlab-ci.yml pin so check-versions can flag staleness.
-        versions = read_ci_image_versions()
+        versions = read_pinned_image_versions()
         self.assertIn("pr_agent_version", versions)
         self.assertRegex(versions["pr_agent_version"], r"^\d+\.\d+")
 
-    def test_ci_image_update_is_manual(self):
-        # A digest-pinned CI image is flagged for manual update, never written.
+    def test_reads_manifest_pins_from_kubernetes(self):
+        # Reads the real kubernetes/ manifest pins (gluetun-exporter sidecar,
+        # the shared python CronJob base image, the digest-pinned plex-exporter)
+        # so pins that live outside all.yml stay visible to check-versions.
+        versions = read_pinned_image_versions()
+        self.assertRegex(
+            versions.get("gluetun_exporter_version", ""),
+            r"^\d+\.\d+\.\d+-standalone$",
+        )
+        self.assertRegex(
+            versions.get("python_cronjob_version", ""), r"^3\.\d+-slim$"
+        )
+        self.assertEqual(versions.get("plex_exporter_version"), "latest")
+
+    def test_divergent_multifile_pin_is_flagged(self):
+        # The python base image is pinned in two CronJob manifests that must
+        # share one tag. Patch one path to a different tag and assert the
+        # divergence raises (fails CI loudly) rather than silently selecting one.
+        real_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            content = real_read_text(self, *args, **kwargs)
+            if self.name == "cronjob.yaml" and "gitlab-runner-reaper" in str(self):
+                content = re.sub(
+                    r"(image:\s*python:)3\.\d+-slim",
+                    r"\g<1>3.0-slim",
+                    content,
+                )
+            return content
+
+        with patch.object(Path, "read_text", fake_read_text):
+            with self.assertRaises(RuntimeError) as ctx:
+                read_pinned_image_versions()
+        self.assertIn("python_cronjob_version", str(ctx.exception))
+        self.assertIn("diverge", str(ctx.exception))
+
+    def test_pinned_image_update_is_manual(self):
+        # A digest-pinned image is flagged for manual update, never written.
         self.assertFalse(update_version_in_file("pr_agent_version", "9.9.9"))
+        self.assertFalse(
+            update_version_in_file("gluetun_exporter_version", "9.9.9-standalone")
+        )
+        self.assertFalse(update_version_in_file("python_cronjob_version", "9.9-slim"))
 
 
 class TestVersionParsing(unittest.TestCase):
@@ -457,20 +498,21 @@ class TestGetDeployCommand(unittest.TestCase):
             )
 
     def test_helm_chart_prefix_routes_to_flux(self):
-        # Every helm_chart_* variable must route through Flux — the old
+        # Every helm_chart_versions.* variable (the dotted registry var_name
+        # spelling) must route through Flux — the old
         # maintenance:update-helm-charts task was removed when platform
         # controllers became Flux HelmReleases.
         for var in (
-            "helm_chart_versions_metallb",
-            "helm_chart_versions_traefik",
-            "helm_chart_versions_cert_manager",
-            "helm_chart_versions_external_dns",
-            "helm_chart_versions_external_secrets",
+            "helm_chart_versions.metallb",
+            "helm_chart_versions.traefik",
+            "helm_chart_versions.cert_manager",
+            "helm_chart_versions.external_dns",
+            "helm_chart_versions.external_secrets",
             # Observability Helm charts
-            "helm_chart_versions_kube_prometheus_stack",
-            "helm_chart_versions_loki",
-            "helm_chart_versions_alloy",
-            "helm_chart_versions_prometheus_blackbox_exporter",
+            "helm_chart_versions.kube_prometheus_stack",
+            "helm_chart_versions.loki",
+            "helm_chart_versions.alloy",
+            "helm_chart_versions.prometheus_blackbox_exporter",
         ):
             cmd = check_versions.get_deploy_command(self._mk(var, category="helm"))
             self.assertIn("flux:sync-versions", cmd, f"{var}: {cmd}")
@@ -512,7 +554,7 @@ class TestGetDeployCommand(unittest.TestCase):
     def test_new_flux_services_route_correctly(self):
         """Verify busybox, meilisearch, redis, and external-secrets route to Flux."""
         for var_name in ["busybox_version", "meilisearch_version", "redis_version",
-                         "helm_chart_versions_external_secrets"]:
+                         "helm_chart_versions.external_secrets"]:
             result = self._mk(var_name=var_name, category="dockerhub")
             cmd = check_versions.get_deploy_command(result)
             self.assertIn("flux:sync-versions", cmd,
@@ -541,6 +583,21 @@ class TestGetDeployCommand(unittest.TestCase):
         self.assertEqual(
             len(names), len(set(names)),
             f"Duplicate names: {[n for n in names if names.count(n) > 1]}",
+        )
+
+    def test_every_helm_chart_pin_has_registry_entry(self):
+        """Every helm_chart_versions.* key pinned in all.yml must have a
+        SERVICE_REGISTRY entry, or its updates are silently never reported
+        (how kured and reloader went missing)."""
+        current = check_versions.read_current_versions()
+        registry_vars = {s["var_name"] for s in check_versions.SERVICE_REGISTRY}
+        missing = [
+            v for v in current
+            if v.startswith("helm_chart_versions.") and v not in registry_vars
+        ]
+        self.assertEqual(
+            missing, [],
+            f"helm_chart_versions pins with no SERVICE_REGISTRY entry: {missing}",
         )
 
     def test_service_registry_field_completeness(self):
@@ -1238,6 +1295,34 @@ class TestAnnotateLatestResolution(unittest.TestCase):
         result = self._mk(latest_version=None, notes="")
         check_versions._annotate_latest_resolution(result, "latest")
         self.assertEqual(result.notes, "")
+
+
+class TestCliArgumentValidation(unittest.TestCase):
+    """Unknown CLI flags must fail loudly (exit 2), not silently run the full
+    unfiltered check (e.g. a typo'd `--catagory helm`)."""
+
+    def _run(self, *args):
+        import subprocess
+        return subprocess.run(
+            [sys.executable, str(script_path), *args],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_unknown_flag_exits_2(self):
+        res = self._run("--catagory", "helm")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("unknown argument", res.stderr)
+
+    def test_unknown_flag_after_valid_flag_exits_2(self):
+        res = self._run("--service", "k3s", "--bogus")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("--bogus", res.stderr)
+
+    def test_list_still_works(self):
+        res = self._run("--list")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("Tracked services", res.stdout)
 
 
 if __name__ == "__main__":

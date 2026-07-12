@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+# Oneshot that samples SMART health/attributes for every scanned device
+# (standby-aware: never wakes sleeping drives). Invoked every 5 minutes
+# by smartmon-collector.timer.
+[Unit]
+Description=Sample SMART device health to node_exporter textfile collector
+
+[Service]
+Type=oneshot
+# Passes the textfile dir so the role variable (node_exporter_host_textfile_dir)
+# is honored both here and inside the script — same contract as the
+# corosync/zpool collectors.
+ExecStart=/usr/local/sbin/smartmon-collector.sh {{ node_exporter_host_textfile_dir }}
+User=root
+# ~1s per drive; bound generously for the 17-drive NAS so a hung device
+# can't accumulate stuck oneshots.
+TimeoutStartSec=120s
+Nice=10
+# Sandbox: smartctl issues raw ioctls against /dev/sd*//dev/nvme*, so
+# PrivateDevices is deliberately NOT set (same carve-out as the zpool
+# collector's /dev/zfs). ProtectSystem=strict keeps the rest of the fs
+# read-only except the textfile dir.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+ReadWritePaths={{ node_exporter_host_textfile_dir }}

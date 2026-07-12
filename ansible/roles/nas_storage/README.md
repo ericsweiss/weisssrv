@@ -1,17 +1,31 @@
 # NAS Storage Role
 
-Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory, media-mover automation, and SMART monitoring on pve-nas-01. Does **not** create or destroy ZFS pools.
+Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory, media-mover and archive-backup automation, and SMART monitoring on pve-nas-01. Does **not** create or destroy ZFS pools.
 
 ## What This Role Manages
 
 ### ZFS
 - Pool property configuration (compression, atime, xattr)
-- Dataset creation and management
+- Dataset verification and property enforcement (datasets are created
+  manually; a missing dataset fails the deploy — see `tasks/zfs.yml`)
 - Automated periodic snapshots via zfs-auto-snapshot
+- Optional ARC cap: when `zfs_arc_max_bytes` is set (host_vars; 6711934976
+  ≈ 6.25 GiB on pve-nas-01), renders `/etc/modprobe.d/zfs.conf` with
+  `options zfs zfs_arc_max=<bytes>` and notifies an `Update initramfs`
+  handler so the cap applies at early boot, before the pools import. It also
+  applies the value to the running kernel via
+  `/sys/module/zfs/parameters/zfs_arc_max` (compare-then-set) so a changed cap
+  takes effect immediately, not only at next reboot. Empty (the default)
+  leaves ARC at the ZFS default and the file unmanaged.
 
 ### NFS
 - NFS server installation and configuration
 - Exports configuration for k3s nodes and services
+- Per-app appdata subdirectories under the `/export/appdata` bind source
+  (`nas_appdata_dirs`, owned `nas_appdata_owner`:`nas_appdata_group` =
+  1000:2000 to match the export's `all_squash,anonuid=1000,anongid=2000`);
+  created after the mounted-dataset guard so a locked/unmounted `ssd` pool
+  can never get them mkdir'd onto its bare mountpoint
 - Security (restricted to nfs_clients IPSet)
 
 ### Samba
@@ -26,9 +40,18 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 - Automatic remount on boot
 
 ### Media Mover
-- Systemd timer (runs at 03:30 daily; overridable via media_mover_schedule)
-- Moves completed downloads from nvme to tank
+- Systemd timer (production runs at 04:15 daily via `media_mover_schedule`
+  in host_vars; the timer template falls back to 03:30 when unset)
+- Moves aged library files (older than media_mover_min_age) off the NVMe hot
+  tier to tank
 - Preserves directory structure and permissions
+- Load-shaped: it shares the nightly window with vzdump/scrub/smartd, so the
+  unit runs deferentially — `media_mover_nice` (10) + ionice
+  (`media_mover_io_class`/`media_mover_io_priority`, best-effort/7) set
+  absolute priority, and the cgroup-v2 `media_mover_cpu_weight` /
+  `media_mover_io_weight` (both 20, below the 100 default) deprioritize it
+  only under contention. `media_mover_bwlimit` is an optional hard rsync
+  throughput cap (empty = unlimited).
 
 ### SMART Monitoring
 - Smartmontools configuration
@@ -39,7 +62,8 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 
 ```yaml
 # ZFS pools (never created/destroyed by Ansible — manually built).
-# The role only sets properties + creates datasets under existing pools.
+# The role only verifies datasets exist and enforces their properties;
+# dataset creation is manual too (docs/06-zfs.md, docs/32 §2a).
 zfs_pools:
   - name: tank        # 6x 22TB raidz2
     datasets:
@@ -72,10 +96,15 @@ zfs_pools:
 # left at the server default (none:tls:mtls), which accepts plaintext.
 # Requires nfs_tls active on the server AND on every client that mounts TLS.
 nfs_exports:
+  # NFSv4 pseudo-root (fsid=0): traversal-only, so read-only — clients cross
+  # from here into whichever child exports are explicitly listed for them.
+  # crossmnt is deliberately ABSENT: it would implicitly export every child
+  # filesystem bound under /export with THIS line's options (plaintext, no
+  # xprtsec), bypassing the per-child client lists and TLS requirements.
   - path: /export                     # NFSv4 pseudo-root (left plaintext)
     clients:
       - spec: "192.168.0.200/29"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
 
   - path: /export/appdata             # k3s-only -> export-level require TLS
     bind_source: /mnt/ssd/appdata
@@ -111,6 +140,28 @@ samba_shares:
     force_group: "media"
     create_mask: "0664"
     directory_mask: "2775"
+
+# ZFS ARC cap (defaults/main.yml; pinned per host — pve-nas-01 sets
+# 6711934976 ≈ 6.25 GiB in host_vars, compute hosts leave it empty)
+zfs_arc_max_bytes: ""
+
+# Media-mover load-shaping (defaults/main.yml; see Media Mover above)
+media_mover_nice: 10
+media_mover_io_class: best-effort
+media_mover_io_priority: 7
+media_mover_cpu_weight: 20
+media_mover_io_weight: 20
+media_mover_bwlimit: ""               # rsync --bwlimit, e.g. "50m"; empty = unlimited
+
+# Per-app appdata subdirectories on the /export/appdata bind source.
+# Zvol-backed datasets (authentik/mealie postgres, prometheus, loki) are NOT
+# here — those are separate ext4-on-zvol mounts, not NFS subdirectories.
+nas_appdata_base: /mnt/ssd/appdata
+nas_appdata_owner: 1000
+nas_appdata_group: 2000
+nas_appdata_mode: "0775"
+nas_appdata_dirs: [grafana, sonarr, radarr, lidarr, prowlarr, qbittorrent,
+                   nzbget, pulsarr, mealie, bar-assistant]
 ```
 
 Mergerfs unifies `/mnt/nvme/media` (hot) + `/mnt/tank/media` (cold) at
@@ -133,26 +184,28 @@ ansible-playbook ansible/playbooks/storage.yml
 ```
 pve-nas-01
 ├─ ZFS Pools
-│  ├─ tank (122TB usable, raidz2)
-│  ├─ ssd (10.9TB, raidz1)
-│  ├─ nvme (2.27TB, single)
-│  └─ archive (21.8TB, raidz1)
+│  ├─ tank (6x 22TB raidz2, ~88TB usable)
+│  ├─ ssd (3x 4TB raidz1, ~8TB usable)
+│  ├─ nvme (1x 4TB, ~2.27TB)
+│  └─ archive (4x 6TB raidz1, ~18TB usable)
 ├─ Mergerfs: /mnt/media
 │  └─ Combines: tank/media + nvme/media
 ├─ NFS: Exports to k3s nodes
 ├─ Samba: Shares to LAN
-├─ Media Mover: nvme → tank (03:30 daily)
+├─ Media Mover: nvme → tank (04:15 daily, load-shaped)
+├─ Archive backup: archive-backupctl → archive pool (05:00 nightly)
 └─ SMART: Monitoring + alerts
 ```
 
 ## Files
 
 - `tasks/main.yml` - Main orchestration
-- `tasks/zfs.yml` - ZFS configuration
-- `tasks/nfs.yml` - NFS exports
+- `tasks/zfs.yml` - ZFS configuration (incl. the ARC modprobe.d cap)
+- `tasks/nfs.yml` - NFS exports + per-app appdata subdirectories
 - `tasks/samba.yml` - Samba shares
 - `tasks/mergerfs.yml` - Unified media directory
 - `tasks/media_mover.yml` - Automated file mover
+- `tasks/archive_backup.yml` - Nightly ZFS replication to the archive pool
 - `tasks/smartd.yml` - SMART monitoring
 - `templates/*` - Configuration templates
 
@@ -173,7 +226,9 @@ zpool create -f tank raidz2 \
   # ... (6 disks total)
 ```
 
-Ansible only sets properties and creates datasets.
+Ansible only sets pool/dataset properties and verifies the expected datasets
+exist (they are created manually alongside the pool; a missing one fails the
+deploy).
 
 ## Testing
 

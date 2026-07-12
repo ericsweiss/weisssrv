@@ -13,7 +13,9 @@ media_gid: 2000
 plex_version: latest
 
 # Plex claim token (optional - for linking to account during initial setup)
-# Set via environment variable: PLEX_CLAIM
+# Set via environment variable: PLEX_CLAIM. Once the server is claimed,
+# re-run the role WITHOUT the env var so the token is removed from the
+# systemd override (the Environment= line is only rendered when non-empty).
 plex_claim: "{{ lookup('ansible.builtin.env', 'PLEX_CLAIM', default='') }}"
 
 # Plex Custom Certificate PFX passphrase. Read from env var injected by

@@ -70,6 +70,79 @@
       # the .154 line the option string would differ and this grep would miss.
       failed_when: mixed_plain.rc != 0 or 'xprtsec' in mixed_plain.stdout
 
+    # _zfs_anchor selection (nfs.yml): an encrypted bind source must order on
+    # the LATE zfs-mount-encrypted.service, a plaintext one on the early
+    # zfs-mount.service — the wrong anchor re-creates the empty-mountpoint
+    # capture incident the anchor logic guards against.
+    - name: Read the /export/appdata bind fstab entry (encrypted source)
+      ansible.builtin.command: >-
+        grep -E '^/mnt/ssd/appdata[[:space:]]+/export/appdata[[:space:]]' /etc/fstab
+      register: enc_bind_line
+      changed_when: false
+      failed_when: >-
+        enc_bind_line.rc != 0
+        or 'x-systemd.requires=zfs-mount-encrypted.service' not in enc_bind_line.stdout
+        or 'x-systemd.after=zfs-mount-encrypted.service' not in enc_bind_line.stdout
+        or 'nofail' not in enc_bind_line.stdout
+
+    - name: Read the /export/share bind fstab entry (plaintext source)
+      ansible.builtin.command: >-
+        grep -E '^/mnt/tank/share[[:space:]]+/export/share[[:space:]]' /etc/fstab
+      register: plain_bind_line
+      changed_when: false
+      failed_when: >-
+        plain_bind_line.rc != 0
+        or 'x-systemd.requires=zfs-mount.service' not in plain_bind_line.stdout
+        or 'zfs-mount-encrypted' in plain_bind_line.stdout
+
+    - name: Read the nfs-server ordering drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf
+      register: nfs_dropin
+
+    - name: Assert the drop-in gates nfsd on the encrypted export only
+      ansible.builtin.assert:
+        that:
+          - "'After=zfs-mount-encrypted.service' in (nfs_dropin.content | b64decode)"
+          - "'RequiresMountsFor=/export/appdata' in (nfs_dropin.content | b64decode)"
+          - "'RequiresMountsFor=/export/share' not in (nfs_dropin.content | b64decode)"
+        fail_msg: >-
+          nfs-server drop-in must order after zfs-mount-encrypted.service and
+          RequiresMountsFor exactly the encrypted exports (never the plaintext
+          ones).
+
+    # Media mover: script + timer render and the timer is enabled.
+    - name: Stat media-mover script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/media-mover.sh
+      register: media_mover_script
+      failed_when: not media_mover_script.stat.exists or media_mover_script.stat.mode != '0755'
+
+    - name: Verify media-mover script renders src/dst from host vars
+      ansible.builtin.command: grep -q 'SRC="/mnt/nvme/media/library"' /usr/local/sbin/media-mover.sh
+      register: media_mover_src_check
+      changed_when: false
+      failed_when: media_mover_src_check.rc != 0
+
+    - name: Check media-mover timer enabled state  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled media-mover.timer
+      register: media_mover_timer
+      changed_when: false
+      failed_when: media_mover_timer.stdout | trim != 'enabled'
+
+    # Per-app appdata subdirectories (finding 204): created after the
+    # mounted-dataset guard, owned 1000:2000 so the all_squashed appdata export
+    # is writable by the floating k3s apps (Grafana + downloads/recipes).
+    - name: Stat the grafana appdata subdirectory
+      ansible.builtin.stat:
+        path: /mnt/ssd/appdata/grafana
+      register: appdata_grafana
+      failed_when: >-
+        not appdata_grafana.stat.exists
+        or not appdata_grafana.stat.isdir
+        or appdata_grafana.stat.uid != 1000
+        or appdata_grafana.stat.gid != 2000
+
     - name: Check if Samba is installed
       ansible.builtin.package:
         name: samba
@@ -102,16 +175,14 @@
       register: smb_service
       failed_when: smb_service.status.LoadState != 'loaded'
 
-    # archive-backupctl contract. The script threads each replicated dataset
-    # through six parallel lists (SRC_LIST/MAP/RMAP, the lock list, and both
-    # restore case statements) plus a zvol-vs-filesystem receive branch. The
-    # assertions live in files/archive-contract-assert.sh (a real *.sh: shellcheck
-    # lints it, and its embedded quotes don't trip Ansible's arg splitter the way
-    # an inline `shell:` block would). It pins the lists with NO runtime self-
-    # protection — SRC_LIST, both restore paths (per-target + all), and the lock
-    # list (a dataset missing there is silently left writable); MAP/RMAP need no
-    # static check (a missing key fails loudly under set -u). It also bash -n's the
-    # REAL render and pins the type->arm coupling so an inversion is caught.
+    # archive-backupctl contract. MAP/RMAP, the lock list, and the restore
+    # targets are all derived from SRC_LIST inside the script, so the
+    # assertions in files/archive-contract-assert.sh (a real *.sh: shellcheck
+    # lints it, and its embedded quotes don't trip Ansible's arg splitter the
+    # way an inline `shell:` block would) pin what derivation can't protect:
+    # SRC_LIST membership, the root-is-a-filesystem allow-list, basename
+    # uniqueness. It also bash -n's the REAL render and pins the zvol-vs-
+    # filesystem type->arm coupling so an inversion is caught.
     - name: Assert the archive-backupctl contract (restorable, lock-listed, type-coupled)
       ansible.builtin.script: files/archive-contract-assert.sh
       changed_when: false
@@ -122,9 +193,11 @@
           - "✓ NFS server installed"
           - "✓ /etc/exports configured"
           - "✓ Exports file contains expected paths"
+          - "✓ Bind mounts anchored per encryption state (fstab + nfs-server drop-in)"
+          - "✓ Media-mover script + timer deployed and enabled"
           - "✓ Samba installed"
           - "✓ smb.conf configured"
           - "✓ smb.conf contains expected shares"
           - "✓ NFS service loaded"
           - "✓ Samba service loaded"
-          - "✓ archive-backupctl contract (restorable + lock-listed + type-coupled)"
+          - "✓ archive-backupctl contract (SRC_LIST-derived + type-coupled)"

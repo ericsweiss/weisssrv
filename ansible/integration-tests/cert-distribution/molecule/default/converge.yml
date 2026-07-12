@@ -11,31 +11,8 @@
 
 
   pre_tasks:
-    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    # Fix any interrupted dpkg state in Docker containers
-    - name: Fix any interrupted dpkg state
-      ansible.builtin.shell: |
-        dpkg --configure -a || true
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-      changed_when: false
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
     - name: Install required packages
       ansible.builtin.apt:
@@ -46,13 +23,10 @@
           - curl
           - git
           - sudo
+          # openssl: the forced-command receiver validates the pushed bundle
+          # (parse, notAfter, key==cert, SAN) with it on every sudo target.
+          - openssl
         state: present
-
-    - name: Wait for systemd to be ready
-      ansible.builtin.wait_for:
-        path: /run/systemd/system
-        state: present
-        timeout: 30
 
     # Set up SSH for certificate distribution
     - name: Create admin user
@@ -105,7 +79,6 @@
       when: "'cert_servers' in group_names"
       changed_when: false
 
-    # Create destination directories on clients
     - name: Create certificate directories on clients
       ansible.builtin.file:
         path: /etc/ssl/certs/wildcard
@@ -227,7 +200,7 @@
         path: "/root/.acme.sh/{{ item.domain }}"
         state: directory
         mode: '0755'
-      loop: "{{ acme_domains }}"
+      loop: "{{ mock_cert_domains }}"
 
     - name: Create mock certificates in acme.sh directory
       ansible.builtin.copy:
@@ -237,7 +210,7 @@
           -----END CERTIFICATE-----
         dest: "/root/.acme.sh/{{ item.domain }}/fullchain.cer"
         mode: '0644'
-      loop: "{{ acme_domains }}"
+      loop: "{{ mock_cert_domains }}"
 
     - name: Create mock private keys in acme.sh directory
       ansible.builtin.copy:
@@ -247,7 +220,7 @@
           -----END PRIVATE KEY-----
         dest: "/root/.acme.sh/{{ item.domain }}/{{ item.domain }}.key"
         mode: '0600'
-      loop: "{{ acme_domains }}"
+      loop: "{{ mock_cert_domains }}"
 
     - name: Create mock acme.sh binary
       ansible.builtin.copy:
@@ -258,6 +231,24 @@
         dest: /root/.acme.sh/acme.sh
         mode: '0755'
 
+    # The mock acme.sh above makes the role's "acme.sh installed" check true, so
+    # it skips the real tarball install — the only thing that ships dnsapi/. The
+    # role then asserts the dns_cf.sh DNS-01 hook exists, so mock it too (a
+    # non-empty stub satisfies the stat-based assert without a network install).
+    - name: Create mock acme.sh dnsapi directory
+      ansible.builtin.file:
+        path: /root/.acme.sh/dnsapi
+        state: directory
+        mode: '0755'
+
+    - name: Create mock acme.sh dnsapi hook (dns_cf.sh)
+      ansible.builtin.copy:
+        content: |
+          #!/usr/bin/env bash
+          # Mock acme.sh Cloudflare DNS-01 hook - test only
+        dest: /root/.acme.sh/dnsapi/dns_cf.sh
+        mode: '0755'
+
     # Create local cert dir with installed certs (simulates acme.sh --install-cert)
     - name: Create local certificate directory
       ansible.builtin.file:
@@ -265,23 +256,54 @@
         state: directory
         mode: '0755'
 
-    - name: Create mock fullchain.pem in local cert dir
-      ansible.builtin.copy:
-        content: |
-          -----BEGIN CERTIFICATE-----
-          MIICMzCCAZygAwIBAgIUMockTestCertificateFullchain000000wDQYJKoZI
-          -----END CERTIFICATE-----
-        dest: "{{ local_cert_dir }}/fullchain.pem"
-        mode: '0644'
+    # Generate a REAL *.{{ internal_domain }} wildcard cert that CHAINS to a
+    # throwaway CA. The forced-command receiver validates every pushed bundle
+    # with openssl (parse, notAfter, key==cert, SAN covers *.<internal_domain>,
+    # AND chains to a CA already in the client truststore), so the distributed
+    # cert must be genuine AND trusted — a self-signed leaf is now rejected. The
+    # test CA is installed into each client's trust store in the play below,
+    # before the push, so the receiver's chain check passes end to end.
+    - name: Generate a CA-chained wildcard cert (leaf + CA) for distribution
+      ansible.builtin.shell:
+        chdir: "{{ local_cert_dir }}"
+        creates: "{{ local_cert_dir }}/fullchain.pem"
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          dom="{{ internal_domain }}"
+          # 1. Throwaway root CA
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout test-ca.key -out test-ca.pem \
+            -days 30 -subj "/CN=Homelab Test CA"
+          # 2. Leaf key + CSR for the wildcard
+          openssl req -newkey rsa:2048 -nodes -keyout privkey.pem -out leaf.csr \
+            -subj "/CN=*.${dom}"
+          # 3. Sign the leaf with the CA, carrying the wildcard SAN
+          printf 'subjectAltName=DNS:*.%s,DNS:%s\nbasicConstraints=CA:FALSE\n' "$dom" "$dom" > san.ext
+          openssl x509 -req -in leaf.csr -CA test-ca.pem -CAkey test-ca.key -CAcreateserial \
+            -days 30 -extfile san.ext -out leaf.pem
+          # 4. fullchain = leaf + CA (leaf FIRST, so the receiver's single-cert
+          #    `openssl x509` checks still read the leaf)
+          cat leaf.pem test-ca.pem > fullchain.pem
 
-    - name: Create mock privkey.pem in local cert dir
-      ansible.builtin.copy:
-        content: |
-          -----BEGIN PRIVATE KEY-----
-          MIIEvgIBADANBgkqhkiGTestPrivateKeyLocalCert00000000000000000
-          -----END PRIVATE KEY-----
-        dest: "{{ local_cert_dir }}/privkey.pem"
-        mode: '0640'
+    - name: Set permissions on the generated cert pair
+      ansible.builtin.file:
+        path: "{{ local_cert_dir }}/{{ item.name }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {name: fullchain.pem, mode: "0644"}
+        - {name: privkey.pem, mode: "0640"}
+
+    # Stash the throwaway CA cert as a fact so the cert_clients play below can
+    # install it into their trust store — the receiver's chain check runs on the
+    # clients, so the leaf must chain to a CA they trust.
+    - name: Slurp the test CA cert
+      ansible.builtin.slurp:
+        src: "{{ local_cert_dir }}/test-ca.pem"
+      register: test_ca_slurp
+
+    - name: Publish the test CA cert as a host fact
+      ansible.builtin.set_fact:
+        test_ca_pem_b64: "{{ test_ca_slurp.content }}"
 
     # Install sudo for the distribution script (runs sudo on remote hosts)
     - name: Install sudo
@@ -332,6 +354,12 @@
         # the distribution key to that source IP — the from="..." restriction
         # would reject the SSH push from the container and fail distribution.
         acme_certs_key_from: ""
+        # Suppress the role's OWN proactive push here: it runs during this play,
+        # which is BEFORE the CA is trusted on the clients (next play), so the
+        # receiver's chain check would reject it and abort converge. The real
+        # distribution is exercised by the explicit "Run Certificate
+        # Distribution" play below, after the test CA is installed.
+        skip_cert_distribution: true
 
     # The role deploys the real ed25519 keypair (generated earlier in this
     # converge, injected via add_host) to /home/eric/.ssh/id_ed25519_certs and pushes
@@ -339,6 +367,25 @@
     # authorized_keys via ansible.posix.authorized_key. Both happen inside
     # acme_certs above, so no post-role keygen / authorized_key push is
     # needed here.
+
+# Trust the throwaway test CA on the clients BEFORE distribution — the
+# forced-command receiver's `openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt`
+# check runs on each client, so the distributed leaf must chain to a CA the
+# client already trusts.
+- name: Converge - Trust the test CA on cert clients
+  hosts: cert_clients
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install the throwaway test CA into the client trust store
+      ansible.builtin.copy:
+        content: "{{ hostvars['dns-01'].test_ca_pem_b64 | b64decode }}"
+        dest: /usr/local/share/ca-certificates/homelab-test-ca.crt
+        mode: "0644"
+
+    - name: Refresh the client CA bundle so the receiver's chain check trusts the leaf
+      ansible.builtin.command: update-ca-certificates
+      changed_when: true
 
 # Third play: Run the distribution script now that keys are in place
 - name: Converge - Run Certificate Distribution

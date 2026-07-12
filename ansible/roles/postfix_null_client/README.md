@@ -56,21 +56,25 @@ secrets:
 ## Deployment
 
 ```bash
-# Deploy to Proxmox hosts
-ansible-playbook ansible/playbooks/site.yml --tags mail
+# Proxmox hosts (site.yml tags the role postfix_null_client)
+ansible-playbook ansible/playbooks/site.yml --tags postfix_null_client
 
-# Deploy to DNS servers
-ansible-playbook ansible/playbooks/dns.yml --tags mail
+# DNS servers only
+ansible-playbook ansible/playbooks/site.yml --tags postfix_null_client --limit dns
 ```
+
+The role is also applied by the `dns.yml`, `k3s.yml`, `gitlab.yml`, and
+`plex.yml` playbooks (untagged there — those playbooks deploy their whole
+stack).
 
 ## Architecture
 
 ```
 Managed Hosts (null clients)
-├─ pve-nas-01
-├─ pve-opt-03
-├─ dns-01
-├─ dns-02
+├─ all 6 Proxmox hosts
+├─ dns-01 / dns-02
+├─ gitlab
+├─ plex
 └─ k3s nodes
      │
      └─> smtp-relay (192.168.0.151)

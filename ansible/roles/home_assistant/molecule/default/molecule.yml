@@ -19,6 +19,8 @@ platforms:
       - /run
       - /tmp
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   env:
     SMTP_RELAY_USER: testsmtp@example.com
     SMTP_RELAY_PASSWORD: testsmtppassword
@@ -29,6 +31,10 @@ provisioner:
     group_vars:
       all:
         home_assistant_render_only: true
+        # Pin the staging dir so verify.yml can assert on stable
+        # /tmp/ha-{configuration,secrets}.yaml paths (production uses a
+        # private per-run tempdir instead).
+        home_assistant_staging_dir: /tmp
         home_assistant_ssl_enabled: true
         home_assistant_smtp_host: smtp-relay.test.local
         home_assistant_smtp_port: 587

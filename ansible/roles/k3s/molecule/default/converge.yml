@@ -59,3 +59,7 @@
             mode: "0644"
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+          # This is a test-result marker, not state convergence — the negative
+          # test re-runs (and this rescue fires) on every converge, so it must
+          # not count toward molecule's idempotence check.
+          changed_when: false

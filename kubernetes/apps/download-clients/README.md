@@ -1,63 +1,14 @@
 # Downloads Stack
 
-VPN-protected download clients and media management applications with flexible per-app VPN control.
+VPN-protected download clients and media management applications with
+per-app VPN control (Gluetun sidecar killswitch).
 
-## Architecture
-
-```
-                             Internet
-                                 |
-                    +------------+------------+
-                    |                         |
-               VPN Tunnel              VPN Tunnel
-               (optional)              (optional)
-                    |                         |
-+-------------------+---+   +-------------------+---+
-|     NZBGet Pod        |   |   qBittorrent Pod     |
-|  +---------+-------+  |   |  +---------+-------+  |
-|  | Gluetun | NZBGet|  |   |  | Gluetun | qBit  |  |
-|  |  (VPN)  | :6789 |  |   |  |  (VPN)  | :8080 |  |
-|  +---------+-------+  |   |  +---------+-------+  |
-|  Shared Network NS    |   |  Shared Network NS    |
-|  (killswitch enforced)|   |  (killswitch enforced)|
-+-----------------------+   +-----------------------+
-        ^                           ^
-        |                           |
-  +-----+---------------------------+-----+
-  |                                       |
-  |     *arr Apps (no VPN needed)        |
-  | +----------+ +--------+ +---------+   |
-  | | Prowlarr | | Sonarr | | Radarr  |   |
-  | | Lidarr   | | Pulsarr|           |   |
-  | +----------+ +--------+ +---------+   |
-  +---------------------------------------+
-                    |
-                    v
-  +------------------------------------------------+
-  |           NFS Storage (pve-nas-01)             |
-  | /media/downloads <--hard link--> /media/library|
-  +------------------------------------------------+
-```
-
-## Key Features
-
-- **Independent VPN Control**: NZBGet and qBittorrent can each run with or without VPN
-- **Multiple VPN Providers**: Support for PrivadoVPN, VPN Unlimited, or no VPN
-- **Killswitch Enforcement**: When VPN is enabled, apps share network namespace with Gluetun - if VPN drops, app loses network
-- **Easy Switching**: Change VPN status per-app with a single command
-- **No Redeployment**: Toggle VPN without recreating deployments (just restarts pod)
-
-## Components
-
-| Service | Purpose | URL | VPN |
-|---------|---------|-----|-----|
-| NZBGet | Usenet downloads | nzbget.esweiss.com | Optional |
-| qBittorrent | BitTorrent downloads | qbittorrent.esweiss.com | Optional |
-| Prowlarr | Indexer manager | prowlarr.esweiss.com | No |
-| Sonarr | TV shows | tv.esweiss.com | No |
-| Radarr | Movies | movies.esweiss.com | No |
-| Lidarr | Music | music.esweiss.com | No |
-| Pulsarr | Plex Watchlist automation | pulsarr.esweiss.com | No |
+**`docs/21-download-clients-deployment.md` is the source of truth** for the
+architecture diagram, component deep-dives, VPN/killswitch design, storage
+layout and hard-linking, per-app configuration, SSO integration, maintenance
+commands, and troubleshooting. This README covers only what lives in this
+folder: the manifest layout, how the overlays wire together, and the VPN
+toggle knobs.
 
 ## Deployment
 
@@ -68,8 +19,10 @@ top-level `apps` Kustomization.
 - **Secret**: `externalsecret.yaml` — ExternalSecret `vpn-credentials` sourcing `openvpn-user` / `openvpn-password` from 1Password via ESO
 - **Workloads**: `prowlarr.yaml` and `pulsarr.yaml` are standalone manifests; `nzbget/` and `qbittorrent/` are overlays over the shared Gluetun VPN sidecar component (`_vpn-sidecar/`); `sonarr/`, `radarr/`, and `lidarr/` are overlays over the shared `_arr` component (`_arr/`). Each overlay's `resources.yaml` holds its app-specific resources (incl. the per-app VPN ConfigMap for nzbget/qbittorrent). Image tags use `${<app>_version}` placeholders substituted from the `cluster-versions` ConfigMap at reconcile time.
 - **Storage**: `storage/` — per-app NFS PV/PVC overlays over the shared `_nfs-pv/` component (TLS mountOptions defined once), plus `storage/shared.yaml` for the RWX media PV
-- **Ingress**: `ingress-routes.yaml` (standard) + `ingress-routes-ha-bypass.yaml` (HA integration API-only routes)
+- **Ingress**: `ingress-routes.yaml` (standard) + `ingress-routes-ha-bypass.yaml` (full-host SSO bypass routes scoped to Home Assistant's IP, 192.168.0.154 — see docs/24)
+- **NetworkPolicy**: `networkpolicy.yaml` (default-deny ingress + Traefik/observability allows, incl. the VPN-exporter scrape exception)
 - **Certificate**: `certificate.yaml` (single wildcard cert for `*.esweiss.com`)
+- **Autoscaling**: `vpa.yaml` (VPA recommendations for the stack — see docs/33)
 
 Deploy workflow (edit + commit + push):
 
@@ -79,7 +32,8 @@ git add kubernetes/apps/download-clients/
 git commit -m "..."
 git push
 
-# Force reconciliation instead of waiting for the ~1m poll
+# Push triggers reconciliation via the GitLab agent's Flux Receiver
+# (poll is the fallback); force it manually with:
 task flux:reconcile
 
 # Ops checks (unchanged)
@@ -98,15 +52,21 @@ Management below) and pushing.
 Each download client has a per-app ConfigMap (e.g., `nzbget-vpn-config`,
 `qbittorrent-vpn-config`) that Gluetun reads. The Gluetun sidecar itself is the
 shared `_vpn-sidecar/` component; the per-app ConfigMap lives in the app
-overlay's `resources.yaml`. Edit it to toggle `vpn_enabled` or change
-`vpn_provider`:
+overlay's `resources.yaml`:
+
+```yaml
+# nzbget-vpn-config / qbittorrent-vpn-config
+data:
+  vpn_enabled: "true"           # "true" or "false"
+  vpn_provider: "privado"       # or "vpn unlimited" (Gluetun wants the space, not a hyphen)
+  server_countries: "Netherlands"
+```
+
+Edit it to toggle `vpn_enabled` or change `vpn_provider`:
 
 ```bash
 vim kubernetes/apps/download-clients/qbittorrent/resources.yaml
-# Find the ConfigMap section and edit:
-#   vpn_enabled: "true"          # or "false"
-#   vpn_provider: "privado"      # or "vpn unlimited" (note space for Gluetun)
-#   server_countries: "Netherlands"
+# Find the ConfigMap section and edit vpn_enabled / vpn_provider
 
 git add kubernetes/apps/download-clients/qbittorrent/resources.yaml
 git commit -m "Disable VPN on qbittorrent" # or similar
@@ -130,7 +90,8 @@ deployment/qbittorrent -n downloads` still works.
 > in the **same** edit that sets `vpn_enabled: "false"`, remove the
 > `gluetun-exporter` container and the `gluetun-qbittorrent` PodMonitor from
 > `qbittorrent/resources.yaml` (and re-add both when re-enabling the VPN). NZBGet ships
-> VPN-off and carries neither, which is why it has no false-fire problem.
+> VPN-off and carries neither, which is why it has no false-fire problem; if
+> NZBGet's VPN is ever enabled, replicate the exporter sidecar + PodMonitor there.
 
 ### Check VPN Status
 
@@ -160,148 +121,9 @@ After editing, also update each app's ConfigMap `vpn_provider` to match
 (see previous section) — the credentials and the provider selector must
 agree.
 
-## How the Sidecar Pattern Works
-
-When VPN is enabled for an app:
-
-1. **Shared Network Namespace**: The app container and Gluetun sidecar share the same network namespace
-2. **Gluetun Owns the Network**: All traffic goes through Gluetun's VPN tunnel
-3. **Killswitch by Design**: If Gluetun crashes or loses VPN connection, the app container has no network access
-4. **No Bypass Possible**: The app cannot circumvent the VPN because it doesn't have its own network interface
-
-When VPN is disabled:
-
-1. **Gluetun Sleeps**: The sidecar container runs `sleep infinity` (uses minimal resources)
-2. **Direct Networking**: The app uses the pod's network directly
-3. **No VPN Overhead**: No VPN tunnel, no encryption overhead
-
-## Configuration Files
-
-Each download client has its own VPN configuration via ConfigMap:
-
-```yaml
-# nzbget-vpn-config / qbittorrent-vpn-config
-data:
-  vpn_enabled: "true"           # "true" or "false"
-  vpn_provider: "privado"       # "privado" or "vpn unlimited" (Gluetun format)
-  server_countries: "Netherlands"
-```
-
-**Note**: Gluetun expects the provider name with a space (`"vpn unlimited"`),
-not a hyphen. Set the ConfigMap value accordingly when switching to
-VPN Unlimited.
-
-## Storage Layout
-
-All apps mount `/media` which maps to `/export/media` on the NAS (mergerfs view):
-
-```
-/media/
-  downloads/
-    nzbget/              # NZBGet downloads
-      intermediate/      # In-progress downloads
-      complete/          # Completed downloads
-    qbittorrent/         # qBittorrent downloads
-      intermediate/      # In-progress downloads
-      complete/          # Completed downloads
-  library/               # Organized media (MergerFS: nvme hot + tank cold)
-    TV_Shows/
-    Movies/
-    Music/
-    Books/
-    Audiobooks/
-```
-
-Hard linking works because downloads and library are on the same NFS mount (both under `/media`).
-
-## Download Paths
-
-- NZBGet: `/media/downloads/nzbget/complete`
-- qBittorrent: `/media/downloads/qbittorrent/complete`
-
-## Media Paths
-
-- TV: `/media/library/TV_Shows`
-- Movies: `/media/library/Movies`
-- Music: `/media/library/Music`
-
-## Internal Service URLs
-
-For *arr app configuration, use Kubernetes service DNS names:
-
-- NZBGet: `nzbget.downloads.svc.cluster.local:6789`
-- qBittorrent: `qbittorrent.downloads.svc.cluster.local:8080`
-- Sonarr: `sonarr.downloads.svc.cluster.local:8989`
-- Radarr: `radarr.downloads.svc.cluster.local:7878`
-
-## DNS Configuration
-
-All services use internal domain (esweiss.com) via AdGuard Home rewrites:
-
-```yaml
-- domain: nzbget.esweiss.com
-  answer: 192.168.0.101
-- domain: qbittorrent.esweiss.com
-  answer: 192.168.0.101
-- domain: prowlarr.esweiss.com
-  answer: 192.168.0.101
-- domain: tv.esweiss.com
-  answer: 192.168.0.101
-- domain: movies.esweiss.com
-  answer: 192.168.0.101
-- domain: music.esweiss.com
-  answer: 192.168.0.101
-- domain: pulsarr.esweiss.com
-  answer: 192.168.0.101
-```
-
-## Troubleshooting
-
-```bash
-# View logs for specific app
-task downloads:logs APP=nzbget
-task downloads:logs APP=nzbget CONTAINER=gluetun
-task downloads:logs APP=sonarr
-
-# Shell access
-task downloads:shell APP=nzbget
-task downloads:shell APP=nzbget CONTAINER=gluetun
-
-# Restart all apps
-task downloads:restart
-
-# Delete and redeploy (Flux redeploys on next reconcile)
-task downloads:delete
-task flux:reconcile
-```
-
-### Common Issues
-
-#### VPN Not Connecting
-
-1. Check Gluetun logs: `task downloads:logs APP=nzbget CONTAINER=gluetun`
-2. Verify credentials are correct in 1Password
-3. Try switching VPN providers: edit the app's ConfigMap (`vpn_provider`) and the `externalsecret.yaml` to reference the alternate 1P item (see "Update VPN Credentials" above), commit + push, then `task flux:rotate-secret -- downloads`
-
-#### App Has No Network When VPN Enabled
-
-This is the killswitch working correctly. If Gluetun can't establish VPN:
-1. Check VPN provider status.
-2. Check credentials in 1Password match what Gluetun expects.
-3. Temporarily disable VPN by editing the app's `vpn_enabled` ConfigMap entry in its YAML → commit + push → `task flux:rotate-secret -- downloads`.
-
-#### Need to Use Different VPN Providers for Each App
-
-Both apps share the same `vpn-credentials` secret. If you need different providers:
-1. Split the ExternalSecret into two separate ExternalSecrets (e.g., `vpn-credentials-privado`, `vpn-credentials-vpnunlimited`) referencing the different 1P items.
-2. Update each app's `envFrom`/`secretKeyRef` in the pod spec to point at its own secret.
-3. Commit + push.
-
-Today both apps use the single `vpn-credentials` secret (see
-`externalsecret.yaml`), which is sourced from PrivadoVPN. Switching
-providers for the whole stack is documented above under "Update VPN
-Credentials"; switching providers per-app requires the split described
-in this section.
+Both apps share the single `vpn-credentials` Secret. Per-app providers would
+require splitting the ExternalSecret in two and pointing each app's
+`secretKeyRef` at its own Secret.
 
 ## Files
 
@@ -318,4 +140,10 @@ in this section.
 - `sonarr/`, `radarr/`, `lidarr/` - per-app overlays over the `_arr` component
 - `pulsarr.yaml` - Pulsarr deployment
 - `ingress-routes.yaml` - Traefik IngressRoutes with SSO
+- `ingress-routes-ha-bypass.yaml` - *arr API bypass routes for Home Assistant (docs/24)
+- `networkpolicy.yaml` - default-deny ingress + Traefik/observability allows (incl. VPN-exporter scrape)
+- `vpa.yaml` - VPA resources for the stack (docs/33)
 - `kustomization.yaml` - Kustomize configuration
+
+For logs/shell/restart commands, storage paths, service URLs, DNS rewrites,
+and all troubleshooting, see `docs/21-download-clients-deployment.md`.

@@ -194,9 +194,13 @@
 - name: Notify if new API token was created
   ansible.builtin.debug:
     msg: >
-      API token monitoring@pve!exporter created. Retrieve the secret
-      from the Proxmox UI and store it in the "Proxmox API Token"
-      1Password item.
+      API token monitoring@pve!exporter created. The secret is only printed
+      once at creation and was discarded here (no_log) — the Proxmox UI
+      cannot re-display it. Recover it as root from /etc/pve/priv/token.cfg
+      on any Proxmox node, or rotate it (`pveum user token remove
+      monitoring@pve exporter && pveum user token add monitoring@pve exporter
+      --privsep 0`) and capture the printed value, then store it in the
+      "Proxmox API Token" 1Password item.
   run_once: true
   delegate_to: "{{ groups['proxmox'][0] }}"
   when:

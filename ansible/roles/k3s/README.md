@@ -16,12 +16,25 @@ Installs and configures Kubernetes k3s cluster with embedded etcd, kube-vip VIP,
 - Mount point creation and management
 
 ### K3s Installation
-- Version checking and upgrading
-- Server installation (with embedded etcd)
-- Agent installation (connects to API VIP)
+- Version checking and upgrading (pinned installer script, optional sha256 pin
+  via `k3s_install_script_checksum`)
+- Server installation (with embedded etcd, `secrets-encryption: true`,
+  WireGuard flannel backend — see docs/19)
+- Agent installation (connects to API VIP with the lower-privilege agent
+  token; existing agents are migrated off the server token — see docs/19)
 - Kube-vip manifest deployment (first server only)
+- /etc/hosts pins: container-registry hostname → internal Traefik VIP
+  (`k3s_registry_host_pins`) and NAS storage hostname for NFS-over-TLS PVs
+  (`k3s_storage_host_pins`)
 - Node label application
 - Node taint application
+- Off-node etcd snapshot copy (opt-in, servers only): a systemd timer that
+  copies the newest local etcd snapshot to an NFS export on pve-nas-01 (by
+  hostname over TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
+  textfile metric for the `EtcdSnapshotStale` alert — off by default via
+  `k3s_etcd_snapshot_offnode_enabled` (see docs/17 and defaults for the
+  companion NFS export + `node_exporter_host` + `nfs_tls`/tlshd on the servers
+  it needs — the `xprtsec=tls` mount hangs without the TLS handshake daemon)
 
 ## Configuration
 
@@ -113,27 +126,41 @@ k3s Cluster (9 nodes: 3 servers + 6 agents)
 
 ## Files
 
-- `tasks/main.yml` - Main orchestration
+- `tasks/main.yml` - Main orchestration (prerequisites, /etc/hosts pins, disks)
 - `tasks/server.yml` - Server installation
-- `tasks/agent.yml` - Agent installation
+- `tasks/agent.yml` - Agent installation (incl. agent-token migration)
+- `tasks/install-script.yml` - Shared version detection + installer staging
+- `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration
 - `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
+- `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy
 - `defaults/main.yml` - Default values
-- `handlers/main.yml` - Service restart handlers
+- `handlers/main.yml` - Service restart + Ready-gate handlers
+- `molecule/default/` - Server scenario (bootstrap + join branches)
+- `molecule/agent/` - Agent scenario (config, token migration)
 
 ## Dependencies
 
+Applied by `ansible/playbooks/k3s.yml` (not meta dependencies):
+
 - `base` role (networking, DNS)
-- `qol` role (optional)
+- `qol` role
 - `postfix_null_client` role (for system mail)
+- `alloy_host` role (host journald -> Loki shipping)
+- `nfs_tls` / `proxmox_firewall` roles (separate plays in the same playbook)
 
 ## 1Password Secrets
 
 ```yaml
 secrets:
-  k3s_token: "op://Homelab/K3s Cluster Token/credential"
+  k3s_token: "op://Homelab/K3s Cluster Token/credential"        # K3S_TOKEN
+  k3s_agent_token: "op://Homelab/K3s Agent Token/credential"    # K3S_AGENT_TOKEN
 ```
+
+`K3S_AGENT_TOKEN` is the dedicated lower-privilege agent join token (falls
+back to the server token when unset). See docs/19 for the agent-token,
+secrets-encryption, flannel-backend, and registry-pin details.
 
 ## Persistent Storage
 

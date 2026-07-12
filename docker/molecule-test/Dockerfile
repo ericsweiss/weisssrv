@@ -11,7 +11,11 @@
 # apt dependencies that are slow to install. The image is a cache
 # optimization — molecule tests still work without it (they just take
 # longer installing packages at runtime).
-FROM ghcr.io/hifis-net/debian-systemd:trixie
+# Pinned by manifest-list digest (multi-arch index, not a platform digest) so
+# the rolling `trixie` tag can't silently change the base under a rebuild.
+# Bump deliberately: resolve the new digest with
+#   docker buildx imagetools inspect ghcr.io/hifis-net/debian-systemd:trixie
+FROM ghcr.io/hifis-net/debian-systemd:trixie@sha256:d1ef7a336af9e98fb94bc0fe18d0bc7f863bae943c8cecadad2d8d08db09e687
 
 # Suppress interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive

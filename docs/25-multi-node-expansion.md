@@ -17,34 +17,14 @@ This document covers the architecture and procedures for the 6-node Proxmox HA c
 
 ## Current State
 
-**Proxmox Cluster (weisssrv)** - 6 nodes, fully quorate:
-
-| Host | IP | Role | Storage | Status |
-|------|-----|------|---------|--------|
-| pve-nas-01 | .102 | NAS + storage | tank/ssd/nvme/archive | Active |
-| pve-laptop-01 | .103 | Compute | local-ssd (1TB) | Active |
-| pve-opt-01 | .104 | Compute | local-ssd (1TB) | Active |
-| pve-opt-02 | .105 | Compute | local-ssd (1TB) | Active |
-| pve-opt-03 | .106 | Compute | local-ssd (1TB) | Active |
-| pve-prec-01 | .107 | Compute | local-ssd (1TB) | Active |
-
-**K3s Cluster** - 9 nodes (3 servers + 6 agents):
-
-| Node | IP | VMID | Host | Role | Status |
-|------|-----|------|------|------|--------|
-| k3s-srv-nas-01 | .222 | 222 | pve-nas-01 | Server (first) | Active |
-| k3s-srv-laptop-01 | .223 | 223 | pve-laptop-01 | Server | Active |
-| k3s-srv-prec-01 | .227 | 227 | pve-prec-01 | Server | Active |
-| k3s-agt-nas-01 | .202 | 202 | pve-nas-01 | Agent (NAS) | Active |
-| k3s-agt-laptop-01 | .203 | 203 | pve-laptop-01 | Agent (ingress) | Active |
-| k3s-agt-opt-01 | .204 | 204 | pve-opt-01 | Agent (ingress) | Active |
-| k3s-agt-opt-02 | .205 | 205 | pve-opt-02 | Agent (ingress) | Active |
-| k3s-agt-opt-03 | .206 | 206 | pve-opt-03 | Agent (ingress) | Active |
-| k3s-agt-prec-01 | .207 | 207 | pve-prec-01 | Agent (compute) | Active |
+**Proxmox Cluster (weisssrv)** — 6 nodes, fully quorate. **K3s Cluster** — 9
+nodes (3 servers + 6 agents). The canonical host-by-host and node-by-node
+topology (IPs, VMIDs, placement, roles) lives in `docs/01-overview.md`;
+`ansible/inventories/prod/hosts.yml` is the machine-readable source.
 
 **Infrastructure Services (HA-managed)**:
 
-These services float between nodes via Proxmox HA - there is no fixed "preferred" or "current" host. To check actual runtime locations, run `task proxmox:ha-status` or `ha-manager status` on any cluster node.
+Each service has a **home node** (node-affinity priority 2 — it fails back there when the home is available) and fallback nodes (priority 1); see the per-service `ha_rules` in `group_vars/all.yml` for the current homes. To check actual runtime locations, run `task proxmox:ha-status` or `ha-manager status` on any cluster node.
 
 | Service | VMID | Type | HA State | Eligible Hosts (have replicated data) |
 |---------|------|------|----------|---------------------------------------|
@@ -61,7 +41,10 @@ These services float between nodes via Proxmox HA - there is no fixed "preferred
 | k3s-agt-nas-01 | 202 | VM | pve-nas-01 | Requires local NFS access |
 
 **HA Configuration**:
-- Node-affinity rule `critical-services-no-nas` excludes pve-nas-01 from HA resources
+- Per-service node-affinity rules (`affinity-dns-01`, `affinity-smtp-relay`,
+  `affinity-dns-02`, `affinity-home-assistant` in `group_vars/all.yml`
+  `ha_rules`) give each service a home node (priority 2, fails back when
+  available) plus fallback nodes (priority 1); pve-nas-01 is never listed
 - Multi-target ZFS replication (every 15 minutes) to 4 nodes per service
 - Services can failover to any node with replicated data
 
@@ -619,48 +602,58 @@ Node-affinity rules provide flexible control over which nodes can run specific r
 
 **Current Configuration** (managed by Ansible):
 
-We use a single node-affinity rule that excludes pve-nas-01 from all critical services:
+We use one node-affinity rule **per service** — each gives the service a home
+node at priority 2 (HA fails the service back there when the home is
+available) and the remaining compute nodes at priority 1 as fallbacks;
+pve-nas-01 is never listed. The `ha_rules` list in
+`ansible/inventories/prod/group_vars/all.yml` is the source of truth (rule
+names `affinity-dns-01`, `affinity-smtp-relay`, `affinity-dns-02`,
+`affinity-home-assistant`). Representative shape:
 
 ```yaml
-# From ansible/inventories/prod/group_vars/all.yml
+# From ansible/inventories/prod/group_vars/all.yml (one rule per service)
 ha_rules:
-  - name: critical-services-no-nas
+  - name: affinity-smtp-relay
     type: node-affinity
     resources:
-      - ct:150  # dns-01
-      - ct:160  # dns-02
-      - ct:151  # smtp-relay
-      - vm:154  # home-assistant
+      - ct:151  # smtp-relay (Postfix relay)
     nodes:
-      - pve-laptop-01
-      - pve-opt-01
-      - pve-opt-02
-      - pve-opt-03
-      - pve-prec-01
-    strict: false  # Allow NAS only if ALL other nodes unavailable
+      - "pve-opt-01:2"  # home (priority 2 — fails back when available)
+      - "pve-laptop-01:1"
+      - "pve-opt-02:1"
+      - "pve-opt-03:1"
+      - "pve-prec-01:1"
+    strict: false
+    comment: "smtp-relay home pve-opt-01 (fails back when available); never pve-nas-01"
+    enabled: true
+  # ... affinity-dns-01, affinity-dns-02, affinity-home-assistant follow the
+  # same pattern with their own homes (see all.yml for current homes and any
+  # temporary exceptions, e.g. fallback-only nodes).
 ```
 
-**Why exclude pve-nas-01**:
-- Avoids I/O contention between critical services and NAS workloads
-- Services can float freely among the 5 `local-ssd` nodes
-- Multi-target replication ensures data is available on all eligible nodes
+**Why per-service homes (and never pve-nas-01)**:
+- Homes match the `storage_replication_jobs` primary layout, so a failback
+  lands where replication is freshest
+- Distributes the services across the compute nodes instead of piling onto one
+- Excluding pve-nas-01 avoids I/O contention with NAS workloads; `strict:
+  false` still allows it as an absolute last resort
 
 **Manual CLI commands** (for reference):
 
 ```bash
-# Create node-affinity rule (Proxmox 9+)
-sudo ha-manager rules add node-affinity critical-services-no-nas \
-    --resources ct:150,ct:151,ct:160,vm:154 \
-    --nodes pve-laptop-01,pve-opt-01,pve-opt-02,pve-opt-03,pve-prec-01 \
-    --comment "Prevent critical services from running on pve-nas-01"
+# Create a per-service node-affinity rule (Proxmox 9+; priority suffix = home)
+sudo ha-manager rules add node-affinity affinity-smtp-relay \
+    --resources ct:151 \
+    --nodes pve-opt-01:2,pve-laptop-01:1,pve-opt-02:1,pve-opt-03:1,pve-prec-01:1 \
+    --comment "smtp-relay home pve-opt-01; never pve-nas-01"
 
 # List rules
 sudo ha-manager rules list
 
 # Update a rule
-sudo ha-manager rules set node-affinity critical-services-no-nas \
-    --resources ct:150,ct:151,ct:160,vm:154 \
-    --nodes pve-laptop-01,pve-opt-01,pve-opt-02,pve-opt-03,pve-prec-01
+sudo ha-manager rules set node-affinity affinity-smtp-relay \
+    --resources ct:151 \
+    --nodes pve-opt-01:2,pve-laptop-01:1,pve-opt-02:1,pve-opt-03:1,pve-prec-01:1
 ```
 
 ### Step 4: Add HA Resources

@@ -27,18 +27,27 @@ Configures Postfix as the central SMTP relay. Accepts authenticated submissions 
 
 ### Required Variables
 
-```yaml
-# Admin email (receives root mail)
-admin_email: "{{ lookup('ansible.builtin.env', 'ROOT_EMAIL_ALIAS', default='root@localhost') }}"
+The production values live in `ansible/inventories/prod/group_vars/mail.yml`
+(`smtp_relay_config`, `smtp_tls_cert_dir`, `smtp_submission_config`) and
+`all.yml` (`admin_email`, `postfix_sasl_user`/`postfix_sasl_password`,
+`mail_aliases`) — those files are the source of truth, don't copy values from
+here. Key shape (all Postfix booleans are the strings `"yes"`/`"no"`, never
+YAML booleans — the templates render values verbatim):
 
-# SMTP relay configuration
+```yaml
+# Admin email (receives root mail; fails hard when the env var is missing)
+admin_email: "{{ lookup('ansible.builtin.env', 'ROOT_EMAIL_ALIAS') or undef(hint='ROOT_EMAIL_ALIAS env var must be set (run via the task wrapper / op run)') }}"
+
+# SMTP relay configuration (excerpt)
 smtp_relay_config:
   myhostname: "smtp-relay.{{ internal_domain }}"
-  myorigin: "{{ internal_domain }}"
+  myorigin: "/etc/mailname"
   relayhost: "[smtp.gmail.com]:587"
-  smtp_sasl_auth_enable: true
+  smtp_sasl_auth_enable: "yes"
   smtp_tls_security_level: "secure"
   smtpd_tls_security_level: "may"
+  smtpd_sasl_auth_enable: "no"   # port-25 AUTH off; submission re-enables it
+  smtpd_tls_auth_only: "yes"
 
 # TLS certificates (smtp_tls_cert_dir defaults to /etc/postfix/tls; the
 # acme_certs cert-reload script deploys fullchain.pem + privkey.pem there).
@@ -110,11 +119,13 @@ Null Clients (Proxmox, DNS, k3s)
 10. Create SASL configuration directory
 11. Deploy smtpd.conf (inbound auth config)
 12. Check if SASL user exists
-13. Create/update relay user in SASL database
-14. Set permissions on /etc/sasldb2 (root:postfix 0640)
-15. Configure mail aliases
-16. Run newaliases
-17. Ensure Postfix is enabled and running
+13. Record credential fingerprint (rotation detection for step 14)
+14. Create/update relay user in SASL database
+15. Set permissions on /etc/sasldb2 (root:postfix 0640)
+16. Configure mail aliases (mail_aliases -> /etc/aliases)
+17. Run newaliases
+18. Ensure Postfix is enabled and running
+19. Deploy postfix queue collector (script + oneshot + timer)
 ```
 
 ## Files
@@ -123,6 +134,10 @@ Null Clients (Proxmox, DNS, k3s)
 - `templates/main.cf.j2` - Postfix main configuration
 - `templates/master.cf.j2` - Postfix master configuration (submission service)
 - `templates/sasl_passwd.j2` - Gmail credentials
+- `templates/aliases.j2` - Mail aliases (rendered from `mail_aliases`)
+- `templates/postfix-queue-collector.service.j2` - Queue metrics oneshot
+- `files/postfix-queue-collector.sh` - Queue metrics textfile collector
+- `files/postfix-queue-collector.timer` - Collector timer (every minute)
 - `handlers/main.yml` - Postfix reload handlers
 
 ## Dependencies
@@ -272,12 +287,21 @@ postsuper -d <QUEUE_ID>
 
 ### Monitoring
 
+The `postfix-queue-collector` timer (deployed by this role) samples the queue
+every minute into the node_exporter textfile collector, so Prometheus scrapes
+`postfix_queue_depth`, `postfix_up`, and a collector-staleness sentinel from
+`smtp-relay:9101` — a wedged Gmail hop shows up as a persistently non-zero
+queue instead of only in manual `mailq` checks.
+
 ```bash
 # Watch mail logs in real-time
 tail -f /var/log/mail.log
 
 # Count messages in queue
 mailq | tail -n 1
+
+# Inspect the exported metrics
+cat /var/lib/node_exporter/postfix_queue.prom
 
 # View Postfix status
 systemctl status postfix
@@ -303,4 +327,6 @@ To rotate credentials:
 2. **Relay auth password:**
    - Update 1Password
    - Run `task infra:deploy` (updates relay and all null clients)
+   - The deploy reports the SASL task as changed on rotation (fingerprint
+     sentinel at `/etc/postfix/.sasl_relay_user.sha256`) and reloads postfix
 

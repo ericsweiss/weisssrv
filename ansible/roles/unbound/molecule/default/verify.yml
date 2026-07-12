@@ -67,11 +67,13 @@
         fail_msg: "unbound remote-control is not configured for the local Unix socket"
         success_msg: "unbound remote-control uses the local Unix socket (no control certs)"
 
+    # Tolerant probe: containers may lack outbound DoT, so this never fails
+    # the run — the summary below reports the outcome, and the dns-stack
+    # integration scenario hard-asserts real resolution.
     - name: Test DNS resolution via Unbound
       ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short
       register: dns_test
       changed_when: false
-      failed_when: dns_test.rc != 0
       ignore_errors: true
 
     - name: Display test results
@@ -82,5 +84,5 @@
           - "Listening on 127.0.0.1:5335"
           - "Configuration deployed with DoT forwarders"
           - "Remote-control configuration deployed"
-          - "unbound-control TLS certificates present"
+          - "Remote-control via local Unix socket (no TLS control certs)"
           - "DNS resolution: {{ 'working' if dns_test.rc == 0 else 'skipped (no network in container)' }}"

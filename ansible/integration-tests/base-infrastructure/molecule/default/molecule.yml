@@ -53,11 +53,14 @@ provisioner:
     # Provide dummy SSH key for testing (base role expects this via all.yml lookup)
     # yamllint disable-line rule:line-length
     SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC3qctest123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123TEST123== test@molecule"
+  playbooks:
+    prepare: ../../../_shared/prepare.yml
   inventory:
     group_vars:
       base_managed:
         # Base role configuration
         # timezone inherited from production all.yml (America/Los_Angeles)
+        # admin_user (eric) comes from production all.yml via converge vars_files
         common_packages:
           - curl
           - wget
@@ -66,9 +69,10 @@ provisioner:
           - tmux
           - neovim
           - net-tools
-        admin_username: eric
-        admin_user_shell: /bin/zsh
-        skip_ssh_config: true  # SSH doesn't work in containers
+        # SSH hardening is exercised end-to-end by the base role's own molecule
+        # scenario (sshd -T asserted); skip it here to keep this integration
+        # test focused on the base+qol+tailscale interaction.
+        skip_ssh_config: true
         skip_dns_config: true  # DNS resolver needs real network
 
         # Tailscale configuration

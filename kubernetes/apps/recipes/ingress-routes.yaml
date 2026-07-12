@@ -21,8 +21,6 @@ spec:
     - match: Host(`food.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -46,8 +44,6 @@ spec:
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
-          namespace: traefik
-        - name: strip-www
           namespace: traefik
         - name: hsts-header
           namespace: traefik
@@ -80,8 +76,6 @@ spec:
     - match: Host(`bar.ericsweiss.com`) && PathPrefix(`/api`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -91,8 +85,6 @@ spec:
     - match: Host(`bar.ericsweiss.com`) && PathPrefix(`/uploads`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -106,8 +98,6 @@ spec:
     - match: Host(`bar.ericsweiss.com`) && PathPrefix(`/search`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
         - name: bar-assistant-search-strip
@@ -119,8 +109,6 @@ spec:
     - match: Host(`bar.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -146,8 +134,6 @@ spec:
       middlewares:
         - name: lan-tailscale-only
           namespace: traefik
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -159,8 +145,6 @@ spec:
       middlewares:
         - name: lan-tailscale-only
           namespace: traefik
-        - name: strip-www
-          namespace: traefik
         - name: hsts-header
           namespace: traefik
       services:
@@ -171,8 +155,6 @@ spec:
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
-          namespace: traefik
-        - name: strip-www
           namespace: traefik
         - name: hsts-header
           namespace: traefik
@@ -186,8 +168,6 @@ spec:
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
-          namespace: traefik
-        - name: strip-www
           namespace: traefik
         - name: hsts-header
           namespace: traefik

@@ -88,3 +88,46 @@
   # Tolerant like the ifup drop-in's `|| logger` fallback: a transient ethtool
   # failure here should not fail the play (the boot-time drop-in re-applies it).
   failed_when: false
+
+# --- active-backup bond MAC-flap guard -------------------------------------
+# Force all_slaves_active=0 on active-backup bonds so the inactive backup leg's
+# reflected frames are dropped instead of poisoning the bridge FDB. Persist the
+# value in /etc/network/interfaces (surgical, no reload) AND apply it live via
+# sysfs (no reboot). See defaults/main.yml and docs/34-bond-mac-flapping.md.
+- name: Stat /etc/network/interfaces for the bond all_slaves_active guard
+  ansible.builtin.stat:
+    path: /etc/network/interfaces
+  register: nic_tuning_etc_interfaces
+  when: nic_tuning_bond_asa_guard | bool
+
+- name: Persist bond all_slaves_active=0 in /etc/network/interfaces
+  # Surgical: only rewrites an explicit `...=1` to `0`; never inserts a line, so
+  # a hand-maintained interfaces file is otherwise untouched. Deliberately does
+  # NOT notify a networking reload — the runtime task below applies it live, and
+  # a reload would blip the uplink. The edit takes effect on the next reboot.
+  ansible.builtin.replace:
+    path: /etc/network/interfaces
+    regexp: '^(\s*bond-all_slaves_active\s+)1\b'
+    replace: '\g<1>0'
+  when:
+    - nic_tuning_bond_asa_guard | bool
+    - nic_tuning_etc_interfaces.stat.exists | default(false)
+
+- name: Enforce all_slaves_active=0 on active-backup bonds at runtime (no reboot)
+  ansible.builtin.shell: |
+    set -eu
+    [ -r /sys/class/net/bonding_masters ] || { echo OK; exit 0; }
+    changed=0
+    for b in $(cat /sys/class/net/bonding_masters); do
+      mode=$(awk '{print $1}' "/sys/class/net/$b/bonding/mode" 2>/dev/null || true)
+      cur=$(cat "/sys/class/net/$b/bonding/all_slaves_active" 2>/dev/null || true)
+      if [ "$mode" = "active-backup" ] && [ "$cur" = "1" ]; then
+        echo 0 > "/sys/class/net/$b/bonding/all_slaves_active" && changed=1
+      fi
+    done
+    [ "$changed" -eq 1 ] && echo CHANGED || echo OK
+  args:
+    executable: /bin/bash
+  register: nic_tuning_bond_asa_runtime
+  changed_when: "'CHANGED' in nic_tuning_bond_asa_runtime.stdout"
+  when: nic_tuning_bond_asa_guard | bool

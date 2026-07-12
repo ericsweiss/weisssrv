@@ -37,32 +37,23 @@
   become: true
   serial: 1  # One server at a time for HA
   vars:
-    k3s_install_script_url: "https://get.k3s.io"
-    k3s_cluster_cidr: "10.42.0.0/16"
-    k3s_service_cidr: "10.43.0.0/16"
-    k3s_api_vip: "192.168.0.161"
+    # Delegate target for kubectl against the cluster: a server OTHER than the
+    # one being upgraded; falls back to k3s_servers[0] when it is the only one.
+    # Lazily templated per task, so it tracks inventory_hostname per host.
+    k3s_delegate_server: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
   tasks:
     - name: Display current node being updated
       ansible.builtin.debug:
         msg: "=== Updating k3s server: {{ inventory_hostname }} ==="
 
-    - name: Check current k3s version
-      ansible.builtin.command: k3s --version
-      register: k3s_current_version
-      changed_when: false
-      failed_when: false
-
-    - name: Parse current k3s version
-      ansible.builtin.set_fact:
-        k3s_installed_version: "{{ k3s_current_version.stdout | regex_search('v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+') }}"
-      when: k3s_current_version.rc == 0
-
-    - name: Display version info
-      ansible.builtin.debug:
-        msg:
-          - "Installed: {{ k3s_installed_version | default('not detected') }}"
-          - "Target: {{ k3s_version }}"
-          - "Needs upgrade: {{ (k3s_installed_version | default('')) != k3s_version }}"
+    # Version detection + staged installer download shared with the k3s role:
+    # get_url to /root/k3s-install.sh (0700) with the tag-pinned URL and the
+    # optional k3s_install_script_checksum from all.yml — no `curl | sh`, so
+    # the root-run installer is integrity-checkable before it executes.
+    - name: Detect k3s version and stage install script
+      ansible.builtin.include_role:
+        name: k3s
+        tasks_from: install-script.yml
 
     - name: Skip if version matches
       ansible.builtin.meta: end_host
@@ -81,14 +72,12 @@
           ansible.builtin.include_tasks: _wait-no-kured-server-reboot.yml
           vars:
             kured_clear_reason: "before upgrading {{ inventory_hostname }}"
-            kured_clear_delegate: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+            kured_clear_delegate: "{{ k3s_delegate_server }}"
 
-        # Cordon delegates to a server OTHER than the one being upgraded; falls
-        # back to k3s_servers[0] when it is the only server. NO drain: a k3s
-        # service restart keeps running pods (containerd persists the
-        # containers across a kubelet restart), and draining the executor's own
-        # node would deadlock the CI job. Cordon just blocks new scheduling for
-        # the ~1-2 min the binary upgrade takes.
+        # NO drain: a k3s service restart keeps running pods (containerd persists
+        # the containers across a kubelet restart), and draining the executor's
+        # own node would deadlock the CI job. Cordon just blocks new scheduling
+        # for the ~1-2 min the binary upgrade takes.
         # Note: when this node is the one running the CI executor pod, the
         # runner-manager's kubelet exec/log stream to that pod may blip for the
         # seconds the node's kubelet restarts. The container (and the job process)
@@ -96,24 +85,20 @@
         - name: Cordon node before upgrade
           ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
           changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          delegate_to: "{{ k3s_delegate_server }}"
 
-        - name: Upgrade k3s server binary
-          ansible.builtin.shell: |
-            set -o pipefail
-            curl -sfL {{ k3s_install_script_url }} | \
-              INSTALL_K3S_VERSION="{{ k3s_version }}" \
-              INSTALL_K3S_SKIP_START=true \
-              sh -
-          args:
-            executable: /bin/bash
+        - name: Upgrade k3s server binary (staged installer)
+          ansible.builtin.command: /root/k3s-install.sh server
+          environment:
+            INSTALL_K3S_VERSION: "{{ k3s_version }}"
+            INSTALL_K3S_SKIP_START: "true"
           changed_when: true
 
         - name: Re-assert kured is not rebooting any server right before the k3s restart
           ansible.builtin.include_tasks: _wait-no-kured-server-reboot.yml
           vars:
             kured_clear_reason: "before restarting k3s on {{ inventory_hostname }}"
-            kured_clear_delegate: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+            kured_clear_delegate: "{{ k3s_delegate_server }}"
 
         - name: Restart k3s service
           ansible.builtin.systemd:
@@ -121,8 +106,12 @@
             state: restarted
             daemon_reload: true
 
-        - name: Wait for k3s to be ready
-          ansible.builtin.command: k3s kubectl get nodes
+        # /readyz (stricter than /healthz) gates on the apiserver being fully
+        # ready to serve — same gate as the k3s role's "Wait for k3s API healthy"
+        # handler. A plain `kubectl get nodes` can pass while etcd is still
+        # rejoining, letting serial:1 advance to the next server too early.
+        - name: Wait for k3s API healthy (/readyz)
+          ansible.builtin.command: k3s kubectl --request-timeout=5s get --raw=/readyz
           register: k3s_ready
           retries: 30
           delay: 10
@@ -139,63 +128,27 @@
             msg: "Server {{ inventory_hostname }} upgraded to: {{ k3s_new_version.stdout }}"
 
       always:
-        - name: Uncordon node after upgrade (always runs, retries for API availability)
-          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          register: uncordon_result
-          retries: 12
-          delay: 10
-          until: uncordon_result.rc == 0
-          failed_when: false
-
-        - name: Fail if uncordon failed after retries
-          ansible.builtin.fail:
-            msg: >-
-              Failed to uncordon {{ inventory_hostname }} after {{ uncordon_result.attempts }} attempts.
-              Node may remain unschedulable. Run manually: kubectl uncordon {{ inventory_hostname }}
-          when: uncordon_result.rc | default(0) != 0
-
-        - name: Wait for node to be Ready
-          ansible.builtin.command: >
-            k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
-          register: node_ready
-          retries: 30
-          delay: 5
-          until: node_ready.stdout == "True"
-          changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+        - name: Uncordon node and wait for Ready (always runs)
+          ansible.builtin.include_tasks: _uncordon-and-wait-ready.yml
 
 - name: Update k3s agent nodes
   hosts: k3s_agents
   become: true
   serial: 1  # One agent at a time to minimize disruption
   vars:
-    k3s_install_script_url: "https://get.k3s.io"
-    k3s_api_vip: "192.168.0.161"
-    k3s_api_port: 6443
+    # Same lazily-templated delegate target as the server play; for agents the
+    # difference() filter is a no-op, so this resolves to k3s_servers[0].
+    k3s_delegate_server: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
   tasks:
     - name: Display current node being updated
       ansible.builtin.debug:
         msg: "=== Updating k3s agent: {{ inventory_hostname }} ==="
 
-    - name: Check current k3s version
-      ansible.builtin.command: k3s --version
-      register: k3s_current_version
-      changed_when: false
-      failed_when: false
-
-    - name: Parse current k3s version
-      ansible.builtin.set_fact:
-        k3s_installed_version: "{{ k3s_current_version.stdout | regex_search('v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+') }}"
-      when: k3s_current_version.rc == 0
-
-    - name: Display version info
-      ansible.builtin.debug:
-        msg:
-          - "Installed: {{ k3s_installed_version | default('not detected') }}"
-          - "Target: {{ k3s_version }}"
-          - "Needs upgrade: {{ (k3s_installed_version | default('')) != k3s_version }}"
+    # Version detection + staged installer download (see server play note).
+    - name: Detect k3s version and stage install script
+      ansible.builtin.include_role:
+        name: k3s
+        tasks_from: install-script.yml
 
     - name: Skip if version matches
       ansible.builtin.meta: end_host
@@ -208,7 +161,7 @@
         -o jsonpath='{.items[?(@.spec.volumes[*].persistentVolumeClaim)].metadata.name}'
       register: persistent_pods
       changed_when: false
-      delegate_to: "{{ groups['k3s_servers'][0] }}"
+      delegate_to: "{{ k3s_delegate_server }}"
 
     - name: Warn about persistent workloads
       ansible.builtin.debug:
@@ -222,26 +175,22 @@
         - name: Cordon node before upgrade
           ansible.builtin.command: k3s kubectl cordon {{ inventory_hostname }}
           changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          delegate_to: "{{ k3s_delegate_server }}"
 
         # CRITICAL: Must pass "agent" argument to install script, otherwise it installs
         # as server mode and creates k3s.service instead of k3s-agent.service.
         # The agent also needs K3S_URL and K3S_TOKEN to know which cluster to join.
-        - name: Upgrade k3s agent binary
-          ansible.builtin.shell: |
-            set -o pipefail
-            curl -sfL {{ k3s_install_script_url }} | \
-              INSTALL_K3S_VERSION="{{ k3s_version }}" \
-              INSTALL_K3S_SKIP_START=true \
-              K3S_URL="https://{{ k3s_api_vip }}:{{ k3s_api_port }}" \
-              sh -s - agent
-          args:
-            executable: /bin/bash
+        - name: Upgrade k3s agent binary (staged installer)
+          ansible.builtin.command: /root/k3s-install.sh agent
           environment:
+            INSTALL_K3S_VERSION: "{{ k3s_version }}"
+            INSTALL_K3S_SKIP_START: "true"
+            K3S_URL: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
             # Use the (opt-in) agent token so a node-version upgrade rewrites the
-            # agent env file with the lower-privilege token, not the cluster token
-            # (ANS-D-2). Falls back to k3s_token when K3S_AGENT_TOKEN is unset, so
-            # this is behaviour-preserving until the feature is enabled.
+            # agent env file with the lower-privilege token, not the cluster
+            # token. Falls back to k3s_token when K3S_AGENT_TOKEN is unset, so
+            # this is behaviour-preserving until the feature is enabled — see
+            # docs/19 "Agent token".
             K3S_TOKEN: "{{ k3s_agent_token }}"
           changed_when: true
           no_log: true
@@ -285,7 +234,7 @@
           delay: 10
           until: k3s_agent_ready.rc == 0
           changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          delegate_to: "{{ k3s_delegate_server }}"
 
         - name: Wait for pods to stabilize on upgraded node
           # Mirror scripts/maintenance-lib.sh:42-46 list_unhealthy_pods so this
@@ -312,7 +261,7 @@
           delay: 10
           until: unhealthy_on_node.stdout | int == 0
           changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+          delegate_to: "{{ k3s_delegate_server }}"
 
         - name: Verify new k3s version
           ansible.builtin.command: k3s --version
@@ -324,32 +273,8 @@
             msg: "Agent {{ inventory_hostname }} upgraded to: {{ k3s_new_version.stdout }}"
 
       always:
-        - name: Uncordon node after upgrade (always runs, retries for API availability)
-          ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-          changed_when: true
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
-          register: uncordon_result
-          retries: 12
-          delay: 10
-          until: uncordon_result.rc == 0
-          failed_when: false
-
-        - name: Fail if uncordon failed after retries
-          ansible.builtin.fail:
-            msg: >-
-              Failed to uncordon {{ inventory_hostname }} after {{ uncordon_result.attempts }} attempts.
-              Node may remain unschedulable. Run manually: kubectl uncordon {{ inventory_hostname }}
-          when: uncordon_result.rc | default(0) != 0
-
-        - name: Wait for node to be Ready
-          ansible.builtin.command: >
-            k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
-          register: node_ready
-          retries: 30
-          delay: 5
-          until: node_ready.stdout == "True"
-          changed_when: false
-          delegate_to: "{{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) | default(groups['k3s_servers'][0]) }}"
+        - name: Uncordon node and wait for Ready (always runs)
+          ansible.builtin.include_tasks: _uncordon-and-wait-ready.yml
 
 - name: Post-upgrade verification
   hosts: k3s_servers

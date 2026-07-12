@@ -33,9 +33,9 @@ The check covers both rendered pod specs and HelmRelease `.spec.values`.
 Limitation: a CPU limit baked into a third-party chart's subchart defaults that
 is NOT overridden in `.spec.values` is invisible here (the corpus is kustomize-
 only, no `helm template`). validate-helm-values.py renders the value-heavy
-releases (traefik, kube-prometheus-stack, authentik, kured) via `helm template`
-and reuses _cpu_limit_violations to catch those; other charts rely on the live
-pod-spec audit in docs/33-autoscaling.md.
+releases (see RELEASES there) via `helm template` and reuses
+_cpu_limit_violations to catch those; other charts rely on the live pod-spec
+audit in docs/33-autoscaling.md.
 
 Usage (wired into flux:lint, on the accumulated full corpus):
   kustomize build <path> | envsubst >> corpus
@@ -113,6 +113,13 @@ def _vpa_resources(spec: dict) -> set[str]:
             controlled |= {"cpu", "memory"}
         else:
             controlled |= {str(r).lower() for r in cr}
+    # containerPolicies scope by containerName: a policy naming one container
+    # says nothing about the pod's other containers, which the VPA still
+    # controls with the default (cpu+memory). Without a '*' catch-all policy,
+    # fail closed and count those defaults so e.g. a named-container
+    # memory-only policy cannot hide a real CPU/HPA clash on a sidecar.
+    if not any(p.get("containerName") == "*" for p in policies):
+        controlled |= {"cpu", "memory"}
     return controlled
 
 

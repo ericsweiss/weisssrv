@@ -3,9 +3,15 @@
 
 smtp_tls_cert_dir: /etc/postfix/tls
 
+# Where the queue-depth collector drops its .prom file. Must match
+# node_exporter_host_textfile_dir (node_exporter_host runs on this host and
+# scrapes the same directory).
+smtp_relay_textfile_dir: /var/lib/node_exporter
+
 smtp_relay_config:
   myhostname: smtp-relay.esweiss.com
   myorigin: esweiss.com
+  mydestination: "$myhostname, localhost.$mydomain, localhost"
   inet_interfaces: all
   inet_protocols: ipv4
   # Only loopback + the host LAN are trusted for unauthenticated (permit_mynetworks)
@@ -55,12 +61,17 @@ smtp_relay_config:
   smtpd_sasl_local_domain: "$myhostname"
   broken_sasl_auth_clients: "yes"
 
-# Gmail credentials (from 1Password)
-# These are resolved at runtime via 1Password CLI
-# smtp_gmail_user: "{{ secrets.smtp_gmail_user }}"
-# smtp_gmail_password: "{{ secrets.smtp_gmail_password }}"
+# Local aliases; root mail is forwarded to admin_email (all.yml defines the
+# same map for the null clients — keep the shapes in sync).
+mail_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"
 
-# Relay user credentials for null clients
-# These are resolved at runtime via 1Password CLI
-# smtp_relay_user: "{{ secrets.smtp_relay_user }}"
-# smtp_relay_password: "{{ secrets.smtp_relay_password }}"
+# Required credentials (no defaults):
+# - smtp_gmail_user / smtp_gmail_password: outbound Gmail relay auth, defined
+#   in host_vars/smtp-relay.yml from the SMTP_GMAIL_* env vars (`op run`).
+# - postfix_sasl_user / postfix_sasl_password: inbound null-client relay auth,
+#   defined in group_vars/all.yml from the SMTP_RELAY_* env vars (`op run`).

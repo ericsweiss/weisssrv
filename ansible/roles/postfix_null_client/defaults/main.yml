@@ -7,7 +7,11 @@ smtp_relay_port: 587
 postfix_config:
   myhostname: "{{ inventory_hostname }}.esweiss.com"
   myorigin: "/etc/mailname"
-  mydestination: "$myhostname, {{ internal_domain }}, localhost.localdomain, localhost"
+  # $myhostname must stay listed: the /etc/aliases root->admin_email rewrite
+  # only applies to locally delivered mail. The bare domain must NOT be
+  # listed, or every null client would deliver/bounce *@esweiss.com locally
+  # instead of relaying it.
+  mydestination: "$myhostname, localhost.localdomain, localhost"
   relayhost: "[{{ smtp_relay_host }}]:{{ smtp_relay_port }}"
   mynetworks: "127.0.0.0/8"
   inet_interfaces: "loopback-only"
@@ -29,7 +33,5 @@ mail_aliases:
   webmaster: root
   root: "{{ admin_email }}"
 
-# These are resolved from 1Password at runtime
-# Relay user credentials for authenticating to smtp-relay
-# postfix_sasl_user: "{{ secrets.smtp_relay_user }}"
-# postfix_sasl_password: "{{ secrets.smtp_relay_password }}"
+# Required: postfix_sasl_user / postfix_sasl_password — defined in
+# group_vars/all.yml from the SMTP_RELAY_* env vars injected by `op run`.

@@ -226,6 +226,137 @@ class TestDeploymentPodNodes:
         assert _run("deployment_pod_nodes metallb-controller", rows).stdout.strip() == "<unscheduled>"
 
 
+# --- kured_rebooting_filter --------------------------------------------------
+
+class TestKuredRebootingFilter:
+    # Input mirrors the verify's jsonpath rows: "node<TAB>annotation<TAB>unschedulable".
+    def test_annotated_and_cordoned_listed(self):
+        rows = "node-a\ttrue\ttrue\n"
+        assert _run("kured_rebooting_filter", rows).stdout.split() == ["node-a"]
+
+    def test_annotated_but_schedulable_not_listed(self):
+        # kured writes the annotation BEFORE its block-check and does not clear
+        # it when blocked — annotated-but-schedulable is stale, NOT mid-reboot.
+        rows = "node-a\ttrue\t\n"
+        assert _run("kured_rebooting_filter", rows).stdout.strip() == ""
+
+    def test_cordoned_but_unannotated_not_listed(self):
+        # A manual/op-3 cordon without the kured annotation must not be excused.
+        rows = "node-a\t\ttrue\n"
+        assert _run("kured_rebooting_filter", rows).stdout.strip() == ""
+
+    def test_mixed_rows(self):
+        rows = (
+            "node-a\t\t\n"           # healthy
+            "node-b\ttrue\ttrue\n"   # actively rebooting
+            "node-c\ttrue\t\n"       # annotated, blocked (schedulable)
+            "node-d\t\ttrue\n"       # cordoned, no annotation
+        )
+        assert _run("kured_rebooting_filter", rows).stdout.split() == ["node-b"]
+
+    def test_empty_input_empty(self):
+        assert _run("kured_rebooting_filter", "").stdout.strip() == ""
+
+
+# --- classify_not_ready_nodes ------------------------------------------------
+
+class TestClassifyNotReadyNodes:
+    def _classify(self, kured_names: str, not_ready: str) -> list[str]:
+        res = _run(f"classify_not_ready_nodes '{kured_names}'", not_ready)
+        assert res.returncode == 0, res.stderr
+        return res.stdout.splitlines()
+
+    def test_kured_rebooting_node_excused(self):
+        assert self._classify("node-a", "node-a\n") == ["excused node-a"]
+
+    def test_unexcused_node_errors(self):
+        assert self._classify("node-a", "node-b\n") == ["error node-b"]
+
+    def test_no_kured_nodes_all_error(self):
+        assert self._classify("", "node-a\nnode-b\n") == [
+            "error node-a",
+            "error node-b",
+        ]
+
+    def test_mixed_verdicts(self):
+        # needs_grace in the verify is "any error line" — a mix must surface both.
+        out = self._classify("node-a", "node-a\nnode-b\n")
+        assert out == ["excused node-a", "error node-b"]
+
+    def test_exact_name_match_only(self):
+        # Substring/prefix names must not be excused (grep -qxF semantics).
+        assert self._classify("node-a", "node-a2\n") == ["error node-a2"]
+
+    def test_reclassification_with_fresh_input_clears_excuse(self):
+        # After the grace re-read, a node kured finished with (annotation gone)
+        # that is STILL NotReady must flip from excused to error.
+        assert self._classify("node-a", "node-a\n") == ["excused node-a"]
+        assert self._classify("", "node-a\n") == ["error node-a"]
+
+    def test_empty_input_no_verdicts(self):
+        assert self._classify("node-a", "") == []
+
+
+# --- rearm_marker_host -------------------------------------------------------
+
+class TestRearmMarkerHost:
+    def test_plain_hostname(self):
+        assert _run("rearm_marker_host", "pve-opt-01\n").stdout.strip() == "pve-opt-01"
+
+    def test_whitespace_stripped(self):
+        assert _run("rearm_marker_host", "  pve-opt-02 \n").stdout.strip() == "pve-opt-02"
+
+    def test_only_first_line_used(self):
+        out = _run("rearm_marker_host", "pve-opt-03\npve-opt-04\n").stdout.strip()
+        assert out == "pve-opt-03"
+
+    def test_blank_marker_prints_nothing(self):
+        assert _run("rearm_marker_host", "   \n").stdout.strip() == ""
+
+    def test_empty_marker_prints_nothing(self):
+        assert _run("rearm_marker_host", "").stdout.strip() == ""
+
+
+# --- rearm_remote_command ----------------------------------------------------
+
+class TestRearmRemoteCommand:
+    def _cmd(self, *args) -> str:
+        res = _run("rearm_remote_command " + " ".join(args))
+        assert res.returncode == 0, res.stderr
+        return res.stdout
+
+    def test_prompt_armed_before_fallback_teardown(self):
+        # The safety guarantee: systemd-run arms the prompt unit BEFORE the
+        # fallback timer is touched, so a failed arm leaves the fallback intact.
+        cmd = self._cmd("60")
+        arm = cmd.index("systemd-run")
+        fallback_stop = cmd.index("systemctl stop maintenance-self-reboot.timer")
+        assert arm < fallback_stop
+
+    def test_fallback_teardown_gated_on_arm_success(self):
+        # The teardown block must be joined with && (short-circuits on a failed
+        # systemd-run), not `;` (which would tear down unconditionally).
+        cmd = self._cmd("60")
+        after_arm = cmd.split("systemctl reboot", 1)[1]
+        assert after_arm.lstrip().startswith("&&")
+
+    def test_pre_arm_cleanup_targets_prompt_unit_only(self):
+        # Everything before systemd-run may only touch the -prompt units; the
+        # fallback units (no -prompt suffix) must appear only after the && gate.
+        cmd = self._cmd("60")
+        before_arm = cmd.split("systemd-run", 1)[0]
+        assert "maintenance-self-reboot.timer" not in before_arm
+        assert "maintenance-self-reboot.service" not in before_arm
+        assert "maintenance-self-reboot-prompt.timer" in before_arm
+
+    def test_delay_parameter_honored(self):
+        assert "--on-active=90s" in self._cmd("90")
+        assert "--on-active=60s" in self._cmd()  # default
+
+    def test_arms_the_prompt_unit(self):
+        assert "--unit=maintenance-self-reboot-prompt" in self._cmd("60")
+
+
 # --- ha_reset_verdict ------------------------------------------------------
 
 class TestHaResetVerdict:

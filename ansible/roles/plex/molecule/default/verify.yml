@@ -102,6 +102,13 @@
           - "'PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR' in override_decoded"
           - "'TMPDIR' in override_decoded"
           - "'Restart=on-failure' in override_decoded"
+          # DVR fix: media is the PRIMARY group (mergerfs FUSE only honors the
+          # primary GID for writes to /media).
+          - "'Group=media' in override_decoded"
+          # Regression guard: overriding Group= drops plex's own group, which
+          # owns the TLS cert at /etc/ssl/plex — without this line Plex can't
+          # read plex.pfx and silently serves its plex.direct fallback cert.
+          - "'SupplementaryGroups=plex' in override_decoded"
         fail_msg: "Systemd override missing expected configuration"
         success_msg: "Systemd override has correct configuration"
       vars:

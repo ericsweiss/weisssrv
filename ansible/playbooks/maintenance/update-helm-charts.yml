@@ -4,7 +4,7 @@
 #   1. Edit versions in ansible/inventories/prod/group_vars/all.yml
 #   2. Run: task flux:sync-versions
 #   3. Commit and push — Flux reconciles the new chart versions.
-# See docs/29-flux-operations.md § "Updating an App Version".
+# See docs/29-flux-operations.md § "Deploying a Change".
 
 - name: Update k3s Helm charts
   hosts: localhost

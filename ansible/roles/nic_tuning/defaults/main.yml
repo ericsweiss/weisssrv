@@ -19,3 +19,15 @@
 # lands in /etc/sysctl.d/ and is re-applied on each reboot).
 nic_tuning_overrides: []
 nic_tuning_ip_forward: false
+
+# Guard against a MAC-flap black-hole on active-backup bonds whose two legs
+# share an unmanaged (dumb) switch. With `all_slaves_active=1` the bonding
+# driver DELIVERS frames received on the inactive backup leg; the switch floods
+# each guest's own frames back onto that leg, so the host bridge learns the
+# guest MAC on bond0 (not its veth) and misdirects the guest's unicast return
+# traffic out to the switch — an intermittent, recurring outage. Forcing the
+# kernel default `all_slaves_active=0` drops those inactive-leg frames and stops
+# the bridge-FDB poisoning. Set false only if a bond legitimately needs =1
+# (e.g. multicast RX across multiple switches), which this fleet does not.
+# See docs/34-bond-mac-flapping.md.
+nic_tuning_bond_asa_guard: true

@@ -1,0 +1,85 @@
+---
+# Off-node etcd snapshot copy (docs/17 "etcd Snapshots"). Mounts the NFS export
+# on pve-nas-01 (by hostname, xprtsec=tls) and installs a systemd timer that
+# copies the newest local k3s snapshot there, emitting an
+# etcd_snapshot_last_copy_timestamp_seconds textfile metric for EtcdSnapshotStale.
+# Server nodes only; the caller gates this on k3s_etcd_snapshot_offnode_enabled
+# (off by default — see defaults/main.yml for the companion changes it needs).
+
+- name: Create the off-node etcd snapshot mount point
+  ansible.builtin.file:
+    path: "{{ k3s_etcd_snapshot_mountpoint }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# The xprtsec=tls mount needs the kernel TLS handshake daemon (tlshd, from the
+# nfs_tls role) active on this server; without it the mount hangs with an opaque
+# timeout. Fail loud with an actionable message instead. The nfs_tls play runs
+# group-wide and BEFORE the k3s server play (playbooks/k3s.yml), so tlshd is
+# already up by the time this assert runs.
+- name: Assert tlshd is active for the off-node TLS NFS mount  # noqa: command-instead-of-module
+  ansible.builtin.command: systemctl is-active tlshd.service
+  register: k3s_offnode_tlshd
+  changed_when: false
+  failed_when: k3s_offnode_tlshd.stdout != "active"
+  tags:
+    - molecule-notest
+
+# Mount by hostname (server: pve-nas-01.esweiss.com) so the *.esweiss.com cert
+# verifies under xprtsec=tls — an IP mount fails the TLS handshake (no IP SAN).
+# The /etc/hosts pin (k3s_storage_host_pins) keeps resolution DNS-independent.
+- name: Mount the off-node etcd snapshot NFS export (by hostname, TLS)
+  ansible.posix.mount:
+    path: "{{ k3s_etcd_snapshot_mountpoint }}"
+    src: "{{ k3s_etcd_snapshot_nfs_server }}:{{ k3s_etcd_snapshot_nfs_export }}"
+    fstype: nfs4
+    opts: "{{ k3s_etcd_snapshot_nfs_options }}"
+    state: mounted
+  tags:
+    - molecule-notest
+
+- name: Ensure the node_exporter textfile directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_etcd_snapshot_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the etcd snapshot off-node copy script
+  ansible.builtin.template:
+    src: k3s-etcd-snapshot-copy.sh.j2
+    dest: /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the etcd snapshot copy service unit
+  ansible.builtin.template:
+    src: k3s-etcd-snapshot-copy.service.j2
+    dest: /etc/systemd/system/k3s-etcd-snapshot-copy.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for etcd snapshot copy
+
+- name: Install the etcd snapshot copy timer unit
+  ansible.builtin.template:
+    src: k3s-etcd-snapshot-copy.timer.j2
+    dest: /etc/systemd/system/k3s-etcd-snapshot-copy.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for etcd snapshot copy
+
+- name: Enable + start the etcd snapshot copy timer
+  ansible.builtin.systemd:
+    name: k3s-etcd-snapshot-copy.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode
+  tags:
+    - molecule-notest

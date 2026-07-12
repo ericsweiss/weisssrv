@@ -1,19 +1,24 @@
 ---
-# RBAC for the leaked-pod reaper. Least-privilege, cross-namespace shape:
+# RBAC for the leaked-pod/leaked-secret reaper. Least-privilege, cross-namespace
+# shape:
 #   - one ServiceAccount in the reaper's own namespace
-#   - one ClusterRole granting ONLY pods list/delete (NOT get — the script lists
-#     the collection and deletes by name; it never reads a single pod; no
-#     create/update/patch, no secrets/configmaps) — deliberately a far smaller
-#     verb set than the runner SAs' full pods+secrets get/list/watch/create/
-#     update/delete/patch. NOTE: `list pods` still returns full pod specs (incl.
-#     job env) — k8s has no list-without-spec for objects that also need status,
-#     so this is inherent; mitigated by the digest-pinned image + fixed no-input
-#     script + namespace scope + this dedicated, single-purpose SA.
+#   - one ClusterRole granting ONLY pods list/delete + secrets list/delete (NOT
+#     get — the script lists each collection and deletes by name; it never reads
+#     a single object; no create/update/patch, no configmaps) — deliberately a
+#     far smaller verb set than the runner SAs' full pods+secrets get/list/watch/
+#     create/update/delete/patch. NOTE: `list pods` returns full pod specs (incl.
+#     job env) and `list secrets` returns secret DATA (k8s has no list-without-
+#     data for either) — the secrets list is narrowed server-side to
+#     type=kubernetes.io/dockercfg (the per-job image-pull credentials the reaper
+#     targets), so the runner token / SA-token secrets are never returned; the
+#     residual exposure of those dockercfg blobs is inherent and mitigated by the
+#     digest-pinned image + fixed no-input script + namespace scope + this
+#     dedicated, single-purpose SA.
 #   - two NAMESPACED RoleBindings (one per runner namespace), each binding the SA
 #     to the ClusterRole. A RoleBinding referencing a ClusterRole scopes those
-#     verbs to ONLY the binding's namespace — so pod-delete is confined to exactly
-#     the two runner namespaces. This is NOT a ClusterRoleBinding: there is no
-#     cluster-wide pod-delete anywhere.
+#     verbs to ONLY the binding's namespace — so pod/secret-delete is confined to
+#     exactly the two runner namespaces. This is NOT a ClusterRoleBinding: there
+#     is no cluster-wide pod/secret-delete anywhere.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -32,8 +37,18 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list", "delete"]
+  # ACCEPTED TRADEOFF (secrets: list): the reaper garbage-collects stale per-job
+  # runner Secrets by age/pattern, which inherently needs `list` — RBAC cannot
+  # filter by name/type, and `list secrets` exposes Secret data. Minimized by the
+  # RoleBinding below, which scopes this to the gitlab-runner-privileged namespace
+  # ONLY (never cluster-wide), so the blast radius is just that namespace's
+  # ephemeral per-job registry credentials; the reaper's own script further
+  # narrows to the runner-created Secret type + a field selector.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list", "delete"]
 ---
-# Scopes the ClusterRole's pods:list/delete to ONLY gitlab-runner-privileged.
+# Scopes the ClusterRole's pods/secrets:list/delete to ONLY gitlab-runner-privileged.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

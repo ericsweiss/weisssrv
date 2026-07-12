@@ -3,14 +3,23 @@
 # Installs from Debian packages and runs on port 9101 to avoid conflicting
 # with the k3s DaemonSet node-exporter on port 9100.
 
-- name: Install prometheus-node-exporter and smartmontools
+- name: Install prometheus-node-exporter
   ansible.builtin.apt:
-    name:
-      - prometheus-node-exporter
-      - smartmontools
+    name: prometheus-node-exporter
     state: present
     update_cache: true
     cache_valid_time: 3600
+
+# smartctl only makes sense on bare-metal Proxmox hosts (smartmon
+# collector below, collect-state.sh, postflight, smartd on the NAS).
+# The DNS/smtp LXCs and the GitLab VM have no visible block devices,
+# so the package would just be dead weight there — same gate rationale
+# as the drivetemp tasks below.
+- name: Install smartmontools (bare-metal Proxmox hosts only)
+  ansible.builtin.apt:
+    name: smartmontools
+    state: present
+  when: inventory_hostname in groups['proxmox'] | default([])
 
 # drivetemp only makes sense on bare-metal Proxmox hosts — it's a kernel
 # module that exposes SATA drive temperatures via hwmon. DNS LXCs (which
@@ -141,7 +150,7 @@
 # health-based monitoring (zfs_exporter on the NAS, SMART) never fires —
 # a May 10 scrub had already counted errors and nothing surfaced it. The
 # collector exports per-pool error counters + scrub age fleet-wide;
-# companion alerts live in release.yaml (homelab.storage group).
+# companion alerts live in release.yaml (homelab.monitoring group).
 - name: Install zpool status collector script (proxmox hosts only)
   ansible.builtin.copy:
     src: zpool-status-collector.sh
@@ -174,6 +183,75 @@
 - name: Enable + start zpool status collector timer
   ansible.builtin.systemd:
     name: zpool-status-collector.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - inventory_hostname in groups['proxmox'] | default([])
+    - not ansible_check_mode
+  tags:
+    - molecule-notest
+
+# ---------------------------------------------------------------------------
+# vzdump backup metrics hookscript (Proxmox hosts only)
+# ---------------------------------------------------------------------------
+# Referenced by the proxmox_backup vzdump job's `script` property. jobs.cfg is
+# clustered, so the `all` job runs on every node for its local guests and vzdump
+# invokes this hook on each — it must exist fleet-wide or the run aborts on any
+# node that lacks it. Deployed here (not in proxmox_backup, which reconciles the
+# single clustered config on one node) so it lands on every Proxmox host. Each
+# node writes its own /var/lib/node_exporter/vzdump_backup.prom, distinguished
+# by the instance label at scrape time; feeds VzdumpBackupFailed/Stale.
+- name: Install vzdump metrics hookscript (proxmox hosts only)
+  ansible.builtin.copy:
+    src: vzdump-metrics-hook.sh
+    dest: /usr/local/bin/vzdump-metrics-hook.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['proxmox'] | default([])
+
+# ---------------------------------------------------------------------------
+# SMART health collector (Proxmox hosts only — they carry the physical drives)
+# ---------------------------------------------------------------------------
+# smartd on pve-nas-01 emails on attribute failures, but nothing exported
+# SMART to Prometheus: Grafana/Alertmanager were blind to reallocated/
+# pending/uncorrectable sectors and ZFS error events (e.g. the archive
+# ZFSPoolDeviceErrors) couldn't be attributed to a disk. The collector is
+# standby-aware (`smartctl -n standby`) so it never wakes drives or aborts
+# long self-tests — the documented reason DEVICESCAN left smartd.conf.
+- name: Install smartmon collector script (proxmox hosts only)
+  ansible.builtin.copy:
+    src: smartmon-collector.sh
+    dest: /usr/local/sbin/smartmon-collector.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['proxmox'] | default([])
+
+- name: Install smartmon collector service unit
+  ansible.builtin.template:
+    src: smartmon-collector.service.j2
+    dest: /etc/systemd/system/smartmon-collector.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+  notify: Reload systemd for smartmon collector
+
+- name: Install smartmon collector timer unit
+  ansible.builtin.copy:
+    src: smartmon-collector.timer
+    dest: /etc/systemd/system/smartmon-collector.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname in groups['proxmox'] | default([])
+  notify: Reload systemd for smartmon collector
+
+- name: Enable + start smartmon collector timer
+  ansible.builtin.systemd:
+    name: smartmon-collector.timer
     enabled: true
     state: started
     daemon_reload: true

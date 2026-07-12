@@ -12,32 +12,26 @@
 # the ServerAliveInterval/CountMax options in SSH_OPTS are the only guard
 # against a post-connect stall on a hung host.
 
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# timeout_cmd (shared helper). shellcheck source=scripts/shell-lib.sh
+. "$_SCRIPT_DIR/shell-lib.sh" || { echo "ERROR: cannot source shell-lib.sh — run from a full scripts/ checkout (needs sibling shell-lib.sh + hosts.env)" >&2; exit 1; }
+# Host/IP roster, generated from ansible/inventories/prod/hosts.yml.
+# shellcheck source=scripts/hosts.env
+. "$_SCRIPT_DIR/hosts.env" || { echo "ERROR: cannot source hosts.env — run from a full scripts/ checkout" >&2; exit 1; }
+
 echo "=== Network Diagnostics for weisssrv Cluster ==="
 echo "Generated: $(date)"
 echo ""
 
-PVE_HOSTS="192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107"
-K3S_SERVERS="192.168.0.222 192.168.0.223 192.168.0.227"
+# This script addresses Proxmox hosts by IP (not the Tailscale hostnames the
+# Taskfile uses); K3S_SERVERS is already IPs in hosts.env.
+PVE_HOSTS="$PVE_IPS"
 
 # SSH options as an array so word splitting is explicit and shellcheck-clean.
 # ServerAlive* bound a post-connect stall even on the no-timeout fallback path
 # (host without GNU/BSD timeout) so a hung remote can't block a section.
 SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
           -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
-
-# timeout is GNU coreutils; on stock macOS install via 'brew install coreutils' (gtimeout).
-# Intentionally duplicated in find-pve-host-for-vm.sh — keep both copies in sync.
-timeout_cmd() {
-    local seconds="$1"
-    shift
-    if command -v timeout &>/dev/null; then
-        timeout "$seconds" "$@"
-    elif command -v gtimeout &>/dev/null; then
-        gtimeout "$seconds" "$@"
-    else
-        "$@"
-    fi
-}
 
 ssh_cmd() {
     timeout_cmd 10 ssh "${SSH_OPTS[@]}" "$@"
@@ -122,7 +116,7 @@ if command -v kubectl &> /dev/null; then
     timeout_cmd 10 kubectl get pods -n metallb-system -o wide 2>/dev/null || echo "Cannot query k3s (timeout or unreachable)"
     echo ""
     echo "MetalLB speaker logs (last 10 lines each):"
-    for pod in $(timeout_cmd 10 kubectl get pods -n metallb-system -l component=speaker -o name 2>/dev/null); do
+    for pod in $(timeout_cmd 10 kubectl get pods -n metallb-system -l app.kubernetes.io/component=speaker -o name 2>/dev/null); do
         echo "--- $pod ---"
         timeout_cmd 10 kubectl logs "$pod" -n metallb-system --tail=10 2>/dev/null || echo "Cannot get logs"
     done

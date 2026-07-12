@@ -65,6 +65,31 @@
         fail_msg: "NFS exports missing expected configuration"
         success_msg: "NFS exports configured correctly"
 
+    # Prod-shaped export (bind_source + xprtsec + fsid + all_squash mapping) —
+    # asserts the schema production actually uses renders correctly, not just
+    # the legacy path-only shape above.
+    - name: Assert prod-shaped TLS export rendered correctly
+      ansible.builtin.assert:
+        that:
+          - "'/export/appdata' in exports_content.stdout"
+          - "'xprtsec=tls' in exports_content.stdout"
+          - "'fsid=11' in exports_content.stdout"
+          - "'all_squash,anonuid=1000,anongid=2000' in exports_content.stdout"
+        fail_msg: "Prod-shaped export (/export/appdata bind + xprtsec=tls) did not render"
+        success_msg: "Prod-shaped TLS export rendered correctly"
+
+    - name: Check bind mount for prod-shaped export is live
+      ansible.builtin.command: findmnt /export/appdata
+      register: appdata_bind
+      changed_when: false
+
+    - name: Assert bind mount is live
+      ansible.builtin.assert:
+        that:
+          - appdata_bind.rc == 0
+        fail_msg: "/export/appdata bind mount not mounted"
+        success_msg: "/export/appdata bind mount is live"
+
     # ============================================
     # Samba Server Verification
     # (Samba works fully in Docker containers)

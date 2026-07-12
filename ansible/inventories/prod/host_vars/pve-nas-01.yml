@@ -50,12 +50,13 @@ zfs_encryption_guest_ctids: [152]
 # /export/* fstab binds (and the nfs-server drop-in) on the late
 # zfs-mount-encrypted.service rather than the early zfs-mount.service, so the
 # binds capture the real (unlocked) datasets, never an empty mountpoint. All
-# three ZFS-backed exports (appdata, share, tank/proxmox) are encrypted;
+# four ZFS-backed exports (appdata, share, tank/proxmox, k3s-etcd) are encrypted;
 # /mnt/media (mergerfs, plaintext) is not ZFS-backed and keeps a plain bind.
 nas_encrypted_bind_sources:
   - /mnt/ssd/appdata
   - /mnt/tank/share
   - /mnt/tank/proxmox
+  - /mnt/ssd/k3s-etcd  # off-node k3s etcd snapshot copies (encrypted, ssd pool)
 
 # ZFS pool configuration
 zfs_pools:
@@ -110,6 +111,34 @@ zfs_pools:
       - name: ssd/appdata/loki
         properties:
           com.sun:auto-snapshot: "false"
+      # mealie/postgres is a zvol (proxmox_vm `zfs create -p -V ssd/appdata/
+      # mealie/postgres`), so the auto-created ssd/appdata/mealie parent would
+      # mount over /mnt/ssd/appdata/mealie and shadow the /appdata/mealie dir
+      # the recipes-appdata-mealie NFS PV serves (mealie's /app/data). canmount
+      # =off keeps it unmounted so the NFS bind exports the real directory; the
+      # nas_storage appdata shadowing-guard asserts this holds.
+      - name: ssd/appdata/mealie
+        properties:
+          canmount: "off"
+      # Off-node etcd snapshot copies from the k3s servers (docs/17). Small, lz4,
+      # no auto-snapshot (snapshotting etcd snapshots is pointless). Its OWN
+      # encryption root — the ssd pool root is plaintext and children do NOT
+      # inherit encryption (docs/32), so it must be created with explicit
+      # encryption flags. CREATE MANUALLY FIRST — nas_storage does not create
+      # datasets (hard-fails DATASET_MISSING on the next NAS deploy):
+      #   zfs create -o encryption=aes-256-gcm -o keyformat=passphrase \
+      #     -o keylocation=prompt -o mountpoint=/mnt/ssd/k3s-etcd ssd/k3s-etcd
+      # (passphrase from 1P "ZFS Pool ssd Passphrase"; name == encryptionroot so
+      # the zfs-load-key@ssd boot loop unlocks it automatically). The
+      # encryption=aes-256-gcm property below makes nas_storage fail loudly if the
+      # dataset was accidentally created plaintext (zfs set encryption errors).
+      - name: ssd/k3s-etcd
+        properties:
+          mountpoint: /mnt/ssd/k3s-etcd
+          atime: "off"
+          compression: lz4
+          com.sun:auto-snapshot: "false"
+          encryption: aes-256-gcm
 
   - name: nvme
     datasets:
@@ -132,6 +161,14 @@ zfs_pools:
 # ZFS scrub timer
 zfs_scrub_enabled: true
 zfs_scrub_schedule: "monthly"
+
+# ZFS ARC cap (bytes). This host is memory-over-committed (~42.5GB pinned
+# guest RAM of 62GB), so the ARC is capped hard at ~6.25GiB. Matches the cap
+# already live on the host (hand-applied /etc/modprobe.d/zfs.conf, baked into
+# the initramfs) so a rebuild does not silently revert to the ~31GB default
+# and swap-thrash the guests. Rendered into /etc/modprobe.d/zfs.conf by
+# nas_storage (with an update-initramfs handler so it applies at early boot).
+zfs_arc_max_bytes: 6711934976
 
 # NVMe fast storage
 nvme_storage:
@@ -180,27 +217,44 @@ nfs_tls_is_server: true
 
 # NFS exports
 nfs_exports:
-  # NFSv4 root export
+  # NFSv4 pseudo-root (fsid=0): traversal-only, so read-only. NFSv4 clients
+  # cross from here into whichever child exports below are explicitly listed
+  # for them — no crossmnt needed for that. crossmnt is deliberately ABSENT:
+  # per exports(5) it would implicitly export any child filesystem bound under
+  # /export to every client line here WITH THIS LINE'S OPTIONS (plaintext, no
+  # xprtsec), bypassing the per-child client lists and TLS requirements. Any
+  # new dataset bound under /export MUST get its own explicit export entry.
+  # The .154 (HAOS) line must stay: its fstab mounts /media relative to this
+  # pseudo-root, and an explicit fsid=0 export disables nfsd's synthesized
+  # pseudo-root entirely.
   - path: /export
     clients:
       - spec: "192.168.0.102/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.103/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.104/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.105/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.106/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.107/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.154/32"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.200/29"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
-      - spec: "192.168.0.220/29"
-        options: "rw,sync,hide,crossmnt,no_subtree_check,fsid=0,sec=sys,root_squash"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
+      # k3s servers (.222/.223/.227) as explicit /32s. 192.168.0.220/29 masks to
+      # .216-.223 and does NOT cover .227 (prec-01); with the explicit fsid=0
+      # export disabling the synthesized pseudo-root, a server missing here can
+      # not traverse into /export/k3s-etcd (off-node etcd snapshot copy).
+      - spec: "192.168.0.222/32"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.223/32"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.227/32"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
 
   # K3s/app RW exports
   # These directories use UID 1000 (eric) and GID 2000 (media) with setgid for shared access
@@ -209,7 +263,9 @@ nfs_exports:
   #
   # Two CIDR blocks for k3s nodes:
   #   192.168.0.200/29 (.200-.207) = k3s agents
-  #   192.168.0.220/29 (.220-.227) = k3s servers
+  #   192.168.0.220/29 = k3s servers .222/.223 (masks to .216-.223, NOT .227).
+  #     Servers do not mount these RW exports; the off-node etcd export (the one
+  #     servers DO use) and the fsid=0 pseudo-root list the three servers as /32s.
   # xprtsec=tls: REQUIRE — these k3s client lines reject plaintext mounts.
   # The k3s PVs mount with xprtsec=tls by hostname (pve-nas-01.esweiss.com,
   # so the *.esweiss.com cert verifies; an IP mount fails the handshake).
@@ -264,6 +320,26 @@ nfs_exports:
       - spec: "192.168.0.154/32"  # HAOS — plaintext (no xprtsec; see comment above)
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 
+  # Off-node k3s etcd snapshot copies (docs/17). Servers only (.222/.223/.227),
+  # xprtsec=tls REQUIRED, no_root_squash so each server's root copy script can
+  # write its snapshots. Servers mount by hostname (pve-nas-01.esweiss.com) as
+  # /k3s-etcd (pseudo-root-relative — the fsid=0 root is at /export). fsid=15
+  # (unique). The three servers are listed as /32s in the fsid=0 pseudo-root
+  # above so NFSv4 traversal into this child works (the /29 there omits .227).
+  - path: /export/k3s-etcd
+    bind_source: /mnt/ssd/k3s-etcd
+    owner: 0  # root
+    group: 0  # root
+    mode: "0700"
+    xprtsec: "tls"
+    clients:
+      - spec: "192.168.0.222/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
+      - spec: "192.168.0.223/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
+      - spec: "192.168.0.227/32"
+        options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
+
   # Proxmox backup target (requires no_root_squash)
   - path: /export/tank-proxmox
     bind_source: /mnt/tank/proxmox
@@ -314,26 +390,58 @@ samba_shares:
 media_mover_enabled: true
 media_mover_src: /mnt/nvme/media/library    # Hot tier library
 media_mover_dst: /mnt/tank/media/library    # Cold tier library
-media_mover_schedule: "*-*-* 02:00:00"  # Daily at 2 AM (systemd calendar format)
+# 04:15, NOT 02:00: 02:00 already carries smartd's daily short tests, and the
+# cluster-wide vzdump run (pve_vzdump_jobs below, 03:30 daily) writes into
+# tank/proxmox until ~03:48 — stacking the nvme->tank rsync on either thrashed
+# the NAS every night. 04:15 clears the observed vzdump tail while still
+# finishing well before the 05:00 archive replication snapshot.
+media_mover_schedule: "*-*-* 04:15:00"
 
-# Proxmox storage configuration
+# Proxmox storage configuration — reconciled by the proxmox_backup role
+# (storage.yml / site.yml NAS play). Codified target: mount by HOSTNAME with
+# xprtsec=tls (the *.esweiss.com cert has no IP SAN, so an IP mount fails the
+# TLS handshake). The live entry still carries the legacy plaintext IP; server
+# is create-fixed in Proxmox, so the role fails loud until the one-time
+# migration (outside a backup window):
+#   ssh pve-nas-01 "sudo pvesh delete /storage/tank-proxmox"  # config only, data untouched
+# then re-run the role. Prerequisite: tlshd on every PVE host
+# (nfs_tls_enabled in group_vars/proxmox.yml).
 pve_storage:
   - id: tank-proxmox
     type: nfs
-    server: 192.168.0.102
+    server: pve-nas-01.esweiss.com
     export: /tank-proxmox
-    content: "backup,images,rootdir"
+    # Synced from the live storage.cfg. content is a mutable property, so the
+    # role updates it on drift (unlike server/export/path, which are
+    # create-fixed and fail loud).
+    content: "snippets,backup,vztmpl,iso"
     path: /mnt/pve/tank-proxmox
+    options: "vers=4.2,xprtsec=tls"
 
-# Proxmox backup job
+# Proxmox backup job (jobs.cfg via /cluster/backup) — reconciled by the
+# proxmox_backup role. IMPORTANT: `id` must match the live jobs.cfg id or the
+# role CREATES A SECOND job (check with: pvesh get /cluster/backup
+# --output-format json); GUI-created ids look like backup-xxxxxxxx-xxxx.
+# Schedule is a systemd-style calendar event (not cron). Adopted from the live
+# GUI job: 03:30 daily, all guests, keep-daily=7/weekly=4/monthly=3, routed
+# through the modern notification-system (mailnotification/mailto are the
+# deprecated pre-8.x keys and are no longer set).
+# The job's `script` key publishes vzdump_backup_last_run_success +
+# _last_success_timestamp_seconds (the series the VzdumpBackupFailed/Stale
+# alerts consume). The hookscript is deployed to every Proxmox host by
+# node_exporter_host — this is a cluster-wide `all` job, so it runs (and invokes
+# the hook) on each node for that node's local guests, not just here.
 pve_vzdump_jobs:
-  - id: backup
+  - id: backup-10f33360-a177
     storage: tank-proxmox
-    schedule: "0 2 * * *"
+    schedule: "03:30"
     mode: snapshot
     compress: zstd
-    mailnotification: failure
-    mailto: "{{ admin_email }}"
+    all: true
+    prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
+    notification_mode: notification-system
+    enabled: true
+    script: /usr/local/bin/vzdump-metrics-hook.sh
 
 # SMART monitoring
 smartd_enabled: true

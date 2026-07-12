@@ -22,68 +22,37 @@
     quiet: true
   when: alloy_host_loki_url is match('^https://')
 
-- name: Create apt keyrings directory
-  ansible.builtin.file:
-    path: /etc/apt/keyrings
-    state: directory
-    mode: "0755"
+# Shared stat -> download -> verify-fingerprint -> dearmor -> add-repo pipeline.
+# This role has no meta dependency on base (which provisions gnupg), so the
+# helper installs it when the keyring is first created.
+- name: Add Grafana signed APT repository
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://apt.grafana.com/gpg.key
+    apt_signed_repo_fingerprint: B53AE77BADB630A683046005963FA27710458545
+    apt_signed_repo_keyring_path: /etc/apt/keyrings/grafana.gpg
+    apt_signed_repo_repo_line: "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main"
+    apt_signed_repo_filename: grafana
+    apt_signed_repo_install_gnupg: true
 
-- name: Check if Grafana GPG key exists
-  ansible.builtin.stat:
-    path: /etc/apt/keyrings/grafana.gpg
-  register: alloy_host_gpg_key
-
-# The verify/dearmor steps below call gpg. The base role normally provisions
-# gnupg, but this role has no meta dependency on it, so install it explicitly
-# (gated on the same condition as the key steps) to stay correct standalone.
-- name: Ensure gnupg is installed
+- name: Install Alloy (pinned version)
   ansible.builtin.apt:
-    name: gnupg
+    name: "alloy={{ alloy_host_version }}"
     state: present
-  when: not alloy_host_gpg_key.stat.exists
-
-- name: Download Grafana GPG key
-  ansible.builtin.get_url:
-    url: https://apt.grafana.com/gpg.key
-    dest: /tmp/grafana.gpg.key
-    mode: "0644"
-  when: not alloy_host_gpg_key.stat.exists
-
-- name: Verify Grafana GPG key fingerprint (primary key must match exactly)
-  ansible.builtin.shell: |
-    set -o pipefail
-    primary_fpr=$(gpg --show-keys --with-colons /tmp/grafana.gpg.key 2>/dev/null \
-        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-    [ "$primary_fpr" = "B53AE77BADB630A683046005963FA27710458545" ]
-  args:
-    executable: /bin/bash
-  changed_when: false
-  when: not alloy_host_gpg_key.stat.exists
-
-- name: Add Grafana GPG key to keyring
-  ansible.builtin.shell: |
-    gpg --yes --dearmor -o /etc/apt/keyrings/grafana.gpg < /tmp/grafana.gpg.key
-  args:
-    creates: /etc/apt/keyrings/grafana.gpg
-  when: not alloy_host_gpg_key.stat.exists
-
-- name: Clean up downloaded GPG key
-  ansible.builtin.file:
-    path: /tmp/grafana.gpg.key
-    state: absent
-  when: not alloy_host_gpg_key.stat.exists
-
-- name: Add Grafana APT repository
-  ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main"
-    filename: grafana
-    state: present
+    # Refresh the index so a newly-pinned version resolves — the fleet has
+    # APT periodic list updates disabled, so the cache is otherwise stale.
     update_cache: true
+    cache_valid_time: 3600
+    allow_downgrade: true
+    allow_change_held_packages: true
 
-- name: Install Alloy
-  ansible.builtin.apt:
+# Hold the package so a manual `apt upgrade` can't move Alloy past the pin
+# (the Grafana repo continuously serves newer builds). Mirrors the plex role.
+- name: Hold Alloy package to prevent unintended upgrades
+  ansible.builtin.dpkg_selections:
     name: alloy
-    state: present
+    selection: hold
 
 - name: Disable Alloy usage reporting
   ansible.builtin.lineinfile:

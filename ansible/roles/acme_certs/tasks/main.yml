@@ -74,17 +74,67 @@
 # No run_once: combined with the dns-01 when-clause it would silently
 # skip if dns-02 ever sorted first in the play; the when-clause alone
 # already limits execution to dns-01.
+# Deploy the forced-command receiver to each sudo target BEFORE the key is
+# pinned to it: authorized_keys will force `sudo <receiver>`, so the receiver
+# and its sudoers rule must already exist when the next cert push arrives.
+- name: Deploy cert-receive forced-command receiver to each sudo target
+  ansible.builtin.template:
+    src: cert-receive.sh.j2
+    dest: "{{ acme_certs_receiver_path }}"
+    owner: root
+    group: root
+    mode: "0500"
+  loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.host }}"
+  delegate_to: "{{ item.host }}"
+  when:
+    - inventory_hostname == 'dns-01'
+    - not (item.ssh_no_sudo | default(false))
+    - dns01_ssh_public_key is defined
+    - acme_certs_distribute_pubkeys | default(true)
+
+# Scopes the escalation: the cert key's forced command `sudo <receiver>` is the
+# ONLY thing this rule permits, so even if eric's broad sudo is later tightened
+# the receiver still runs — and the key can do nothing else.
+- name: Deploy cert-receive sudoers drop-in to each sudo target
+  ansible.builtin.copy:
+    # Static marker, not {{ ansible_managed }}: the copy module (unlike template)
+    # does not inject ansible_managed, so referencing it here is undefined on
+    # modern ansible-core and aborts the task.
+    content: |
+      # Ansible managed - acme_certs cert-receive sudoers drop-in
+      {{ item.ssh_user | default('eric') }} ALL=(root) NOPASSWD: {{ acme_certs_receiver_path }}
+      Defaults!{{ acme_certs_receiver_path }} !requiretty
+    dest: /etc/sudoers.d/cert-receive
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.host }}"
+  delegate_to: "{{ item.host }}"
+  when:
+    - inventory_hostname == 'dns-01'
+    - not (item.ssh_no_sudo | default(false))
+    - dns01_ssh_public_key is defined
+    - acme_certs_distribute_pubkeys | default(true)
+
 - name: Deploy dns-01 cert-distribution pubkey to each target's authorized_keys
   ansible.posix.authorized_key:
     user: "{{ item.ssh_user | default('eric') }}"
     state: present
     key: "{{ dns01_ssh_public_key }}"
     comment: "eric@dns-01 (cert distribution)"
-    # dns-01 keeps .150 across Proxmox-HA moves; pinning the source shrinks
-    # the blast radius if this key (root-equivalent on every target) leaks.
-    # Configurable via acme_certs_key_from so a test harness whose source isn't
-    # .150 can relax it; empty -> no from= restriction.
-    key_options: "{{ ('from=\"' ~ acme_certs_key_from ~ '\"') if (acme_certs_key_from | default('') | length > 0) else omit }}"
+    # Lock the key to the forced-command receiver: restrict (no pty/agent/port/
+    # X11/user-rc) + command="sudo <receiver>" so a leaked key can only install a
+    # validated cert and run the target's baked-in reload — never a shell. The
+    # from= source pin is kept as defense in depth (dns-01 holds .150 across HA
+    # moves); acme_certs_key_from empty drops only that clause (e.g. molecule).
+    key_options: >-
+      {{ (('from="' ~ acme_certs_key_from ~ '",') if (acme_certs_key_from | default('') | length > 0) else '')
+         ~ 'command="sudo ' ~ acme_certs_receiver_path ~ '",restrict' }}
   loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
   loop_control:
     label: "{{ item.host }}"
@@ -102,9 +152,13 @@
     - acme_certs_distribute_pubkeys | default(true)
     - dns01_ssh_public_key != ''
 
+# cron is required by acme.sh --install / --install-cronjob (renewals are
+# cron-driven); a minimal image without crontab would otherwise leave
+# renewals silently unscheduled.
 - name: Install acme.sh dependencies
   ansible.builtin.apt:
     name:
+      - cron
       - curl
       - openssl
     state: present
@@ -118,11 +172,27 @@
   register: acme_installed
   when: inventory_hostname == 'dns-01'
 
-- name: Download acme.sh installer
+# The pinned release tarball — NOT the single raw acme.sh file. The
+# installer copies dnsapi/ (and deploy/, notify/) into /root/.acme.sh only
+# when those directories exist next to it, and a hook missing at install
+# time is never fetched later (acme.sh has no network fallback for hooks).
+# A single-file install lacks dnsapi/dns_cf.sh, so a fresh dns-01 could
+# neither issue nor renew via Cloudflare DNS-01.
+- name: Download acme.sh release tarball
   ansible.builtin.get_url:
-    url: "https://raw.githubusercontent.com/acmesh-official/acme.sh/{{ acme_sh_version }}/acme.sh"
-    dest: /tmp/acme_installer.sh
-    mode: '0755'
+    url: "https://github.com/acmesh-official/acme.sh/archive/refs/tags/{{ acme_sh_version }}.tar.gz"
+    dest: "/tmp/acme.sh-{{ acme_sh_version }}.tar.gz"
+    checksum: "sha256:{{ acme_sh_tarball_sha256 }}"
+    mode: '0644'
+  when:
+    - inventory_hostname == 'dns-01'
+    - not acme_installed.stat.exists
+
+- name: Extract acme.sh release tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/acme.sh-{{ acme_sh_version }}.tar.gz"
+    dest: /tmp
+    remote_src: true
   when:
     - inventory_hostname == 'dns-01'
     - not acme_installed.stat.exists
@@ -134,9 +204,12 @@
 # call them) AND by Cloudflare's CAA enforcement if it tried ZeroSSL.
 # Pin Let's Encrypt as the default CA at install time so subsequent
 # `acme.sh --issue` invocations without --server still hit LE.
+# bash (not sh/dash): the installer trips dash incompatibilities in
+# containers, and the cronjob task below already assumes /bin/bash.
 - name: Install acme.sh (default CA pinned to Let's Encrypt)
   ansible.builtin.shell: |
-    sh /tmp/acme_installer.sh --install --email {{ acme_email }} \
+    cd /tmp/acme.sh-{{ acme_sh_version }} && \
+    bash acme.sh --install --email {{ acme_email }} \
       --server letsencrypt
   args:
     creates: /root/.acme.sh/acme.sh
@@ -144,15 +217,39 @@
     - inventory_hostname == 'dns-01'
     - not acme_installed.stat.exists
 
+- name: Check the dns_cf hook is installed
+  ansible.builtin.stat:
+    path: /root/.acme.sh/dnsapi/dns_cf.sh
+  register: acme_dnsapi_hook
+  when: inventory_hostname == 'dns-01'
+
+- name: Assert acme.sh has the dnsapi hooks
+  ansible.builtin.assert:
+    that:
+      - acme_dnsapi_hook.stat.exists
+    fail_msg: >-
+      /root/.acme.sh/dnsapi/dns_cf.sh is missing — this acme.sh install has
+      no DNS hooks, so Cloudflare DNS-01 issuance/renewal cannot work.
+      Remove /root/.acme.sh and re-run this role to reinstall from the
+      pinned release tarball (which ships dnsapi/).
+    success_msg: "acme.sh dnsapi hooks are present (dns_cf)"
+  when:
+    - inventory_hostname == 'dns-01'
+    # In check mode on a fresh host the install above is skipped, so only
+    # assert when acme.sh was already installed — same gate as the
+    # default-CA task below.
+    - acme_installed.stat.exists or (not ansible_check_mode)
+
 # acme.sh's installer manages its own renewal cron. Earlier role versions
 # passed --nocron, leaving renewals unscheduled on fresh installs; ensure
-# the job exists regardless of install vintage.
+# the job exists regardless of install vintage. The && ties the task's rc
+# to --install-cronjob, so an install failure fails the task instead of
+# being masked by the echo.
 - name: Ensure acme.sh renewal cronjob exists
   ansible.builtin.shell: |
     set -o pipefail
     if ! crontab -l 2>/dev/null | grep -q '\.acme\.sh.*--cron'; then
-      /root/.acme.sh/acme.sh --install-cronjob
-      echo CHANGED
+      /root/.acme.sh/acme.sh --install-cronjob && echo CHANGED
     fi
   args:
     executable: /bin/bash
@@ -175,10 +272,13 @@
     - inventory_hostname == 'dns-01'
     - acme_installed.stat.exists or (not ansible_check_mode)
 
-- name: Remove acme.sh installer
+- name: Remove acme.sh installer artifacts
   ansible.builtin.file:
-    path: /tmp/acme_installer.sh
+    path: "{{ item }}"
     state: absent
+  loop:
+    - "/tmp/acme.sh-{{ acme_sh_version }}.tar.gz"
+    - "/tmp/acme.sh-{{ acme_sh_version }}"
   when:
     - inventory_hostname == 'dns-01'
     - not acme_installed.stat.exists

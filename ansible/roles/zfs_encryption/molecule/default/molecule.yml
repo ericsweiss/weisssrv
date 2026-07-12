@@ -19,6 +19,8 @@ platforms:
       - /run
       - /tmp
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   inventory:
     group_vars:
       all:
@@ -27,4 +29,7 @@ provisioner:
         zfs_encryption_pools:
           - name: testpool
             item: ZFS Pool testpool Passphrase
+        # Exercise the guest-start half of the boot rework: the unit must be
+        # ENABLED (not just deployed) and the script must render the cohort.
+        zfs_encryption_guest_vmids: [999]
         zfs_encryption_install_zfsutils: false

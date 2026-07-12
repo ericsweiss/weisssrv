@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Forced-command receiver for wildcard-cert distribution. dns-01's
+# homelab-cert-reload.sh pipes a cert bundle to this script over SSH; the
+# key that reaches it is pinned in authorized_keys with
+# command="sudo /usr/local/sbin/cert-receive",restrict so a leaked/abused
+# cert key can ONLY install a *.{{ internal_domain }} cert that passes every
+# check below — parses, is unexpired, matches its key, covers the wildcard SAN,
+# AND chains to a CA already trusted by this host — then run the one baked-in
+# reload below; never a shell or arbitrary sudo. Every
+# operational parameter (paths, owner, mode, reload) is baked in at deploy
+# time and is NOT taken from the client, so the untrusted side controls only
+# the cert bytes on stdin, which are fully validated before use.
+
+set -euo pipefail
+
+# --- Baked-in, client-immutable parameters (rendered by acme_certs) ---
+CERT_DIR="{{ item.cert_dir }}"
+OWNER="{{ item.owner }}"
+GROUP="{{ item.group }}"
+CERT_MODE="{{ item.cert_mode }}"
+KEY_MODE="{{ item.key_mode }}"
+EXPECT_DOMAIN="{{ internal_domain }}"
+# This script already runs as root (forced command is `sudo cert-receive`), so
+# the reload runs verbatim. restart_command values that carry their own `sudo`
+# still work — sudo root->root needs no password or tty on these Debian hosts
+# (no `Defaults requiretty`).
+RELOAD={{ (item.restart_command | default('systemctl restart ' ~ (item.restart_service | default('')))) | quote }}
+DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
+MAX_BYTES=65536
+
+fail() { echo "FAIL: $1" >&2; exit "${2:-3}"; }
+
+TMP="$(mktemp -d /tmp/cert-receive.XXXXXX)"
+chmod 0700 "$TMP"
+trap 'rm -rf "$TMP"' EXIT
+
+# 1. Read stdin (untrusted) with a hard size cap — a cert bundle is a few KB;
+#    the cap stops a rogue key from filling /tmp. head -c bounds the read.
+head -c "$MAX_BYTES" > "$TMP/in" || fail "could not read bundle"
+[ -s "$TMP/in" ] || fail "empty bundle"
+
+# 2. Split at the fixed delimiter. The RECEIVER assigns the output filenames
+#    (fullchain.pem / privkey.pem) — nothing from stdin becomes a path, so a
+#    hostile bundle cannot traverse out of $TMP.
+awk -v d="$DELIM" -v out="$TMP" '
+  $0==d { part=1; next }
+  part==0 { print > (out "/fullchain.pem") }
+  part==1 { print > (out "/privkey.pem") }
+' "$TMP/in"
+[ -s "$TMP/fullchain.pem" ] || fail "bundle missing certificate part"
+[ -s "$TMP/privkey.pem" ]   || fail "bundle missing key part"
+
+# 3. Validate before trusting: parseable cert + key, cert not expired, the key
+#    matches the leaf, and the leaf actually covers *.{{ internal_domain }}
+#    (blocks pushing an unrelated but otherwise-valid cert).
+openssl x509 -in "$TMP/fullchain.pem" -noout >/dev/null 2>&1 || fail "certificate does not parse"
+openssl pkey -in "$TMP/privkey.pem" -noout >/dev/null 2>&1 || fail "private key does not parse"
+if ! openssl x509 -in "$TMP/fullchain.pem" -checkend 0 >/dev/null 2>&1; then
+  fail "certificate is expired"
+fi
+cert_pub="$(openssl x509 -in "$TMP/fullchain.pem" -noout -pubkey 2>/dev/null)"
+key_pub="$(openssl pkey -in "$TMP/privkey.pem" -pubout 2>/dev/null)"
+[ -n "$cert_pub" ] && [ "$cert_pub" = "$key_pub" ] || fail "private key does not match certificate"
+if ! openssl x509 -in "$TMP/fullchain.pem" -noout -ext subjectAltName 2>/dev/null \
+     | tr ',' '\n' | tr -d ' ' | grep -Fxq "DNS:*.${EXPECT_DOMAIN}"; then
+  fail "certificate does not cover *.${EXPECT_DOMAIN}"
+fi
+# The checks above only prove the bundle is internally self-consistent — a
+# self-signed (or attacker-CA) cert carrying the right SAN would pass them all.
+# Require the leaf to chain to a CA the host already trusts (the same public
+# Let's Encrypt chain the real cert uses), so the pinned distribution key can't
+# be abused to install a well-formed-but-untrusted wildcard cert. The fullchain
+# supplies its own intermediate via -untrusted; roots come from the system
+# store. Trade-off: this fails-closed if the local truststore ever lags a future
+# LE root/intermediate rotation — acceptable, since a stale truststore would
+# also break every TLS client on the host.
+if ! openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt \
+       -untrusted "$TMP/fullchain.pem" "$TMP/fullchain.pem" >/dev/null 2>&1; then
+  fail "certificate does not chain to a trusted CA"
+fi
+
+# 4. Idempotence, decided server-side: if this exact cert was already applied
+#    (marker + on-disk fullchain AND privkey all match) skip the reload.
+new_hash="$(sha256sum "$TMP/fullchain.pem" | cut -d' ' -f1)"
+new_key_hash="$(sha256sum "$TMP/privkey.pem" | cut -d' ' -f1)"
+applied_hash="$(cat "${CERT_DIR}/.applied-fullchain.sha256" 2>/dev/null | tr -d '[:space:]' || true)"
+cur_hash="$(sha256sum "${CERT_DIR}/fullchain.pem" 2>/dev/null | cut -d' ' -f1 || true)"
+cur_key_hash="$(sha256sum "${CERT_DIR}/privkey.pem" 2>/dev/null | cut -d' ' -f1 || true)"
+if [ -n "$applied_hash" ] && [ "$applied_hash" = "$new_hash" ] \
+   && [ "$cur_hash" = "$new_hash" ] && [ "$cur_key_hash" = "$new_key_hash" ]; then
+  echo "unchanged"
+  exit 0
+fi
+
+# 5. Install with the baked-in ownership/modes. Each file lands via a
+#    same-directory temp + rename (install then mv) so a concurrent reader or a
+#    crash mid-write never observes a truncated fullchain.pem/privkey.pem — a
+#    plain `install` copies in place (O_TRUNC) and would expose a torn file.
+install -o "$OWNER" -g "$GROUP" -m "$CERT_MODE" "$TMP/fullchain.pem" "${CERT_DIR}/.fullchain.pem.new"
+mv -f "${CERT_DIR}/.fullchain.pem.new" "${CERT_DIR}/fullchain.pem"
+install -o "$OWNER" -g "$GROUP" -m "$KEY_MODE"  "$TMP/privkey.pem"  "${CERT_DIR}/.privkey.pem.new"
+mv -f "${CERT_DIR}/.privkey.pem.new" "${CERT_DIR}/privkey.pem"
+
+# 6. Reload the consuming service. Marker is written ONLY after a clean reload,
+#    so a failed reload re-fires (self-heals) on the next push instead of being
+#    masked by a stale "applied" hash.
+if bash -c "$RELOAD"; then
+  printf '%s\n' "$new_hash" > "${CERT_DIR}/.applied-fullchain.sha256"
+  echo "OK"
+else
+  fail "reload failed" 4
+fi

@@ -3,6 +3,21 @@
 # host-level observability). k3s, Plex, GitLab, and Home Assistant have
 # dedicated playbooks with separate lifecycles.
 
+# smtp-relay has no dedicated playbook (dns/plex/gitlab provision via their
+# own), so codify its create path here — otherwise rebuilding the container
+# after loss is a manual, undocumented step. proxmox_lxc is idempotent and
+# handles the container living on another node after an HA migration. Runs
+# FIRST (gather_facts:false, purely delegated to pve-opt-01): the base_managed
+# play below connects directly to smtp-relay and would mark a lost container
+# UNREACHABLE, excluding it from every subsequent play — so provisioning must
+# happen before that first connection attempt.
+- name: Provision SMTP relay LXC container
+  hosts: mail
+  gather_facts: false
+  roles:
+    - role: proxmox_lxc
+      tags: [proxmox_lxc]
+
 - name: Deploy base configuration to all managed hosts
   hosts: base_managed
   become: true
@@ -23,6 +38,16 @@
     - role: tailscale
       tags: [tailscale]
       when: tailscale_enabled | bool
+    # tlshd on every PVE host (client mode; truststore only) — prerequisite
+    # for the tank-proxmox storage.cfg entry mounting with xprtsec=tls on all
+    # nodes. Tasks self-guard on nfs_tls_enabled (group_vars/proxmox.yml).
+    # Server-mode pve-nas-01 (nfs_tls_is_server) is EXCLUDED here so its
+    # cert/key-dependent setup runs only in the NAS play below, after acme_certs
+    # distributes the wildcard cert — preserving the fresh-bootstrap ordering
+    # documented on the NAS play. Client-only hosts need just the CA bundle.
+    - role: nfs_tls
+      tags: [nfs_tls]
+      when: not (nfs_tls_is_server | default(false))
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
@@ -70,6 +95,10 @@
       tags: [nfs_tls]
     - role: nas_storage
       tags: [nas_storage]
+    # Declarative storage.cfg + vzdump jobs (tank-proxmox target). Cluster-wide
+    # config, so it runs from this single node; no-op while its lists are empty.
+    - role: proxmox_backup
+      tags: [proxmox_backup]
     - role: zfs_exporter
       tags: [zfs_exporter]
 
@@ -92,8 +121,8 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
-- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, and GitLab hosts)
-  hosts: proxmox:dns:mail:gitlab_servers
+- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, and k3s-server hosts)
+  hosts: proxmox:dns:mail:gitlab_servers:k3s_servers
   become: true
   roles:
     - role: node_exporter_host

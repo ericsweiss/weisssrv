@@ -8,6 +8,10 @@
 # ConfigMap. Runner token sourced via ExternalSecret (externalsecret.yaml); the
 # chart reads it from the Secret `gitlab-runner-privileged-token` via
 # runners.secret.
+#
+# Shared values (gitlabUrl/clone_url, replicas, checkInterval, rbac,
+# manager resources, affinity, tolerations) are duplicated in
+# ../gitlab-runner/release.yaml — mirror edits there.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -38,8 +42,13 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
-    # GitLab instance URL (use external domain - internal esweiss.com not resolvable in k3s cluster DNS)
-    gitlabUrl: https://git.ericsweiss.com
+    # GitLab instance URL. git.esweiss.com resolves in-cluster (CoreDNS forwards
+    # to AdGuard, which rewrites it to the internal Traefik VIP .101), keeping
+    # runner<->GitLab traffic on the LAN instead of hairpinning through the WAN
+    # record for git.ericsweiss.com. clone_url (in runners.config) must match:
+    # GitLab's external_url stays git.ericsweiss.com, so clone URLs would not
+    # follow gitlabUrl alone.
+    gitlabUrl: https://git.esweiss.com
 
     # Single runner controller pod — concurrent (below) controls actual job
     # parallelism. Pinning to 1 here so that an out-of-band `kubectl scale
@@ -97,10 +106,13 @@ spec:
       # branch+MR CI workflow (lint/validate/test) depends on this runner
       # accepting unprotected branches. Setting protected:true would silently
       # break MR CI (no runner would pick up MR jobs) because feature branches
-      # are not protected. Mitigations in place: the runner only accepts the
-      # 'infrastructure' tag (runUntagged:false), which only the trusted
-      # weisssrv project uses; other projects' jobs land on the non-privileged
-      # shared runner. Revisit if a second project ever gets this tag.
+      # are not protected.
+      # The isolation boundary is the runner REGISTRATION SCOPE, not the tag:
+      # tags are cooperative routing, and any project on the instance can
+      # declare tags:[infrastructure] in its CI. The registration behind the
+      # 1Password "GitLab Runner Privileged" token must therefore be a PROJECT
+      # runner locked to the weisssrv project — never an instance runner — so
+      # no other project's jobs can reach root+DinD execution (docs/27 Step 8).
       protected: false
 
       # Executor type
@@ -117,6 +129,10 @@ spec:
         # and the runner crash-looped on first render (the HelmRelease
         # had been stalled behind the observability block until !83).
         [[runners]]
+          # Keep clones on the LAN path too (see gitlabUrl above). A [[runners]]
+          # scalar — must precede the [runners.kubernetes] sub-table.
+          clone_url = "https://git.esweiss.com"
+
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
             # A ~15-job start burst requests ~22.5 cpu; the scheduler places what
@@ -178,6 +194,27 @@ spec:
             # Restricted to esweiss.com/cpu=modern|legacy to prevent arbitrary node targeting.
             # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
             node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
+
+            # Pod anti-affinity: spread infrastructure job pods across agents so
+            # a ~15-job burst does not bin-pack many systemd-DinD test pods onto
+            # one node. Simultaneous same-node container starts race the cgroup-v2
+            # setup and die at prepare ("Container is not running") — the dominant
+            # script_failure flake class the in-job retry loop then has to absorb.
+            # Soft (preferred, weight 100): the scheduler spreads when it can but
+            # still packs under CPU pressure rather than leaving jobs Pending. The
+            # selector matches the pod_labels label below, which every infrastructure
+            # job pod carries. A sub-table — keep it after all scalar keys above and
+            # before pod_labels (which must stay LAST; see TOML positionality note).
+            [runners.kubernetes.affinity.pod_anti_affinity]
+              [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution]]
+                weight = 100
+                [runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term]
+                  topology_key = "kubernetes.io/hostname"
+                  [runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term.label_selector]
+                    [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term.label_selector.match_expressions]]
+                      key = "esweiss.com/runner-class"
+                      operator = "In"
+                      values = ["infrastructure"]
 
             # NetworkPolicy selector: infrastructure job pods keep
             # unrestricted egress (ansible/SSH to the whole LAN) — see

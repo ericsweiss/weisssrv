@@ -1,0 +1,15 @@
+---
+# DISABLED — all CI runs on GitLab (.gitlab-ci.yml is canonical; GitHub is a
+# read-only mirror). This single inert placeholder replaces the former
+# per-stage stubs (lint / molecule / kubernetes / terraform / integration-tests).
+# `on: {}` means it never triggers.
+name: CI (DISABLED - See GitLab CI)
+
+on: {}
+
+jobs:
+  disabled:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI runs on GitLab — see .gitlab-ci.yml"

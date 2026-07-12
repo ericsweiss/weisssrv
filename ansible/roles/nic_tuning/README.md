@@ -11,8 +11,16 @@ Per-NIC tuning for homelab Proxmox hosts and anywhere else a persistent
   2026-04-04 and 2026-04-07/14; manual `ethtool -K nic1 gro off` fixed it.
 - `pve_firewall` on Proxmox occasionally resets `net.ipv4.ip_forward`, which
   breaks Tailscale subnet routing. A sysctl.d drop-in keeps the value sticky.
+- Bonded hosts (`.104/.105/.106`) run `bond-mode active-backup` with both legs
+  on the same **unmanaged** switch. `bond-all_slaves_active 1` made the driver
+  deliver frames received on the *inactive* backup leg; the switch floods a
+  guest's own frames back onto that leg, so the host bridge learns the guest
+  MAC on `bond0` instead of its veth and misdirects the guest's return traffic
+  out to the switch — an intermittent "MAC-flapping" black-hole that recurs on
+  reboots/HA-moves and hit dns-02 (and any guest that lands on a bonded host).
+  Full diagnosis + recovery: `docs/34-bond-mac-flapping.md`.
 
-This role codifies both.
+This role codifies all three.
 
 ## Variables
 
@@ -27,9 +35,21 @@ This role codifies both.
         - feature: gro
           value: "off"
   ```
-  Writes `/etc/network/interfaces.d/99-nic-<iface>-tuning.cfg` with a
-  `post-up /sbin/ethtool -K ...` line per option, and applies the overrides
-  immediately via the `ethtool` command (idempotent).
+  Writes `/etc/network/interfaces.d/99-nic-<iface>-tuning.cfg` — an
+  `iface <iface> inet manual` stanza with a `post-up /sbin/ethtool -K ...`
+  line per option — and applies the overrides immediately via the `ethtool`
+  command (idempotent). The stanza header is load-bearing: ifupdown2 rejects
+  bare `post-up` lines ("error processing line"), which would leave the
+  drop-in inert at boot; duplicate `iface` stanzas are merged with the
+  interface's declaration in `/etc/network/interfaces`.
+- `nic_tuning_bond_asa_guard` (default `true`) — force
+  `all_slaves_active=0` on every `active-backup` bond. Persists the value by
+  rewriting an explicit `bond-all_slaves_active 1` → `0` in
+  `/etc/network/interfaces` (surgical `replace`; never inserts a line, never
+  reloads networking) **and** applies it live via
+  `/sys/class/net/<bond>/bonding/all_slaves_active` (no reboot). Idempotent and
+  a no-op on non-bonded hosts. Set `false` only if a bond legitimately needs
+  `=1` (multi-switch multicast RX) — this fleet does not.
 
 ## Example inventory wiring
 

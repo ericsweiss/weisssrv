@@ -183,7 +183,7 @@ features:
     serverConfig: true
     rewrites: true
   filters: true
-  tlsConfig: false  # Disabled - each host has its own TLS server name (dns-01 vs dns-02)
+  tlsConfig: false  # Not synced: cert files/paths are host-local and the adguard_home role reconciles TLS per host — syncing would fight the Ansible-managed config on dns-02
 ```
 
 The block above is abbreviated — the full synced feature set

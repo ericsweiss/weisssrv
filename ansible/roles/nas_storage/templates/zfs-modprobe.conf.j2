@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# ZFS kernel module parameters (managed by the nas_storage role).
+#
+# zfs_arc_max caps the ARC in bytes. It is a load-time module parameter, and
+# the data pools import from the initramfs at early boot, so the value is baked
+# into the initramfs (update-initramfs handler) — otherwise the ARC would grow
+# to the ~half-RAM default before this file is read and swap-thrash the pinned
+# guests on this memory-over-committed host. Value comes from zfs_arc_max_bytes.
+options zfs zfs_arc_max={{ zfs_arc_max_bytes }}

@@ -38,6 +38,11 @@ Installs and configures shell and editor tooling. Sets up zsh with Oh My Zsh, Ne
 # Admin user (from base role)
 admin_user: eric
 
+# Oh My Zsh pinned commit — the framework clone is checked out at this commit
+# and self-update is disabled in .zshrc. Update by picking a new commit from
+# https://github.com/ohmyzsh/ohmyzsh/commits/master and bumping the pin.
+omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
+
 # Oh My Zsh theme
 omz_theme: risto
 
@@ -64,7 +69,15 @@ nvim_plugins:
   - tpope/vim-fugitive      # Git integration
   - sheerun/vim-polyglot    # Language pack
   - joshdick/onedark.vim    # Color scheme
+
+# Colorscheme applied in init.vim (with `silent!`, so a missing scheme
+# degrades to the default look). Must come from nvim_plugins or be built in.
+nvim_colorscheme: onedark
 ```
+
+Vundle itself is pinned (v0.10.2), but `+PluginInstall` clones the plugins in
+`nvim_plugins` at their current HEAD — plugin contents are not reproducible
+across hosts/time. Pin via forks or explicit checkouts if that ever matters.
 
 ### Customization
 
@@ -125,20 +138,19 @@ Can also be applied to k3s nodes:
 
 ```
 1. Install QoL packages (zsh, neovim, fzf, ripgrep, fd-find)
-2. Check current shell for admin user
-3. Set zsh as default shell (if not already)
-4. Check if Oh My Zsh is installed
-5. Install Oh My Zsh (unattended, if not present)
-6. Deploy .zshrc configuration with theme and plugins
-7. Deploy .zprofile (PATH configuration)
-8. Deploy .alias.zsh (custom aliases)
-9. Deploy .local.zsh (local overrides, force: false)
-10. Include neovim setup tasks:
+2. Set zsh as default shell (unconditional; user module is idempotent)
+3. Remove a legacy shallow install.sh clone of Oh My Zsh (one-time migration)
+4. Clone/converge Oh My Zsh at the pinned commit (omz_commit)
+5. Deploy .zshrc configuration with theme and plugins (self-update disabled)
+6. Deploy .zprofile (PATH configuration)
+7. Deploy .alias.zsh (custom aliases)
+8. Deploy .local.zsh (local overrides, force: false)
+9. Include neovim setup tasks:
     ├─ Create ~/.config/nvim directory
     ├─ Create ~/.vim/bundle directory
-    ├─ Clone Vundle plugin manager
+    ├─ Clone Vundle plugin manager (pinned v0.10.2)
     ├─ Deploy init.vim configuration
-    └─ Install Vundle plugins (headless)
+    └─ Install Vundle plugins (headless, at plugin HEAD)
 ```
 
 ## Files
@@ -157,10 +169,10 @@ Can also be applied to k3s nodes:
 ## Idempotency
 
 - Package installation is idempotent
-- Shell change only occurs if not already zsh
-- Oh My Zsh installation uses `creates` parameter
+- Shell is set unconditionally; the user module reports changed only on a real change
+- Oh My Zsh converges to the pinned commit via the git module (no change once there)
 - .local.zsh uses `force: false` to preserve user customizations
-- Vundle plugin installation uses `creates` parameter
+- Vundle plugin installation uses `creates` (marker keyed to the plugin-list hash)
 - Configuration files are templates (idempotent overwrites)
 
 ## Security

@@ -6,7 +6,13 @@ After=zfs-mount.service
 
 [Service]
 Type=oneshot
-Nice=10
-IOSchedulingClass=best-effort
-IOSchedulingPriority=7
+# Load-shaping: keep the nightly nvme->tank move from adding to the fleet-wide
+# spike. Nice + ionice set absolute priority; CPUWeight/IOWeight (below the 100
+# default) proportionally deprioritize it only under contention (a no-op when
+# the NAS is otherwise idle).
+Nice={{ media_mover_nice | default(10) }}
+IOSchedulingClass={{ media_mover_io_class | default('best-effort') }}
+IOSchedulingPriority={{ media_mover_io_priority | default(7) }}
+CPUWeight={{ media_mover_cpu_weight | default(20) }}
+IOWeight={{ media_mover_io_weight | default(20) }}
 ExecStart=/usr/local/sbin/media-mover.sh

@@ -11,6 +11,7 @@
       changed_when: false
       failed_when: package_check.rc != 0
       loop:
+        - cron
         - curl
         - openssl
 
@@ -61,6 +62,15 @@
         fail_msg: "acme.sh is not executable"
         success_msg: "acme.sh is installed and executable"
 
+    # The role installs from the pinned release tarball precisely so the
+    # dnsapi/ hooks ship with it — a single-file install would leave
+    # DNS-01 issuance/renewal broken on a fresh dns-01.
+    - name: Check the dns_cf hook was installed
+      ansible.builtin.stat:
+        path: /root/.acme.sh/dnsapi/dns_cf.sh
+      register: dns_cf_hook
+      failed_when: not dns_cf_hook.stat.exists
+
     - name: Check if homelab-cert-reload script exists
       ansible.builtin.stat:
         path: /usr/local/sbin/homelab-cert-reload.sh
@@ -91,6 +101,21 @@
         fail_msg: "Cert reload script missing expected content"
         success_msg: "Cert reload script contains all expected variables and commands"
 
+    # The dns-02 target is a sudo host, so it goes through the forced-command
+    # receiver (push_target_receiver), not the legacy scp path. The reload
+    # command (systemctl restart AdGuardHome) lives in the receiver on dns-02;
+    # the reload script only carries the local dns-01 AdGuard restart. The
+    # receiver itself is exercised end to end by the cert-distribution
+    # integration test (real cert push through the forced command).
+    - name: Verify cert reload script uses the forced-command receiver dispatch
+      ansible.builtin.assert:
+        that:
+          - "'push_target_receiver' in (cert_reload_content.content | b64decode)"
+          - "'CERT-RECEIVE-BUNDLE-BOUNDARY' in (cert_reload_content.content | b64decode)"
+          - "'DNS_02_CERT_DIR=' not in (cert_reload_content.content | b64decode)"
+        fail_msg: "Cert reload script is not using the forced-command receiver path for sudo targets"
+        success_msg: "Cert reload script dispatches sudo targets through the receiver"
+
     - name: Check if certificate directory exists
       ansible.builtin.stat:
         path: /opt/AdGuardHome/certs
@@ -100,7 +125,7 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "acme.sh dependencies installed (curl, openssl)"
+          - "acme.sh dependencies installed (cron, curl, openssl)"
           - "eric .ssh directory created with correct permissions (0700)"
           - "SSH private key deployed for cert distribution (0600)"
           - "SSH public key deployed for cert distribution (0644)"

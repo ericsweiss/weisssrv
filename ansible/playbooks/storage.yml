@@ -12,6 +12,9 @@
     # xprtsec=tls export (avoids a TLS-required export with no handshake daemon).
     - nfs_tls
     - nas_storage
+    # Declarative storage.cfg + vzdump jobs (tank-proxmox target). Cluster-wide
+    # config, so it runs from this single node; no-op while its lists are empty.
+    - proxmox_backup
     - zfs_exporter
     # site.yml deploys node_exporter_host (to pve-nas-01 via proxmox) and
     # alloy_host (via base_managed) in dedicated plays; include them here so a

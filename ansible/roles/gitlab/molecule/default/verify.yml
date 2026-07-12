@@ -69,8 +69,7 @@
     - name: Verify SSH port configuration
       ansible.builtin.assert:
         that:
-          - gitlab_config is search('gitlab_shell_ssh_port')
-          - gitlab_config is search('= 22')
+          - gitlab_config is search('gitlab_shell_ssh_port.*=.*' ~ (gitlab_ssh_port | string))
         fail_msg: "SSH port not configured"
         success_msg: "SSH port configured correctly"
 
@@ -104,6 +103,26 @@
           - gitlab_config is search('X-Forwarded-Ssl')
         fail_msg: "NGINX proxy headers not configured"
         success_msg: "NGINX proxy headers configured correctly"
+
+    # ==========================================================================
+    # Verify NGINX TLS branch (side render from converge — prod default)
+    # ==========================================================================
+    - name: Read the TLS-branch render
+      ansible.builtin.slurp:
+        src: /tmp/gitlab.rb.tls
+      register: gitlab_rb_tls_content
+
+    - name: Verify the TLS branch renders listen_https + cert paths
+      ansible.builtin.assert:
+        that:
+          # Anchor to line start (?m)^nginx\[ so the registry_nginx/pages_nginx
+          # lines (which render unconditionally) can't satisfy the web-UI branch.
+          - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['listen_https'\\] = true")
+          - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['listen_port'\\] = 443$")
+          - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['ssl_certificate'\\] = '/etc/gitlab/ssl/fullchain.pem'")
+          - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['ssl_certificate_key'\\] = '/etc/gitlab/ssl/privkey.pem'")
+        fail_msg: "TLS branch of gitlab.rb.j2 did not render nginx TLS settings"
+        success_msg: "TLS branch renders listen_https=true with the distributed cert paths"
 
     # ==========================================================================
     # Verify Let's Encrypt is DISABLED (Traefik handles TLS)
@@ -351,6 +370,34 @@
       ansible.builtin.command: /usr/local/sbin/gitlab-backup-run.sh
       changed_when: false
 
+    # Backup-slimming contract (!121): the wrapper must pass SKIP through to
+    # gitlab-backup — a silent regression here re-bloats backups until the OS
+    # disk fills. The mock from prepare.yml records every invocation's args.
+    - name: Read recorded gitlab-backup invocation args
+      ansible.builtin.slurp:
+        src: /tmp/gitlab-backup-args
+      register: gitlab_backup_args
+
+    - name: Assert SKIP=registry,artifacts reaches gitlab-backup
+      ansible.builtin.assert:
+        that:
+          - "'SKIP=registry,artifacts' in (gitlab_backup_args.content | b64decode)"
+          - "'CRON=1' in (gitlab_backup_args.content | b64decode)"
+        fail_msg: "gitlab-backup was not invoked with SKIP=registry,artifacts — backups would re-bloat"
+        success_msg: "Backup wrapper passes SKIP=registry,artifacts to gitlab-backup"
+
+    - name: Read the spaced-SKIP wrapper render
+      ansible.builtin.slurp:
+        src: /tmp/gitlab-backup-run-spaced.sh
+      register: gitlab_backup_spaced
+
+    - name: Assert whitespace is stripped from an overridden gitlab_backup_skip
+      ansible.builtin.assert:
+        that:
+          - (gitlab_backup_spaced.content | b64decode) is search("BACKUP_SKIP='?registry,artifacts'?")
+        fail_msg: "A spaced gitlab_backup_skip override was not normalized to registry,artifacts"
+        success_msg: "Spaced gitlab_backup_skip override renders as registry,artifacts"
+
     - name: Read gitlab_backup.prom after success
       ansible.builtin.slurp:
         src: /var/lib/node_exporter/gitlab_backup.prom
@@ -457,11 +504,66 @@
         success_msg: "Mock gitlab-ctl status works correctly"
 
     # ==========================================================================
+    # SSH Redirect NAT Rules
+    # ==========================================================================
+    # prepare.yml seeds drifted variants (a commented PREROUTING rule, an
+    # OUTPUT rule missing -o lo); after converge each chain must hold exactly
+    # the one managed rule and the seeded drift must be gone.
+    - name: Read PREROUTING SSH redirect rules
+      ansible.builtin.shell: |
+        set -o pipefail
+        iptables -t nat -S PREROUTING | grep -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22'
+      args:
+        executable: /bin/bash
+      register: nat_prerouting_rules
+      changed_when: false
+
+    - name: Read OUTPUT SSH redirect rules
+      ansible.builtin.shell: |
+        set -o pipefail
+        iptables -t nat -S OUTPUT | grep -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22'
+      args:
+        executable: /bin/bash
+      register: nat_output_rules
+      changed_when: false
+
+    - name: Assert exactly one managed SSH redirect rule per chain
+      ansible.builtin.assert:
+        that:
+          - nat_prerouting_rules.stdout_lines | length == 1
+          - nat_output_rules.stdout_lines | length == 1
+          - "'-o lo' in nat_output_rules.stdout"
+          # Seeded legacy -m comment variants must have been cleaned up.
+          - "'comment' not in nat_prerouting_rules.stdout"
+          - "'comment' not in nat_output_rules.stdout"
+        fail_msg: >-
+          NAT redirect drift survived converge — expected exactly one managed
+          rule per chain (OUTPUT with -o lo, no legacy comment variants).
+        success_msg: "Exactly one managed SSH redirect rule per chain; seeded drift cleaned"
+
+    # ==========================================================================
+    # SSH Login Restriction (AllowUsers drop-in)
+    # ==========================================================================
+    - name: Read the AllowUsers drop-in
+      ansible.builtin.slurp:
+        src: /etc/ssh/sshd_config.d/60-gitlab-allowusers.conf
+      register: gitlab_allowusers_conf
+
+    - name: Verify the sshd login restriction
+      ansible.builtin.assert:
+        that:
+          - "'AllowUsers git ' in (gitlab_allowusers_conf.content | b64decode)"
+          - "'@192.168.0.0/24' in (gitlab_allowusers_conf.content | b64decode)"
+          - "'@100.64.0.0/10' in (gitlab_allowusers_conf.content | b64decode)"
+        fail_msg: "AllowUsers drop-in missing or incomplete — WAN-exposed sshd accepts any local account"
+        success_msg: "sshd restricted to git + admin from admin networks"
+
+    # ==========================================================================
     # Fail2ban GitLab SSH Jail Verification
     # ==========================================================================
-    # NOTE: GitLab SSH uses OpenSSH with AuthorizedKeysCommand. SSH auth failures
-    # are logged to systemd journal, not gitlab-shell.log. We use the built-in
-    # sshd filter with systemd backend.
+    # NOTE: GitLab manages the git user's authorized_keys via gitlab-shell.
+    # SSH auth failures are logged to systemd journal, not gitlab-shell.log.
+    # We use the built-in sshd filter with systemd backend.
 
     # NOTE: fail2ban is installed by the base role, not the gitlab role.
     # In molecule tests, fail2ban may not be installed, so all checks are conditional.
@@ -542,58 +644,16 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "GitLab Configuration Test Results:"
-          - "=================================="
-          - "Configuration file: /etc/gitlab/gitlab.rb (0600, root:root)"
-          - ""
-          - "Core Settings:"
-          - "  - External URL: https://git.test.local"
-          - "  - Email from: gitlab@test.local"
-          - "  - Time zone: America/Los_Angeles"
-          - ""
-          - "NGINX (Traefik Proxy):"
-          - "  - Listen HTTP on port 80 (TLS terminated at Traefik)"
-          - "  - Real IP from X-Forwarded-For"
-          - "  - Trusted networks: 192.168.0.0/24, 10.42.0.0/16"
-          - ""
-          - "Let's Encrypt: DISABLED (Traefik handles TLS)"
-          - ""
-          - "SMTP Relay:"
-          - "  - Server: smtp-relay.test.local:587"
-          - "  - STARTTLS enabled"
-          - "  - Credentials configured"
-          - ""
-          - "Container Registry:"
-          - "  - URL: https://registry.git.test.local"
-          - "  - Listen on port 5050 (registry_nginx TLS)"
-          - ""
-          - "GitLab Pages:"
-          - "  - URL: https://pages.git.test.local"
-          - "  - Daemon on localhost:8090, pages_nginx TLS on 8443"
-          - ""
-          - "SAML SSO (Authentik):"
-          - "  - Provider label: Authentik"
-          - "  - Auto sign-in enabled"
-          - "  - Auto-create users enabled"
-          - "  - Admin groups: gitlab-admins"
-          - ""
-          - "Backup:"
-          - "  - Path: /var/opt/gitlab/backups"
-          - "  - Retention: 7 days"
-          - "  - Cron: daily at 2:00 AM"
-          - ""
-          - "Repository Storage (GitLab 18+):"
-          - "  - Path: /mnt/gitlab-repos/git-data/repositories"
-          - "  - Uses gitaly['configuration'] syntax"
-          - ""
-          - "Performance:"
-          - "  - Puma workers: 2"
-          - "  - Sidekiq concurrency: 10"
-          - "  - Prometheus monitoring: enabled"
-          - ""
-          - "Fail2ban (GitLab SSH Protection):"
-          - "  - Package: installed"
-          - "  - Jail: gitlab-ssh (ports 22,{{ gitlab_ssh_port }})"
-          - "  - Filter: sshd (built-in, aggressive mode)"
-          - "  - Backend: systemd journal"
-          - "  - Settings: maxretry=5, bantime=1h, findtime=10m"
+          - "gitlab.rb rendered with correct permissions (0600, root:root)"
+          - "Core settings verified (external URL, email, time zone)"
+          - "NGINX HTTP branch verified (real_ip, forwarded headers); TLS branch verified via side render"
+          - "Let's Encrypt disabled (acme_certs distributes the cert)"
+          - "SMTP relay settings and credentials verified"
+          - "Container Registry and Pages nginx TLS verified"
+          - "SAML SSO provider, IdP settings, and attribute statements verified"
+          - "Gitaly storage configuration verified ({{ gitlab_git_data_dir }})"
+          - "Backup path, retention, cron, wrapper metrics, and SKIP contract verified"
+          - "Performance tuning verified (Puma workers: {{ gitlab_puma_workers }}, Sidekiq: {{ gitlab_sidekiq_concurrency }})"
+          - "SSH redirect NAT rules verified (one per chain, port {{ gitlab_ssh_port }}, drift cleaned)"
+          - "sshd AllowUsers restriction verified"
+          - "fail2ban gitlab-ssh jail verified (ports 22,{{ gitlab_ssh_port }}, sshd filter, journald)"

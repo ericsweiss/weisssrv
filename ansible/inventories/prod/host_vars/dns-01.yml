@@ -14,11 +14,9 @@ proxmox_startup_delay: 10
 
 # This host runs acme.sh for certificate generation
 # (the acme_certs role gates on inventory_hostname == 'dns-01')
+# The issued names are not configurable: the role issues
+# "{{ internal_domain }}" + "*.{{ internal_domain }}" directly.
 acme_email: "{{ admin_email }}"
-acme_dns_provider: dns_cf
-acme_domains:
-  - "*.{{ internal_domain }}"
-  - "{{ internal_domain }}"
 
 # Certificate distribution targets.
 #
@@ -159,8 +157,8 @@ cert_distribution_targets:
     key_mode: "0600"
     restart_command: "ha core restart"
 
-# Certificate source paths on dns-01
-acme_cert_dir: "/root/.acme.sh/{{ internal_domain }}_ecc"
+# Local certificate store on dns-01 (AdGuard Home's cert dir; the acme_certs
+# role installs the issued PEMs here and the reload script reads them from here).
 local_cert_dir: /opt/AdGuardHome/certs
 
 # AdGuard Home Sync runs from dns-01

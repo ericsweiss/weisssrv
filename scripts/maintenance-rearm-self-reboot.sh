@@ -20,13 +20,15 @@ set -uo pipefail
 
 MARKER="${1:-/tmp/maintenance-self-host}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/maintenance-lib.sh
+. "$SCRIPT_DIR/maintenance-lib.sh"
 
 if [ ! -f "$MARKER" ]; then
   echo "maintenance-rearm: no self-host marker ($MARKER); nothing to re-arm."
   exit 0
 fi
 
-HOST=$(head -n1 "$MARKER" | tr -d '[:space:]')
+HOST=$(rearm_marker_host < "$MARKER")
 if [ -z "$HOST" ]; then
   echo "maintenance-rearm: empty self-host marker; nothing to re-arm."
   rm -f "$MARKER"
@@ -57,18 +59,11 @@ export ANSIBLE_CONFIG
 # Depends on the same auth the run's plays use, all present in the after_script
 # shell (same job pod): the apt-installed `op` binary, OP_SERVICE_ACCOUNT_TOKEN,
 # and the on-disk SSH key + ansible_user/become from inventories/prod.
-# Best-effort, and ORDER MATTERS for the safety guarantee: arm a SEPARATE prompt
-# unit (maintenance-self-reboot-prompt) at +60s FIRST, and only AFTER systemd-run
-# succeeds (the && gate) tear down the long fallback (maintenance-self-reboot,
-# armed during the run). If the prompt arm fails, the && short-circuits so the
-# fallback is left INTACT — the host still reboots on it and the else-branch
-# warning below is then accurate. (The earlier design reused the fallback's own
-# --unit name and stopped it BEFORE arming; a systemd-run failure after that stop
-# left NO timer at all, silently stranding the host despite the "still reboots"
-# log.) The leading reset-failed/stop targets the PROMPT unit only (clearing any
-# stale prompt from a prior after_script), never the fallback.
+# Best-effort. The remote snippet (arm-prompt-first, &&-gated fallback teardown
+# — the ordering IS the safety guarantee) is built by rearm_remote_command in
+# maintenance-lib.sh, where it is unit-tested.
 if op run -- ansible "$HOST" -i inventories/prod -b -m shell -a \
-  'systemctl reset-failed maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemctl stop maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemd-run --no-block --collect --on-active=60s --unit=maintenance-self-reboot-prompt systemctl reboot && { systemctl reset-failed maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; systemctl stop maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; }'; then
+  "$(rearm_remote_command 60)"; then
   echo "maintenance-rearm: prompt reboot armed on $HOST."
   rm -f "$MARKER"
 else

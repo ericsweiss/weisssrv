@@ -8,11 +8,8 @@
   vars:
     # Fixtures exercised across the cases below. The role gates each task
     # file behind `<var> | length > 0`, so non-empty lists activate them.
-    # ha_groups / ha_rules are present (representative) and, with the
-    # stubs' empty current-state, drive the group/rule "add" paths too.
-    test_ha_groups:
-      - name: infra-core-grp
-        nodes: [pve-opt-01, pve-opt-02]
+    # ha_rules is present (representative) and, with the stubs' empty
+    # current-state, drives the rule "add" path too.
     test_ha_rules:
       - name: dns-affinity
         type: node-affinity
@@ -39,6 +36,20 @@
       - id: "150-0"
         source_node: "{{ inventory_hostname }}"
         target_node: pve-opt-02
+        schedule: "*/15"
+        enabled: true
+    # Two jobs for the same VMID — used by the permuted-ID case (L), where the
+    # live jobs carry the same TARGET SET but swapped job-ID assignments (what
+    # Proxmox does after a guest migration round-trip).
+    test_replication_jobs_multi:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        enabled: true
+      - id: "150-1"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-03
         schedule: "*/15"
         enabled: true
     # Per-resource detail that exactly matches test_ha_resources[0] — used
@@ -107,7 +118,6 @@
       ansible.builtin.include_role:
         name: proxmox_ha
       vars:
-        ha_groups: "{{ test_ha_groups }}"
         ha_rules: "{{ test_ha_rules }}"
         ha_resources: "{{ test_ha_resources }}"
 
@@ -226,6 +236,168 @@
       args:
         executable: /bin/bash
       register: case_d
+      changed_when: false
+
+    # =====================================================================
+    # CASE J — REAL target drift (desired target set differs) with the VM
+    # local: exactly one `pvesr delete` + one `pvesr create-local-job`.
+    # =====================================================================
+    - name: J — reset log, seed a job on the wrong target, VMID local
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesr_list
+          content: |
+            [{"id": "150-0", "source": "{{ inventory_hostname }}",
+              "target": "pve-opt-99", "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: J — run replication tasks with target drift (VM local)
+      ansible.builtin.include_role:
+        name: proxmox_ha
+        tasks_from: replication
+      vars:
+        storage_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: J — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -c '^pvesr delete 150-0$' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job 150-0 pve-opt-02 ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}}"
+      args:
+        executable: /bin/bash
+      register: case_j
+      changed_when: false
+
+    # =====================================================================
+    # CASE K — same target drift but the VM is NOT local: the live job must
+    # NOT be deleted (it could never be recreated here — deleting it would
+    # silently drop a replication target). Source-drift warning only.
+    # =====================================================================
+    - name: K — reset log, same drifted job, NO local VMIDs
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: ""}
+        - name: pvesr_list
+          content: |
+            [{"id": "150-0", "source": "{{ inventory_hostname }}",
+              "target": "pve-opt-99", "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: K — run replication tasks with target drift (VM not local)
+      ansible.builtin.include_role:
+        name: proxmox_ha
+        tasks_from: replication
+      vars:
+        storage_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: K — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}}"
+      args:
+        executable: /bin/bash
+      register: case_k
+      changed_when: false
+
+    # =====================================================================
+    # CASE L — permuted job-ID<->target assignments with an IDENTICAL target
+    # set (what Proxmox leaves behind after a migration round-trip): NOT
+    # drift. No delete/create/update — a delete+recreate here would force a
+    # full ZFS resync per touched target.
+    # =====================================================================
+    - name: L — reset log, seed permuted-ID jobs (same target set), VMID local
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesr_list
+          content: |
+            [{"id": "150-0", "source": "{{ inventory_hostname }}",
+              "target": "pve-opt-03", "schedule": "*/15"},
+             {"id": "150-1", "source": "{{ inventory_hostname }}",
+              "target": "pve-opt-02", "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: L — run replication tasks with permuted assignments
+      ansible.builtin.include_role:
+        name: proxmox_ha
+        tasks_from: replication
+      vars:
+        storage_replication_jobs: "{{ test_replication_jobs_multi }}"
+
+    - name: L — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        update=$(grep -c '^pvesr update ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}, \"update_calls\": ${update}}"
+      args:
+        executable: /bin/bash
+      register: case_l
+      changed_when: false
+
+    # =====================================================================
+    # CASE M — orphaned job (exists on this node, absent from config) next
+    # to an already-correct configured job: warning only, ZERO mutations.
+    # Orphan cleanup is deliberately manual (see tasks/replication.yml).
+    # =====================================================================
+    - name: M — reset log, seed a matching job + an orphan, VMID local
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesr_list
+          content: |
+            [{"id": "150-0", "source": "{{ inventory_hostname }}",
+              "target": "pve-opt-02", "schedule": "*/15"},
+             {"id": "151-0", "source": "{{ inventory_hostname }}",
+              "target": "pve-opt-03", "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: M — run replication tasks with an orphaned job present
+      ansible.builtin.include_role:
+        name: proxmox_ha
+        tasks_from: replication
+      vars:
+        storage_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: M — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        update=$(grep -c '^pvesr update ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}, \"update_calls\": ${update}}"
+      args:
+        executable: /bin/bash
+      register: case_m
       changed_when: false
 
     # =====================================================================
@@ -488,6 +660,16 @@
            "c_set": {{ (case_c.stdout | from_json).set_calls }},
            "d_create": {{ (case_d.stdout | from_json).create_calls }},
            "d_update": {{ (case_d.stdout | from_json).update_calls }},
+           "j_delete": {{ (case_j.stdout | from_json).delete_calls }},
+           "j_create": {{ (case_j.stdout | from_json).create_calls }},
+           "k_delete": {{ (case_k.stdout | from_json).delete_calls }},
+           "k_create": {{ (case_k.stdout | from_json).create_calls }},
+           "l_delete": {{ (case_l.stdout | from_json).delete_calls }},
+           "l_create": {{ (case_l.stdout | from_json).create_calls }},
+           "l_update": {{ (case_l.stdout | from_json).update_calls }},
+           "m_delete": {{ (case_m.stdout | from_json).delete_calls }},
+           "m_create": {{ (case_m.stdout | from_json).create_calls }},
+           "m_update": {{ (case_m.stdout | from_json).update_calls }},
            "e_set": {{ (case_e.stdout | from_json).set_calls }},
            "e_add": {{ (case_e.stdout | from_json).add_calls }},
            "f_set": {{ (case_f.stdout | from_json).set_calls }},

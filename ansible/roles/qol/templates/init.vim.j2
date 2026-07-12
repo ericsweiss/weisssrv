@@ -19,5 +19,7 @@ filetype plugin indent on    " required
 
 set mouse=a
 syntax on
-colorscheme onedark
+" silent! — a missing scheme (nvim_plugins overridden without the matching
+" colorscheme plugin, or plugins not yet installed) must not error every start
+silent! colorscheme {{ nvim_colorscheme | default('onedark') }}
 set tabstop=4 shiftwidth=4 softtabstop=0 expandtab smarttab

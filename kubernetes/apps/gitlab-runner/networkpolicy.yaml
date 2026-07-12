@@ -33,9 +33,13 @@ spec:
   policyTypes:
     - Egress
 ---
-# The shared runner manager long-polls GitLab (git.ericsweiss.com via Cloudflare,
-# so the 443 target set is not enumerable) and talks to the kube-API to spawn
-# job pods.
+# The shared runner manager long-polls GitLab (git.esweiss.com, which AdGuard
+# rewrites to the internal Traefik VIP 192.168.0.101) and talks to the kube-API
+# to spawn job pods. The VIP is allowed both as an ipBlock and via the traefik
+# namespace pods: kube-proxy may DNAT the LoadBalancer VIP to a Traefik pod IP
+# before policy evaluation (same reason the kube-API rules below target node
+# IPs), so neither form alone is guaranteed to match. Public 443 is retained
+# for registry/object-storage style callbacks GitLab may redirect to.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -76,6 +80,16 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
+    # GitLab via the internal Traefik VIP (pre-DNAT) or Traefik pods (post-DNAT).
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.101/32
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 443
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -90,9 +104,11 @@ spec:
           port: 443
 ---
 # Shared-runner job pods run untrusted project code: full internet for
-# package pulls and clones, but nothing on the LAN/cluster networks beyond
-# DNS, the kube-API (their RBAC is namespace-scoped), and the internal
-# Traefik VIP for tenants that use *.esweiss.com URLs.
+# package pulls, but nothing on the LAN/cluster networks beyond DNS, the
+# kube-API (for jobs bringing their own kubeconfig — the job SA itself is
+# token-less), and GitLab via the internal Traefik VIP (clone_url) — allowed
+# as both the VIP ipBlock and the traefik namespace pods for the same
+# pre/post-DNAT reason as managers-egress above.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -136,6 +152,9 @@ spec:
     - to:
         - ipBlock:
             cidr: 192.168.0.101/32
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
       ports:
         - protocol: TCP
           port: 443

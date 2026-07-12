@@ -62,12 +62,32 @@
         src: /etc/network/interfaces.d/99-nic-lo-tuning.cfg
       register: ethtool_content
 
-    - name: Assert ethtool drop-in includes both features
+    - name: Assert ethtool drop-in includes the iface header and both features
       ansible.builtin.assert:
         that:
+          - "'iface lo inet manual' in (ethtool_content.content | b64decode)"
           - "'post-up /sbin/ethtool -K lo rx on' in (ethtool_content.content | b64decode)"
           - "'post-up /sbin/ethtool -K lo tx on' in (ethtool_content.content | b64decode)"
-        fail_msg: "ethtool drop-in missing expected post-up lines"
+        fail_msg: "ethtool drop-in missing iface stanza header or expected post-up lines"
+
+    # Parse validity: ifupdown2 must associate the post-up lines with the
+    # interface. A bare post-up line (no iface header) is rejected with
+    # "error processing line" and would be silently inert at boot.
+    - name: Query lo through ifupdown2
+      ansible.builtin.command: ifquery lo
+      register: ifquery_lo
+      changed_when: false
+
+    - name: Assert ifupdown2 parses the drop-in and attaches the post-up lines
+      ansible.builtin.assert:
+        that:
+          - ifquery_lo.rc == 0
+          - "'post-up /sbin/ethtool -K lo rx on' in ifquery_lo.stdout"
+          - "'post-up /sbin/ethtool -K lo tx on' in ifquery_lo.stdout"
+          - "'error' not in (ifquery_lo.stderr | lower)"
+        fail_msg: >-
+          ifupdown2 did not attach the drop-in's post-up lines to lo — the
+          boot-time persistence would be inert
 
     - name: Assert ethtool drop-in pipes failures to logger
       ansible.builtin.assert:
@@ -88,3 +108,24 @@
           - not stale_dropin.stat.exists
         fail_msg: "Stale NIC tuning drop-in was not removed by the role"
         success_msg: "Stale NIC tuning drop-in correctly removed"
+
+    # active-backup bond MAC-flap guard: the seeded `bond-all_slaves_active 1`
+    # must be rewritten in place to 0 (surgical replace, rest of the stanza
+    # untouched). The runtime sysfs task is a no-op in the container (no bond).
+    - name: Read /etc/network/interfaces after the bond guard
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: etc_interfaces_content
+
+    - name: Assert bond all_slaves_active was corrected to 0 (and 1 is gone)
+      ansible.builtin.assert:
+        that:
+          - "'bond-all_slaves_active 0' in (etc_interfaces_content.content | b64decode)"
+          - "'bond-all_slaves_active 1' not in (etc_interfaces_content.content | b64decode)"
+          # surrounding stanza lines must survive the surgical replace
+          - "'bond-mode active-backup' in (etc_interfaces_content.content | b64decode)"
+          - "'bond-slaves nic0 nic1' in (etc_interfaces_content.content | b64decode)"
+        fail_msg: >-
+          bond-all_slaves_active was not rewritten to 0 (or the surgical replace
+          damaged the surrounding bond0 stanza)
+        success_msg: "bond-all_slaves_active correctly forced to 0 in place"

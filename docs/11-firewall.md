@@ -61,6 +61,13 @@ IPSets define groups of IPs for use in rules. IPSets are **dynamically generated
 The `dc/` scope prefix appears only when rules *reference* an ipset
 (`-source +dc/k3s_nodes`), never in the declaration header.
 
+**`admin_ts` is deliberately the full CGNAT range** (`100.64.0.0/10`), not
+per-device 100.x pins. Accepted risk: this is a single-owner tailnet
+(docs/05-tailscale.md), per-device pins are brittle (onboarding/DR lockout)
+and partly moot — subnet-router SNAT means tailnet traffic to guests arrives
+as `admin_lan` anyway. Tailnet-side ACL tightening is codified in
+`terraform/tailscale/`. Revisit if the tailnet ever gains non-admin members.
+
 ### Security Groups
 
 Security groups are reusable rule sets. Each security group has a **single, clear purpose** - admin access is separated from service-specific rules.
@@ -129,12 +136,20 @@ IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
 IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
 # SMTP relay from core cluster
 IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
-# Outbound DNS and SMTP (for upstream relay)
+# Outbound egress allowlist — only ENFORCED because the smtp-relay guest sets
+# policy_out: DROP (guest_firewall_policy_out in its inventory entry); with
+# Proxmox's guest default (policy_out ACCEPT) these OUT ACCEPTs are no-ops.
+# conntrack auto-allows replies to inbound 25/587.
+# DNS and SMTP submission (upstream relay to Gmail)
 OUT ACCEPT -p udp -dport 853 -log nolog
 OUT ACCEPT -p tcp -dport 853 -log nolog
 OUT ACCEPT -p udp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 53 -log nolog
 OUT ACCEPT -p tcp -dport 587 -log nolog
+# apt (the base role runs apt inside the LXC) + ICMP diagnostics
+OUT ACCEPT -p tcp -dport 80 -log nolog
+OUT ACCEPT -p tcp -dport 443 -log nolog
+OUT ACCEPT -p icmp -log nolog
 ```
 
 **sg-nfs-server** - NFS exports:
@@ -158,6 +173,7 @@ IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
 [group sg-k3s-core]
 
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog  # etcd
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2381 -log nolog       # etcd metrics (kubeEtcd scrape)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog      # kubelet
 IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog      # Flannel WireGuard (active CNI backend; VXLAN/8472 retired 2026-06-11)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7946 -log nolog       # MetalLB memberlist
@@ -178,6 +194,34 @@ IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog       # SSDP
 IN ACCEPT -p tcp -dport 32400 -log nolog                             # Plex Web (public)
 ```
 
+**sg-host-egress** - Host-originated egress allowlist (hosts only, paired
+with a trailing `OUT DROP` in host.fw — see "Host egress filtering" below):
+```ini
+[group sg-host-egress]
+
+OUT ACCEPT -p udp -dport 53 -log nolog          # DNS
+OUT ACCEPT -p tcp -dport 53 -log nolog          # DNS over TCP
+OUT ACCEPT -p udp -dport 853 -log nolog         # DNS over TLS
+OUT ACCEPT -p tcp -dport 853 -log nolog         # DNS over TLS
+OUT ACCEPT -p udp -dport 123 -log nolog         # NTP
+OUT ACCEPT -p tcp -dport 80 -log nolog          # apt / HTTP
+OUT ACCEPT -p tcp -dport 443 -log nolog         # apt, Proxmox repos, Tailscale control/DERP, 1Password Connect
+OUT ACCEPT -p udp -dport 41641 -log nolog       # Tailscale direct
+OUT ACCEPT -p udp -dport 3478 -log nolog        # Tailscale STUN
+OUT ACCEPT -p tcp -dport 22 -log nolog          # SSH (migration, host-to-host, cert distribution)
+OUT ACCEPT -p tcp -dport 2222 -log nolog        # GitLab SSH
+OUT ACCEPT -p tcp -dport 587 -log nolog         # SMTP submission to relay
+OUT ACCEPT -p tcp -dport 25 -log nolog          # SMTP relay
+OUT ACCEPT -p tcp -dport 2049 -log nolog        # NFS (backup target / shares)
+OUT ACCEPT -p tcp -dport 111 -log nolog         # rpcbind (NFS)
+OUT ACCEPT -p udp -dport 111 -log nolog         # rpcbind (NFS)
+OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
+OUT ACCEPT -p udp -dport 5404:5412 -log nolog   # corosync cluster membership
+OUT ACCEPT -p tcp -dport 8006 -log nolog        # Proxmox API (cluster/migration)
+OUT ACCEPT -p tcp -dport 60000:60050 -log nolog # Proxmox live migration (insecure channel)
+OUT ACCEPT -p icmp -log nolog                   # ping/diagnostics
+```
+
 ### Options
 
 ```ini
@@ -189,6 +233,12 @@ log_level_in: nolog
 log_level_out: nolog
 ```
 
+Host-level inbound drop logging is tunable via `pve_firewall_log_level_in`
+(role default `nolog`; rendered into each `host.fw`). Flip it to `info` — per
+host_vars or globally — to make dropped-inbound packets visible in the kernel
+log for triage; pve-firewall rate-limits its own logging, so `info` is safe
+to leave on during an incident.
+
 ## Host Firewall
 
 Each Proxmox host has a host.fw that references security groups. All Proxmox hosts get `sg-pve-cluster` and `sg-host-admin` automatically.
@@ -197,29 +247,36 @@ Each Proxmox host has a host.fw that references security groups. All Proxmox hos
 ```ini
 [OPTIONS]
 enable: 1
+log_level_in: nolog
+log_level_out: nolog
 
 [RULES]
 # All Proxmox hosts need cluster communication, admin access, and exporter scraping
 GROUP sg-pve-cluster
 GROUP sg-host-admin
 GROUP sg-metrics
+# Host egress default-deny (proxmox_firewall_egress_filtering)
+GROUP sg-host-egress
+OUT DROP -log info
 
 # NAS-specific rules
 GROUP sg-nfs-server
 GROUP sg-smb-server
 ```
 
-**pve-opt-03 host.fw** (Compute role):
-```ini
-[OPTIONS]
-enable: 1
+### Host egress filtering
 
-[RULES]
-# All Proxmox hosts need cluster communication, admin access, and exporter scraping
-GROUP sg-pve-cluster
-GROUP sg-host-admin
-GROUP sg-metrics
-```
+Host-originated egress default-deny is **enabled on all six Proxmox hosts**
+(`proxmox_firewall_egress_filtering: true` in `group_vars/proxmox.yml`; role
+default `false`). When enabled, `host.fw` references the `sg-host-egress`
+allowlist and appends an explicit trailing `OUT DROP -log info` rule —
+pve-firewall honors OUT *rules* in host.fw but **ignores** the host-level
+`policy_out` option, so the trailing DROP rule (not a policy setting) is what
+enforces default-deny. Drops log at `info` for allowlist tuning; conntrack
+auto-allows RELATED/ESTABLISHED replies, so the allowlist covers only NEW
+outbound connections the node initiates. When enabling on a new host, verify
+with `pve-firewall compile` first — a missing allowlist entry breaks the host
+(and possibly remote access).
 
 ## Guest Firewall (VMs and LXC Containers)
 
@@ -236,10 +293,14 @@ GROUP sg-dns
 GROUP sg-metrics
 ```
 
-**smtp-relay (VMID 151) firewall:**
+**smtp-relay (VMID 151) firewall** — the one guest that enforces
+default-deny egress (`guest_firewall_policy_out: "DROP"` in its inventory
+entry). Unlike host.fw, guest firewalls honor `policy_out`, which turns
+sg-smtp-relay's OUT ACCEPT rules into an enforced egress allowlist:
 ```ini
 [OPTIONS]
 enable: 1
+policy_out: DROP
 
 [RULES]
 GROUP sg-vm-admin
@@ -391,6 +452,11 @@ k3s_agents:
 | `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
 | `sg-windows` | Windows RDP | Windows VMs |
 | `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes (9100/9101/9134/9167/8123/32400/3000/7472/7473) + Loki NodePort 31100 from core-cluster | **All hosts and guests** |
+| `sg-host-egress` | Host-originated egress allowlist (paired with trailing `OUT DROP` in host.fw) | Proxmox hosts (via `proxmox_firewall_egress_filtering`) |
+
+To enforce a guest egress allowlist, set `guest_firewall_policy_out: "DROP"`
+on the guest's inventory entry — its security groups' OUT ACCEPT rules then
+become the allowlist (currently enabled on smtp-relay).
 
 **Deployment:**
 

@@ -31,6 +31,13 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
+# Boot ordering: the branch dirs are (deliberately plaintext) ZFS datasets
+# with no .mount units — zfs-mount-generator is not enabled here (see the
+# nfs.yml bind-mount comment) — so requires-mounts-for alone orders against
+# nothing and the mergerfs mount can race the ZFS mounts and capture empty
+# branch stubs. Anchor explicitly on the bulk zfs-mount.service like the
+# ZFS-backed export binds do (nofail keeps a missing branch from blocking
+# boot); requires-mounts-for is kept as documentation of the branch set.
 - name: Configure MergerFS mounts in fstab
   ansible.posix.mount:
     path: "{{ item.target }}"
@@ -38,7 +45,10 @@
     fstype: fuse.mergerfs
     opts: >-
       {{ item.options | join(',') }},fsname={{ item.name }}{%- if item.systemd_requires is defined -%}
-      ,{% for req in item.systemd_requires %}x-systemd.requires-mounts-for={{ req }}{% if not loop.last %},{% endif %}{% endfor -%}
+      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service
+      {%- for req in item.systemd_requires -%}
+      ,x-systemd.requires-mounts-for={{ req }}
+      {%- endfor -%}
       {% endif -%}
     state: mounted
   loop: "{{ mergerfs_mounts }}"
@@ -200,7 +210,6 @@
     - mergerfs_needs_remount | default(false)
     - mergerfs_nfs_check.results | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length > 0
 
-# Display warning if remount is blocked
 - name: Display warning - MergerFS remount blocked
   ansible.builtin.debug:
     msg: |
@@ -287,6 +296,9 @@
   register: bind_unmount
   changed_when: "'Unmounting:' in stdout"
 
+# Gate on mergerfs_safe_to_remount (not bind_unmount.changed): with zero bind
+# mounts sourcing from the target there is nothing to unbind, but the remount
+# must still proceed or new fstab options are silently never applied.
 - name: Unmount MergerFS
   ansible.posix.mount:
     path: "{{ item.target }}"
@@ -296,8 +308,7 @@
     label: "{{ item.name }}"
   when:
     - not ansible_check_mode
-    - bind_unmount is defined
-    - bind_unmount.changed | default(false)
+    - mergerfs_safe_to_remount | default(false)
   register: mergerfs_unmount
 
 - name: Mount MergerFS with fstab options

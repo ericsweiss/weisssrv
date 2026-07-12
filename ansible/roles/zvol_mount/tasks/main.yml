@@ -62,6 +62,9 @@
     label: "{{ item.name }} ({{ item.path }})"
   register: disk_fstypes
   changed_when: false
+  # Read-only probe — run it in --check too, or the registered results carry
+  # no stdout and the downstream templating breaks under dry-runs.
+  check_mode: false
   when: zvol_mount_disk_devices is defined
 
 # Fail fast if a disk has an existing filesystem different from the expected type.
@@ -102,9 +105,12 @@
     label: "{{ item.name }} ({{ item.path }})"
   register: disk_uuids
   changed_when: false
-  # In check mode with unformatted disks, blkid will fail (disk not formatted yet)
-  # We allow failure in check mode since we can't format disks in check mode anyway
+  # blkid fails on an unformatted disk (formatting is skipped in check mode);
+  # allow it and let the UUID validation below handle the empty result.
   failed_when: false
+  # Read-only probe — run it in --check too, so `item.stdout` exists for the
+  # findmnt/mount templating below instead of failing a dry-run.
+  check_mode: false
   when: zvol_mount_disk_devices is defined
 
 # Fail early if any disk doesn't have a valid UUID (prevents empty UUID in fstab)
@@ -171,7 +177,7 @@
 # This can happen if device naming changed (/dev/sdX is non-deterministic)
 - name: Check current mount status of additional disks
   ansible.builtin.shell: |
-    findmnt -n -o TARGET "UUID={{ item.1.stdout | trim }}" 2>/dev/null || echo "not-mounted"
+    findmnt -n -o TARGET "UUID={{ item.1.stdout | default('') | trim }}" 2>/dev/null || echo "not-mounted"
   args:
     executable: /bin/bash
   loop: "{{ zvol_mount_disk_devices | zip(disk_uuids.results) | list }}"
@@ -179,6 +185,9 @@
     label: "{{ item.0.name }}"
   register: current_mounts
   changed_when: false
+  # Read-only probe — run it in --check too (an empty UUID from a disk that
+  # is still unformatted simply reports not-mounted).
+  check_mode: false
   when:
     - zvol_mount_fix_wrong_locations | default(true)
     - zvol_mount_disk_devices is defined

@@ -43,7 +43,11 @@ stays manual — see the last section for why.
   in Operations).
 
   Chart-native HPA:
-  - Traefik (`controllers/traefik/release.yaml`): min 2 / max 4 @ ~70% CPU.
+  - Traefik (`controllers/traefik/release.yaml`): min 2 / max 6 @ ~70% CPU.
+    Its CPU request was raised 100m → 250m per this doc's "raise the request,
+    not the threshold" rule: at 100m the 70% target sat at 70m (noise level),
+    so every traffic burst pinned the HPA at maxReplicas and fired
+    KubeHpaMaxedOut; at 250m idle reads ~3% and scaling tracks real load.
   - authentik-server (`apps/authentik/release.yaml`): min 2 / max 4 @ ~75% CPU;
     the worker stays single-replica.
   - onepassword-connect (`controllers/onepassword-connect/release.yaml`,
@@ -132,9 +136,20 @@ script's `CPU_LIMIT_ALLOWLIST` (currently empty).
 
 | Mode | Used for | Behavior |
 |---|---|---|
-| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound), MetalLB, cert-manager, ESO, Connect, Traefik, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
-| `Initial` | apps (downloads incl. the gluetun sidecars caught by wildcard `*` policies, recipes incl. bar-assistant redis/meilisearch/salt-rim, authentik server/worker, runners, agent), external-dns (single replica, no PDB), Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile |
-| `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive) |
+| `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound), MetalLB, cert-manager, ESO, Connect, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
+| `Initial` | **Traefik** (moved from Auto — see below), apps (downloads incl. the gluetun sidecars caught by wildcard `*` policies, recipes incl. bar-assistant redis/meilisearch/salt-rim, authentik server/worker, runners, agent), external-dns (single replica, no PDB), Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile |
+| `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs (the Prometheus/Alertmanager VPAs target the operator CRs, not the StatefulSets — see docs/31) | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive) |
+
+**Traefik is `Initial`, not `Auto`** (changed after the ingress-churn
+incident): Traefik is the ingress data path for every service, including the
+container registry. Under CI-burst load the Auto updater evicted Traefik to
+apply a new memory request, and each replacement pod's startup readiness gap
+surfaced as transient 502s on `registry.git.ericsweiss.com` (ImagePullBackOff
+in CI), `git.esweiss.com` hangs, and Unhealthy events — a PDB doesn't help
+because the disruption is the replacement pod's own readiness gap. `Initial`
+still right-sizes on natural restarts (chart upgrades, node drains) without
+the updater ever evicting the data path. Rationale comment lives in
+`configs/vpa/platform.yaml`.
 
 The rows above are representative, not exhaustive — the canonical coverage
 lives in the VPA policy files under `kubernetes/infrastructure/configs/vpa/`
@@ -148,8 +163,8 @@ can't starve or balloon a workload.
 
 The update mode above is independent of which resources a policy controls. Any
 workload that also has an HPA carries a **memory-only** VPA
-(`controlledResources: [memory]`) regardless of its update-mode tier — Traefik
-and Connect (`Auto`), authentik-server and salt-rim (`Initial`) all follow this.
+(`controlledResources: [memory]`) regardless of its update-mode tier — Connect
+(`Auto`), Traefik, authentik-server, and salt-rim (`Initial`) all follow this.
 The lint invariant below enforces it. ESO has no HPA (it doesn't horizontally
 scale — see "Not the external-secrets controller" above), so its VPA controls
 cpu+memory.
@@ -166,7 +181,20 @@ kubectl get hpa -A                          # HPA min/max + current target/repli
 Under normal load every HPA should sit at its `minReplicas` (matches how
 traefik/authentik idle at 2). If a new HPA pins to max at idle, its CPU request
 is too small relative to the threshold — raise the request, not the threshold
-(the authentik fix pattern), so utilization tracks real load instead of noise.
+(the authentik and Traefik fix pattern), so utilization tracks real load
+instead of noise.
+
+### Recommendation metrics + ceiling alert
+
+kube-state-metrics exports the VPA recommendations via its
+`customResourceState` config (kube-prometheus-stack `release.yaml`) as
+`vpa_recommendation_target` and `vpa_recommendation_uncappedtarget` — the
+capped and uncapped recommendation per container/resource. The
+**`VPARecommendationCapped`** alert fires when `uncappedtarget > target` for
+24h: the recommendation has been clamped by `maxAllowed` for a full day, i.e.
+the workload has outgrown its ceiling (a brief clamp during a burst is
+expected and does not fire). Response: raise the `maxAllowed` cap in the
+policy file (`infrastructure/configs/vpa/` etc.) or investigate the growth.
 
 `task flux:lint` runs `scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas`
 over the full rendered manifest set: it fails if any workload has an HPA and a

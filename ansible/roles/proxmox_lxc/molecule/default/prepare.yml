@@ -85,12 +85,67 @@
           exit 0
       become: true
 
-    - name: Install pct stub (records calls)
+    - name: Install pct stub (records calls, answers `config` from state)
       ansible.builtin.copy:
         dest: /usr/local/bin/pct
         mode: "0755"
         content: |
           #!/bin/bash
-          echo "pct $*" >> /tmp/molecule-stub-state/pct.log
+          STATE=/tmp/molecule-stub-state
+          echo "pct $*" >> "$STATE/pct.log"
+          # The role's reconcile tasks parse `pct config` for the net0 /
+          # onboot / startup lines. Defaults match the role defaults so the
+          # reconciles see NO drift and stay no-op (the existence-guard's
+          # zero-mutation invariant). Override files let converge inject
+          # drifted variants per case.
+          if [ "$1" = "config" ]; then
+            if [ -f "$STATE/ct_net0_override" ]; then
+              echo "net0: $(cat "$STATE/ct_net0_override")"
+            else
+              echo "net0: name=eth0,bridge=vmbr0,firewall=1,ip=192.168.0.199/24,gw=192.168.0.1"
+            fi
+            if [ -f "$STATE/ct_onboot_override" ]; then
+              echo "onboot: $(cat "$STATE/ct_onboot_override")"
+            else
+              echo "onboot: 1"
+            fi
+            # NOTE the default startup is "order=100" (NO up=0): mirrors
+            # Proxmox dropping the up=0 default from the stored string, so
+            # the startup reconcile's normalize-both-sides must treat it as
+            # equal to the desired "order=100,up=0" — else it churns every run.
+            if [ -f "$STATE/ct_startup_override" ]; then
+              echo "startup: $(cat "$STATE/ct_startup_override")"
+            else
+              echo "startup: order=100"
+            fi
+          fi
           exit 0
+      become: true
+
+    # Deterministic GPU group GIDs for the idmap contract cases — the role
+    # getent's video/render on the "Proxmox host" (this container). groupmod/
+    # groupadd -o permits a duplicate GID if a system group already sits on
+    # 44/104, so the pin always lands.
+    - name: Pin video/render group GIDs for the GPU idmap cases
+      ansible.builtin.shell: |
+        set -e -o pipefail
+        for spec in video:44 render:104; do
+          g=${spec%%:*}; gid=${spec##*:}
+          if getent group "$g" >/dev/null; then
+            cur=$(getent group "$g" | cut -d: -f3)
+            [ "$cur" = "$gid" ] || groupmod -o -g "$gid" "$g"
+          else
+            groupadd -o -g "$gid" "$g"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: true
+      become: true
+
+    - name: Proxmox LXC conf directory (idmap tasks rewrite <id>.conf here)
+      ansible.builtin.file:
+        path: /etc/pve/lxc
+        state: directory
+        mode: "0755"
       become: true

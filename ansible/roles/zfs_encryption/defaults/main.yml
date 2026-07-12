@@ -6,12 +6,14 @@
 # from 1Password Connect (running in the cluster, exposed at
 # connect.esweiss.com via internal Traefik).
 #
-# Cold-cluster boot fallback: if Connect is unreachable, the unit fails
-# fast and logs to journald. Operator unlocks manually:
+# Cold-cluster boot fallback: if Connect is unreachable, the per-pool
+# units keep retrying (Restart=on-failure) and log to journald. Operator
+# shortcut:
 #     ssh <host>
 #     sudo zfs load-key <pool>     # paste passphrase from 1P phone app
-#     sudo zfs mount -a
-# See docs/32-zfs-encryption.md for the full procedure.
+# Nothing else needed — zfs-mount-encrypted.service mounts the datasets
+# on its next retry and the units ordered after it converge. See
+# docs/32-zfs-encryption.md "Cold-cluster recovery" for the full procedure.
 
 # Connect access point. Reachable from any LAN/Tailscale host because
 # the IngressRoute is gated by lan-tailscale-only, and the AdGuard

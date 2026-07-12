@@ -31,7 +31,7 @@ Redis is not required as of Authentik 2025.10 - all state is in PostgreSQL.
 
 | Component | Purpose | Replicas | Stateless? |
 |-----------|---------|----------|------------|
-| Server | Web UI, API, embedded outpost | 2 | Yes |
+| Server | Web UI, API, embedded outpost | 2-4 (HPA) | Yes |
 | Worker | Background tasks (email, sync) | 1 | Yes |
 | PostgreSQL | Primary database (all state) | 1 | No |
 
@@ -87,12 +87,13 @@ Deploy workflow:
 # Edit manifests
 vim kubernetes/apps/authentik/release.yaml  # or any other file
 
-# Commit + push; Flux reconciles within ~1 minute
+# Commit + push; the GitLab agent's Flux Receiver triggers reconciliation
+# on push (poll is the fallback)
 git add kubernetes/apps/authentik/
 git commit -m "..."
 git push
 
-# Force reconciliation if you don't want to wait for the poll interval
+# Force reconciliation manually if needed
 task flux:reconcile
 ```
 
@@ -251,18 +252,19 @@ kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
 
 ### Certificate issues
 
-The IngressRoutes reference existing wildcard certificates:
-- `ericsweiss-com-tls` in `default` namespace
-- `esweiss-com-tls` in `default` namespace
+The IngressRoutes reference per-host certificates issued by cert-manager in
+the `authentik` namespace (see `certificate.yaml`):
+- `authentik-ericsweiss-tls` (auth.ericsweiss.com)
+- `authentik-esweiss-tls` (auth.esweiss.com)
 
 If certificates are not found:
 ```bash
-# Check certificates exist
-kubectl get certificate -A
-kubectl get secret ericsweiss-com-tls -n default
-kubectl get secret esweiss-com-tls -n default
+# Check certificate status (READY should be True)
+kubectl get certificate -n authentik
+kubectl describe certificate authentik-ericsweiss-tls -n authentik
 
-# Copy secrets to authentik namespace if needed (Traefik handles cross-namespace by default)
+# Check the issued secrets
+kubectl get secret authentik-ericsweiss-tls authentik-esweiss-tls -n authentik
 ```
 
 ## Backup and Restore
@@ -293,7 +295,7 @@ kubectl exec -i -n authentik authentik-postgresql-0 -- \
 
 | Component | Replicas | Storage |
 |---|---|---|
-| Authentik server | 2 (anti-affinity) | stateless |
+| Authentik server | 2-4 (HPA, anti-affinity) | stateless |
 | Authentik worker | 1 | stateless |
 | Bundled PostgreSQL | 1 | hostPath PV on `k3s-agt-nas-01` → ZFS zvol `ssd/appdata/authentik/postgres` (10 GB, ext4) |
 

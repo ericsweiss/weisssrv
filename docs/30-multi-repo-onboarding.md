@@ -4,7 +4,7 @@ How to attach an external Git repository to the weisssrv k3s cluster so Flux rec
 
 ## Table of Contents
 
-1. [Overview](#overview)
+1. [Overview](#overview) (incl. the [Pre-Onboarding Checklist](#pre-onboarding-checklist))
 2. [Path A — 1Password Backend](#path-a--1password-backend)
 3. [Path B — GitLab CI/CD Variables Backend](#path-b--gitlab-cicd-variables-backend)
 4. [Namespace Isolation](#namespace-isolation)
@@ -35,6 +35,33 @@ See `kubernetes/clusters/weisssrv/tenants/README.md` for the canonical templates
 | GitLab variables | Friend without 1P; tenant already has a GitLab project | Secrets are visible to anyone with project Maintainer access; no 1P budget impact |
 
 Prefer GitLab variables for friends — see [Rate Limits](#rate-limits-1password-families-plan).
+
+### Pre-Onboarding Checklist
+
+Before the **first** tenant reconciles anything, close these platform-side
+gaps (each is an accepted risk only while every manifest is
+operator-authored):
+
+- **Guard Traefik's `allowCrossNamespace: true`.** The CRD provider currently
+  lets any IngressRoute reference middlewares/Services in other namespaces
+  (see the accepted-risk comment in
+  `kubernetes/infrastructure/controllers/traefik/release.yaml` and the
+  matching security note in `kubernetes/clusters/weisssrv/tenants/README.md`).
+  A tenant-authored IngressRoute could pull platform middlewares or another
+  namespace's Service. Options: scope the provider per-tenant, add a
+  validating policy pinning `@namespace` refs, or revert to
+  `allowCrossNamespace: false`.
+- **Scope the GitLab agent's RBAC below cluster-admin.** The agent
+  (`kubernetes/apps/gitlab-agent/release.yaml`) currently gets cluster-admin
+  via the chart's default `rbac.create` — deliberate while it is the CI
+  deploy path for the whole `kubernetes/` tree, but before tenant repos
+  deploy through it, replace that with namespaced Roles per tenant (or a
+  least-privilege ClusterRole) so a compromised agentk can't touch the whole
+  cluster.
+- **Use the tenant ServiceAccount pattern.** Every tenant Kustomization must
+  set `serviceAccountName` (see the wiring templates below) — without it,
+  kustomize-controller applies tenant manifests with its own cluster-admin
+  credentials.
 
 ---
 
@@ -207,6 +234,31 @@ spec:
   # secretRef:
   #   name: <repo-slug>-git-creds
 ---
+# Tenant reconciliation runs under a namespace-scoped ServiceAccount —
+# without serviceAccountName, kustomize-controller applies tenant manifests
+# with its own cluster-admin credentials. The SA must live in the
+# Kustomization's OWN namespace (flux-system); the RoleBinding in the tenant
+# namespace grants it admin there and nowhere else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: <repo-slug>-flux
+  namespace: flux-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: <repo-slug>-flux-admin
+  namespace: <repo-slug>
+subjects:
+  - kind: ServiceAccount
+    name: <repo-slug>-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -216,6 +268,7 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  serviceAccountName: <repo-slug>-flux
   sourceRef:
     kind: GitRepository
     name: <repo-slug>
@@ -348,6 +401,29 @@ spec:
   ref:
     branch: main
 ---
+# ServiceAccount + RoleBinding: identical pattern to Path A step 4 —
+# the Kustomization must NOT reconcile with kustomize-controller's
+# cluster-admin credentials.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: <repo-slug>-flux
+  namespace: flux-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: <repo-slug>-flux-admin
+  namespace: <repo-slug>
+subjects:
+  - kind: ServiceAccount
+    name: <repo-slug>-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -357,6 +433,7 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  serviceAccountName: <repo-slug>-flux
   sourceRef:
     kind: GitRepository
     name: <repo-slug>
@@ -414,7 +491,7 @@ Tenants **must not** create or modify resources in:
 
 Why: Flux's server-side apply with `prune: true` will fight any resources that appear in a namespace that isn't part of the tenant's Kustomization. The result is reconcile loops and random deletions.
 
-**Enforcement is cooperative today** — trust model. Every tenant is either me or a friend I've invited. A future admission controller (Kyverno or OPA Gatekeeper) could enforce this automatically. Tracked in `docs/16-next-steps.md`.
+**Enforcement**: the Flux apply path is RBAC-scoped — each tenant Kustomization sets `serviceAccountName`, and the SA's RoleBinding grants `admin` only in the tenant's namespace, so a tenant manifest targeting another namespace fails to apply. What remains cooperative is everything outside that path (e.g. which ClusterSecretStore a namespace references, cross-namespace Traefik refs — see the Pre-Onboarding Checklist). A future admission controller (Kyverno or OPA Gatekeeper) could close those. Tracked in `docs/16-next-steps.md`.
 
 If a tenant needs to consume a platform service (Traefik ingress, cert-manager certificate, Authentik OIDC), they do so via CRs in *their own* namespace — an IngressRoute in the tenant namespace, a Certificate in the tenant namespace, etc. The platform controllers act on those CRs without the tenant needing to touch platform namespaces.
 
@@ -578,6 +655,28 @@ spec:
   ref:
     branch: main
 ---
+# SA + RoleBinding: see Path A step 4 — the Kustomization reconciles as
+# this namespace-scoped SA, not as kustomize-controller's cluster-admin.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: example-app-flux
+  namespace: flux-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: example-app-flux-admin
+  namespace: example-app
+subjects:
+  - kind: ServiceAccount
+    name: example-app-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -587,6 +686,7 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  serviceAccountName: example-app-flux
   sourceRef:
     kind: GitRepository
     name: example-app

@@ -164,6 +164,60 @@ spec:
     assert _run(CPU_HPA + "---" + off_container_vpa, monkeypatch) == 0
 
 
+def test_named_container_memory_policy_still_clashes(monkeypatch):
+    """A memory-only policy naming ONE container leaves the pod's other
+    containers under default (cpu+memory) VPA control — the cpu clash with the
+    HPA must not be hidden (fail closed without a '*' catch-all)."""
+    named_vpa = """
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: foo, namespace: ns}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: app
+        controlledResources: [memory]
+"""
+    assert _run(CPU_HPA + "---" + named_vpa, monkeypatch) == 1
+
+
+def test_named_container_off_policy_still_clashes(monkeypatch):
+    """A mode:Off policy naming ONE container does not turn off the VPA for
+    unmatched containers, which keep default cpu+memory control."""
+    named_off_vpa = """
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: foo, namespace: ns}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: app
+        mode: "Off"
+"""
+    assert _run(CPU_HPA + "---" + named_off_vpa, monkeypatch) == 1
+
+
+def test_named_policy_plus_catchall_memory_passes(monkeypatch):
+    """A named policy alongside a '*' memory-only catch-all covers every
+    container, so no default cpu control remains and there is no clash."""
+    combo_vpa = """
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: foo, namespace: ns}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: foo}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: sidecar
+        mode: "Off"
+      - containerName: "*"
+        controlledResources: [memory]
+"""
+    assert _run(CPU_HPA + "---" + combo_vpa, monkeypatch) == 0
+
+
 LIST_DOC = """
 apiVersion: v1
 kind: List

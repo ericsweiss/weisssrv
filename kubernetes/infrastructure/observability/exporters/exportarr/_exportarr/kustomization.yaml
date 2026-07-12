@@ -1,0 +1,19 @@
+---
+# Shared exportarr skeleton — a Kustomize Component carrying the common
+# Deployment + Service + ServiceMonitor for the *arr Prometheus exporters,
+# which are byte-for-byte identical apart from name/labels, exportarr
+# subcommand, port (9707-9710), target URL, and API-key secret key. Each
+# per-app overlay (../sonarr, ../radarr, ../lidarr, ../prowlarr) lists this
+# component and applies a patch with only the per-app differences.
+#
+# The skeleton uses the placeholder name "exportarr-arr" on port 9707; the
+# overlays rename/repoint everything via patches. API keys (each app's
+# Settings > General) come from the observability-exporter-secrets Secret
+# (../../externalsecret.yaml), sourced from the "Download Client API Keys"
+# 1Password item.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - deployment.yaml
+  - service.yaml
+  - servicemonitor.yaml

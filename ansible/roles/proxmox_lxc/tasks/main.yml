@@ -173,17 +173,27 @@
     - container_exists.rc != 0
     - not (proxmox_lxc_skip_create | default(false))
 
+# pveam download exits 0 when the template is already present (it re-verifies
+# the checksum), so a non-zero rc is a real failure (bad template name, dead
+# mirror, network) — fail here instead of surfacing later as a cryptic
+# `pct create ... vztmpl` error. The `pveam update` index refresh is
+# best-effort: it must not block recreation from an already-cached template
+# during a DNS/mirror outage (the exact recovery path this role bootstraps
+# public DNS for), so tolerate its failure and let `pveam download` decide.
 - name: Download LXC template if not present
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    pveam update
+    set -o errexit -o pipefail
+    pveam update || echo "WARN: pveam update failed (offline or mirror down); proceeding with cached appliance index" >&2
     pveam download {{ lxc_template_storage }} {{ lxc_template }}
+  args:
+    executable: /bin/bash
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
     - not (proxmox_lxc_skip_create | default(false))
-  failed_when: false
-  changed_when: false
+  register: lxc_template_download
+  changed_when: "'downloading' in (lxc_template_download.stdout | default(''))"
 
 # Detect host video and render group GIDs for GPU passthrough
 - name: Get host video group GID

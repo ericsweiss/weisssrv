@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# Post-deployment cluster verification, invoked by the deploy-verify CI job
+# (.gitlab-ci.yml) as `bash scripts/deploy-verify.sh`. Extracted from the inline
+# job body so this ~400-line script lands under shellcheck coverage (the job's
+# scripts/*.sh glob) instead of living unlinted inside YAML.
+#
+# Contract: runs after .k3s-deploy-base (kubectl + jq) provisioned the runner
+# and the inline flux-install step put `flux` on PATH. Reads KUSTOMIZE_VERSION,
+# KUSTOMIZE_SHA256, and PYYAML_VERSION from the CI job environment (global
+# `variables:` in .gitlab-ci.yml). Exits non-zero on any hard failure.
+#
+# NOTE: the FLUX_VERSION supply-chain pin stays inline in .gitlab-ci.yml (the
+# step before this one) so flux-version-pin-check / task lint:flux-version-pin
+# keep grepping it from that file.
+
+# Bind + assert the CI-provided version pins up front: fail loudly if this
+# script is ever run outside the CI job that sets them, and give shellcheck a
+# visible assignment (no SC2154 for env-sourced vars).
+KUSTOMIZE_VERSION="${KUSTOMIZE_VERSION:?deploy-verify.sh requires KUSTOMIZE_VERSION (set in .gitlab-ci.yml variables)}"
+KUSTOMIZE_SHA256="${KUSTOMIZE_SHA256:?deploy-verify.sh requires KUSTOMIZE_SHA256 (set in .gitlab-ci.yml variables)}"
+PYYAML_VERSION="${PYYAML_VERSION:?deploy-verify.sh requires PYYAML_VERSION (set in .gitlab-ci.yml variables)}"
+
+set -eo pipefail
+
+# Install tools needed for server-side dry-run validation.
+# These are already in the flux-lint job's before_script but deploy-verify
+# extends .k3s-deploy-base (kubectl + jq only), so we install them here.
+apt-get install -y -qq gettext-base > /dev/null 2>&1
+pip install --quiet "pyyaml==${PYYAML_VERSION}"
+curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
+echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c -
+tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
+
+# Bounded retry helper for transient startup states.
+# Suppresses output during polling; on timeout, prints the last
+# failed attempt's output for diagnostics.
+wait_for() {
+  local desc="$1" timeout="$2" interval="$3"; shift 3
+  local start_ts last_output
+  start_ts=$(date +%s)
+  while true; do
+    last_output=$("$@" 2>&1) && return 0
+    local elapsed=$(( $(date +%s) - start_ts ))
+    if [ "$elapsed" -ge "$timeout" ]; then
+      echo "wait_for: $desc timed out after ${elapsed}s"
+      echo "Last check output:"
+      echo "$last_output"
+      return 1
+    fi
+    echo "wait_for: $desc not ready (${elapsed}s/${timeout}s)..."
+    sleep "$interval"
+  done
+}
+
+echo "=== Post-Deployment Verification ==="
+
+# jq filter fragment: select items whose Ready condition is missing or not True.
+# Used by multiple check functions below.
+JQ_NOT_READY='select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))'
+
+echo "Checking node status..."
+check_nodes_ready() {
+  NODE_OUTPUT=$(kubectl get nodes --no-headers)
+  [ -z "$NODE_OUTPUT" ] && return 1
+  NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 != "Ready" {count++} END {print count+0}')
+  [ "$NOT_READY" -eq 0 ]
+}
+if ! wait_for "all nodes Ready" 60 5 check_nodes_ready; then
+  echo "ERROR: Node(s) not Ready after 60s"
+  kubectl get nodes --no-headers
+  exit 1
+fi
+kubectl get nodes --no-headers
+
+EXIT=0
+
+echo ""
+echo "=== Server-side dry-run validation ==="
+# Validate rendered manifests against the cluster API without applying.
+# Catches CRD field mismatches and API validation issues that kubeconform
+# (offline schema) cannot detect. Runs before Flux reconcile so issues
+# are surfaced even if Flux itself would fail to apply them.
+VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
+if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
+  echo "ERROR: $VERSIONS_CONFIGMAP not found"
+  exit 1
+fi
+# Shared extraction (scripts/flux-render.sh) — same block flux-lint uses.
+VARS=$(bash scripts/flux-render.sh export-versions "$VERSIONS_CONFIGMAP") \
+  || { echo "ERROR: failed to extract version keys for dry-run"; exit 1; }
+eval "$VARS"
+if [ -n "$FLUX_ENVSUBST_VARS" ]; then
+  for ks in kubernetes/clusters/weisssrv/*.yaml; do
+    NAME=$(basename "$ks" .yaml)
+    [ "$NAME" = "kustomization" ] && continue
+    # Python source must reach python3 -c with NO leading whitespace, or it
+    # raises IndentationError at module level — so the heredoc lines below stay
+    # column-0, not aligned with the surrounding bash if-block.
+    if ! SRCPATH=$(python3 -c "
+import yaml
+with open('$ks') as f:
+    doc = yaml.safe_load(f)
+print(doc.get('spec',{}).get('path','') or '')
+"); then
+      echo "    ERROR: failed to parse $ks"
+      EXIT=1
+      continue
+    fi
+    [ -z "$SRCPATH" ] && continue
+    SRCPATH=${SRCPATH#./}
+    echo "  dry-run: $SRCPATH"
+    # IMPORTANT: use `printf '%s\n'` (NOT `echo`) when piping captured
+    # YAML through commands. `echo` interprets backslash escapes by
+    # default in bash; the rendered manifests contain Grafana dashboard
+    # JSON with thousands of `\n` literals inside `|` block scalars,
+    # and echo turns those into actual newlines — corrupting line
+    # numbering and breaking the YAML parser ("did not find expected
+    # comment or line break" mid-stream). printf '%s' preserves bytes.
+    # Split kustomize stderr into a tmpfile so warnings/deprecation
+    # notices on stderr don't contaminate the YAML stream that goes
+    # to envsubst/kubectl. (`2>&1` would mix them in and create
+    # spurious YAML parse errors downstream.)
+    KS_ERR=$(mktemp)
+    if ! RAW=$(kustomize build "$SRCPATH" 2>"$KS_ERR"); then
+      echo "    FAIL: kustomize build failed for $SRCPATH"
+      head -120 <"$KS_ERR"
+      rm -f "$KS_ERR"
+      EXIT=1
+      continue
+    fi
+    rm -f "$KS_ERR"
+    RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
+    # Use server-side apply (SSA) for dry-run validation. Plain
+    # `apply --dry-run=server` requires the legacy
+    # `kubectl.kubernetes.io/last-applied-configuration` annotation
+    # (resources Flux owns don't have it) and computes a strategic
+    # merge patch in the kubectl client. SSA sends the manifest to
+    # the API server which computes the diff itself, no client-side
+    # patch construction. --force-conflicts makes the dry-run win
+    # field-ownership disputes with kustomize-controller; nothing is
+    # persisted (it's still --dry-run=server).
+    # Wrap the assignment in `if` so a non-zero kubectl exit doesn't
+    # abort the script via `set -e` before we check DRYRUN_RC.
+    if DRYRUN_ERR=$(printf '%s\n' "$RENDERED" | kubectl apply \
+      --server-side --dry-run=server --force-conflicts \
+      --field-manager=ci-deploy-verify -f - 2>&1); then
+      DRYRUN_RC=0
+    else
+      DRYRUN_RC=$?
+    fi
+    if [ "$DRYRUN_RC" -ne 0 ]; then
+      echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
+      # Filter for actual error lines; fall back to raw output if no
+      # match. `|| true` keeps grep's no-match exit (1) from aborting
+      # the script under `set -o pipefail`. Also catches kubectl
+      # error patterns we didn't enumerate (e.g. "forbidden",
+      # "timeout") via the fallback path.
+      FILTERED_ERR=$(grep -iE "error|invalid|did not find|cannot|forbidden|timeout" \
+        <<<"$DRYRUN_ERR" || true)
+      # Use here-string (<<<) instead of `printf | head` so head's
+      # early stdin close doesn't SIGPIPE the writer and trip
+      # `set -o pipefail`.
+      if [ -n "$FILTERED_ERR" ]; then
+        head -30 <<<"$FILTERED_ERR"
+      else
+        head -30 <<<"$DRYRUN_ERR"
+      fi
+      EXIT=1
+    fi
+  done
+fi
+
+# Snapshot pre-reconcile state to distinguish steady-state from bootstrap.
+# If all Kustomizations are already Ready, this is a steady-state push and
+# non-Ready ExternalSecrets should be treated as failures. During bootstrap
+# or recovery (some Kustomizations not yet Ready), ESO may still be starting
+# and ES non-readiness is expected.
+PRE_KS_NOT_READY=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A -o json 2>/dev/null \
+  | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
+STEADY_STATE=false
+if [ "$PRE_KS_NOT_READY" -eq 0 ]; then
+  STEADY_STATE=true
+  echo "Cluster is steady-state (all Kustomizations were Ready pre-reconcile)"
+else
+  echo "Cluster is in bootstrap/recovery ($PRE_KS_NOT_READY Kustomization(s) not Ready pre-reconcile)"
+fi
+
+echo ""
+echo "=== Triggering Flux reconciliation ==="
+# Force Flux to reconcile the current commit before checking status.
+# Without this, we would check stale state from the previous reconcile cycle.
+echo "Triggering Flux source reconciliation..."
+if ! flux reconcile source git flux-system --timeout=2m; then
+  echo "ERROR: Flux source reconciliation failed or timed out"
+  EXIT=1
+fi
+echo "Triggering root kustomization reconciliation..."
+if ! flux reconcile kustomization flux-system --timeout=3m --with-source; then
+  echo "ERROR: Flux root kustomization reconciliation failed or timed out"
+  EXIT=1
+fi
+# Allow downstream kustomizations time to reconcile after the root
+sleep 15
+
+echo ""
+echo "Flux controllers:"
+flux check
+
+echo ""
+echo "Flux Kustomizations:"
+flux get kustomizations -A
+
+echo ""
+echo "Flux HelmReleases:"
+flux get helmreleases -A
+
+echo ""
+echo "ExternalSecrets:"
+kubectl get externalsecrets -A
+
+echo ""
+echo "ExternalSecret readiness:"
+check_externalsecrets_ready() {
+  ES_COUNT=$(kubectl get externalsecrets -A -o json 2>/dev/null \
+    | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
+  [ "$ES_COUNT" -eq 0 ]
+}
+if ! wait_for "ExternalSecrets ready" 90 10 check_externalsecrets_ready; then
+  ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null \
+    | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
+  kubectl get externalsecrets -A -o json 2>/dev/null \
+    | jq -r ".items[] | $JQ_NOT_READY | \"  \(.metadata.namespace)/\(.metadata.name)\"" 2>/dev/null || true
+  if [ "$STEADY_STATE" = "true" ]; then
+    echo "ERROR: $ES_NOT_READY ExternalSecret(s) not Ready on a steady-state cluster"
+    EXIT=1
+  else
+    echo "WARNING: $ES_NOT_READY ExternalSecret(s) not Ready (bootstrap/recovery)"
+  fi
+else
+  echo "All ExternalSecrets ready"
+fi
+
+# Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
+# HelmRepository, etc.) is not Ready.
+#
+# Query the CRDs directly via kubectl -o json because `flux get all`
+# only produces tabular output (json output was requested in fluxcd/flux2
+# discussions #1904 / #3535 but hasn't been implemented). An earlier
+# text-based implementation merged stderr into stdout and counted
+# warnings as outages — we use structured jq against the API instead.
+echo ""
+echo "Checking for non-Ready Flux resources..."
+FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
+check_flux_resources_ready() {
+  FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null) || return 1
+  NOT_READY=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
+  [ "$NOT_READY" -eq 0 ]
+}
+# 5 min headroom — major chart bumps (kube-prometheus-stack, Loki) can
+# take 2-4 min to reconcile through HelmRelease + child CRD updates +
+# rollout, and verify runs immediately after `git push` of those bumps.
+if ! wait_for "Flux resources ready" 300 10 check_flux_resources_ready; then
+  FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null || echo '{"items":[]}')
+  NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
+  echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
+  echo "$FLUX_ALL" | jq -r ".items[] | $JQ_NOT_READY | \"  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == \"Ready\")) | .[0].message // \"no Ready condition\")\""
+  EXIT=1
+else
+  echo "All Flux resources ready"
+fi
+
+# Gate specifically on the top-level Flux Kustomizations — if any is
+# stuck (any child HelmRelease failing), the above broad check catches
+# it too, but naming them explicitly yields clear failure signals in
+# the pipeline output.
+check_top_kustomizations_ready() {
+  for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
+    KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+    if [ "$KS_READY" != "True" ]; then return 1; fi
+  done
+}
+if ! wait_for "top-level Kustomizations ready" 180 5 check_top_kustomizations_ready; then
+  for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
+    KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+    if [ "$KS_READY" != "True" ]; then
+      echo "ERROR: flux-system/$ks_name Kustomization not Ready (status=$KS_READY)"
+      EXIT=1
+    fi
+  done
+else
+  echo "All top-level Kustomizations ready"
+fi
+
+echo ""
+echo "=== Observability Stack ==="
+check_obs_pods_healthy() {
+  OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
+  [ -z "$OBS_PODS" ] && return 1
+  echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/ {exit 1}' || return 1
+  echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) exit 1}' || return 1
+}
+# Long timeout in steady state covers chart-upgrade rollouts; short
+# timeout in bootstrap/recovery so we drop into the WARNING branch
+# below quickly instead of burning the full budget when the namespace
+# is legitimately empty.
+OBS_PODS_WAIT=240
+[ "$STEADY_STATE" != "true" ] && OBS_PODS_WAIT=30
+if ! wait_for "observability pods healthy" "$OBS_PODS_WAIT" 10 check_obs_pods_healthy; then
+  OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
+  if [ -z "$OBS_PODS" ]; then
+    if [ "$STEADY_STATE" = "true" ]; then
+      echo "ERROR: No pods in observability namespace on a steady-state cluster"
+      EXIT=1
+    else
+      echo "WARNING: No pods in observability namespace (bootstrap/recovery)"
+    fi
+  else
+    OBS_BAD=$(echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/')
+    if [ -n "$OBS_BAD" ]; then
+      # In bootstrap/recovery, pods may legitimately be Pending,
+      # ContainerCreating, or initializing mid-rollout — warn for
+      # those. Anything not on the transient-state allowlist (any
+      # form of CrashLoopBackOff, ImagePullBackOff, InvalidImageName,
+      # OOMKilled, etc.) is a real bug even during bootstrap.
+      # Steady-state always fails on any non-Running pod.
+      OBS_NON_TRANSIENT=$(echo "$OBS_BAD" | awk '$3 !~ /^(Pending|ContainerCreating|PodInitializing|Terminating|Init:[0-9]+\/[0-9]+)$/')
+      if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_NON_TRANSIENT" ]; then
+        echo "ERROR: Observability pods in failing state:"
+        echo "$OBS_BAD"
+        EXIT=1
+      else
+        echo "WARNING: Some observability pods not yet Running (bootstrap/recovery):"
+        echo "$OBS_BAD"
+      fi
+    else
+      OBS_UNREADY=$(echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) print}')
+      if [ -n "$OBS_UNREADY" ]; then
+        echo "WARNING: Some observability pods have unready containers:"
+        echo "$OBS_UNREADY"
+        if [ "$STEADY_STATE" = "true" ]; then EXIT=1; fi
+      fi
+    fi
+  fi
+else
+  echo "All observability pods healthy"
+fi
+check_obs_helmreleases_ready() {
+  OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
+  OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
+  [ "${OBS_HR_COUNT:-0}" -eq 0 ] && return 1
+  OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
+  [ -z "$OBS_HR_BAD" ]
+}
+# Same pattern as the pods wait above: long budget in steady state for
+# chart-upgrade reconciliation, short budget in bootstrap/recovery so
+# the WARNING branch handles the legitimately-empty case without delay.
+OBS_HR_WAIT=300
+[ "$STEADY_STATE" != "true" ] && OBS_HR_WAIT=30
+if ! wait_for "observability HelmReleases ready" "$OBS_HR_WAIT" 10 check_obs_helmreleases_ready; then
+  OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
+  OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
+  if [ "${OBS_HR_COUNT:-0}" -eq 0 ]; then
+    if [ "$STEADY_STATE" = "true" ]; then
+      echo "ERROR: No HelmReleases in observability namespace on a steady-state cluster"
+      EXIT=1
+    else
+      echo "WARNING: No HelmReleases in observability namespace (bootstrap/recovery)"
+    fi
+  else
+    OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
+    # In bootstrap/recovery, HelmReleases may still be reconciling on
+    # first install — warn instead of failing hard. But hard-failure
+    # reasons (InstallFailed/UpgradeFailed/etc.) AND any HR with a
+    # non-zero .status.failures (controller has retried at least once)
+    # are real bugs even during bootstrap, so always fail on those.
+    # The .status.failures check catches degraded HRs whose Ready
+    # condition reason doesn't match the explicit allowlist.
+    OBS_HR_FAILED=$(echo "$OBS_HR_JSON" | jq -r '
+      .items[]
+      | (.status.conditions // [] | map(select(.type=="Ready")) | .[0]) as $ready
+      | select(
+          $ready.status != "True"
+          and (
+            (($ready.reason // "") | test("InstallFailed|UpgradeFailed|TestFailed|RollbackFailed"))
+            or ((.status.failures // 0) > 0)
+          )
+        )
+      | .metadata.name' 2>/dev/null || true)
+    if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_HR_FAILED" ]; then
+      echo "ERROR: Not all observability HelmReleases are Ready:"
+      echo "$OBS_HR_BAD"
+      EXIT=1
+    else
+      echo "WARNING: Some observability HelmReleases still reconciling (bootstrap/recovery):"
+      echo "$OBS_HR_BAD"
+    fi
+  fi
+else
+  echo "All observability HelmReleases ready"
+fi
+
+echo ""
+echo "LoadBalancer services:"
+kubectl get svc -A | grep LoadBalancer || true
+
+echo ""
+echo "Checking GitLab health..."
+gitlab_ok=false
+start_ts=$(date +%s)
+last_err=""
+while true; do
+  if curl_out=$(curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness 2>&1); then
+    gitlab_ok=true
+    break
+  fi
+  last_err=$curl_out
+  elapsed=$(( $(date +%s) - start_ts ))
+  if [ "$elapsed" -ge 60 ]; then break; fi
+  echo "GitLab health probe failed (${elapsed}s elapsed), retrying..."
+  sleep 3
+done
+if [ "$gitlab_ok" = "true" ]; then
+  echo "GitLab API: OK"
+else
+  echo "ERROR: GitLab health check failed after 60s of retries"
+  echo "Last curl error: ${last_err:-<empty>}"
+  EXIT=1
+fi
+
+echo ""
+echo "=== Verification Complete (exit=$EXIT) ==="
+exit $EXIT

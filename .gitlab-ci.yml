@@ -3,11 +3,8 @@
 # Canonical source: https://git.ericsweiss.com/eric/weisssrv
 # GitHub mirror: https://github.com/ericsweiss/weisssrv (read-only)
 #
-# Pipeline Features:
-# - Full validation suite (lint, test, security)
-# - Auto-deployment on merge to main (after tests pass)
-# - 1Password integration for all secrets
-# - Service restarts: automatic
+# Restart/reboot policy:
+# - Service restarts: automatic (during deploys)
 # - Machine reboots: manual approval required (maintenance jobs auto-reboot when triggered)
 #
 # Required CI/CD Variables (Settings > CI/CD > Variables):
@@ -19,7 +16,9 @@
 # Pipeline triggers:
 # - Merge requests: Validation only (no deploy)
 # - Push to main: Validation + auto-deploy
-# - Scheduled: Version checking and secret detection only (all other jobs excluded via when: never)
+# - Scheduled: Version checking and secret detection only (all other jobs excluded
+#   via when: never), EXCEPT a schedule with SCHEDULE_TYPE=full-test, which also runs
+#   build-molecule-images + molecule/integration tests as an external-dependency canary
 # - Manual (web): Lint, validate, test, security stages only (deploy/gate/maintenance excluded)
 
 stages:
@@ -59,15 +58,30 @@ variables:
   # deploy (.deploy-base) pip installs. Keep in step with requirements.txt's
   # ansible pin (which the molecule-ci image builds from).
   ANSIBLE_VERSION: "11.6.0"
-  # Single source for the kustomize pin installed by flux-lint and deploy-verify
-  # (was duplicated inline in both jobs — ci-dup-kustomize).
+  # Single source for the kustomize pin used by flux-lint and deploy-verify.
   KUSTOMIZE_VERSION: "5.4.3"
   KUSTOMIZE_SHA256: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
+  # Single source for the pytest/PyYAML pins pip-installed by the lint/test/
+  # verify jobs. PYYAML_VERSION also matches the version-check job's pin so
+  # every job parses YAML with the same library version.
+  PYTEST_VERSION: "9.1.1"
+  PYYAML_VERSION: "6.0.2"
 
 # ============================================================================
 # Workflow rules - when to run the pipeline
 # ============================================================================
 workflow:
+  # Aggressively cancel superseded MR pipelines. GitLab's default auto-cancel is
+  # "conservative": it stops cancelling a pipeline the moment any NON-interruptible
+  # job (build-molecule-images, the deploy-* jobs) has started — so on a busy MR,
+  # every push left the previous pipeline's heavy but interruptible molecule/
+  # integration jobs running, piling up on the shared k3s runners and starving
+  # them (the systemd-in-DinD containers then time out — the "Container is not
+  # running" flakes get worse the more commits are pushed). on_new_commit:
+  # interruptible cancels those interruptible jobs on the next push while leaving
+  # the non-interruptible image-build/deploy jobs untouched.
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -136,6 +150,124 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: never
 
+# Shared rules for every manual maintenance-stage job: skip schedule/web
+# pipelines, then a manual button on main (op-token guarded). Pull in via
+# `rules: - !reference [.maintenance-manual-rules, rules]` (nested !reference
+# to .skip-schedule-web is fine — see deploy-verify's rules for precedent).
+.maintenance-manual-rules:
+  rules:
+    - !reference [.skip-schedule-web, rules]
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      when: manual
+      # GitLab quirk: rules-based `when: manual` defaults to
+      # `allow_failure: false` (top-level `when: manual` defaults to
+      # true). Without this explicit `allow_failure: true`, every main
+      # pipeline would PAUSE waiting for someone to play these manual jobs
+      # — blocking unrelated CI flow. Failures are still surfaced in the
+      # GitLab UI when a job is actually played.
+      allow_failure: true
+
+# Shared `changes:` path lists for the lint/validate/test jobs. Each job's
+# merge_request_event and main rules pull the SAME list via
+# `changes: !reference [.paths-<x>, changes]`, so a path edit happens once
+# instead of in two hand-synced copies (which silently drift — a job just stops
+# running on one trigger). Hidden jobs (dot-prefixed) are template fragments,
+# never scheduled. NOT plain YAML anchors: the pipeline stays anchor-free
+# (extends/!reference only) so the planned include:-file split remains safe
+# (docs/16 ARCH-4 — anchors are file-local and would break across includes).
+.paths-build-molecule:
+  changes:
+    - docker/molecule-test/**/*
+    - docker/molecule-ci/**/*
+    - requirements.txt
+    - ansible/requirements.yml
+.paths-shellcheck:
+  changes:
+    - scripts/**/*
+    - ansible/roles/**/*.sh
+    - ansible/roles/**/*.sh.j2
+.paths-deploy-coverage:
+  changes:
+    - ansible/roles/**/*
+    - ansible/playbooks/**/*
+    # Covers group_vars/, host_vars/, hosts.yml, and any other top-level
+    # inventory file under ansible/inventories/prod/.
+    - ansible/inventories/prod/**/*
+.paths-molecule-matrix:
+  changes:
+    - ansible/roles/**/molecule/**/*
+    - ansible/integration-tests/**/*
+    - scripts/check-molecule-matrix-coverage.sh
+    - .gitlab-ci.yml
+.paths-flux-version-pin:
+  changes:
+    - .gitlab-ci.yml
+    - kubernetes/infrastructure/sources/versions-configmap.yaml
+    - ansible/inventories/prod/group_vars/all.yml
+.paths-yaml-lint:
+  changes:
+    - ansible/**/*
+    - kubernetes/**/*
+    - .gitlab-ci.yml
+.paths-ansible:
+  changes:
+    - ansible/**/*
+.paths-terraform:
+  changes:
+    - terraform/**/*
+.paths-flux-versions-sync:
+  changes:
+    - ansible/inventories/prod/group_vars/all.yml
+    - kubernetes/infrastructure/sources/versions-configmap.yaml
+    - scripts/generate-versions-configmap.py
+.paths-hosts-env-sync:
+  changes:
+    - ansible/inventories/prod/hosts.yml
+    - scripts/hosts.env
+    - scripts/generate-hosts-env.py
+.paths-python-tests:
+  changes:
+    # The pytest suite validates real tree files beyond scripts/:
+    # test_adguard_api_body.py asserts on the adguard_home role, and
+    # test_check_molecule_matrix_coverage.py smoke-tests the live matrix.
+    - scripts/**/*
+    - ansible/inventories/prod/group_vars/all.yml
+    - ansible/roles/adguard_home/tasks/api_base_config.yml
+    - ansible/roles/**/molecule/**/*
+    - ansible/integration-tests/**/*
+    - .gitlab-ci.yml
+.paths-flux-lint:
+  changes:
+    - kubernetes/**/*
+    - ansible/inventories/prod/group_vars/all.yml
+.paths-prometheus-config:
+  changes:
+    - kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
+    - kubernetes/infrastructure/observability/kube-prometheus-stack/alertmanager-config.yaml
+    - scripts/extract-prometheus-config.py
+    - scripts/lint-prometheus-config.sh
+.paths-molecule:
+  changes:
+    - ansible/roles/**/*
+    - ansible/molecule/**/*
+    - ansible/playbooks/**/*
+    - ansible/inventories/prod/group_vars/**/*
+    # Test-image/dependency changes must run the suite they feed
+    # (build-molecule-images fires on the same paths).
+    - docker/molecule-test/**/*
+    - docker/molecule-ci/**/*
+    - requirements.txt
+    - ansible/requirements.yml
+.paths-integration:
+  changes:
+    - ansible/integration-tests/**/*
+    - ansible/roles/**/*
+    - ansible/inventories/**/*
+    - docker/molecule-test/**/*
+    - docker/molecule-ci/**/*
+    - requirements.txt
+    - ansible/requirements.yml
+
 # GitLab HTTP state backend (project-scoped Terraform state + lock) shared by
 # terraform-plan and deploy-terraform via `extends`. Edit the path/auth once.
 .terraform-http-backend:
@@ -180,22 +312,24 @@ workflow:
       install -m 600 ansible/ansible.cfg "$ANSIBLE_CONFIG"
       trap "rm -f '$ANSIBLE_CONFIG'" EXIT
     - |
-      # Setup SSH from 1Password
+      # Setup SSH from 1Password. umask 077 in a subshell so the key file is
+      # never created with the default 0644 mode (no chmod race window).
       mkdir -p ~/.ssh
       chmod 700 ~/.ssh
-      op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519
-      chmod 600 ~/.ssh/id_ed25519
+      (umask 077; op read "op://Homelab/SSH Key/private key" > ~/.ssh/id_ed25519)
       # TOFU keyscan: ephemeral runners have no known_hosts to inherit, so we
       # fetch fresh per job rather than bake host keys into the image. Accepted
       # on a single-LAN homelab (MITM would need both network paths in the job
       # window). Strict pinning lives on the operator path: ansible.cfg
       # (StrictHostKeyChecking=accept-new) + host_vars/dns-01.yml host_key for
       # acme_certs cert distribution.
-      # Add known hosts for all infrastructure (Proxmox hosts, services, k3s VMs)
-      ssh-keyscan -H 192.168.0.102 192.168.0.103 192.168.0.104 192.168.0.105 192.168.0.106 192.168.0.107 >> ~/.ssh/known_hosts 2>/dev/null || true
-      ssh-keyscan -H 192.168.0.150 192.168.0.151 192.168.0.152 192.168.0.153 192.168.0.154 192.168.0.160 >> ~/.ssh/known_hosts 2>/dev/null || true
-      ssh-keyscan -H 192.168.0.202 192.168.0.203 192.168.0.204 192.168.0.205 192.168.0.206 192.168.0.207 >> ~/.ssh/known_hosts 2>/dev/null || true
-      ssh-keyscan -H 192.168.0.222 192.168.0.223 192.168.0.227 >> ~/.ssh/known_hosts 2>/dev/null || true
+      # Add known hosts for all infrastructure (Proxmox hosts, services, k3s
+      # VMs). ALL_SSH_IPS is generated from ansible/inventories/prod/hosts.yml
+      # (scripts/hosts.env; the hosts-env-sync job guards it against drift), so
+      # a new node is keyscanned automatically without editing this list.
+      . scripts/hosts.env
+      # shellcheck disable=SC2086  # word-split ALL_SSH_IPS into one keyscan
+      ssh-keyscan -H $ALL_SSH_IPS >> ~/.ssh/known_hosts 2>/dev/null || true
     - ansible-galaxy collection install -r ansible/requirements.yml
 
 # Shared kubectl install (pinned checksum) + kubeconfig fetch from 1Password.
@@ -218,8 +352,8 @@ workflow:
         echo "ERROR: op read returned empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?"
         exit 1
       fi
-      echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
-      chmod 600 ~/.kube/config
+      # umask 077 subshell: never create the kubeconfig world-readable.
+      (umask 077; echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config)
       export KUBECONFIG="$HOME/.kube/config"
       echo "Kubeconfig written ($(wc -c < ~/.kube/config) bytes), KUBECONFIG=$KUBECONFIG"
 
@@ -338,8 +472,7 @@ build-molecule-images:
     # mid-flight. The molecule-TEST image needs no digest dotenv: the molecule
     # jobs pull it by its immutable `:${CI_COMMIT_SHORT_SHA}` tag (see
     # .molecule-base before_script), which already pins the test target per
-    # pipeline. (A MOLECULE_TEST_IMAGE digest var used to be emitted here but was
-    # never consumed by any job — dead config, removed.)
+    # pipeline.
     - MOLECULE_CI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}")
     - echo "MOLECULE_CI_IMAGE=${MOLECULE_CI_DIGEST}" > molecule-images.env
     - cat molecule-images.env
@@ -360,20 +493,17 @@ build-molecule-images:
       dotenv: molecule-images.env
     expire_in: 7 days
   rules:
+    # full-test schedule canary: rebuild the images so external deps baked in
+    # at build time (apt, pip, ansible-galaxy) are exercised, not just the
+    # stale :latest image's runtime deps. Must precede the schedule
+    # `when: never` rule — GitLab rules are first-match-wins.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - docker/molecule-test/**/*
-        - docker/molecule-ci/**/*
-        - requirements.txt
-        - ansible/requirements.yml
+      changes: !reference [.paths-build-molecule, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - docker/molecule-test/**/*
-        - docker/molecule-ci/**/*
-        - requirements.txt
-        - ansible/requirements.yml
+      changes: !reference [.paths-build-molecule, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
@@ -443,15 +573,9 @@ shellcheck:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - scripts/**/*
-        - ansible/roles/**/*.sh
-        - ansible/roles/**/*.sh.j2
+      changes: !reference [.paths-shellcheck, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - scripts/**/*
-        - ansible/roles/**/*.sh
-        - ansible/roles/**/*.sh.j2
+      changes: !reference [.paths-shellcheck, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # Catches role changes that aren't mapped to any deploy-* job. Fails
@@ -461,12 +585,10 @@ shellcheck:
 deploy-coverage-check:
   needs: []
   stage: lint
-  # Switched from `alpine:3.19` to `python:3.11-slim` because the runner
-  # pod's `apk add ... dl-cdn.alpinelinux.org` started returning DNS lookup
-  # errors mid-pipeline. python:3.11-slim is Debian-based, ships bash +
-  # coreutils + python3, and we only need to apt-get git + PyYAML (one
-  # round-trip vs apk's six-package install). Same effective dependency
-  # set, no Alpine CDN dependency.
+  # python:3.11-slim (not alpine): apk installs from dl-cdn.alpinelinux.org
+  # returned DNS lookup errors mid-pipeline. The Debian image ships bash +
+  # coreutils + python3, so before_script only needs apt-get git + pip
+  # PyYAML — no Alpine CDN dependency.
   image: python:3.11-slim
   variables:
     # The script `git merge-base --is-ancestor BASE_REF HEAD` guard
@@ -481,24 +603,16 @@ deploy-coverage-check:
     # name=deploy-* AND stage=deploy). Plain `grep -oE` would match
     # paths inside lint/test job rules and report false coverage.
     - apt-get update -qq && apt-get install -y --no-install-recommends git
-    - pip install --no-cache-dir --quiet PyYAML
+    - pip install --no-cache-dir --quiet "PyYAML==${PYYAML_VERSION}"
   script:
     - bash scripts/check-deploy-coverage.sh
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/roles/**/*
-        - ansible/playbooks/**/*
-        # Covers group_vars/, host_vars/, hosts.yml, and any other
-        # top-level inventory file under ansible/inventories/prod/.
-        - ansible/inventories/prod/**/*
+      changes: !reference [.paths-deploy-coverage, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/roles/**/*
-        - ansible/playbooks/**/*
-        - ansible/inventories/prod/**/*
+      changes: !reference [.paths-deploy-coverage, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
@@ -513,24 +627,16 @@ molecule-matrix-coverage-check:
   stage: lint
   image: python:3.11-slim
   before_script:
-    - pip install --no-cache-dir --quiet PyYAML
+    - pip install --no-cache-dir --quiet "PyYAML==${PYYAML_VERSION}"
   script:
     - bash scripts/check-molecule-matrix-coverage.sh
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/roles/**/molecule/**/*
-        - ansible/integration-tests/**/*
-        - scripts/check-molecule-matrix-coverage.sh
-        - .gitlab-ci.yml
+      changes: !reference [.paths-molecule-matrix, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/roles/**/molecule/**/*
-        - ansible/integration-tests/**/*
-        - scripts/check-molecule-matrix-coverage.sh
-        - .gitlab-ci.yml
+      changes: !reference [.paths-molecule-matrix, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # deploy-verify hardcodes FLUX_VERSION + tarball sha256 as a pin pair
@@ -555,22 +661,21 @@ flux-version-pin-check:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - .gitlab-ci.yml
-        - kubernetes/infrastructure/sources/versions-configmap.yaml
-        - ansible/inventories/prod/group_vars/all.yml
+      changes: !reference [.paths-flux-version-pin, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - .gitlab-ci.yml
-        - kubernetes/infrastructure/sources/versions-configmap.yaml
-        - ansible/inventories/prod/group_vars/all.yml
+      changes: !reference [.paths-flux-version-pin, changes]
 
 yaml-lint:
   needs: []
   stage: lint
+  # `-d relaxed` is a baseline syntax check across the whole tree. Strict
+  # enforcement of ansible/.yamllint (160-char line-length, truthy, octal)
+  # is owned by the ansible-lint job, which loads that config from `cd
+  # ansible` and honors the repo's `# noqa yaml[...]` exemptions — raw
+  # yamllint cannot, so don't point this job at ansible/.yamllint.
   before_script:
-    - apt-get update -qq
-    - pip install --quiet yamllint==1.37.1
+    # Keep the yamllint pin in step with requirements.txt (molecule-ci image).
+    - pip install --quiet yamllint==1.38.0
   script:
     - yamllint -d relaxed ansible/
     - yamllint -d relaxed kubernetes/
@@ -579,15 +684,9 @@ yaml-lint:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/**/*
-        - kubernetes/**/*
-        - .gitlab-ci.yml
+      changes: !reference [.paths-yaml-lint, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/**/*
-        - kubernetes/**/*
-        - .gitlab-ci.yml
+      changes: !reference [.paths-yaml-lint, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 ansible-lint:
@@ -615,25 +714,13 @@ ansible-lint:
         fi
       done
     - ansible-lint playbooks/ roles/
-    - |
-      echo "Validating proxmox_ha role structure..."
-      for task_file in roles/proxmox_ha/tasks/*.yml; do
-        echo "Validating YAML: $task_file"
-        python3 -c "import yaml; yaml.safe_load(open('$task_file'))"
-      done
-      for f in main.yml rules.yml resources.yml replication.yml; do
-        test -f "roles/proxmox_ha/tasks/$f" || { echo "ERROR: $f missing"; exit 1; }
-        echo "  Found: $f"
-      done
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/**/*
+      changes: !reference [.paths-ansible, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/**/*
+      changes: !reference [.paths-ansible, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-fmt:
@@ -649,11 +736,9 @@ terraform-fmt:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
@@ -776,11 +861,9 @@ terraform-validate:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-plan:
@@ -798,8 +881,8 @@ terraform-plan:
     # hashes are committed; a CI-side change would mask supply-chain drift).
     - terraform init -lockfile=readonly
     - |
-      export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-      export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
+      export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+      export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare Terraform Token/username")
       terraform plan -input=false -no-color -lock-timeout=120s -out=tfplan
     # Generate plan report for MR widget (shows resource change counts in merge requests)
     - terraform show -json tfplan | jq -r '
@@ -829,11 +912,9 @@ terraform-plan:
     # skip, not a clean plan. validation-gate needs this job optionally, so a
     # token-gated skip can't silently mask drift on a real (token-bearing) run.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform, changes]
 
 flux-versions-sync:
   needs: []
@@ -843,7 +924,7 @@ flux-versions-sync:
   stage: lint
   image: python:3.11-slim
   before_script:
-    - pip install --quiet pyyaml
+    - pip install --quiet "pyyaml==${PYYAML_VERSION}"
   script:
     # Compare committed ConfigMap against a freshly-generated one. The
     # generator writes in-place, so we save + restore the committed file
@@ -866,15 +947,45 @@ flux-versions-sync:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/inventories/prod/group_vars/all.yml
-        - kubernetes/infrastructure/sources/versions-configmap.yaml
-        - scripts/generate-versions-configmap.py
+      changes: !reference [.paths-flux-versions-sync, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/inventories/prod/group_vars/all.yml
-        - kubernetes/infrastructure/sources/versions-configmap.yaml
-        - scripts/generate-versions-configmap.py
+      changes: !reference [.paths-flux-versions-sync, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+hosts-env-sync:
+  needs: []
+  # Fails if scripts/hosts.env is out of sync with the host roster in
+  # ansible/inventories/prod/hosts.yml. Run `task hosts:sync` locally to
+  # regenerate and commit. Mirrors flux-versions-sync (same drift-guard pattern).
+  stage: lint
+  image: python:3.11-slim
+  before_script:
+    - pip install --quiet "pyyaml==${PYYAML_VERSION}"
+  script:
+    # Compare the committed file against a freshly-generated one. The generator
+    # writes in place, so save + restore to keep the workspace clean for the
+    # keyscan (which sources hosts.env) and other jobs.
+    - |
+      set -eo pipefail
+      TARGET=scripts/hosts.env
+      cp "$TARGET" /tmp/committed.env
+      python3 scripts/generate-hosts-env.py
+      cp "$TARGET" /tmp/generated.env
+      cp /tmp/committed.env "$TARGET"   # restore workspace
+      if ! diff -q /tmp/committed.env /tmp/generated.env >/dev/null 2>&1; then
+        echo "ERROR: scripts/hosts.env is out of sync with hosts.yml"
+        echo "Run: task hosts:sync and commit the result."
+        diff -u /tmp/committed.env /tmp/generated.env || true
+        exit 1
+      fi
+      echo "scripts/hosts.env is in sync with hosts.yml"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-hosts-env-sync, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-hosts-env-sync, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 python-tests:
@@ -888,7 +999,7 @@ python-tests:
     # git is required by test_check_deploy_coverage.py (it builds throwaway git
     # repos to exercise check-deploy-coverage.sh); the slim image omits it.
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
-    - pip install --quiet pytest pyyaml
+    - pip install --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}"
   script:
     - pytest scripts/ -v --junitxml=report.xml
   artifacts:
@@ -904,21 +1015,9 @@ python-tests:
     # molecule/integration dirs. Those paths must be in `changes:` or an MR that edits
     # only them would skip the tests that guard them.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - scripts/**/*
-        - ansible/inventories/prod/group_vars/all.yml
-        - ansible/roles/adguard_home/tasks/api_base_config.yml
-        - ansible/roles/**/molecule/**/*
-        - ansible/integration-tests/**/*
-        - .gitlab-ci.yml
+      changes: !reference [.paths-python-tests, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - scripts/**/*
-        - ansible/inventories/prod/group_vars/all.yml
-        - ansible/roles/adguard_home/tasks/api_base_config.yml
-        - ansible/roles/**/molecule/**/*
-        - ansible/integration-tests/**/*
-        - .gitlab-ci.yml
+      changes: !reference [.paths-python-tests, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 flux-lint:
@@ -933,7 +1032,7 @@ flux-lint:
   image: python:3.11-slim
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl gettext-base
-    - pip install --quiet pyyaml
+    - pip install --quiet "pyyaml==${PYYAML_VERSION}"
     - |
       KUBECONFORM_SHA256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
       curl -fsSL -o /tmp/kubeconform.tar.gz \
@@ -957,22 +1056,12 @@ flux-lint:
       # Extract cluster-versions ConfigMap keys and export as env so envsubst
       # can substitute ${var} placeholders in rendered manifests. This mirrors
       # what Flux's kustomize-controller does at reconcile time (postBuild).
+      # Shared with Taskfile flux:lint via scripts/flux-render.sh so the two
+      # paths can't drift.
       VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-      VARS_OUTPUT=$(python3 -c "
-      import yaml
-      with open('$VERSIONS_CONFIGMAP') as f:
-          doc = yaml.safe_load(f)
-      for k, v in doc.get('data', {}).items():
-          print(f'{k}\t{v}')
-      ") || { echo "ERROR: Failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
-      if [ -z "$VARS_OUTPUT" ]; then
-        echo "ERROR: No version keys found in $VERSIONS_CONFIGMAP"
-        exit 1
-      fi
-      while IFS=$'\t' read -r k v; do
-        [ -n "$k" ] && export "$k=$v"
-      done <<< "$VARS_OUTPUT"
-      ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
+      VARS=$(bash scripts/flux-render.sh export-versions "$VERSIONS_CONFIGMAP") \
+        || { echo "ERROR: failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
+      eval "$VARS"
 
       # Accumulate the full rendered corpus so the HPA/VPA invariant check
       # (below) sees standalone HPAs + VPAs across every namespace at once.
@@ -980,12 +1069,9 @@ flux-lint:
       RENDER_ALL=$(mktemp)
       trap 'rm -f "$RENDER_ALL"' EXIT
 
-      # kubeconform schema version: derive MAJOR.MINOR from k3s_version in the
-      # versions ConfigMap (the same source validate-helm-values.py reads) so both
-      # track one source at kubeconform's MAJOR.MINOR.0 schema granularity. The
-      # `|| true` keeps the empty-match fallback reachable under `set -eo pipefail`.
-      K8S_VER=$(grep -E '^ *k3s_version:' kubernetes/infrastructure/sources/versions-configmap.yaml | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
-      K8S_VER="${K8S_VER:-1.36}.0"
+      # kubeconform schema version derived from k3s_version (shared helper) so
+      # local lint + CI validate against the same MAJOR.MINOR.0 API schemas.
+      K8S_VER=$(bash scripts/flux-render.sh k8s-version "$VERSIONS_CONFIGMAP")
       echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
       # Iterate every Flux Kustomization under clusters/weisssrv/ and validate
       # the target path it points at. This picks up new top-level Kustomizations
@@ -1033,14 +1119,18 @@ flux-lint:
           FAILED=1
           continue
         fi
-        RENDERED=$(echo "$RAW" | envsubst "$ENVSUBST_VARS")
+        # printf '%s\n' (NOT echo): rendered manifests carry Grafana dashboard
+        # JSON with thousands of literal \n inside block scalars, and echo would
+        # expand those into real newlines and corrupt the YAML stream (same
+        # rationale as the deploy-verify dry-run block).
+        RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
         printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
         # KNOWN GAP: -ignore-missing-schemas silently SKIPS any CR whose schema
         # is absent from (or unreachable in) the datreeio CRDs-catalog. Most CRDs
         # we use (IngressRoute, VPA, ExternalSecret, ServiceMonitor, Certificate)
         # are in the catalog, but a CR for a kind not in the catalog is unchecked.
         # Tracked as a follow-up (vendor CRD JSON schemas + a second strict pass).
-        if ! echo "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
+        if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version "$K8S_VER" \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
@@ -1084,13 +1174,47 @@ flux-lint:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - kubernetes/**/*
-        - ansible/inventories/prod/group_vars/all.yml
+      changes: !reference [.paths-flux-lint, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - kubernetes/**/*
-        - ansible/inventories/prod/group_vars/all.yml
+      changes: !reference [.paths-flux-lint, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Validate the kube-prometheus-stack alert rules (PromQL in HelmRelease values)
+# and the Alertmanager config (ExternalSecret template) that kubeconform /
+# flux-lint can't parse. Without this, a bad expr or malformed route only
+# surfaces post-merge when the prometheus-operator admission webhook rejects the
+# rendered CR (failing the whole HelmRelease upgrade). See docs/33.
+prometheus-config-lint:
+  needs: []
+  stage: lint
+  image: python:3.11-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl
+    - pip install --quiet "pyyaml==${PYYAML_VERSION}"
+    - |
+      set -eo pipefail
+      # promtool (prometheus) + amtool (alertmanager), pinned + sha256 like every
+      # other downloaded binary in this pipeline. set -eo pipefail so a failing
+      # sha256sum -c aborts the block — without it only the last line's status
+      # counts and the integrity pin would be decorative.
+      PROM_VERSION="3.6.0"
+      curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz" -o /tmp/prom.tar.gz
+      echo "2002ef4a55a64161affccd2786c7081d4e3b3a8d08786a98b3bb110971414916  /tmp/prom.tar.gz" | sha256sum -c -
+      tar xzf /tmp/prom.tar.gz -C /usr/local/bin --strip-components=1 "prometheus-${PROM_VERSION}.linux-amd64/promtool"
+      AM_VERSION="0.28.1"
+      curl -fsSL "https://github.com/prometheus/alertmanager/releases/download/v${AM_VERSION}/alertmanager-${AM_VERSION}.linux-amd64.tar.gz" -o /tmp/am.tar.gz
+      echo "5ac7ab5e4b8ee5ce4d8fb0988f9cb275efcc3f181b4b408179fafee121693311  /tmp/am.tar.gz" | sha256sum -c -
+      tar xzf /tmp/am.tar.gz -C /usr/local/bin --strip-components=1 "alertmanager-${AM_VERSION}.linux-amd64/amtool"
+      promtool --version && amtool --version
+  script:
+    - bash scripts/lint-prometheus-config.sh
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-prometheus-config, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-prometheus-config, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
@@ -1108,10 +1232,14 @@ flux-lint:
 .molecule-base:
   stage: test
   # Backstop for infra-class scheduling failures (a pod that briefly can't be
-  # placed during transition churn surfaces as runner_system_failure). The primary
-  # fix is right-sizing the job resources + quota (gitlab-runner-privileged) so
-  # these are rare; deliberately NOT retrying stuck_or_timeout_failure — a
-  # genuinely hung test should fail fast, not burn another full timeout.
+  # placed during transition churn surfaces as runner_system_failure — wide
+  # molecule fan-outs can exhaust schedulable CPU/memory and time a job pod
+  # out Pending before any test runs). The primary fix is right-sizing the
+  # job resources + quota (gitlab-runner-privileged) so these are rare;
+  # deliberately NOT retrying script_failure (a failing test must not be
+  # masked — transient in-container start storms are handled by the in-job
+  # destroy+jitter loop in each test job) or stuck_or_timeout_failure (a
+  # genuinely hung test should fail fast, not burn another full timeout).
   retry:
     max: 2
     when:
@@ -1168,14 +1296,6 @@ flux-lint:
 
 molecule-tests:
   extends: .molecule-base
-  retry:
-    max: 2
-    when:
-      - script_failure
-      # Wide molecule fan-outs can exhaust schedulable CPU/memory and
-      # the job pod times out Pending (runner_system_failure) before
-      # any test runs — retry instead of failing the pipeline.
-      - runner_system_failure
   script:
     - cd "ansible/roles/$ROLE"
     # In-job retry with destroy + jitter. Under full pipeline fan-out,
@@ -1183,7 +1303,7 @@ molecule-tests:
     # setup and die at prepare ("Container X is not running" — pipelines
     # 360/361/365, several roles, always the same second). Job-level
     # retry re-rolls the same dice (all attempts land in the same
-    # storm); destroy + a randomized 15-45s sleep de-conflicts the
+    # storm); destroy + a randomized 20-65s sleep de-conflicts the
     # restart instead. $RANDOM is per-shell and the runner pod start
     # times differ, so the jitter genuinely spreads.
     # The default scenarios inherit shared config from ansible/molecule/base.yml
@@ -1192,14 +1312,18 @@ molecule-tests:
     - |
       base_opt=""
       [ "$SCENARIO" = "default" ] && base_opt="-c $CI_PROJECT_DIR/ansible/molecule/base.yml"
-      attempt=1; max=3
+      # max=4 (was 3): under a full ~55-job fan-out the container-start storm
+      # can outlast 3 attempts and exhaust; a 4th widely-jittered attempt
+      # usually catches a lull. Only flaky jobs pay it (a healthy job passes on
+      # attempt 1), and 4 * (test + <=65s jitter) still fits the job timeouts.
+      attempt=1; max=4
       until molecule $base_opt test -s "$SCENARIO"; do
         rc=$?
         attempt=$((attempt+1))
         if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
         echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
         molecule $base_opt destroy -s "$SCENARIO" || true
-        sleep $(( (RANDOM % 31) + 15 ))
+        sleep $(( (RANDOM % 46) + 20 ))
       done
   parallel:
     matrix:
@@ -1248,6 +1372,11 @@ molecule-tests:
         SCENARIO: default
       - ROLE: unbound
         SCENARIO: default
+      # apt_signed_repo is the shared signed-apt-repo pipeline backing
+      # alloy_host + gitlab + plex; its scenario hermetically tests both the
+      # accept (correct fingerprint) and reject (wrong fingerprint) paths.
+      - ROLE: apt_signed_repo
+        SCENARIO: default
       # prometheus_exporter is the shared install pipeline backing
       # zfs_exporter + unbound_exporter; its scenario contract-tests both
       # artifact branches (tarball + deb) on the skip path.
@@ -1274,6 +1403,8 @@ molecule-tests:
         SCENARIO: default
       - ROLE: proxmox_ha
         SCENARIO: default
+      - ROLE: proxmox_backup
+        SCENARIO: default
       # zfs_encryption: validates template rendering, file modes, systemd
       # ordering hooks, and per-pool service enable. Cannot exercise
       # `zfs load-key` (no kernel module in container) or live Connect
@@ -1282,20 +1413,16 @@ molecule-tests:
       - ROLE: zfs_encryption
         SCENARIO: default
   rules:
+    # full-test schedule canary (must precede the schedule when:never rule —
+    # first-match-wins): catches external-dependency rot (apt/galaxy/upstream
+    # installers) without waiting for an unrelated ansible MR to turn red.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/roles/**/*
-        - ansible/molecule/**/*
-        - ansible/playbooks/**/*
-        - ansible/inventories/prod/group_vars/**/*
+      changes: !reference [.paths-molecule, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/roles/**/*
-        - ansible/molecule/**/*
-        - ansible/playbooks/**/*
-        - ansible/inventories/prod/group_vars/**/*
+      changes: !reference [.paths-molecule, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 integration-tests:
@@ -1304,25 +1431,19 @@ integration-tests:
   # role stacks; base-infrastructure alone is ~12m idle and blew the
   # inherited 20m ceiling under pipeline fan-out contention (361).
   timeout: 35m
-  retry:
-    max: 2
-    when:
-      - script_failure
-      # Same pod-scheduling-timeout tolerance as molecule-tests.
-      - runner_system_failure
   script:
     - cd "ansible/integration-tests/$TEST"
     # Same in-job destroy+jitter retry as molecule-tests (see comment
     # there) — multi-container scenarios are the most start-storm-prone.
     - |
-      attempt=1; max=3
+      attempt=1; max=4
       until molecule test; do
         rc=$?
         attempt=$((attempt+1))
         if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
         echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
         molecule destroy || true
-        sleep $(( (RANDOM % 31) + 15 ))
+        sleep $(( (RANDOM % 46) + 20 ))
       done
   parallel:
     matrix:
@@ -1333,18 +1454,14 @@ integration-tests:
           - mail-stack
           - storage-stack
   rules:
+    # full-test schedule canary — same rationale as molecule-tests.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - ansible/integration-tests/**/*
-        - ansible/roles/**/*
-        - ansible/inventories/**/*
+      changes: !reference [.paths-integration, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - ansible/integration-tests/**/*
-        - ansible/roles/**/*
-        - ansible/inventories/**/*
+      changes: !reference [.paths-integration, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
@@ -1362,13 +1479,13 @@ secret_detection:
     # Custom gitleaks config is loaded via `.gitlab/secret-detection-ruleset.toml`
     # which `[[secrets.passthrough]]`s `.gitleaks.toml`. The previously-used
     # `SECRET_DETECTION_RULESET_PATH` variable is not a documented GitLab
-    # variable and was silently ignored. `.gitleaks.toml` carries both
+    # variable and was silently ignored. `.gitleaks.toml` carries
     # content-allowlist regexes (`op://`, `[your-...]`, anchored test/fake
-    # fixture tokens) AND a path-allowlist that exempts `docs/*.md` +
-    # `ansible/roles/*/molecule/*` wholesale — those trees are noisy with
-    # placeholder-shaped strings. Trade-off (a real secret committed under
-    # those paths won't be caught here) is documented in `.gitleaks.toml`
-    # header.
+    # fixture tokens) that cover the placeholder shapes docs use — `docs/*.md`
+    # is scanned normally — plus a path-allowlist for the molecule/
+    # integration-test trees only (throwaway PEM fixtures). Trade-off (a real
+    # secret committed under those test paths won't be caught here) is
+    # documented in `.gitleaks.toml` header.
     # Require modern CPU (gitleaks binary uses POPCNT/SSE4.2 - OptiPlex Core 2 Quads crash with SIGILL)
     # OPERATIONAL INVARIANT: this job is pinned to esweiss.com/cpu=modern nodes.
     # If no modern-CPU node is schedulable the job sits Pending and is NOT a
@@ -1418,7 +1535,11 @@ validation-gate:
       optional: true
     - job: flux-versions-sync
       optional: true
+    - job: hosts-env-sync
+      optional: true
     - job: flux-lint
+      optional: true
+    - job: prometheus-config-lint
       optional: true
     - job: flux-version-pin-check
       optional: true
@@ -1487,8 +1608,8 @@ deploy-terraform:
     # hashes are committed; a CI-side change would mask supply-chain drift).
     - terraform init -lockfile=readonly
     - |
-      export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare DNS Token/credential")
-      export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare DNS Token/username")
+      export TF_VAR_cloudflare_api_token=$(op read "op://Homelab/Cloudflare Terraform Token/credential")
+      export TF_VAR_cloudflare_account_id=$(op read "op://Homelab/Cloudflare Terraform Token/username")
       terraform apply -auto-approve -lock-timeout=120s tfplan
   environment:
     name: production/cloudflare
@@ -1534,10 +1655,13 @@ deploy-ansible-base:
         # node_exporter_host + alloy_host live in site.yml and run on the
         # same host set base does. The script above runs site.yml with
         # --tags node_exporter_host,alloy_host as a second step so these
-        # changes actually deploy when this rule fires (previously the
-        # rule advertised coverage that base.yml alone did not provide).
+        # changes actually deploy when this rule fires.
         - ansible/roles/node_exporter_host/**/*
         - ansible/roles/alloy_host/**/*
+        # apt_signed_repo is the shared signed-repo helper alloy_host includes;
+        # list it so a helper-only change still triggers the base deploy (same
+        # pattern prometheus_exporter uses under deploy-ansible-dns/storage).
+        - ansible/roles/apt_signed_repo/**/*
         - ansible/playbooks/base.yml
         - ansible/playbooks/site.yml
         - ansible/inventories/prod/group_vars/proxmox.yml
@@ -1571,6 +1695,9 @@ deploy-ansible-proxmox:
         - ansible/roles/qol/**/*
         - ansible/roles/tailscale/**/*
         - ansible/roles/postfix_null_client/**/*
+        # This job RUNS site.yml plays (--limit proxmox); a change to those
+        # plays must redeploy too (idempotent, so extra triggers are safe).
+        - ansible/playbooks/site.yml
 
 deploy-ansible-firewall:
   stage: deploy
@@ -1679,6 +1806,9 @@ deploy-ansible-storage:
         # same path is listed under deploy-ansible-dns.
         - ansible/roles/prometheus_exporter/**/*
         - ansible/roles/nfs_tls/**/*
+        # Declarative storage.cfg + vzdump jobs — runs from storage.yml on
+        # pve-nas-01 (cluster-wide config, idempotent).
+        - ansible/roles/proxmox_backup/**/*
         - ansible/playbooks/storage.yml
 
 deploy-ansible-mail:
@@ -1712,6 +1842,9 @@ deploy-ansible-mail:
         # site.yml --limit mail run, so a vars-only change must trigger
         # a redeploy (mirrors group_vars/dns.yml on the dns job).
         - ansible/inventories/prod/group_vars/mail.yml
+        # This job RUNS site.yml plays (--limit mail); a change to those
+        # plays must redeploy too.
+        - ansible/playbooks/site.yml
 
 deploy-ansible-certs:
   stage: deploy
@@ -1759,6 +1892,9 @@ deploy-ansible-certs:
         # acme_certs uses for cert distribution; a change to those
         # fingerprints needs a redeploy.
         - ansible/inventories/prod/host_vars/dns-01.yml
+        # This job RUNS site.yml plays (--limit dns --tags acme_certs); a
+        # change to those plays must redeploy too.
+        - ansible/playbooks/site.yml
 
 # ------------------------------------------------------------------------------
 # Ansible Applications (VMs/LXC)
@@ -1794,6 +1930,9 @@ deploy-plex:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/plex/**/*
+        # apt_signed_repo: shared signed-repo helper plex includes (Debian
+        # non-free repo pin) — a helper-only change must still deploy plex.
+        - ansible/roles/apt_signed_repo/**/*
         - ansible/roles/proxmox_lxc/**/*
         - ansible/playbooks/plex.yml
 
@@ -1850,6 +1989,9 @@ deploy-gitlab:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes:
         - ansible/roles/gitlab/**/*
+        # apt_signed_repo: shared signed-repo helper the gitlab role includes
+        # for the GitLab omnibus apt repo — a helper-only change must deploy it.
+        - ansible/roles/apt_signed_repo/**/*
         # zvol_mount is invoked by the gitlab role for the
         # /mnt/gitlab-repos persistent volume.
         - ansible/roles/zvol_mount/**/*
@@ -1997,428 +2139,7 @@ deploy-verify:
       echo "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f  /tmp/flux.tar.gz" | sha256sum -c -
       tar xzf /tmp/flux.tar.gz -C /usr/local/bin flux
       flux --version
-    - |
-      set -eo pipefail
-
-      # Install tools needed for server-side dry-run validation.
-      # These are already in the flux-lint job's before_script but deploy-verify
-      # extends .k3s-deploy-base (kubectl + jq only), so we install them here.
-      apt-get install -y -qq gettext-base > /dev/null 2>&1
-      pip install --quiet pyyaml
-      curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
-      echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c -
-      tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
-
-      # Bounded retry helper for transient startup states.
-      # Suppresses output during polling; on timeout, prints the last
-      # failed attempt's output for diagnostics.
-      wait_for() {
-        local desc="$1" timeout="$2" interval="$3"; shift 3
-        local start_ts last_output
-        start_ts=$(date +%s)
-        while true; do
-          last_output=$("$@" 2>&1) && return 0
-          local elapsed=$(( $(date +%s) - start_ts ))
-          if [ "$elapsed" -ge "$timeout" ]; then
-            echo "wait_for: $desc timed out after ${elapsed}s"
-            echo "Last check output:"
-            echo "$last_output"
-            return 1
-          fi
-          echo "wait_for: $desc not ready (${elapsed}s/${timeout}s)..."
-          sleep "$interval"
-        done
-      }
-
-      echo "=== Post-Deployment Verification ==="
-
-      # jq filter fragment: select items whose Ready condition is missing or not True.
-      # Used by multiple check functions below.
-      JQ_NOT_READY='select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))'
-
-      echo "Checking node status..."
-      check_nodes_ready() {
-        NODE_OUTPUT=$(kubectl get nodes --no-headers)
-        [ -z "$NODE_OUTPUT" ] && return 1
-        NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 != "Ready" {count++} END {print count+0}')
-        [ "$NOT_READY" -eq 0 ]
-      }
-      if ! wait_for "all nodes Ready" 60 5 check_nodes_ready; then
-        echo "ERROR: Node(s) not Ready after 60s"
-        kubectl get nodes --no-headers
-        exit 1
-      fi
-      kubectl get nodes --no-headers
-
-      EXIT=0
-
-      echo ""
-      echo "=== Server-side dry-run validation ==="
-      # Validate rendered manifests against the cluster API without applying.
-      # Catches CRD field mismatches and API validation issues that kubeconform
-      # (offline schema) cannot detect. Runs before Flux reconcile so issues
-      # are surfaced even if Flux itself would fail to apply them.
-      VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-      if [ ! -f "$VERSIONS_CONFIGMAP" ]; then
-        echo "ERROR: $VERSIONS_CONFIGMAP not found"
-        exit 1
-      fi
-      VARS_OUTPUT=$(python3 -c "
-      import yaml
-      with open('$VERSIONS_CONFIGMAP') as f:
-          doc = yaml.safe_load(f)
-      for k, v in doc.get('data', {}).items():
-          print(f'{k}\t{v}')
-      ") || { echo "ERROR: failed to extract version keys for dry-run"; exit 1; }
-      if [ -n "$VARS_OUTPUT" ]; then
-        while IFS=$'\t' read -r k v; do
-          [ -n "$k" ] && export "$k=$v"
-        done <<< "$VARS_OUTPUT"
-        ENVSUBST_VARS=$(echo "$VARS_OUTPUT" | awk -F'\t' '{printf "${%s} ", $1}')
-        for ks in kubernetes/clusters/weisssrv/*.yaml; do
-          NAME=$(basename "$ks" .yaml)
-          [ "$NAME" = "kustomization" ] && continue
-          # Python source must reach python3 -c with NO leading whitespace, or
-          # it raises IndentationError at module level. The YAML `- |` literal
-          # block strips a 6-space indent from each line, so the Python lines
-          # below MUST be at exactly 6 spaces (matching the script block's
-          # content indent), not aligned with the surrounding bash if-block.
-          if ! SRCPATH=$(python3 -c "
-      import yaml
-      with open('$ks') as f:
-          doc = yaml.safe_load(f)
-      print(doc.get('spec',{}).get('path','') or '')
-      "); then
-            echo "    ERROR: failed to parse $ks"
-            EXIT=1
-            continue
-          fi
-          [ -z "$SRCPATH" ] && continue
-          SRCPATH=${SRCPATH#./}
-          echo "  dry-run: $SRCPATH"
-          # IMPORTANT: use `printf '%s\n'` (NOT `echo`) when piping captured
-          # YAML through commands. `echo` interprets backslash escapes by
-          # default in bash; the rendered manifests contain Grafana dashboard
-          # JSON with thousands of `\n` literals inside `|` block scalars,
-          # and echo turns those into actual newlines — corrupting line
-          # numbering and breaking the YAML parser ("did not find expected
-          # comment or line break" mid-stream). printf '%s' preserves bytes.
-          # Split kustomize stderr into a tmpfile so warnings/deprecation
-          # notices on stderr don't contaminate the YAML stream that goes
-          # to envsubst/kubectl. (`2>&1` would mix them in and create
-          # spurious YAML parse errors downstream.)
-          KS_ERR=$(mktemp)
-          if ! RAW=$(kustomize build "$SRCPATH" 2>"$KS_ERR"); then
-            echo "    FAIL: kustomize build failed for $SRCPATH"
-            head -120 <"$KS_ERR"
-            rm -f "$KS_ERR"
-            EXIT=1
-            continue
-          fi
-          rm -f "$KS_ERR"
-          RENDERED=$(printf '%s\n' "$RAW" | envsubst "$ENVSUBST_VARS")
-          # Use server-side apply (SSA) for dry-run validation. Plain
-          # `apply --dry-run=server` requires the legacy
-          # `kubectl.kubernetes.io/last-applied-configuration` annotation
-          # (resources Flux owns don't have it) and computes a strategic
-          # merge patch in the kubectl client. SSA sends the manifest to
-          # the API server which computes the diff itself, no client-side
-          # patch construction. --force-conflicts makes the dry-run win
-          # field-ownership disputes with kustomize-controller; nothing is
-          # persisted (it's still --dry-run=server).
-          # Wrap the assignment in `if` so a non-zero kubectl exit doesn't
-          # abort the script via `set -e` before we check DRYRUN_RC.
-          if DRYRUN_ERR=$(printf '%s\n' "$RENDERED" | kubectl apply \
-            --server-side --dry-run=server --force-conflicts \
-            --field-manager=ci-deploy-verify -f - 2>&1); then
-            DRYRUN_RC=0
-          else
-            DRYRUN_RC=$?
-          fi
-          if [ "$DRYRUN_RC" -ne 0 ]; then
-            echo "    FAIL: server-side dry-run rejected manifests from $SRCPATH"
-            # Filter for actual error lines; fall back to raw output if no
-            # match. `|| true` keeps grep's no-match exit (1) from aborting
-            # the script under `set -o pipefail`. Also catches kubectl
-            # error patterns we didn't enumerate (e.g. "forbidden",
-            # "timeout") via the fallback path.
-            FILTERED_ERR=$(grep -iE "error|invalid|did not find|cannot|forbidden|timeout" \
-              <<<"$DRYRUN_ERR" || true)
-            # Use here-string (<<<) instead of `printf | head` so head's
-            # early stdin close doesn't SIGPIPE the writer and trip
-            # `set -o pipefail`.
-            if [ -n "$FILTERED_ERR" ]; then
-              head -30 <<<"$FILTERED_ERR"
-            else
-              head -30 <<<"$DRYRUN_ERR"
-            fi
-            EXIT=1
-          fi
-        done
-      fi
-
-      # Snapshot pre-reconcile state to distinguish steady-state from bootstrap.
-      # If all Kustomizations are already Ready, this is a steady-state push and
-      # non-Ready ExternalSecrets should be treated as failures. During bootstrap
-      # or recovery (some Kustomizations not yet Ready), ESO may still be starting
-      # and ES non-readiness is expected.
-      PRE_KS_NOT_READY=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A -o json 2>/dev/null \
-        | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
-      STEADY_STATE=false
-      if [ "$PRE_KS_NOT_READY" -eq 0 ]; then
-        STEADY_STATE=true
-        echo "Cluster is steady-state (all Kustomizations were Ready pre-reconcile)"
-      else
-        echo "Cluster is in bootstrap/recovery ($PRE_KS_NOT_READY Kustomization(s) not Ready pre-reconcile)"
-      fi
-
-      echo ""
-      echo "=== Triggering Flux reconciliation ==="
-      # Force Flux to reconcile the current commit before checking status.
-      # Without this, we would check stale state from the previous reconcile cycle.
-      echo "Triggering Flux source reconciliation..."
-      if ! flux reconcile source git flux-system --timeout=2m; then
-        echo "ERROR: Flux source reconciliation failed or timed out"
-        EXIT=1
-      fi
-      echo "Triggering root kustomization reconciliation..."
-      if ! flux reconcile kustomization flux-system --timeout=3m --with-source; then
-        echo "ERROR: Flux root kustomization reconciliation failed or timed out"
-        EXIT=1
-      fi
-      # Allow downstream kustomizations time to reconcile after the root
-      sleep 15
-
-      echo ""
-      echo "Flux controllers:"
-      flux check
-
-      echo ""
-      echo "Flux Kustomizations:"
-      flux get kustomizations -A
-
-      echo ""
-      echo "Flux HelmReleases:"
-      flux get helmreleases -A
-
-      echo ""
-      echo "ExternalSecrets:"
-      kubectl get externalsecrets -A
-
-      echo ""
-      echo "ExternalSecret readiness:"
-      check_externalsecrets_ready() {
-        ES_COUNT=$(kubectl get externalsecrets -A -o json 2>/dev/null \
-          | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
-        [ "$ES_COUNT" -eq 0 ]
-      }
-      if ! wait_for "ExternalSecrets ready" 90 10 check_externalsecrets_ready; then
-        ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null \
-          | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
-        kubectl get externalsecrets -A -o json 2>/dev/null \
-          | jq -r ".items[] | $JQ_NOT_READY | \"  \(.metadata.namespace)/\(.metadata.name)\"" 2>/dev/null || true
-        if [ "$STEADY_STATE" = "true" ]; then
-          echo "ERROR: $ES_NOT_READY ExternalSecret(s) not Ready on a steady-state cluster"
-          EXIT=1
-        else
-          echo "WARNING: $ES_NOT_READY ExternalSecret(s) not Ready (bootstrap/recovery)"
-        fi
-      else
-        echo "All ExternalSecrets ready"
-      fi
-
-      # Fail if any Flux resource (Kustomization, HelmRelease, GitRepository,
-      # HelmRepository, etc.) is not Ready.
-      #
-      # Query the CRDs directly via kubectl -o json because `flux get all`
-      # only produces tabular output (json output was requested in fluxcd/flux2
-      # discussions #1904 / #3535 but hasn't been implemented). An earlier
-      # text-based implementation merged stderr into stdout and counted
-      # warnings as outages — we use structured jq against the API instead.
-      echo ""
-      echo "Checking for non-Ready Flux resources..."
-      FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
-      check_flux_resources_ready() {
-        FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null) || return 1
-        NOT_READY=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
-        [ "$NOT_READY" -eq 0 ]
-      }
-      # 5 min headroom — major chart bumps (kube-prometheus-stack, Loki) can
-      # take 2-4 min to reconcile through HelmRelease + child CRD updates +
-      # rollout, and verify runs immediately after `git push` of those bumps.
-      if ! wait_for "Flux resources ready" 300 10 check_flux_resources_ready; then
-        FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null || echo '{"items":[]}')
-        NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
-        echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
-        echo "$FLUX_ALL" | jq -r ".items[] | $JQ_NOT_READY | \"  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == \"Ready\")) | .[0].message // \"no Ready condition\")\""
-        EXIT=1
-      else
-        echo "All Flux resources ready"
-      fi
-
-      # Gate specifically on the top-level Flux Kustomizations — if any is
-      # stuck (any child HelmRelease failing), the above broad check catches
-      # it too, but naming them explicitly yields clear failure signals in
-      # the pipeline output.
-      check_top_kustomizations_ready() {
-        for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
-          KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-          if [ "$KS_READY" != "True" ]; then return 1; fi
-        done
-      }
-      if ! wait_for "top-level Kustomizations ready" 180 5 check_top_kustomizations_ready; then
-        for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
-          KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-          if [ "$KS_READY" != "True" ]; then
-            echo "ERROR: flux-system/$ks_name Kustomization not Ready (status=$KS_READY)"
-            EXIT=1
-          fi
-        done
-      else
-        echo "All top-level Kustomizations ready"
-      fi
-
-      echo ""
-      echo "=== Observability Stack ==="
-      check_obs_pods_healthy() {
-        OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
-        [ -z "$OBS_PODS" ] && return 1
-        echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/ {exit 1}' || return 1
-        echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) exit 1}' || return 1
-      }
-      # Long timeout in steady state covers chart-upgrade rollouts; short
-      # timeout in bootstrap/recovery so we drop into the WARNING branch
-      # below quickly instead of burning the full budget when the namespace
-      # is legitimately empty.
-      OBS_PODS_WAIT=240
-      [ "$STEADY_STATE" != "true" ] && OBS_PODS_WAIT=30
-      if ! wait_for "observability pods healthy" "$OBS_PODS_WAIT" 10 check_obs_pods_healthy; then
-        OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
-        if [ -z "$OBS_PODS" ]; then
-          if [ "$STEADY_STATE" = "true" ]; then
-            echo "ERROR: No pods in observability namespace on a steady-state cluster"
-            EXIT=1
-          else
-            echo "WARNING: No pods in observability namespace (bootstrap/recovery)"
-          fi
-        else
-          OBS_BAD=$(echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/')
-          if [ -n "$OBS_BAD" ]; then
-            # In bootstrap/recovery, pods may legitimately be Pending,
-            # ContainerCreating, or initializing mid-rollout — warn for
-            # those. Anything not on the transient-state allowlist (any
-            # form of CrashLoopBackOff, ImagePullBackOff, InvalidImageName,
-            # OOMKilled, etc.) is a real bug even during bootstrap.
-            # Steady-state always fails on any non-Running pod.
-            OBS_NON_TRANSIENT=$(echo "$OBS_BAD" | awk '$3 !~ /^(Pending|ContainerCreating|PodInitializing|Terminating|Init:[0-9]+\/[0-9]+)$/')
-            if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_NON_TRANSIENT" ]; then
-              echo "ERROR: Observability pods in failing state:"
-              echo "$OBS_BAD"
-              EXIT=1
-            else
-              echo "WARNING: Some observability pods not yet Running (bootstrap/recovery):"
-              echo "$OBS_BAD"
-            fi
-          else
-            OBS_UNREADY=$(echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) print}')
-            if [ -n "$OBS_UNREADY" ]; then
-              echo "WARNING: Some observability pods have unready containers:"
-              echo "$OBS_UNREADY"
-              if [ "$STEADY_STATE" = "true" ]; then EXIT=1; fi
-            fi
-          fi
-        fi
-      else
-        echo "All observability pods healthy"
-      fi
-      check_obs_helmreleases_ready() {
-        OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
-        OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
-        [ "${OBS_HR_COUNT:-0}" -eq 0 ] && return 1
-        OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
-        [ -z "$OBS_HR_BAD" ]
-      }
-      # Same pattern as the pods wait above: long budget in steady state for
-      # chart-upgrade reconciliation, short budget in bootstrap/recovery so
-      # the WARNING branch handles the legitimately-empty case without delay.
-      OBS_HR_WAIT=300
-      [ "$STEADY_STATE" != "true" ] && OBS_HR_WAIT=30
-      if ! wait_for "observability HelmReleases ready" "$OBS_HR_WAIT" 10 check_obs_helmreleases_ready; then
-        OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
-        OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
-        if [ "${OBS_HR_COUNT:-0}" -eq 0 ]; then
-          if [ "$STEADY_STATE" = "true" ]; then
-            echo "ERROR: No HelmReleases in observability namespace on a steady-state cluster"
-            EXIT=1
-          else
-            echo "WARNING: No HelmReleases in observability namespace (bootstrap/recovery)"
-          fi
-        else
-          OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
-          # In bootstrap/recovery, HelmReleases may still be reconciling on
-          # first install — warn instead of failing hard. But hard-failure
-          # reasons (InstallFailed/UpgradeFailed/etc.) AND any HR with a
-          # non-zero .status.failures (controller has retried at least once)
-          # are real bugs even during bootstrap, so always fail on those.
-          # The .status.failures check catches degraded HRs whose Ready
-          # condition reason doesn't match the explicit allowlist.
-          OBS_HR_FAILED=$(echo "$OBS_HR_JSON" | jq -r '
-            .items[]
-            | (.status.conditions // [] | map(select(.type=="Ready")) | .[0]) as $ready
-            | select(
-                $ready.status != "True"
-                and (
-                  (($ready.reason // "") | test("InstallFailed|UpgradeFailed|TestFailed|RollbackFailed"))
-                  or ((.status.failures // 0) > 0)
-                )
-              )
-            | .metadata.name' 2>/dev/null || true)
-          if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_HR_FAILED" ]; then
-            echo "ERROR: Not all observability HelmReleases are Ready:"
-            echo "$OBS_HR_BAD"
-            EXIT=1
-          else
-            echo "WARNING: Some observability HelmReleases still reconciling (bootstrap/recovery):"
-            echo "$OBS_HR_BAD"
-          fi
-        fi
-      else
-        echo "All observability HelmReleases ready"
-      fi
-
-      echo ""
-      echo "LoadBalancer services:"
-      kubectl get svc -A | grep LoadBalancer || true
-
-      echo ""
-      echo "Checking GitLab health..."
-      gitlab_ok=false
-      start_ts=$(date +%s)
-      last_err=""
-      while true; do
-        if curl_out=$(curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness 2>&1); then
-          gitlab_ok=true
-          break
-        fi
-        last_err=$curl_out
-        elapsed=$(( $(date +%s) - start_ts ))
-        if [ "$elapsed" -ge 60 ]; then break; fi
-        echo "GitLab health probe failed (${elapsed}s elapsed), retrying..."
-        sleep 3
-      done
-      if [ "$gitlab_ok" = "true" ]; then
-        echo "GitLab API: OK"
-      else
-        echo "ERROR: GitLab health check failed after 60s of retries"
-        echo "Last curl error: ${last_err:-<empty>}"
-        EXIT=1
-      fi
-
-      echo ""
-      echo "=== Verification Complete (exit=$EXIT) ==="
-      exit $EXIT
+    - bash scripts/deploy-verify.sh
   rules:
     # Inherit each deploy-* job's rules verbatim so this verify job appears
     # in the pipeline if and only if at least one deploy-* job does.
@@ -2482,10 +2203,7 @@ maintenance-update-packages:
     name: production/maintenance-packages
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # 2. Application updates - MANUAL (AdGuard, Tailscale, Plex)
 maintenance-update-applications:
@@ -2507,10 +2225,7 @@ maintenance-update-applications:
     name: production/maintenance-applications
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # 3. K3s node updates - MANUAL (cordon/upgrade/restart; no drain — kernel reboots via kured)
 maintenance-update-k3s-nodes:
@@ -2519,6 +2234,10 @@ maintenance-update-k3s-nodes:
   resource_group: infrastructure-maintenance
   variables:
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
+    # Lower-privilege agent token (ANS-D-2). Without it, group_vars/k3s.yml
+    # falls back to the cluster token and node upgrades would rewrite the
+    # agents' env files with the full token. See docs/19 "Agent token".
+    K3S_AGENT_TOKEN: "op://Homelab/K3s Agent Token/credential"
   script:
     - cd ansible
     - bash ../scripts/maintenance-run-with-verify.sh
@@ -2527,10 +2246,7 @@ maintenance-update-k3s-nodes:
     name: production/k3s-nodes
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # 4. K3s VM provisioning - MANUAL (creates/modifies VMs)
 maintenance-k3s-provision:
@@ -2540,9 +2256,9 @@ maintenance-k3s-provision:
   variables:
     SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
-    # Lower-privilege agent token (ANS-D-2), enabled 2026-07-04. Servers advertise
-    # it (agent-token) and agents join with it instead of the cluster token. See
-    # docs/19 "Agent token".
+    # Lower-privilege agent token (ANS-D-2). Servers advertise it (agent-token)
+    # and agents join with it instead of the cluster token. See docs/19
+    # "Agent token".
     K3S_AGENT_TOKEN: "op://Homelab/K3s Agent Token/credential"
   script:
     - cd ansible
@@ -2557,10 +2273,7 @@ maintenance-k3s-provision:
     name: production/k3s-provision
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # NOTE: maintenance-update-full removed from CI — superseded by:
 #   maintenance-update-packages (broader host coverage) + maintenance-update-applications
@@ -2579,10 +2292,7 @@ maintenance-proxmox-ha:
     name: production/proxmox-ha
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # 6. Home Assistant restart - MANUAL (restarts HA VM)
 maintenance-home-assistant-restart:
@@ -2597,10 +2307,7 @@ maintenance-home-assistant-restart:
     name: production/home-assistant-restart
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # Optional: single-button "run all 6 ops in sequence". Delegates the
 # 6-op sequence to scripts/maintenance-all-ops.sh and wraps it in
@@ -2619,6 +2326,9 @@ maintenance-run-all:
     ADGUARD_ADMIN_PASSWORD: "op://Homelab/AdGuard Home/password"
     TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
     K3S_TOKEN: "op://Homelab/K3s Cluster Token/credential"
+    # Lower-privilege agent token (ANS-D-2) — required by the k3s node-update
+    # and provision ops below, or they'd fall back to the cluster token.
+    K3S_AGENT_TOKEN: "op://Homelab/K3s Agent Token/credential"
   script:
     # The all-ops sub-script handles the 6 ops; the wrapper guarantees
     # verify runs after, even if any op failed.
@@ -2627,16 +2337,7 @@ maintenance-run-all:
     name: production/maintenance-run-all
     action: prepare
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      # GitLab quirk: rules-based `when: manual` defaults to
-      # `allow_failure: false` (top-level `when: manual` defaults to
-      # true). Without this explicit `allow_failure: true`, every main
-      # pipeline would PAUSE waiting for someone to play this manual
-      # job — blocking unrelated CI flow. Failures are still surfaced
-      # in the GitLab UI when the job is actually played.
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # 7. Post-maintenance verification - MANUAL ad-hoc cluster health check
 # The maintenance ops + maintenance-run-all already invoke
@@ -2652,10 +2353,7 @@ maintenance-verify:
   script:
     - bash scripts/post-maintenance-verify.sh
   rules:
-    - !reference [.skip-schedule-web, rules]
-    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      when: manual
-      allow_failure: true
+    - !reference [.maintenance-manual-rules, rules]
 
 # ============================================================================
 # VERSION CHECK - Runs early, soft-fail on PRs
@@ -2685,7 +2383,7 @@ version-check:
         op --version
       fi
   script:
-    - pip install --quiet pyyaml==6.0.2 requests==2.32.3
+    - pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.32.3
     # GITLAB_API_TOKEN drives version-check-ci.py's post_mr_comment(). Without
     # it the script gracefully skips the comment and only writes the
     # version-report.json artifact (graceful-skip lives in version-check-ci.py).
@@ -2705,9 +2403,12 @@ version-check:
     # available, which must not red the scheduled pipeline.
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       allow_failure: true
-    # Manual trigger on web pipelines (must precede main rule to avoid auto-run)
+    # Manual trigger on web pipelines (must precede main rule to avoid auto-run).
+    # allow_failure: rules-based `when: manual` defaults to allow_failure: false,
+    # which would leave every web pipeline "blocked" until this job is played.
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
+      allow_failure: true
     # Run on MRs as informational (soft-fail)
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       allow_failure: true

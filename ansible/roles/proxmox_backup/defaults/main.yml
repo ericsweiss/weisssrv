@@ -1,0 +1,44 @@
+---
+# Declarative Proxmox storage entries (storage.cfg), reconciled via pvesh:
+# absent entries are created; mutable properties (content, options) are
+# updated on drift; create-fixed properties (server, export, path) fail loud
+# with recreation instructions instead of silently diverging. Entries are
+# defined in host_vars — pve-nas-01 owns tank-proxmox.
+#
+# Example:
+# pve_storage:
+#   - id: tank-proxmox
+#     type: nfs
+#     server: pve-nas-01.esweiss.com  # hostname, not IP — the wildcard TLS cert has no IP SAN
+#     export: /tank-proxmox
+#     content: "snippets,backup,vztmpl,iso"
+#     options: "vers=4.2,xprtsec=tls"
+pve_storage: []
+
+# Declarative vzdump backup jobs (jobs.cfg), reconciled via pvesh
+# (/cluster/backup): absent jobs are created with the configured id; existing
+# jobs are updated on drift. A job's `id` must match the live jobs.cfg id to
+# adopt an existing job (GUI-created ids look like backup-xxxxxxxx-xxxx).
+# Unmanaged live jobs are warned about, never deleted.
+#
+# Example:
+# pve_vzdump_jobs:
+#   - id: backup-10f33360-a177
+#     storage: tank-proxmox
+#     schedule: "03:30"
+#     mode: snapshot
+#     compress: zstd
+#     all: true                # back up every guest (--all 1)
+#     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
+#     notification_mode: notification-system
+#     enabled: true
+#     script: /usr/local/bin/vzdump-metrics-hook.sh  # jobs.cfg `script` prop
+pve_vzdump_jobs: []
+
+# The vzdump metrics hookscript that a job's `script` key points at is deployed
+# fleet-wide by node_exporter_host (to /usr/local/bin/vzdump-metrics-hook.sh on
+# every Proxmox host) — a cluster-wide `all` job runs on each node for its local
+# guests and invokes the hook there, so it must exist on all of them, not only
+# the node where this role reconciles the clustered jobs.cfg. The hook writes
+# vzdump_backup_last_run_success + _last_success_timestamp_seconds, feeding the
+# VzdumpBackupFailed/Stale alerts.

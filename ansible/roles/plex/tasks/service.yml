@@ -1,6 +1,12 @@
 ---
 # Plex Media Server service management
 
+# Version bumps (install.yml) and override/group changes (configure.yml)
+# notify "Restart plex"; flush them here so the health check below
+# validates the restarted daemon, not the still-running old one.
+- name: Apply pending restarts before health check
+  ansible.builtin.meta: flush_handlers
+
 - name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: true

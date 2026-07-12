@@ -14,7 +14,6 @@
   ansible.builtin.command: >-
     ha-manager add {{ item.type }}:{{ item.vmid }}
     --state {{ item.state | default('started') }}
-    {% if item.group is defined %}--group {{ item.group }}{% endif %}
     {% if item.max_restart is defined %}--max_restart {{ item.max_restart }}{% endif %}
     {% if item.max_relocate is defined %}--max_relocate {{ item.max_relocate }}{% endif %}
     {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
@@ -46,8 +45,6 @@
   ansible.builtin.command: >-
     ha-manager set {{ item.item.type }}:{{ item.item.vmid }}
     --state {{ item.item.state | default('started') }}
-    {% if item.item.group is defined %}--group {{ item.item.group }}{% endif %}
-    {% if item.item.group is not defined and 'group ' in (item.stdout | default('')) %}--delete group{% endif %}
     {% if item.item.max_restart is defined %}--max_restart {{ item.item.max_restart }}{% endif %}
     {% if item.item.max_relocate is defined %}--max_relocate {{ item.item.max_relocate }}{% endif %}
     {% if item.item.comment is defined %}--comment "{{ item.item.comment }}"{% endif %}
@@ -65,8 +62,6 @@
     # Only update when drift is detected
     - >-
       ('state ' ~ (item.item.state | default('started'))) not in _stdout
-      or (item.item.group is defined and ('group ' ~ item.item.group) not in _stdout)
-      or (item.item.group is not defined and 'group ' in _stdout)
       or (item.item.max_restart is defined and _current_max_restart != (item.item.max_restart | string))
       or (item.item.max_relocate is defined and _current_max_relocate != (item.item.max_relocate | string))
       or (item.item.comment is defined and ('comment ' ~ item.item.comment) not in _stdout)

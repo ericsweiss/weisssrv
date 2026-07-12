@@ -59,12 +59,15 @@ plex:
 
 ## Deployment
 
-```bash
-# Provision Plex LXC
-ansible-playbook ansible/playbooks/plex.yml --tags provision
+The provisioning play runs first in each stack's playbook and is a no-op when
+the container already exists:
 
-# Provision DNS LXCs
-task dns:deploy --tags provision
+```bash
+# Provision Plex LXC (full stack deploy)
+task plex:deploy
+
+# Provision DNS LXCs (full stack deploy)
+task dns:deploy
 ```
 
 ## Files

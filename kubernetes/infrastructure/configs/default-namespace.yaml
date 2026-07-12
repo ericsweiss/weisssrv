@@ -1,0 +1,31 @@
+---
+# Adopt the built-in `default` namespace to harden it. It hosts only the
+# vm-ingress backend Services/EndpointSlices and IngressRoutes (apps stage) —
+# no pods — but without PSA labels and a default-deny NetworkPolicy a pod
+# accidentally deployed there would be completely unguarded. Neither PSA nor
+# NetworkPolicy affects Services/EndpointSlices/IngressRoutes, so the
+# vm-ingress routing is untouched; both only bite if pods appear (fail-closed).
+#
+# prune: disabled — Flux must never attempt to delete a built-in namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

@@ -48,6 +48,9 @@ provisioner:
         k3s_api_vip: "192.168.0.161"
         k3s_api_port: 6443
         k3s_token: "test-token-for-molecule-agent-testing"
+        # Distinct from k3s_token so the token-migration lineinfile in
+        # tasks/agent.yml runs against the env file pre-staged by prepare.yml.
+        k3s_agent_token: "test-agent-token-for-molecule"
         k3s_role: agent  # This makes it run agent tasks
         k3s_labels:
           node-type: "general"

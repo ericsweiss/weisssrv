@@ -10,8 +10,9 @@
 #   2. Verifies the PFX is parseable before swapping it in.
 #   3. Atomically replaces the bundle that Plex reads, keeping the
 #      previous bundle as `.pfx.prev` for one-step revert.
-#   4. Restarts plexmediaserver and verifies the daemon comes back up;
-#      reverts to `.pfx.prev` if the restart fails.
+#   4. Restarts plexmediaserver, verifies the daemon comes back up AND
+#      that port 32400 serves the pushed cert (not the plex.direct
+#      fallback); reverts to `.pfx.prev` on either failure.
 #
 # The PFX passphrase is in 1Password as "Plex Custom Certificate /
 # password" and must already be configured under Settings -> Network ->
@@ -106,6 +107,36 @@ if [[ $restart_rc -ne 0 ]] || ! systemctl is-active --quiet plexmediaserver; the
         systemctl restart plexmediaserver || true
     fi
     exit 1
+fi
+
+# is-active alone can't catch the documented failure mode: Plex parses the
+# PFX at startup, and on a parse failure it stays active but silently
+# serves its plex.direct fallback cert (breaking Traefik's TLS verification
+# of the upstream). Compare the leaf actually served on 32400 against the
+# pushed fullchain; retry because Plex accepts TLS a little after the unit
+# reports active. Budget ~60s (20 x 3s) to match service.yml's readiness check
+# (retries 12 x delay 5s) so a legitimately-slow start isn't reverted spuriously.
+EXPECTED_FP=$(openssl x509 -in "$PEM_FULLCHAIN" -noout -fingerprint -sha256)
+SERVED_FP=""
+for _ in $(seq 1 20); do
+    SERVED_FP=$(openssl s_client -connect 127.0.0.1:32400 </dev/null 2>/dev/null \
+        | openssl x509 -noout -fingerprint -sha256 2>/dev/null) || SERVED_FP=""
+    [[ "$SERVED_FP" == "$EXPECTED_FP" ]] && break
+    sleep 3
+done
+if [[ "$SERVED_FP" != "$EXPECTED_FP" ]]; then
+    if [[ -f "$PFX_PREV" ]]; then
+        echo "plex is serving an unexpected certificate after cert swap (got ${SERVED_FP:-nothing}); reverting" >&2
+        cp -p "$PFX_PREV" "$PFX_FILE"
+        chown root:plex "$PFX_FILE"
+        chmod 0640 "$PFX_FILE"
+        systemctl restart plexmediaserver || true
+        exit 1
+    fi
+    # First install: nothing to revert to, and Plex won't serve the custom
+    # cert until the operator sets "Custom certificate location" in the UI
+    # — warn instead of failing the whole distribution run.
+    echo "warning: plex is not serving the pushed certificate (got ${SERVED_FP:-nothing}); if this is the first install, configure the custom certificate location + encryption key in Plex settings" >&2
 fi
 
 echo "plex cert reloaded ($PFX_FILE)"

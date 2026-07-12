@@ -47,7 +47,7 @@ echo ""
 
 echo "=== 6/6 Home Assistant restart ==="
 # Restart + down-then-up readiness wait live in maintenance-ha-restart.sh
-# (single implementation; this used to be a verbatim copy).
+# (single implementation).
 bash "$SCRIPT_DIR/maintenance-ha-restart.sh"
 
 echo ""

@@ -22,5 +22,8 @@ provisioner:
   inventory:
     group_vars:
       all:
-        unbound_exporter_version: 0.4.6
+        unbound_exporter_version: 0.6.0
+        # Same pinned sha256 as all.yml — without it the CI .deb installs
+        # unverified (install.yml omits the checksum param when unset).
+        unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
         unbound_exporter_port: 9167

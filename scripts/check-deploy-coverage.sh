@@ -28,6 +28,13 @@
 # job itself (stage: lint) and any other lint/test job whose name
 # happens to start with "deploy-".
 #
+# The walker assumes each deploy-* job declares `stage: deploy` LITERALLY
+# on the job (every current one does); a stage inherited only via
+# `extends:` is not resolved and would silently drop that job's paths
+# from coverage credit (a loud false failure on the next matching edit,
+# not a silent pass). `changes:` is accepted in both GitLab forms — the
+# plain list and the `changes: {paths: [...]}` mapping.
+#
 # ## Policy: trade-off of the intentionally-unmapped lists
 #
 # 1. Why these lists exist. Some role/playbook/inventory paths are
@@ -136,7 +143,9 @@ INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
     bootstrap/storage-bootstrap.yml
     maintenance/_ensure-nfs-server-healthy.yml
     maintenance/_reboot-if-needed.yml
+    maintenance/_uncordon-and-wait-ready.yml
     maintenance/_wait-no-kured-server-reboot.yml
+    tasks/_check-mode-reachable.yml
     maintenance/update-applications.yml
     maintenance/update-full.yml
     maintenance/update-helm-charts.yml
@@ -345,6 +354,9 @@ for job_name, job in ci.items():
             # !reference entries land here (None) — skip cleanly.
             continue
         changes = rule.get("changes", [])
+        if isinstance(changes, dict):
+            # GitLab also accepts `changes: {paths: [...], compare_to: ...}`.
+            changes = changes.get("paths", [])
         if not isinstance(changes, list):
             continue
         for change in changes:

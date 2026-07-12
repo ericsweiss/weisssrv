@@ -128,6 +128,33 @@
       register: postflight_service_check
       failed_when: postflight_service_check is changed
 
+    # The timer being enabled says nothing about whether the DynamicUser +
+    # LoadCredential + StateDirectory sandbox can actually start on the real
+    # (unprivileged) dns-01 LXC. Trigger one run and confirm it did not fail at
+    # the exec/sandbox stage. An app-level failure (unreachable origin) is fine;
+    # a systemd exec-class status (217 USER, 226 NAMESPACE, 238 STATE_DIRECTORY,
+    # 243 CREDENTIALS) means the sandbox itself could not be set up.
+    - name: Trigger one adguardhome-sync run to exercise the sandbox  # noqa: command-instead-of-module
+      ansible.builtin.command: systemctl start adguardhome-sync.service
+      changed_when: false
+      failed_when: false
+
+    - name: Read adguardhome-sync exec status  # noqa: command-instead-of-module
+      ansible.builtin.command: >-
+        systemctl show adguardhome-sync.service --property=ExecMainStatus --value
+      register: adguardhome_sync_status
+      changed_when: false
+
+    - name: Assert adguardhome-sync started under its sandbox
+      ansible.builtin.assert:
+        that:
+          - adguardhome_sync_status.stdout | trim not in ['217', '226', '238', '243']
+        fail_msg: >-
+          adguardhome-sync.service failed at the exec/sandbox stage
+          (ExecMainStatus={{ adguardhome_sync_status.stdout | trim }}) — a
+          DynamicUser/LoadCredential/StateDirectory primitive could not be set
+          up on this host.
+
 - name: Verify SMTP relay
   hosts: mail
   become: true
@@ -299,6 +326,17 @@
       register: postflight_service_check
       failed_when: postflight_service_check is changed
 
+    # Every k3s NFS PV mounts with xprtsec=tls; if the handshake daemon is
+    # down, new TLS mounts fail cluster-wide even though nfsd itself is up.
+    - name: Verify tlshd is running (NFS-over-TLS handshake daemon)
+      ansible.builtin.service:
+        name: tlshd
+        state: started
+      check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
+      when: nfs_tls_enabled | default(false)
+
     - name: Check NFS exports are active
       ansible.builtin.command: showmount -e localhost
       changed_when: false
@@ -343,8 +381,10 @@
         msg: "{{ mover_status.stdout_lines | select('search', 'Active|Main PID|Status') | list }}"
       when: media_mover_enabled | default(false) and mover_status.rc == 0
 
-- name: Verify k3s persistent storage mounts
-  hosts: k3s
+# gitlab_servers included: the gitlab VM carries the gitlab-repos zvol via the
+# same vm_additional_disks mechanism as the k3s agents.
+- name: Verify persistent storage mounts (k3s + gitlab)
+  hosts: k3s:gitlab_servers
   become: true
   tasks:
     - name: Verify additional disk mount points
@@ -364,6 +404,49 @@
         label: "{{ item.name }}"
       changed_when: false
       when: vm_additional_disks is defined
+
+# The NAS server-side tlshd check lives in the 'Verify NAS storage' play above;
+# this play asserts the client side: every k3s node that could mount a NAS export
+# runs the handshake daemon (agents for the app PVs, servers for the off-node
+# etcd-snapshot copy), and any live pve-nas-01 mount is actually TLS (a plaintext
+# one means a client slipped past the require-TLS export lines). The servers'
+# etcd-snapshot mount is on-demand, so the live-mount loop is often empty there.
+- name: Verify NFSv4-over-TLS on k3s nodes
+  hosts: k3s
+  become: true
+  tasks:
+    - name: Verify tlshd handshake daemon is running
+      ansible.builtin.service:
+        name: tlshd
+        state: started
+      check_mode: true
+      register: postflight_service_check
+      failed_when: postflight_service_check is changed
+      when: nfs_tls_enabled | default(false)
+
+    # Pods (and their NFS PVs) float across agents, so an agent may legitimately
+    # carry zero NAS mounts. Read /proc/mounts directly (xprtsec surfaces there);
+    # grep rc=1 (no match) is tolerated so the assert loop is simply empty.
+    - name: Gather live NFS mounts to pve-nas-01
+      ansible.builtin.command:
+        cmd: "grep pve-nas-01.esweiss.com: /proc/mounts"
+      changed_when: false
+      failed_when: false
+      register: nas_nfs_mounts
+      when: nfs_tls_enabled | default(false)
+
+    - name: Assert every pve-nas-01 NFS mount carries xprtsec=tls
+      ansible.builtin.assert:
+        that:
+          - "'xprtsec=tls' in item"
+        fail_msg: "NFS mount to pve-nas-01 without xprtsec=tls: {{ item }}"
+        success_msg: "pve-nas-01 NFS mount is TLS: {{ item.split()[0] }}"
+      loop: "{{ nas_nfs_mounts.stdout_lines | default([]) }}"
+      loop_control:
+        label: "{{ item.split()[0] }}"
+      when:
+        - nfs_tls_enabled | default(false)
+        - nas_nfs_mounts.stdout_lines | default([]) | length > 0
 
 - name: Display verification summary
   hosts: localhost
