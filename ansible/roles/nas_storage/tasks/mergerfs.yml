@@ -294,7 +294,13 @@
     - nfs_unexport is defined
     - nfs_unexport.changed | default(false)
   register: bind_unmount
-  changed_when: "'Unmounting:' in stdout"
+  # In a loop the current item's result is exposed as a bare `stdout`, but
+  # ansible-core 2.19+ no longer auto-injects it into the changed_when namespace
+  # (2.18/CI does), so a bare reference raises "'stdout' is undefined" on newer
+  # control nodes. default('') keeps this correct on 2.18 and non-erroring on
+  # 2.19+ — bind_unmount.changed is not consumed downstream (the remount gates
+  # on mergerfs_safe_to_remount, see below).
+  changed_when: "'Unmounting:' in (stdout | default(''))"
 
 # Gate on mergerfs_safe_to_remount (not bind_unmount.changed): with zero bind
 # mounts sourcing from the target there is nothing to unbind, but the remount

@@ -423,7 +423,7 @@ pve_storage:
 # role CREATES A SECOND job (check with: pvesh get /cluster/backup
 # --output-format json); GUI-created ids look like backup-xxxxxxxx-xxxx.
 # Schedule is a systemd-style calendar event (not cron). Adopted from the live
-# GUI job: 03:30 daily, all guests, keep-daily=7/weekly=4/monthly=3, routed
+# GUI job: 03:30 daily, all guests, keep-daily=7/weekly=4/monthly=6, routed
 # through the modern notification-system (mailnotification/mailto are the
 # deprecated pre-8.x keys and are no longer set).
 # The job's `script` key publishes vzdump_backup_last_run_success +
@@ -438,7 +438,7 @@ pve_vzdump_jobs:
     mode: snapshot
     compress: zstd
     all: true
-    prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
+    prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system
     enabled: true
     script: /usr/local/bin/vzdump-metrics-hook.sh

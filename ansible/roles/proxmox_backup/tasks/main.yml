@@ -161,11 +161,21 @@
       vars:
         _current: >-
           {{ _pve_current_backup_jobs | selectattr('id', 'equalto', item.id) | first | default({}) }}
-        # prune-backups is a property string PVE may reorder — compare as
-        # sorted kv sets. Undefined desired keys inherit the live value so
-        # they never register as drift.
-        _current_prune: "{{ _current.get('prune-backups', '') | split(',') | map('trim') | select() | sort | list }}"
-        _desired_prune: "{{ item.prune_backups | default(_current.get('prune-backups', '')) | split(',') | map('trim') | select() | sort | list }}"
+        # prune-backups may come back from `pvesh ... --output-format json` as a
+        # dict ({'keep-daily': '7', ...}) rather than the legacy comma string
+        # (and PVE may reorder either), so normalise BOTH sides to a sorted
+        # "key=value" list before comparing — splitting a dict raised "descriptor
+        # 'split' for 'str' objects doesn't apply to a 'dict' object". An
+        # undefined desired value inherits the live one (via _current_prune) so
+        # it never registers as drift.
+        _current_prune: >-
+          {{ (_current['prune-backups'].items() | map('join', '=') | sort | list)
+             if (_current.get('prune-backups') is mapping)
+             else (_current.get('prune-backups', '') | string | split(',') | map('trim') | select() | sort | list) }}
+        _desired_prune: >-
+          {{ (item.prune_backups | string | split(',') | map('trim') | select() | sort | list)
+             if item.prune_backups is defined
+             else _current_prune }}
         # Optional fields present on the LIVE job but removed from the desired
         # config must be explicitly cleared — `pvesh set` only updates the flags
         # it is given, so a stale `exclude`/`vmid` would keep silently skipping

@@ -177,7 +177,7 @@ nzbget_version: "26.2"
 qbittorrent_version: "5.2.3"
 prowlarr_version: "2.4.0.5397"
 sonarr_version: "4.0.19.2979"
-radarr_version: "6.2.1.10461"
+radarr_version: "6.3.0.10514"
 lidarr_version: "3.1.0.4875"
 pulsarr_version: "0.17.3"
 

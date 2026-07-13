@@ -123,6 +123,42 @@
     mode: "0600"
   when: k3s_is_first_server | default(false)
 
+# A rebuilt/rejoined etcd server's on-disk cred/passwd diverges from the
+# datastore bootstrap entry, so k3s fatals "cred/passwd newer than datastore"
+# on EVERY restart and cannot self-heal (it only writes disk->datastore for the
+# first server / --cluster-reset; see k3s-io/k3s#4910). An ExecStartPre drop-in
+# reconciles it from the datastore before each start: a no-op for an in-sync
+# server (recreates identical content), the documented remedy for a diverged
+# one. Installed before the (re)start below so it is in effect when k3s starts.
+- name: Ensure k3s systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/k3s.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install cred/passwd datastore-reconcile drop-in (etcd-member restart safety)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/k3s.service.d/50-reconcile-cred-passwd.conf
+    content: |
+      # Managed by Ansible (k3s role). Reconcile cred/passwd from the datastore
+      # before each start so a rebuilt/rejoined etcd member does not fatal
+      # "cred/passwd newer than datastore" on restart. See k3s-io/k3s#4910.
+      [Service]
+      ExecStartPre=-/usr/bin/rm -f /var/lib/rancher/k3s/server/cred/passwd
+    owner: root
+    group: root
+    mode: "0644"
+  register: k3s_cred_reconcile_dropin
+
+# Inline (not a handler) on purpose: the reload must precede the k3s (re)start
+# below so the ExecStartPre is in effect, whereas handlers only flush at play end.
+- name: Reload systemd when the cred reconcile drop-in changes  # noqa: no-handler
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: k3s_cred_reconcile_dropin is changed
+
 # Version detection + install-script staging (shared with agent.yml)
 - name: Detect k3s version and stage install script
   ansible.builtin.include_tasks: install-script.yml

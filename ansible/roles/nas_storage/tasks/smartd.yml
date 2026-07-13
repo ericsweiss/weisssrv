@@ -37,13 +37,35 @@
 - name: Enumerate pool member disks missing from smartd_*_disks
   ansible.builtin.shell: |
     set -o pipefail
-    known=" {{ _smartd_all_disks | join(' ') }} "
+    # Compare disks by their canonical device, not raw by-id string. A disk has
+    # several /dev/disk/by-id aliases (NVMe exposes both nvme-eui.* and
+    # nvme-<Model>_<Serial>), and `zpool status -P` prints whichever alias ZFS
+    # recorded at vdev-add time — often eui.* for the NVMe special/cache vdevs —
+    # which need not match the readable Model_Serial alias listed in the
+    # smartd_*_disks host_vars. A raw string compare then false-flags a monitored
+    # disk as missing and fails the deploy over a disk that IS covered; readlink
+    # -f collapses every alias to the same /dev/nvmeXn1 so the compare is true.
+    # canonical_smart_disk: strip -partN, canonicalise via readlink -f, then
+    # normalise a residual kernel partition suffix (/dev/nvme0n1p3 -> /dev/nvme0n1,
+    # /dev/sda3 -> /dev/sda) that -partN stripping alone misses when a pool was
+    # created from kernel names rather than by-id aliases — so a monitored whole
+    # disk still matches a pool member that zpool reports as a partition.
+    canonical_smart_disk() {
+      dev="${1%-part[0-9]*}"
+      rd=$(readlink -f "$dev" 2>/dev/null) || rd="$dev"
+      printf '%s\n' "$rd" | sed -E 's#^(/dev/(nvme[0-9]+n[0-9]+|mmcblk[0-9]+))p[0-9]+$#\1#; s#^(/dev/(sd|vd|hd|xvd)[a-z]+)[0-9]+$#\1#'
+    }
+    known=""
+    for e in {{ _smartd_all_disks | map('quote') | join(' ') }}; do
+      known="${known} $(canonical_smart_disk "$e") "
+    done
     missing=""
     for pool in $(zpool list -H -o name); do
       for dev in $(zpool status -P "$pool" | awk '$1 ~ "^/dev/" {print $1}'); do
         base="${dev%-part[0-9]*}"
+        rd="$(canonical_smart_disk "$dev")"
         case "$known" in
-          *" ${base} "*) ;;
+          *" ${rd} "*) ;;
           *) missing="${missing}${base} " ;;
         esac
       done
