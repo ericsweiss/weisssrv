@@ -129,3 +129,22 @@
           bond-all_slaves_active was not rewritten to 0 (or the surgical replace
           damaged the surrounding bond0 stanza)
         success_msg: "bond-all_slaves_active correctly forced to 0 in place"
+
+    # The real fix: the bonding module option (the boot-time control) must be
+    # flipped 1 -> 0, with fail_over_mac and the rest of the line preserved.
+    - name: Read /etc/modprobe.d/bonding.conf after the bond guard
+      ansible.builtin.slurp:
+        src: /etc/modprobe.d/bonding.conf
+      register: bonding_modprobe_content
+
+    - name: Assert the bonding module all_slaves_active was forced to 0
+      ansible.builtin.assert:
+        that:
+          - "'all_slaves_active=0' in (bonding_modprobe_content.content | b64decode)"
+          - "'all_slaves_active=1' not in (bonding_modprobe_content.content | b64decode)"
+          # the other module options must survive the surgical replace
+          - "'fail_over_mac=1' in (bonding_modprobe_content.content | b64decode)"
+        fail_msg: >-
+          bonding module all_slaves_active was not flipped to 0 (or the surgical
+          replace clobbered fail_over_mac) — the guard would revert on next boot
+        success_msg: "bonding module all_slaves_active=0 (reboot-safe); fail_over_mac preserved"

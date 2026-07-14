@@ -43,13 +43,21 @@ This role codifies all three.
   drop-in inert at boot; duplicate `iface` stanzas are merged with the
   interface's declaration in `/etc/network/interfaces`.
 - `nic_tuning_bond_asa_guard` (default `true`) — force
-  `all_slaves_active=0` on every `active-backup` bond. Persists the value by
-  rewriting an explicit `bond-all_slaves_active 1` → `0` in
-  `/etc/network/interfaces` (surgical `replace`; never inserts a line, never
-  reloads networking) **and** applies it live via
-  `/sys/class/net/<bond>/bonding/all_slaves_active` (no reboot). Idempotent and
-  a no-op on non-bonded hosts. Set `false` only if a bond legitimately needs
-  `=1` (multi-switch multicast RX) — this fleet does not.
+  `all_slaves_active=0` on every `active-backup` bond, across three layers:
+  - **`/etc/modprobe.d/bonding.conf`** module option — the *real* boot-time
+    control. The bonding module default is applied when the module loads (before
+    ifupdown2 runs); a stale `all_slaves_active=1` here is why the guard used to
+    revert on every reboot. Surgically flips `=1` → `=0`, preserving
+    `fail_over_mac`; only touches an existing file.
+  - **`/etc/network/interfaces`** stanza — surgical `replace` of
+    `bond-all_slaves_active 1` → `0` (never inserts a line, never reloads).
+    Belt-and-suspenders: ifupdown2 does **not** honor this stanza, so it is
+    harmless but not load-bearing.
+  - **live sysfs** `/sys/class/net/<bond>/bonding/all_slaves_active` — applies
+    the fix now, without a reboot.
+
+  Idempotent and a no-op on non-bonded hosts. Set `false` only if a bond
+  legitimately needs `=1` (multi-switch multicast RX) — this fleet does not.
 
 ## Example inventory wiring
 

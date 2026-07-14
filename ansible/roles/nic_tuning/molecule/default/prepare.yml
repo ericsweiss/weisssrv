@@ -54,3 +54,23 @@
         owner: root
         group: root
         mode: "0644"
+
+    # The bonding module option is the real boot-time control for all_slaves_active
+    # (ifupdown2 ignores the interfaces stanza). Seed the stale `=1` the fleet had;
+    # verify.yml asserts the role flips it to 0 in place, preserving fail_over_mac.
+    - name: Ensure /etc/modprobe.d exists (minimal test container may lack it)
+      ansible.builtin.file:
+        path: /etc/modprobe.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Seed a stale bonding modprobe.d config (all_slaves_active=1)
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/bonding.conf
+        content: |
+          options bonding fail_over_mac=1 all_slaves_active=1
+        owner: root
+        group: root
+        mode: "0644"

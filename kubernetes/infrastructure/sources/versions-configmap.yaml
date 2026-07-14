@@ -38,7 +38,7 @@ data:
   mealie_version: v3.20.1
   meilisearch_version: v1.15.2
   nzbget_version: '26.2'
-  plex_version: 1.43.2.10687-563d026ea
+  plex_version: 1.43.3.10828-00f62d37d
   postgresql_version: 18.4-trixie
   prowlarr_version: 2.4.0.5397
   proxmox_exporter_version: 3.9.0

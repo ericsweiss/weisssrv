@@ -22,13 +22,20 @@ and the permanent fix (codified in the `nic_tuning` role).
 
 ## Root cause
 
-`/etc/network/interfaces` on the bonded hosts had:
+The bonded hosts carried `all_slaves_active=1` in **two** places — the visible
+`/etc/network/interfaces` stanza and, decisively, the bonding **module option**
+in `/etc/modprobe.d/bonding.conf` (which is what the kernel actually applies at
+boot, before ifupdown2 runs):
 
 ```
+# /etc/network/interfaces
 iface bond0 inet manual
     bond-slaves nic0 nic1
     bond-mode active-backup
-    bond-all_slaves_active 1      # <-- the bug
+    bond-all_slaves_active 1      # <-- ignored by ifupdown2 (see "Permanent fix")
+
+# /etc/modprobe.d/bonding.conf
+options bonding fail_over_mac=1 all_slaves_active=1   # <-- the real boot-time bug
 ```
 
 Both bond legs plug into the same **unmanaged** switch. In `active-backup` only
@@ -86,12 +93,22 @@ Apply to every bonded host (`.104`, `.105`, `.106`).
 ## Permanent fix (codified)
 
 The `nic_tuning` role enforces `all_slaves_active=0` on every `active-backup`
-bond (`nic_tuning_bond_asa_guard`, default `true`):
+bond (`nic_tuning_bond_asa_guard`, default `true`) across three layers:
 
-- **Persist**: surgically rewrites an explicit `bond-all_slaves_active 1` → `0`
-  in `/etc/network/interfaces` (an `ansible.builtin.replace`; it never inserts a
-  line and never reloads networking, so the hand-maintained file is otherwise
-  untouched and the uplink does not blip). Takes effect on the next reboot.
+- **Boot-time control** (`/etc/modprobe.d/bonding.conf`): surgically flips a
+  stale `all_slaves_active=1` → `0` in the bonding module options, preserving
+  `fail_over_mac`. This is what actually decides the value at boot — the module
+  default is applied when bonding loads, *before* ifupdown2 runs. **This was the
+  missing piece**: the fleet's `bonding.conf` still carried the legacy `=1`, so
+  despite the interfaces rewrite below the kernel value reverted to `1` on every
+  reboot (ifupdown2 does not honor the `bond-all_slaves_active` stanza). Applies
+  on the next module load (reboot); no initramfs rebuild — bonding loads at
+  network-up from the live `/etc/modprobe.d`.
+- **Interfaces stanza** (belt-and-suspenders): surgically rewrites an explicit
+  `bond-all_slaves_active 1` → `0` in `/etc/network/interfaces` (an
+  `ansible.builtin.replace`; never inserts a line, never reloads networking, so
+  the hand-maintained file is untouched and the uplink does not blip). Harmless
+  where ifupdown2 ignores it; a safety net if a version ever honors it.
 - **Apply live**: writes `0` to
   `/sys/class/net/<bond>/bonding/all_slaves_active` for any active-backup bond,
   so a `task` run fixes a host without a reboot.

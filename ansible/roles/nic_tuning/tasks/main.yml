@@ -91,9 +91,18 @@
 
 # --- active-backup bond MAC-flap guard -------------------------------------
 # Force all_slaves_active=0 on active-backup bonds so the inactive backup leg's
-# reflected frames are dropped instead of poisoning the bridge FDB. Persist the
-# value in /etc/network/interfaces (surgical, no reload) AND apply it live via
-# sysfs (no reboot). See defaults/main.yml and docs/34-bond-mac-flapping.md.
+# reflected frames are dropped instead of poisoning the bridge FDB. THREE layers,
+# because the value is really decided at module-load, not by the interfaces file:
+#   1. /etc/modprobe.d/bonding.conf — the ACTUAL boot-time control. The bonding
+#      module option sets every bond's default when the module loads (before
+#      ifupdown2 runs). A stale `all_slaves_active=1` here (Proxmox/legacy) is why
+#      the guard never survived a reboot: ifupdown2 does NOT honor the
+#      `bond-all_slaves_active` interfaces stanza, so that rewrite left the kernel
+#      value at the module default (1) after every boot.
+#   2. /etc/network/interfaces stanza (surgical, no reload) — belt-and-suspenders
+#      for any ifupdown2 that does honor it; harmless where it does not.
+#   3. runtime sysfs — applies the fix live now, without a reboot.
+# See defaults/main.yml and docs/34-bond-mac-flapping.md.
 - name: Stat /etc/network/interfaces for the bond all_slaves_active guard
   ansible.builtin.stat:
     path: /etc/network/interfaces
@@ -112,6 +121,28 @@
   when:
     - nic_tuning_bond_asa_guard | bool
     - nic_tuning_etc_interfaces.stat.exists | default(false)
+
+- name: Stat /etc/modprobe.d/bonding.conf for the bonding module option
+  ansible.builtin.stat:
+    path: /etc/modprobe.d/bonding.conf
+  register: nic_tuning_bonding_modprobe
+  when: nic_tuning_bond_asa_guard | bool
+
+- name: Force all_slaves_active=0 in the bonding module options (boot-time control)
+  # Surgically flip a stale `all_slaves_active=1` to `=0`, preserving fail_over_mac
+  # and any other module options. This is what actually decides the value at boot:
+  # the module default applies when bonding loads, before ifupdown2 runs. Only
+  # touches an existing file — a host with no bonding.conf already gets the kernel
+  # default (0), so there is nothing to force. Takes effect on the next module
+  # load (reboot); the runtime task below applies it live now. No initramfs
+  # rebuild needed: bonding loads at network-up from the live /etc/modprobe.d.
+  ansible.builtin.replace:
+    path: /etc/modprobe.d/bonding.conf
+    regexp: '(\ball_slaves_active=)1\b'
+    replace: '\g<1>0'
+  when:
+    - nic_tuning_bond_asa_guard | bool
+    - nic_tuning_bonding_modprobe.stat.exists | default(false)
 
 - name: Enforce all_slaves_active=0 on active-backup bonds at runtime (no reboot)
   ansible.builtin.shell: |
