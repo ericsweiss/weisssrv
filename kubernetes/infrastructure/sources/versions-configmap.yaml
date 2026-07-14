@@ -22,7 +22,7 @@ data:
   helm_chart_versions_cert_manager: v1.21.0
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.7.0
-  helm_chart_versions_kube_prometheus_stack: 87.15.2
+  helm_chart_versions_kube_prometheus_stack: 87.16.0
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.4.4
   helm_chart_versions_metallb: 0.15.3

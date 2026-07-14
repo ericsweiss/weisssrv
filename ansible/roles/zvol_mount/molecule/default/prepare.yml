@@ -62,21 +62,59 @@
       args:
         creates: /tmp/test-disk.img
 
-    # Loop devices are KERNEL-GLOBAL: privileged CI containers on the same
-    # node share the namespace, so a hardcoded /dev/loop0 collides whenever
-    # two molecule jobs run concurrently (pipeline 365: "device node
-    # /dev/loop0 (7:0) is lost" — another job's container owned it).
-    # `losetup -f` allocates the first free device via /dev/loop-control;
-    # the -j probe makes re-runs reuse the existing attachment.
-    - name: Attach loopback device (dynamic allocation, reuse if attached)
+    # Loop devices are KERNEL-GLOBAL, but the /dev/loopN device NODES live in
+    # each container's private /dev, which has no udev to create them. So
+    # `losetup -f --show` gets a free number from the kernel (/dev/loop-control)
+    # and then fails — "device node /dev/loopN (7:N) is lost. You may use
+    # mknod(1) to recover it" — whenever that node was never materialized in
+    # this container (job 20006 / the recurring zvol_mount retry-tax). Fix per
+    # the error's own hint: ask the kernel for a free number, mknod that exact
+    # node ourselves, then attach — retrying when a concurrent molecule job wins
+    # the same number between our probe and our attach (loops are shared
+    # host-wide). The -j probe makes a re-run reuse the existing attachment.
+    - name: Attach loopback device (dynamic allocation, mknod recovery, race-safe)
       ansible.builtin.shell: |
         set -euo pipefail
+        # NOTE: keep these comments apostrophe-free. ansible split_args tokenizes
+        # the shell free-form value, so a stray single quote in a comment (a
+        # contraction or possessive) trips "unbalanced quotes" at PARSE time.
+        #
+        # Loop devices are KERNEL-GLOBAL, but the /dev/loopN NODES live in a
+        # per-container private /dev with no udev to materialize them, so a
+        # kernel-allocated device has no node and losetup reports it "lost".
+        # losetup can also print the path with a trailing " (lost)" annotation,
+        # so trust ONLY the loop-index digits, rebuild a clean /dev/loopN path,
+        # and recreate the node unconditionally (major 7 / minor N) -- which also
+        # covers a missing, stale, or wrong node.
+        loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
+        node_for() {
+          n=$(loop_num "$1"); [ -n "$n" ] || return 1
+          d="/dev/loop$n"
+          rm -f "$d" 2>/dev/null || true
+          mknod "$d" b 7 "$n" 2>/dev/null || true
+          [ -b "$d" ] || return 1   # mknod failed: do not hand back an invalid node
+          printf '%s' "$d"
+        }
+        # Reuse an existing attachment (idempotent re-run); its node may be gone too.
         existing=$(losetup -j /tmp/test-disk.img 2>/dev/null | cut -d: -f1 | head -1 || true)
         if [ -n "$existing" ]; then
-          printf '%s' "$existing"
-        else
-          losetup -f --show /tmp/test-disk.img
+          d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
         fi
+        # Fresh allocation: get a free number, materialize its node, attach --
+        # retry when a concurrent molecule job wins the number between our probe
+        # and our attach (loops are shared host-wide).
+        for _ in $(seq 1 10); do
+          raw=$(losetup -f 2>/dev/null || true)
+          [ -n "$raw" ] || { sleep 1; continue; }
+          d=$(node_for "$raw") || { sleep 1; continue; }
+          if losetup "$d" /tmp/test-disk.img 2>/dev/null; then
+            printf '%s' "$d"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "could not attach a loop device for /tmp/test-disk.img after 10 attempts" >&2
+        exit 1
       args:
         executable: /bin/bash
       register: zvol_loop_device
