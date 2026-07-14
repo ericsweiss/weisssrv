@@ -26,19 +26,11 @@ openid:
   username_field: "preferred_username"
   block_login: true
 
-# SMTP Notifications (using smtp-relay)
-notify:
-  - name: smtp_notify
-    platform: smtp
-    server: "{{ home_assistant_smtp_host }}"
-    port: {{ home_assistant_smtp_port }}
-    encryption: "{{ home_assistant_smtp_encryption }}"
-    username: !secret smtp_username
-    password: !secret smtp_password
-    sender: "{{ home_assistant_smtp_sender }}"
-    sender_name: "{{ home_assistant_smtp_sender_name }}"
-    recipient:
-      - !secret admin_email
+# SMTP notifications are no longer rendered here: the YAML `smtp` notify
+# platform is removed in HA 2027.1.0. HA auto-imported the former config into
+# a UI config entry that now owns the `smtp_notify` notifier; that entry lives
+# in HAOS .storage (captured by HA backups), so a from-scratch HAOS rebuild
+# must re-add SMTP via the UI or restore it from a backup. See docs/24.
 
 # Prometheus metrics endpoint
 prometheus:

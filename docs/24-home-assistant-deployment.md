@@ -370,12 +370,18 @@ truth for the capture and rotation procedures.
 
 **Step 2: Verify SMTP Notifications**
 
-After deployment, test notifications via Developer Tools > Services:
+SMTP notifications are no longer defined in `configuration.yaml` — the YAML
+`smtp` notify platform is removed in HA 2027.1.0, and HA auto-imported the
+former config into a UI entry that now owns `notify.smtp_notify` (stored in
+HAOS `.storage`, captured by HA backups; manage it under Settings > Devices &
+Services). A from-scratch HAOS rebuild must re-add SMTP via the UI or restore
+from a backup. After a deploy, confirm the imported entry still works via
+Developer Tools > Actions:
 
 ```yaml
-service: notify.smtp_notify
+action: notify.smtp_notify
 data:
-  message: "Home Assistant SMTP test from codified config"
+  message: "Home Assistant SMTP test"
   title: "Test Notification"
 ```
 
@@ -405,12 +411,11 @@ op run --env-file=<(echo "") -- ansible-playbook ansible/playbooks/home-assistan
 
 **Manual Configuration Alternative:**
 
-If you prefer manual setup, secrets are available via 1Password CLI:
+If you prefer manual setup, the OIDC secrets are available via 1Password CLI:
 
 ```bash
-op read "op://Homelab/SMTP Relay Auth/username"
-op read "op://Homelab/SMTP Relay Auth/password"
-op read "op://Homelab/Email Config/root_alias"
+op read "op://Homelab/Home Assistant SSO/authentik-client-id"
+op read "op://Homelab/Home Assistant SSO/authentik-client-secret"
 ```
 
 ### NFS Media Mount

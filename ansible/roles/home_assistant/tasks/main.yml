@@ -43,22 +43,6 @@
     state: present
   when: not (home_assistant_render_only | default(false))
 
-- name: Validate required SMTP relay credentials and admin email are set
-  ansible.builtin.assert:
-    that:
-      - home_assistant_smtp_username | default('') | length > 0
-      - home_assistant_smtp_password | default('') | length > 0
-      # admin_email feeds the notify recipient in configuration.yaml; a
-      # missing ADMIN_EMAIL env would render admin_email: "" and silently
-      # break notifications.
-      - home_assistant_admin_email | default('') | length > 0
-    fail_msg: >-
-      SMTP relay credentials or admin email are not set. Ensure SMTP_RELAY_USER,
-      SMTP_RELAY_PASSWORD and ADMIN_EMAIL environment variables are provided via 'op run'.
-      Run deployment with: task home-assistant:deploy-config (which injects 1Password secrets)
-    success_msg: "SMTP relay credentials and admin email are present"
-  no_log: true
-
 - name: Validate required OIDC credentials are set
   ansible.builtin.assert:
     that:

@@ -29,6 +29,10 @@ pve_storage: []
 #     mode: snapshot
 #     compress: zstd
 #     all: true                # back up every guest (--all 1)
+#     bwlimit: 30720           # optional: cap per-node backup I/O (KiB/s). A
+#                              # cluster-wide `all` job runs on every node at
+#                              # once, all writing to one target — bwlimit bounds
+#                              # the aggregate so a backup can't saturate the pool.
 #     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
 #     notification_mode: notification-system
 #     enabled: true

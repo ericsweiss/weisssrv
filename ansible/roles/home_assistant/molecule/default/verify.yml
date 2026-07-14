@@ -9,7 +9,7 @@
 # We slurp each one and assert on structural markers + injected values.
 # This catches Jinja errors, accidental removal of trusted-proxy
 # entries, broken !secret refs, regressions in the SSL block, OIDC
-# configure_url drift, and SMTP-block changes — all of which are the
+# configure_url drift, and the SMTP-notify removal — all of which are the
 # real failure modes for a config push to HAOS.
 #
 # YAML quoting note: every `that:` list entry is wrapped in YAML
@@ -97,23 +97,16 @@
           client_id/client_secret, the Authentik discovery URL, and
           block_login true (so password login stays disabled).
 
-    - name: Assert SMTP notify block uses !secret refs and configured host
+    - name: Assert the deprecated YAML SMTP notify platform is NOT rendered
+      # The `smtp` notify platform is removed in HA 2027.1.0 and was migrated
+      # to a HA UI config entry (HAOS .storage); guard against re-adding it.
       ansible.builtin.assert:
         that:
-          - "cfg_text is search('notify:')"
-          - "cfg_text is search('platform: smtp')"
-          - "cfg_text is search('server: \"smtp-relay\\.test\\.local\"')"
-          - "cfg_text is search('port: 587')"
-          - "cfg_text is search('encryption: \"starttls\"')"
-          - "cfg_text is search('username: !secret smtp_username')"
-          - "cfg_text is search('password: !secret smtp_password')"
-          - "cfg_text is search('sender: \"home-assistant@test\\.local\"')"
-          - "cfg_text is search('sender_name: \"Home Assistant Test\"')"
-          - "cfg_text is search('- !secret admin_email')"
+          - "cfg_text is not search('platform: smtp')"
         fail_msg: >-
-          notify SMTP block is missing one of platform, server, port,
-          encryption, !secret username/password, sender, sender_name,
-          or the admin_email recipient.
+          A `platform: smtp` notify block was rendered into configuration.yaml.
+          The YAML SMTP notify platform is removed in HA 2027.1.0 — SMTP
+          notifications now live in a HA UI config entry, not this template.
 
     - name: Assert prometheus + default_config + tts blocks present
       ansible.builtin.assert:
@@ -142,23 +135,25 @@
         secrets_text: "{{ secrets_content.content | b64decode }}"
       no_log: true
 
-    - name: Assert secrets.yaml has all five !secret keys with injected values
+    - name: Assert secrets.yaml has the OIDC !secret keys and no stale SMTP keys
       # The molecule.yml provisioner.env block injects synthetic values;
       # the role's defaults look them up via env(). With | to_json each
       # value is wrapped in double quotes — we match on the quoted form
       # so a regression to unquoted output (which breaks YAML when a
       # value happens to contain ":", "[", or whitespace) shows up here.
+      # smtp_username/password/admin_email are gone (SMTP migrated to the HA
+      # UI in 2027.1.0) — assert they stay out.
       ansible.builtin.assert:
         that:
-          - "secrets_text is search('smtp_username: \"testsmtp@example\\.com\"')"
-          - "secrets_text is search('smtp_password: \"testsmtppassword\"')"
-          - "secrets_text is search('admin_email: \"admin@example\\.com\"')"
           - "secrets_text is search('oidc_client_id: \"test-oidc-client-id\"')"
           - "secrets_text is search('oidc_client_secret: \"test-oidc-client-secret\"')"
+          - "secrets_text is not search('smtp_username')"
+          - "secrets_text is not search('smtp_password')"
+          - "secrets_text is not search('admin_email')"
         fail_msg: >-
-          secrets.yaml is missing one of the five expected !secret keys
-          (smtp_username, smtp_password, admin_email, oidc_client_id,
-          oidc_client_secret) or a value isn't double-quoted via to_json.
+          secrets.yaml is missing an OIDC !secret key (oidc_client_id,
+          oidc_client_secret), a value isn't double-quoted via to_json, or a
+          removed SMTP key (smtp_username/password/admin_email) came back.
       no_log: true
 
     # ========================================================================
@@ -167,6 +162,6 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "configuration.yaml rendered with http/trusted_proxies, ssl block, OIDC, SMTP, prometheus, default_config"
-          - "secrets.yaml rendered with all five !secret keys, double-quoted via to_json"
+          - "configuration.yaml rendered with http/trusted_proxies, ssl block, OIDC, prometheus, default_config (SMTP notify removed for HA 2027.1.0)"
+          - "secrets.yaml rendered with the OIDC !secret keys, double-quoted via to_json"
           - "All home_assistant role render-only contract assertions passed"

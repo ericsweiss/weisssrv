@@ -13,15 +13,10 @@ home_assistant_config_path: "/config"
 # role README "Host-key pinning" section for the capture command.
 home_assistant_host_key: ""
 
-# SMTP configuration (from 1Password via environment variables)
-home_assistant_smtp_host: "smtp-relay.esweiss.com"
-home_assistant_smtp_port: 587
-home_assistant_smtp_encryption: "starttls"
-home_assistant_smtp_username: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_USER') }}"
-home_assistant_smtp_password: "{{ lookup('ansible.builtin.env', 'SMTP_RELAY_PASSWORD') }}"
-home_assistant_smtp_sender: "home-assistant@esweiss.com"
-home_assistant_smtp_sender_name: "Home Assistant"
-home_assistant_admin_email: "{{ lookup('ansible.builtin.env', 'ADMIN_EMAIL') }}"
+# SMTP notifications were removed from configuration.yaml.j2 (the YAML `smtp`
+# notify platform is dropped in HA 2027.1.0; the config now lives in a HA UI
+# entry). The former home_assistant_smtp_* / home_assistant_admin_email vars
+# and their SMTP_RELAY_USER/PASSWORD/ADMIN_EMAIL env lookups are gone with it.
 
 # Trusted proxies for reverse proxy setup
 # INTENTIONAL: Broad ranges are required here because:

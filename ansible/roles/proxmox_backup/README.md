@@ -46,6 +46,7 @@ pve_vzdump_jobs:
     mode: snapshot
     compress: zstd
     all: true
+    bwlimit: 30720                # optional: cap per-node backup I/O (KiB/s)
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
     notification_mode: notification-system
     enabled: true

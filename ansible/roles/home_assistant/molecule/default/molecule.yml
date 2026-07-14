@@ -22,9 +22,6 @@ provisioner:
   playbooks:
     prepare: prepare.yml
   env:
-    SMTP_RELAY_USER: testsmtp@example.com
-    SMTP_RELAY_PASSWORD: testsmtppassword
-    ADMIN_EMAIL: admin@example.com
     HA_OIDC_CLIENT_ID: test-oidc-client-id
     HA_OIDC_CLIENT_SECRET: test-oidc-client-secret
   inventory:
@@ -36,11 +33,6 @@ provisioner:
         # private per-run tempdir instead).
         home_assistant_staging_dir: /tmp
         home_assistant_ssl_enabled: true
-        home_assistant_smtp_host: smtp-relay.test.local
-        home_assistant_smtp_port: 587
-        home_assistant_smtp_encryption: starttls
-        home_assistant_smtp_sender: home-assistant@test.local
-        home_assistant_smtp_sender_name: Home Assistant Test
         home_assistant_trusted_proxies:
           - 192.168.0.0/24
           - 10.42.0.0/16

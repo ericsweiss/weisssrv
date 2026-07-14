@@ -146,6 +146,7 @@
         {% if item.vmid is defined %}--vmid {{ item.vmid | join(',') }}{% endif %}
         {% if item.exclude is defined %}--exclude {{ item.exclude | join(',') }}{% endif %}
         {% if item.prune_backups is defined %}--prune-backups "{{ item.prune_backups }}"{% endif %}
+        {% if item.bwlimit is defined %}--bwlimit {{ item.bwlimit }}{% endif %}
         {% if item.notification_mode is defined %}--notification-mode {{ item.notification_mode }}{% endif %}
         {% if item.mailnotification is defined %}--mailnotification {{ item.mailnotification }}{% endif %}
         {% if item.mailto is defined %}--mailto "{{ item.mailto }}"{% endif %}
@@ -189,7 +190,8 @@
              + (['notification-mode'] if (item.notification_mode is not defined and _current.get('notification-mode', '') != '') else [])
              + (['mailnotification'] if (item.mailnotification is not defined and (_current.mailnotification | default('')) != '') else [])
              + (['mailto'] if (item.mailto is not defined and (_current.mailto | default('')) != '') else [])
-             + (['script'] if (item.script is not defined and (_current.script | default('')) != '') else []) }}
+             + (['script'] if (item.script is not defined and (_current.script | default('')) != '') else [])
+             + (['bwlimit'] if (item.bwlimit is not defined and (_current.bwlimit | default('') | string) != '') else []) }}
         _has_drift: >-
           {{ (_current.storage | default('')) != item.storage or
              (_current.schedule | default('')) != item.schedule or
@@ -210,6 +212,8 @@
               (_current.mailto | default('')) != item.mailto) or
              (item.script is defined and
               (_current.script | default('')) != item.script) or
+             (item.bwlimit is defined and
+              (_current.bwlimit | default('') | string) != (item.bwlimit | string)) or
              (_delete_fields | length > 0) }}
       ansible.builtin.command: >-
         pvesh set /cluster/backup/{{ item.id }}
@@ -222,6 +226,7 @@
         {% if item.vmid is defined %}--vmid {{ item.vmid | join(',') }}{% endif %}
         {% if item.exclude is defined %}--exclude {{ item.exclude | join(',') }}{% endif %}
         {% if item.prune_backups is defined %}--prune-backups "{{ item.prune_backups }}"{% endif %}
+        {% if item.bwlimit is defined %}--bwlimit {{ item.bwlimit }}{% endif %}
         {% if item.notification_mode is defined %}--notification-mode {{ item.notification_mode }}{% endif %}
         {% if item.mailnotification is defined %}--mailnotification {{ item.mailnotification }}{% endif %}
         {% if item.mailto is defined %}--mailto "{{ item.mailto }}"{% endif %}

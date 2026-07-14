@@ -1115,6 +1115,54 @@ spec:
                     to confirm, then `systemctl restart corosync pve-cluster`
                     on the affected node.
 
+              # I/O + memory pressure (PSI) on the bare-metal Proxmox hosts — the
+              # gap that let the 2026-07-13 pve-nas-01 freeze go un-alerted. The
+              # nightly cluster `all` backup fired on every node at 03:30 and they
+              # all wrote to pve-nas-01's tank-proxmox NFS target at once,
+              # saturating the (spinning) tank pool (io-PSI 0.47-0.59, load 26);
+              # stalled dirty-writeback then stalled memory reclaim and the host
+              # wedged in the KVM guest-page-fault path ~6 min later — with ZERO
+              # warning, because the stock NodeDiskIOSaturation / NodeMemory*
+              # alerts are scoped to the k3s node-exporter job, NOT the bare-metal
+              # node-exporter-host (:9101). PSI is the earliest saturation signal
+              # we collect. Codified guard for the trigger is bwlimit on the
+              # vzdump job (host_vars/pve-nas-01.yml). See docs/12-runbooks.md.
+              - alert: ProxmoxHostIOPressure
+                expr: >-
+                  rate(node_pressure_io_waiting_seconds_total{job="node-exporter-host"}[5m]) > 0.20
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Proxmox host {{ $labels.instance }} is I/O-pressure stalled'
+                  description: >-
+                    {{ $labels.instance }} has spent
+                    {{ $value | humanizePercentage }}
+                    of the last 5 minutes with tasks stalled waiting on disk I/O.
+                    Sustained pool saturation — on pve-nas-01 this precedes a
+                    dirty-writeback -> memory-reclaim stall -> whole-host freeze.
+                    Find the heavy writer (`iotop`; usually vzdump/scrub) and
+                    throttle or reschedule it; bwlimit on the vzdump job is the
+                    codified guard.
+              - alert: ProxmoxHostMemoryPressure
+                expr: >-
+                  rate(node_pressure_memory_waiting_seconds_total{job="node-exporter-host"}[5m]) > 0.10
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Proxmox host {{ $labels.instance }} is under memory-reclaim pressure'
+                  description: >-
+                    {{ $labels.instance }} has spent
+                    {{ $value | humanizePercentage }}
+                    of the last 5 minutes with tasks stalled on memory reclaim.
+                    On the memory-over-committed NAS this cascades from I/O
+                    saturation (stalled dirty-page writeback) into a KVM
+                    page-fault wedge. Check swap use / ARC / a heavy writer and
+                    correlate with ProxmoxHostIOPressure.
+
               # Companion: detects collector meta-failure (the textfile
               # script ran but is stuck). Per-instance, with usable labels.
               #

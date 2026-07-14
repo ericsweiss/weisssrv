@@ -99,8 +99,6 @@ SSH calls will fail with a host-key mismatch. To recover:
 ## Required 1Password Items
 
 In vault "Homelab":
-- **SMTP Relay Auth** - username, password (for SMTP notifications)
-- **Email Config** - root_alias (admin email for notifications)
 - **Home Assistant SSO** - authentik-client-id, authentik-client-secret (for OIDC login via Authentik)
 
 These are automatically injected via Taskfile environment variables resolved by `op run`.
@@ -112,23 +110,20 @@ These are automatically injected via Taskfile environment variables resolved by 
 Core Home Assistant configuration including:
 - HTTP reverse proxy settings (for Traefik)
 - Trusted proxy networks (LAN, k3s)
-- SMTP notification platform
+- OpenID Connect SSO (Authentik)
 - Default integrations
+
+SMTP notifications are no longer rendered here — the YAML `smtp` notify
+platform is removed in HA 2027.1.0 and was migrated to a HA UI config entry
+(stored in HAOS `.storage`, captured by HA backups). Re-add via the UI or
+restore from a backup on a from-scratch HAOS rebuild.
 
 Variables used:
 - `home_assistant_trusted_proxies` - List of trusted proxy CIDRs
-- `home_assistant_smtp_host` - SMTP server hostname
-- `home_assistant_smtp_port` - SMTP server port
-- `home_assistant_smtp_encryption` - Encryption method (starttls)
-- `home_assistant_smtp_sender` - Email sender address
-- `home_assistant_smtp_sender_name` - Sender display name
 
 ### secrets.yaml.j2
 
 Sensitive values injected from 1Password via environment variables:
-- `smtp_username` - SMTP relay username (from `SMTP_RELAY_USER` env var)
-- `smtp_password` - SMTP relay password (from `SMTP_RELAY_PASSWORD` env var)
-- `admin_email` - Admin email for notifications (from `ADMIN_EMAIL` env var)
 - `oidc_client_id` - Authentik OIDC client ID (from `HA_OIDC_CLIENT_ID` env var)
 - `oidc_client_secret` - Authentik OIDC client secret (from `HA_OIDC_CLIENT_SECRET` env var)
 
@@ -201,7 +196,6 @@ Key variables in `defaults/main.yml`:
 home_assistant_host: "192.168.0.154"
 home_assistant_ssh_port: 22222
 home_assistant_config_path: "/config"
-home_assistant_smtp_host: "smtp-relay.esweiss.com"
 home_assistant_trusted_proxies:
   - "192.168.0.0/24"      # Local LAN
   - "10.42.0.0/16"        # k3s pod network

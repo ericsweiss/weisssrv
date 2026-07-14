@@ -1807,9 +1807,6 @@ tasks:
     desc: Deploy Home Assistant configuration via Ansible with 1Password secrets
     dir: "{{.ANSIBLE_DIR}}"
     env:
-      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
-      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
-      ADMIN_EMAIL: op://Homelab/Email Config/root_alias
       HA_OIDC_CLIENT_ID: op://Homelab/Home Assistant SSO/authentik-client-id
       HA_OIDC_CLIENT_SECRET: op://Homelab/Home Assistant SSO/authentik-client-secret
     cmds:

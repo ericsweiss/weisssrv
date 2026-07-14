@@ -438,6 +438,16 @@ pve_vzdump_jobs:
     mode: snapshot
     compress: zstd
     all: true
+    # bwlimit caps per-node backup I/O (KiB/s). Because this is a cluster-wide
+    # `all` job it fires on EVERY node at 03:30 and they all write their guests
+    # to THIS host's tank-proxmox NFS target at once. Unthrottled, that combined
+    # write saturated the (spinning) tank pool and froze pve-nas-01 on 2026-07-13
+    # (I/O-pressure PSI 0.59, load 26, KVM guest page-fault hang, ~12h outage).
+    # 30720 KiB/s = 30 MiB/s per node keeps the aggregate (<=6 nodes -> ~180 MB/s)
+    # comfortably under saturation; each host's backup just runs proportionally
+    # longer (fine at 03:30). Raise only if the ProxmoxHost I/O-pressure alerts
+    # stay quiet through a full backup window.
+    bwlimit: 30720
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system
     enabled: true
