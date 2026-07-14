@@ -376,14 +376,29 @@ echo "Checking GitLab health..."
 # (verify runs right after kured node reboots, peak ingress churn). A real HTTP
 # status (incl 4xx/5xx) means GitLab answered, so trust it rather than let an
 # external 200 mask an internal error.
-GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.esweiss.com/-/readiness 2>/dev/null || true)
-if [ -z "$GITLAB_CODE" ] || [ "$GITLAB_CODE" = "000" ]; then
-  GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.ericsweiss.com/-/readiness 2>/dev/null || true)
-fi
+# GitLab's VM disk is on an encryption-gated zvol, so a maintenance run that
+# reboots pve-nas-01 leaves GitLab restarting: it can take minutes to finish
+# and returns 404 on /-/readiness until Rails/Workhorse are up. Retry for up to
+# ~4 min so a slow-but-healthy start is not a false failure (a genuinely-down
+# GitLab still fails once the budget is spent). Mirrors deploy-verify.sh's retry;
+# the internal->external fallback on a connection-level 000 is preserved.
+GITLAB_CODE=""
+gitlab_start_ts=$(date +%s)
+while true; do
+  GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.esweiss.com/-/readiness 2>/dev/null || true)
+  if [ -z "$GITLAB_CODE" ] || [ "$GITLAB_CODE" = "000" ]; then
+    GITLAB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://git.ericsweiss.com/-/readiness 2>/dev/null || true)
+  fi
+  if [ "$GITLAB_CODE" = "200" ]; then break; fi
+  gitlab_elapsed=$(( $(date +%s) - gitlab_start_ts ))
+  if [ "$gitlab_elapsed" -ge 240 ]; then break; fi
+  echo "GitLab not ready (HTTP ${GITLAB_CODE:-000}, ${gitlab_elapsed}s elapsed), retrying..."
+  sleep 10
+done
 if [ "$GITLAB_CODE" = "200" ]; then
   echo "GitLab: OK"
 else
-  echo "ERROR: GitLab health check failed (HTTP ${GITLAB_CODE:-000})"
+  echo "ERROR: GitLab health check failed (HTTP ${GITLAB_CODE:-000}) after 4m of retries"
   ERRORS=$((ERRORS + 1))
 fi
 

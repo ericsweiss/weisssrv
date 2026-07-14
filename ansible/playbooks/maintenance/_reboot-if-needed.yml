@@ -300,15 +300,33 @@
 # Ready again (etcd member rejoined) — otherwise two etcd members could be down
 # at once. Delegated to a server NOT on this host. No-op for hosts with no server.
 # No failed_when:false on purpose: if the rebooted server's etcd member does NOT
-# come Ready within 3x300s, FAIL the run — a degraded etcd is a hard stop, do not
-# keep rebooting more hosts on top of it.
+# come Ready within the bounded budget below, FAIL the run — a degraded etcd is a
+# hard stop, do not keep rebooting more hosts on top of it.
+#
+# Hard-bounded so this gate can never wedge the whole serial sweep. Rebooting a
+# control-plane host fails the kube-vip API VIP (.161) over to another server;
+# during that window a `kubectl wait` issued (on the delegate) against the VIP
+# could block on a dead TCP session far past its own --timeout. That is exactly
+# what stalled the 2026-07-14 maintenance run — this gate sat ~42 min until the
+# CI job deadline killed it, having rebooted 0 further hosts. Nested bounds,
+# smallest first, so a slow-but-healthy rejoin is never cut short:
+#   - --timeout=180s is the LOGICAL budget — how long the node has to go Ready;
+#   - --request-timeout=190s bounds a hung API call, set ABOVE --timeout so it
+#     never terminates the `kubectl wait` watch early (a client request timeout
+#     BELOW the wait budget would false-fail a slow etcd rejoin — the very thing
+#     we are trying to avoid);
+#   - `timeout --kill-after` is the outer hard backstop that kills a socket-level
+#     hang the kubectl client timers cannot reach (SIGTERM at 200s, SIGKILL +10s).
+# Nesting 180 < 190 < 200. 3 attempts => ~10 min worst case, then the run fails.
 - name: Wait for this host's k3s server (etcd member) to rejoin before serial advances
   ansible.builtin.command: >-
-    k3s kubectl wait --for=condition=Ready node/{{ host_etcd_server_node }} --timeout=300s
+    timeout --kill-after=10s 200s
+    k3s kubectl --request-timeout=190s wait
+    --for=condition=Ready node/{{ host_etcd_server_node }} --timeout=180s
   register: etcd_rejoin_wait
   changed_when: false
   retries: 3
-  delay: 10
+  delay: 15
   until: etcd_rejoin_wait.rc == 0
   delegate_to: >-
     {{ (groups['k3s_servers']
