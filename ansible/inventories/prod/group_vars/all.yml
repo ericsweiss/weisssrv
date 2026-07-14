@@ -128,7 +128,7 @@ tailscale_accept_dns: false  # Use local DNS infrastructure
 tailscale_advertise_routes: []  # Only subnet routers (Proxmox hosts) should advertise routes
 
 # Application version pins
-adguard_home_version: "0.107.77"
+adguard_home_version: "0.107.78"
 adguardhome_sync_version: "0.9.2"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
@@ -262,7 +262,7 @@ helm_chart_versions:
   cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.7.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.15.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "87.15.2"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
   loki: "18.4.4"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.1"
   prometheus_blackbox_exporter: "11.15.1"

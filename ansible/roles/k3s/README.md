@@ -8,6 +8,13 @@ Installs and configures Kubernetes k3s cluster with embedded etcd, kube-vip VIP,
 - Package installation (curl, open-iscsi, nfs-common)
 - iscsid service enablement
 - Config directory creation
+- Kernel inotify ceilings (`/etc/sysctl.d/90-k3s-inotify.conf`): raises
+  `fs.inotify.max_user_instances` (128 → 8192) and `max_user_watches` so a
+  container-dense node never exhausts the host-global, per-UID inotify-instance
+  pool. Without it, a fresh molecule CI container's systemd PID 1 intermittently
+  dies at boot with *"Failed to allocate manager object: Too many open files"*
+  and the job fails at molecule's *"Wait for systemd to be ready"* prepare step.
+  Toggle with `k3s_inotify_tuning`; see the note below and docs/19.
 
 ### Persistent Storage
 - Additional disk formatting (ZFS zvols as /dev/sdb, /dev/sdc, etc.)
@@ -113,6 +120,7 @@ k3s Cluster (9 nodes: 3 servers + 6 agents)
 1. Install prerequisites
 2. Enable iscsid service
 3. Create k3s config directory
+3b. Raise kernel inotify ceilings (sysctl.d drop-in; live-applied on real nodes)
 4. Mount additional persistent disks (if defined)
    ├─ Check if formatted
    ├─ Format if needed (ext4)
@@ -126,7 +134,7 @@ k3s Cluster (9 nodes: 3 servers + 6 agents)
 
 ## Files
 
-- `tasks/main.yml` - Main orchestration (prerequisites, /etc/hosts pins, disks)
+- `tasks/main.yml` - Main orchestration (prerequisites, inotify sysctl, /etc/hosts pins, disks)
 - `tasks/server.yml` - Server installation
 - `tasks/agent.yml` - Agent installation (incl. agent-token migration)
 - `tasks/install-script.yml` - Shared version detection + installer staging

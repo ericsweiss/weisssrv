@@ -25,6 +25,25 @@ k3s_storage_host_pins:
   - name: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
     ip: "192.168.0.102"
 
+# ---------------------------------------------------------------------------
+# Kernel inotify limits (docs/19 "CI molecule flake: Too many open files")
+# ---------------------------------------------------------------------------
+# Raise the per-UID inotify instance/watch ceilings on every k3s node. Each
+# systemd-in-Docker container (the molecule CI jobs the in-cluster GitLab
+# runners execute) needs one inotify instance to watch its own cgroup. The
+# kernel default fs.inotify.max_user_instances=128 is per-UID and — because the
+# runner pods share the host user namespace — is drawn HOST-GLOBAL by every
+# uid-0 container on the node (kubelet, containerd, Flux, Prometheus, Alloy, and
+# every pod's root process). A container-dense node exhausts the pool, and the
+# next molecule container's systemd PID 1 dies at boot with "Failed to allocate
+# manager object: Too many open files" -> molecule then sees "Container is not
+# running" in its prepare step and the job fails (script_failure, not retried).
+# Raising the ceiling removes that ambient exhaustion. Set k3s_inotify_tuning to
+# false to remove the drop-in entirely.
+k3s_inotify_tuning: true
+k3s_inotify_max_user_instances: 8192
+k3s_inotify_max_user_watches: 1048576
+
 # K3s version and installation
 # Note: Version should be set in group_vars/k3s.yml or all.yml
 # This is a fallback default

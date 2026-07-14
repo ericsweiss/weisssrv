@@ -34,6 +34,39 @@
     state: directory
     mode: "0755"
 
+# Raise the kernel inotify ceilings so a container-dense node never exhausts the
+# host-global per-UID inotify-instance pool and kills a fresh molecule CI
+# container's systemd PID 1 ("Too many open files"). See k3s_inotify_* in
+# defaults/main.yml for the full failure mode. The drop-in persists across
+# reboots (sysctl --system); the live apply (sysctl_set/reload) is skipped under
+# skip_k3s_install so the molecule container only writes the file — verify.yml
+# asserts it — and does not touch the shared host's /proc/sys.
+- name: Raise kernel inotify limits for systemd-in-Docker CI containers
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value | string }}"
+    sysctl_file: /etc/sysctl.d/90-k3s-inotify.conf
+    sysctl_set: "{{ not (skip_k3s_install | default(false) | bool) }}"
+    reload: "{{ not (skip_k3s_install | default(false) | bool) }}"
+    state: present
+  loop:
+    - { name: fs.inotify.max_user_instances, value: "{{ k3s_inotify_max_user_instances }}" }
+    - { name: fs.inotify.max_user_watches, value: "{{ k3s_inotify_max_user_watches }}" }
+  loop_control:
+    label: "{{ item.name }}={{ item.value }}"
+  when: k3s_inotify_tuning | bool
+
+- name: Remove the k3s inotify sysctl drop-in when disabled
+  # Removes persistence only: the live ceiling stays raised until the next
+  # reboot cleanly reverts it to the kernel default. We deliberately do NOT force
+  # the value back down (same rationale as nic_tuning's ip_forward disable) —
+  # lowering a kernel limit that other workloads on the node may now rely on
+  # could do more harm than leaving it high for one more boot cycle.
+  ansible.builtin.file:
+    path: /etc/sysctl.d/90-k3s-inotify.conf
+    state: absent
+  when: not (k3s_inotify_tuning | bool)
+
 # Pin the GitLab registry hostname to the internal Traefik VIP so containerd
 # resolves it locally (no upstream DNS) and pulls CI images via the direct
 # internal path. See k3s_registry_host_pins in defaults/main.yml for the why +

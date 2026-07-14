@@ -43,6 +43,24 @@
         fail_msg: "k3s config file missing expected settings"
         success_msg: "k3s config file contains expected settings"
 
+    # Node-prep: the inotify sysctl drop-in (tasks/main.yml) must render so a
+    # container-dense node cannot exhaust the host-global inotify-instance pool
+    # and kill a fresh molecule container's systemd PID 1 with "Too many open
+    # files". Under skip_k3s_install the role writes the drop-in but does not
+    # apply it live (the container shares the host's /proc/sys).
+    - name: Read the inotify sysctl drop-in
+      ansible.builtin.slurp:
+        src: /etc/sysctl.d/90-k3s-inotify.conf
+      register: k3s_inotify_dropin
+
+    - name: Verify the inotify drop-in raises both ceilings
+      ansible.builtin.assert:
+        that:
+          - (k3s_inotify_dropin.content | b64decode) is search('(?m)^fs\.inotify\.max_user_instances\s*=\s*8192\s*$')
+          - (k3s_inotify_dropin.content | b64decode) is search('(?m)^fs\.inotify\.max_user_watches\s*=\s*1048576\s*$')
+        fail_msg: "inotify sysctl drop-in missing or ceilings not raised"
+        success_msg: "inotify drop-in raises max_user_instances=8192 and max_user_watches=1048576"
+
     # Security-critical keys render unconditionally on every server.
     - name: Verify hardening keys render in the server config
       ansible.builtin.assert:
@@ -171,6 +189,7 @@
           - "k3s config directory exists"
           - "k3s config file exists with correct permissions (0600)"
           - "k3s config contains tls-san, API VIP, cluster-cidr, and service-cidr"
+          - "inotify sysctl drop-in raises max_user_instances/max_user_watches"
           - "secrets-encryption, agent-token, and flannel backend render"
           - "cluster-init vs join stanza matches k3s_is_first_server"
           - "kube-vip manifest deployed on the first server only (VIP, readOnly kubeconfig)"

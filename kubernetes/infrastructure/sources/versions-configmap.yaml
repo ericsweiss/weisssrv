@@ -5,7 +5,7 @@
 apiVersion: v1
 data:
   adguard_exporter_version: v1.2.1
-  adguard_home_version: 0.107.77
+  adguard_home_version: 0.107.78
   adguardhome_sync_version: 0.9.2
   alloy_host_version: 1.17.1-1
   authentik_version: 2026.5.4
@@ -22,7 +22,7 @@ data:
   helm_chart_versions_cert_manager: v1.21.0
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.7.0
-  helm_chart_versions_kube_prometheus_stack: 87.15.1
+  helm_chart_versions_kube_prometheus_stack: 87.15.2
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.4.4
   helm_chart_versions_metallb: 0.15.3

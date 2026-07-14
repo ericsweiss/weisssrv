@@ -633,6 +633,64 @@ kubectl get svc traefik -n traefik -o yaml
 kubectl describe svc traefik -n traefik
 ```
 
+### CI molecule flake: "Too many open files" (inotify exhaustion)
+
+**Symptom.** A `molecule-tests` matrix job fails at the prepare step:
+
+```
+TASK [Wait for systemd to be ready]
+fatal: [<role>-test]: FAILED! => {"attempts": 3, ...,
+  "stderr": "Error response from daemon: Container <id> is not running"}
+CRITICAL Ansible return code was 2 ... prepare-common.yml
+```
+
+The container is created and passes the creation-wait, then dies within ~7s.
+The failure is `script_failure` (rc 2), which the `.molecule-base` retry
+deliberately does **not** auto-retry, so it fails the pipeline and has
+historically needed a manual "retry job". It is intermittent, hits at any
+concurrency (even a single job), and clusters on **one node at a time**.
+
+**Root cause.** systemd PID 1 inside the test container can't allocate its
+control-group inotify watch:
+
+```
+Failed to create control group inotify object: Too many open files
+Failed to allocate manager object: Too many open files
+[!!!!!!] Failed to allocate manager object.
+Exiting PID 1...
+```
+
+`fs.inotify.max_user_instances` is a **per-UID, host-global** limit (the runner
+pods share the host user namespace). Its kernel default of **128** is drawn down
+by every uid-0 container on the node — kubelet, containerd, Flux, Prometheus,
+Alloy, and each pod's root process — all heavy inotify users. On a
+container-dense node the pool is exhausted, so the *next* systemd-in-Docker
+molecule container's `inotify_init()` returns `EMFILE` and PID 1 exits before
+molecule's prepare can reach it. Whichever node is nearest its cap fails, which
+is why it appears to roam across nodes between pipelines.
+
+**Fix (codified).** The `k3s` role raises the ceilings on every node via
+`/etc/sysctl.d/90-k3s-inotify.conf` (`k3s_inotify_*` in the role defaults):
+`fs.inotify.max_user_instances = 8192`, `fs.inotify.max_user_watches =
+1048576`. Redeploy with `task k3s:deploy` (or a role-scoped run) to apply.
+
+**Diagnose / verify limits per node:**
+
+```bash
+# Current ceiling on a node (128 = unpatched default; 8192 = fixed):
+ssh <k3s-node> cat /proc/sys/fs/inotify/max_user_instances
+
+# Apply on all nodes without a full role redeploy. max_user_instances is the
+# exhausted limit that fixes the symptom (inotify_init -> EMFILE); max_user_watches
+# is hardening the role also raises — run the second invocation for parity. Writing
+# sysctl_file= persists the same drop-in the role manages, so this survives reboot;
+# `task k3s:deploy` remains the canonical owner.
+ansible k3s_servers:k3s_agents -b -m ansible.posix.sysctl \
+  -a "name=fs.inotify.max_user_instances value=8192 sysctl_file=/etc/sysctl.d/90-k3s-inotify.conf sysctl_set=true reload=true"
+ansible k3s_servers:k3s_agents -b -m ansible.posix.sysctl \
+  -a "name=fs.inotify.max_user_watches value=1048576 sysctl_file=/etc/sysctl.d/90-k3s-inotify.conf sysctl_set=true reload=true"
+```
+
 ## Rebuilding a Server Node
 
 To rebuild a lost or corrupted server VM (including the first server) while
