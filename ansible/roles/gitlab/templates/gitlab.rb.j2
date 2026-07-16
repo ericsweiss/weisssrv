@@ -195,7 +195,8 @@ prometheus_monitoring['enable'] = true
 # Monitoring Endpoint (for health checks)
 # =============================================================================
 
-# Sourced from gitlab_monitoring_whitelist (defaults/main.yml) — the LAN /24,
-# firewall-gated. See that var for why it is not narrowed to node IPs (GitLab
-# real_ip matching would 404 Traefik-proxied /-/readiness probes).
+# Sourced from gitlab_monitoring_whitelist (defaults/main.yml) — the LAN /24
+# (firewall-gated) plus the k3s pod CIDR. See that var for the real_ip
+# mechanics: in-cluster verify probes reach here with a pod source IP when
+# their runner pod shares a node with a Traefik replica.
 gitlab_rails['monitoring_whitelist'] = {{ gitlab_monitoring_whitelist | to_json }}

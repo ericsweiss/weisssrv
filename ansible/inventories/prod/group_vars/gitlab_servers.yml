@@ -22,3 +22,19 @@ gitlab_saml_admin_groups:
 # Postfix null client uses the role default postfix_config (relay via
 # smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
 # postfix_sasl_password, and mail_aliases are defined in all.yml.
+
+# Monitoring whitelist: role default (loopback + LAN /24) PLUS the k3s pod
+# CIDR. The deploy-verify / maintenance-verify readiness probes run in runner
+# PODS: when such a pod lands on a node hosting a Traefik replica, its
+# connection to the internal VIP short-circuits in-cluster
+# (externalTrafficPolicy: Local preserves the pod source IP), so GitLab sees a
+# 10.42.x client and 404s /-/readiness; on other nodes the traffic SNATs to a
+# node IP and passes — a placement-dependent flake that failed
+# maintenance-run-all's verify on 2026-07-16. The pod CIDR is
+# cluster-internal and unroutable from outside; the exposure ceiling is
+# unauthenticated /-/metrics to in-cluster pods (incl. shared-runner CI jobs),
+# accepted for deterministic verify.
+gitlab_monitoring_whitelist:
+  - 127.0.0.1
+  - 192.168.0.0/24
+  - 10.42.0.0/16

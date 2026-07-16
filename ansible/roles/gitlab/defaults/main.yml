@@ -126,13 +126,12 @@ gitlab_nginx_real_ip_trusted_addresses:
   - 10.43.0.0/16
 
 # Sources allowed to reach GitLab's unauthenticated monitoring endpoints
-# (/-/metrics, /-/readiness, /-/liveness; /-/health is unrestricted). Kept at the
-# LAN /24 — already firewall-gated to the admin/cluster IP sets. GitLab sets
-# real_ip from X-Forwarded-For, so a Traefik-proxied probe (e.g. the maintenance
-# /-/readiness check via git.ericsweiss.com) is matched on its REAL client IP,
-# which is not necessarily a k3s node IP; narrowing to node IPs would 404 those
-# probes for marginal benefit. Override in host_vars to tighten if every monitor
-# source is known.
+# (/-/metrics, /-/readiness, /-/liveness; /-/health is unrestricted). Narrow
+# least-privilege default: loopback + the firewall-gated LAN /24. GitLab
+# matches the real_ip from X-Forwarded-For, so Traefik-proxied probes are
+# matched on their REAL client IP. Deployments whose verify probes run in
+# k8s pods must opt the pod CIDR in via inventory (prod does — see
+# group_vars/gitlab_servers.yml for the full mechanics).
 gitlab_monitoring_whitelist:
   - 127.0.0.1
   - 192.168.0.0/24
