@@ -346,7 +346,9 @@ This:
 
 After bootstrap, Flux reconciles five Kustomizations in `dependsOn` order:
 `infrastructure-sources` → `infrastructure-controllers` →
-`infrastructure-configs` → `infrastructure-observability` → `apps`. The
+`infrastructure-configs`, which fans out to `infrastructure-observability`
+and `apps` in parallel (apps deliberately do not gate on observability
+health). The
 canonical description of each stage's role and membership lives in
 `docs/29-flux-operations.md`; each stage's `kustomization.yaml` under
 `kubernetes/infrastructure/` and `kubernetes/apps/` is the current set.
@@ -377,7 +379,7 @@ Expected state (Flux Kustomization stages reconcile in dependsOn order):
 - `infrastructure-controllers` `Kustomization` — Ready (after sources)
 - `infrastructure-configs` `Kustomization` — Ready (after controllers)
 - `infrastructure-observability` `Kustomization` — Ready (after configs)
-- `apps` `Kustomization` — Ready (after infrastructure-observability)
+- `apps` `Kustomization` — Ready (after infrastructure-configs)
 - Every `HelmRelease` — Ready
 - Every `ExternalSecret` — `SecretSynced: True`
 - Every `IngressRoute` resolved and responding

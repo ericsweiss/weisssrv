@@ -1,0 +1,29 @@
+---
+# Shared downloads IngressRoute skeleton (placeholder name/host/service/port are
+# replaced by each per-app overlay). The parts every downloads route shares —
+# entryPoints: websecure, the lan-tailscale-only + authentik-auth + hsts-header
+# middleware chain, and tls.secretName: esweiss-com-tls — live here exactly once,
+# so a change to the chain (e.g. adding a rate-limit middleware) is a one-place edit.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: app
+  namespace: downloads
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`app.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: authentik-auth
+          namespace: authentik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: app
+          port: 8080
+  tls:
+    secretName: esweiss-com-tls

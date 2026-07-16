@@ -15,10 +15,12 @@ making subnet-router **failover real** instead of a single-host SPOF.
 
 `terraform apply` here **overwrites the live tailnet ACL**. A wrong policy can
 sever tailnet connectivity and Tailscale SSH (including the path this repo's
-remote admin relies on). Do **not** wire `apply` into CI — a read-only drift
-`plan` in CI is fine (and wanted, so Admin-console hot-fixes surface instead
-of being silently reverted at the next apply), but `apply` stays supervised.
-Review `policy.hujson` against the current Admin console ACL first.
+remote admin relies on). `apply` stays **out of CI and supervised**; only a
+read-only drift `plan` runs in CI — the `tailscale-drift-plan` job
+(`.gitlab-ci.yml`) runs `terraform plan` (never `apply`, `allow_failure: true`)
+on the schedule and on tailscale-module MRs, so an Admin-console hot-fix surfaces
+as drift in the plan output instead of being silently reverted at the next
+apply. Review `policy.hujson` against the current Admin console ACL first.
 
 ## One-time setup
 

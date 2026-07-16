@@ -109,6 +109,10 @@ IN ACCEPT -source +dc/pve_hosts -p udp -dport 5405 -log nolog      # Corosync
 
 #### Service-Specific Security Groups
 
+> The blocks below are reproduced from
+> `ansible/roles/proxmox_firewall/templates/cluster.fw.j2`, which is the
+> authoritative source; if they ever diverge, trust the template.
+
 **sg-dns** - DNS service ports only (no SSH):
 ```ini
 [group sg-dns]
@@ -118,9 +122,13 @@ IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
-# AdGuard Home Web UI
+# AdGuard Home plaintext admin API (:3000)
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
+# AdGuard Home HTTPS admin UI (:443) — Traefik proxies dns-01/dns-02.esweiss.com
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
 # Standard DNS
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
 IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
@@ -149,6 +157,7 @@ OUT ACCEPT -p tcp -dport 587 -log nolog
 # apt (the base role runs apt inside the LXC) + ICMP diagnostics
 OUT ACCEPT -p tcp -dport 80 -log nolog
 OUT ACCEPT -p tcp -dport 443 -log nolog
+OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
 OUT ACCEPT -p icmp -log nolog
 ```
 

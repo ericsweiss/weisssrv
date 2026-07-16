@@ -1,19 +1,4 @@
 ---
-# Default-deny ingress for metallb-system — parity with the rest of the
-# controller namespaces (cert-manager pattern). Only the controller is
-# pod-network; the speaker DaemonSet is hostNetwork, so NetworkPolicy does not
-# apply to it (its ports are guarded by the Proxmox VM firewall instead).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: metallb-system
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # Allow ingress to the MetalLB controller webhook (called by the
 # kube-apiserver, which arrives post-DNAT from a server node IP — the
 # metallb-webhook-service maps 443 -> container port 9443) and metrics scrapes

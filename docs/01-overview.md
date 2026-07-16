@@ -49,6 +49,11 @@ Internet
         +-- k3s-api       (192.168.0.161) - kube-vip K3s API HA endpoint
 ```
 
+**NIC note**: the three OptiPlex compute nodes (pve-opt-01/02/03, .104/.105/.106)
+uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
+`/etc/network/interfaces`); the other hosts are single-NIC. See
+[docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md).
+
 ### IP Allocation Strategy
 
 | Range | Purpose | Status |
@@ -59,9 +64,15 @@ Internet
 | 192.168.0.150-155 | Infrastructure services (DNS, SMTP, apps) | Active |
 | 192.168.0.160-169 | Additional infrastructure services | Active (.160 dns-02) |
 | 192.168.0.200-207 | K3s agent VMs (subnet: 192.168.0.200/29) | Active (.202-.207) |
-| 192.168.0.220-227 | K3s server VMs (subnet: 192.168.0.220/29) | Active (.222, .223, .227) |
+| 192.168.0.220-227 | K3s server VMs (.222/.223 in 192.168.0.220/29; .227 is outside it) | Active (.222, .223, .227) |
 
-**Note**: K3s VM subnets (192.168.0.200/29 for agents, 192.168.0.220/29 for servers) are allowlisted in NFS exports for secure access to storage.
+**Note**: K3s VM subnets are allowlisted in NFS exports for secure access to
+storage. Mind the CIDR gotcha: `192.168.0.220/29` masks to .216–.223 and does
+**not** cover server .227 (prec-01). So the RW exports (`/export/{appdata,share,media}`)
+allowlist only the /29 blocks (agents `192.168.0.200/29` + servers .222/.223),
+deliberately excluding .227; the fsid=0 pseudo-root and `/export/k3s-etcd` list
+all three servers (.222/.223/.227) as explicit /32s. This mirrors the wording in
+`host_vars/pve-nas-01.yml` (the source of truth).
 
 ## Service Architecture
 

@@ -22,6 +22,12 @@ PYYAML_VERSION="${PYYAML_VERSION:?deploy-verify.sh requires PYYAML_VERSION (set 
 
 set -eo pipefail
 
+# Pure pod/HelmRelease/Ready-condition classifiers live in a sourced lib so they
+# can be unit-tested without a live cluster (scripts/test_deploy_verify_lib.py).
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/deploy-verify-lib.sh
+. "$_SCRIPT_DIR/deploy-verify-lib.sh"
+
 # Install tools needed for server-side dry-run validation.
 # These are already in the flux-lint job's before_script but deploy-verify
 # extends .k3s-deploy-base (kubectl + jq only), so we install them here.
@@ -53,16 +59,14 @@ wait_for() {
 }
 
 echo "=== Post-Deployment Verification ==="
-
-# jq filter fragment: select items whose Ready condition is missing or not True.
-# Used by multiple check functions below.
-JQ_NOT_READY='select((.status.conditions // []) | map(select(.type == "Ready")) | (length == 0 or .[0].status != "True"))'
+# JQ_NOT_READY and the pod/HR classifiers come from deploy-verify-lib.sh (sourced
+# above).
 
 echo "Checking node status..."
 check_nodes_ready() {
   NODE_OUTPUT=$(kubectl get nodes --no-headers)
   [ -z "$NODE_OUTPUT" ] && return 1
-  NOT_READY=$(echo "$NODE_OUTPUT" | awk '$2 != "Ready" {count++} END {print count+0}')
+  NOT_READY=$(echo "$NODE_OUTPUT" | nodes_not_ready_count)
   [ "$NOT_READY" -eq 0 ]
 }
 if ! wait_for "all nodes Ready" 60 5 check_nodes_ready; then
@@ -175,11 +179,13 @@ fi
 # non-Ready ExternalSecrets should be treated as failures. During bootstrap
 # or recovery (some Kustomizations not yet Ready), ESO may still be starting
 # and ES non-readiness is expected.
+# The trailing || echo 999 guards the WHOLE pipeline: under pipefail a
+# kubectl failure would otherwise propagate out of the substitution and
+# set -e would kill the script — the guard degrades to bootstrap mode instead.
 PRE_KS_NOT_READY=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A -o json 2>/dev/null \
-  | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
-STEADY_STATE=false
-if [ "$PRE_KS_NOT_READY" -eq 0 ]; then
-  STEADY_STATE=true
+  | count_not_ready || echo "999")
+STEADY_STATE=$(steady_state "$PRE_KS_NOT_READY")
+if [ "$STEADY_STATE" = "true" ]; then
   echo "Cluster is steady-state (all Kustomizations were Ready pre-reconcile)"
 else
   echo "Cluster is in bootstrap/recovery ($PRE_KS_NOT_READY Kustomization(s) not Ready pre-reconcile)"
@@ -221,15 +227,14 @@ kubectl get externalsecrets -A
 echo ""
 echo "ExternalSecret readiness:"
 check_externalsecrets_ready() {
-  ES_COUNT=$(kubectl get externalsecrets -A -o json 2>/dev/null \
-    | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
+  ES_COUNT=$(kubectl get externalsecrets -A -o json 2>/dev/null | count_not_ready || echo "999")
   [ "$ES_COUNT" -eq 0 ]
 }
 if ! wait_for "ExternalSecrets ready" 90 10 check_externalsecrets_ready; then
-  ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null \
-    | jq "[.items[] | $JQ_NOT_READY] | length" 2>/dev/null || echo "999")
-  kubectl get externalsecrets -A -o json 2>/dev/null \
-    | jq -r ".items[] | $JQ_NOT_READY | \"  \(.metadata.namespace)/\(.metadata.name)\"" 2>/dev/null || true
+  # Outer guards: under pipefail a kubectl failure would otherwise escape the
+  # substitution/pipeline and set -e would kill the script mid-diagnostics.
+  ES_NOT_READY=$(kubectl get externalsecrets -A -o json 2>/dev/null | count_not_ready || echo "999")
+  { kubectl get externalsecrets -A -o json 2>/dev/null || echo '{"items":[]}'; } | not_ready_ns_names
   if [ "$STEADY_STATE" = "true" ]; then
     echo "ERROR: $ES_NOT_READY ExternalSecret(s) not Ready on a steady-state cluster"
     EXIT=1
@@ -253,7 +258,7 @@ echo "Checking for non-Ready Flux resources..."
 FLUX_KINDS="kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io,gitrepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io"
 check_flux_resources_ready() {
   FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null) || return 1
-  NOT_READY=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
+  NOT_READY=$(echo "$FLUX_ALL" | count_not_ready)
   [ "$NOT_READY" -eq 0 ]
 }
 # 5 min headroom — major chart bumps (kube-prometheus-stack, Loki) can
@@ -261,7 +266,7 @@ check_flux_resources_ready() {
 # rollout, and verify runs immediately after `git push` of those bumps.
 if ! wait_for "Flux resources ready" 300 10 check_flux_resources_ready; then
   FLUX_ALL=$(kubectl get $FLUX_KINDS -A -o json 2>/dev/null || echo '{"items":[]}')
-  NOT_READY_COUNT=$(echo "$FLUX_ALL" | jq "[.items[] | $JQ_NOT_READY] | length")
+  NOT_READY_COUNT=$(echo "$FLUX_ALL" | count_not_ready)
   echo "ERROR: $NOT_READY_COUNT Flux resource(s) not Ready:"
   echo "$FLUX_ALL" | jq -r ".items[] | $JQ_NOT_READY | \"  \(.kind)/\(.metadata.namespace)/\(.metadata.name): \((.status.conditions // []) | map(select(.type == \"Ready\")) | .[0].message // \"no Ready condition\")\""
   EXIT=1
@@ -298,8 +303,8 @@ echo "=== Observability Stack ==="
 check_obs_pods_healthy() {
   OBS_PODS=$(kubectl get pods -n observability --no-headers 2>/dev/null || true)
   [ -z "$OBS_PODS" ] && return 1
-  echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/ {exit 1}' || return 1
-  echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) exit 1}' || return 1
+  [ -z "$(echo "$OBS_PODS" | pods_not_running_or_completed)" ] || return 1
+  [ -z "$(echo "$OBS_PODS" | pods_running_unready)" ] || return 1
 }
 # Long timeout in steady state covers chart-upgrade rollouts; short
 # timeout in bootstrap/recovery so we drop into the WARNING branch
@@ -317,7 +322,7 @@ if ! wait_for "observability pods healthy" "$OBS_PODS_WAIT" 10 check_obs_pods_he
       echo "WARNING: No pods in observability namespace (bootstrap/recovery)"
     fi
   else
-    OBS_BAD=$(echo "$OBS_PODS" | awk '$3 !~ /^(Running|Completed)$/')
+    OBS_BAD=$(echo "$OBS_PODS" | pods_not_running_or_completed)
     if [ -n "$OBS_BAD" ]; then
       # In bootstrap/recovery, pods may legitimately be Pending,
       # ContainerCreating, or initializing mid-rollout — warn for
@@ -325,7 +330,7 @@ if ! wait_for "observability pods healthy" "$OBS_PODS_WAIT" 10 check_obs_pods_he
       # form of CrashLoopBackOff, ImagePullBackOff, InvalidImageName,
       # OOMKilled, etc.) is a real bug even during bootstrap.
       # Steady-state always fails on any non-Running pod.
-      OBS_NON_TRANSIENT=$(echo "$OBS_BAD" | awk '$3 !~ /^(Pending|ContainerCreating|PodInitializing|Terminating|Init:[0-9]+\/[0-9]+)$/')
+      OBS_NON_TRANSIENT=$(echo "$OBS_BAD" | pods_non_transient)
       if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_NON_TRANSIENT" ]; then
         echo "ERROR: Observability pods in failing state:"
         echo "$OBS_BAD"
@@ -335,7 +340,7 @@ if ! wait_for "observability pods healthy" "$OBS_PODS_WAIT" 10 check_obs_pods_he
         echo "$OBS_BAD"
       fi
     else
-      OBS_UNREADY=$(echo "$OBS_PODS" | awk '$3=="Running"{split($2,a,"/"); if(a[1]!=a[2]) print}')
+      OBS_UNREADY=$(echo "$OBS_PODS" | pods_running_unready)
       if [ -n "$OBS_UNREADY" ]; then
         echo "WARNING: Some observability pods have unready containers:"
         echo "$OBS_UNREADY"
@@ -350,7 +355,7 @@ check_obs_helmreleases_ready() {
   OBS_HR_JSON=$(kubectl get helmreleases -n observability -o json 2>/dev/null || echo '{"items":[]}')
   OBS_HR_COUNT=$(echo "$OBS_HR_JSON" | jq '.items | length' 2>/dev/null || echo "0")
   [ "${OBS_HR_COUNT:-0}" -eq 0 ] && return 1
-  OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
+  OBS_HR_BAD=$(echo "$OBS_HR_JSON" | helmreleases_not_ready_names)
   [ -z "$OBS_HR_BAD" ]
 }
 # Same pattern as the pods wait above: long budget in steady state for
@@ -369,25 +374,14 @@ if ! wait_for "observability HelmReleases ready" "$OBS_HR_WAIT" 10 check_obs_hel
       echo "WARNING: No HelmReleases in observability namespace (bootstrap/recovery)"
     fi
   else
-    OBS_HR_BAD=$(echo "$OBS_HR_JSON" | jq -r ".items[] | $JQ_NOT_READY | .metadata.name" 2>/dev/null || true)
+    OBS_HR_BAD=$(echo "$OBS_HR_JSON" | helmreleases_not_ready_names)
     # In bootstrap/recovery, HelmReleases may still be reconciling on
     # first install — warn instead of failing hard. But hard-failure
     # reasons (InstallFailed/UpgradeFailed/etc.) AND any HR with a
     # non-zero .status.failures (controller has retried at least once)
-    # are real bugs even during bootstrap, so always fail on those.
-    # The .status.failures check catches degraded HRs whose Ready
-    # condition reason doesn't match the explicit allowlist.
-    OBS_HR_FAILED=$(echo "$OBS_HR_JSON" | jq -r '
-      .items[]
-      | (.status.conditions // [] | map(select(.type=="Ready")) | .[0]) as $ready
-      | select(
-          $ready.status != "True"
-          and (
-            (($ready.reason // "") | test("InstallFailed|UpgradeFailed|TestFailed|RollbackFailed"))
-            or ((.status.failures // 0) > 0)
-          )
-        )
-      | .metadata.name' 2>/dev/null || true)
+    # are real bugs even during bootstrap, so always fail on those
+    # (helmreleases_hard_failed in deploy-verify-lib.sh).
+    OBS_HR_FAILED=$(echo "$OBS_HR_JSON" | helmreleases_hard_failed)
     if [ "$STEADY_STATE" = "true" ] || [ -n "$OBS_HR_FAILED" ]; then
       echo "ERROR: Not all observability HelmReleases are Ready:"
       echo "$OBS_HR_BAD"
@@ -407,25 +401,13 @@ kubectl get svc -A | grep LoadBalancer || true
 
 echo ""
 echo "Checking GitLab health..."
-gitlab_ok=false
-start_ts=$(date +%s)
-last_err=""
-while true; do
-  if curl_out=$(curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness 2>&1); then
-    gitlab_ok=true
-    break
-  fi
-  last_err=$curl_out
-  elapsed=$(( $(date +%s) - start_ts ))
-  if [ "$elapsed" -ge 60 ]; then break; fi
-  echo "GitLab health probe failed (${elapsed}s elapsed), retrying..."
-  sleep 3
-done
-if [ "$gitlab_ok" = "true" ]; then
+check_gitlab_ready() {
+  curl -sf --max-time 5 https://git.ericsweiss.com/-/readiness
+}
+if wait_for "GitLab readiness" 60 3 check_gitlab_ready; then
   echo "GitLab API: OK"
 else
   echo "ERROR: GitLab health check failed after 60s of retries"
-  echo "Last curl error: ${last_err:-<empty>}"
   EXIT=1
 fi
 

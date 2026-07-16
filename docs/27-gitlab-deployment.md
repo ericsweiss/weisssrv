@@ -100,7 +100,10 @@ primary benefit of isolating large repository I/O.
 
 ## 1Password Items Required
 
-Create these items in your **Homelab** vault:
+The canonical inventory of every 1Password item the deployment expects lives in
+[docs/15-credential-rotation.md](15-credential-rotation.md) ("Required 1Password
+Items"). The table below is the GitLab-scoped subset needed for this setup —
+create these items in your **Homelab** vault:
 
 | Item | Type | Fields |
 |------|------|--------|
@@ -413,10 +416,11 @@ The wrapper writes `/var/lib/node_exporter/gitlab_backup.prom` with:
 
 `node_exporter_host` runs on the GitLab VM (port 9101) so the textfile metric is
 scraped alongside the host's other metrics. Prometheus discovers the VM via the
-`node-exporter-host-gitlab` Service/Endpoints
-(`kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`,
-pinned to 192.168.0.153). The `sg-metrics` security group already authorizes the
-9101 scrape from the k3s nodes, so no firewall change is needed.
+shared `node-exporter-host` Service/Endpoints
+(`kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`),
+which lists 192.168.0.153 among its Endpoints addresses. The `sg-metrics`
+security group already authorizes the 9101 scrape from the k3s nodes, so no
+firewall change is needed.
 
 Two alerts (`homelab.scripts` group) cover backup health, on different
 timescales — `GitLabBackupFailed` fires ~1h after a single failed run, while

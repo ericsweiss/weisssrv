@@ -32,10 +32,19 @@ write_prom_metrics() {
     echo "# HELP media_mover_last_run_success Whether the last run succeeded (1=success, 0=failure)"
     echo "# TYPE media_mover_last_run_success gauge"
     echo "media_mover_last_run_success ${success}"
+    # On failure, preserve the last-known success timestamp so MediaMoverStale
+    # measures time-since-last-success, not time-since-last-attempt (dropping
+    # it made every failure also trip the alert's absent() arm).
+    local sval
     if [ "$success" -eq 1 ]; then
+      sval="$ts"
+    else
+      sval="$(awk '/^media_mover_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+    fi
+    if [ -n "$sval" ]; then
       echo "# HELP media_mover_last_success_timestamp_seconds Unix timestamp of last successful run"
       echo "# TYPE media_mover_last_success_timestamp_seconds gauge"
-      echo "media_mover_last_success_timestamp_seconds ${ts}"
+      echo "media_mover_last_success_timestamp_seconds ${sval}"
     fi
   } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"

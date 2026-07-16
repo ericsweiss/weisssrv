@@ -3,33 +3,11 @@
   hosts: all
   gather_facts: false
   tasks:
-    - name: Wait for systemd
-      ansible.builtin.raw: |
-        for i in $(seq 1 30); do
-          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
-            exit 0
-          fi
-          sleep 1
-        done
-        systemctl status >/dev/null 2>&1 && exit 0
-        exit 1
-      changed_when: false
-      retries: 3
-      delay: 2
-      register: systemd_ready
-      until: systemd_ready.rc == 0
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-base.yml
 
     - name: Disable apt background services
-      ansible.builtin.raw: |
-        systemctl stop apt-daily.timer 2>/dev/null || true
-        systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
-        exit 0
-      changed_when: false
-
-    - name: Ensure ansible temp directory exists
-      ansible.builtin.raw: |
-        mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
-      changed_when: false
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-apt-disable.yml
 
     # Contract-test harness, modelled on proxmox_vm/molecule/default. The
     # Proxmox CLIs (ha-manager, pvesr, qm, pct, pvecm) are stubbed in

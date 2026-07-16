@@ -57,7 +57,8 @@ pve_vzdump_jobs:
 (`pvesh get /cluster/backup --output-format json`) and mirror the live values
 — the role then reconciles instead of creating a duplicate.
 
-**Migrating `tank-proxmox` from the legacy IP to hostname+TLS** (one-time,
+**Migrating a storage entry from a legacy IP to hostname+TLS** (done for
+`tank-proxmox` on 2026-07-14; keep for the next entry that needs it — one-time,
 outside a backup window; the fixed-property assert enforces that this has
 happened before the role converges):
 

@@ -49,7 +49,7 @@ would regress that behavior.
 | `apt_signed_repo_repo_line` | Full `deb [signed-by=...] ...` sources line | yes |
 | `apt_signed_repo_filename` | apt `sources.list.d` filename (no extension) | yes |
 | `apt_signed_repo_when` | Extra gate threaded through every task (e.g. a skip flag) | no (default `true`) |
-| `apt_signed_repo_install_gnupg` | Install gnupg (gated on key absence) when nothing else guarantees it | no (default `false`) |
+| `apt_signed_repo_install_gnupg` | Install gnupg on every run (the existing-keyring re-verify also needs gpg) when nothing else guarantees it | no (default `false`) |
 | `apt_signed_repo_keyring_mode` | Explicit keyring mode; empty leaves gpg's default | no (default `""`) |
 | `apt_signed_repo_tmp_key` | Staging path for the download | no (default `/tmp/<keyring-basename>.download`) |
 | `apt_signed_repo_update_cache` | Refresh the apt cache when the repo is added; set `false` for hermetic tests/staged rollouts | no (default `true`) |

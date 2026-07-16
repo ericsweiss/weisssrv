@@ -1,0 +1,39 @@
+---
+# promtool unit test for etcdInsufficientMembers (quorum loss). Uses the pinned
+# upstream rule copy since the live rule ships from the Helm chart.
+rule_files:
+  - upstream-etcd.rules.yaml
+evaluation_interval: 1m
+tests:
+  # 2 of 3 members down => only 1 up < ceil(3/2)=2 => fires after 3m.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+        values: '1+0x10'
+      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+        values: '0+0x10'
+      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: etcdInsufficientMembers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: kube-etcd
+
+  # 2 of 3 members up => 2 < 2 is false => quorum intact, no alert. This is
+  # the rolling concurrency:1 kured reboot (1 member down): it must land
+  # here, not above — pins the firing boundary against off-by-one edits.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kube-etcd", instance="192.168.0.222:2381"}'
+        values: '1+0x10'
+      - series: 'up{job="kube-etcd", instance="192.168.0.223:2381"}'
+        values: '0+0x10'
+      - series: 'up{job="kube-etcd", instance="192.168.0.227:2381"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: etcdInsufficientMembers
+        exp_alerts: []

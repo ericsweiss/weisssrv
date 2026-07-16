@@ -1,0 +1,98 @@
+---
+# Molecule scenario for the AdGuard Home TLS/DoT configuration path.
+# The default scenario deploys no certs, so the /control/tls/configure
+# drift-detection + apply block (api_base_config.yml) self-skips and never
+# runs. This scenario deploys a self-signed cert into adguard_cert_path with
+# adguard_tls_enabled: true so the TLS POST actually fires; verify asserts
+# /control/tls/status reflects the configured server_name/ports/paths, and the
+# idempotence step catches a regression in the certificate_path comparison
+# (a POST-every-run non-idempotence if tls/status stops echoing the paths).
+#
+# Self-contained (no `-c base.yml`): non-default scenarios get the full
+# molecule.yml, matching the CI molecule-tests job (default-only base_opt).
+dependency:
+  name: galaxy
+  options:
+    # See ansible/molecule/base.yml: read the repo's single source of truth
+    # (ansible/requirements.yml) via a CWD-relative path (CWD = the role dir).
+    role-file: ../../requirements.yml
+    requirements-file: ../../requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: adguard-tls-test
+    image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    capabilities:
+      - NET_ADMIN
+      - NET_RAW
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ../../..
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+  playbooks:
+    prepare: ../../../../molecule/prepare-common.yml
+    converge: converge.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        adguard_home_version: 0.107.77
+        adguard_user: adguard
+        adguard_group: adguard
+        adguard_install_path: /opt/AdGuardHome
+        adguard_cert_path: /opt/AdGuardHome/certs
+        adguard_http_port: 3000
+        adguard_dns_port: 53
+        adguard_admin_user: eric
+        adguard_admin_password: testpassword123
+        adguard_protection_enabled: true
+        adguard_upstream_dns:
+          - 127.0.0.1:5335
+        adguard_enable_dnssec: true
+        internal_domain: test.local
+        skip_ssh_config: true
+        skip_dns_config: true
+        skip_resolv_conf_update: true
+        adguard_use_private_tmp: false
+        adguard_use_protect_system: false
+        # The feature under test: certs are present (deployed in converge) and
+        # TLS is enabled, so api_base_config.yml runs the /control/tls/configure
+        # POST instead of self-skipping. server_name matches the self-signed
+        # cert's CN/SAN so AdGuard accepts and enables it.
+        adguard_tls_enabled: true
+        adguard_tls_server_name: dns.test.local
+        adguard_https_port: 443
+        adguard_dot_port: 853
+        adguard_doq_port: 853
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy

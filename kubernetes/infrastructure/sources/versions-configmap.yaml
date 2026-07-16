@@ -8,7 +8,7 @@ data:
   adguard_home_version: 0.107.78
   adguardhome_sync_version: 0.9.2
   alloy_host_version: 1.17.1-1
-  authentik_version: 2026.5.4
+  authentik_version: 2026.5.5
   bar_assistant_version: 5.15.3
   busybox_version: '1.38'
   debian_version: '13'
@@ -22,9 +22,9 @@ data:
   helm_chart_versions_cert_manager: v1.21.0
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.7.0
-  helm_chart_versions_kube_prometheus_stack: 87.16.0
+  helm_chart_versions_kube_prometheus_stack: 87.16.1
   helm_chart_versions_kured: 6.1.0
-  helm_chart_versions_loki: 18.4.4
+  helm_chart_versions_loki: 18.5.0
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.15.1
@@ -45,11 +45,11 @@ data:
   pulsarr_version: 0.17.3
   qbittorrent_version: 5.2.3
   radarr_version: 6.3.0.10514
-  redis_exporter_version: v1.86.0
+  redis_exporter_version: v1.87.0
   redis_version: 8.8.0-alpine
   salt_rim_version: 4.15.0
   sonarr_version: 4.0.19.2979
-  tailscale_version: 1.98.8
+  tailscale_version: 1.98.9
   unbound_exporter_version: 0.6.0
   zfs_exporter_version: 2.3.12
 kind: ConfigMap

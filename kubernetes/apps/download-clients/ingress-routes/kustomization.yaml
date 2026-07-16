@@ -1,0 +1,13 @@
+---
+# Downloads IngressRoutes aggregator. Each per-app overlay is a thin patch over
+# the ../_ingressroute component (shared middleware chain + TLS defined once).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - nzbget
+  - qbittorrent
+  - prowlarr
+  - sonarr
+  - radarr
+  - lidarr
+  - pulsarr

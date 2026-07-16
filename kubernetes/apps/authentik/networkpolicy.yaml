@@ -1,16 +1,4 @@
 ---
-# Default-deny ingress for the namespace.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: authentik
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # Default-deny egress; explicit allows below open just what server/worker need.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -141,10 +129,10 @@ spec:
         - ipBlock:
             cidr: 192.168.0.151/32
       ports:
+        # Submission (587/STARTTLS) only — the relay requires SASL auth on 587
+        # and no app dials cleartext 25.
         - protocol: TCP
           port: 587
-        - protocol: TCP
-          port: 25
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

@@ -74,10 +74,17 @@ spec:
         values: [sonarr, radarr, lidarr, prowlarr]
   policyTypes: [Ingress]
   ingress:
+    # Scope the observability peer to the exportarr pods (least-privilege,
+    # matching the recipes redis-exporter rule) rather than the whole namespace.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: observability
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [exportarr-sonarr, exportarr-radarr, exportarr-lidarr, exportarr-prowlarr]
       ports:
         - { protocol: TCP, port: 8989 }
         - { protocol: TCP, port: 7878 }

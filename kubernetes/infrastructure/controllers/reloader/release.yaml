@@ -1,6 +1,6 @@
 ---
-# stakater/Reloader — watches ConfigMaps/Secrets and rolls the workloads that
-# consume them when their content changes, so a mounted-file ConfigMap edit
+# stakater/Reloader — watches ConfigMaps (Secrets are ignored, see
+# ignoreSecrets below) and rolls the annotated workloads that consume them, so a mounted-file ConfigMap edit
 # actually reaches running pods (a plain Flux reconcile updates the ConfigMap but
 # leaves the pod's mounted copy stale until a manual rollout).
 #

@@ -5,54 +5,19 @@
 # Runner token sourced via ExternalSecret (externalsecret.yaml); the chart
 # reads it from the Secret named `gitlab-runner-token` via runners.secret.
 #
-# Shared values (gitlabUrl/clone_url, replicas, checkInterval, rbac,
-# manager resources, affinity, tolerations) are duplicated in
-# ../gitlab-runner-privileged/release.yaml — mirror edits there.
+# The fields shared with ../gitlab-runner-privileged/release.yaml (interval,
+# timeout, chart, install/upgrade, gitlabUrl, replicas, checkInterval, rbac,
+# manager resources, affinity, tolerations) are merged in from the
+# kubernetes/components/gitlab-runner-common component (wired in
+# kustomization.yaml); only this runner's deltas live below.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: gitlab-runner
   namespace: gitlab-runner
 spec:
-  interval: 30m
   releaseName: gitlab-runner
-  # Runner liveness probe + GitLab connection handshake can take 6-8 minutes
-  # on a cold start; default 5m timeout times out prematurely.
-  timeout: 15m
-  chart:
-    spec:
-      chart: gitlab-runner
-      version: "${gitlab_runner_helm_version}"
-      sourceRef:
-        kind: HelmRepository
-        name: gitlab
-        namespace: flux-system
-      interval: 12h
-  install:
-    timeout: 15m
-    remediation:
-      retries: 3
-  upgrade:
-    timeout: 15m
-    remediation:
-      retries: 3
-      remediateLastFailure: true
   values:
-    # GitLab instance URL. git.esweiss.com resolves in-cluster (CoreDNS forwards
-    # to AdGuard, which rewrites it to the internal Traefik VIP .101), keeping
-    # runner<->GitLab traffic on the LAN instead of hairpinning through the WAN
-    # record for git.ericsweiss.com. clone_url (in runners.config) must match:
-    # GitLab's external_url stays git.ericsweiss.com, so clone URLs would not
-    # follow gitlabUrl alone.
-    gitlabUrl: https://git.esweiss.com
-
-    # Single runner controller pod — concurrent (below) controls actual job
-    # parallelism. Pinning to 1 here so that an out-of-band `kubectl scale
-    # --replicas=0` (used during maintenance to drain CI for k3s upgrades)
-    # is reconciled back to 1 on the next Flux pass instead of leaving the
-    # deployment silently at 0 like it did on 2026-06-08.
-    replicas: 1
-
     # Concurrent jobs, capped to what the namespace ResourceQuota admits. A job
     # pod sums to ~5Gi memory limits (build 4Gi + helper 1Gi) and the manager
     # (~256Mi) also counts, so 40Gi admits floor((40-0.25)/5)=7. A higher value
@@ -60,9 +25,6 @@ spec:
     # spurious CI failures); at 7, excess jobs queue at the runner slot instead.
     # Raise with the quota.
     concurrent: 7
-
-    # Check interval (seconds)
-    checkInterval: 30
 
     # Kubernetes executor configuration
     runners:
@@ -167,58 +129,7 @@ spec:
               name = "home"
               mount_path = "/home/gitlab-runner"
 
-    # RBAC configuration — bound ONLY to the manager SA below; job pods run as
-    # the unprivileged gitlab-runner-jobs SA (serviceaccount.yaml).
-    # clusterWideAccess: false restricts the runner to only manage resources in its own namespace.
-    # This is appropriate for the shared runner - job pods are created in the gitlab-runner namespace.
-    # CI jobs that need to deploy to other namespaces should use a kubeconfig with appropriate
-    # permissions (stored as a CI/CD variable or fetched from 1Password).
-    # See: https://docs.gitlab.com/runner/install/kubernetes_helm_chart_configuration/
-    rbac:
-      create: true
-      clusterWideAccess: false
-      rules:
-        - apiGroups: [""]
-          resources: ["pods", "pods/exec", "pods/attach", "pods/log", "secrets", "configmaps"]
-          verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
-        - apiGroups: [""]
-          resources: ["services"]
-          verbs: ["get", "list", "watch"]
-
     # Service account
     serviceAccount:
       create: true
       name: gitlab-runner
-
-    # Pod resources for the runner manager
-    resources:
-      requests:
-        cpu: 150m
-        memory: 128Mi
-      limits:
-        # No CPU limit: the runner manager is a trusted control-loop poller that
-        # bursts when spawning/reaping CI job pods; CFS throttling at 1 core was a
-        # chronic CPUThrottlingHigh source. The CPU request still grants a
-        # scheduling share; memory limit kept (OOM is a real failure mode).
-        memory: 512Mi
-
-    # Node affinity - prefer non-NAS nodes for runner pods
-    affinity:
-      nodeAffinity:
-        preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
-                - key: esweiss.com/nas
-                  operator: DoesNotExist
-
-    # Tolerations for workload nodes
-    tolerations:
-      - key: esweiss.com/ingress
-        operator: Equal
-        value: "true"
-        effect: PreferNoSchedule
-      - key: esweiss.com/compute
-        operator: Equal
-        value: "true"
-        effect: PreferNoSchedule

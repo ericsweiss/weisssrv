@@ -1,18 +1,4 @@
 ---
-# Default-deny ingress: Reloader serves no cluster traffic (it watches the
-# apiserver and patches workloads; no webhook, no scraped metrics endpoint
-# enabled), so nothing should reach its pod. Parity with the other controllers'
-# ingress baseline (external-secrets, onepassword-connect).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: reloader
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
----
 # Confine egress to exactly what Reloader needs: DNS + the kube-apiserver.
 # Reloader watches ConfigMaps cluster-wide and patches Deployments, so bounding
 # its network reach (no LAN/internet egress) limits what a compromised controller

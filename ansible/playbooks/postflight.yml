@@ -217,7 +217,7 @@
         msg: "{{ zpool_health.results[3].stdout_lines }}"
 
     - name: Verify ZFS datasets are mounted
-      ansible.builtin.command: zfs list -H -o name,mounted
+      ansible.builtin.command: zfs list -H -o name,mounted,canmount
       changed_when: false
       register: zfs_datasets
       failed_when: false
@@ -228,6 +228,9 @@
           - "'yes' in item"
         fail_msg: "Critical ZFS dataset not mounted: {{ item }}"
       loop: "{{ zfs_datasets.stdout_lines }}"
+      # Skip zvols (mounted column '-') and datasets deliberately kept unmounted
+      # with canmount=off (e.g. ssd/appdata/mealie, kept unmounted so the NFS
+      # bind exports the real directory rather than a shadowing mount).
       when: >
         (
           'tank/media' in item or
@@ -235,6 +238,7 @@
           'ssd/appdata' in item or
           'nvme/media' in item
         ) and item is not regex('.*\t-$')
+          and item is not regex('.*\toff$')
 
     - name: Verify MergerFS mounts
       ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE

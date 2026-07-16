@@ -22,6 +22,17 @@ spec:
       # dns-01/dns-02 are the AdGuard HA VIPs. Either way DNS goes to the LAN
       # resolvers outside the tunnel (FIREWALL_OUTBOUND_SUBNETS below routes
       # them via eth0); upstream privacy comes from Unbound's DoT, not the VPN.
+      #
+      # SECURITY TRADEOFF (reviewed, accepted): tracker/indexer hostname lookups
+      # therefore leave the tunnel to the LAN AdGuard — visible to the user's own
+      # resolver only (not the ISP; Unbound's DoT hides the upstream). Routing
+      # them in-tunnel via gluetun's own DoT proxy (DOT=on, DNS_ADDRESS=127.0.0.1
+      # + dnsConfig -> 127.0.0.1) was evaluated and rejected: gluetun execs
+      # `sleep infinity` in VPN-off mode (see the gluetun container below), so
+      # 127.0.0.1:53 would have no listener and app DNS would break whenever the
+      # VPN is disabled; it would also drop internal *.esweiss.com resolution
+      # (the Cloudflare DoT upstream can't see AdGuard's LAN rewrites) and add a
+      # pod-startup race on the DoT proxy. The metadata exposure is accepted.
       dnsPolicy: None
       dnsConfig:
         nameservers:

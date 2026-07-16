@@ -1,19 +1,10 @@
----
 # NetworkPolicies for the gitlab-runner namespace (the shared, non-privileged
 # runner + its job pods). The privileged/infrastructure runner now lives in the
 # gitlab-runner-privileged namespace with its own policies. Shared job pods are
 # classed esweiss.com/runner-class=shared and get internet-only egress (RFC1918
 # blocked) + DNS + kube-API + the internal Traefik VIP. Nothing here serves
-# traffic, so ingress is denied outright.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: gitlab-runner
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
+# traffic, so ingress is denied outright via the shared default-deny-ingress
+# (components/netpol-baseline, wired in kustomization.yaml).
 ---
 # Namespace-wide default-deny EGRESS. The label-scoped allow rules below
 # (managers-egress for app=gitlab-runner, shared-jobs-egress for

@@ -53,6 +53,27 @@
       loop_control:
         label: "{{ item.item }}"
 
+    # Deb install path: the package must be installed and its binary present.
+    # Only the role's apt(deb:) step could have installed it (nothing pre-stages
+    # the package), so its presence proves get_url -> apt deb: actually ran.
+    - name: Check the deb install-path package status
+      ansible.builtin.command: dpkg-query -W -f='${Status}' pe-realdeb-mock
+      register: pe_realdeb_status
+      changed_when: false
+      failed_when: "'install ok installed' not in pe_realdeb_status.stdout"
+
+    - name: Verify deb install path landed the binary
+      ansible.builtin.stat:
+        path: /usr/local/bin/pe-realdeb-mock
+      register: pe_realdeb_bin
+      failed_when: not pe_realdeb_bin.stat.exists or not pe_realdeb_bin.stat.executable
+
+    - name: Stat deb install-path scratch download (must be cleaned up)
+      ansible.builtin.stat:
+        path: /tmp/pe-deb-scratch/pe-realdeb-mock.deb
+      register: pe_deb_scratch
+      failed_when: pe_deb_scratch.stat.exists
+
     - name: Check mock service state
       ansible.builtin.systemd:
         name: "{{ item }}"
@@ -61,6 +82,7 @@
         - pe-tarball-mock
         - pe-deb-mock
         - pe-install-mock
+        - pe-realdeb-mock
 
     - name: Verify mock services are enabled and active
       ansible.builtin.assert:
@@ -80,4 +102,4 @@
           - "  - tarball branch skip path: binary intact, service enabled+active"
           - "  - deb branch skip path: binary intact, service enabled+active"
           - "  - tarball install path: download/extract/copy ran, binary installed, scratch cleaned"
-          - "(real .deb install path covered by the unbound_exporter live deploy)"
+          - "  - deb install path: download/apt-install ran, package installed, scratch cleaned"

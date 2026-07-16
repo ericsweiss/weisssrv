@@ -1,0 +1,19 @@
+---
+# Optional knobs. The required per-collector vars have no sensible default and
+# must be supplied by the calling role (see README.md):
+#   textfile_collector_name              base name for the .service/.timer units
+#   textfile_collector_service_description  [Unit] Description of the service
+#   textfile_collector_timer_description    [Unit] Description of the timer
+#   textfile_collector_script            path to the collector script
+#   textfile_collector_textfile_dir      node_exporter textfile dir (script arg
+#                                        + first ReadWritePaths entry)
+
+# Extra units to order after (space-joined into a single After= line; empty = none).
+textfile_collector_after: []
+# Extra writable paths beyond textfile_collector_textfile_dir (e.g. a socket dir).
+textfile_collector_extra_read_write_paths: []
+textfile_collector_timeout_start_sec: 15s
+textfile_collector_nice: 10
+textfile_collector_on_boot_sec: 1min
+textfile_collector_on_unit_inactive_sec: 1min
+textfile_collector_accuracy_sec: 10s

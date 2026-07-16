@@ -1,17 +1,4 @@
 ---
-# Default-deny ingress for external-dns. This namespace consumes the Cloudflare
-# API token Secret, so co-tenant pods should have no pod-network path in.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: external-dns
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # external-dns exposes only a metrics endpoint; allow it from observability.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

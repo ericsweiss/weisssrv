@@ -13,3 +13,8 @@ resources:
   - certificate.yaml
   - networkpolicy.yaml
   - vpa.yaml
+
+# default-deny-ingress from the shared baseline component (see
+# kubernetes/components/netpol-baseline).
+components:
+  - ../../components/netpol-baseline

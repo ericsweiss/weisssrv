@@ -42,7 +42,10 @@ spec:
   dnsNames:
     - "*.esweiss.com"
     - esweiss.com
-  # STAGGERED renewBefore across the three identical *.esweiss.com wildcards
-  # (default 720h / external-secrets 600h / downloads 480h) so they don't all
-  # renew in the same window and burn the LE 5/week duplicate-cert limit at once.
+  # CANONICAL stagger note (the other two legs point here). The three identical
+  # *.esweiss.com wildcards live in separate namespaces because Traefik only
+  # reads TLS Secrets from the IngressRoute's own namespace, so each fires its
+  # own ACME order. renewBefore is staggered across the legs — default 720h /
+  # external-secrets 600h / downloads 480h — so they don't all renew in the same
+  # window and burn the Let's Encrypt 5/week duplicate-cert limit at once.
   renewBefore: 720h   # 30 days (stagger anchor)

@@ -15,4 +15,10 @@ IOSchedulingClass={{ media_mover_io_class | default('best-effort') }}
 IOSchedulingPriority={{ media_mover_io_priority | default(7) }}
 CPUWeight={{ media_mover_cpu_weight | default(20) }}
 IOWeight={{ media_mover_io_weight | default(20) }}
+# Namespace-free hardening only: ProtectSystem/ProtectHome/PrivateTmp would
+# put the unit in a private mount namespace, detached from the live ZFS mounts.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 ExecStart=/usr/local/sbin/media-mover.sh

@@ -44,9 +44,9 @@ Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconc
 2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
 3. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
 4. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions`.
-5. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, vm-ingress). `dependsOn: infrastructure-observability`. Substitutes image/chart versions from `cluster-versions`.
+5. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, vm-ingress). `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from `cluster-versions`.
 
-The four-way infrastructure split ensures CRDs are installed before CRD-dependent configs, and the observability stack is healthy before apps are reconciled — first bootstrap converges cleanly without "no matches for kind" transient errors.
+The four-way infrastructure split ensures CRDs are installed before CRD-dependent configs. Apps branch off `infrastructure-configs` in parallel with observability: on a truly-fresh bootstrap the few monitoring CRs under `apps/` retry until observability installs the monitoring CRDs (bounded in practice by the one-time CRD pre-apply below), and in steady state observability failures no longer block apps.
 
 Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml` and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
 
@@ -632,6 +632,13 @@ pipeline when the pin drifts from `versions-configmap.yaml`). Upgrade steps:
 4. Commit all four files together and push; Flux upgrades itself on
    reconcile.
 5. Verify: `flux check` and `task flux:status`.
+
+`check-versions.py` marks `flux_version` as `held`, so
+`task maintenance:check-versions` (and the CI version-check job) report a newer
+Flux CLI release as `HELD` and never count it as an actionable update. That is
+deliberate: bumping the GitOps control plane is a bootstrap-tested manual step
+(the sequence above), not an automated pin bump. `check-versions.py --update flux`
+prints the same rationale and refuses to write the new version.
 
 ## One-Time Cluster Patches
 

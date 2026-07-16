@@ -68,6 +68,15 @@
         state stopped
         max_restart 3
         max_relocate 3
+    # Per-resource detail whose comment/max_restart/max_relocate were REMOVED
+    # from the desired config — used for the removal-convergence case (one
+    # `ha-manager set` with `--comment ""` + `--delete` expected).
+    ha_detail_removal: |
+      vm:150
+        state started
+        comment legacy note
+        max_restart 3
+        max_relocate 3
   pre_tasks:
     - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
       ansible.builtin.raw: |
@@ -199,6 +208,86 @@
       args:
         executable: /bin/bash
       register: case_c
+      changed_when: false
+
+    # =====================================================================
+    # CASE C2 — fields REMOVED from config (comment/max_restart/max_relocate
+    # still set live) trigger exactly one `ha-manager set` that clears the
+    # comment (--comment "") and --deletes the numeric keys — the removal
+    # must CONVERGE, not re-fire every run.
+    # =====================================================================
+    - name: C2 — reset log, list resource, supply removal-drift detail
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_config_list, content: "vm:150\n"}
+        - {name: ha_resource_detail, content: "{{ ha_detail_removal }}"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: C2 — run role with the trimmed resource (no comment/max_*)
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_resources:
+          - type: vm
+            vmid: 150
+            state: started
+
+    - name: C2 — count ha-manager calls and the removal arguments
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager set vm:150 ' "$log" || true)
+        # The stub logs "$*", so the empty --comment argument collapses to
+        # nothing between spaces — match the flags, not the empty string.
+        removal=$(grep -c -- '--comment .*--delete max_restart,max_relocate' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}, \"removal_calls\": ${removal}}"
+      args:
+        executable: /bin/bash
+      register: case_c2
+      changed_when: false
+
+    # =====================================================================
+    # CASE C2b — post-clear convergence: with the fields gone from the live
+    # detail too, the trimmed config must trigger NO further `set` (drives
+    # all three "not defined and empty current" arms false — the one
+    # convergence path no other case covers; tests role drift logic, not
+    # real Proxmox `--comment ""` behavior, which a stub cannot model).
+    # =====================================================================
+    - name: C2b — reset log, list resource, supply post-clear clean detail
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_config_list, content: "vm:150\n"}
+        - {name: ha_resource_detail, content: "vm:150\n  state started\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: C2b — re-run role with the same trimmed resource
+      ansible.builtin.include_role:
+        name: proxmox_ha
+      vars:
+        ha_resources:
+          - type: vm
+            vmid: 150
+            state: started
+
+    - name: C2b — count ha-manager calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        set_calls=$(grep -c '^ha-manager set vm:150 ' "$log" || true)
+        echo "{\"set_calls\": ${set_calls}}"
+      args:
+        executable: /bin/bash
+      register: case_c2b
       changed_when: false
 
     # =====================================================================
@@ -658,6 +747,9 @@
            "b_set": {{ (case_b.stdout | from_json).set_calls }},
            "c_add": {{ (case_c.stdout | from_json).add_calls }},
            "c_set": {{ (case_c.stdout | from_json).set_calls }},
+           "c2_set": {{ (case_c2.stdout | from_json).set_calls }},
+           "c2_removal": {{ (case_c2.stdout | from_json).removal_calls }},
+           "c2b_set": {{ (case_c2b.stdout | from_json).set_calls }},
            "d_create": {{ (case_d.stdout | from_json).create_calls }},
            "d_update": {{ (case_d.stdout | from_json).update_calls }},
            "j_delete": {{ (case_j.stdout | from_json).delete_calls }},

@@ -3,17 +3,21 @@
 # exporters, dashboards). Sits between infrastructure-configs and apps in
 # the reconciliation chain so that:
 #   1. CRDs (ServiceMonitor, PodMonitor, PrometheusRule) are installed before
-#      apps create ServiceMonitor resources via serviceMonitor.enabled: true.
+#      steady-state app changes add monitoring CRs (on a truly-fresh bootstrap
+#      the apps stage no longer waits here — see apps.yaml — so its monitoring
+#      consumers, the qbittorrent PodMonitor and the authentik chart's
+#      ServiceMonitor, retry until these CRDs land).
 #   2. ExternalSecrets work (ClusterSecretStore from configs is already up).
 #   3. A failed observability deploy does NOT block the core infrastructure
-#      chain (cert-manager, traefik, MetalLB) but DOES block all apps
-#      (apps.yaml dependsOn infrastructure-observability).
-#   4. Controller HelmReleases enable serviceMonitor.enabled. cert-manager guards
-#      this with a .Capabilities check (silently skips if the CRD is absent), but
-#      Traefik does NOT — it always emits the ServiceMonitor. So on a FRESH
-#      bootstrap the monitoring.coreos.com CRDs (ServiceMonitor/PodMonitor/
-#      PrometheusRule) must exist before the controllers stage; see docs/29
-#      "Fresh bootstrap / disaster recovery" for the one-time CRD pre-apply.
+#      chain (cert-manager, traefik, MetalLB) or the apps stage (which gates
+#      on infrastructure-configs) — it only blocks this stage.
+#   4. Controller HelmReleases enable serviceMonitor.enabled, and on a FRESH
+#      bootstrap the monitoring.coreos.com CRDs must exist before the
+#      controllers stage: Traefik's chart hard-fails its template render
+#      ("You have to deploy monitoring.coreos.com/v1 first") when that API is
+#      absent, stalling the wait:true controllers Kustomization. See docs/29
+#      "Fresh bootstrap / disaster recovery" for the one-time CRD pre-apply;
+#      the durable CRDs-only early stage is tracked as k8s-infra-06 in docs/16.
 #
 # optional: false — same rationale as other stages: the ConfigMap is guaranteed
 # to exist at this point. A missing ConfigMap here means a real bug.

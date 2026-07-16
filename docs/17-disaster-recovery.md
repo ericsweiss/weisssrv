@@ -77,13 +77,39 @@ backups, not by replication-grade HA. Recovery is restore-from-backup
 with the RTO that implies. Revisit if a second storage-capable node ever
 joins.
 
-A second accepted gap: **every backup copy is on-site** — `tank/proxmox`
-(vzdump) and the `archive` pool both live in the pve-nas-01 chassis, so a
-fire/theft/site loss takes the originals and every backup together. The
-archive's raw-encrypted streams and `plug`/`unplug` workflow are designed
-so the pool can be detached and rotated offsite, but no offsite copy
-exists today. Git-managed state (this repo) and 1Password are the only
-data that survives a total site loss.
+A second accepted gap: **every backup copy is on-site — 3-2-1 is not met.**
+There are 3 copies for VM images/appdata, but the "2 media" are four ZFS pools
+(`tank/proxmox` vzdump target, the `archive` replication pool, plus `ssd`/`nvme`)
+all inside the **single pve-nas-01 chassis** (one failure domain: chassis / PSU /
+HBA / host-OS / `rm -rf` / ransomware), and there is **no** offsite copy. Even the
+"off-node" etcd snapshot copy lands on `ssd/k3s-etcd` on pve-nas-01, so a NAS/site
+loss takes it too. A fire/theft/site loss takes the originals and every backup
+together; git-managed state (this repo, plus the GitHub mirror) and 1Password are
+the only data that survives, so unique data such as app-database content (and
+future Immich photos) would be lost.
+
+The archive's raw-encrypted streams and `plug`/`unplug` workflow are purpose-built
+for offsite rotation (the pool can be detached and carried offsite), but no
+rotation is performed today. **Adding an offsite / off-host backup tier is a
+tracked roadmap item that needs a user decision** — see
+[docs/16-next-steps.md](16-next-steps.md) ("Offsite / 3-2-1 backup tier").
+
+## Accepted Risk: Network Fabric SPOF
+
+The network fabric is a single point of failure the rest of this analysis
+otherwise omits. Both legs of every active-backup bond plug into **one unmanaged
+switch** (see [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md)), and there
+is **one router/gateway** (Asus GT-AX11000 at 192.168.0.1, which is also DHCP and
+the Cloudflare-origin port-forwarder). Everything rides one flat `vmbr0` /24 with
+**no second corosync ring** (`cluster.fw.j2` reserves 5406/ring1 for a future
+knet link, but only 5405/ring0 is configured). A switch or router failure does not
+merely drop internet — it collapses Proxmox corosync quorum and k3s etcd traffic
+simultaneously, since both traverse that single L2; the documented bond-MAC-flap
+history already shows fabric instability black-holing HA guests. This is inherent
+to a homelab budget. **A second switch + a second corosync ring on a separate
+NIC/VLAN is a tracked roadmap item that needs a user decision** — see
+[docs/16-next-steps.md](16-next-steps.md) ("Network-fabric SPOF: second switch +
+corosync ring").
 
 ## Backup Dedup: vzdump Exclusion of App-Data Zvols
 
@@ -362,32 +388,12 @@ These decisions are too critical and hardware-specific to automate safely.
 
 #### Creating ZFS Pools
 
-For detailed instructions, see `docs/06-zfs.md`. Quick example:
-
-```bash
-# List available disks
-ls -la /dev/disk/by-id/
-
-# Create pool 'tank' with raidz2 (dual parity)
-zpool create -o ashift=12 \
-             -O acltype=posixacl \
-             -O compression=zstd \
-             -O normalization=formD \
-             -O relatime=on \
-             -O xattr=sa \
-             -m /mnt/tank \
-             tank raidz2 \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA18WD1 \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0RDDB \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0EJDZ \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0ZZ1R \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0HR34 \
-             /dev/disk/by-id/ata-ST22000NM000C-3WC103_ZXA0FEGJ
-
-# Verify pool creation
-zpool status tank
-zpool list -v tank
-```
+**Use the canonical pool-creation commands in
+[docs/06-zfs.md](06-zfs.md#pool-details) — do not hand-transcribe them here.**
+The real `tank` pool is `raidz2` **plus** a `special mirror` (2x NVMe metadata)
+**and** an L2ARC `cache` vdev; a `zpool create ... tank raidz2 <disks>` without
+those two vdevs would rebuild a materially different, slower pool. docs/06 is the
+single source of truth for every pool's exact geometry and by-id device list.
 
 **Required Pools for pve-nas-01:**
 - `tank` - Main storage pool (HDDs in raidz2)

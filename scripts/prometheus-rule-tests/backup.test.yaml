@@ -1,0 +1,74 @@
+---
+# promtool unit tests for the backup/durability alerts.
+# rule_files is resolved relative to this file's runtime location; the lint
+# script copies the tests next to the extracted rules.yaml before running them.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # ArchiveBackupFailed fires only on a genuine send/receive error (metric 0).
+  - interval: 1m
+    input_series:
+      - series: 'archive_backup_last_run_success'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ArchiveBackupFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # A successful run (metric 1) must NOT fire ArchiveBackupFailed.
+  - interval: 1m
+    input_series:
+      - series: 'archive_backup_last_run_success'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ArchiveBackupFailed
+        exp_alerts: []
+
+  # ArchiveBackupDatasetStale fires per-dataset when a dataset's last-success
+  # timestamp is older than 2 days; a fresh dataset does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'archive_backup_dataset_last_success_timestamp_seconds{dataset="tank/proxmox"}'
+        values: '-200000+0x70'
+      - series: 'archive_backup_dataset_last_success_timestamp_seconds{dataset="ssd/appdata"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ArchiveBackupDatasetStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              dataset: 'tank/proxmox'
+
+  # ArchiveBackupChronicallyDeferred covers the first-run edge (no timestamp
+  # yet): >=3 consecutive deferrals fires; 2 does not.
+  - interval: 1m
+    input_series:
+      - series: 'archive_backup_dataset_deferred_runs{dataset="tank/proxmox"}'
+        values: '3+0x70'
+      - series: 'archive_backup_dataset_deferred_runs{dataset="ssd/appdata"}'
+        values: '2+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ArchiveBackupChronicallyDeferred
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              dataset: 'tank/proxmox'
+
+  # VzdumpBackupStale fires per-node when the last vzdump is older than 26h.
+  - interval: 1m
+    input_series:
+      - series: 'vzdump_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '-100000+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: VzdumpBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.102:9101'

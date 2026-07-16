@@ -90,6 +90,16 @@
     - Reload postfix
   no_log: true
 
+# Safety-net: the handler above only runs when the plaintext sasl_passwd
+# changes, so a deleted/corrupted .db would never be rebuilt on a re-run and
+# the Gmail SASL lookup would silently fail (fleet-wide mail defer). Rebuild it
+# whenever the .db is missing, mirroring postfix_null_client.
+- name: Ensure SASL password database exists
+  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
+  args:
+    creates: /etc/postfix/sasl_passwd.db
+  no_log: true
+
 - name: Create SASL configuration directory
   ansible.builtin.file:
     path: /etc/postfix/sasl
@@ -214,23 +224,19 @@
     group: root
     mode: "0755"
 
-- name: Install postfix queue collector service unit
-  ansible.builtin.template:
-    src: postfix-queue-collector.service.j2
-    dest: /etc/systemd/system/postfix-queue-collector.service
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload systemd for postfix queue collector
-
-- name: Install postfix queue collector timer unit
-  ansible.builtin.copy:
-    src: postfix-queue-collector.timer
-    dest: /etc/systemd/system/postfix-queue-collector.timer
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload systemd for postfix queue collector
+- name: Deploy postfix queue collector unit + timer
+  ansible.builtin.include_role:
+    name: textfile_collector
+  vars:
+    textfile_collector_name: postfix-queue-collector
+    textfile_collector_service_description: Sample Postfix queue depth to node_exporter textfile collector
+    textfile_collector_timer_description: Periodically sample the Postfix queue
+    textfile_collector_script: /usr/local/sbin/postfix-queue-collector.sh
+    textfile_collector_textfile_dir: "{{ smtp_relay_textfile_dir }}"
+    textfile_collector_after:
+      - postfix.service
+    textfile_collector_extra_read_write_paths:
+      - /var/spool/postfix/public
 
 - name: Enable + start postfix queue collector timer
   ansible.builtin.systemd:

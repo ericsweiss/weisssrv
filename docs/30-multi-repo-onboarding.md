@@ -503,7 +503,12 @@ The 1Password Families plan shares **1,000 reads per day across the entire accou
 
 ### Current Budget
 
-- This repo's ExternalSecrets: ~13 across all namespaces (~38 distinct fields). The Connect provider syncs the vault to a local cache — per-field reads hit the cache, not the cloud API, so the effective rate-limit cost is low. Run `kubectl get externalsecrets -A` for current counts.
+- This repo's current ExternalSecret footprint and its rate-limit accounting live
+  in [docs/29-flux-operations.md](29-flux-operations.md) § Rate Limits (the
+  authoritative copy) — refer to it rather than duplicating the counts here. In
+  short: the Connect provider syncs the vault to a local cache, so per-field reads
+  hit the cache, not the cloud API, and the effective rate-limit cost is low. Run
+  `kubectl get externalsecrets -A` for current counts.
 
 ### Adding a Tenant on 1Password
 

@@ -1,22 +1,13 @@
----
-# Default-deny ingress for external-secrets. This namespace holds the 1Password
+# NetworkPolicies for external-secrets. This namespace holds the 1Password
 # Connect bootstrap credentials (op-credentials, onepassword-connect-token) and
 # every ESO-synced Secret, so a compromised co-tenant pod should face a
 # pod-network barrier, not an open path. Parity with cert-manager/external-dns,
 # which guard the Cloudflare API token the same way.
 #
-# The onepassword-connect ingress allow (8080/8081) lives in
-# onepassword-connect/networkpolicy.yaml; NetworkPolicies are additive, so the
-# default-deny here does not override it.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: external-secrets
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
+# default-deny-ingress is provided by the shared components/netpol-baseline
+# component (wired in kustomization.yaml). NetworkPolicies are additive, so it
+# does not override the onepassword-connect ingress allow (8080/8081) in
+# onepassword-connect/networkpolicy.yaml.
 
 ---
 # Allow ingress to the ESO webhook (validating/conversion webhook called by the

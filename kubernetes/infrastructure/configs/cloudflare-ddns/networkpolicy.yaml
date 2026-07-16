@@ -1,16 +1,4 @@
 ---
-# Default-deny ingress (no caller talks to the CronJob; it makes outbound calls only).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: cloudflare-ddns
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # Egress allowlist: kube-dns + external HTTPS only.
 # The CronJob calls api.cloudflare.com plus a public IPv4-detection provider
 # (api.ipify.org, with ipv4.icanhazip.com / checkip.amazonaws.com as fallbacks) —

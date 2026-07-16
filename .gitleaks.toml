@@ -3,18 +3,19 @@
 # This is consumed by GitLab's secret_detection job (which uses gitleaks under
 # the hood) via the passthrough in `.gitlab/secret-detection-ruleset.toml`.
 #
-# Scope of exclusions (see `paths` and `regexes` blocks below):
+# Scope of exclusions:
 #   - `docs/*.md` is scanned normally — the `regexes` content allowlist below
 #     covers the placeholder shapes docs use (1Password op:// refs, doc
-#     placeholders like `[your-...]`), so the whole tree no longer needs a PATH
-#     exclusion and a real secret committed under docs/ is still caught.
+#     placeholders like `[your-...]`), so a real secret committed under docs/ is
+#     still caught.
 #   - The molecule trees (`ansible/roles/*/molecule/*`,
-#     `ansible/integration-tests/*/molecule/*`) ARE excluded via PATH allowlist:
-#     several scenarios generate throwaway PEM private keys inline (acme_certs,
-#     nfs_tls, the cert/mail integration tests) that trip gitleaks's
-#     `private-key` rule and cannot be safely anchored by a content regex.
-#     Trade-off: a real secret committed under a molecule path won't be caught
-#     here, but those fixtures are operator-authored and reviewed independently.
+#     `ansible/integration-tests/*/molecule/*`) are NOT excluded wholesale.
+#     Several scenarios inline THROWAWAY PEM private keys (acme_certs, nfs_tls,
+#     the cert/mail integration tests) that trip only gitleaks's `private-key`
+#     rule, so the rule-scoped allowlist below suppresses ONLY that rule under
+#     those paths. Every OTHER rule — cloud keys, provider tokens, high-entropy
+#     strings — still scans the molecule trees, so a real secret pasted into a
+#     `secrets:` fixture (the most likely place) is still caught.
 #
 # `useDefault = true` is REQUIRED — without it gitleaks loads only the rules
 # defined in this file (which has none), disabling all detection.
@@ -24,7 +25,7 @@ title = "weisssrv allowlist"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "weisssrv homelab false positives"
 regexes = [
   # 1Password reference URIs — not secrets, just pointers to vault items.
@@ -40,7 +41,20 @@ paths = [
   # Generated cluster snapshots (gitignored, but never trip on a stray copy).
   '''CLUSTER_STATUS\.txt''',
   '''cluster-state-.*\.txt''',
-  # Molecule fixtures generate throwaway PEM private keys inline (see header).
+]
+
+# Rule-scoped allowlist: suppress ONLY the default `private-key` rule under the
+# molecule trees (the throwaway PEM fixtures), not the whole path. A global
+# allowlist with `targetRules` never redefines the default rule (re-declaring
+# `[[rules]] id = "private-key"` merges on current gitleaks but would silently
+# DISABLE the detector on any version with replace semantics — fail-open),
+# and if a runner's gitleaks were too old for targetRules the fixtures would
+# fail the job loudly instead (fail-closed). Every other rule still scans the
+# molecule trees, and private-key still fires everywhere else.
+[[allowlists]]
+description = "molecule throwaway PEM private keys"
+targetRules = ["private-key"]
+paths = [
   '''ansible/roles/.*/molecule/.*''',
   '''ansible/integration-tests/.*/molecule/.*''',
 ]

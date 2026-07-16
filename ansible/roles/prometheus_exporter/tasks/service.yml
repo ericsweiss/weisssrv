@@ -12,6 +12,11 @@
 - name: Apply pending restarts before health check
   # Flush so the health probe below sees the freshly restarted binary on a
   # version/unit change. No-op when nothing notified a restart.
+  # Note: flush_handlers is play-global — when this shared pipeline is included
+  # mid-play (e.g. zfs_exporter after nfs_tls/nas_storage in storage.yml) it
+  # also fires any handlers those earlier roles queued, running them here rather
+  # than at play end. Benign (those roles have finished their tasks) but it does
+  # reorder their handler execution.
   ansible.builtin.meta: flush_handlers
 
 - name: Verify metrics endpoint for {{ prometheus_exporter_name }}

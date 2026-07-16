@@ -1,17 +1,9 @@
----
 # NetworkPolicies for the gitlab-runner-privileged namespace (the privileged
 # runner manager + its infrastructure job pods). Infrastructure job pods deploy
 # the homelab itself (ansible/SSH, kubectl, 1Password) and keep unrestricted
-# egress by design. Nothing here serves traffic, so ingress is denied outright.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: gitlab-runner-privileged
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
+# egress by design. Nothing here serves traffic, so ingress is denied outright
+# via the shared default-deny-ingress (components/netpol-baseline, wired in
+# kustomization.yaml).
 ---
 # Namespace-wide default-deny EGRESS, matching the shared gitlab-runner
 # namespace. The label-scoped allows below (managers-egress for

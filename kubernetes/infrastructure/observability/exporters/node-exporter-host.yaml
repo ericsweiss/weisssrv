@@ -1,23 +1,25 @@
 ---
 # Node Exporter (host-level) — remote scrape of prometheus-node-exporter running
-# directly on the bare-metal Proxmox hosts, the dns-01/dns-02 LXCs, and the
-# GitLab VM. Provides hardware metrics (hwmon thermals, SMART, NIC details,
-# disk I/O) that VMs cannot see; the LXCs and the GitLab VM contribute
-# filesystem/textfile metrics only (the GitLab VM exposes the
-# gitlab_backup_* backup-freshness metric via its textfile collector).
+# directly on the bare-metal Proxmox hosts, the dns-01/dns-02 LXCs, the
+# smtp-relay LXC, the GitLab VM, and the three k3s server VMs (see the
+# Endpoints list below for the authoritative set). Provides hardware metrics
+# (hwmon thermals, SMART, NIC details, disk I/O) that VMs cannot see; the
+# LXCs and VMs contribute filesystem/textfile metrics only (e.g. the GitLab
+# VM exposes gitlab_backup_* backup-freshness via its textfile collector).
 # Runs on port 9101 to avoid conflicting with the k3s DaemonSet on 9100.
-
-# ---------------------------------------------------------------------------
-# pve-nas-01 (192.168.0.102)
-# ---------------------------------------------------------------------------
+#
+# One selectorless headless Service + one manual Endpoints list every host: the
+# ServiceMonitor sets `job=node-exporter-host` (jobLabel from
+# app.kubernetes.io/name) and Prometheus derives a per-host `instance=<ip>:9101`
+# from each Endpoints address, so the thermal/PSI alerts and dashboards keep
+# their stable `job="node-exporter-host", instance=~"<ip>:9101"` selectors.
 apiVersion: v1
 kind: Service
 metadata:
-  name: node-exporter-host-pve-nas-01
+  name: node-exporter-host
   namespace: observability
   labels:
     app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-nas-01
 spec:
   clusterIP: None
   ports:
@@ -29,395 +31,27 @@ spec:
 apiVersion: v1
 kind: Endpoints
 metadata:
-  name: node-exporter-host-pve-nas-01
+  name: node-exporter-host
   namespace: observability
 subsets:
   - addresses:
-      - ip: 192.168.0.102
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# pve-laptop-01 (192.168.0.103)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-pve-laptop-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-laptop-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-pve-laptop-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.103
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# pve-opt-01 (192.168.0.104)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-pve-opt-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-opt-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-pve-opt-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.104
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# pve-opt-02 (192.168.0.105)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-pve-opt-02
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-opt-02
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-pve-opt-02
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.105
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# pve-opt-03 (192.168.0.106)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-pve-opt-03
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-opt-03
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-pve-opt-03
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.106
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# pve-prec-01 (192.168.0.107)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-pve-prec-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: pve-prec-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-pve-prec-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.107
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# dns-01 (192.168.0.150)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-dns-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: dns-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-dns-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.150
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# dns-02 (192.168.0.160)
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-dns-02
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: dns-02
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-dns-02
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.160
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# smtp-relay (192.168.0.151) — HA-managed mail relay LXC
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-smtp-relay
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: smtp-relay
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-smtp-relay
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.151
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# gitlab (192.168.0.153) — VM on pve-nas-01; textfile backup-freshness metric
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-gitlab
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: gitlab
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-gitlab
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.153
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# k3s-srv-nas-01 (192.168.0.222) — off-node etcd snapshot textfile metric
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-k3s-srv-nas-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: k3s-srv-nas-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-k3s-srv-nas-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.222
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# k3s-srv-laptop-01 (192.168.0.223) — off-node etcd snapshot textfile metric
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-k3s-srv-laptop-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: k3s-srv-laptop-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-k3s-srv-laptop-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.223
-    ports:
-      - name: metrics
-        port: 9101
-
----
-# ---------------------------------------------------------------------------
-# k3s-srv-prec-01 (192.168.0.227) — off-node etcd snapshot textfile metric
-# ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Service
-metadata:
-  name: node-exporter-host-k3s-srv-prec-01
-  namespace: observability
-  labels:
-    app.kubernetes.io/name: node-exporter-host
-    app.kubernetes.io/instance: k3s-srv-prec-01
-spec:
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: 9101
-      targetPort: 9101
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: node-exporter-host-k3s-srv-prec-01
-  namespace: observability
-subsets:
-  - addresses:
-      - ip: 192.168.0.227
+      # Bare-metal Proxmox hosts (full hardware metrics: hwmon, SMART, NICs)
+      - ip: 192.168.0.102   # pve-nas-01
+      - ip: 192.168.0.103   # pve-laptop-01
+      - ip: 192.168.0.104   # pve-opt-01
+      - ip: 192.168.0.105   # pve-opt-02
+      - ip: 192.168.0.106   # pve-opt-03
+      - ip: 192.168.0.107   # pve-prec-01
+      # DNS LXCs + HA-managed mail relay (filesystem/textfile metrics only)
+      - ip: 192.168.0.150   # dns-01
+      - ip: 192.168.0.160   # dns-02
+      - ip: 192.168.0.151   # smtp-relay
+      # GitLab VM (192.168.0.153) — textfile gitlab_backup_* freshness metric
+      - ip: 192.168.0.153   # gitlab
+      # k3s servers — off-node etcd snapshot textfile metric
+      - ip: 192.168.0.222   # k3s-srv-nas-01
+      - ip: 192.168.0.223   # k3s-srv-laptop-01
+      - ip: 192.168.0.227   # k3s-srv-prec-01
     ports:
       - name: metrics
         port: 9101
@@ -431,10 +65,9 @@ metadata:
 spec:
   # Set the Prometheus `job` label to the value of `app.kubernetes.io/name`
   # (= "node-exporter-host") on every scraped metric. Without this, Prometheus
-  # Operator defaults `job` to the Service name (e.g.
-  # `node-exporter-host-pve-nas-01`), which makes the per-host series
-  # impossible to match with a stable `job="node-exporter-host"` selector —
-  # the thermal alerts and the thermals dashboard rely on that selector.
+  # Operator defaults `job` to the Service name (`node-exporter-host`), and the
+  # thermal alerts and thermals dashboard rely on the `job="node-exporter-host"`
+  # selector.
   jobLabel: app.kubernetes.io/name
   selector:
     matchLabels:

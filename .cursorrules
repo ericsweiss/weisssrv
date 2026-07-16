@@ -33,39 +33,11 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
 
 ## Code Conventions
 
-### Ansible Tasks
-
-```yaml
-# Good example
-- name: Deploy AdGuard Home configuration
-  ansible.builtin.template:
-    src: AdGuardHome.yaml.j2
-    dest: "{{ adguard_install_path }}/AdGuardHome.yaml"
-    owner: adguard
-    group: adguard
-    mode: "0600"
-  notify: Restart AdGuardHome
-  no_log: true  # Contains passwords
-```
-
-### Variable Organization
-
-**Precedence** (low to high):
-1. `group_vars/all.yml` - Global defaults, version pins, secrets
-2. `group_vars/<group>.yml` - Group-specific config
-3. `host_vars/<host>.yml` - Host-specific overrides
-
-**Naming**: Role-specific (`adguard_http_port`), Global (`internal_domain`), Secrets (in `secrets:` dict with `op://`)
-
-### Secrets
-
-```yaml
-# In group_vars/all.yml
-secrets:
-  smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
-
-# Usage - always add no_log: true for password tasks
-```
+The Ansible code conventions (FQCN, snake_case + variable precedence,
+`no_log: true` on secret-handling tasks, and the handler/service task patterns)
+are documented once in `CLAUDE.md` § "Code Conventions" — follow that section.
+It is the single canonical home so every agent entry-point sees the same rules;
+do not restate them here.
 
 ## Common Workflows
 
@@ -76,52 +48,6 @@ See `docs/18-bootstrap-new-systems.md`
 Versions are pinned in `ansible/inventories/prod/group_vars/all.yml`; run
 `task flux:sync-versions` after editing pins that feed Kubernetes manifests.
 Full workflow (discovery, update, deploy, verify): `docs/12-runbooks.md`.
-
-## Ansible Patterns
-
-### Handler Pattern
-```yaml
-# tasks/main.yml
-- name: Deploy configuration
-  ansible.builtin.template:
-    src: config.j2
-    dest: /etc/service/config
-  notify: Restart service
-
-# handlers/main.yml
-- name: Restart service
-  ansible.builtin.service:
-    name: service
-    state: restarted
-```
-
-### Service Pattern
-```yaml
-- name: Install packages
-  ansible.builtin.apt:
-    name: [package1, package2]
-    state: present
-    update_cache: true
-
-- name: Create service user
-  ansible.builtin.user:
-    name: serviceuser
-    system: true
-    create_home: false
-    shell: /usr/sbin/nologin
-
-- name: Deploy systemd unit
-  ansible.builtin.template:
-    src: service.service.j2
-    dest: /etc/systemd/system/service.service
-  notify: [Reload systemd, Restart service]
-
-- name: Enable service
-  ansible.builtin.systemd:
-    name: service
-    enabled: true
-    state: started
-```
 
 ## Key References
 

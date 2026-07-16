@@ -36,17 +36,18 @@
 # via `gitlab-ctl hup nginx`. Create the directory ahead of the first
 # distribution.
 #
-# Mode 0750 (not 0755): Omnibus's own /etc/gitlab/ssl is 0700 by
-# default; this is the next-tighter mode that still lets the gitlab
-# user (running nginx as gitlab-www) traverse to read the certs via
-# group permissions when needed.
+# Mode 0700 matches Omnibus's own default for /etc/gitlab/ssl. nginx reads the
+# cert/key as its root master process before forking workers that drop to
+# gitlab-www, so no group/other access is required (and the group is root, of
+# which gitlab-www is not a member — the key itself is distributed 0600
+# root:root regardless).
 - name: Ensure /etc/gitlab/ssl exists with secure mode
   ansible.builtin.file:
     path: /etc/gitlab/ssl
     state: directory
     owner: root
     group: root
-    mode: "0750"
+    mode: "0700"
 
 # Fresh-deploy guard: before `gitlab-ctl reconfigure` runs (notified by
 # the gitlab.rb template task below), assert that the cert + key files

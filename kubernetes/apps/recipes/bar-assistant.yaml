@@ -65,6 +65,17 @@ spec:
         - name: redis
           image: redis:${redis_version}
           imagePullPolicy: IfNotPresent
+          # Cap the dataset under the 256Mi container limit (headroom for redis
+          # overhead/fragmentation) and evict LRU keys rather than growing to an
+          # OOMKill. Also gives redis_memory_max_bytes a non-zero value so the
+          # dashboard Memory Usage gauge stops dividing by 0. args (not command)
+          # so the image entrypoint still gosu-drops to the redis user.
+          args:
+            - redis-server
+            - --maxmemory
+            - 192mb
+            - --maxmemory-policy
+            - allkeys-lru
           # No drop:[ALL]/aPE:false: image starts as root and gosu-drops to redis
           # (needs CAP_SETUID). Pod-level seccomp + automount:false are the safe
           # hardening; deeper container hardening needs per-image testing first.

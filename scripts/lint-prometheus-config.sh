@@ -28,4 +28,37 @@ python3 scripts/extract-prometheus-config.py alertmanager "$work/alertmanager.ya
 amtool check-config "$work/alertmanager.yaml"
 
 echo ""
-echo "Prometheus rules + Alertmanager config are valid."
+echo "=== Running promtool alert unit tests ==="
+# Behavioral tests for the load-bearing alerts (firing/labels/timing). The
+# extracted rules keep their annotations for `promtool check rules` above; the
+# unit tests run against an annotation-stripped copy so they assert alert logic,
+# not churn-prone description prose. rule_files in the *.test.yaml resolve
+# relative to the test file's dir, so the tests and any supplementary
+# *.rules.yaml are copied alongside the stripped rules.
+tests_dir="$work/rule-tests"
+mkdir -p "$tests_dir"
+cp scripts/prometheus-rule-tests/*.yaml "$tests_dir"/
+python3 - "$work/rules.yaml" "$tests_dir" <<'PY'
+import glob
+import sys
+
+import yaml
+
+
+def strip_annotations(path: str, out: str) -> None:
+    doc = yaml.safe_load(open(path))
+    for group in doc.get("groups", []):
+        for rule in group.get("rules", []):
+            rule.pop("annotations", None)
+    yaml.safe_dump(doc, open(out, "w"), sort_keys=False)
+
+
+src, out_dir = sys.argv[1], sys.argv[2]
+strip_annotations(src, f"{out_dir}/rules.yaml")
+for supplementary in glob.glob(f"{out_dir}/*.rules.yaml"):
+    strip_annotations(supplementary, supplementary)
+PY
+promtool test rules "$tests_dir"/*.test.yaml
+
+echo ""
+echo "Prometheus rules + Alertmanager config are valid; alert unit tests pass."

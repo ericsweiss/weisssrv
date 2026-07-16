@@ -7,26 +7,6 @@
     state: restarted
     daemon_reload: true
 
-# Picks up unit file changes for the corosync-health-collector timer/service.
-# `state: restarted` (not started) is required because `started` is a no-op
-# against an already-active timer — a change to OnUnitInactiveSec or any
-# other timer field would otherwise not take effect until reboot.
-- name: Reload systemd for corosync health collector
-  ansible.builtin.systemd:
-    name: corosync-health-collector.timer
-    daemon_reload: true
-    state: restarted
-
-# Same restarted-not-started rationale as the corosync handler above.
-- name: Reload systemd for zpool status collector
-  ansible.builtin.systemd:
-    name: zpool-status-collector.timer
-    daemon_reload: true
-    state: restarted
-
-# Same restarted-not-started rationale as the corosync handler above.
-- name: Reload systemd for smartmon collector
-  ansible.builtin.systemd:
-    name: smartmon-collector.timer
-    daemon_reload: true
-    state: restarted
+# The corosync/zpool/smartmon collector timers are reloaded + restarted on a
+# unit change by the shared textfile_collector role (restart-on-change task),
+# so this role no longer carries per-collector reload handlers.

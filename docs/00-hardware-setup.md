@@ -76,7 +76,9 @@ This homelab currently consists of:
 - **Storage**:
   - OS: 120GB SSD
   - Additional: 1TB Samsung 870 EVO (installed, local-ssd ZFS pool)
-- **Network**: Gigabit Ethernet
+- **Network**: 2x Gigabit Ethernet in a **2-NIC active-backup bond**
+  (`nic0`/`nic1`, hand-maintained in `/etc/network/interfaces`) — these three
+  nodes need a bonded uplink; see [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md)
 - **Role**: General compute, k3s workers, LXC containers
 
 ### Laptop Node: MSI GS60 2QD

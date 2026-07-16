@@ -9,3 +9,10 @@ resources:
   - networkpolicy.yaml
   - resourcequota.yaml
   - vpa.yaml
+
+# Shared config components:
+# - netpol-baseline: the default-deny-ingress policy (see kubernetes/components/netpol-baseline)
+# - gitlab-runner-common: HelmRelease fields shared with the other runner
+components:
+  - ../../components/netpol-baseline
+  - ../../components/gitlab-runner-common

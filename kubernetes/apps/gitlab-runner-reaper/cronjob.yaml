@@ -87,7 +87,7 @@ spec:
       # this so a big backlog isn't hard-killed into a failed Job.
       activeDeadlineSeconds: 120
       # Delete the reaper's OWN finished Job pods after 1h so the reaper does not
-      # itself leak pods (which would be ironic).
+      # itself leak pods.
       ttlSecondsAfterFinished: 3600
       # Retry on a transient API blip; a persistent failure (e.g. broken RBAC)
       # exhausts this and surfaces as a failed Job (script exits non-zero on any

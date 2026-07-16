@@ -35,21 +35,10 @@ if [[ ! "$VMID" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
-# Hard wall-clock bound for the SSH probes (timeout_cmd from shell-lib.sh).
-# ConnectTimeout=2 only bounds the TCP connect phase — a host that accepts the
-# connection but stalls in PAM/sssd or a disk-stuck remote shell would otherwise
-# hang the step-1 loop and step-4 qm scan (and the Taskfile task calling this
-# script) indefinitely. ServerAlive* trips on a dead post-connect channel; the
-# timeout_cmd wall-clock bound is the backstop.
-ssh_quick() {
-    timeout_cmd 6 ssh -o ConnectTimeout=2 -o BatchMode=yes \
-        -o ServerAliveInterval=2 -o ServerAliveCountMax=2 "$@"
-}
-
 # Step 1: pick a reachable host as cluster entry point.
 REACHABLE=""
 for host in "${HOSTS[@]}"; do
-    if ssh_quick "$host" "true" 2>/dev/null; then
+    if ssh_probe "$host" "true" 2>/dev/null; then
         REACHABLE="$host"
         break
     fi
@@ -73,12 +62,12 @@ fi
 # Without `-n` (and the trailing `p`), a line that grep matched but whose
 # `(node,...)` shape sed can't parse would be echoed VERBATIM, putting the
 # whole status line into $NODE instead of falling through to steps 3/4.
-NODE=$(ssh_quick "$REACHABLE" "sudo ha-manager status 2>/dev/null | grep -E 'service vm:${VMID}([[:space:]]|\$)'" 2>/dev/null \
+NODE=$(ssh_probe "$REACHABLE" "sudo ha-manager status 2>/dev/null | grep -E 'service vm:${VMID}([[:space:]]|\$)'" 2>/dev/null \
     | sed -n 's/.*(\([^,]*\),.*/\1/p' || true)
 
 # Step 3: cluster resources (covers non-HA VMs known to the cluster)
 if [ -z "$NODE" ]; then
-    NODE=$(ssh_quick "$REACHABLE" \
+    NODE=$(ssh_probe "$REACHABLE" \
         "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null \
         | python3 -c "import sys, json; d = json.load(sys.stdin); v = [x for x in d if x.get('vmid') == ${VMID}]; print(v[0]['node'] if v else '')" 2>/dev/null \
         || true)
@@ -95,7 +84,7 @@ fi
 # stream fully first removes that race.
 if [ -z "$NODE" ]; then
     for host in "${HOSTS[@]}"; do
-        qm_status=$(ssh_quick "$host" "sudo qm status ${VMID}" 2>/dev/null || true)
+        qm_status=$(ssh_probe "$host" "sudo qm status ${VMID}" 2>/dev/null || true)
         if printf '%s' "$qm_status" | grep -q "status:"; then
             NODE="$host"
             break

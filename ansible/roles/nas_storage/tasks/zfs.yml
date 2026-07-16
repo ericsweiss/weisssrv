@@ -14,6 +14,10 @@
 # Reads each property's current value and only `zfs set`s on a mismatch,
 # so the task reports changed only when it actually changed something.
 # Datasets in a pool that is not imported are skipped (not failed).
+# `set -e` after the existence probe: a failing `zfs set` (or a bad property
+# name in `zfs get`) must fail the task, not fall through to CHANGED/OK —
+# failed_when checks rc because setting failed_when replaces Ansible's
+# default rc!=0 handling.
 # NOTE: property values in zfs_pools[].properties MUST be written exactly as
 # `zfs get -H -o value <prop>` prints them — the HUMAN-READABLE form, since the
 # comparison runs without -p (recordsize prints '1M', not 1048576; acltype
@@ -26,6 +30,7 @@
       echo "DATASET_MISSING"
       exit 0
     fi
+    set -e
     changed=0
     {% for prop, value in item.1.properties.items() %}
     current=$(zfs get -H -o value {{ prop | quote }} {{ item.1.name | quote }} 2>/dev/null)
@@ -43,7 +48,7 @@
   # The pool is imported (the when: gate guarantees it), so a missing dataset
   # here is a real misconfiguration, not the exported-archive steady state —
   # surface it. Datasets in an un-imported pool are skipped by the when: gate.
-  failed_when: "'DATASET_MISSING' in zfs_result.stdout"
+  failed_when: "zfs_result.rc != 0 or 'DATASET_MISSING' in zfs_result.stdout"
   when: item.0.name in zfs_imported_pools.stdout_lines
 
 # The zfs-scrub-<schedule>@.timer template units are shipped by

@@ -26,7 +26,9 @@ This role codifies all three.
 
 - `nic_tuning_ip_forward` (default `false`) — write
   `/etc/sysctl.d/99-nic-tuning-ip-forward.conf` with `net.ipv4.ip_forward=1`
-  and run `sysctl --system`.
+  and apply it via a scoped `ansible.posix.sysctl` reload of just
+  `net.ipv4.ip_forward` from that drop-in (deliberately not `sysctl --system`,
+  so an unrelated bad entry elsewhere in `/etc/sysctl.d/` can't fail the apply).
 - `nic_tuning_overrides` (default `[]`) — list of per-interface dicts:
   ```yaml
   nic_tuning_overrides:

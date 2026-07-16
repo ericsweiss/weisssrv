@@ -80,4 +80,35 @@ printf '%s\n' "$reseed_loop" | grep -qF 'Re-seed aborted: cannot determine type 
 printf '%s\n' "$reseed_loop" | grep -qF '| zfs receive -s -u "${recv_opts[@]}" "$sub"' \
   || { echo >&2 "in-loop re-seed receive not coupled to recv_opts"; exit 1; }
 
+# Deferral contract: the vzdump-quiesce timeout must exit 75 (EX_TEMPFAIL), and
+# cmd_run must branch on it separately from real failures — reverting the guard
+# to `return 1` re-creates the nightly ArchiveBackupFailed false alarm the DEFER
+# semantics fixed. Anchor to the DEFER log line so a comment can't satisfy it.
+awk '/log "DEFER \$\{src\}/{f=1} f && /return/{print; exit}' "$s" \
+  | grep -qF 'return 75' || { echo >&2 "vzdump-quiesce timeout does not return 75 (DEFER)"; exit 1; }
+grep -qF 'elif [[ "$rc" -eq 75 ]]; then' "$s" \
+  || { echo >&2 "cmd_run does not branch on the DEFER exit code 75"; exit 1; }
+# Missing-source SKIP must exit 73 (not 0): a rc-0 SKIP would refresh the
+# dataset's last-success timestamp and silence ArchiveBackupDatasetStale for a
+# vanished source.
+grep -qF 'return 73; }' "$s" \
+  || { echo >&2 "missing-source SKIP does not return 73"; exit 1; }
+grep -qF 'elif [[ "$rc" -eq 73 ]]; then' "$s" \
+  || { echo >&2 "cmd_run does not branch on the missing-source exit code 73"; exit 1; }
+
+# Per-dataset metric contract: both series must be emitted via the shared
+# gauge helper (the dataset-stale + chronically-deferred alerts consume them),
+# the helper must filter to current SRC_LIST members (no orphan series), and
+# state must be seeded from the previous run so a deferral/abort preserves
+# series for datasets the run never reached. Behavior is exercised by
+# archive-metrics-behavior.sh; these pins catch a wholesale removal.
+grep -qF '_emit_dataset_gauge archive_backup_dataset_last_success_timestamp_seconds' "$s" \
+  || { echo >&2 "per-dataset last-success metric not emitted"; exit 1; }
+grep -qF '_emit_dataset_gauge archive_backup_dataset_deferred_runs' "$s" \
+  || { echo >&2 "per-dataset deferred-runs metric not emitted"; exit 1; }
+awk '/_emit_dataset_gauge\(\) \{/{f=1} f && /MAP\[\$ds\]/{print; exit}' "$s" \
+  | grep -q 'continue' || { echo >&2 "emit helper lost its SRC_LIST (MAP) orphan filter"; exit 1; }
+[ "$(grep -c '_load_prev_dataset_metrics' "$s")" -ge 2 ] \
+  || { echo >&2 "_load_prev_dataset_metrics not defined+called (previous-run seeding lost)"; exit 1; }
+
 echo "archive-backupctl contract OK"

@@ -600,6 +600,31 @@ class TestGetDeployCommand(unittest.TestCase):
             f"helm_chart_versions pins with no SERVICE_REGISTRY entry: {missing}",
         )
 
+    def test_every_top_level_version_pin_has_registry_entry(self):
+        """Every top-level `*_version` pin in all.yml must have a
+        SERVICE_REGISTRY entry, or its updates are silently never reported.
+
+        The sibling helm-chart test only guards `helm_chart_versions.*`; this is
+        how `alloy_host_version` slipped through untracked. Non-service pins that
+        legitimately have no upstream to check are allow-listed explicitly."""
+        # Pins that are intentionally not tracked by SERVICE_REGISTRY: the base
+        # OS release is set by the distro, not a per-service upstream.
+        allowed_untracked = {"debian_version"}
+        current = check_versions.read_current_versions()
+        registry_vars = {s["var_name"] for s in check_versions.SERVICE_REGISTRY}
+        missing = [
+            v for v in current
+            if v.endswith("_version")
+            and not v.startswith("helm_chart_versions.")
+            and v not in registry_vars
+            and v not in allowed_untracked
+        ]
+        self.assertEqual(
+            missing, [],
+            f"top-level *_version pins with no SERVICE_REGISTRY entry: {missing} "
+            "(add a registry entry, or allow-list it if it has no upstream to track)",
+        )
+
     def test_service_registry_field_completeness(self):
         """Every SERVICE_REGISTRY entry must have required fields for its category."""
         required_fields = {
@@ -773,6 +798,27 @@ class TestDockerhubMajorPinAndPrefix(unittest.TestCase):
             # Highest tag within major 3 — never v4.0.0.
             self.assertEqual(check_versions.fetch_dockerhub_version(svc), "v3.42.0")
 
+    def test_name_filter_has_no_startswith_constraint(self):
+        # The python `-slim` CronJob image: name_filter narrows only the API
+        # query (a suffix like "-slim" never matches a tag's startswith, unlike
+        # version_prefix). The regex is what selects the tag. A regression that
+        # applied startswith to name_filter would reject every "3.x-slim" tag.
+        svc = {
+            "docker_image": "library/python",
+            "tag_regex": r"^(3\.\d+)-slim$",
+            "dockerhub_name_filter": "-slim",
+        }
+        captured = {}
+
+        def fake_request(url, headers=None):
+            captured["url"] = url
+            return self._payload("3.13-slim", "3.12-slim", "3.13")
+
+        with patch.object(check_versions, "_make_request", side_effect=fake_request):
+            self.assertEqual(check_versions.fetch_dockerhub_version(svc), "3.13-slim")
+        # name_filter feeds the Docker Hub `name=` query, not a tag startswith.
+        self.assertIn("name=-slim", captured["url"])
+
 
 class TestVersionTupleGreaterRules(unittest.TestCase):
     """version_tuple_greater unequal-length and release-vs-prerelease ordering."""
@@ -873,7 +919,11 @@ class TestUpdateVersionInFile(unittest.TestCase):
                 self.assertTrue(
                     check_versions.update_version_in_file("helm_chart_versions.traefik", "40.4.0")
                 )
-            self.assertIn('traefik: "40.4.0"', path.read_text())
+            out = path.read_text()
+            self.assertIn('traefik: "40.4.0"', out)
+            # The nested branch must also rewrite the trailing comment (the
+            # top-level test asserts this; the nested one was the blind spot).
+            self.assertIn("# Currently deployed 40.4.0", out)
         finally:
             os.unlink(path)
 
@@ -1323,6 +1373,316 @@ class TestCliArgumentValidation(unittest.TestCase):
         res = self._run("--list")
         self.assertEqual(res.returncode, 0)
         self.assertIn("Tracked services", res.stdout)
+
+
+class TestFetchGithubReleaseTagFilter(unittest.TestCase):
+    """The tag_filter branch of fetch_github_release — the version-selection
+    logic behind k3s/gluetun/mealie. It paginates, SKIPS drafts/prereleases,
+    and returns the HIGHEST version (not the newest by date). None of this is
+    covered by the latest-endpoint (no-tag_filter) tests."""
+
+    # Mirrors the real k3s registry entry.
+    K3S_SVC = {
+        "github_repo": "k3s-io/k3s",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d+\.\d+\.\d+\+k3s\d+$",
+    }
+
+    @staticmethod
+    def _page_dispatch(pages):
+        """github_api side_effect: return the release list for the ?page=N."""
+        def api(path):
+            m = re.search(r"[?&]page=(\d+)", path)
+            return pages.get(int(m.group(1)), [])
+        return api
+
+    def test_highest_not_newest_and_skip_is_load_bearing(self):
+        # Page 1 (exactly 100 items -> pagination continues to page 2) leads
+        # with a STABLE older-branch patch, simulating newest-by-date. Page 2
+        # (<100 -> loop stops) holds the true winner plus a prerelease AND a
+        # draft that both carry HIGHER versions. The winner must be the highest
+        # STABLE version across pages, proving both "highest not newest" and
+        # that the draft/prerelease skip is load-bearing (drop the skip and the
+        # 1.37 draft would win instead).
+        page1 = [{"tag_name": "v1.34.9+k3s2"}] + [
+            {"tag_name": f"nightly-{i}"} for i in range(99)  # non-matching filler
+        ]
+        page2 = [
+            {"tag_name": "v1.35.3+k3s1"},
+            {"tag_name": "v1.36.0+k3s1", "prerelease": True},
+            {"tag_name": "v1.37.0+k3s1", "draft": True},
+        ]
+        pages = {1: page1, 2: page2}
+        with patch.object(check_versions, "github_api",
+                          side_effect=self._page_dispatch(pages)) as mock_api:
+            result = check_versions.fetch_github_release(self.K3S_SVC)
+        self.assertEqual(result, "v1.35.3+k3s1")  # prefix retained (strip_prefix False)
+        # page 1 was full (100) -> page 2 fetched; page 2 <100 -> stop.
+        self.assertEqual(mock_api.call_count, 2)
+
+    def test_no_matching_release_raises(self):
+        # A single page with only draft/prerelease/non-matching entries.
+        page1 = [
+            {"tag_name": "v1.36.0+k3s1", "prerelease": True},
+            {"tag_name": "v1.37.0+k3s1", "draft": True},
+            {"tag_name": "not-a-release"},
+        ]
+        with patch.object(check_versions, "github_api",
+                          side_effect=self._page_dispatch({1: page1})):
+            with self.assertRaises(RuntimeError) as ctx:
+                check_versions.fetch_github_release(self.K3S_SVC)
+        self.assertIn("No release matching", str(ctx.exception))
+
+    def test_strip_prefix_applied_in_tag_filter_branch(self):
+        # strip_prefix=True in the tag_filter branch must strip the version_prefix
+        # from the winning tag (gluetun/mealie-style).
+        svc = {
+            "github_repo": "owner/repo",
+            "version_prefix": "v",
+            "strip_prefix": True,
+            "tag_filter": r"^v\d+\.\d+\.\d+$",
+        }
+        page1 = [{"tag_name": "v1.2.3"}, {"tag_name": "v1.2.2"}]
+        with patch.object(check_versions, "github_api",
+                          side_effect=self._page_dispatch({1: page1})):
+            self.assertEqual(check_versions.fetch_github_release(svc), "1.2.3")
+
+
+class TestFetchLsioVersion(unittest.TestCase):
+    """fetch_lsio_version returns the CAPTURED version group (return_full_tag
+    False), i.e. it strips the `version-` prefix. Previously only the non-JSON
+    guard was tested, never the capture/strip return path."""
+
+    @staticmethod
+    def _payload(*tags):
+        return {"results": [{"name": t} for t in tags]}
+
+    def test_version_prefix_stripped_from_capture(self):
+        svc = {
+            "docker_image": "linuxserver/sonarr",
+            "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        }
+        payload = self._payload("version-4.0.15.2941", "version-4.0.16.2944", "latest")
+        with patch.object(check_versions, "_make_request", return_value=payload):
+            # Captured version, prefix stripped — not the full "version-..." tag.
+            self.assertEqual(check_versions.fetch_lsio_version(svc), "4.0.16.2944")
+
+    def test_bare_tag_regex_empty_prefix(self):
+        # qBittorrent-style bare tags (no version- prefix).
+        svc = {
+            "docker_image": "linuxserver/qbittorrent",
+            "lsio_version_regex": r"^(\d+\.\d+\.\d+)$",
+        }
+        payload = self._payload("5.1.3", "5.1.4", "latest")
+        with patch.object(check_versions, "_make_request", return_value=payload):
+            self.assertEqual(check_versions.fetch_lsio_version(svc), "5.1.4")
+
+
+class TestFetchGhcrVersion(unittest.TestCase):
+    """fetch_ghcr_version (the gluetun-exporter tracker): anonymous pull-token
+    flow, tag_filter matching, and highest-version selection — untested until now."""
+
+    @staticmethod
+    def _dispatch(token_resp, tags_resp):
+        def request(url, headers=None):
+            if "/token" in url:
+                return token_resp
+            return tags_resp
+        return request
+
+    def test_standalone_filter_selects_highest_standalone(self):
+        # The -standalone constraint keeps a bare X.Y.Z from ranking above its
+        # -standalone twin.
+        svc = {"ghcr_image": "thecfu/gluetun-exporter",
+               "tag_filter": r"^\d+\.\d+\.\d+-standalone$"}
+        tags = {"tags": ["1.2.3", "1.2.3-standalone", "1.3.0-standalone"]}
+        with patch.object(check_versions, "_make_request",
+                          side_effect=self._dispatch({"token": "x"}, tags)):
+            self.assertEqual(check_versions.fetch_ghcr_version(svc), "1.3.0-standalone")
+
+    def test_missing_token_raises(self):
+        svc = {"ghcr_image": "thecfu/gluetun-exporter"}
+        with patch.object(check_versions, "_make_request",
+                          side_effect=self._dispatch({}, {"tags": ["1.0.0"]})):
+            with self.assertRaises(RuntimeError):
+                check_versions.fetch_ghcr_version(svc)
+
+    def test_non_json_tags_raises(self):
+        svc = {"ghcr_image": "thecfu/gluetun-exporter"}
+        with patch.object(check_versions, "_make_request",
+                          side_effect=self._dispatch({"token": "x"}, "<html>500</html>")):
+            with self.assertRaises(RuntimeError):
+                check_versions.fetch_ghcr_version(svc)
+
+
+class TestVersionCache(unittest.TestCase):
+    """_read_cache / _write_cache: round-trip, TTL expiry, and the corrupted-
+    cache self-heal unlink — all previously uncovered."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patcher = patch.object(check_versions, "CACHE_DIR", self.tmp)
+        self.patcher.start()
+
+    def tearDown(self):
+        import shutil
+        self.patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_write_then_read_roundtrips(self):
+        check_versions._write_cache("Some Service", "1.2.3")
+        self.assertEqual(check_versions._read_cache("Some Service"), "1.2.3")
+
+    def test_expired_entry_returns_none(self):
+        import json
+        import time
+        cache_file = check_versions._cache_key("Old Service")
+        cache_file.write_text(json.dumps({
+            "version": "9.9.9",
+            "timestamp": time.time() - check_versions.CACHE_TTL - 1,
+            "service": "Old Service",
+        }))
+        self.assertIsNone(check_versions._read_cache("Old Service"))
+
+    def test_corrupted_entry_is_removed(self):
+        cache_file = check_versions._cache_key("Bad Service")
+        cache_file.write_text("not json {{{")
+        self.assertIsNone(check_versions._read_cache("Bad Service"))
+        # Self-heal: the unreadable entry is unlinked so it can't wedge every run.
+        self.assertFalse(cache_file.exists())
+
+
+class TestFormatJson(unittest.TestCase):
+    """format_json's summary contract: held updates are excluded from
+    updates_available and counted separately in updates_held (version-check-ci.py
+    keys its exit code off this distinction)."""
+
+    def test_summary_counts_and_held_flag(self):
+        import json
+        SV = check_versions.ServiceVersion
+        results = [
+            SV(name="MetalLB", category="helm", current_version="0.15.3",
+               latest_version="0.16.0", update_available=True,
+               var_name="helm_chart_versions.metallb", held=True),
+            SV(name="Foo", category="helm", current_version="1.0",
+               latest_version="1.1", update_available=True, var_name="foo_version"),
+            SV(name="Bar", category="github", current_version="1.0",
+               var_name="bar_version", error="boom"),
+            SV(name="Baz", category="github", current_version="2.0",
+               latest_version="2.0", update_available=False, var_name="baz_version"),
+        ]
+        data = json.loads(check_versions.format_json(results))
+        self.assertEqual(data["summary"], {
+            "total": 4,
+            "up_to_date": 1,
+            "updates_available": 1,   # only Foo — the held MetalLB is excluded
+            "updates_held": 1,        # MetalLB
+            "errors": 1,
+        })
+        metallb = next(s for s in data["services"] if s["name"] == "MetalLB")
+        self.assertIs(metallb.get("held"), True)
+
+
+class TestCheckService(unittest.TestCase):
+    """check_service — the function that decides update_available — exercised
+    for real (never mocked): update detection on both the live-fetch and
+    cache-hit paths, plus the RuntimeError-vs-typed-Exception error mapping."""
+
+    SVC = {"name": "Fake GH", "var_name": "fake_version", "category": "github"}
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patcher = patch.object(check_versions, "CACHE_DIR", self.tmp)
+        self.patcher.start()
+
+    def tearDown(self):
+        import shutil
+        self.patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_live_update_available_when_latest_greater(self):
+        # use_cache=False so the patched fetcher is actually reached (check_service
+        # reads the cache first and would short-circuit otherwise).
+        with patch.object(check_versions, "fetch_github_release", return_value="2.0.0"):
+            r = check_versions.check_service(self.SVC, {"fake_version": "1.0.0"}, use_cache=False)
+        self.assertTrue(r.update_available)
+        self.assertIsNone(r.error)
+
+    def test_live_no_update_when_equal(self):
+        with patch.object(check_versions, "fetch_github_release", return_value="1.0.0"):
+            r = check_versions.check_service(self.SVC, {"fake_version": "1.0.0"}, use_cache=False)
+        self.assertFalse(r.update_available)
+
+    def test_current_latest_never_updates(self):
+        with patch.object(check_versions, "fetch_github_release", return_value="2.0.0"):
+            r = check_versions.check_service(self.SVC, {"fake_version": "latest"}, use_cache=False)
+        self.assertFalse(r.update_available)
+
+    def test_cache_hit_drives_update_available(self):
+        check_versions._write_cache(self.SVC["name"], "3.0.0")
+        # A cache hit must return before any fetch.
+        with patch.object(check_versions, "fetch_github_release",
+                          side_effect=AssertionError("must not fetch on cache hit")):
+            r = check_versions.check_service(self.SVC, {"fake_version": "2.0.0"}, use_cache=True)
+        self.assertEqual(r.latest_version, "3.0.0")
+        self.assertTrue(r.update_available)
+
+    def test_cache_hit_no_update_when_not_greater(self):
+        check_versions._write_cache(self.SVC["name"], "2.0.0")
+        r = check_versions.check_service(self.SVC, {"fake_version": "2.0.0"}, use_cache=True)
+        self.assertFalse(r.update_available)
+
+    def test_runtimeerror_surfaced_verbatim(self):
+        with patch.object(check_versions, "fetch_github_release",
+                          side_effect=RuntimeError("upstream 500")):
+            r = check_versions.check_service(self.SVC, {"fake_version": "1.0.0"}, use_cache=False)
+        self.assertEqual(r.error, "upstream 500")
+        self.assertNotIn("Unexpected", r.error)
+
+    def test_generic_exception_is_type_tagged(self):
+        with patch.object(check_versions, "fetch_github_release",
+                          side_effect=ValueError("boom")):
+            r = check_versions.check_service(self.SVC, {"fake_version": "1.0.0"}, use_cache=False)
+        self.assertTrue(r.error.startswith("Unexpected ValueError"))
+
+
+class TestMainExitCodes(unittest.TestCase):
+    """The default (no-arg) run's exit-code contract: errors->2,
+    actionable-updates->1, clean/held-only->0. This is the code the CI job and
+    version-check-ci.py reconcile against; only --update/--list/unknown-flag
+    paths were covered before."""
+
+    def _run_main_with(self, results):
+        with patch.object(check_versions, "check_all", return_value=results), \
+             patch.object(check_versions, "read_current_versions", return_value={}), \
+             patch.object(check_versions.sys, "argv", ["check-versions.py"]):
+            with self.assertRaises(SystemExit) as cm:
+                check_versions.main()
+        return cm.exception.code
+
+    def test_held_only_and_clean_exits_0(self):
+        SV = check_versions.ServiceVersion
+        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+                  latest_version="0.16.0", update_available=True,
+                  var_name="helm_chart_versions.metallb", held=True)
+        clean = SV(name="Foo", category="helm", current_version="1.0",
+                   latest_version="1.0", var_name="foo_version")
+        self.assertEqual(self._run_main_with([held, clean]), 0)
+
+    def test_actionable_update_exits_1(self):
+        SV = check_versions.ServiceVersion
+        upd = SV(name="Foo", category="helm", current_version="1.0",
+                 latest_version="1.1", update_available=True, var_name="foo_version")
+        self.assertEqual(self._run_main_with([upd]), 1)
+
+    def test_error_exits_2(self):
+        SV = check_versions.ServiceVersion
+        err = SV(name="Bar", category="github", current_version="1.0",
+                 var_name="bar_version", error="boom")
+        self.assertEqual(self._run_main_with([err]), 2)
 
 
 if __name__ == "__main__":

@@ -98,10 +98,6 @@ nfs_tls_enabled: true
 # observability), and the servers already in the nfs_clients ipset.
 k3s_etcd_snapshot_offnode_enabled: true
 
-# MetalLB IP ranges
-metallb_public_range: "192.168.0.100-192.168.0.100"
-metallb_internal_range: "192.168.0.101-192.168.0.101"
-
 # kube-vip configuration
 kube_vip_interface: "eth0"
 

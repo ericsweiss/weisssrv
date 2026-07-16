@@ -1,10 +1,11 @@
 ---
-# lidarr config storage (+ actimeo/lookupcache): thin overlay over the ../../_nfs-pv component.
+# lidarr config storage: thin overlay over the ../../_nfs-pv-arr component
+# (10Gi + actimeo/lookupcache defined once there).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads
 components:
-  - ../../_nfs-pv
+  - ../../_nfs-pv-arr
 patches:
   - target:
       kind: PersistentVolume
@@ -17,19 +18,8 @@ patches:
         path: /metadata/labels/app
         value: lidarr
       - op: replace
-        path: /spec/capacity/storage
-        value: 10Gi
-      - op: replace
         path: /spec/nfs/path
         value: /appdata/lidarr
-      # *arr apps add NFS attribute caching ahead of xprtsec=tls (inserted at
-      # indices 3/4 so the shared xprtsec option stays defined once in _nfs-pv).
-      - op: add
-        path: /spec/mountOptions/3
-        value: actimeo=3
-      - op: add
-        path: /spec/mountOptions/4
-        value: lookupcache=positive
   - target:
       kind: PersistentVolumeClaim
       name: nfs-pvc
@@ -37,9 +27,6 @@ patches:
       - op: replace
         path: /metadata/name
         value: lidarr-config
-      - op: replace
-        path: /spec/resources/requests/storage
-        value: 10Gi
       - op: replace
         path: /spec/volumeName
         value: downloads-appdata-lidarr

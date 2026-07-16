@@ -1,17 +1,8 @@
----
 # NetworkPolicies for the gitlab-runner-reaper namespace. The reaper is a
 # single-purpose CronJob that only talks to the kube-API (lists/deletes leaked
 # job pods in the two runner namespaces); nothing serves traffic, so ingress is
-# denied outright.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: gitlab-runner-reaper
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
+# denied outright via the shared default-deny-ingress (components/netpol-baseline,
+# wired in kustomization.yaml).
 ---
 # Reaper egress: kube-dns (to resolve kubernetes.default.svc) and the
 # kube-apiserver. kube-proxy DNATs the in-cluster VIP (10.43.0.1:443) to the

@@ -223,7 +223,7 @@ curl -I https://192.168.0.150
 
 ### Postfix SMTP Relay (smtp-relay)
 
-TLS for SMTP submission (port 587):
+TLS for the SMTP relay — the global `main.cf` defaults (govern port 25):
 
 ```
 # /etc/postfix/main.cf
@@ -232,6 +232,10 @@ smtpd_tls_key_file = /etc/postfix/tls/privkey.pem
 smtpd_tls_security_level = may
 smtpd_tls_auth_only = yes
 ```
+
+Port 587 (submission) is stricter: a `master.cf` per-service override sets
+`-o smtpd_tls_security_level=encrypt`, so TLS is **mandatory** on 587 (not the
+opportunistic `may` above). See docs/10-mail.md.
 
 **Verify**:
 ```bash

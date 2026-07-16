@@ -25,7 +25,7 @@ split: Ansible manages the guest, Flux manages the ingress.
 
 ```yaml
 # Version (pinned in group_vars/all.yml — see it for the current value)
-plex_version: "1.43.2.10687-563d026ea"  # Or "latest" for auto-update
+plex_version: "<pinned in group_vars/all.yml>"  # Or "latest" for auto-update
 
 # LXC configuration (host_vars/plex.yml)
 plex:
@@ -131,7 +131,7 @@ while `plex_claim` is non-empty, so the re-run removes it.
 ### Pinned Version
 
 ```yaml
-plex_version: "1.43.2.10687-563d026ea"   # current pin — see group_vars/all.yml
+plex_version: "<pinned in group_vars/all.yml>"   # current pin — see group_vars/all.yml
 ```
 
 Updates via:

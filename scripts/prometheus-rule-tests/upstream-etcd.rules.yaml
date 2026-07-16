@@ -1,0 +1,17 @@
+---
+# Mirror of the kube-prometheus-stack (etcd-mixin) etcdInsufficientMembers rule.
+# kubeEtcd.enabled: true re-enables this chart-shipped rule, but it lives in the
+# Helm chart, not our additionalPrometheusRulesMap, so extract-prometheus-config
+# cannot reach it. Pinned here so the promtool suite can assert the quorum-loss
+# firing behaviour we rely on; if the chart's expr changes, update this copy.
+groups:
+  - name: etcd.upstream
+    rules:
+      - alert: etcdInsufficientMembers
+        expr: sum(up{job=~".*etcd.*"} == bool 1) by (job) < ((count(up{job=~".*etcd.*"}) by (job) + 1) / 2)
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: etcd cluster has insufficient number of members.
+          description: 'etcd cluster "{{ $labels.job }}": insufficient members ({{ $value }}).'

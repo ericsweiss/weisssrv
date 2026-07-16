@@ -200,7 +200,7 @@ kubectl/helm invocations.
 
 ---
 
-## Renovate Bot Integration
+## Priority 4: Renovate Bot Integration
 
 **Status**: Not yet implemented. `all.yml` remains the single source of truth for
 versions; the `cluster-versions` ConfigMap flows into Flux via substitutions.
@@ -287,6 +287,80 @@ Onboarding flow: fork template → add CI vars → add wiring YAML under
 ---
 
 ## Outstanding Follow-Ups
+
+### Architectural decisions deferred from the full-repo review (2026-07-14) — need a user decision
+
+The full-repo review surfaced four architectural items that are intentionally
+**not** implemented in that MR because each is a hardware and/or posture change
+that needs an explicit call. Each is a real, documented gap, not a regression.
+
+#### Network segmentation / admin-IPSet tightening
+
+- **Current state**: the whole estate is one flat L2 `192.168.0.0/24` (single
+  `vmbr0`, `vlan: null`) shared with Home-Assistant-managed IoT and an
+  unmanaged, un-Ansible'd Windows box (.155). The `admin_lan` firewall IPSet is
+  the entire /24, so SSH (22), the Proxmox API (8006), the kube-apiserver
+  (6443), RDP (3389), and the AdGuard admin plane (:3000/:443/:853) accept from
+  every device on the LAN. The services stay authenticated, so this is a
+  defense-in-depth / L3-reachability gap, not direct compromise. See
+  [docs/11-firewall.md](11-firewall.md) and [docs/06-zfs.md](06-zfs.md)
+  ("Encryption Posture", LAN-trust model). VLANs are listed as "planned" below
+  (Security Hardening) but never implemented.
+- **Proposed change**: implement the planned management/IoT/guest VLANs and
+  re-scope `admin_lan` to a management VLAN or an explicit small admin-host set.
+  Interim (no VLAN hardware change): tighten the highest-value ports
+  (8006/6443/22/3389) to a dedicated admin IPSet of specific workstation IPs,
+  leaning on Tailscale (`admin_ts`) for remote admin.
+- **Decision needed**: buy/configure a VLAN-capable switch and re-IP into
+  segments, or take the interim IPSet tightening now.
+
+#### Offsite / 3-2-1 backup tier
+
+- **Current state**: 3-2-1 is not met. Every backup class lives inside the
+  single pve-nas-01 chassis — vzdump → `tank/proxmox`, `archive-backupctl` →
+  `archive` pool, the GitLab tarball (via vzdump), and even the "off-node" etcd
+  snapshot copy (→ `ssd/k3s-etcd`, still on pve-nas-01). No offsite copy exists.
+  See [docs/17-disaster-recovery.md](17-disaster-recovery.md) (on-site backups).
+- **Proposed change**: add an offsite/off-host tier — rotate the `archive`
+  pool's raw-encrypted snapshots to an external USB HDD stored offsite (the
+  existing `plug`/`unplug` + `zfs send -w` chain already supports this), and/or
+  push the small critical datasets (GitLab tarball, postgres, etcd snapshots —
+  each << a few GB) to a cheap encrypted offsite target (Backblaze B2 /
+  rsync.net). Re-point or duplicate the etcd off-node copy to a destination that
+  is not pve-nas-01.
+- **Decision needed**: which mechanism (physical rotation vs. encrypted cloud),
+  plus budget and retention.
+
+#### Network-fabric SPOF: second switch + corosync ring
+
+- **Current state**: a single unmanaged switch carries both legs of every
+  active-backup bond; a single router/gateway (Asus GT-AX11000 at 192.168.0.1)
+  is also DHCP and the Cloudflare-origin port-forwarder; everything rides one
+  flat `vmbr0` /24 with only one corosync ring (5405/ring0; 5406/ring1 is
+  reserved but unused). A switch or router failure collapses Proxmox corosync
+  quorum and k3s etcd L2 simultaneously. See
+  [docs/17-disaster-recovery.md](17-disaster-recovery.md) (Network Fabric SPOF)
+  and [docs/34-bond-mac-flapping.md](34-bond-mac-flapping.md).
+- **Proposed change**: budget-permitting, add a second cheap switch and a second
+  corosync ring on a separate NIC/VLAN for the Proxmox cluster so a single
+  switch failure cannot lose cluster quorum.
+- **Decision needed**: hardware spend, and whether the compute nodes have a
+  spare NIC for ring1.
+
+#### Tailscale ACL least-privilege lockdown
+
+- **Current state**: `terraform/tailscale/policy.hujson` grants full-mesh member
+  access (`autogroup:member -> *:*`), the SSH rule allows `root` (action
+  `check`), and `autoApprovers` auto-approves `192.168.0.0/24` — so a single
+  compromised tailnet-joined device has lateral reach to the whole LAN. This is
+  an acknowledged, deliberately non-breaking baseline (documented in the file
+  and its README), not a regression.
+- **Proposed change**: follow the file's own plan and
+  [docs/05-tailscale.md](05-tailscale.md) — tag the Proxmox subnet routers
+  `tag:subnet-router`, scope the ACLs to tag/group-based `src -> dst` rules, and
+  drop the `root` SSH user once nonroot+sudo access is validated.
+- **Decision needed**: confirm the tag/group scoping scheme and validate nonroot
+  SSH before tightening.
 
 ### Deferred from the 2026 comprehensive review
 
@@ -619,12 +693,15 @@ delete` dance above is no longer needed for subsequent immutable-field changes.
   for one read-only media browse mount of non-sensitive data. See docs/24.
 
 The former second exception — the Proxmox **`tank-proxmox` backup target** —
-is retired as a codified exception: the `proxmox_backup` role now manages the
-`storage.cfg` entry as hostname + `vers=4.2,xprtsec=tls`, and `tlshd` runs on
-all six Proxmox hosts (`nfs_tls_enabled: true` in `group_vars/proxmox.yml`).
-What remains is a one-time supervised migration of the live legacy IP entry
-(outside a backup window: `pvesh delete /storage/tank-proxmox`, then re-run
-the role — see `ansible/roles/proxmox_backup/README.md` and docs/06).
+is retired: the `proxmox_backup` role manages the `storage.cfg` entry as
+hostname + `vers=4.2,xprtsec=tls`, `tlshd` runs on all six Proxmox hosts
+(`nfs_tls_enabled: true` in `group_vars/proxmox.yml`), and the one-time
+migration off the legacy IP entry is COMPLETE — every host mounts
+`pve-nas-01.esweiss.com:/tank-proxmox` with `xprtsec=tls` (verified
+2026-07-14). Residual gap: the `/export/tank-proxmox` export line does not
+yet REQUIRE TLS (`xprtsec: tls`) the way the k3s exports do, so a plaintext
+client would still be accepted server-side; tighten the export once nothing
+legacy needs it.
 
 ### ~~Authentik / Plex bypass routes — internal TLS~~ (DONE)
 
@@ -675,7 +752,9 @@ obvious.
 ### Security Hardening
 
 - [x] Add fail2ban to Proxmox hosts (deployed)
-- [ ] Network segmentation with VLANs (IoT, guest, management)
+- [ ] Network segmentation with VLANs (IoT, guest, management) — detail +
+  interim admin-IPSet option under "Architectural decisions deferred from the
+  full-repo review (2026-07-14)" above
 - [x] Implement Network Policies in k3s (default-deny ingress) -- done across
   the board: default-deny + scoped policies live in the app namespaces
   (download-clients, recipes, authentik, gitlab-runner{,-privileged,-reaper},

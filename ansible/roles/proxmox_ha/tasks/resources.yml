@@ -47,7 +47,8 @@
     --state {{ item.item.state | default('started') }}
     {% if item.item.max_restart is defined %}--max_restart {{ item.item.max_restart }}{% endif %}
     {% if item.item.max_relocate is defined %}--max_relocate {{ item.item.max_relocate }}{% endif %}
-    {% if item.item.comment is defined %}--comment "{{ item.item.comment }}"{% endif %}
+    {% if _needs_comment_arg %}--comment "{{ _comment_value }}"{% endif %}
+    {% if _delete_keys | length > 0 %}--delete {{ _delete_keys | join(',') }}{% endif %}
   vars:
     # Extract numeric field values using regex with word boundary (whitespace or end-of-line)
     _stdout: "{{ item.stdout | default('') }}"
@@ -56,15 +57,31 @@
     _current_max_restart: "{{ _current_max_restart_match[0] | default('') if _current_max_restart_match else '' }}"
     _current_max_relocate_match: "{{ _stdout | regex_search('max_relocate\\s+(\\d+)(?:\\s|$)', '\\1') }}"
     _current_max_relocate: "{{ _current_max_relocate_match[0] | default('') if _current_max_relocate_match else '' }}"
+    # Current comment (rest of its line). Used so a comment REMOVED from config is
+    # cleared with an explicit --comment "" instead of persisting forever and
+    # re-firing drift every run (same pattern as rules.yml/replication.yml).
+    _current_comment_match: "{{ _stdout | regex_search('(?m)^\\s*comment\\s+(.*?)\\s*$', '\\1') }}"
+    _current_comment: "{{ _current_comment_match[0] if _current_comment_match else '' }}"
+    _needs_comment_arg: "{{ (item.item.comment is defined) or (_current_comment | length > 0) }}"
+    _comment_value: "{{ item.item.comment | default('') }}"
+    # max_restart/max_relocate removed from config but still set live must be
+    # unset with --delete; `ha-manager set` only writes options it is given.
+    _delete_keys: >-
+      {{ (['max_restart'] if (item.item.max_restart is not defined and _current_max_restart | length > 0) else [])
+         + (['max_relocate'] if (item.item.max_relocate is not defined and _current_max_relocate | length > 0) else []) }}
   when:
     - item.item.type + ':' + (item.item.vmid | string) in current_ha_resources.stdout_lines
     - item.item.enabled | default(true)
-    # Only update when drift is detected
+    # Only update when drift is detected — including a field REMOVED from config
+    # that is still set live (comment / max_restart / max_relocate).
     - >-
       ('state ' ~ (item.item.state | default('started'))) not in _stdout
       or (item.item.max_restart is defined and _current_max_restart != (item.item.max_restart | string))
       or (item.item.max_relocate is defined and _current_max_relocate != (item.item.max_relocate | string))
       or (item.item.comment is defined and ('comment ' ~ item.item.comment) not in _stdout)
+      or (item.item.comment is not defined and _current_comment | length > 0)
+      or (item.item.max_restart is not defined and _current_max_restart | length > 0)
+      or (item.item.max_relocate is not defined and _current_max_relocate | length > 0)
   loop: "{{ ha_resource_current_config.results }}"
   loop_control:
     label: "{{ item.item.type }}:{{ item.item.vmid | default('N/A') }}"

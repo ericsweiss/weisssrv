@@ -5,7 +5,11 @@ Thumbs.db
 # IDEs / AI tooling
 .idea/
 .vscode/
-.claude/
+# Ignore everything under .claude/ (personal overrides, caches, worktrees the
+# tooling may create) EXCEPT the shared, committed settings.json guardrails.
+# `.claude/*` (not `.claude/`) so the negation can re-include the one file.
+.claude/*
+!.claude/settings.json
 .remember/
 *.swp
 *.swo
@@ -73,6 +77,9 @@ docs/[3-9][0-9]-professional-repo-audit-*.md
 
 # Version check cache
 .version-cache/
+
+# CI dependency/tool cache dirs (PIP_CACHE_DIR, collections, lint toolchains)
+.cache/
 
 # Temporary files
 *.tmp

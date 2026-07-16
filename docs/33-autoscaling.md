@@ -47,7 +47,10 @@ stays manual — see the last section for why.
     Its CPU request was raised 100m → 250m per this doc's "raise the request,
     not the threshold" rule: at 100m the 70% target sat at 70m (noise level),
     so every traffic burst pinned the HPA at maxReplicas and fired
-    KubeHpaMaxedOut; at 250m idle reads ~3% and scaling tracks real load.
+    KubeHpaMaxedOut; at 250m idle reads ~3% and scaling tracks real load. The
+    request bump removed idle-noise triggering but not genuine CI image-pull
+    spikes, so a scaleUp/scaleDown `behavior` block (stabilization windows + a
+    1-pod step policy, like authentik-server) was added as the second lever.
   - authentik-server (`apps/authentik/release.yaml`): min 2 / max 4 @ ~75% CPU;
     the worker stays single-replica.
   - onepassword-connect (`controllers/onepassword-connect/release.yaml`,
@@ -182,7 +185,11 @@ Under normal load every HPA should sit at its `minReplicas` (matches how
 traefik/authentik idle at 2). If a new HPA pins to max at idle, its CPU request
 is too small relative to the threshold — raise the request, not the threshold
 (the authentik and Traefik fix pattern), so utilization tracks real load
-instead of noise.
+instead of noise. Request-sizing stops idle-noise triggering but not genuine
+transient spikes: if a bursty HPA still flaps to max, add an HPA `behavior`
+block (`scaleUp`/`scaleDown` `stabilizationWindowSeconds` + a Pods step policy
+of 1) as the second lever — both authentik-server and Traefik carry one — so a
+short burst needs sustained pressure before a pod is added.
 
 ### Recommendation metrics + ceiling alert
 
@@ -195,6 +202,13 @@ capped and uncapped recommendation per container/resource. The
 the workload has outgrown its ceiling (a brief clamp during a burst is
 expected and does not fire). Response: raise the `maxAllowed` cap in the
 policy file (`infrastructure/configs/vpa/` etc.) or investigate the growth.
+For a `RequestsOnly` VPA whose `maxAllowed.memory` equals the container's
+memory limit (e.g. the gluetun-exporter sidecar, both 48Mi), raising
+`maxAllowed` alone clears the alert — it reads the VPA CR status target, which
+is capped only by the policy — but the admission controller still holds the
+applied request at the container limit, so the real memory ceiling is
+unchanged. If the growth is genuine, raise the container's memory limit in
+lockstep with `maxAllowed`.
 
 `task flux:lint` runs `scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas`
 over the full rendered manifest set: it fails if any workload has an HPA and a

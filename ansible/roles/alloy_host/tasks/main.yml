@@ -80,6 +80,12 @@
     state: started
     daemon_reload: true
 
+# Flush the notified restart now (state: started is a no-op on a running
+# service) so the readiness probe below validates the freshly deployed
+# config, not the pre-change process — same pattern as prometheus_exporter.
+- name: Apply pending restarts before health check
+  ansible.builtin.meta: flush_handlers
+
 - name: Verify Alloy is listening on port 12345
   ansible.builtin.uri:
     url: "http://localhost:12345/-/ready"

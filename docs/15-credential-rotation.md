@@ -21,8 +21,9 @@ consumer paths and they rotate differently:
 
 This is the canonical, authoritative inventory of every item the deployment
 expects in the **Homelab** vault. CLAUDE.md, `docs/02-install.md`,
-`docs/13-ci-cd.md`, and `docs/28-gitlab-migration.md` all point here; update
-this list (not those files) when an item is added or its fields change.
+`docs/13-ci-cd.md`, `docs/27-gitlab-deployment.md`, and
+`docs/28-gitlab-migration.md` all point here; update this list (not those files)
+when an item is added or its fields change.
 
 - **Cloudflare DNS Token** - API token (credential, scoped DNS:Edit + Zone:Read only) + account ID (username field); consumed by the in-cluster ESO trio (cert-manager, external-dns, cloudflare-ddns) and acme_certs
 - **Cloudflare Terraform Token** - API token (credential, scoped Zone:Read + DNS:Edit + **Zone Settings:Edit** — Terraform manages `cloudflare_zone_settings_override`) + account ID (username field); Terraform via Taskfile + the terraform-plan/deploy-terraform CI jobs only

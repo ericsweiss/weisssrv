@@ -3,24 +3,7 @@
   hosts: all
   gather_facts: false
   tasks:
-    - name: Wait for systemd to be ready
-      ansible.builtin.raw: |
-        for i in $(seq 1 30); do
-          if systemctl is-system-running 2>/dev/null | grep -qE '(running|degraded)'; then
-            exit 0
-          fi
-          sleep 1
-        done
-        systemctl status >/dev/null 2>&1 && exit 0
-        exit 1
-      changed_when: false
-      retries: 3
-      delay: 2
-      register: resolv_conf_systemd_ready
-      until: resolv_conf_systemd_ready.rc == 0
-
-    - name: Ensure ansible temp directory exists
-      ansible.builtin.raw: |
-        mkdir -p /root/.ansible/tmp
-        chmod 700 /root/.ansible/tmp
-      changed_when: false
+    # No apt install in this scenario, so import the shared prepare-base
+    # (systemd-wait + temp-dir) WITHOUT prepare-apt-disable.
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-base.yml

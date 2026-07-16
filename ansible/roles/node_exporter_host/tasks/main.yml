@@ -92,174 +92,122 @@
     - molecule-notest
 
 # ---------------------------------------------------------------------------
-# Corosync + pmxcfs health collector (Proxmox cluster nodes only)
+# Textfile collectors (Proxmox hosts only)
 # ---------------------------------------------------------------------------
-# Detects the failure class that took out pve-nas-01's pmxcfs around
-# 2026-05-09: corosync alive (so ProxmoxHostDown stayed green) but stuck at
-# 99% CPU, /etc/pve/ha/manager_status frozen for weeks. The collector writes
-# three metrics to the textfile dir so PrometheusRules in
-# kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
-# (homelab.monitoring group) can fire on either condition + on collector
-# meta-failure.
-- name: Install corosync health collector script (proxmox hosts only)
-  ansible.builtin.copy:
-    src: corosync-health-collector.sh
-    dest: /usr/local/sbin/corosync-health-collector.sh
-    owner: root
-    group: root
-    mode: "0755"
+# One block so the proxmox-group gate lives in a single place; each collector
+# keeps its own script + textfile_collector include.
+- name: Deploy the Proxmox-host textfile collectors
   when: inventory_hostname in groups['proxmox'] | default([])
+  block:
+    # Corosync + pmxcfs health: detects the failure class that took out
+    # pve-nas-01's pmxcfs around 2026-05-09 — corosync alive (so
+    # ProxmoxHostDown stayed green) but stuck at 99% CPU,
+    # /etc/pve/ha/manager_status frozen for weeks. Writes three metrics so the
+    # homelab.monitoring PrometheusRules can fire on either condition + on
+    # collector meta-failure.
+    - name: Install corosync health collector script
+      ansible.builtin.copy:
+        src: corosync-health-collector.sh
+        dest: /usr/local/sbin/corosync-health-collector.sh
+        owner: root
+        group: root
+        mode: "0755"
 
-- name: Install corosync health collector service unit
-  ansible.builtin.template:
-    src: corosync-health-collector.service.j2
-    dest: /etc/systemd/system/corosync-health-collector.service
-    owner: root
-    group: root
-    mode: "0644"
-  when: inventory_hostname in groups['proxmox'] | default([])
-  notify: Reload systemd for corosync health collector
+    - name: Deploy corosync health collector unit + timer
+      ansible.builtin.include_role:
+        name: textfile_collector
+      vars:
+        textfile_collector_name: corosync-health-collector
+        textfile_collector_service_description: Sample corosync + pmxcfs health to node_exporter textfile collector
+        textfile_collector_timer_description: Periodically sample corosync + pmxcfs health
+        textfile_collector_script: /usr/local/sbin/corosync-health-collector.sh
+        textfile_collector_textfile_dir: "{{ node_exporter_host_textfile_dir }}"
+        textfile_collector_after:
+          - corosync.service
 
-- name: Install corosync health collector timer unit
-  ansible.builtin.copy:
-    src: corosync-health-collector.timer
-    dest: /etc/systemd/system/corosync-health-collector.timer
-    owner: root
-    group: root
-    mode: "0644"
-  when: inventory_hostname in groups['proxmox'] | default([])
-  notify: Reload systemd for corosync health collector
+    # zpool status: catches the failure class that corrupted pve-laptop-01's
+    # local-ssd (2026-06-12) — a pool accumulating vdev checksum errors stays
+    # ONLINE, so health-based monitoring (zfs_exporter on the NAS, SMART)
+    # never fires. Exports per-pool error counters + scrub age fleet-wide;
+    # companion alerts in release.yaml (homelab.monitoring group).
+    - name: Install zpool status collector script
+      ansible.builtin.copy:
+        src: zpool-status-collector.sh
+        dest: /usr/local/sbin/zpool-status-collector.sh
+        owner: root
+        group: root
+        mode: "0755"
 
-- name: Enable + start corosync health collector timer
-  ansible.builtin.systemd:
-    name: corosync-health-collector.timer
-    enabled: true
-    state: started
-    daemon_reload: true
-  when:
-    - inventory_hostname in groups['proxmox'] | default([])
-    - not ansible_check_mode
-  tags:
-    - molecule-notest
+    - name: Deploy zpool status collector unit + timer
+      ansible.builtin.include_role:
+        name: textfile_collector
+      vars:
+        textfile_collector_name: zpool-status-collector
+        textfile_collector_service_description: Sample zpool status to node_exporter textfile collector
+        textfile_collector_timer_description: Periodically sample zpool status
+        textfile_collector_script: /usr/local/sbin/zpool-status-collector.sh
+        textfile_collector_textfile_dir: "{{ node_exporter_host_textfile_dir }}"
+        textfile_collector_after:
+          - zfs-import.target
+        textfile_collector_timeout_start_sec: 30s
 
-# ---------------------------------------------------------------------------
-# zpool status collector (Proxmox hosts only — they carry the ZFS pools)
-# ---------------------------------------------------------------------------
-# Catches the failure class that corrupted pve-laptop-01's local-ssd
-# (2026-06-12): a pool accumulating vdev checksum errors stays ONLINE, so
-# health-based monitoring (zfs_exporter on the NAS, SMART) never fires —
-# a May 10 scrub had already counted errors and nothing surfaced it. The
-# collector exports per-pool error counters + scrub age fleet-wide;
-# companion alerts live in release.yaml (homelab.monitoring group).
-- name: Install zpool status collector script (proxmox hosts only)
-  ansible.builtin.copy:
-    src: zpool-status-collector.sh
-    dest: /usr/local/sbin/zpool-status-collector.sh
-    owner: root
-    group: root
-    mode: "0755"
-  when: inventory_hostname in groups['proxmox'] | default([])
+    # vzdump backup metrics hookscript: referenced by the proxmox_backup
+    # vzdump job's `script` property. jobs.cfg is clustered, so the `all` job
+    # runs on every node for its local guests and vzdump invokes this hook on
+    # each — it must exist fleet-wide or the run aborts on any node that lacks
+    # it. Deployed here (not in proxmox_backup, which reconciles the single
+    # clustered config on one node). Each node writes its own
+    # /var/lib/node_exporter/vzdump_backup.prom, distinguished by the instance
+    # label at scrape time; feeds VzdumpBackupFailed/Stale.
+    - name: Install vzdump metrics hookscript
+      ansible.builtin.copy:
+        src: vzdump-metrics-hook.sh
+        dest: /usr/local/bin/vzdump-metrics-hook.sh
+        owner: root
+        group: root
+        mode: "0755"
 
-- name: Install zpool status collector service unit
-  ansible.builtin.template:
-    src: zpool-status-collector.service.j2
-    dest: /etc/systemd/system/zpool-status-collector.service
-    owner: root
-    group: root
-    mode: "0644"
-  when: inventory_hostname in groups['proxmox'] | default([])
-  notify: Reload systemd for zpool status collector
+    # SMART health: smartd on pve-nas-01 emails on attribute failures, but
+    # nothing exported SMART to Prometheus — Grafana/Alertmanager were blind
+    # to reallocated/pending/uncorrectable sectors and ZFS error events
+    # couldn't be attributed to a disk. Standby-aware (`smartctl -n standby`)
+    # so it never wakes drives or aborts long self-tests — the documented
+    # reason DEVICESCAN left smartd.conf.
+    - name: Install smartmon collector script
+      ansible.builtin.copy:
+        src: smartmon-collector.sh
+        dest: /usr/local/sbin/smartmon-collector.sh
+        owner: root
+        group: root
+        mode: "0755"
 
-- name: Install zpool status collector timer unit
-  ansible.builtin.copy:
-    src: zpool-status-collector.timer
-    dest: /etc/systemd/system/zpool-status-collector.timer
-    owner: root
-    group: root
-    mode: "0644"
-  when: inventory_hostname in groups['proxmox'] | default([])
-  notify: Reload systemd for zpool status collector
+    - name: Deploy smartmon collector unit + timer
+      ansible.builtin.include_role:
+        name: textfile_collector
+      vars:
+        textfile_collector_name: smartmon-collector
+        textfile_collector_service_description: Sample SMART device health to node_exporter textfile collector
+        textfile_collector_timer_description: Periodically sample SMART device health
+        textfile_collector_script: /usr/local/sbin/smartmon-collector.sh
+        textfile_collector_textfile_dir: "{{ node_exporter_host_textfile_dir }}"
+        textfile_collector_timeout_start_sec: 120s
+        textfile_collector_on_boot_sec: 2min
+        textfile_collector_on_unit_inactive_sec: 5min
+        textfile_collector_accuracy_sec: 30s
 
-- name: Enable + start zpool status collector timer
-  ansible.builtin.systemd:
-    name: zpool-status-collector.timer
-    enabled: true
-    state: started
-    daemon_reload: true
-  when:
-    - inventory_hostname in groups['proxmox'] | default([])
-    - not ansible_check_mode
-  tags:
-    - molecule-notest
-
-# ---------------------------------------------------------------------------
-# vzdump backup metrics hookscript (Proxmox hosts only)
-# ---------------------------------------------------------------------------
-# Referenced by the proxmox_backup vzdump job's `script` property. jobs.cfg is
-# clustered, so the `all` job runs on every node for its local guests and vzdump
-# invokes this hook on each — it must exist fleet-wide or the run aborts on any
-# node that lacks it. Deployed here (not in proxmox_backup, which reconciles the
-# single clustered config on one node) so it lands on every Proxmox host. Each
-# node writes its own /var/lib/node_exporter/vzdump_backup.prom, distinguished
-# by the instance label at scrape time; feeds VzdumpBackupFailed/Stale.
-- name: Install vzdump metrics hookscript (proxmox hosts only)
-  ansible.builtin.copy:
-    src: vzdump-metrics-hook.sh
-    dest: /usr/local/bin/vzdump-metrics-hook.sh
-    owner: root
-    group: root
-    mode: "0755"
-  when: inventory_hostname in groups['proxmox'] | default([])
-
-# ---------------------------------------------------------------------------
-# SMART health collector (Proxmox hosts only — they carry the physical drives)
-# ---------------------------------------------------------------------------
-# smartd on pve-nas-01 emails on attribute failures, but nothing exported
-# SMART to Prometheus: Grafana/Alertmanager were blind to reallocated/
-# pending/uncorrectable sectors and ZFS error events (e.g. the archive
-# ZFSPoolDeviceErrors) couldn't be attributed to a disk. The collector is
-# standby-aware (`smartctl -n standby`) so it never wakes drives or aborts
-# long self-tests — the documented reason DEVICESCAN left smartd.conf.
-- name: Install smartmon collector script (proxmox hosts only)
-  ansible.builtin.copy:
-    src: smartmon-collector.sh
-    dest: /usr/local/sbin/smartmon-collector.sh
-    owner: root
-    group: root
-    mode: "0755"
-  when: inventory_hostname in groups['proxmox'] | default([])
-
-- name: Install smartmon collector service unit
-  ansible.builtin.template:
-    src: smartmon-collector.service.j2
-    dest: /etc/systemd/system/smartmon-collector.service
-    owner: root
-    group: root
-    mode: "0644"
-  when: inventory_hostname in groups['proxmox'] | default([])
-  notify: Reload systemd for smartmon collector
-
-- name: Install smartmon collector timer unit
-  ansible.builtin.copy:
-    src: smartmon-collector.timer
-    dest: /etc/systemd/system/smartmon-collector.timer
-    owner: root
-    group: root
-    mode: "0644"
-  when: inventory_hostname in groups['proxmox'] | default([])
-  notify: Reload systemd for smartmon collector
-
-- name: Enable + start smartmon collector timer
-  ansible.builtin.systemd:
-    name: smartmon-collector.timer
-    enabled: true
-    state: started
-    daemon_reload: true
-  when:
-    - inventory_hostname in groups['proxmox'] | default([])
-    - not ansible_check_mode
-  tags:
-    - molecule-notest
+    - name: Enable + start the collector timers
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      loop:
+        - corosync-health-collector.timer
+        - zpool-status-collector.timer
+        - smartmon-collector.timer
+      when: not ansible_check_mode
+      tags:
+        - molecule-notest
 
 # Note: we deliberately do NOT auto-clean the collectors on hosts dropped
 # from the proxmox group. The natural conditional

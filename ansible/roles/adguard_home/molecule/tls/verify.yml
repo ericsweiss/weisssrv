@@ -1,0 +1,64 @@
+---
+# Verify playbook for the adguard_home TLS scenario. Asserts that the role's
+# /control/tls/configure POST actually took effect: /control/tls/status must
+# echo back the enabled flag, server_name, ports, and certificate/key paths.
+# (The certificate_path-comparison idempotence is enforced by molecule's
+# idempotence step re-running converge and requiring no change.)
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check that the deployed TLS cert and key exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: tls_files
+      failed_when: not tls_files.stat.exists
+      loop:
+        - "{{ adguard_cert_path }}/fullchain.pem"
+        - "{{ adguard_cert_path }}/privkey.pem"
+
+    - name: Wait for AdGuard Home HTTP port
+      ansible.builtin.wait_for:
+        port: "{{ adguard_http_port }}"
+        timeout: 60
+        msg: "AdGuard Home HTTP port not responding"
+
+    - name: Get AdGuard Home TLS status
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ adguard_http_port }}/control/tls/status"
+        method: GET
+        user: "{{ adguard_admin_user }}"
+        password: "{{ adguard_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: tls_status
+      until: tls_status.status == 200
+      retries: 5
+      delay: 5
+
+    - name: Assert TLS is enabled with the configured server_name, ports, and paths
+      ansible.builtin.assert:
+        that:
+          - tls_status.json.enabled | bool
+          - tls_status.json.server_name == adguard_tls_server_name
+          - (tls_status.json.port_https | int) == adguard_https_port
+          - (tls_status.json.port_dns_over_tls | int) == adguard_dot_port
+          - (tls_status.json.port_dns_over_quic | int) == adguard_doq_port
+          - tls_status.json.certificate_path == adguard_cert_path ~ '/fullchain.pem'
+          - tls_status.json.private_key_path == adguard_cert_path ~ '/privkey.pem'
+        fail_msg: >-
+          /control/tls/status did not reflect the configured TLS settings:
+          {{ tls_status.json }}
+        success_msg: "AdGuard TLS status reflects the configured server_name, ports, and cert/key paths"
+
+    - name: Display TLS verification result
+      ansible.builtin.debug:
+        msg:
+          - "TLS enabled: {{ tls_status.json.enabled }}"
+          - "server_name: {{ tls_status.json.server_name }}"
+          - "port_https / port_dns_over_tls / port_dns_over_quic:
+             {{ tls_status.json.port_https }} / {{ tls_status.json.port_dns_over_tls }}
+             / {{ tls_status.json.port_dns_over_quic }}"
+          - "certificate_path: {{ tls_status.json.certificate_path }}"
+          - "private_key_path: {{ tls_status.json.private_key_path }}"

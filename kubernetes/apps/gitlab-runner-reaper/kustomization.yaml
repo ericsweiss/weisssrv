@@ -13,3 +13,19 @@ resources:
   - networkpolicy.yaml
   - rbac.yaml
   - cronjob.yaml
+
+# default-deny-ingress from the shared baseline component (see
+# kubernetes/components/netpol-baseline).
+components:
+  - ../../components/netpol-baseline
+patches:
+  # This kustomization deliberately sets no top-level namespace (its
+  # RoleBindings target other namespaces), so namespace the shared
+  # default-deny-ingress here instead of via a namespace transformer.
+  - target:
+      kind: NetworkPolicy
+      name: default-deny-ingress
+    patch: |
+      - op: add
+        path: /metadata/namespace
+        value: gitlab-runner-reaper

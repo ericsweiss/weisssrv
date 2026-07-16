@@ -92,8 +92,9 @@ PrometheusRules consume these.
 
 For the metric to be scraped, `node_exporter_host` must run on the GitLab VM —
 the `gitlab_servers` group is included in the node_exporter play in
-`ansible/playbooks/site.yml`, and the VM is scraped via the
-`node-exporter-host-gitlab` Service/Endpoints in
+`ansible/playbooks/site.yml`, and the VM (192.168.0.153) is scraped
+via the shared `node-exporter-host` Service/Endpoints (one Endpoints object
+listing all scraped hosts) in
 `kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`.
 
 ```bash

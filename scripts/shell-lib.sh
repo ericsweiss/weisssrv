@@ -23,3 +23,14 @@ timeout_cmd() {
         "$@"
     fi
 }
+
+# SSH reachability probe: short-timeout, keepalive-bounded ssh under a
+# wall-clock backstop. ConnectTimeout=2 bounds the TCP connect; ServerAlive*
+# trips a dead post-connect channel; timeout_cmd is the backstop for a host that
+# connects then stalls (PAM/sssd, disk-stuck remote shell). Shared by
+# find-reachable-host.sh and find-pve-host-for-vm.sh. Pass the target and remote
+# command as args, e.g. `ssh_probe "$host" "true"`.
+ssh_probe() {
+    timeout_cmd 6 ssh -o ConnectTimeout=2 -o BatchMode=yes \
+        -o ServerAliveInterval=2 -o ServerAliveCountMax=2 "$@"
+}

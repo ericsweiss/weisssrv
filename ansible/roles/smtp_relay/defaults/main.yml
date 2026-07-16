@@ -14,15 +14,19 @@ smtp_relay_config:
   mydestination: "$myhostname, localhost.$mydomain, localhost"
   inet_interfaces: all
   inet_protocols: ipv4
-  # Only loopback + the host LAN are trusted for unauthenticated (permit_mynetworks)
-  # relay. The k3s pod (10.42.0.0/16) and service (10.43.0.0/16) CIDRs were
-  # removed: every in-cluster relay consumer — Alertmanager, Mealie, Bar
-  # Assistant, Authentik — authenticates via SASL on 587 (permit_sasl_authenticated),
-  # so the pod CIDR granted unauthenticated relay that nothing actually used.
-  # (The service CIDR was also dead: pods source from pod IPs, never service IPs.)
-  mynetworks: "127.0.0.0/8, 192.168.0.0/24"
+  # Least-privilege default: trust only loopback for unauthenticated relay and
+  # require SASL on port 25 (smtpd_relay_restrictions drops permit_mynetworks).
+  # Every configured sender already relays via SASL on 587
+  # (permit_sasl_authenticated) — postfix_null_client (Proxmox/DNS/GitLab/Plex/
+  # k3s), Home Assistant (587/STARTTLS), and the in-cluster apps (Alertmanager,
+  # Mealie, Bar Assistant, Authentik) — so the port-25 permit_mynetworks path is
+  # unused by default. A deployment that needs to trust a host LAN for
+  # unauthenticated relay opts in explicitly by overriding mynetworks +
+  # smtpd_relay_restrictions (prod does this in group_vars/mail.yml, bounded by
+  # the guest firewall which admits :25 only from managed hosts).
+  mynetworks: "127.0.0.0/8"
   relayhost: "[smtp.gmail.com]:587"
-  smtpd_relay_restrictions: "permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
+  smtpd_relay_restrictions: "permit_sasl_authenticated, reject_unauth_destination"
 
   # TLS for incoming connections (from null clients). The acme_certs
   # cert-reload script deploys fullchain.pem + privkey.pem into smtp_tls_cert_dir

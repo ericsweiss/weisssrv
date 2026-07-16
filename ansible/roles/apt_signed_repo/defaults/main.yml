@@ -11,8 +11,10 @@
 # condition (e.g. gitlab's skip_gitlab_install) without wrapping the include.
 apt_signed_repo_when: true
 
-# Install gnupg (gated on key absence) for callers with no other guarantee it
-# is present. Left off where a prerequisite task or the base role provides it.
+# Install gnupg on every run (when true) for callers with no other guarantee it
+# is present — not gated on key absence, because the existing-keyring
+# re-verification also needs gpg when the keyring is already there. Left off
+# where a prerequisite task or the base role provides it.
 apt_signed_repo_install_gnupg: false
 
 # Explicit keyring mode. Empty skips the permission task entirely (the keyring

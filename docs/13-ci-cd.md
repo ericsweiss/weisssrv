@@ -65,7 +65,15 @@ stages:
 #### Build Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `build-molecule-images` | docker/**, ansible/requirements*.yml (and on a schedule) | Builds + pushes the `molecule-test` and `molecule-ci` images consumed by the test stage; emits image digests for downstream `needs:` |
+| `build-molecule-test` | docker/molecule-test/** (and on a schedule) | Builds + pushes the `molecule-test` image consumed by the test stage |
+| `build-molecule-ci` | docker/molecule-ci/**, requirements.txt, ansible/requirements.yml (and on a schedule) | Builds + pushes the `molecule-ci` image; emits the image-digest dotenv for downstream `needs:` |
+
+Both jobs extend a shared base: BuildKit registry layer-caching
+(`--cache-from :latest`) speeds interactive rebuilds, while the scheduled
+full-test canary builds from scratch to keep catching upstream breakage.
+Job-level `retry` no longer includes `script_failure`; transient
+build/push failures are retried by a bounded in-script loop instead, so a
+genuinely broken Dockerfile fails fast.
 
 #### Lint Stage
 | Job | Triggers | Description |
@@ -76,11 +84,19 @@ stages:
 | `deploy-coverage-check` | All MRs/pushes | Runs `scripts/check-deploy-coverage.sh`; asserts every Ansible role maps to a deploy job or is in the intentionally-unmapped list |
 | `molecule-matrix-coverage-check` | All MRs/pushes | Runs `scripts/check-molecule-matrix-coverage.sh`; asserts every molecule scenario is in the CI matrix |
 | `flux-version-pin-check` | `.gitlab-ci.yml`, versions-configmap | Asserts the `FLUX_VERSION` pin in deploy-verify matches `flux_version` in the versions ConfigMap, so an incomplete flux bump fails before merge |
-| `prometheus-config-lint` | Prometheus/Alertmanager config paths | Extracts rendered rules + alertmanager config and validates with pinned `promtool` / `amtool` (`scripts/extract-prometheus-config.py`, `scripts/lint-prometheus-config.sh`) |
+| `kubectl-version-pin-check` | `.gitlab-ci.yml`, versions-configmap | Asserts the CI `kubectl` pin stays within kubectl's supported ±1 minor skew of `k3s_version`, so the pin can't silently rot |
+| `prometheus-config-lint` | Prometheus/Alertmanager config paths, `scripts/prometheus-rule-tests/**` | Extracts rendered rules + alertmanager config, validates with pinned `promtool` / `amtool`, and runs the `promtool test rules` unit tests in `scripts/prometheus-rule-tests/` (`scripts/extract-prometheus-config.py`, `scripts/lint-prometheus-config.sh`) |
+| `docs-link-check` | docs/**, README.md, CLAUDE.md | Runs `scripts/check-doc-links.py`; fails on any relative `.md` cross-link whose target file is missing |
+| `taskfile-smoke` | Taskfile.yml, scripts/** | Pinned go-task runs `task --list` (schema check) + `scripts/check-taskfile.sh` asserts every script the Taskfile references exists |
 | `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
 | `terraform-fmt` | terraform/** | Terraform formatting |
+
+The pip/galaxy-installing jobs and the toolchain-downloading lint jobs
+(`flux-lint`, `prometheus-config-lint`) use GitLab `cache:` keyed on their
+pinned inputs, so identical dependencies are not re-downloaded every run
+(first run after a pin bump is a deliberate cache miss).
 
 #### AI-Review Stage (MRs Only)
 | Job | Triggers | Description |
@@ -91,7 +107,8 @@ stages:
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `terraform-validate` | terraform/** | Terraform syntax |
-| `terraform-plan` | terraform/** + 1Password | Full plan with credentials |
+| `terraform-plan` | terraform/cloudflare/** + 1Password | Full Cloudflare plan with credentials (tailscale changes no longer re-plan the Cloudflare module) |
+| `tailscale-drift-plan` | terraform/tailscale/** (MR/main, token-guarded) + schedules | Read-only `terraform plan` of the tailnet ACL module against its own state backend; advisory (`allow_failure: true`), deliberately outside validation-gate |
 | `flux-lint` | kubernetes/**, ansible/inventories/prod/group_vars/all.yml | `kustomize build` + envsubst (from versions ConfigMap) + kubeconform on every Flux Kustomization; also validates cluster root builds, and runs `scripts/validate-helm-values.py` — `helm template` against the pinned chart for the value-heavy releases, catching typo'd `.spec.values` keys (hard-fails where the chart ships a values.schema.json) and unrenderable values. The versions-extraction render loop is shared with `deploy-verify` via `scripts/flux-render.sh` |
 
 > **Limitation**: chart value validation covers only the releases listed in
@@ -103,10 +120,16 @@ stages:
 #### Test Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `molecule-tests` | ansible/roles/** | Role unit tests (requires Docker-in-Docker) |
-| `integration-tests` | ansible/integration-tests/**, ansible/roles/**, ansible/inventories/** | Multi-role tests (requires Docker-in-Docker) |
+| `molecule-tests` | ansible/roles/**, scripts/molecule-retry.sh | Role unit tests (requires Docker-in-Docker) |
+| `integration-tests` | ansible/integration-tests/**, ansible/roles/**, ansible/inventories/**, scripts/molecule-retry.sh | Multi-role tests (requires Docker-in-Docker) |
 | `python-tests` | scripts/**, ansible/inventories/prod/group_vars/all.yml | pytest on check-versions.py and generate-versions-configmap.py |
 
+> **Note:** The molecule/integration retry policy (bounded re-run with jitter on
+> transient DinD flakes) lives in `scripts/molecule-retry.sh`, shared by both jobs.
+> The molecule fan-out also `needs:` `ansible-lint`/`yaml-lint` (`optional: true`)
+> so a fast lint failure short-circuits it before it consumes privileged-runner
+> capacity.
+>
 > **Note:** Test jobs require Docker-in-Docker and a runner with `privileged = true`.
 > All weisssrv jobs (including tests) run on the **infrastructure runner**
 > (`gitlab-runner-privileged` Helm release, tag: `infrastructure`) which has `privileged = true`.
@@ -141,7 +164,7 @@ agent's Flux integration (poll is the fallback — see docs/29-flux-operations.m
 #### Deploy Stage - Terraform
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `deploy-terraform` | terraform/** on main | Apply Cloudflare DNS |
+| `deploy-terraform` | terraform/cloudflare/** on main | Apply Cloudflare DNS |
 
 #### Deploy Stage - Ansible Infrastructure
 | Job | Triggers | Description |
@@ -158,7 +181,7 @@ agent's Flux integration (poll is the fallback — see docs/29-flux-operations.m
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `deploy-plex` | ansible/roles/plex/**, ansible/roles/proxmox_lxc/**, ansible/playbooks/plex.yml | Deploy Plex LXC container |
-| `deploy-gitlab` | ansible/roles/gitlab/**, ansible/playbooks/gitlab.yml, ansible/inventories/prod/group_vars/all.yml | Deploy GitLab VM and application |
+| `deploy-gitlab` | ansible/roles/gitlab/**, ansible/roles/apt_signed_repo/**, ansible/roles/zvol_mount/**, ansible/playbooks/gitlab.yml, ansible/inventories/prod/group_vars/gitlab_servers.yml, ansible/inventories/prod/group_vars/all.yml | Deploy GitLab VM and application |
 | `deploy-home-assistant-config` | ansible/roles/home_assistant/**, ansible/playbooks/home-assistant.yml | Deploy Home Assistant configuration |
 
 #### K3s Platform and Applications: Flux-Managed
@@ -180,8 +203,8 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 #### Deploy Stage - Verification
 | Job | Triggers | Description | Blocks pipeline? |
 |-----|----------|-------------|------------------|
-| `deploy-gitlab-verify` | ansible/roles/gitlab/**, kubernetes/apps/vm-ingress/gitlab*.yaml, kubernetes/apps/vm-ingress/services-gitlab.yaml, kubernetes/apps/gitlab-runner/**, kubernetes/apps/gitlab-runner-privileged/** | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
-| `deploy-verify` | `ansible/**`, `terraform/**`, `kubernetes/**`, `scripts/**` (pushes to main) | Runs `scripts/deploy-verify.sh`: server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
+| `deploy-gitlab-verify` | Inherits deploy-gitlab's rules verbatim via `!reference` (ansible/roles/gitlab/**, ansible/roles/apt_signed_repo/**, ansible/roles/zvol_mount/**, ansible/playbooks/gitlab.yml, group_vars/gitlab_servers.yml, group_vars/all.yml) — Ansible-only; the k3s ingress/runner manifests are Flux-managed and do **not** trigger this job. | GitLab smoke tests (HTTP readiness, container registry, SSH port 22). | No (`allow_failure: true`) |
+| `deploy-verify` | The union of the `deploy-*` jobs' own `changes:` path filters plus `kubernetes/**/*`, on pushes to main. This is per-role/per-playbook subsets, **not** blanket `ansible/**` (roles wired to no deploy job — e.g. proxmox_vm, proxmox_ha, k3s, zfs_encryption — do not trigger it), and there is **no** `scripts/**` filter (a change only under `scripts/` runs no deploy job). | Runs `scripts/deploy-verify.sh`: server-side dry-run validates rendered manifests against cluster API, triggers Flux reconciliation (fails on timeout), checks all nodes `Ready`, asserts zero Flux resources `Ready=false`, checks ExternalSecret readiness (hard failure on steady-state, warning during bootstrap), verifies GitLab HTTP. | Yes — fails the pipeline on any issue |
 
 > **Note:** The two jobs have different semantics:
 > - `deploy-gitlab-verify` is informational (`allow_failure: true`) — pipeline continues on failure.
@@ -206,7 +229,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 |---------|------|
 | Merge request | Lint, validate, test, security, AI review stages (no deploy) |
 | Push to main | Full validation + auto-deploy |
-| Scheduled | Version checking and secret detection. All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** a schedule with `SCHEDULE_TYPE=full-test`, which also runs `build-molecule-images` + `molecule-tests` + `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes). |
+| Scheduled | Version checking, secret detection, and the advisory `tailscale-drift-plan` (when its token is present). All other jobs (lint, validate, test, ai-review, gate, deploy, maintenance) are excluded — **except** a schedule with `SCHEDULE_TYPE=full-test`, which also runs `build-molecule-test`/`build-molecule-ci` + `molecule-tests` + `integration-tests` as an external-dependency canary (catches upstream image/package breakage between code changes). |
 | Manual (web) | Lint, validate, test stages only. AI review, deploy, gate, and maintenance jobs are excluded. Security (`secret_detection`) runs if branch is `main`. |
 
 ## Deployment Pipeline
@@ -216,7 +239,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 When a merge request is merged to `main`:
 
 1. **Validation stages run first** (lint, validate, test, security)
-2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked.
+2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs (including `kubectl-version-pin-check`, `docs-link-check`, and `taskfile-smoke`) as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked. `tailscale-drift-plan` is deliberately excluded (advisory-only, like `pr-agent-review`).
 3. **Only changed components deploy** (path-based triggers on Ansible/Terraform jobs)
 4. **Kubernetes workloads reconcile via Flux** — independent of CI. Reconciliation
    is push-triggered via the GitLab agent's Flux integration (seconds after a push);
@@ -253,7 +276,8 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
 - The GitLab agent's Flux integration triggers reconciliation within seconds of the push (the 1-minute GitRepository poll remains as fallback)
 - `flux-system` `GitRepository` syncs the new revision
 - Top-level `Kustomization`s reconcile in dependency order:
-  `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs` → `infrastructure-observability` → `apps`
+  `infrastructure-sources` → `infrastructure-controllers` → `infrastructure-configs`,
+  which then reconciles `infrastructure-observability` and `apps` in parallel
 - `helm-controller` upgrades HelmReleases; `kustomize-controller` applies Kustomizations
 - **All Secrets** are created by `external-secrets`' `ExternalSecret` CRs that
   reference 1Password item titles via the ClusterSecretStore `onepassword-homelab`
@@ -353,9 +377,14 @@ Items" for the complete list of items referenced by ExternalSecrets in the clust
 |------|--------|---------|
 | SSH Key | `private key` | Ansible deployments |
 | Cloudflare Terraform Token | `credential`, `username` | Terraform `terraform-plan` / `deploy-terraform` |
+| Tailscale OAuth | `client id`, `credential` | `tailscale-drift-plan` (read-only ACL drift plan) |
 | GitLab API Token | `credential` | `pr-agent-review` (AI code review); also hard-asserted by `task gitlab:deploy` |
 | OpenAI API Key | `api-key` | `pr-agent-review` (AI code review) |
-| GitHub Token | `credential` | `version-check` (higher API rate limits) |
+
+> The 1Password **GitHub Token** item is **not** used by CI — it is consumed by
+> local Taskfile tasks (`task maintenance:check-versions` etc.). In CI, GitHub
+> rate-limit headroom for `version-check` comes from the optional masked
+> `GH_API_TOKEN` variable (see Optional Variables above), not a 1Password item.
 
 All other items (Authentik, PrivadoVPN, Mealie/Bar Assistant/SSO, GitLab Runner tokens,
 GitLab Agent token, SMTP Relay Auth, etc.) are consumed by **ExternalSecrets in the
@@ -428,9 +457,13 @@ GitLab native secret detection scans for:
 - Passwords in code
 - Cloud provider credentials
 
-Excluded paths:
-- `docs/` - Documentation may contain example values
-- `ansible/roles/*/molecule/` - Test fixtures
+Scanning scope:
+- `docs/*.md` is scanned normally — content-shape allowlists in
+  `.gitleaks.toml` cover the placeholder forms docs use (`op://` references,
+  `[your-...]` placeholders, anchored fake fixture tokens)
+- The molecule / integration-test trees are scanned by every rule EXCEPT the
+  `private-key` rule (rule-scoped allowlist for the throwaway PEM fixtures a
+  test run generates); any other secret type committed there is still caught
 
 ## Runner Network Boundaries
 

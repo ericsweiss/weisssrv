@@ -1,18 +1,4 @@
 ---
-# Default-deny ingress for cert-manager. This namespace holds the Cloudflare
-# API token Secret (DNS-01 solver), so a compromised co-tenant pod should face
-# a pod-network barrier, not an open path.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: cert-manager
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # Allow ingress to the cert-manager webhook (called by the kube-apiserver, which
 # arrives post-DNAT from a server node IP) and metrics scrapes from
 # observability. The apiserver source is not pinned by IP because the webhook

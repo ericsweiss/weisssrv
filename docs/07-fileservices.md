@@ -40,8 +40,9 @@ Fast NVMe storage is merged with slower HDD storage:
 
 ### Media Mover
 
-A systemd timer (`media-mover.timer`, daily at 04:15 —
-`media_mover_schedule` in `host_vars/pve-nas-01.yml`; role default 03:30)
+A systemd timer (`media-mover.timer`, daily at 06:00 —
+`media_mover_schedule` in `host_vars/pve-nas-01.yml` is the source of truth;
+role default 06:00)
 runs `/usr/local/sbin/media-mover.sh`, which moves files older than 12 hours
 (`media_mover_min_age`) from `/mnt/nvme/media/library` to
 `/mnt/tank/media/library`. The service is load-shaped so a large overnight
@@ -139,6 +140,7 @@ With setgid + GID 2000:
   +-- share                (bind: /mnt/tank/share)
   +-- media                (bind: /mnt/media - mergerfs union)
   +-- tank-proxmox         (bind: /mnt/tank/proxmox)
+  +-- k3s-etcd             (bind: /mnt/ssd/k3s-etcd)
 ```
 
 ### Access Control
@@ -150,6 +152,7 @@ With setgid + GID 2000:
 | /export/share | k3s VMs | RW | require TLS (`xprtsec=tls`); plaintext rejected |
 | /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS (`xprtsec=tls` on k3s lines); **.154 plaintext** via its own line (HAOS can't do `xprtsec`) |
 | /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | export lines carry no `xprtsec`; the Proxmox storage entry mounts with `xprtsec=tls` by hostname (proxmox_backup role) |
+| /export/k3s-etcd | k3s servers only (.222/.223/.227, as explicit /32s) | RW, no_root_squash (mode 0700) | require TLS (`xprtsec=tls`); plaintext rejected. Off-node k3s etcd snapshot copies — see docs/17 |
 
 The `/export` pseudo-root is traversal-only: NFSv4 clients cross from it into
 whichever child exports are explicitly listed for them. `crossmnt` is
@@ -200,7 +203,8 @@ The k3s NFS PVs already use `server: pve-nas-01.esweiss.com` for this reason
   might schedule — and on all six Proxmox hosts, covering both the NFS server
   and the tank-proxmox mounting hosts). The k3s client lines of
   `/export/{appdata,share,media}` carry `xprtsec=tls` — **require TLS**: a
-  plaintext mount from those CIDRs is rejected. The k3s PVs *mount* with
+  plaintext mount from those CIDRs is rejected. `/export/k3s-etcd` (off-node
+  etcd snapshot copies, k3s servers only, mode 0700) likewise requires TLS. The k3s PVs *mount* with
   `xprtsec=tls`, **by hostname** (`pve-nas-01.esweiss.com`, so the
   `*.esweiss.com` cert verifies — an IP mount fails the handshake).
   One documented plaintext exception:

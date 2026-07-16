@@ -19,13 +19,7 @@ if [ "$#" -lt 1 ]; then
 fi
 
 for target in "$@"; do
-    # ConnectTimeout bounds the TCP connect; ServerAlive* trips a dead
-    # post-connect channel; timeout_cmd (shell-lib.sh) is the wall-clock
-    # backstop for a host that accepts the connection but then stalls
-    # (PAM/sssd, disk-stuck remote shell).
-    if timeout_cmd 6 ssh -o ConnectTimeout=2 -o BatchMode=yes \
-        -o ServerAliveInterval=2 -o ServerAliveCountMax=2 \
-        "$target" "true" 2>/dev/null; then
+    if ssh_probe "$target" "true" 2>/dev/null; then
         echo "$target"
         exit 0
     fi

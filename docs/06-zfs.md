@@ -10,7 +10,7 @@ The NAS has four ZFS pools with different performance characteristics:
 |------|------|----------|----------|
 | `tank` | raidz2 (6x 22TB) + special device + cache | ~88TB usable (132TB raw) | Bulk media storage |
 | `ssd` | raidz1 (3x 4TB SSD) | ~8TB usable / 10.9TB raw | App data, databases |
-| `nvme` | Single NVMe 4TB | 2.27TB | Hot downloads, fast scratch |
+| `nvme` | Single Samsung 990 PRO NVMe | 2.27TB pool (per `zpool list nvme`) | Hot downloads, fast scratch |
 | `archive` | raidz1 (4x 6TB) | ~18TB usable (3x 6TB data) | Cold backups |
 
 ## Pool Details
@@ -143,7 +143,10 @@ zpool list -v nvme
 - Optimized for hot data and fast scratch space
 - Same base properties as tank pool
 
-**Capacity**: Full 4TB available (no parity overhead)
+**Capacity**: ~2.27TB pool (single-disk, no parity overhead) — the live figure
+per `zpool list nvme`, which is the source of truth. This is below the 4TB
+device's nominal size; if the whole device is expected in the pool, check its
+partitioning/by-id before trusting the label.
 
 **WARNING**: Single device pool has no redundancy. Suitable for temporary/cache data only.
 
@@ -310,6 +313,8 @@ compression: lz4 (ssd/appdata; pool default zstd)
 - `ssd/databases` - Database storage (encryption root; replicated to `archive`)
 - `ssd/pve` - GitLab VM disks (encryption root; intentionally NOT replicated by
   `archive-backupctl` — the GitLab repos zvol under `ssd/appdata` is the backed-up copy)
+- `ssd/k3s-etcd` - Off-node k3s etcd snapshot copies (encryption root; exported as
+  `/export/k3s-etcd` to the k3s servers over TLS — see docs/07 and docs/17)
 
 ### nvme (Fast Scratch Pool)
 
@@ -324,6 +329,8 @@ compression: zstd
 
 **Datasets**:
 - `nvme/media` - MergerFS hot tier for downloads and new media (mounted `/mnt/nvme/media`)
+- `nvme/fast` - Transcode scratch (mounted `/mnt/nvme/fast`)
+- `nvme/pve` - Ephemeral VM/LXC images (mounted `/mnt/nvme/pve`; Proxmox-managed)
 
 ### archive (Cold Storage Pool)
 
@@ -436,7 +443,8 @@ sudo zfs get reservation ssd/appdata
 
 Optimized per workload:
 
-- **Large files (media)**: 128K (default)
+- **Large files (media)**: `tank/media` is set to 1M (large sequential media);
+  128K is the pool default used by `tank/share`
 - **Databases**: 8K-16K
 - **Small files**: 16K-32K
 
@@ -643,7 +651,7 @@ the posture is explicit rather than assumed.
 
 | Subsystem | Encrypted? | Notes |
 |---|---|---|
-| ZFS pools `tank`, `ssd` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/backups`, `tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `ssd/appdata` (+ children), `ssd/databases`, `ssd/pve`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
+| ZFS pools `tank`, `ssd` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/backups`, `tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `ssd/appdata` (+ children), `ssd/databases`, `ssd/pve`, `ssd/k3s-etcd`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `nvme` | No | Media domain (hot-tier media, transcode scratch, ephemeral images) — non-sensitive, plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `archive` | Dataset-level (raw) | Plaintext pool; the seven replicated backup datasets arrive as raw `zfs send -w` streams encrypted under their source keys (`archive-backupctl`). See `docs/32-zfs-encryption.md`. |
 | Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |

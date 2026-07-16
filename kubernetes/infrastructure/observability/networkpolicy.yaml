@@ -1,4 +1,3 @@
----
 # Pod-network controls for the observability namespace.
 #
 # Before this, no NetworkPolicy existed here: Loki runs auth_enabled=false and
@@ -7,20 +6,13 @@
 # the ClusterIP). Prometheus, Alertmanager (holds the Discord webhook + SMTP
 # secret), and Grafana were likewise unguarded at the pod layer.
 #
-# Default-deny ingress + scoped allows below. Egress is intentionally left open:
-# the exporters in this namespace reach many LAN hosts (Proxmox API, AdGuard,
-# Unbound, Plex, ZFS), Alertmanager reaches smtp-relay + Discord, and Prometheus
-# remote-scrapes the host node-exporters — a default-deny-egress would require
-# enumerating the entire LAN surface and is out of scope for this hardening.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: observability
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
+# default-deny-ingress is provided by the shared components/netpol-baseline
+# component (wired in kustomization.yaml); the scoped allows below open it back
+# up. Egress is intentionally left open: the exporters in this namespace reach
+# many LAN hosts (Proxmox API, AdGuard, Unbound, Plex, ZFS), Alertmanager reaches
+# smtp-relay + Discord, and Prometheus remote-scrapes the host node-exporters — a
+# default-deny-egress would require enumerating the entire LAN surface and is out
+# of scope for this hardening.
 
 ---
 # Allow all intra-namespace ingress so the stack keeps working: Prometheus

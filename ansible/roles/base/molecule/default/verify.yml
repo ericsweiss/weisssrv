@@ -205,15 +205,94 @@
         src: /etc/fail2ban/jail.local
       register: jail_local_content
 
-    - name: Verify jail.local contains expected configuration
+    - name: Verify jail.local renders the container branch (this host is a container)
       ansible.builtin.assert:
         that:
           - "'ignoreip' in (jail_local_content.content | b64decode)"
           - "'127.0.0.1' in (jail_local_content.content | b64decode)"
           - "'[sshd]' in (jail_local_content.content | b64decode)"
           - "'enabled = true' in (jail_local_content.content | b64decode)"
-        fail_msg: "jail.local does not contain expected fail2ban configuration"
-        success_msg: "jail.local contains expected fail2ban configuration"
+          # Container branch: route banaction, no iptables, no recidive jail.
+          - "'banaction = route' in (jail_local_content.content | b64decode)"
+          - "'iptables-multiport' not in (jail_local_content.content | b64decode)"
+          - "'[recidive]' not in (jail_local_content.content | b64decode)"
+        fail_msg: "jail.local does not render the expected container-mode fail2ban configuration"
+        success_msg: "jail.local renders the container branch (banaction = route, no recidive)"
+
+    # ========================================================================
+    # Physical/VM branch coverage. The container above renders banaction=route;
+    # the branch all 6 bare-metal Proxmox hosts use (iptables banaction,
+    # recidive jail, pveproxy jail + proxmox.conf filter) is never rendered in a
+    # container, so render jail.local.j2 + proxmox.conf.j2 with is_container=false
+    # and the recidive/pveproxy jails on, then assert the physical branch.
+    - name: Render the physical/VM branch of jail.local
+      vars:
+        # Role templates dir, derived without '../' (playbook_dir is
+        # <role>/molecule/default).
+        base_role_templates: "{{ playbook_dir | dirname | dirname }}/templates"
+        is_container: false
+        fail2ban_email_enabled: false
+        fail2ban_ignoreip: ["127.0.0.1/8", "::1", "192.168.0.0/24"]
+        fail2ban_default_bantime: "1h"
+        fail2ban_default_findtime: "10m"
+        fail2ban_default_maxretry: 5
+        fail2ban_sshd_enabled: true
+        fail2ban_sshd_port: 22
+        fail2ban_sshd_maxretry: 5
+        fail2ban_sshd_bantime: "1h"
+        fail2ban_sshd_findtime: "10m"
+        fail2ban_pveproxy_enabled: true
+        fail2ban_pveproxy_port: 8006
+        fail2ban_pveproxy_maxretry: 5
+        fail2ban_pveproxy_bantime: "1h"
+        fail2ban_pveproxy_findtime: "10m"
+        fail2ban_recidive_enabled: true
+        fail2ban_recidive_bantime: "1w"
+        fail2ban_recidive_findtime: "1d"
+        fail2ban_recidive_maxretry: 3
+      ansible.builtin.template:
+        src: "{{ base_role_templates }}/jail.local.j2"
+        dest: /tmp/jail.local.physical
+        mode: "0644"
+
+    - name: Read the rendered physical jail.local
+      ansible.builtin.slurp:
+        src: /tmp/jail.local.physical
+      register: jail_local_physical
+
+    - name: Verify the physical branch renders iptables, recidive, and pveproxy
+      ansible.builtin.assert:
+        that:
+          - "'banaction = iptables-multiport' in (jail_local_physical.content | b64decode)"
+          - "'banaction_allports = iptables-allports' in (jail_local_physical.content | b64decode)"
+          - "'[recidive]' in (jail_local_physical.content | b64decode)"
+          - "'logpath = /var/log/fail2ban.log' in (jail_local_physical.content | b64decode)"
+          - "'[proxmox]' in (jail_local_physical.content | b64decode)"
+          - "'banaction = route' not in (jail_local_physical.content | b64decode)"
+        fail_msg: "physical-branch jail.local missing iptables/recidive/pveproxy config"
+        success_msg: "physical branch renders iptables banaction, recidive, and pveproxy jails"
+
+    - name: Render the Proxmox pveproxy filter
+      vars:
+        base_role_templates: "{{ playbook_dir | dirname | dirname }}/templates"
+      ansible.builtin.template:
+        src: "{{ base_role_templates }}/proxmox.conf.j2"
+        dest: /tmp/proxmox.conf.physical
+        mode: "0644"
+
+    - name: Read the rendered pveproxy filter
+      ansible.builtin.slurp:
+        src: /tmp/proxmox.conf.physical
+      register: proxmox_filter_physical
+
+    - name: Verify the pveproxy filter is a valid fail2ban filter
+      ansible.builtin.assert:
+        that:
+          - "'[Definition]' in (proxmox_filter_physical.content | b64decode)"
+          - "'failregex' in (proxmox_filter_physical.content | b64decode)"
+          - "'<HOST>' in (proxmox_filter_physical.content | b64decode)"
+        fail_msg: "proxmox.conf filter missing [Definition]/failregex/<HOST>"
+        success_msg: "proxmox.conf renders a valid fail2ban filter with a HOST-capturing failregex"
 
     - name: Check fail2ban service status
       ansible.builtin.command: fail2ban-client status

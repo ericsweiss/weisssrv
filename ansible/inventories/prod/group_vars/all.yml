@@ -133,7 +133,7 @@ adguardhome_sync_version: "0.9.2"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
 alloy_host_version: "1.17.1-1"
-tailscale_version: "1.98.8"
+tailscale_version: "1.98.9"
 debian_version: "13"
 k3s_version: "v1.36.2+k3s1"
 # Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
@@ -150,7 +150,7 @@ kube_vip_version: "v1.2.1"
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.5.4"
+authentik_version: "2026.5.5"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
@@ -198,10 +198,10 @@ plex_version: "1.43.3.10828-00f62d37d"
 
 # GitLab EE (using CE features) - Omnibus package
 # https://packages.gitlab.com/gitlab/gitlab-ee
-# 19.1.x line (incl. CVE-2026-5816 Web IDE single-origin fix); 19.1.1 = latest
-# patch. Applied by task gitlab:deploy / the deploy-gitlab CI job (triggered on
-# all.yml changes); maintenance apt-upgrade honors the gitlab-ee package hold
-# and will not bump it.
+# 19.1.x line (incl. CVE-2026-5816 Web IDE single-origin fix); 19.1.2-ee.0 =
+# current latest patch. Applied by task gitlab:deploy / the deploy-gitlab CI
+# job (triggered on all.yml changes); maintenance apt-upgrade honors the
+# gitlab-ee package hold and will not bump it.
 gitlab_version: "19.1.2-ee.0"
 
 # GitLab Runner version for k3s cluster
@@ -236,7 +236,7 @@ adguard_exporter_version: "v1.2.1"
 # integrity. On bump: shasum -a 256 the downloaded .deb and update both lines.
 unbound_exporter_version: "0.6.0"
 unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
-redis_exporter_version: "v1.86.0"
+redis_exporter_version: "v1.87.0"
 
 # Helm chart versions for k3s platform workloads
 # These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
@@ -258,18 +258,18 @@ helm_chart_versions:
   # images per upstream. Re-evaluate when the fix lands.
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
-  traefik: "41.0.2"  # App version v3.7.5 (chart 41.x: logs.general->log, logs.access->accessLog)
+  traefik: "41.0.2"  # App version v3.7.6 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.7.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.16.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
-  loki: "18.4.4"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  kube_prometheus_stack: "87.16.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  loki: "18.5.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.1"
   prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"
   vpa: "4.12.3"
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
-  reloader: "2.2.14"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap/Secret change
+  reloader: "2.2.14"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

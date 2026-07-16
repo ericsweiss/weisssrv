@@ -1,0 +1,81 @@
+---
+# Converge playbook for the adguard_home TLS scenario. Same container prep as
+# the default scenario, plus a self-signed cert deployed into adguard_cert_path
+# (mimicking acme_certs) so the role's /control/tls/configure path runs.
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
+    - name: Wait for apt locks to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - systemd
+          - ca-certificates
+          - dnsutils
+          - python3-passlib
+          - openssl
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create adguard group (pre-requisite for user creation)
+      ansible.builtin.group:
+        name: adguard
+        system: true
+        state: present
+
+    # acme_certs deploys fullchain.pem + privkey.pem here in production; deploy a
+    # self-signed pair before the role so api_base_config.yml sees the certs and
+    # runs the TLS configure POST. setgid dir + group adguard so the AdGuard
+    # process can read the key it loads via the API.
+    - name: Create certs directory for self-signed TLS cert
+      ansible.builtin.file:
+        path: "{{ adguard_cert_path }}"
+        state: directory
+        owner: root
+        group: adguard
+        mode: "2750"
+
+    - name: Generate self-signed TLS certificate
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes
+          -keyout {{ adguard_cert_path }}/privkey.pem
+          -out {{ adguard_cert_path }}/fullchain.pem
+          -days 3650 -subj "/CN={{ adguard_tls_server_name }}"
+          -addext "subjectAltName=DNS:{{ adguard_tls_server_name }}"
+        creates: "{{ adguard_cert_path }}/fullchain.pem"
+
+    - name: Set ownership + perms on the self-signed cert (group adguard readable)
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: adguard
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ adguard_cert_path }}/fullchain.pem"
+          mode: "0644"
+        - path: "{{ adguard_cert_path }}/privkey.pem"
+          mode: "0640"
+
+  roles:
+    - role: adguard_home

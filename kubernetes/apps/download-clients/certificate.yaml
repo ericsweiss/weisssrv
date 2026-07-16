@@ -15,7 +15,6 @@ spec:
   dnsNames:
     - "*.esweiss.com"
     - esweiss.com
-  # Staggered renewBefore across the three identical *.esweiss.com certs
-  # (default 720h / external-secrets 600h / downloads 480h) so they don't all
-  # renew in the same window and trip the Let's Encrypt 5-per-week duplicate limit.
-  renewBefore: 480h
+  # Staggered renewBefore leg; the canonical stagger note (all three legs +
+  # rationale) lives in configs/wildcard-certificates.yaml.
+  renewBefore: 480h   # 20 days (staggered)

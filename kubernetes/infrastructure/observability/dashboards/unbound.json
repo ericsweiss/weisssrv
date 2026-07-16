@@ -201,7 +201,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "max by (instance) (unbound_queries_total)",
+          "expr": "sum by (instance) (unbound_queries_total)",
           "legendFormat": "{{ instance }}",
           "refId": "A"
         }
@@ -254,7 +254,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "max by (instance) (rate(unbound_cache_hits_total[5m])) / (max by (instance) (rate(unbound_cache_hits_total[5m])) + max by (instance) (rate(unbound_cache_misses_total[5m]))) * 100",
+          "expr": "sum by (instance) (rate(unbound_cache_hits_total[5m])) / (sum by (instance) (rate(unbound_cache_hits_total[5m])) + sum by (instance) (rate(unbound_cache_misses_total[5m]))) * 100",
           "legendFormat": "{{ instance }}",
           "refId": "A"
         }
@@ -297,7 +297,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "max by (instance) (rate(unbound_prefetches_total[5m]))",
+          "expr": "sum by (instance) (rate(unbound_prefetches_total[5m]))",
           "legendFormat": "{{ instance }}",
           "refId": "A"
         }

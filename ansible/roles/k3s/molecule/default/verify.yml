@@ -183,6 +183,151 @@
         fail_msg: "copy timer missing OnCalendar/Persistent"
         success_msg: "copy timer renders OnCalendar=hourly and Persistent=true"
 
+    # ------------------------------------------------------------------
+    # Behavioral test of the DEPLOYED copy script (not just its rendered text):
+    # seed snapshots + a bind-mounted export, run it, and assert the atomic
+    # copy, *.part exclusion, retention prune, the success metric, and the
+    # preserved-timestamp failure branch. SYS_ADMIN + privileged let us
+    # bind-mount so the script's `mountpoint -q` gate passes. Paths mirror the
+    # k3s defaults baked into the rendered script.
+    - name: Provide a bind-mounted off-node export so `mountpoint -q` passes
+      ansible.builtin.shell: |
+        set -e
+        mkdir -p /tmp/etcd-dest-backing /mnt/etcd-snapshots
+        mountpoint -q /mnt/etcd-snapshots || mount --bind /tmp/etcd-dest-backing /mnt/etcd-snapshots
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Seed snapshot source (old, newest, newer *.part) and pre-existing copies
+      ansible.builtin.shell: |
+        set -e
+        SNAP=/var/lib/rancher/k3s/server/db/snapshots
+        DEST=/mnt/etcd-snapshots/{{ ansible_hostname }}
+        rm -rf "$SNAP"; mkdir -p "$SNAP"
+        echo old  > "$SNAP/etcd-snapshot-old";      touch -d @1699990000 "$SNAP/etcd-snapshot-old"
+        echo new  > "$SNAP/etcd-snapshot-new";      touch -d @1700000000 "$SNAP/etcd-snapshot-new"
+        # A NEWER *.part in-progress snapshot the script must ignore.
+        echo part > "$SNAP/etcd-snapshot-new.part"; touch -d @1700000500 "$SNAP/etcd-snapshot-new.part"
+        # Six pre-existing copies (all older) so a single new copy trips retention.
+        rm -rf "$DEST"; mkdir -p "$DEST"
+        for i in 1 2 3 4 5 6; do
+          echo dummy > "$DEST/dummy-$i"
+          touch -d @$((1699900000 + i)) "$DEST/dummy-$i"
+        done
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Run the off-node snapshot copy script (success path)
+      ansible.builtin.command: /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+      changed_when: true
+
+    - name: List the copied snapshots on the export
+      ansible.builtin.find:
+        paths: "/mnt/etcd-snapshots/{{ ansible_hostname }}"
+        file_type: file
+      register: etcd_copied
+
+    - name: Verify the newest snapshot copied, *.part excluded, and retention pruned to 5
+      vars:
+        _copied_names: "{{ etcd_copied.files | map(attribute='path') | map('basename') | list }}"
+      ansible.builtin.assert:
+        that:
+          - "'etcd-snapshot-new' in _copied_names"
+          - "'etcd-snapshot-new.part' not in _copied_names"
+          - etcd_copied.files | length == 5
+        fail_msg: "copy/retention wrong (dest contents: {{ _copied_names }})"
+        success_msg: "copy landed the newest snapshot, excluded *.part, and pruned dest to 5"
+
+    - name: Read the etcd snapshot copy metric file (success)
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/etcd_snapshot_copy.prom
+      register: etcd_prom_success
+
+    - name: Verify the success metric and the snapshot's own timestamp
+      ansible.builtin.assert:
+        that:
+          - "'etcd_snapshot_last_copy_success 1' in (etcd_prom_success.content | b64decode)"
+          - "'etcd_snapshot_last_copy_timestamp_seconds 1700000000' in (etcd_prom_success.content | b64decode)"
+        fail_msg: "success metric or snapshot timestamp missing from etcd_snapshot_copy.prom"
+        success_msg: "success metric emits success=1 with the snapshot's mtime"
+
+    - name: Unmount the export to force the failure branch
+      ansible.builtin.command: umount /mnt/etcd-snapshots
+      changed_when: true
+
+    - name: Run the copy script again (failure path — export not mounted)
+      ansible.builtin.command: /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+      register: etcd_copy_fail
+      changed_when: true
+      # The mountpoint gate must make the script exit non-zero.
+      failed_when: etcd_copy_fail.rc == 0
+
+    - name: Read the metric file after the forced failure
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/etcd_snapshot_copy.prom
+      register: etcd_prom_fail
+
+    - name: Verify the failure branch preserved the last-good timestamp
+      ansible.builtin.assert:
+        that:
+          - "'etcd_snapshot_last_copy_success 0' in (etcd_prom_fail.content | b64decode)"
+          - "'etcd_snapshot_last_copy_timestamp_seconds 1700000000' in (etcd_prom_fail.content | b64decode)"
+        fail_msg: "failure branch did not preserve the prior success timestamp"
+        success_msg: "failure branch keeps success=0 with the preserved last-good timestamp"
+
+    # ------------------------------------------------------------------
+    # Maintenance reboot-gate coverage: exercise the DEFER routing of the real
+    # playbooks/maintenance/_reboot-if-needed.yml end to end without ever
+    # rebooting. proxmox_self_reboot_safe=false forces the fail-closed defer
+    # branch (the pve-nas-01 case), so the reboot module is never reached; assert
+    # the routing decision and the alertable deferred-reboot metric it emits.
+    # (Synchronous/detached branches would reboot / need a live CI-executor +
+    # k3s-node inventory mapping, so they stay out of this container test.)
+    - name: Force a pending reboot for the reboot-gate test
+      ansible.builtin.file:
+        path: /var/run/reboot-required
+        state: touch
+        mode: "0644"
+
+    - name: Run the reboot gate on an unsafe host (must route to defer, never reboot)
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../../../../playbooks/maintenance/_reboot-if-needed.yml"
+      vars:
+        proxmox_self_reboot_safe: false
+        skip_reboot: false
+        auto_reboot: true
+        node_exporter_host_textfile_dir: /tmp/reboot-gate-test
+
+    - name: Verify the gate deferred the reboot (no reboot occurred)
+      ansible.builtin.assert:
+        that:
+          - reboot_required | bool
+          - reboot_action == 'defer'
+        fail_msg: "reboot gate did not route an unsafe host to defer (got {{ reboot_action | default('unset') }})"
+        success_msg: "reboot gate routed the unsafe host to defer without rebooting"
+
+    - name: Read the deferred-reboot metric the gate emitted
+      ansible.builtin.slurp:
+        src: /tmp/reboot-gate-test/maintenance_reboot_deferred.prom
+      register: reboot_deferred_metric
+
+    - name: Verify the deferred-reboot metric fires for this host
+      vars:
+        _metric: "{{ reboot_deferred_metric.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'maintenance_reboot_deferred{host=' in _metric"
+          - inventory_hostname in _metric
+          - "'} 1' in _metric"
+        fail_msg: "maintenance_reboot_deferred metric missing/wrong for {{ inventory_hostname }}"
+        success_msg: "deferred-reboot metric emitted for {{ inventory_hostname }}"
+
+    - name: Clean up the forced reboot-required marker
+      ansible.builtin.file:
+        path: /var/run/reboot-required
+        state: absent
+
     - name: Display test results
       ansible.builtin.debug:
         msg:

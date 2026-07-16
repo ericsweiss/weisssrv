@@ -7,13 +7,22 @@
 # FQDN and "@" forms resolve to the zone apex in the v4 provider. The FQDN form
 # is kept here because it doubles as inline documentation of which zone this
 # record lives in.
+
+# DDNS placeholder IP: seeds the A-records at creation time only; the
+# cloudflare-ddns CronJob owns the live value thereafter (each record's
+# lifecycle.ignore_changes = [content]). Hoisted so a placeholder change is a
+# one-line edit.
+locals {
+  ddns_placeholder_ip = "104.156.98.15"
+}
+
 resource "cloudflare_record" "root" {
   zone_id = data.cloudflare_zone.external.id
   name    = var.external_domain # ericsweiss.com
   type    = "A"
-  content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
-  proxied = true            # Cloudflare proxy (orange cloud) enabled
-  ttl     = 1               # 1 = "Auto" (Cloudflare-managed); required for proxied
+  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
+  proxied = true                      # Cloudflare proxy (orange cloud) enabled
+  ttl     = 1                         # 1 = "Auto" (Cloudflare-managed); required for proxied
   comment = "Managed by Terraform - IP updated by cloudflare-ddns CronJob in k3s"
 
   lifecycle {
@@ -153,9 +162,9 @@ resource "cloudflare_record" "git" {
   zone_id = data.cloudflare_zone.external.id
   name    = "git"
   type    = "A"
-  content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
-  proxied = false           # DNS-only to allow SSH traffic
-  ttl     = 60              # short TTL since DDNS updates this record
+  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
+  proxied = false                     # DNS-only to allow SSH traffic
+  ttl     = 60                        # short TTL since DDNS updates this record
   comment = "GitLab Web + SSH - DNS only, TLS via Traefik, IP updated by DDNS"
 
   lifecycle {
@@ -185,9 +194,9 @@ resource "cloudflare_record" "direct" {
   zone_id = data.cloudflare_zone.external.id
   name    = "direct"
   type    = "A"
-  content = "104.156.98.15" # Initial/placeholder value - updated by DDNS
-  proxied = false           # DNS-only mode (grey cloud) - intentionally exposes origin IP
-  ttl     = 60              # short TTL since DDNS updates this record
+  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
+  proxied = false                     # DNS-only mode (grey cloud) - intentionally exposes origin IP
+  ttl     = 60                        # short TTL since DDNS updates this record
   comment = "Direct access (no proxy) - IP updated by DDNS"
 
   lifecycle {

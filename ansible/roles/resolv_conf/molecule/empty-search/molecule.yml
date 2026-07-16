@@ -10,7 +10,10 @@
 dependency:
   name: galaxy
   options:
-    requirements-file: requirements.yml
+    # See ansible/molecule/base.yml: read the repo's single source of truth
+    # (ansible/requirements.yml) via a CWD-relative path (CWD = the role dir).
+    role-file: ../../requirements.yml
+    requirements-file: ../../requirements.yml
 driver:
   name: docker
 platforms:

@@ -681,7 +681,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "rate(adguard_queries[$__rate_interval])",
+                    "expr": "clamp_min(delta(adguard_queries[5m]), 0) / 300",
                     "interval": "",
                     "legendFormat": "{{server}}",
                     "range": true,
@@ -950,7 +950,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "rate(adguard_queries_blocked[$__rate_interval])",
+                    "expr": "clamp_min(delta(adguard_queries_blocked[5m]), 0) / 300",
                     "instant": false,
                     "interval": "",
                     "legendFormat": "Blocked {{server}}",

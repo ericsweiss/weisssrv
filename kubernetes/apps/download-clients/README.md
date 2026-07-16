@@ -19,7 +19,7 @@ top-level `apps` Kustomization.
 - **Secret**: `externalsecret.yaml` — ExternalSecret `vpn-credentials` sourcing `openvpn-user` / `openvpn-password` from 1Password via ESO
 - **Workloads**: `prowlarr.yaml` and `pulsarr.yaml` are standalone manifests; `nzbget/` and `qbittorrent/` are overlays over the shared Gluetun VPN sidecar component (`_vpn-sidecar/`); `sonarr/`, `radarr/`, and `lidarr/` are overlays over the shared `_arr` component (`_arr/`). Each overlay's `resources.yaml` holds its app-specific resources (incl. the per-app VPN ConfigMap for nzbget/qbittorrent). Image tags use `${<app>_version}` placeholders substituted from the `cluster-versions` ConfigMap at reconcile time.
 - **Storage**: `storage/` — per-app NFS PV/PVC overlays over the shared `_nfs-pv/` component (TLS mountOptions defined once), plus `storage/shared.yaml` for the RWX media PV
-- **Ingress**: `ingress-routes.yaml` (standard) + `ingress-routes-ha-bypass.yaml` (full-host SSO bypass routes scoped to Home Assistant's IP, 192.168.0.154 — see docs/24)
+- **Ingress**: per-app IngressRoute overlays under `ingress-routes/` over the shared `_ingressroute/` component (middleware chain + TLS defined once) + `ingress-routes-ha-bypass.yaml` (full-host SSO bypass routes scoped to Home Assistant's IP, 192.168.0.154 — see docs/24)
 - **NetworkPolicy**: `networkpolicy.yaml` (default-deny ingress + Traefik/observability allows, incl. the VPN-exporter scrape exception)
 - **Certificate**: `certificate.yaml` (single wildcard cert for `*.esweiss.com`)
 - **Autoscaling**: `vpa.yaml` (VPA recommendations for the stack — see docs/33)
@@ -129,6 +129,7 @@ require splitting the ExternalSecret in two and pointing each app's
 
 - `namespace.yaml` - Downloads namespace (privileged PSS label for Gluetun CAP_NET_ADMIN)
 - `_nfs-pv/` - shared NFS PV+PVC Kustomize component (TLS mountOptions defined once)
+- `_nfs-pv-arr/` - *arr variant extending `_nfs-pv` (10Gi + actimeo/lookupcache), used by sonarr/radarr/lidarr
 - `_vpn-sidecar/` - shared Gluetun VPN sidecar Kustomize component (killswitch defined once)
 - `storage/` - per-app NFS PV/PVC overlays over `_nfs-pv/` + `storage/shared.yaml` (RWX media PV)
 - `externalsecret.yaml` - ExternalSecret `vpn-credentials` sourced from 1Password via ESO
@@ -139,7 +140,7 @@ require splitting the ExternalSecret in two and pointing each app's
 - `_arr/` - shared Deployment+Service Kustomize component for sonarr/radarr/lidarr
 - `sonarr/`, `radarr/`, `lidarr/` - per-app overlays over the `_arr` component
 - `pulsarr.yaml` - Pulsarr deployment
-- `ingress-routes.yaml` - Traefik IngressRoutes with SSO
+- `_ingressroute/`, `ingress-routes/` - shared IngressRoute component + per-app overlays (SSO middleware chain defined once)
 - `ingress-routes-ha-bypass.yaml` - *arr API bypass routes for Home Assistant (docs/24)
 - `networkpolicy.yaml` - default-deny ingress + Traefik/observability allows (incl. VPN-exporter scrape)
 - `vpa.yaml` - VPA resources for the stack (docs/33)

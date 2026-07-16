@@ -63,28 +63,14 @@ echo "Roles to test: ${ROLES_TO_TEST[*]}"
 echo "Molecule options: ${MOLECULE_OPTS:-none}"
 echo ""
 
-# Check prerequisites
+# Resolve molecule via the shared 3-tier resolver (scripts/resolve-tool.sh),
+# the single source of truth for the PATH -> python3 -m -> pyenv-glob chain.
 if ! command -v python3 &>/dev/null; then
     echo -e "${RED}ERROR: python3 not found${NC}"
     exit 1
 fi
 
-MOLECULE_CMD=""
-if command -v molecule &>/dev/null; then
-    MOLECULE_CMD=molecule
-elif python3 -m molecule --version &>/dev/null; then
-    MOLECULE_CMD="python3 -m molecule"
-else
-    # Fallback: search pyenv installations, validating each before selecting
-    for pyenv_mol in ~/.pyenv/versions/*/bin/molecule; do
-        if [ -x "$pyenv_mol" ] && "$pyenv_mol" --version &>/dev/null; then
-            MOLECULE_CMD="$pyenv_mol"
-            break
-        fi
-    done
-fi
-
-if [ -z "$MOLECULE_CMD" ]; then
+if ! MOLECULE_CMD=$("${SCRIPT_DIR}/../scripts/resolve-tool.sh" molecule molecule); then
     echo -e "${RED}ERROR: molecule not found (pip install molecule molecule-docker)${NC}"
     exit 1
 fi

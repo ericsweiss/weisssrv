@@ -180,6 +180,7 @@ kubernetes/apps/download-clients/
 ├── externalsecret.yaml         # VPN credentials from 1Password (via ESO)
 ├── _vpn-sidecar/               # shared Gluetun VPN sidecar Component (killswitch defined once)
 ├── _nfs-pv/                    # shared NFS PV+PVC Component (TLS mountOptions defined once)
+├── _nfs-pv-arr/                # *arr variant of _nfs-pv (10Gi + actimeo/lookupcache)
 ├── storage/                    # per-app NFS PV/PVC overlays over _nfs-pv + storage/shared.yaml (RWX media PV)
 ├── certificate.yaml            # Wildcard cert in the downloads namespace
 ├── nzbget/                     # overlay over _vpn-sidecar: resources.yaml (Deployment + nzbget-vpn-config) + kustomization.yaml
@@ -190,7 +191,8 @@ kubernetes/apps/download-clients/
 ├── radarr/                     # per-*arr overlay
 ├── lidarr/                     # per-*arr overlay
 ├── pulsarr.yaml
-├── ingress-routes.yaml         # Traefik IngressRoutes for all apps
+├── _ingressroute/              # shared IngressRoute skeleton component (middleware chain + TLS once)
+├── ingress-routes/             # per-app IngressRoute overlays (name/host/service/port only)
 ├── ingress-routes-ha-bypass.yaml  # High-priority routes bypassing SSO for Home Assistant's IP
 ├── networkpolicy.yaml          # default-deny + per-app allowlist (incl. observability->qbittorrent:8002 VPN scrape)
 ├── vpa.yaml                    # VerticalPodAutoscalers (per-container sizing, incl. gluetun-exporter)

@@ -4,7 +4,7 @@ This guide covers the observability platform: Prometheus for metrics, Grafana fo
 
 ## Overview
 
-The observability stack runs entirely in the `observability` namespace and is reconciled by Flux as a single Kustomization (`infrastructure-observability`). It sits between `infrastructure-configs` and `apps` in the reconciliation chain, so CRDs like ServiceMonitor and PrometheusRule are available before application namespaces attempt to create them.
+The observability stack runs entirely in the `observability` namespace and is reconciled by Flux as a single Kustomization (`infrastructure-observability`). It branches off `infrastructure-configs` in parallel with `apps`, and it owns the monitoring CRDs (ServiceMonitor, PodMonitor, PrometheusRule) that steady-state application monitoring relies on.
 
 ### Components
 
@@ -46,7 +46,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Meilisearch (Bar Assistant search) | recipes | `/metrics` | 60s |
 | GitLab (VM) | observability (external endpoint) | `/-/metrics` | 60s |
 | Home Assistant (VM) | observability (external endpoint) | `/api/prometheus` | 60s |
-| Blackbox exporter (14 HTTP + 2 DNS probes) | observability | `/probe` | 60s |
+| Blackbox exporter (18 HTTP + 2 DNS + 2 TCP probes) | observability | `/probe` | 60s |
 | cert-manager | cert-manager | `/metrics` | (chart default) |
 | Traefik | traefik | `/metrics` | (chart default) |
 | MetalLB | metallb-system | `/metrics` | (chart default) |
@@ -65,15 +65,15 @@ infrastructure-sources
 infrastructure-controllers
         |
 infrastructure-configs
-        |
-infrastructure-observability    <-- this stack
-        |
-      apps
+        |         \
+infrastructure-   apps
+observability    (parallel)
+  <-- this stack
 ```
 
-Flux reconciles the observability stack after `infrastructure-configs` is Ready (so the ClusterSecretStore, ClusterIssuer, and MetalLB IP pools exist) but before `apps` (so ServiceMonitor CRDs are available for application namespaces).
+Flux reconciles the observability stack after `infrastructure-configs` is Ready (so the ClusterSecretStore, ClusterIssuer, and MetalLB IP pools exist). `apps` branches off `infrastructure-configs` in parallel — deliberately NOT gated on observability health, so a failed observability upgrade cannot freeze application reconciliation.
 
-**Trade-off:** `apps` depends on `infrastructure-observability`, so a failed observability deploy blocks all application reconciliation. This is intentional for CRD ordering on clean bootstrap, but means observability issues can impact apps. If this becomes problematic, change `apps.yaml` `dependsOn` back to `infrastructure-configs` — ServiceMonitor CRDs persist in Kubernetes even if the observability Kustomization temporarily fails.
+**Trade-off:** on a truly-fresh bootstrap the few monitoring CRs under `apps/` (the qbittorrent PodMonitor, the authentik chart ServiceMonitor) retry until this stack installs the monitoring CRDs — bounded in practice by the one-time CRD pre-apply in docs/29. In steady state the CRDs persist even if this Kustomization temporarily fails, so apps are unaffected by observability incidents.
 
 ### Namespace
 
@@ -306,7 +306,10 @@ Add the ConfigMap to `kubernetes/infrastructure/observability/dashboards/` and r
 
 ### Dashboard Inventory
 
-**Community dashboards** (imported from Grafana.com by ID):
+**Community dashboards** (vendored as JSON ConfigMaps in
+`kubernetes/infrastructure/observability/dashboards/`, generated identically to
+the custom ones below — originally exported from these Grafana.com IDs, not
+imported by ID at runtime):
 
 | Dashboard | Grafana ID | Category |
 |-----------|------------|----------|
@@ -328,6 +331,7 @@ Add the ConfigMap to `kubernetes/infrastructure/observability/dashboards/` and r
 | DNS Combined | AdGuard + Unbound for both DNS servers |
 | Mail | SMTP relay status and logs |
 | Infrastructure | Proxmox, ZFS, DNS overview |
+| Alerts Overview | All alert rules defined across Prometheus (Infrastructure folder) |
 | Blackbox Exporter | Endpoint monitoring |
 | cert-manager | Certificate health |
 | Flux Cluster | Reconciliation status |

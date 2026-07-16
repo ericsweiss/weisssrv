@@ -530,6 +530,75 @@ job itself is managed by the `proxmox_backup` role):
   one. Guest VM/LXC images are the DR path for the compute-node guests — treat
   staleness as a real gap, not noise.
 
+The remaining backup alerts anchor their `runbook_url` here as well; their
+remediation follows.
+
+#### ArchiveBackupFailed / ArchiveBackupStale
+
+Cold-tier replication to the `archive` pool via `archive-backupctl`
+(`/usr/local/sbin/archive-backupctl run`, `nas_storage` role), fired by
+`archive-backup.timer` (OnCalendar in
+`ansible/roles/nas_storage/templates/archive-backup.timer.j2` is the source of
+truth — currently 06:30, after the throttled cluster-wide vzdump finishes). It
+emits `archive_backup_last_run_success` / freshness metrics; `ArchiveBackupStale`
+additionally guards ~2-day staleness.
+
+- **ArchiveBackupFailed** — the last `archive-backupctl run` exited non-zero
+  from a genuine `zfs send`/`receive` error, so a dataset's cold copy may be at
+  risk. (A vzdump-quiesce overrun is NOT this alert: it is a per-dataset
+  DEFERRAL, exit 0, surfaced by the two alerts below.) Read
+  `journalctl -u archive-backup.service` on pve-nas-01 for the failing
+  dataset's send/receive error, fix the cause (pool health, space, resume
+  token), then re-run with `sudo /usr/local/sbin/archive-backupctl run`.
+  Restore / replication design: docs/06 and docs/17.
+- **ArchiveBackupStale** — no fully successful run within the freshness
+  window. Confirm the timer is enabled (`systemctl status archive-backup.timer`)
+  and that the `archive` pool is imported and healthy (`zpool status archive`).
+- **ArchiveBackupDatasetStale / ArchiveBackupChronicallyDeferred** — one
+  dataset's copy is aging (>2 days) or was deferred 3+ consecutive runs while
+  the rest of the run succeeds. Almost always `tank/proxmox`: the 03:30 vzdump
+  is overrunning the 06:30 archive window, so the quiesce guard defers it every
+  night. Check today's vzdump completion (`ls -lt /mnt/tank/proxmox/dump |
+  head`) against the timer; either re-run `archive-backupctl run` once vzdump
+  is idle (a success clears both alerts), or if the overrun is the new normal,
+  move `archive-backup.timer.j2` later / revisit the vzdump `bwlimit` in
+  host_vars.
+
+#### GitLabBackupFailed / GitLabBackupStale / GitLabBackupStaleCritical
+
+Nightly GitLab backup via `/usr/local/sbin/gitlab-backup-run.sh` (`gitlab` role,
+daily cron), which emits `gitlab_backup_last_run_success` /
+`..._last_run_duration_seconds` / `..._last_size_bytes` textfile metrics.
+
+- **GitLabBackupFailed** — the last backup run exited non-zero. Inspect the run
+  (`ssh gitlab "journalctl -t gitlab-backup-run"`) and re-run with
+  `ssh gitlab "sudo /usr/local/sbin/gitlab-backup-run.sh"`.
+- **GitLabBackupStale / …StaleCritical** — no successful backup within the
+  warning / critical freshness windows. Full backup/restore procedure: docs/27.
+
+#### EtcdSnapshotStale
+
+The off-node etcd snapshot copy (k3s servers, opt-in) copies each server's local
+etcd snapshots to `pve-nas-01:/export/k3s-etcd` over TLS via
+`k3s-etcd-snapshot-copy.timer` (hourly) and emits
+`etcd_snapshot_last_copy_timestamp_seconds`.
+
+- **EtcdSnapshotStale** — no fresh off-node copy. Check
+  `systemctl status k3s-etcd-snapshot-copy.timer` and the TLS NFS mount on the
+  server node. etcd restore procedure: docs/17.
+
+#### MediaMoverFailed / MediaMoverStale
+
+`media-mover.service` (`nas_storage` role) tiers aged files from the nvme hot tier
+to `tank/media` (see docs/07).
+
+- **MediaMoverFailed** — a run exited non-zero. The common cause is
+  `SRC missing: /mnt/nvme/media/library` (the nvme pool/dataset not mounted), which
+  hard-fails by design so an unmounted source pool surfaces rather than silently
+  no-oping. Verify the nvme mounts (`zfs mount | grep nvme`) before re-running.
+- **MediaMoverStale** — no successful move within the freshness window; the
+  `absent()` arm also covers the metric never being written.
+
 ### Full System Backup
 
 1. **ZFS Snapshots**:
@@ -1180,15 +1249,10 @@ Some tasks skip in check mode but run in actual deployment:
 - Service restarts (handlers don't run in check mode)
 - User creation (can't verify before creation)
 
-### Skip Counts by Host
-
-| Host | Skipped | Primary Reasons |
-|------|---------|-----------------|
-| dns-01 | 8 | Replica-specific tasks, already-configured items |
-| dns-02 | 18 | Primary-only tasks (acme_certs, adguard_sync) |
-| pve-nas-01 | 13 | Check mode, idempotent tasks, no changes needed |
-| pve-opt-03 | 9 | NAS-specific tasks, idempotent items |
-| smtp-relay | 3 | Minimal role set, most infrastructure tasks excluded |
+Exact per-host skip counts vary with every role/task change and are **not** a
+health signal — do not treat a specific number as expected. Verify the resulting
+state (`task infra:verify`) instead of chasing counts. The qualitative pattern of
+what skips where is below.
 
 ### Expected Skips
 
@@ -1601,8 +1665,8 @@ header documents the invariant):
 
 | Regular | `--json` | Meaning |
 |---|---|---|
-| `OK` | `healthy: true` | every gate green: all collected hosts reachable, ALL k3s nodes Ready, zero Flux not-ready, zero non-ONLINE ZFS pools (all hosts), GitLab `/-/health` 200 via the internal VIP, zero Warning events in the last hour |
-| `PARTIAL` | `degraded: true` | any imperfection with core infra still up — a Warning-event spike alone downgrades green, so `PARTIAL` right after deploys/restarts is normal and decays within the hour |
+| `OK` | `healthy: true` | every gate green: all collected hosts reachable, ALL k3s nodes Ready, zero Flux not-ready, zero non-ONLINE ZFS pools (all hosts), GitLab `/-/health` 200 via the internal VIP. Recent Warning events are reported in the header but are **advisory only** — they do not gate OK/healthy |
+| `PARTIAL` | `degraded: true` | any imperfection with core infra still up (e.g. a host unreachable, a k3s node NotReady, a Flux resource not ready, a degraded ZFS pool) while the core plane is up. Warning events do not by themselves downgrade green |
 | `FAILED` | neither flag | catastrophic: no Proxmox host reachable, k3s API up with zero Ready nodes, or (regular only) host coverage below the floor — `CLUSTER_STATUS.txt` is not overwritten. In `--json` mode, "neither flag" also occurs when node data is simply unavailable (local kubectl/kubeconfig failure leaves `k3s.nodes_ready: 0` / `k3s.nodes_total: 0`) — check `collector_context` to distinguish collector-side from cluster-side |
 
 One intentional asymmetry: the "all collected hosts reachable" gate is

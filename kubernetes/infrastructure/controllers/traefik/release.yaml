@@ -55,6 +55,26 @@ spec:
             target:
               type: Utilization
               averageUtilization: 70
+      # Damp HPA flap: CI image-pull bursts (registry traffic through Traefik)
+      # push per-pod CPU past 200% of the 250m request, so with the default 0s
+      # scaleUp window the HPA jumps toward max on transient spikes and fires
+      # KubeHpaMaxedOut before scaling back — the flap authentik-server got a
+      # behavior block for. Require ~2 min of sustained pressure before adding a
+      # pod, one at a time; keep the default 5-min downscale damping. Genuine
+      # sustained load still reaches max=6.
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
 
     # Deployment configuration. No static `replicas` (autoscaling owns it).
     # Metrics are scraped via the ServiceMonitor below; no prometheus.io/scrape

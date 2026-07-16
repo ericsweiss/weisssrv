@@ -141,7 +141,13 @@ spec:
             # per-workload warnings are pure noise (2026-06-10 outage produced
             # ~25 distinct warnings and Discord rate-limiting). Tradeoff:
             # an unrelated pod failure elsewhere is also suppressed during
-            # the outage window.
+            # the outage window. The warning-tier k3s reboot churn that routine
+            # kured kernel rollouts provoke (KubeAggregatedAPIDown,
+            # NodeSystemSaturation) is included here — Discord-only, keyed on a
+            # node being NotReady/Unreachable, NOT a blanket maintenance silence.
+            # The etcd/kubelet criticals (etcdInsufficientMembers, KubeletDown)
+            # are deliberately NOT inhibited: a serialized concurrency:1 reboot
+            # must never lose quorum, so their firing is a genuine signal.
             #
             # Deliberately does NOT suppress EndpointDown or TargetDown:
             # EndpointDown (blackbox probe_success) covers OFF-cluster infra
@@ -153,7 +159,7 @@ spec:
             - source_matchers:
                 - alertname=~"KubeNodeNotReady|KubeNodeUnreachable"
               target_matchers:
-                - alertname=~"KubePodNotReady|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch|KubeletInstanceUnreachable"
+                - alertname=~"KubePodNotReady|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch|KubeletInstanceUnreachable|KubeAggregatedAPIDown|NodeSystemSaturation"
 
           route:
             receiver: discord-default

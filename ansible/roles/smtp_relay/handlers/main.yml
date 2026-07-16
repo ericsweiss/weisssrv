@@ -17,6 +17,6 @@
     name: postfix
     state: reloaded
 
-- name: Reload systemd for postfix queue collector
-  ansible.builtin.systemd:
-    daemon_reload: true
+# The postfix-queue-collector timer is reloaded + restarted on a unit change by
+# the shared textfile_collector role (restart-on-change task), so this role no
+# longer carries a collector reload handler.

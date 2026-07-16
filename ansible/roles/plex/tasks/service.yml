@@ -5,14 +5,9 @@
 # notify "Restart plex"; flush them here so the health check below
 # validates the restarted daemon, not the still-running old one.
 - name: Apply pending restarts before health check
+  # Also flushes the notified "Reload systemd" handler (daemon-reload on an
+  # override change), so no separate daemon-reload task is needed here.
   ansible.builtin.meta: flush_handlers
-
-- name: Reload systemd daemon
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when:
-    - not ansible_check_mode
-    - not (skip_plex_service | default(false))
 
 - name: Enable Plex service
   ansible.builtin.systemd:

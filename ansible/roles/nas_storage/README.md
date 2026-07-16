@@ -40,8 +40,8 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 - Automatic remount on boot
 
 ### Media Mover
-- Systemd timer (production runs at 04:15 daily via `media_mover_schedule`
-  in host_vars; the timer template falls back to 03:30 when unset)
+- Systemd timer (production runs at 06:00 daily via `media_mover_schedule`
+  in host_vars; the timer template falls back to 06:00 when unset)
 - Moves aged library files (older than media_mover_min_age) off the NVMe hot
   tier to tank
 - Preserves directory structure and permissions
@@ -192,8 +192,8 @@ pve-nas-01
 │  └─ Combines: tank/media + nvme/media
 ├─ NFS: Exports to k3s nodes
 ├─ Samba: Shares to LAN
-├─ Media Mover: nvme → tank (04:15 daily, load-shaped)
-├─ Archive backup: archive-backupctl → archive pool (05:00 nightly)
+├─ Media Mover: nvme → tank (06:00 daily, load-shaped)
+├─ Archive backup: archive-backupctl → archive pool (06:30 nightly)
 └─ SMART: Monitoring + alerts
 ```
 

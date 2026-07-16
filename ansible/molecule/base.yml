@@ -14,7 +14,17 @@
 dependency:
   name: galaxy
   options:
-    requirements-file: requirements.yml
+    # Both galaxy sub-dependencies (ansible-galaxy role install + collection
+    # install) read the repo's single source of truth, ansible/requirements.yml,
+    # instead of a per-scenario copy (which drifted into inconsistent, upper-
+    # bound-less pins). role-file/requirements-file resolve relative to
+    # molecule's CWD, which the CI job and test-all-roles.sh both set to the role
+    # dir (ansible/roles/<role>), so ../../ reaches ansible/. NB: this is a
+    # different depth than playbooks.prepare's ../../../../molecule/ below —
+    # molecule resolves playbook paths relative to the scenario dir, but hands
+    # role-file/requirements-file to ansible-galaxy which runs in the CWD.
+    role-file: ../../requirements.yml
+    requirements-file: ../../requirements.yml
 driver:
   name: docker
 provisioner:

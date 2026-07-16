@@ -102,7 +102,7 @@ All labels use the `esweiss.com/` prefix:
 |-------|---------|-------|
 | `esweiss.com/nas=true` | Fast NAS storage access (local NFS) | k3s-agt-nas-01 |
 | `esweiss.com/general=true` | General workloads | All agents |
-| `esweiss.com/ingress=true` | Ingress controller eligible | k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03 |
+| `esweiss.com/ingress=true` | Ingress controller eligible | k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03, k3s-agt-prec-01 |
 | `esweiss.com/compute=true` | High-computation tasks (ML, transcoding) | k3s-agt-prec-01 |
 | `esweiss.com/control-plane=true` | Informational: control plane node | All servers |
 
@@ -112,8 +112,8 @@ All labels use the `esweiss.com/` prefix:
 |------|-----------|-------|--------|---------|
 | All servers | `node-role.kubernetes.io/control-plane` | `true` | NoSchedule | Reserve for etcd + API |
 | k3s-agt-nas-01 | `esweiss.com/nas` | `true` | PreferNoSchedule | Prefer NAS workloads, allow overflow |
-| k3s-agt-laptop-01 | `esweiss.com/ingress` | `true` | PreferNoSchedule | Prefer ingress, allow general overflow |
-| k3s-agt-prec-01 | `esweiss.com/compute` | `true` | PreferNoSchedule | Prefer compute workloads, allow general overflow |
+| k3s-agt-laptop-01, k3s-agt-opt-01, k3s-agt-opt-02, k3s-agt-opt-03 | `esweiss.com/ingress` | `true` | PreferNoSchedule | Prefer ingress, allow general overflow |
+| k3s-agt-prec-01 | `esweiss.com/compute` | `true` | PreferNoSchedule | Prefer compute workloads, allow general overflow (has the ingress **label** but the compute taint, not an ingress taint) |
 
 ### Using the "compute" Label
 
@@ -464,7 +464,7 @@ curl -sk https://192.168.0.161:6443/healthz
 - **K3s nodes**: k3s-srv-prec-01 (.227/227) + k3s-agt-prec-01 (.207/207)
 - **Storage**: 1TB Samsung 870 EVO as `local-ssd`
 - **Agent role**: General + compute with `PreferNoSchedule` taint
-- **Agent specs**: 6 vCPU, 16GB RAM (workstation-class hardware)
+- **Agent specs**: 6 vCPU, 12GB RAM (`vm_memory: 12288` in hosts.yml — the source of truth)
 - **Notes**:
   - Workstation-class hardware with more capable CPU than the OptiPlex nodes
   - Good candidate for GPU passthrough if the Precision has a discrete GPU

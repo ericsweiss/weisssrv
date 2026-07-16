@@ -82,7 +82,11 @@
     that:
       - haos_ssl_cert_check.rc == 0
     fail_msg: |
-      home_assistant_ssl_enabled is true but /ssl/fullchain.pem or
+      HAOS SSL cert pre-flight failed (ssh rc={{ haos_ssl_cert_check.rc }}).
+      rc=255 means the SSH check could not reach HAOS at all (host down,
+      ConnectTimeout, or a host-key mismatch) — investigate connectivity
+      first, not the cert.
+      Otherwise home_assistant_ssl_enabled is true but /ssl/fullchain.pem or
       /ssl/privkey.pem is missing on HAOS. Run `task dns:deploy` first
       so acme_certs distributes the cert (cert_distribution_targets
       entry host=home in host_vars/dns-01.yml), or temporarily set
@@ -203,14 +207,18 @@
       when: not (home_assistant_render_only | default(false))
 
     - name: Remove config backups after a successful `ha core check`
+      # Both paths stay on ONE line: in a `>` scalar a more-indented
+      # continuation keeps its newline, which splits the remote command into
+      # two shell lines — the second .bak was never removed (and the remote
+      # tried to execute it). The multi-line ssh commands above are safe only
+      # because their fragments end in `;`/`&&`.
       ansible.builtin.command:
         cmd: >
           ssh -p {{ home_assistant_ssh_port }}
           -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=yes
           root@{{ home_assistant_host }}
-          'rm -f {{ home_assistant_config_path }}/configuration.yaml.bak
-                 {{ home_assistant_config_path }}/secrets.yaml.bak'
+          'rm -f {{ home_assistant_config_path }}/configuration.yaml.bak {{ home_assistant_config_path }}/secrets.yaml.bak'
       register: ha_backup_cleanup
       changed_when: false
       # Best-effort: the deploy already passed `ha core check`, so a cleanup
@@ -234,8 +242,8 @@
     # .bak exists iff the file existed before THIS deploy (the backup task clears
     # a stale .bak otherwise), so per file: a .bak present -> restore it; no .bak
     # but the file now present -> it was newly created by this deploy, so remove
-    # the bad new file. (This SSH-to-HAOS path is not exercised by molecule,
-    # which runs render_only=true.)
+    # the bad new file. (Exercised by molecule via the verify play's ssh/scp
+    # shims: forced-check-failure and first-install-failure phases.)
     - name: Roll back HA config to the pre-deploy state
       ansible.builtin.command:
         cmd: >

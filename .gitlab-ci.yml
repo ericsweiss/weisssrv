@@ -16,9 +16,10 @@
 # Pipeline triggers:
 # - Merge requests: Validation only (no deploy)
 # - Push to main: Validation + auto-deploy
-# - Scheduled: Version checking and secret detection only (all other jobs excluded
-#   via when: never), EXCEPT a schedule with SCHEDULE_TYPE=full-test, which also runs
-#   build-molecule-images + molecule/integration tests as an external-dependency canary
+# - Scheduled: Version checking, secret detection, and the advisory
+#   tailscale-drift-plan (token-guarded); all other jobs excluded via when: never,
+#   EXCEPT a schedule with SCHEDULE_TYPE=full-test, which also runs the molecule
+#   image builds + molecule/integration tests as an external-dependency canary
 # - Manual (web): Lint, validate, test, security stages only (deploy/gate/maintenance excluded)
 
 stages:
@@ -73,7 +74,7 @@ variables:
 workflow:
   # Aggressively cancel superseded MR pipelines. GitLab's default auto-cancel is
   # "conservative": it stops cancelling a pipeline the moment any NON-interruptible
-  # job (build-molecule-images, the deploy-* jobs) has started — so on a busy MR,
+  # job (the molecule image builds, the deploy-* jobs) has started — so on a busy MR,
   # every push left the previous pipeline's heavy but interruptible molecule/
   # integration jobs running, piling up on the shared k3s runners and starving
   # them (the systemd-in-DinD containers then time out — the "Container is not
@@ -91,7 +92,30 @@ workflow:
 # ============================================================================
 # Templates for reuse
 # ============================================================================
+
+# Persist the pip download cache + the ansible-galaxy collections across jobs so
+# the pip/galaxy installs in .ansible-base and .deploy-base stop re-fetching the
+# same pinned artifacts from PyPI/galaxy on every run (network round-trips that
+# add wall-clock time AND re-expose the pipeline to upstream transient failures,
+# e.g. a galaxy 500/timeout). Both env vars point the tools at cached dirs under
+# the build root; the cache key includes the pin files so a dependency bump
+# busts it. No-op (just no cache hits) when the runner has no distributed cache
+# backend — safe either way. Pulled in via `extends`.
+.dep-cache:
+  variables:
+    PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+    ANSIBLE_COLLECTIONS_PATH: "${CI_PROJECT_DIR}/.cache/ansible-collections"
+  cache:
+    key:
+      files:
+        - requirements.txt
+        - ansible/requirements.yml
+    paths:
+      - .cache/pip
+      - .cache/ansible-collections
+
 .ansible-base:
+  extends: .dep-cache
   variables:
     # GitLab checkout is world-writable, causing Ansible to ignore ansible.cfg
     # Use absolute roles path; config is copied to a secure temp file in before_script
@@ -175,9 +199,15 @@ workflow:
 # never scheduled. NOT plain YAML anchors: the pipeline stays anchor-free
 # (extends/!reference only) so the planned include:-file split remains safe
 # (docs/16 ARCH-4 — anchors are file-local and would break across includes).
-.paths-build-molecule:
+# The two molecule CI images have DISJOINT inputs, so each build job gates on
+# only its own — a requirements.txt pip bump must not rebuild molecule-test's
+# ~40-package apt layer, and a molecule-test apt change must not rebuild
+# molecule-ci's pip+galaxy layers.
+.paths-build-molecule-test:
   changes:
     - docker/molecule-test/**/*
+.paths-build-molecule-ci:
+  changes:
     - docker/molecule-ci/**/*
     - requirements.txt
     - ansible/requirements.yml
@@ -215,6 +245,28 @@ workflow:
 .paths-terraform:
   changes:
     - terraform/**/*
+# Cloudflare-only jobs (terraform-plan, deploy-terraform) gate on just the
+# cloudflare module so an unrelated tailscale change can't fire a Cloudflare
+# plan+apply. The broad .paths-terraform above stays for the multi-module
+# terraform-fmt / terraform-validate jobs.
+.paths-terraform-cloudflare:
+  changes:
+    - terraform/cloudflare/**/*
+.paths-terraform-tailscale:
+  changes:
+    - terraform/tailscale/**/*
+.paths-docs-links:
+  changes:
+    - docs/**/*
+    - README.md
+    - CLAUDE.md
+    - scripts/check-doc-links.py
+    - scripts/test_check_doc_links.py
+.paths-taskfile:
+  changes:
+    - Taskfile.yml
+    # Any script add/rename/delete can dangle a Taskfile reference.
+    - scripts/**/*
 .paths-flux-versions-sync:
   changes:
     - ansible/inventories/prod/group_vars/all.yml
@@ -246,6 +298,8 @@ workflow:
     - kubernetes/infrastructure/observability/kube-prometheus-stack/alertmanager-config.yaml
     - scripts/extract-prometheus-config.py
     - scripts/lint-prometheus-config.sh
+    # promtool unit tests + vendored upstream rules run by the lint script.
+    - scripts/prometheus-rule-tests/**/*
 .paths-molecule:
   changes:
     - ansible/roles/**/*
@@ -253,11 +307,13 @@ workflow:
     - ansible/playbooks/**/*
     - ansible/inventories/prod/group_vars/**/*
     # Test-image/dependency changes must run the suite they feed
-    # (build-molecule-images fires on the same paths).
+    # (the build-molecule-test/ci jobs fire on these paths).
     - docker/molecule-test/**/*
     - docker/molecule-ci/**/*
     - requirements.txt
     - ansible/requirements.yml
+    # The shared in-job retry wrapper both suites run through.
+    - scripts/molecule-retry.sh
 .paths-integration:
   changes:
     - ansible/integration-tests/**/*
@@ -267,6 +323,7 @@ workflow:
     - docker/molecule-ci/**/*
     - requirements.txt
     - ansible/requirements.yml
+    - scripts/molecule-retry.sh
 
 # GitLab HTTP state backend (project-scoped Terraform state + lock) shared by
 # terraform-plan and deploy-terraform via `extends`. Edit the path/auth once.
@@ -282,7 +339,9 @@ workflow:
     TF_HTTP_RETRY_WAIT_MIN: "5"
 
 .deploy-base:
-  extends: .install-1password
+  # .dep-cache: reuse pip wheels + galaxy collections across deploy jobs (the
+  # 12 jobs extending this each pip-install ansible + galaxy-install collections).
+  extends: [.install-1password, .dep-cache]
   # Deploys touch shared infrastructure; never cancel a running deploy when a new
   # pipeline starts — wait for it to complete instead.
   interruptible: false
@@ -409,26 +468,24 @@ workflow:
 # BUILD STAGE - Container images
 # ============================================================================
 
-build-molecule-images:
+# The two CI images are built by separate jobs (build-molecule-test,
+# build-molecule-ci) so each rebuilds only when ITS OWN inputs change — a
+# requirements.txt pip bump no longer rebuilds molecule-test's ~40-package apt
+# layer, and vice-versa. Both share this base: the pinned static docker CLI
+# install, the dind-ready wait, registry login, and a build_and_push helper with
+# registry-backed BuildKit layer caching + a bounded in-script build retry.
+.build-molecule-base:
   # Pushes images consumed by later jobs in this pipeline; do not interrupt.
   interruptible: false
-  # This job pulls a lot of external deps at build time — the base image, apt,
-  # pip, ansible-galaxy (galaxy.ansible.com), and the dind daemon — any of which
-  # can transiently fail and surface as a script_failure (e.g. a galaxy download
-  # 500/timeout, or "Cannot connect to the Docker daemon"). Since the build itself
-  # is deterministic (a REAL error still fails after the retries), retry those too
-  # so a transient download doesn't block the whole molecule matrix. (Test jobs
-  # keep a narrow retry — a failing test must NOT be masked; see .molecule-base.)
+  # Infra-class retries only. NOT script_failure: a genuinely broken Dockerfile
+  # must fail fast, not burn three full image builds — transient external-dep
+  # pulls (base image, apt, pip, galaxy) are handled cheaply by the in-script
+  # build_and_push retry below, which reuses cached layers on a re-attempt.
   retry:
     max: 2
     when:
       - runner_system_failure
       - scheduler_failure
-      - script_failure
-  # Builds both CI images:
-  # - molecule-test: the container molecule spins up (has all role apt deps)
-  # - molecule-ci: the GitLab CI runner image (has docker-cli + molecule + ansible)
-  # Only rebuilds when Dockerfiles or requirements change.
   stage: build
   image: python:3.11
   services:
@@ -436,6 +493,9 @@ build-molecule-images:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    # Daemon-embedded BuildKit (dind 24.0) — no buildx CLI plugin needed (the
+    # static docker binary lacks it). Enables --cache-from + inline cache.
+    DOCKER_BUILDKIT: "1"
   before_script:
     # Install the static docker CLI (NOT docker.io: the Trixie docker.io package
     # ships only the daemon, no CLI — see docker/molecule-ci/Dockerfile). Pinned
@@ -458,14 +518,71 @@ build-molecule-images:
       # "Cannot connect to the Docker daemon at tcp://docker:2375".
       for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
-  script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    # molecule-test: the container roles run inside
-    - docker build -t "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}" docker/molecule-test/
-    - docker push "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}"
-    # molecule-ci: the GitLab CI runner image (docker-cli + pip deps + collections)
-    - docker build -t "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" -f docker/molecule-ci/Dockerfile .
-    - docker push "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}"
+    - |
+      # build_and_push <image-short-name> <docker-build-args...>
+      # Builds ${CI_REGISTRY_IMAGE}/<image>:<sha>, pushing it (and :latest on
+      # main). Seeds a registry layer cache from the previous :latest and embeds
+      # inline cache metadata for the next run — EXCEPT on the full-test schedule
+      # canary, which must rebuild from scratch to exercise fresh external deps.
+      # The build+push is wrapped in a bounded retry so a transient dep pull /
+      # registry blip re-attempts (cheap: cached layers) while a real build error
+      # still fails after the attempts (job-level retry omits script_failure).
+      build_and_push() {
+        img="$1"; shift
+        ref="${CI_REGISTRY_IMAGE}/${img}"
+        cache_args=""
+        if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
+          cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
+        fi
+        attempt=1; max=3
+        # shellcheck disable=SC2086  # word-split cache_args + trailing build args
+        until docker build $cache_args -t "${ref}:${CI_COMMIT_SHORT_SHA}" "$@" \
+              && docker push "${ref}:${CI_COMMIT_SHORT_SHA}"; do
+          attempt=$((attempt+1))
+          if [ "$attempt" -gt "$max" ]; then
+            echo "docker build/push of ${img} failed after ${max} attempts"; return 1
+          fi
+          echo "build/push ${img} attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
+          sleep $(( (RANDOM % 20) + 10 ))
+        done
+        # :latest only on main — MR pipelines use SHA tags so they never
+        # overwrite :latest with unmerged branch images. The SHA tag (and, for
+        # molecule-ci, its digest dotenv) is the load-bearing reference; :latest
+        # is the fallback for pipelines where the build didn't run.
+        if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+          docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
+          docker push "${ref}:latest"
+        fi
+      }
+
+# molecule-test: the container molecule spins up (has all role apt deps). apt-
+# only build; rebuilt only when docker/molecule-test/** changes.
+build-molecule-test:
+  extends: .build-molecule-base
+  script:
+    - build_and_push molecule-test docker/molecule-test/
+  rules:
+    # full-test schedule canary: rebuild from scratch so build-time external deps
+    # (apt) are exercised. Must precede the schedule when:never (first-match).
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-build-molecule-test, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-build-molecule-test, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+
+# molecule-ci: the GitLab CI runner image (docker-cli + pip deps + collections).
+# Rebuilt only when docker/molecule-ci/**, requirements.txt, or
+# ansible/requirements.yml change. Emits the MOLECULE_CI_IMAGE digest dotenv.
+build-molecule-ci:
+  extends: .build-molecule-base
+  script:
+    - build_and_push molecule-ci -f docker/molecule-ci/Dockerfile .
     # Capture the immutable digest of the CI runner image and emit it as a
     # dotenv var. The .molecule-base `image:` reference consumes MOLECULE_CI_IMAGE
     # so a same-pipeline rebuild can't be raced by anyone retagging :latest
@@ -476,34 +593,18 @@ build-molecule-images:
     - MOLECULE_CI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}")
     - echo "MOLECULE_CI_IMAGE=${MOLECULE_CI_DIGEST}" > molecule-images.env
     - cat molecule-images.env
-    # Only push :latest on main — MR pipelines use SHA tags to avoid
-    # overwriting :latest with unmerged branch images. The digest pin
-    # above is the load-bearing reference; :latest is only used as a
-    # fallback for pipelines where build doesn't run (Dockerfile/reqs
-    # unchanged), and even then it's the previous main's image.
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-        docker tag "${CI_REGISTRY_IMAGE}/molecule-test:${CI_COMMIT_SHORT_SHA}" "${CI_REGISTRY_IMAGE}/molecule-test:latest"
-        docker push "${CI_REGISTRY_IMAGE}/molecule-test:latest"
-        docker tag "${CI_REGISTRY_IMAGE}/molecule-ci:${CI_COMMIT_SHORT_SHA}" "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
-        docker push "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
-      fi
   artifacts:
     reports:
       dotenv: molecule-images.env
     expire_in: 7 days
   rules:
-    # full-test schedule canary: rebuild the images so external deps baked in
-    # at build time (apt, pip, ansible-galaxy) are exercised, not just the
-    # stale :latest image's runtime deps. Must precede the schedule
-    # `when: never` rule — GitLab rules are first-match-wins.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-test"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-build-molecule, changes]
+      changes: !reference [.paths-build-molecule-ci, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-build-molecule, changes]
+      changes: !reference [.paths-build-molecule-ci, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
@@ -664,6 +765,107 @@ flux-version-pin-check:
       changes: !reference [.paths-flux-version-pin, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes: !reference [.paths-flux-version-pin, changes]
+
+# The CI kubectl pin (.kubectl-setup) has no drift guard, unlike FLUX_VERSION
+# above. A k3s_version bump merged via all.yml -> versions-configmap could push
+# the hardcoded kubectl pin to 2 minors of skew with nothing catching it, at
+# which point the kubectl calls in deploy-verify / maintenance jobs could break.
+# This asserts the pin stays within Kubernetes' supported +/-1 minor skew of the
+# cluster's k3s_version; on failure, bump the kubectl version + sha256 in
+# .kubectl-setup.
+kubectl-version-pin-check:
+  needs: []
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - |
+      python3 - <<'PY'
+      import pathlib
+      import re
+      import sys
+
+      ci = pathlib.Path(".gitlab-ci.yml").read_text()
+      m = re.search(r"dl\.k8s\.io/release/v(\d+)\.(\d+)\.\d+/bin", ci)
+      if not m:
+          sys.exit("Could not extract the kubectl pin from .kubectl-setup in .gitlab-ci.yml")
+      kmaj, kmin = int(m.group(1)), int(m.group(2))
+
+      cm = pathlib.Path("kubernetes/infrastructure/sources/versions-configmap.yaml").read_text()
+      m2 = re.search(r"^\s*k3s_version:\s*v?(\d+)\.(\d+)", cm, re.M)
+      if not m2:
+          sys.exit("Could not extract k3s_version from versions-configmap.yaml")
+      smaj, smin = int(m2.group(1)), int(m2.group(2))
+
+      print(f"CI kubectl pin: v{kmaj}.{kmin}.x / cluster k3s_version: v{smaj}.{smin}.x")
+      if kmaj != smaj or abs(kmin - smin) > 1:
+          sys.exit(
+              f"kubectl pin v{kmaj}.{kmin} is outside Kubernetes' supported +/-1 minor "
+              f"skew of the cluster (k3s v{smaj}.{smin}) — bump the kubectl version + "
+              f"sha256 in .kubectl-setup (.gitlab-ci.yml)."
+          )
+      print("kubectl pin is within the supported +/-1 minor skew of k3s_version.")
+      PY
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-flux-version-pin, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-flux-version-pin, changes]
+
+# docs/ + the top-level READMEs are the declared source of truth, and the tree
+# carries dozens of internal `](docs/NN-*.md)` cross-links. Docs get renumbered/
+# reorganized, so a renamed or deleted doc silently rots these links. This gate
+# resolves every relative `.md` link against the filesystem (offline, stdlib
+# only — no tool download). scripts/test_check_doc_links.py guards the checker
+# itself in the python-tests job.
+docs-link-check:
+  needs: []
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - python3 scripts/check-doc-links.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-docs-links, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-docs-links, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Taskfile.yml is the operator control surface but nothing validated it —
+# yaml-lint skips the repo root and no job ran `task`. A YAML/go-task schema
+# break, or a reference to a deleted/renamed script, surfaced only at an
+# operator's next `task` run. `task --list` compiles + parses the Taskfile
+# (catches a malformed/broken schema); scripts/check-taskfile.sh then asserts
+# every referenced script exists (go-task evaluates templates lazily and never
+# stats them, so --list alone would miss a dangling reference).
+taskfile-smoke:
+  needs: []
+  stage: lint
+  image: python:3.11-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl ca-certificates
+    - |
+      # go-task, pinned + sha256 like every other downloaded binary in this pipeline.
+      TASK_VERSION="v3.52.0"
+      TASK_SHA256="02c679ffae53dca791804847d78b31731615894e292948397c971c87ac9e95bd"
+      curl -fsSL "https://github.com/go-task/task/releases/download/${TASK_VERSION}/task_linux_amd64.tar.gz" -o /tmp/task.tar.gz
+      echo "${TASK_SHA256}  /tmp/task.tar.gz" | sha256sum -c -
+      tar xzf /tmp/task.tar.gz -C /usr/local/bin task
+      task --version
+  script:
+    - task --list
+    - bash scripts/check-taskfile.sh
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-taskfile, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-taskfile, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 yaml-lint:
   needs: []
@@ -912,9 +1114,56 @@ terraform-plan:
     # skip, not a clean plan. validation-gate needs this job optionally, so a
     # token-gated skip can't silently mask drift on a real (token-bearing) run.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform, changes]
+      changes: !reference [.paths-terraform-cloudflare, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform, changes]
+      changes: !reference [.paths-terraform-cloudflare, changes]
+
+# Read-only drift `terraform plan` for the tailscale ACL module against live
+# state. Never applies (apply stays supervised — see terraform/tailscale/README.md).
+# A non-empty plan = the live tailnet ACL drifted from policy.hujson (e.g. an
+# Admin-console hot-fix); allow_failure so that drift, or a plan hiccup, surfaces
+# without blocking CI. Mirrors terraform-plan's op-injected creds + TF_HTTP_*
+# state backend, scoped to the tailscale module + its own state name.
+tailscale-drift-plan:
+  # Shared HTTP-backend auth/lock settings come from .terraform-http-backend;
+  # only the tailscale state path is overridden here.
+  extends: .terraform-http-backend
+  needs: []
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.15
+    entrypoint: [""]
+  variables:
+    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/tailscale"
+    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/tailscale/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/tailscale/lock"
+  before_script:
+    - !reference [.install-1password-alpine, before_script]
+  script:
+    - cd terraform/tailscale
+    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (committed
+    # provider hashes; a CI-side change would mask supply-chain drift).
+    - terraform init -lockfile=readonly
+    - |
+      export TF_VAR_tailscale_oauth_client_id=$(op read "op://Homelab/Tailscale OAuth/client id")
+      export TF_VAR_tailscale_oauth_client_secret=$(op read "op://Homelab/Tailscale OAuth/credential")
+      # Plan only, never apply — surfaces drift instead of silently reverting it.
+      # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
+      # diff), so allow_failure can actually render the yellow drift signal.
+      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
+  # Advisory drift signal only — never blocks CI (apply stays supervised).
+  allow_failure: true
+  rules:
+    # Periodic drift detection on the schedule (token available on the protected
+    # main branch). No changes: filter — the point is to catch out-of-band
+    # Admin-console edits when nothing in-repo changed.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
+    # And validate a tailscale-module change against live state before its
+    # supervised apply. Token-guarded like terraform-plan (fork MRs lack it).
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes: !reference [.paths-terraform-tailscale, changes]
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes: !reference [.paths-terraform-tailscale, changes]
 
 flux-versions-sync:
   needs: []
@@ -998,7 +1247,7 @@ python-tests:
   before_script:
     # git is required by test_check_deploy_coverage.py (it builds throwaway git
     # repos to exercise check-deploy-coverage.sh); the slim image omits it.
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git jq
     - pip install --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}"
   script:
     - pytest scripts/ -v --junitxml=report.xml
@@ -1030,24 +1279,48 @@ flux-lint:
   # verbatim, so a chart values-key typo would otherwise be unchecked).
   stage: lint
   image: python:3.11-slim
+  # Cache the pinned lint binaries across runs, keyed on .gitlab-ci.yml (where
+  # the versions + sha256s live), so a bump busts the cache. No-op without a
+  # runner cache backend. The versions-extraction is shared with deploy-verify
+  # via scripts/flux-render.sh; the binaries are the download-heavy part.
+  cache:
+    key:
+      prefix: flux-lint
+      files:
+        - .gitlab-ci.yml
+    paths:
+      - .cache/flux-lint-tools
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl gettext-base
     - pip install --quiet "pyyaml==${PYYAML_VERSION}"
     - |
-      KUBECONFORM_SHA256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
-      curl -fsSL -o /tmp/kubeconform.tar.gz \
-        https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-      echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
-      tar xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
-      curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
-      echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c -
-      tar xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
+      # The cache holds VERIFIED TARBALLS, not extracted binaries: every run —
+      # cache hit or miss — re-checks each tarball against its pinned sha256
+      # and re-extracts, so a tampered/mutated runner cache can never smuggle
+      # an unverified binary onto PATH. Download only on miss/corruption.
+      # before_script and script share one shell, so the export persists.
+      TOOLS_CACHE="${CI_PROJECT_DIR}/.cache/flux-lint-tools"
+      TOOLS_BIN=/usr/local/bin
+      mkdir -p "$TOOLS_CACHE"
+      fetch_verified() { # <file> <url> <sha256>
+        if ! echo "$3  $TOOLS_CACHE/$1" | sha256sum -c - >/dev/null 2>&1; then
+          curl -fsSL -o "$TOOLS_CACHE/$1" "$2"
+          echo "$3  $TOOLS_CACHE/$1" | sha256sum -c -
+        fi
+      }
+      fetch_verified kubeconform.tar.gz \
+        https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+        95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+      tar xzf "$TOOLS_CACHE/kubeconform.tar.gz" -C "$TOOLS_BIN" kubeconform
+      fetch_verified kustomize.tar.gz \
+        "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+        "${KUSTOMIZE_SHA256}"
+      tar xzf "$TOOLS_CACHE/kustomize.tar.gz" -C "$TOOLS_BIN" kustomize
       # helm: schema-validates HelmRelease .spec.values (scripts/validate-helm-values.py).
       # Tarball unpacks to linux-amd64/helm (unlike kubeconform/kustomize bare binaries).
-      HELM_SHA256="f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
-      curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.18.4-linux-amd64.tar.gz
-      echo "${HELM_SHA256}  /tmp/helm.tar.gz" | sha256sum -c -
-      tar xzf /tmp/helm.tar.gz -C /usr/local/bin --strip-components=1 linux-amd64/helm
+      fetch_verified helm.tar.gz https://get.helm.sh/helm-v3.18.4-linux-amd64.tar.gz \
+        f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1
+      tar xzf "$TOOLS_CACHE/helm.tar.gz" -C "$TOOLS_BIN" --strip-components=1 linux-amd64/helm
       kubeconform -v && kustomize version && helm version --short && envsubst --version | head -1
   script:
     - |
@@ -1139,6 +1412,22 @@ flux-lint:
         fi
       done
 
+      # [informational] Track which rendered kinds kubeconform could NOT schema-
+      # validate because -ignore-missing-schemas skipped them (no schema in the
+      # datreeio catalog). Every kind in use today IS covered, but nothing else
+      # signals when a NEW CRD-backed kind starts slipping through unvalidated.
+      # scripts/kubeconform-skipped.py lists any skipped kinds over the whole
+      # corpus so that shows up at review time. Never fails the gate (|| true) —
+      # the per-Kustomization passes above are the gate.
+      echo "=== kubeconform unvalidated-kind tracking (informational) ==="
+      # -verbose is load-bearing: without it kubeconform's JSON omits
+      # valid/skipped resources entirely and the tracker always reports
+      # "no skips".
+      kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
+        -schema-location default \
+        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+        -output json < "$RENDER_ALL" 2>/dev/null | python3 scripts/kubeconform-skipped.py || true
+
       # HPA/VPA invariant: no workload may have both an HPA and a VPA driving
       # the same resource (docs/33-autoscaling.md). --require-chart-native-vpas
       # also statically asserts the chart-native-HPA workloads
@@ -1188,23 +1477,43 @@ prometheus-config-lint:
   needs: []
   stage: lint
   image: python:3.11-slim
+  # Cache promtool + amtool across runs, keyed on .gitlab-ci.yml (versions +
+  # sha256s live there). No-op without a runner cache backend.
+  cache:
+    key:
+      prefix: prom-tools
+      files:
+        - .gitlab-ci.yml
+    paths:
+      - .cache/prom-tools
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl
     - pip install --quiet "pyyaml==${PYYAML_VERSION}"
     - |
       set -eo pipefail
       # promtool (prometheus) + amtool (alertmanager), pinned + sha256 like every
-      # other downloaded binary in this pipeline. set -eo pipefail so a failing
-      # sha256sum -c aborts the block — without it only the last line's status
-      # counts and the integrity pin would be decorative.
+      # other downloaded binary in this pipeline. The cache holds VERIFIED
+      # TARBALLS: every run — hit or miss — re-checks the pinned sha256 and
+      # re-extracts, so a mutated runner cache can't smuggle in an unverified
+      # binary. set -eo pipefail so a failing sha256sum -c aborts the block.
+      TOOLS_CACHE="${CI_PROJECT_DIR}/.cache/prom-tools"
+      mkdir -p "$TOOLS_CACHE"
+      fetch_verified() { # <file> <url> <sha256>
+        if ! echo "$3  $TOOLS_CACHE/$1" | sha256sum -c - >/dev/null 2>&1; then
+          curl -fsSL -o "$TOOLS_CACHE/$1" "$2"
+          echo "$3  $TOOLS_CACHE/$1" | sha256sum -c -
+        fi
+      }
       PROM_VERSION="3.6.0"
-      curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz" -o /tmp/prom.tar.gz
-      echo "2002ef4a55a64161affccd2786c7081d4e3b3a8d08786a98b3bb110971414916  /tmp/prom.tar.gz" | sha256sum -c -
-      tar xzf /tmp/prom.tar.gz -C /usr/local/bin --strip-components=1 "prometheus-${PROM_VERSION}.linux-amd64/promtool"
+      fetch_verified prom.tar.gz \
+        "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz" \
+        2002ef4a55a64161affccd2786c7081d4e3b3a8d08786a98b3bb110971414916
+      tar xzf "$TOOLS_CACHE/prom.tar.gz" -C /usr/local/bin --strip-components=1 "prometheus-${PROM_VERSION}.linux-amd64/promtool"
       AM_VERSION="0.28.1"
-      curl -fsSL "https://github.com/prometheus/alertmanager/releases/download/v${AM_VERSION}/alertmanager-${AM_VERSION}.linux-amd64.tar.gz" -o /tmp/am.tar.gz
-      echo "5ac7ab5e4b8ee5ce4d8fb0988f9cb275efcc3f181b4b408179fafee121693311  /tmp/am.tar.gz" | sha256sum -c -
-      tar xzf /tmp/am.tar.gz -C /usr/local/bin --strip-components=1 "alertmanager-${AM_VERSION}.linux-amd64/amtool"
+      fetch_verified am.tar.gz \
+        "https://github.com/prometheus/alertmanager/releases/download/v${AM_VERSION}/alertmanager-${AM_VERSION}.linux-amd64.tar.gz" \
+        5ac7ab5e4b8ee5ce4d8fb0988f9cb275efcc3f181b4b408179fafee121693311
+      tar xzf "$TOOLS_CACHE/am.tar.gz" -C /usr/local/bin --strip-components=1 "alertmanager-${AM_VERSION}.linux-amd64/amtool"
       promtool --version && amtool --version
   script:
     - bash scripts/lint-prometheus-config.sh
@@ -1246,12 +1555,27 @@ prometheus-config-lint:
       - runner_system_failure
       - scheduler_failure
   needs:
-    - job: build-molecule-images
+    # build-molecule-ci emits a dotenv pinning MOLECULE_CI_IMAGE to the image
+    # digest (overriding the :latest fallback below); artifacts:true consumes it.
+    - job: build-molecule-ci
       optional: true
-      # When it runs (Dockerfile/requirements changed this pipeline), the build
-      # job emits a dotenv pinning MOLECULE_CI_IMAGE to the image digest, which
-      # overrides the :latest fallback below; artifacts:true consumes it.
       artifacts: true
+    # build-molecule-test rebuilds the role container. Optional need (no
+    # artifacts) so WHEN it runs the matrix waits for the push before pulling by
+    # SHA tag — otherwise the SHA pull below misses and falls back to the
+    # previous main's :latest (a pull-before-push race when only test rebuilt).
+    - job: build-molecule-test
+      optional: true
+    # Gate the expensive privileged-DinD fan-out (the 37-job molecule +
+    # integration matrix) behind the two fastest correctness lints, so an MR
+    # with a syntax/lint error doesn't burn the whole matrix on the scarce
+    # privileged runner. optional: true — both lints are path-gated (skipped
+    # when their paths don't change), and this deliberately leans runner-capacity
+    # savings over the ~1-2 min it adds to a green pipeline's critical path.
+    - job: ansible-lint
+      optional: true
+    - job: yaml-lint
+      optional: true
   # Pre-built CI runner image (docker-cli + molecule + ansible + collections
   # baked in) — saves ~2 min of apt/pip/galaxy per job vs python:3.11.
   # `image:` only supports single-var expansion ($VAR), not bash defaults, so
@@ -1268,7 +1592,7 @@ prometheus-config-lint:
     ANSIBLE_CALLBACKS_ENABLED: junit
     JUNIT_OUTPUT_DIR: "$CI_PROJECT_DIR/junit"
     MOLECULE_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-test"
-    # Fallback when build-molecule-images is skipped this pipeline; its
+    # Fallback when build-molecule-ci is skipped this pipeline; its
     # dotenv artifact (when present) overrides this with the digest pin.
     MOLECULE_CI_IMAGE: "${CI_REGISTRY_IMAGE}/molecule-ci:latest"
   before_script:
@@ -1298,33 +1622,17 @@ molecule-tests:
   extends: .molecule-base
   script:
     - cd "ansible/roles/$ROLE"
-    # In-job retry with destroy + jitter. Under full pipeline fan-out,
-    # simultaneous systemd-container starts on a shared node race cgroup
-    # setup and die at prepare ("Container X is not running" — pipelines
-    # 360/361/365, several roles, always the same second). Job-level
-    # retry re-rolls the same dice (all attempts land in the same
-    # storm); destroy + a randomized 20-65s sleep de-conflicts the
-    # restart instead. $RANDOM is per-shell and the runner pod start
-    # times differ, so the jitter genuinely spreads.
-    # The default scenarios inherit shared config from ansible/molecule/base.yml
-    # via -c; the self-contained non-default scenarios (k3s/agent,
-    # resolv_conf/empty-search) keep their full molecule.yml and get no -c.
+    # In-job destroy + jitter retry (see scripts/molecule-retry.sh for the why:
+    # container-start storms under a full fan-out). The retry policy (max
+    # attempts + 20-65s jitter) lives in that ONE script, shared with
+    # integration-tests. The default scenarios inherit shared config from
+    # ansible/molecule/base.yml via -c; the self-contained non-default scenarios
+    # (k3s/agent, resolv_conf/empty-search) keep their full molecule.yml, no -c.
     - |
       base_opt=""
       [ "$SCENARIO" = "default" ] && base_opt="-c $CI_PROJECT_DIR/ansible/molecule/base.yml"
-      # max=4 (was 3): under a full ~55-job fan-out the container-start storm
-      # can outlast 3 attempts and exhaust; a 4th widely-jittered attempt
-      # usually catches a lull. Only flaky jobs pay it (a healthy job passes on
-      # attempt 1), and 4 * (test + <=65s jitter) still fits the job timeouts.
-      attempt=1; max=4
-      until molecule $base_opt test -s "$SCENARIO"; do
-        rc=$?
-        attempt=$((attempt+1))
-        if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
-        echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
-        molecule $base_opt destroy -s "$SCENARIO" || true
-        sleep $(( (RANDOM % 46) + 20 ))
-      done
+      MOL_BASE="$base_opt" MOL_SCEN="-s $SCENARIO" \
+        bash "$CI_PROJECT_DIR/scripts/molecule-retry.sh"
   parallel:
     matrix:
       # Each role/scenario combo gets its own parallel job. Roles with a
@@ -1336,6 +1644,8 @@ molecule-tests:
         SCENARIO: default
       - ROLE: adguard_home
         SCENARIO: default
+      - ROLE: adguard_home
+        SCENARIO: tls
       - ROLE: adguard_sync
         SCENARIO: default
       - ROLE: base
@@ -1388,6 +1698,8 @@ molecule-tests:
         SCENARIO: default
       - ROLE: node_exporter_host
         SCENARIO: default
+      - ROLE: textfile_collector
+        SCENARIO: default
       - ROLE: resolv_conf
         SCENARIO: default
       - ROLE: resolv_conf
@@ -1433,18 +1745,10 @@ integration-tests:
   timeout: 35m
   script:
     - cd "ansible/integration-tests/$TEST"
-    # Same in-job destroy+jitter retry as molecule-tests (see comment
-    # there) — multi-container scenarios are the most start-storm-prone.
-    - |
-      attempt=1; max=4
-      until molecule test; do
-        rc=$?
-        attempt=$((attempt+1))
-        if [ "$attempt" -gt "$max" ]; then exit "$rc"; fi
-        echo "molecule attempt $((attempt-1)) failed (rc=$rc); destroying + retrying ($attempt/$max)"
-        molecule destroy || true
-        sleep $(( (RANDOM % 46) + 20 ))
-      done
+    # Same shared destroy+jitter retry as molecule-tests (scripts/molecule-retry.sh)
+    # — multi-container scenarios are the most start-storm-prone. No base/scenario
+    # opts here (each integration test has a single molecule.yml).
+    - bash "$CI_PROJECT_DIR/scripts/molecule-retry.sh"
   parallel:
     matrix:
       - TEST:
@@ -1482,10 +1786,10 @@ secret_detection:
     # variable and was silently ignored. `.gitleaks.toml` carries
     # content-allowlist regexes (`op://`, `[your-...]`, anchored test/fake
     # fixture tokens) that cover the placeholder shapes docs use — `docs/*.md`
-    # is scanned normally — plus a path-allowlist for the molecule/
-    # integration-test trees only (throwaway PEM fixtures). Trade-off (a real
-    # secret committed under those test paths won't be caught here) is
-    # documented in `.gitleaks.toml` header.
+    # is scanned normally — plus a rule-scoped allowlist that exempts ONLY the
+    # `private-key` rule under the molecule/integration-test trees (throwaway
+    # PEM fixtures); every other rule still scans those paths, so a real cloud
+    # key/token committed there IS caught. Details in `.gitleaks.toml`.
     # Require modern CPU (gitleaks binary uses POPCNT/SSE4.2 - OptiPlex Core 2 Quads crash with SIGILL)
     # OPERATIONAL INVARIANT: this job is pinned to esweiss.com/cpu=modern nodes.
     # If no modern-CPU node is schedulable the job sits Pending and is NOT a
@@ -1577,6 +1881,14 @@ validation-gate:
       optional: true
     - job: flux-version-pin-check
       optional: true
+    - job: kubectl-version-pin-check
+      optional: true
+    - job: docs-link-check
+      optional: true
+    - job: taskfile-smoke
+      optional: true
+    # tailscale-drift-plan is deliberately NOT here: it is advisory
+    # (allow_failure) like pr-agent-review, so it can never block the gate.
     - job: python-tests
       optional: true
     # molecule-tests + integration-tests are fanned in via test-aggregate (see
@@ -1654,9 +1966,10 @@ deploy-terraform:
     name: production/cloudflare
   rules:
     - !reference [.skip-schedule-web, rules]
+    # Cloudflare-only: an unrelated terraform/tailscale change must not fire a
+    # Cloudflare plan+apply (which could revert out-of-band Cloudflare drift).
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes:
-        - terraform/**/*
+      changes: !reference [.paths-terraform-cloudflare, changes]
 
 # ------------------------------------------------------------------------------
 # Ansible Infrastructure
@@ -1701,6 +2014,10 @@ deploy-ansible-base:
         # list it so a helper-only change still triggers the base deploy (same
         # pattern prometheus_exporter uses under deploy-ansible-dns/storage).
         - ansible/roles/apt_signed_repo/**/*
+        # textfile_collector is the shared unit/timer scaffold node_exporter_host
+        # includes for its corosync/zpool/smartmon collectors; list it so a
+        # helper-only change still triggers the node_exporter_host deploy.
+        - ansible/roles/textfile_collector/**/*
         - ansible/playbooks/base.yml
         - ansible/playbooks/site.yml
         - ansible/inventories/prod/group_vars/proxmox.yml
@@ -1877,6 +2194,10 @@ deploy-ansible-mail:
       changes:
         - ansible/roles/smtp_relay/**/*
         - ansible/roles/postfix_null_client/**/*
+        # textfile_collector is the shared unit/timer scaffold smtp_relay includes
+        # for its postfix queue collector; list it so a helper-only change still
+        # triggers the mail deploy.
+        - ansible/roles/textfile_collector/**/*
         # Mail group vars: relay/null-client settings consumed by the
         # site.yml --limit mail run, so a vars-only change must trigger
         # a redeploy (mirrors group_vars/dns.yml on the dns job).
@@ -2399,6 +2720,11 @@ maintenance-verify:
 # ============================================================================
 
 version-check:
+  # Every other lint-stage job sets needs: [] so it starts immediately instead
+  # of waiting out the whole build stage (multi-minute image builds) it has no
+  # dependency on. version-check is soft-fail everywhere, so an earlier start is
+  # strictly beneficial.
+  needs: []
   stage: lint
   image: python:3.11
   before_script:

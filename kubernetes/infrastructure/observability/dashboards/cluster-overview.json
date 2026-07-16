@@ -143,7 +143,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{job=\"node-exporter\", mode=\"idle\"}[5m])))",
           "legendFormat": "cpu",
           "refId": "A"
         }
@@ -182,7 +182,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes))",
+          "expr": "100 * (1 - sum(node_memory_MemAvailable_bytes{job=\"node-exporter\"}) / sum(node_memory_MemTotal_bytes{job=\"node-exporter\"}))",
           "legendFormat": "memory",
           "refId": "A"
         }
@@ -280,7 +280,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{job=\"node-exporter\", mode=\"idle\"}[5m]))) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }}",
           "refId": "A"
         },
@@ -344,7 +344,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{job=\"node-exporter\"} / node_memory_MemTotal_bytes{job=\"node-exporter\"}) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }}",
           "refId": "A"
         },
@@ -397,7 +397,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\", fstype!=\"tmpfs\"} / node_filesystem_size_bytes{mountpoint=\"/\", fstype!=\"tmpfs\"}) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "100 * (1 - node_filesystem_avail_bytes{job=\"node-exporter\", mountpoint=\"/\", fstype!=\"tmpfs\"} / node_filesystem_size_bytes{job=\"node-exporter\", mountpoint=\"/\", fstype!=\"tmpfs\"}) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }}",
           "refId": "A"
         }
@@ -521,7 +521,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"}) * 100 * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "(1 - node_filesystem_avail_bytes{job=\"node-exporter\", fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{job=\"node-exporter\", fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"}) * 100 * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -529,7 +529,7 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "node_filesystem_size_bytes{job=\"node-exporter\", fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -537,7 +537,7 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "node_filesystem_avail_bytes{job=\"node-exporter\", fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -644,7 +644,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"}) * 100 * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "(1 - node_filesystem_avail_bytes{job=\"node-exporter\", fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{job=\"node-exporter\", fstype!~\"tmpfs|overlay|squashfs\", mountpoint!~\"/boot.*\"}) * 100 * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }} {{ mountpoint }}",
           "refId": "A"
         },
@@ -2127,7 +2127,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{job=\"node-exporter\", mode=\"idle\"}[5m]))) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }}",
           "refId": "A",
           "instant": true
@@ -2172,7 +2172,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{job=\"node-exporter\"} / node_memory_MemTotal_bytes{job=\"node-exporter\"}) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }}",
           "refId": "A",
           "instant": true

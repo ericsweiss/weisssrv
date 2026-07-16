@@ -157,6 +157,280 @@
       no_log: true
 
     # ========================================================================
+    # 4. Deploy/validate/rescue behavioral coverage (render_only=false)
+    # ========================================================================
+    # The role's only stateful logic — scp stage, pre-deploy backup, atomic
+    # install, `ha core check`, and the rescue rollback — drives HAOS via raw
+    # ssh/scp commands, so it can't run against a real HAOS in CI. Instead,
+    # local shims at /usr/local/bin (ahead of /usr/bin in PATH) execute the
+    # "remote" command locally against a fake /config, and an `ha` shim honors
+    # a fault file so the check-failure rescue paths run for real. Three runs:
+    #   a. success        — prior config replaced, .baks cleaned up
+    #   b. check fails    — rescue restores the pre-deploy config from .bak
+    #   c. first-deploy   — check fails with no prior config: rescue removes
+    #                       the newly-created files instead
+    # Runs AFTER the render-only assertions above because the deploy path
+    # consumes/cleans the /tmp/ha-*.yaml artifacts they assert on.
+    - name: Install the local ssh shim (runs the remote command locally)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ssh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # molecule shim: the role's remote command is the last argument.
+          for last; do :; done
+          exec /bin/bash -c "$last"
+
+    - name: Install the local scp shim (copies into the "remote" path locally)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/scp
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # molecule shim: strip options, copy sources to the dest path after ':'.
+          srcs=()
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -P|-o) shift 2 ;;
+              -*) shift ;;
+              *) srcs+=("$1"); shift ;;
+            esac
+          done
+          dest="${srcs[-1]#*:}"
+          unset 'srcs[-1]'
+          exec cp -p "${srcs[@]}" "$dest"
+
+    - name: Install the ha shim (fault-injectable `ha core check`)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ha
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ -f /tmp/ha-core-check-fail ]; then
+            echo "Configuration check failed (molecule fault injection)" >&2
+            exit 1
+          fi
+          echo "Configuration check OK"
+          exit 0
+
+    - name: Stage dummy /ssl certs for the pre-flight check
+      ansible.builtin.file:
+        path: /ssl
+        state: directory
+        mode: "0755"
+
+    - name: Create dummy cert files the pre-flight tests for
+      ansible.builtin.copy:
+        dest: "/ssl/{{ item }}"
+        content: "molecule dummy cert\n"
+        mode: "0644"
+      loop:
+        - fullchain.pem
+        - privkey.pem
+
+    - name: Generate a host key for the pin (known_hosts needs valid base64)
+      ansible.builtin.command:
+        cmd: ssh-keygen -t ed25519 -N '' -C haos-molecule -f /tmp/haos-hostkey
+        creates: /tmp/haos-hostkey
+
+    - name: Read the generated host public key
+      ansible.builtin.slurp:
+        src: /tmp/haos-hostkey.pub
+      register: haos_hostkey_pub
+
+    - name: Pin the generated key as the HAOS host key
+      ansible.builtin.set_fact:
+        haos_test_host_key: >-
+          {{ (haos_hostkey_pub.content | b64decode).split()[0:2] | join(' ') }}
+
+    - name: Ensure /root/.ssh exists for the known_hosts pin
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        mode: "0700"
+
+    - name: Seed a prior /config (the pre-deploy state the rescue must restore)
+      ansible.builtin.file:
+        path: /tmp/haos-config
+        state: directory
+        mode: "0755"
+
+    - name: Write the prior configuration.yaml and secrets.yaml sentinels
+      ansible.builtin.copy:
+        dest: "/tmp/haos-config/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - { name: configuration.yaml, content: "# prior-config-sentinel\n" }
+        - { name: secrets.yaml, content: "prior_secret: sentinel\n" }
+
+    - name: Create the pinned deploy staging directory
+      ansible.builtin.file:
+        path: /tmp/ha-staging
+        state: directory
+        mode: "0755"
+
+    # --- a. success path ---------------------------------------------------
+    - name: Deploy for real through the shims (success path)
+      ansible.builtin.include_role:
+        name: home_assistant
+        # apply: (not a task keyword) — a dynamic include_role only passes
+        # task keywords like environment to the role's tasks via apply.
+        apply:
+          environment:
+            # Deterministic shim precedence: /usr/local/bin/{ssh,scp,ha} wins.
+            PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      vars:
+        home_assistant_render_only: false
+        home_assistant_config_path: /tmp/haos-config
+        home_assistant_staging_dir: /tmp/ha-staging
+        home_assistant_host_key: "{{ haos_test_host_key }}"
+
+    - name: Slurp the deployed configuration.yaml
+      ansible.builtin.slurp:
+        src: /tmp/haos-config/configuration.yaml
+      register: deployed_cfg
+
+    - name: Slurp the deployed secrets.yaml
+      ansible.builtin.slurp:
+        src: /tmp/haos-config/secrets.yaml
+      register: deployed_secrets
+      no_log: true
+
+    - name: Stat backup/staging leftovers after the successful deploy
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: deploy_leftovers
+      loop:
+        - /tmp/haos-config/configuration.yaml.bak
+        - /tmp/haos-config/secrets.yaml.bak
+        - /tmp/ha-staging/ha-configuration.yaml
+        - /tmp/ha-staging/ha-secrets.yaml
+
+    - name: Assert the deploy replaced the prior config and cleaned up
+      ansible.builtin.assert:
+        that:
+          - "(deployed_cfg.content | b64decode) is search('trusted_proxies:')"
+          - "(deployed_cfg.content | b64decode) is not search('prior-config-sentinel')"
+          - "(deployed_secrets.content | b64decode) is search('oidc_client_secret')"
+          - "deploy_leftovers.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          The deploy path did not atomically install the rendered config
+          (or left .bak/staging files behind).
+        success_msg: "deploy replaced /config atomically; .baks and staging cleaned up"
+
+    # --- b. check-failure path: rescue restores the pre-deploy config -------
+    - name: Arm the `ha core check` fault
+      ansible.builtin.file:
+        path: /tmp/ha-core-check-fail
+        state: touch
+        mode: "0644"
+
+    - name: Deploy again expecting the check to fail (rescue must roll back)
+      block:
+        - name: Run the role with a failing `ha core check`
+          ansible.builtin.include_role:
+            name: home_assistant
+            apply:
+              environment:
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          vars:
+            home_assistant_render_only: false
+            home_assistant_config_path: /tmp/haos-config
+            home_assistant_staging_dir: /tmp/ha-staging
+            home_assistant_host_key: "{{ haos_test_host_key }}"
+            # Different render so the rollback is distinguishable from a no-op:
+            # the new (bad) config contains this CIDR, the restored one must not.
+            home_assistant_trusted_proxies: ["10.99.99.0/24"]
+
+        - name: Fail loudly if the role did not fail
+          ansible.builtin.fail:
+            msg: "`ha core check` was forced to fail but the role succeeded"
+      rescue:
+        - name: Record that the deploy failed as expected
+          ansible.builtin.set_fact:
+            ha_deploy_rescue_fired: true
+
+    - name: Slurp /config after the failed deploy
+      ansible.builtin.slurp:
+        src: /tmp/haos-config/configuration.yaml
+      register: rolled_back_cfg
+
+    - name: Stat the .bak files after the rollback (must be consumed)
+      ansible.builtin.stat:
+        path: "/tmp/haos-config/{{ item }}"
+      register: rollback_baks
+      loop:
+        - configuration.yaml.bak
+        - secrets.yaml.bak
+
+    - name: Assert the rescue restored the pre-deploy config
+      ansible.builtin.assert:
+        that:
+          - ha_deploy_rescue_fired | default(false)
+          - "(rolled_back_cfg.content | b64decode) == (deployed_cfg.content | b64decode)"
+          - "(rolled_back_cfg.content | b64decode) is not search('10\\.99\\.99\\.0/24')"
+          - "rollback_baks.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          The rescue did not restore the pre-deploy /config after a failed
+          `ha core check` (or left .bak files behind).
+        success_msg: "rescue restored the pre-deploy config from .bak on check failure"
+
+    # --- c. first-deploy failure: rescue removes the newly-created files ----
+    - name: Empty /config (first-deploy case, fault still armed)
+      ansible.builtin.file:
+        path: "/tmp/haos-config/{{ item }}"
+        state: absent
+      loop:
+        - configuration.yaml
+        - secrets.yaml
+
+    - name: First deploy expecting the check to fail (rescue must remove new files)
+      block:
+        - name: Run the role first-install with a failing `ha core check`
+          ansible.builtin.include_role:
+            name: home_assistant
+            apply:
+              environment:
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          vars:
+            home_assistant_render_only: false
+            home_assistant_config_path: /tmp/haos-config
+            home_assistant_staging_dir: /tmp/ha-staging
+            home_assistant_host_key: "{{ haos_test_host_key }}"
+
+        - name: Fail loudly if the first-install role run did not fail
+          ansible.builtin.fail:
+            msg: "`ha core check` was forced to fail but the role succeeded"
+      rescue:
+        - name: Record that the first-install deploy failed as expected
+          ansible.builtin.set_fact:
+            ha_first_deploy_rescue_fired: true
+
+    - name: Stat /config after the failed first deploy
+      ansible.builtin.stat:
+        path: "/tmp/haos-config/{{ item }}"
+      register: first_deploy_files
+      loop:
+        - configuration.yaml
+        - secrets.yaml
+
+    - name: Assert the rescue removed the newly-created files
+      ansible.builtin.assert:
+        that:
+          - ha_first_deploy_rescue_fired | default(false)
+          - "first_deploy_files.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          On a failed FIRST deploy the rescue must remove the newly-created
+          /config files (no .bak exists to restore), but files remain.
+        success_msg: "rescue removed the new files on a failed first deploy"
+
+    - name: Disarm the `ha core check` fault
+      ansible.builtin.file:
+        path: /tmp/ha-core-check-fail
+        state: absent
+
+    # ========================================================================
     # Summary
     # ========================================================================
     - name: Display test results
@@ -164,4 +438,5 @@
         msg:
           - "configuration.yaml rendered with http/trusted_proxies, ssl block, OIDC, prometheus, default_config (SMTP notify removed for HA 2027.1.0)"
           - "secrets.yaml rendered with the OIDC !secret keys, double-quoted via to_json"
-          - "All home_assistant role render-only contract assertions passed"
+          - "deploy path: atomic install, check-failure rollback, and first-deploy cleanup verified via local ssh/scp/ha shims"
+          - "All home_assistant role contract assertions passed"

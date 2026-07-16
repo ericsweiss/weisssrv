@@ -1,23 +1,11 @@
 ---
-# Default-deny ingress for vpa-system — parity with the rest of the controller
-# namespaces (cert-manager pattern).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: vpa-system
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # Allow ingress to the VPA admission-controller webhook (called by the
 # kube-apiserver, which arrives post-DNAT from a server node IP — the
-# vpa-webhook Service maps 443 -> container port 8000) and metrics scrapes
-# from observability. The apiserver source is not pinned by IP because the
-# webhook call originates from whichever server is active; allow the webhook
-# port from anywhere and rely on the webhook's own TLS for authenticity.
+# vpa-webhook Service maps 443 -> container port 8000). The apiserver source is
+# not pinned by IP because the webhook call originates from whichever server is
+# active; allow the webhook port from anywhere and rely on the webhook's own TLS
+# for authenticity. The :8944 rule is a parity allow only (see below) — VPA
+# exposes no scraped metrics, so nothing actually connects there.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -32,7 +20,10 @@ spec:
     - ports:
         - protocol: TCP
           port: 8000
-    # Prometheus metrics scrape (admission-controller :8944)
+    # Parity allow for a :8944 admission-controller metrics scrape. Unused:
+    # VPA exposes no scraped metrics endpoint — recommendation visibility comes
+    # via the kube-state-metrics customResourceState config, not a direct
+    # scrape — so no observability pod actually connects here.
     - from:
         - namespaceSelector:
             matchLabels:

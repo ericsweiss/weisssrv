@@ -364,6 +364,19 @@ echo ""
 echo "--- Services ---"
 systemctl list-units --type=service --state=running --no-pager | head -30
 echo ""
+echo "--- Failed Units ---"
+systemctl --failed --no-legend --no-pager 2>/dev/null | head -20 || echo "none"
+echo ""
+echo "--- Recent Error Sources (journalctl -p err, last 1 day; counts only) ---"
+# Identifier + count ONLY — never message bodies: raw journal errors can carry
+# tokens/URLs/PII the generic redaction doesn't key on (same policy as the
+# GitLab/HA log exclusions). Enough to see WHICH service is erroring and how
+# loudly; read the messages on the host when needed.
+_err_sources=$(journalctl -p err -b --since '-1 day' --no-pager -o short 2>/dev/null \
+    | grep -v '^--' | awk '{print $5}' | sed 's/\[[0-9]*\]:*$//;s/:$//' \
+    | sort | uniq -c | sort -rn | head -15 || true)
+[ -n "$_err_sources" ] && printf '%s\n' "$_err_sources" || echo "none"
+echo ""
 echo "--- Disk Usage ---"
 # Include all mounted filesystems, not just those starting with /
 # LXC containers use rootfs/overlay paths that don't start with /
@@ -423,6 +436,19 @@ for vmid in 150 151 152 153 154 160 202 203 204 205 206 207 222 223 227; do
         sudo cat "/etc/pve/firewall/${vmid}.fw" 2>/dev/null || echo "  Cannot read"
     fi
 done
+echo ""
+echo "--- Bond Interfaces ---"
+# active-backup bond MAC-flap guard: all_slaves_active must stay 0
+# (nic_tuning_bond_asa_guard, docs/34). Surfaced so a regression back to 1 is
+# visible in the snapshot.
+found_bond=0
+for b in /sys/class/net/bond*; do
+    [ -d "$b" ] || continue
+    found_bond=1
+    bn=$(basename "$b")
+    echo "  ${bn}: mode=$(awk '{print $1}' "$b/bonding/mode" 2>/dev/null) all_slaves_active=$(cat "$b/bonding/all_slaves_active" 2>/dev/null) active_slave=$(cat "$b/bonding/active_slave" 2>/dev/null)"
+done
+[ "$found_bond" -eq 0 ] && echo "  no bonds configured on this host"
 echo ""
 echo "--- ZFS Pools ---"
 zpool list 2>/dev/null || echo "No ZFS"
@@ -1026,8 +1052,12 @@ echo ""
 echo "--- Custom Components ---"
 ls -la /config/custom_components/ 2>/dev/null || echo "No custom components or directory inaccessible"
 echo ""
-echo "--- Recent Logs (last 20 lines) ---"
-tail -20 /config/home-assistant.log 2>/dev/null || echo "Log file inaccessible"
+echo "--- Recent Logs ---"
+# HA core logs are NOT collected: integration tracebacks/warnings can carry
+# API keys, OAuth tokens, and entity/PII data that the generic redaction
+# patterns don't key on — same policy as the GitLab log exclusion (collect_gitlab).
+# To view manually, run on the HAOS host: tail -100 /config/home-assistant.log
+echo "HA core logs excluded from state collection (may contain tokens/PII)"
 echo ""
 echo "--- Network Info ---"
 ha network info 2>/dev/null || echo "Network info unavailable"

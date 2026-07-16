@@ -24,12 +24,12 @@ weisssrv/
 │   └── tailscale/              # Tailnet ACL policy-as-code
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
-│   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order; together with apps/ they form a five-stage Flux Kustomization chain (sources -> controllers -> configs -> observability -> apps)
+│   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order (sources -> controllers -> configs, which fans out to observability and apps in parallel)
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
 │   │   ├── controllers/        # platform HelmReleases (dependsOn sources) — see the dir for the current set
 │   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
-│   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-observability) — see the dir for the current set
+│   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-configs — parallel to observability) — see the dir for the current set
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
 ├── docker/                     # Molecule test/CI container images
@@ -72,7 +72,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-tr
 - Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password Connect backend
 - Observability stack: Prometheus + Grafana + Loki + Alloy (metrics, logs, dashboards, alerting); k3s-irrelevant components disabled (kubeProxy, kubeScheduler, kubeControllerManager); alertmanager config uses ExternalSecret template for webhook injection
 - Autoscaling: VPA (Auto/Initial/Off tiers per workload class) + CoreDNS HPA pin — see docs/33-autoscaling.md
-- Node/workload ops: kured (coordinated reboots), Reloader (restarts on ConfigMap/Secret change) — full controller set in `kubernetes/infrastructure/controllers/kustomization.yaml`
+- Node/workload ops: kured (coordinated reboots), Reloader (restarts on ConfigMap changes only — Secrets are intentionally excluded via `ignoreSecrets: true`; a rare credential-Secret rotation is a manual restart) — full controller set in `kubernetes/infrastructure/controllers/kustomization.yaml`
 
 **Applications** (deployment details live in the per-app docs):
 - Authentik SSO (auth.esweiss.com) — identity provider for OIDC/SAML; PostgreSQL on a dedicated zvol
@@ -156,10 +156,11 @@ Two consumers pull from the same 1Password "Homelab" vault:
 
 1. **Ansible / Terraform / Task wrapper** — uses `op run --` to inject `op://Homelab/Item/field` references at runtime.
    ```yaml
-   # Format in group_vars/all.yml
+   # Format in group_vars/all.yml (that file holds the real references — the
+   # canonical source of truth; do not re-copy specific item names here)
    secrets:
-     smtp_gmail_password: "op://Homelab/SMTP Relay Gmail/password"
-     # Item names with spaces are fine here — `op run` parses the full path.
+     <var_name>: "op://Homelab/<Item Title>/<field>"
+     # Item titles with spaces are fine — `op run` parses the full path.
    ```
 
 2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password Connect provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect runs in-cluster (no calls to 1Password cloud). `remoteRef.key` is the **1Password item title** and `remoteRef.property` is the **field name** — canonical format reference in `docs/29-flux-operations.md` ("1Password Connect Provider Reference Format").
@@ -241,19 +242,43 @@ knowing up front:
   agent. The `nas_storage` k3s export lines require TLS (`xprtsec: tls`,
   plaintext rejected); the k3s NFS PVs *mount* with `xprtsec=tls` — **by
   hostname** (`server: pve-nas-01.esweiss.com`, since the `*.esweiss.com` cert
-  has no IP SAN; an IP mount fails the handshake). HAOS (.154) and the Proxmox
-  `tank-proxmox` target are documented plaintext exceptions (docs/24, docs/16).
+  has no IP SAN; an IP mount fails the handshake). HAOS (.154) is the one
+  documented plaintext exception (docs/24); the Proxmox `tank-proxmox` target
+  now mounts with TLS, though its export does not yet require it (docs/16).
 - **resolv_conf** / **zvol_mount** are shared helper roles (used by base/adguard
   and k3s/gitlab respectively).
 
+## Code Conventions
+
+These are the repo's Ansible conventions (canonical home for all agent
+entry-points — CLAUDE.md, AGENTS.md, and `.cursorrules` all defer here):
+
+- **Fully-qualified collection names (FQCN)** — `ansible.builtin.apt`, not `apt`.
+  Partly enforced by `ansible-lint` (`profile: production`) via `task lint`.
+- **snake_case** for all Ansible variables; role-specific vars are prefixed with
+  the role name (e.g. `adguard_http_port`). Var precedence (low→high):
+  `group_vars/all.yml` → `group_vars/<group>.yml` → `host_vars/<host>.yml`.
+- **`no_log: true` on any task that handles a secret** (renders a password to a
+  file, passes a credential, etc.). This is a secret-hygiene rule `ansible-lint`
+  does **not** fully catch (it matches known password module params, not the
+  template-writes-a-secret pattern), so apply it by hand. Secrets themselves are
+  `op://Homelab/...` references in the `secrets:` dict (see Secrets Management).
+- **Handler pattern**: a config-changing task `notify:`s a handler that does the
+  `state: restarted`; handlers live in `handlers/main.yml`. When a readiness
+  probe must see the restarted process, `meta: flush_handlers` before it.
+- **Service pattern**: install packages → create a system user
+  (`system: true`, `shell: /usr/sbin/nologin`) → deploy the systemd unit
+  template (`notify: [Reload systemd, Restart <svc>]`) → enable + start.
+- **Follow existing patterns** — mirror a similar role or
+  `kubernetes/apps/<neighbour>` rather than inventing a new shape.
+
 ## User Management
 
-- **Proxmox hosts**: User `eric` with passwordless sudo
-- **LXC containers**: User `eric` with passwordless sudo
-- **VMs**: User `eric` via cloud-init
-- **Services**: Run as dedicated users (adguard, unbound, plex; postfix runs as root)
-
-All hosts use `eric` for SSH access with passwordless sudo. LXC containers are unprivileged (mapped UIDs for security). On smtp-relay SSH access is via `eric`, but Postfix itself runs as root (normal for mail servers).
+All hosts use `eric` for SSH with passwordless sudo; LXC containers are
+unprivileged (mapped UIDs); services run as dedicated users (adguard, unbound,
+plex; Postfix runs as root, normal for mail servers). Canonical detail lives in
+the README "User Management" section and `docs/03-ssh-users.md` — refer there
+rather than restating it here.
 
 ## Testing / Deployment Workflow
 
@@ -352,7 +377,7 @@ atime=off, autotrim=on) for k3s VMs and the HA-managed containers
 
 ## Documentation
 
-The full, numbered `docs/00`–`docs/33` index (grouped Getting Started /
+The full, numbered `docs/` index (grouped Getting Started /
 Infrastructure Services / Operations and Planning) lives in the **Documentation**
 section of `README.md`. Browse `docs/` directly or that table — do not maintain a
 second copy of the index here. Per-area pointers already appear inline in the

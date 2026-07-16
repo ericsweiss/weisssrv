@@ -12,4 +12,9 @@
 #     comment: "dns-01 (AdGuard Home primary)"
 #     enabled: true  # Set to false to remove from HA
 
+# All three managed variables default to empty lists (tasks guard every read
+# with `| default([])` / `is defined`, but defaulting them here keeps the three
+# consistent and matches the README).
 ha_resources: []
+ha_rules: []
+storage_replication_jobs: []

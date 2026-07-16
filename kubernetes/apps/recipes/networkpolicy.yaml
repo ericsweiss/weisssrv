@@ -1,16 +1,4 @@
 ---
-# Default-deny ingress for the namespace.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: recipes
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-
----
 # Default-deny egress; explicit allows below.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -108,9 +96,15 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: traefik
+        # Meilisearch is scraped directly by Prometheus via ServiceMonitor, so
+        # scope the observability peer to the Prometheus pod (least-privilege,
+        # matching the redis-exporter rule below) rather than the whole namespace.
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: bar-assistant
@@ -247,10 +241,10 @@ spec:
         - ipBlock:
             cidr: 192.168.0.151/32
       ports:
+        # Submission (587/STARTTLS) only — mealie/bar-assistant are 587-configured
+        # and no app dials cleartext 25.
         - protocol: TCP
           port: 587
-        - protocol: TCP
-          port: 25
     - to:
         - ipBlock:
             # MetalLB internal Traefik VIP. Reserved for internal-host access

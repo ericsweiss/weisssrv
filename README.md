@@ -51,11 +51,11 @@ Internet
         +-- k3s-srv-laptop-01 (.223) - Server + etcd
         +-- k3s-srv-prec-01   (.227) - Server + etcd
         +-- k3s-agt-nas-01    (.202) - Agent (NAS workloads)
-        +-- k3s-agt-laptop-01 (.203) - Agent (ingress)
-        +-- k3s-agt-opt-01    (.204) - Agent (ingress)
-        +-- k3s-agt-opt-02    (.205) - Agent (ingress)
-        +-- k3s-agt-opt-03    (.206) - Agent (ingress)
-        +-- k3s-agt-prec-01   (.207) - Agent (compute)
+        +-- k3s-agt-laptop-01 (.203) - Agent (ingress + general)
+        +-- k3s-agt-opt-01    (.204) - Agent (ingress + general)
+        +-- k3s-agt-opt-02    (.205) - Agent (ingress + general)
+        +-- k3s-agt-opt-03    (.206) - Agent (ingress + general)
+        +-- k3s-agt-prec-01   (.207) - Agent (general + compute)
 ```
 
 Canonical host/node/VIP topology reference: [docs/01-overview.md](docs/01-overview.md).
@@ -160,12 +160,13 @@ weisssrv/
 ├── kubernetes/               # Flux-managed cluster state
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
 │   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
-│   │                         #   that form the first four stages of the five-stage Flux Kustomization chain:
+│   │                         #   reconciled in dependsOn order; configs fans out to observability and apps:
 │   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap)
 │   │                         #     infrastructure-controllers   (platform HelmReleases — see the dir for the current set)
 │   │                         #     infrastructure-configs       (CRs requiring controller CRDs — see the dir for the current set)
 │   │                         #     infrastructure-observability (kube-prometheus-stack, Loki, Alloy, exporters, dashboards)
-│   └── apps/                 # Sibling top-level Kustomization (fifth stage; dependsOn infrastructure-observability):
+│   └── apps/                 # Sibling top-level Kustomization (dependsOn infrastructure-configs,
+│                             #   parallel to observability so its health can't freeze app reconciliation):
 │                             #   one dir per app — see kubernetes/apps/ for the current set
 ├── scripts/                  # Utility scripts (version checker, versions-configmap generator, etc.)
 ├── docs/                     # Documentation
@@ -198,8 +199,9 @@ weisssrv/
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
 | apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex) |
-| nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in) |
+| nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in, active-backup bond `all_slaves_active` MAC-flap guard — docs/34) |
 | prometheus_exporter | Shared install pipeline for download-based exporters (tarball/.deb); backs zfs_exporter + unbound_exporter |
+| textfile_collector | Shared textfile-collector oneshot service + timer scaffold; backs node_exporter_host (corosync/zpool/smartmon) and smtp_relay (postfix queue) |
 | zfs_exporter | Prometheus ZFS exporter (pool health, scrub status) on the NAS; thin wrapper over prometheus_exporter |
 | unbound_exporter | Prometheus Unbound exporter on DNS hosts; thin wrapper over prometheus_exporter |
 | node_exporter_host | Prometheus node_exporter on bare-metal Proxmox hosts (port 9101); standalone (apt-repo install + drop-in override + textfile collectors) |

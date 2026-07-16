@@ -267,6 +267,10 @@
   hosts: pve-nas-01
   become: true
   tasks:
+    # Encrypted datasets carry `encryption:` in their properties but no
+    # keyformat/keylocation (the key comes from 1Password at boot), so a bare
+    # `zfs create -o encryption=...` fails. They must be created manually per
+    # docs/32-zfs-encryption.md — skip them here and say so.
     - name: Create missing ZFS datasets
       ansible.builtin.command: >
         zfs create
@@ -277,9 +281,26 @@
       loop: "{{ zfs_pools | subelements('datasets') }}"
       loop_control:
         label: "{{ item.1.name }}"
-      when: item.1.name in datasets_to_create
+      when:
+        - item.1.name in datasets_to_create
+        - "'encryption' not in item.1.properties"
       changed_when: true  # Creating a dataset is always a change
       register: dataset_creation
+
+    # Same loop+when shape as the create task above: ansible-lint's mock
+    # templating rejects a standalone `vars:` subelements expression, but is
+    # fine with the loop/when form the create task already uses.
+    - name: List encrypted datasets that require manual creation
+      ansible.builtin.debug:
+        msg: >-
+          SKIPPED (encrypted — create manually with keyformat/keylocation per
+          docs/32-zfs-encryption.md, then re-run): {{ item.1.name }}
+      loop: "{{ zfs_pools | subelements('datasets') }}"
+      loop_control:
+        label: "{{ item.1.name }}"
+      when:
+        - item.1.name in datasets_to_create
+        - "'encryption' in item.1.properties"
 
     - name: Display dataset creation results
       ansible.builtin.debug:
@@ -287,8 +308,12 @@
           - "================================================================"
           - "ZFS DATASET CREATION COMPLETE"
           - "================================================================"
-          - "Created {{ datasets_to_create | length }} datasets"
-          - "{{ datasets_to_create | map('regex_replace', '^', '  - ') | join('\n') }}"
+          - "Created {{ _created | length }} datasets (encrypted ones skipped — see above)"
+          - "{{ _created | map('regex_replace', '^', '  - ') | join('\n') }}"
+      vars:
+        _created: >-
+          {{ dataset_creation.results | selectattr('changed', 'defined')
+             | selectattr('changed') | map(attribute='item.1.name') | list }}
       when: datasets_to_create | length > 0
 
 - name: Phase 5 - Create Directory Structure

@@ -4,9 +4,8 @@
 # path) or exiting 1 if it can't be found. Consolidates the command-v /
 # python3 -m / validated-pyenv-glob chain the Taskfile hand-maintained.
 #
-# ansible/test-all-roles.sh keeps its own inline copy of this same chain (it
-# resolves molecule the same way); keep the two in sync when editing the
-# resolution order.
+# ansible/test-all-roles.sh sources/calls this script to resolve molecule
+# (no duplicated chain); the resolution order lives here alone.
 #
 # Usage: scripts/resolve-tool.sh <tool> [python-module]
 #   scripts/resolve-tool.sh molecule molecule   -> may print "python3 -m molecule"

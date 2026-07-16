@@ -4,7 +4,6 @@
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
-  listen: Reload systemd
   when: not (skip_plex_service | default(false))
 
 - name: Restart plex

@@ -390,22 +390,24 @@ samba_shares:
 media_mover_enabled: true
 media_mover_src: /mnt/nvme/media/library    # Hot tier library
 media_mover_dst: /mnt/tank/media/library    # Cold tier library
-# 04:15, NOT 02:00: 02:00 already carries smartd's daily short tests, and the
-# cluster-wide vzdump run (pve_vzdump_jobs below, 03:30 daily) writes into
-# tank/proxmox until ~03:48 — stacking the nvme->tank rsync on either thrashed
-# the NAS every night. 04:15 clears the observed vzdump tail while still
-# finishing well before the 05:00 archive replication snapshot.
-media_mover_schedule: "*-*-* 04:15:00"
+# 06:00: after the cluster-wide vzdump window, before the 06:30 archive
+# replication. vzdump (pve_vzdump_jobs below, 03:30 daily) writes into
+# tank/proxmox until ~05:45 now that bwlimit throttles it (measured
+# 2026-07-14; unthrottled it ended ~03:48), and 02:00 carries smartd's daily
+# short tests — stacking the nvme->tank rsync on either thrashed the NAS
+# every night. The mover normally finishes in minutes, so it clears before
+# the archive snapshot; even when it overruns, they touch disjoint datasets
+# (tank/media is not replicated to archive) and both are I/O-deprioritized.
+media_mover_schedule: "*-*-* 06:00:00"
 
 # Proxmox storage configuration — reconciled by the proxmox_backup role
-# (storage.yml / site.yml NAS play). Codified target: mount by HOSTNAME with
-# xprtsec=tls (the *.esweiss.com cert has no IP SAN, so an IP mount fails the
-# TLS handshake). The live entry still carries the legacy plaintext IP; server
-# is create-fixed in Proxmox, so the role fails loud until the one-time
-# migration (outside a backup window):
-#   ssh pve-nas-01 "sudo pvesh delete /storage/tank-proxmox"  # config only, data untouched
-# then re-run the role. Prerequisite: tlshd on every PVE host
-# (nfs_tls_enabled in group_vars/proxmox.yml).
+# (storage.yml / site.yml NAS play). Mounted by HOSTNAME with xprtsec=tls
+# (the *.esweiss.com cert has no IP SAN, so an IP mount fails the TLS
+# handshake); the one-time migration off the legacy plaintext-IP entry is
+# complete and the live storage.cfg matches this block. server/export/path
+# are create-fixed in Proxmox — the role fails loud on drift there.
+# Prerequisite: tlshd on every PVE host (nfs_tls_enabled in
+# group_vars/proxmox.yml).
 pve_storage:
   - id: tank-proxmox
     type: nfs
@@ -445,8 +447,10 @@ pve_vzdump_jobs:
     # (I/O-pressure PSI 0.59, load 26, KVM guest page-fault hang, ~12h outage).
     # 30720 KiB/s = 30 MiB/s per node keeps the aggregate (<=6 nodes -> ~180 MB/s)
     # comfortably under saturation; each host's backup just runs proportionally
-    # longer (fine at 03:30). Raise only if the ProxmoxHost I/O-pressure alerts
-    # stay quiet through a full backup window.
+    # longer — the fleet window is now 03:30-~05:45 (measured 2026-07-14), which
+    # is why media-mover runs at 06:00 and the archive-backup timer at 06:30.
+    # Raise only if the ProxmoxHost I/O-pressure alerts stay quiet through a
+    # full backup window, and keep those two downstream schedules in mind.
     bwlimit: 30720
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system

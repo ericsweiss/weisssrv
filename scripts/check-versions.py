@@ -232,13 +232,13 @@ SERVICE_REGISTRY: list[dict] = [
     # LinuxServer.io tags follow these patterns:
     #   version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
     #   version-X.Y.Z.BUILD (*arr apps - stable branch)
-    # We use the "version-" prefixed tags as the canonical source of truth
+    # lsio_version_regex is authoritative: it both selects the tag and captures
+    # the bare version (group 1) that gets pinned in all.yml.
     {
         "name": "NZBGet",
         "var_name": "nzbget_version",
         "category": "lsio",
         "docker_image": "linuxserver/nzbget",
-        "lsio_tag_prefix": "version-v",
         "lsio_version_regex": r"^version-v(\d+\.\d+(?:\.\d+)?)$",
     },
     {
@@ -246,7 +246,7 @@ SERVICE_REGISTRY: list[dict] = [
         "var_name": "qbittorrent_version",
         "category": "lsio",
         "docker_image": "linuxserver/qbittorrent",
-        "lsio_tag_prefix": "",  # qBittorrent uses bare tags without version- prefix
+        # qBittorrent uses bare tags without the version- prefix.
         "lsio_version_regex": r"^(\d+\.\d+\.\d+)$",  # Match bare version tags like "5.1.4"
     },
     {
@@ -254,7 +254,6 @@ SERVICE_REGISTRY: list[dict] = [
         "var_name": "prowlarr_version",
         "category": "lsio",
         "docker_image": "linuxserver/prowlarr",
-        "lsio_tag_prefix": "version-",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
         "notes": "LinuxServer stable branch",
     },
@@ -263,7 +262,6 @@ SERVICE_REGISTRY: list[dict] = [
         "var_name": "sonarr_version",
         "category": "lsio",
         "docker_image": "linuxserver/sonarr",
-        "lsio_tag_prefix": "version-",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
         "notes": "LinuxServer stable branch",
     },
@@ -272,7 +270,6 @@ SERVICE_REGISTRY: list[dict] = [
         "var_name": "radarr_version",
         "category": "lsio",
         "docker_image": "linuxserver/radarr",
-        "lsio_tag_prefix": "version-",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
         "notes": "LinuxServer stable branch",
     },
@@ -281,7 +278,6 @@ SERVICE_REGISTRY: list[dict] = [
         "var_name": "lidarr_version",
         "category": "lsio",
         "docker_image": "linuxserver/lidarr",
-        "lsio_tag_prefix": "version-",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
         "notes": "LinuxServer stable branch",
     },
@@ -353,6 +349,20 @@ SERVICE_REGISTRY: list[dict] = [
         "apt_index_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
         "apt_package": "tailscale",
         "source_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
+    },
+    {
+        "name": "Grafana Alloy (host)",
+        "var_name": "alloy_host_version",
+        # Host-side Alloy apt package (alloy_host role: `apt install alloy=...`
+        # from the Grafana repo, then dpkg-hold). Distinct from the in-cluster
+        # helm_chart_versions.alloy chart entry above — that one only tracks the
+        # Helm chart, leaving this fleet-wide agent otherwise unchecked. The repo
+        # is arch-agnostic `stable main` (alloy_host role repo line), so the
+        # binary-amd64 index is the right one for our amd64 fleet.
+        "category": "apt_repo",
+        "apt_index_url": "https://apt.grafana.com/dists/stable/main/binary-amd64/Packages.gz",
+        "apt_package": "alloy",
+        "source_url": "https://apt.grafana.com/dists/stable/main/binary-amd64/Packages.gz",
     },
     # --- GitLab ---
     {
@@ -484,6 +494,7 @@ SERVICE_REGISTRY: list[dict] = [
         "github_repo": "pdf/zfs_exporter",
         "version_prefix": "v",
         "strip_prefix": True,
+        "notes": "On bump also update zfs_exporter_checksum in all.yml (sha256 of the release .tar.gz).",
     },
     {
         "name": "AdGuard Exporter",
@@ -1760,7 +1771,10 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
         result.source_url = f"https://hub.docker.com/r/{svc_def['docker_image']}/tags"
         result.release_url = result.source_url
     elif "ghcr_image" in svc_def:
-        result.source_url = f"https://github.com/orgs/{svc_def['ghcr_image'].split('/')[0]}/packages"
+        # owner/name form resolves for both user- and org-owned packages;
+        # github.com/orgs/<owner>/packages 404s for user-owned ones.
+        owner, _, name = svc_def["ghcr_image"].partition("/")
+        result.source_url = f"https://github.com/{owner}/{name}/pkgs/container/{name}"
     if svc_def.get("source_url"):
         result.source_url = svc_def["source_url"]
 
@@ -1777,7 +1791,6 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
             result.latest_version = cached
             result.update_available = (
                 current != "latest"
-                and not svc_def.get("pin_version")
                 and cached != current
                 and version_greater(cached, current)
             )
@@ -1817,9 +1830,6 @@ def check_service(svc_def: dict, current_versions: dict[str, str], use_cache: bo
         # Determine if update is available
         if current == "latest":
             _annotate_latest_resolution(result, current)
-            result.update_available = False
-        elif svc_def.get("pin_version"):
-            # Version is intentionally pinned (e.g., newer releases lack binary assets)
             result.update_available = False
         elif latest != current:
             result.update_available = version_greater(latest, current)
@@ -2104,6 +2114,10 @@ def get_deploy_command(result: ServiceVersion) -> str:
 
     # Tailscale (apt, Ansible-managed)
     if var_name == "tailscale_version":
+        return "task maintenance:update-applications"
+
+    # Host-side Alloy (apt, Ansible-managed; dpkg-held so it only moves on a bump)
+    if var_name == "alloy_host_version":
         return "task maintenance:update-applications"
 
     # AdGuard Home (LXC, Ansible-managed)

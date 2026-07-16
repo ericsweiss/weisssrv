@@ -3,7 +3,10 @@
 Description=Nightly ZFS replication to archive pool
 
 [Timer]
-OnCalendar=*-*-* 05:00:00
+# 06:30: clears the throttled cluster-wide vzdump tail (03:30 start + bwlimit
+# stretched it to ~05:45, measured 2026-07-14); the in-script quiesce guard
+# absorbs further growth by deferring tank/proxmox to the next run.
+OnCalendar=*-*-* 06:30:00
 Persistent=true
 RandomizedDelaySec=10m
 

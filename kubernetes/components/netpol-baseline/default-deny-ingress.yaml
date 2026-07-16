@@ -1,0 +1,13 @@
+---
+# Shared default-deny-ingress NetworkPolicy. The body is byte-identical in every
+# namespace (empty podSelector = all pods, Ingress deny), so it is defined once
+# here; the including kustomization supplies the namespace (its `namespace:`
+# transformer, or a per-inclusion patch where the kustomization can't set one).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress

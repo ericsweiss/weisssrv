@@ -124,6 +124,16 @@
       changed_when: false
       failed_when: media_mover_src_check.rc != 0
 
+    # The `${sval}` emit carries the preserved timestamp on failure: dropping
+    # it made every failed run also trip MediaMoverStale's absent() arm.
+    # (Behavior is executed by files/archive-metrics-behavior.sh; this pin
+    # catches a wholesale removal.)
+    - name: Verify media-mover failure path preserves the last-success timestamp
+      ansible.builtin.command: grep -qF 'media_mover_last_success_timestamp_seconds ${sval}' /usr/local/sbin/media-mover.sh
+      register: media_mover_prev_check
+      changed_when: false
+      failed_when: media_mover_prev_check.rc != 0
+
     - name: Check media-mover timer enabled state  # noqa command-instead-of-module
       ansible.builtin.command: systemctl is-enabled media-mover.timer
       register: media_mover_timer
@@ -185,6 +195,12 @@
     # filesystem type->arm coupling so an inversion is caught.
     - name: Assert the archive-backupctl contract (restorable, lock-listed, type-coupled)
       ansible.builtin.script: files/archive-contract-assert.sh
+      changed_when: false
+
+    # Executes the ZFS-free metric helpers (deferral accounting, timestamp
+    # preservation) instead of only grep-pinning them.
+    - name: Assert archive/media-mover metric behavior (executed, not grepped)
+      ansible.builtin.script: files/archive-metrics-behavior.sh
       changed_when: false
 
     - name: Display test results

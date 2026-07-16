@@ -115,17 +115,18 @@ Null Clients (Proxmox, DNS, k3s)
 6. Deploy main.cf (relay configuration)
 7. Deploy master.cf (submission service)
 8. Deploy SASL password file (Gmail credentials)
-9. Postmap SASL password file
+9. Ensure SASL password database exists (postmap; rebuilt if .db is missing)
 10. Create SASL configuration directory
 11. Deploy smtpd.conf (inbound auth config)
 12. Check if SASL user exists
-13. Record credential fingerprint (rotation detection for step 14)
-14. Create/update relay user in SASL database
-15. Set permissions on /etc/sasldb2 (root:postfix 0640)
-16. Configure mail aliases (mail_aliases -> /etc/aliases)
-17. Run newaliases
-18. Ensure Postfix is enabled and running
-19. Deploy postfix queue collector (script + oneshot + timer)
+13. Read existing + compute expected credential fingerprint (rotation detection)
+14. Create/update relay user in SASL database (changed_when keyed on fingerprint)
+15. Record credential fingerprint (only after saslpasswd2 succeeds)
+16. Set permissions on /etc/sasldb2 (root:postfix 0640)
+17. Configure mail aliases (mail_aliases -> /etc/aliases)
+18. Run newaliases
+19. Ensure Postfix is enabled and running
+20. Deploy postfix queue collector (script + oneshot + timer)
 ```
 
 ## Files
@@ -135,14 +136,15 @@ Null Clients (Proxmox, DNS, k3s)
 - `templates/master.cf.j2` - Postfix master configuration (submission service)
 - `templates/sasl_passwd.j2` - Gmail credentials
 - `templates/aliases.j2` - Mail aliases (rendered from `mail_aliases`)
-- `templates/postfix-queue-collector.service.j2` - Queue metrics oneshot
-- `files/postfix-queue-collector.sh` - Queue metrics textfile collector
-- `files/postfix-queue-collector.timer` - Collector timer (every minute)
+- `files/postfix-queue-collector.sh` - Queue metrics textfile collector script
+  (its oneshot service + timer are rendered by the shared `textfile_collector`
+  role; this role installs the script and enables/starts the timer)
 - `handlers/main.yml` - Postfix reload handlers
 
 ## Dependencies
 
 - `acme_certs` role (provides TLS certificates)
+- `textfile_collector` role (renders the postfix queue collector's unit + timer)
 
 ## Security
 

@@ -47,9 +47,11 @@ metadata:
     app.kubernetes.io/component: download-client
     app.kubernetes.io/part-of: media-stack
   annotations:
-    # Track VPN state for observability
+    # Human-readable marker only (not scraped): this pod runs the Gluetun VPN
+    # sidecar. Unlike qbittorrent, nzbget carries no gluetun-exporter, so it
+    # has no VPN metrics.
     esweiss.com/vpn-mode: "sidecar"
-    # stakater/Reloader auto-restarts this Deployment when a ConfigMap/Secret it
+    # stakater/Reloader auto-restarts this Deployment when a ConfigMap it
     # references changes (it auto-detects the nzbget-vpn-config ConfigMap mounted
     # by the Gluetun sidecar). So editing vpn_enabled/vpn_provider + commit/push
     # is enough — Flux reconciles the ConfigMap and Reloader rolls the pod; no

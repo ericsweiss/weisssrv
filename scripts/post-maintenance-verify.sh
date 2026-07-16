@@ -425,7 +425,10 @@ for dns_attempt in 1 2 3 4 5; do
   kubectl delete pod "$dns_pod" "$kctl_timeout" --ignore-not-found --wait=true >/dev/null 2>&1 || true
   # Don't swallow a creation failure: without the pod, a later `kubectl logs` could
   # read a same-named stale pod. On failure, record it and move to the next attempt.
-  if ! kubectl run "$dns_pod" "$kctl_timeout" --restart=Never --image=busybox:1.37 --command -- \
+  # Keep busybox in step with the central pin (busybox_version in
+  # ansible/inventories/prod/group_vars/all.yml); this plain-shell probe can't use
+  # Flux ${busybox_version} substitution, so bump it here when that pin moves.
+  if ! kubectl run "$dns_pod" "$kctl_timeout" --restart=Never --image=busybox:1.38 --command -- \
       sh -c "nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo DNS_PASS || echo DNS_FAIL" \
       >/dev/null 2>&1; then
     dns_last_output="failed to create DNS probe pod $dns_pod"

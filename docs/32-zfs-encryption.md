@@ -109,12 +109,19 @@ reference, and NFS export path — are unchanged by encryption.
   (servers + agents) and HA-managed LXC subvols. Encrypting these
   would create an unrecoverable cold-boot deadlock: Connect runs in
   k3s, k3s VMs live on `local-ssd`, and `local-ssd` would need
-  Connect to unlock. Threat coverage instead comes from the drive-wipe
-  SOP in `docs/15-credential-rotation.md` (every drive that leaves a
-  compute host is wiped or destroyed) plus k3s native
-  `secrets-encryption` for etcd at-rest. The residual exposure —
-  drive theft from a powered-down host on the LAN — is accepted as
-  low-probability for a homelab.
+  Connect to unlock. The controls for the residual **drive theft from a
+  powered-down host** threat are the drive-wipe SOP in
+  `docs/15-credential-rotation.md` (every drive that leaves a compute host is
+  wiped or destroyed) plus physical access control; the residual exposure is
+  accepted as low-probability for a homelab. Note that k3s
+  `secrets-encryption` does **not** meaningfully protect against that
+  drive-theft scenario: its AES key is stored unencrypted at
+  `/var/lib/rancher/k3s/server/cred/encryption-config.json`, on the same
+  unencrypted `local-ssd` as the etcd datastore — so a stolen powered-down
+  server disk yields both the encrypted Secrets and the key that decrypts them.
+  Its real value is limited to cases where an etcd *snapshot* is separated from
+  the key, and those off-node snapshots already sit on the ZFS-encrypted
+  `ssd/k3s-etcd` dataset (above).
 
 ## Architecture
 

@@ -15,7 +15,7 @@ kubernetes/
 │   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources)
 │   ├── infrastructure-configs.yaml       # Flux Kustomization → ../../infrastructure/configs (dependsOn: controllers)
 │   ├── infrastructure-observability.yaml # Flux Kustomization → ../../infrastructure/observability (dependsOn: configs)
-│   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-observability)
+│   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-configs)
 │   ├── kustomization.yaml         # Lists flux-system + the 5 top-level Kustomizations + tenants/
 │   └── tenants/                   # One-file-per-tenant wiring (GitRepository + Kustomization + ClusterSecretStore)
 │       └── README.md              # Onboarding examples
@@ -34,7 +34,8 @@ kubernetes/
 2. Flux's `source-controller` fetches this repo — push-triggered via the
    GitLab agent's Flux module, with a 1m poll as fallback.
 3. Flux's `kustomize-controller` reconciles in dependency order: `sources` →
-   `controllers` → `configs` → `observability` → `apps`.
+   `controllers` → `configs`, then `observability` and `apps` in parallel
+   (apps deliberately do not gate on observability health).
 4. `postBuild.substituteFrom: cluster-versions` substitutes `${var}`
    placeholders (e.g., `${authentik_version}`) from the `cluster-versions`
    ConfigMap, generated from `all.yml` via `task flux:sync-versions`.
@@ -76,7 +77,7 @@ Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
 | `traefik` | Flux (HelmRelease) | Traefik ingress controller |
 | `external-dns` | Flux (HelmRelease) | external-dns |
 | `vpa-system` | Flux (HelmRelease) | Vertical Pod Autoscaler (docs/33) |
-| `reloader` | Flux (HelmRelease) | Reloader — rolls workloads on ConfigMap/Secret changes |
+| `reloader` | Flux (HelmRelease) | Reloader — rolls workloads on ConfigMap changes only (Secrets excluded via `ignoreSecrets: true`) |
 | `kube-system` | k3s (+ Flux HelmRelease for kured) | k3s built-ins + kured reboot coordinator |
 | `cloudflare-ddns` | Flux (Kustomize) | DDNS CronJob |
 | `authentik` | Flux (HelmRelease) | Authentik SSO + bundled PostgreSQL |

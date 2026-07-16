@@ -27,8 +27,10 @@ resources:
   - radarr
   - lidarr
   - pulsarr.yaml
-  # Ingress routes
-  - ingress-routes.yaml
+  # Ingress routes. The seven client routes share one middleware chain + TLS
+  # secret via the _ingressroute Kustomize component; each is a thin per-app
+  # overlay under ingress-routes/ (name/host/service/port only).
+  - ingress-routes
   - ingress-routes-ha-bypass.yaml
   # NetworkPolicies: default-deny + per-app egress allowlist (Gluetun-fronted
   # qb/nzbget excluded from RFC1918, *arr direct internet for media APIs).

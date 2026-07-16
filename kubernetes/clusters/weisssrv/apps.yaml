@@ -2,10 +2,17 @@
 # Flux Kustomization for application workloads.
 # Reconciles kubernetes/apps/ (one folder per app; see apps/kustomization.yaml).
 #
-# dependsOn infrastructure-observability: apps will not reconcile until the
-# full infrastructure chain (sources → controllers → configs → observability)
-# is Ready, which transitively waits for all platform controllers, CRDs, and
-# observability CRDs (ServiceMonitor, PodMonitor, PrometheusRule).
+# dependsOn infrastructure-configs: apps wait for the platform chain
+# (sources → controllers → configs) but deliberately NOT for observability
+# health — a failed observability chart upgrade must not freeze reconciliation
+# of every business app. Trade-off: on a truly-fresh bootstrap the
+# monitoring.coreos.com consumers under apps/ (the raw qbittorrent PodMonitor,
+# and the authentik chart's ServiceMonitor whose absence fails that HelmRelease
+# install) fail and retry until infrastructure-observability installs the CRDs
+# — transient noise that converges via Flux retries/remediation, and moot in
+# practice because the docs/29 fresh-bootstrap CRD pre-apply (required for the
+# controllers stage anyway) puts the CRDs in place first. The durable
+# CRDs-only early stage is tracked as k8s-infra-06 in docs/16.
 #
 # optional: false — the cluster-versions ConfigMap is applied by
 # infrastructure-sources, which must be Ready before this Kustomization runs.
@@ -21,7 +28,7 @@ spec:
   retryInterval: 1m
   timeout: 15m
   dependsOn:
-    - name: infrastructure-observability
+    - name: infrastructure-configs
   sourceRef:
     kind: GitRepository
     name: flux-system

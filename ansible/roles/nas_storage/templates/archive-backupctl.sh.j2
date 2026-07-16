@@ -23,7 +23,7 @@ KEEP_MONTHLY=6
 
 # vzdump-overrun guard (see replicate_one). tank/proxmox is the cluster-wide
 # vzdump target: remote PVE nodes write dumps into it over NFS, so a local
-# pgrep can't see an in-flight backup and the 05:00 archsync snapshot could
+# pgrep can't see an in-flight backup and the nightly archsync snapshot could
 # capture a half-written .vma. Before snapshotting that ONE dataset, wait
 # (bounded) for writes under its mountpoint to quiesce — no file modified within
 # the last VZDUMP_QUIESCE_MIN minutes — giving up (and skipping it for this run)
@@ -72,6 +72,11 @@ unset _src _dst
 PROM_DIR="/var/lib/node_exporter"
 PROM_FILE="${PROM_DIR}/archive_backup.prom"
 
+# Per-dataset replication state, keyed by SRC_LIST entry. Seeded from the
+# previous textfile by _load_prev_dataset_metrics so an aborted or deferring
+# run re-emits last-known values instead of dropping series.
+declare -A _DS_SUCCESS_TS=() _DS_DEFERRED=()
+
 log() { echo "[$(date -Is)] $*"; }
 
 # Write Prometheus textfile metrics for node_exporter scraping
@@ -102,8 +107,46 @@ write_prom_metrics() {
         echo "archive_backup_last_success_timestamp_seconds ${prev}"
       fi
     fi
+    _emit_dataset_gauge archive_backup_dataset_last_success_timestamp_seconds \
+      "Unix timestamp of each dataset's last successful replication" _DS_SUCCESS_TS
+    _emit_dataset_gauge archive_backup_dataset_deferred_runs \
+      "Consecutive runs this dataset was deferred by the vzdump-quiesce guard (0 after any success or failure)" _DS_DEFERRED
   } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+# _emit_dataset_gauge <metric> <help> <assoc-array-name>: exposition block for
+# a per-dataset gauge. MAP filter: only current SRC_LIST members are emitted,
+# so a dataset removed from the archive set ages out of the textfile on the
+# next run instead of leaving an orphan series that alerts stale forever.
+_emit_dataset_gauge() {
+  local metric="$1" help="$2" ds
+  local -n _arr="$3"
+  [[ "${#_arr[@]}" -gt 0 ]] || return 0
+  echo "# HELP ${metric} ${help}"
+  echo "# TYPE ${metric} gauge"
+  while IFS= read -r ds; do
+    [[ -n "${MAP[$ds]:-}" ]] || continue
+    echo "${metric}{dataset=\"${ds}\"} ${_arr[$ds]}"
+  done < <(printf '%s\n' "${!_arr[@]}" | sort)
+}
+
+# _load_dataset_gauge <metric> <assoc-array-name>: seed one per-dataset gauge
+# from the previous run's textfile.
+_load_dataset_gauge() {
+  local metric="$1" ds val
+  local -n _arr="$2"
+  while IFS=$'\t' read -r ds val; do
+    [[ -n "$ds" && -n "$val" ]] || continue
+    _arr["$ds"]="$val"
+  done < <(awk -F'[{}" ]+' -v m="^${metric}\\{" '$0 ~ m {print $3 "\t" $NF}' "$PROM_FILE" 2>/dev/null || true)
+}
+
+# Seed per-dataset state from the previous run's textfile so datasets this run
+# never reaches (deferral, mid-run abort via the ERR trap) keep their series.
+_load_prev_dataset_metrics() {
+  _load_dataset_gauge archive_backup_dataset_last_success_timestamp_seconds _DS_SUCCESS_TS
+  _load_dataset_gauge archive_backup_dataset_deferred_runs _DS_DEFERRED
 }
 
 # On failure, write metrics with success=0 (preserve last-known timestamp)
@@ -334,7 +377,10 @@ replicate_one() {
   snap_now="${SNAP_PREFIX}-$(date +%Y%m%d-%H%M%S)"
   local reseed_tmp="${dst}-reseed"
 
-  dataset_present "$src" || { log "SKIP: missing source $src"; return 0; }
+  # 73: missing-source SKIP. Distinct from success so cmd_run leaves the
+  # dataset's last-success timestamp untouched — a vanished source (e.g. an
+  # un-imported pool) must age into ArchiveBackupDatasetStale, not refresh it.
+  dataset_present "$src" || { log "SKIP: missing source $src"; return 73; }
 
   # vzdump-overrun guard: only for the cluster-wide dump target. Wait for the
   # remote-node NFS writes to settle so this run's snapshot never captures a
@@ -347,12 +393,12 @@ replicate_one() {
     if [[ -n "$vz_mp" && "$vz_mp" != "-" && -d "$vz_mp" ]]; then
       while find "$vz_mp" -type f -mmin "-${VZDUMP_QUIESCE_MIN}" -print -quit 2>/dev/null | grep -q .; do
         if (( vz_waited >= VZDUMP_MAX_WAIT_MIN )); then
-          # Return non-zero so cmd_run marks the run failed and the prior
-          # last-success timestamp is preserved: a chronic overrun then
-          # surfaces via ArchiveBackupFailed/Stale rather than reporting
-          # full success while this dataset silently never replicates.
-          log "SKIP ${src}: vzdump still writing under ${vz_mp} after ${vz_waited}m; leaving prior backup, will retry next run"
-          return 1
+          # 75 (EX_TEMPFAIL) tells cmd_run this dataset was DEFERRED, not
+          # failed: the run's success metric stays meaningful for real
+          # send/receive errors, while chronic deferral surfaces via the
+          # per-dataset last-success/deferred-runs metrics and their alerts.
+          log "DEFER ${src}: vzdump still writing under ${vz_mp} after ${vz_waited}m; leaving prior backup, will retry next run"
+          return 75
         fi
         log "vzdump appears active under ${vz_mp} (writes < ${VZDUMP_QUIESCE_MIN}m old); waiting ${VZDUMP_QUIESCE_MIN}m for quiesce"
         sleep $(( VZDUMP_QUIESCE_MIN * 60 ))
@@ -548,6 +594,7 @@ cmd_run() {
     exit 0
   fi
   _BACKUP_METRICS_ACTIVE=1
+  _load_prev_dataset_metrics
   if ! pool_present; then
     log "Pool '${POOL_DST}' not present (exported/unplugged). Nothing to do."
     exit 0
@@ -556,23 +603,43 @@ cmd_run() {
   set_pool_root_props
 
   log "Starting replication to '${POOL_DST}'"
-  local failed=0
+  local failed=0 deferred=0 rc
   for src in "${SRC_LIST[@]}"; do
     # Isolate each dataset in a fresh process so one persistently failing
     # dataset cannot starve the later ones of backups. A plain
-    # `if ! replicate_one ...` would NOT do: bash disables errexit and the ERR
+    # `if replicate_one ...` would NOT do: bash disables errexit and the ERR
     # trap for a function called inside a condition, turning unguarded
     # send|receive failures into silent false successes. The child keeps full
     # set -Eeuo pipefail semantics; it inherits fd 9 (lock stays held) and its
     # _BACKUP_METRICS_ACTIVE stays 0, so only this parent writes metrics.
-    if ! "$0" __run-one "$src"; then
+    rc=0
+    "$0" __run-one "$src" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      _DS_SUCCESS_TS["$src"]="$(date +%s)"
+      _DS_DEFERRED["$src"]=0
+    elif [[ "$rc" -eq 75 ]]; then
+      # Deferred (vzdump quiesce timeout): prior copy kept, not a run failure.
+      log "Replication DEFERRED for ${src}; prior backup kept, retrying next run"
+      deferred=1
+      _DS_DEFERRED["$src"]=$(( ${_DS_DEFERRED["$src"]:-0} + 1 ))
+    elif [[ "$rc" -eq 73 ]]; then
+      # Missing source: not a success (the timestamp keeps aging into
+      # ArchiveBackupDatasetStale) and not a deferral (reset the counter so a
+      # dataset that vanishes mid-deferral doesn't keep firing the
+      # ChronicallyDeferred alert with a misleading vzdump-overrun story).
+      log "Replication SKIPPED for ${src} (source dataset missing)"
+      _DS_DEFERRED["$src"]=0
+    else
       log "Replication FAILED for ${src}; continuing with remaining datasets"
       failed=1
+      _DS_DEFERRED["$src"]=0
     fi
   done
 
   if [[ "$failed" -eq 1 ]]; then
     log "Replication finished WITH FAILURES (see per-dataset errors above)."
+  elif [[ "$deferred" -eq 1 ]]; then
+    log "Replication complete (deferred dataset(s) above retried next run)."
   else
     log "Replication complete."
   fi

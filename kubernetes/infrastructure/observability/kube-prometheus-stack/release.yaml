@@ -1003,7 +1003,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
-                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#nfs-server-recovery-pve-nas-01'
                   summary: 'NFS server on pve-nas-01 is not serving'
                   description: >-
                     node_nfsd_server_threads on 192.168.0.102 has been 0 (or
@@ -1129,7 +1129,7 @@ spec:
               # vzdump job (host_vars/pve-nas-01.yml). See docs/12-runbooks.md.
               - alert: ProxmoxHostIOPressure
                 expr: >-
-                  rate(node_pressure_io_waiting_seconds_total{job="node-exporter-host"}[5m]) > 0.20
+                  rate(node_pressure_io_waiting_seconds_total{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}[5m]) > 0.20
                 for: 5m
                 labels:
                   severity: warning
@@ -1147,7 +1147,7 @@ spec:
                     codified guard.
               - alert: ProxmoxHostMemoryPressure
                 expr: >-
-                  rate(node_pressure_memory_waiting_seconds_total{job="node-exporter-host"}[5m]) > 0.10
+                  rate(node_pressure_memory_waiting_seconds_total{job="node-exporter-host", instance=~"192\\.168\\.0\\.10[2-7]:9101"}[5m]) > 0.10
                 for: 5m
                 labels:
                   severity: warning
@@ -1438,6 +1438,10 @@ spec:
         groups:
           - name: homelab.scripts
             rules:
+              # archive_backup_last_run_success flips to 0 only on a genuine
+              # zfs send/receive error; a vzdump-quiesce deferral no longer
+              # zeroes it (that surfaces per-dataset via
+              # ArchiveBackupDatasetStale / ArchiveBackupChronicallyDeferred).
               - alert: ArchiveBackupFailed
                 expr: archive_backup_last_run_success == 0
                 for: 1h
@@ -1445,8 +1449,12 @@ spec:
                   severity: warning
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
-                  summary: 'Archive backup failed'
-                  description: 'The nightly archive backup has not completed successfully.'
+                  summary: 'Archive backup hit a replication error'
+                  description: >-
+                    The nightly archive backup exited with a zfs send/receive
+                    error (not a vzdump-quiesce deferral, which is tracked
+                    per-dataset). Durability may be at risk — check
+                    `journalctl -u archive-backup.service` on pve-nas-01.
 
               - alert: ArchiveBackupStale
                 expr: (time() - archive_backup_last_success_timestamp_seconds > 86400 * 2) or absent(archive_backup_last_success_timestamp_seconds)
@@ -1457,6 +1465,44 @@ spec:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
                   summary: 'Archive backup has not run in over 2 days'
                   description: 'No successful archive backup has been recorded for more than 48 hours, or the metric is missing.'
+
+              # Per-dataset durability: a vzdump-quiesce deferral preserves the
+              # previous per-dataset success timestamp (re-emitted, not zeroed),
+              # so a chronically deferred dataset still goes stale here without
+              # zeroing the whole-run success metric.
+              - alert: ArchiveBackupDatasetStale
+                expr: time() - archive_backup_dataset_last_success_timestamp_seconds > 86400 * 2
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Archive dataset {{ $labels.dataset }} has not replicated in over 2 days'
+                  description: >-
+                    Dataset {{ $labels.dataset }} has had no successful archive
+                    replication for more than 48 hours (last success
+                    {{ $value | humanizeDuration }} ago). If it is repeatedly
+                    deferred, the 03:30 vzdump is overrunning the 06:30 archive
+                    window — see the runbook.
+
+              # First-run edge: a dataset deferred from its very first run has no
+              # last-success timestamp, so ArchiveBackupDatasetStale cannot fire.
+              # archive_backup_dataset_deferred_runs counts consecutive deferrals
+              # (reset to 0 on any success or genuine error).
+              - alert: ArchiveBackupChronicallyDeferred
+                expr: archive_backup_dataset_deferred_runs >= 3
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Archive dataset {{ $labels.dataset }} deferred {{ $value | printf "%.0f" }} runs in a row'
+                  description: >-
+                    Dataset {{ $labels.dataset }} has been deferred (vzdump not
+                    quiesced within the archive window) for
+                    {{ $value | printf "%.0f" }} consecutive runs — the 03:30
+                    vzdump is overrunning the 06:30 archive-backup timer. See the
+                    runbook.
 
               - alert: MediaMoverFailed
                 expr: media_mover_last_run_success == 0
@@ -1871,7 +1917,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
-                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
                   summary: 'Postfix queue backing up on {{ $labels.instance }}'
                   description: >-
                     The Postfix relay has held more than 5 messages queued for
@@ -1890,7 +1936,7 @@ spec:
                 labels:
                   severity: critical
                 annotations:
-                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
                   summary: 'Postfix service is not active on {{ $labels.instance }}'
                   description: >-
                     postfix_up has been 0 for 10 minutes — the SMTP relay's
@@ -1910,7 +1956,7 @@ spec:
                 labels:
                   severity: warning
                 annotations:
-                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#smtp-relay-postfix-alerts'
                   summary: 'postfix-queue collector is degraded or missing on smtp-relay'
                   description: >-
                     postfix_queue_collector_last_success_seconds is stale (>15m)
@@ -1934,8 +1980,7 @@ spec:
               # the numerator the residual is genuine steady-state overcommit.
               - alert: KubeCPUOvercommit
                 expr: >-
-                  (sum(namespace_cpu:kube_pod_container_resource_requests:sum)
-                   - sum(namespace_cpu:kube_pod_container_resource_requests:sum{namespace=~"gitlab-runner.*"}))
+                  sum(namespace_cpu:kube_pod_container_resource_requests:sum{namespace!~"gitlab-runner.*"})
                   - (sum(kube_node_status_allocatable{resource="cpu"})
                      - max(kube_node_status_allocatable{resource="cpu"})) > 0
                   and

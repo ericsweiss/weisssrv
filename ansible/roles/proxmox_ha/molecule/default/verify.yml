@@ -53,6 +53,26 @@
           - ha.c_add == 0
         fail_msg: "Expected add=0/set=1 for drifted resource, got add={{ ha.c_add }}/set={{ ha.c_set }}"
 
+    # (c2) Fields removed from config (comment/max_restart/max_relocate still
+    #      set live) must converge with exactly one `set` carrying the clearing
+    #      arguments (`--comment "" --delete max_restart,max_relocate`).
+    - name: C2 — removed fields trigger exactly one clearing `ha-manager set`
+      ansible.builtin.assert:
+        that:
+          - ha.c2_set == 1
+          - ha.c2_removal == 1
+        fail_msg: >-
+          Expected one clearing set for removed fields, got
+          set={{ ha.c2_set }}/removal-args={{ ha.c2_removal }}
+
+    # (c2b) After the clear, a clean live state + the same trimmed config must
+    #       be a no-op — the removal converges instead of re-firing every run.
+    - name: C2b — post-clear state triggers NO further `ha-manager set`
+      ansible.builtin.assert:
+        that:
+          - ha.c2b_set == 0
+        fail_msg: "Expected converged no-op after clear, got set={{ ha.c2b_set }}"
+
     # (d) An absent replication job whose source VM resides locally must be
     #     created via `pvesr create-local-job` (and not `update`).
     - name: D — absent replication job is created via `pvesr create-local-job`

@@ -165,6 +165,156 @@
         fail_msg: "/usr/local/sbin/plex-cert-reload.sh must be root:root 0750"
         success_msg: "/usr/local/sbin/plex-cert-reload.sh is root:root 0750"
 
+    # ========================================================================
+    # Behavioral test of plex-cert-reload.sh: stage a self-signed PEM pair (the
+    # role deploys pfx-passphrase in this scenario), stub systemctl so the
+    # restart/readiness checks pass, run the script, and assert it built a
+    # passphrase-verifiable plex.pfx and exited 0 on this first install. A stub
+    # TLS server on 32400 serving the pushed cert lets the served-cert
+    # fingerprint check pass fast; if it doesn't come up the script still exits 0
+    # via the documented first-install warn path, so the assertions hold either
+    # way.
+    - name: Stage a self-signed PEM pair for the cert-reload hook  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2
+          -keyout /etc/ssl/plex/privkey.pem -out /etc/ssl/plex/fullchain.pem
+          -subj /CN=plex.molecule.test
+        creates: /etc/ssl/plex/fullchain.pem
+
+    - name: Ensure no prior PFX (exercise the first-install path)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/ssl/plex/plex.pfx
+        - /etc/ssl/plex/plex.pfx.prev
+
+    - name: Create the plex-cert-reload stub bin dir
+      ansible.builtin.file:
+        path: /usr/local/lib/plex-cert-stub
+        state: directory
+        mode: "0755"
+
+    - name: Install a systemctl stub so the restart/readiness checks pass
+      ansible.builtin.copy:
+        dest: /usr/local/lib/plex-cert-stub/systemctl
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Stub: pretend plexmediaserver restarts cleanly and is active.
+          exit 0
+
+    - name: Serve the pushed cert on 32400 so the fingerprint check can pass fast
+      ansible.builtin.command:
+        cmd: >-
+          openssl s_server -accept 32400 -naccept 100 -quiet
+          -cert /etc/ssl/plex/fullchain.pem -key /etc/ssl/plex/privkey.pem
+      async: 120
+      poll: 0
+      changed_when: false
+
+    - name: Wait for the stub TLS server to listen (best effort)
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 32400
+        timeout: 10
+      # Not up => the script takes the documented first-install warn path and
+      # still exits 0, so the assertions below hold either way.
+      failed_when: false
+
+    - name: Run plex-cert-reload.sh
+      ansible.builtin.command: /usr/local/sbin/plex-cert-reload.sh
+      register: plex_cert_reload_run
+      changed_when: true
+      # First install serves/warns but always exits 0 when the PFX builds.
+      failed_when: plex_cert_reload_run.rc != 0
+      environment:
+        PATH: "/usr/local/lib/plex-cert-stub:{{ ansible_env.PATH }}"
+
+    - name: Stop the stub TLS server
+      ansible.builtin.command: pkill -f "s_server -accept 32400"
+      changed_when: false
+      failed_when: false
+
+    - name: Check plex.pfx was produced
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/plex.pfx
+      register: plex_pfx_built
+      failed_when: not plex_pfx_built.stat.exists
+
+    - name: Verify plex.pfx is parseable with the deployed passphrase  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          openssl pkcs12 -info -in /etc/ssl/plex/plex.pfx -nokeys -noout
+          -password file:/etc/ssl/plex/pfx-passphrase
+      changed_when: false
+
+    # Negative path: with a prior PFX staged, a served-cert fingerprint
+    # mismatch must revert to the previous bundle and exit non-zero. The
+    # success run above cannot pin this — the script also exits 0 on the
+    # documented first-install warn fallback.
+    - name: Generate a decoy cert the served-fingerprint check must reject  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1
+          -subj /CN=decoy.invalid
+          -keyout /usr/local/lib/plex-cert-stub/decoy.key
+          -out /usr/local/lib/plex-cert-stub/decoy.pem
+        creates: /usr/local/lib/plex-cert-stub/decoy.pem
+
+    - name: Record the current PFX checksum (revert target)
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/plex.pfx
+        checksum_algorithm: sha256
+      register: plex_pfx_before_negative
+
+    - name: Serve the decoy cert on 32400 (guaranteed fingerprint mismatch)
+      ansible.builtin.command:
+        cmd: >-
+          openssl s_server -accept 32400 -naccept 100 -quiet
+          -cert /usr/local/lib/plex-cert-stub/decoy.pem -key /usr/local/lib/plex-cert-stub/decoy.key
+      async: 300
+      poll: 0
+      changed_when: false
+
+    - name: Wait for the decoy TLS server to listen
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 32400
+        timeout: 15
+      # Not load-bearing: an empty served fingerprint still mismatches, so the
+      # revert assertion holds; a slow port release must not flake the test.
+      failed_when: false
+
+    - name: Run plex-cert-reload.sh against the mismatched served cert
+      ansible.builtin.command: /usr/local/sbin/plex-cert-reload.sh
+      register: plex_cert_reload_negative
+      changed_when: true
+      # A staged .prev + mismatch must fail loudly, not take the warn path.
+      failed_when: plex_cert_reload_negative.rc == 0
+      environment:
+        PATH: "/usr/local/lib/plex-cert-stub:{{ ansible_env.PATH }}"
+
+    - name: Stop the decoy TLS server
+      ansible.builtin.command: pkill -f "s_server -accept 32400"
+      changed_when: false
+      failed_when: false
+
+    - name: Check the PFX after the failed swap
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/plex.pfx
+        checksum_algorithm: sha256
+      register: plex_pfx_after_negative
+
+    - name: Verify the failed swap reverted plex.pfx to the previous bundle
+      ansible.builtin.assert:
+        that:
+          - plex_pfx_after_negative.stat.exists
+          - plex_pfx_after_negative.stat.checksum == plex_pfx_before_negative.stat.checksum
+        fail_msg: "plex-cert-reload did not revert plex.pfx after the fingerprint mismatch"
+        success_msg: "fingerprint mismatch reverted plex.pfx and exited non-zero"
+
     # Verify plex user exists (created by plexmediaserver package)
     - name: Check if plex user exists
       ansible.builtin.command: id plex

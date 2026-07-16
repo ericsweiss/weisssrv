@@ -392,39 +392,6 @@
           "refId": "A"
         }
       ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
-      "id": 103,
-      "panels": [],
-      "title": "Logs",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 25 },
-      "id": 10,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "description": "Requires alloy_host on the HA host to ship journal logs. HAOS does not support custom agents, so this panel may show no data unless HA runs on a traditional Linux host.",
-      "title": "Home Assistant Logs",
-      "type": "logs",
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{job=\"journal\", host=\"home\"}",
-          "refId": "A"
-        }
-      ]
     }
   ],
   "schemaVersion": 39,
