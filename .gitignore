@@ -6,10 +6,12 @@ Thumbs.db
 .idea/
 .vscode/
 # Ignore everything under .claude/ (personal overrides, caches, worktrees the
-# tooling may create) EXCEPT the shared, committed settings.json guardrails.
-# `.claude/*` (not `.claude/`) so the negation can re-include the one file.
+# tooling may create) EXCEPT the shared, committed guardrails: settings.json and
+# the checked-in skills/ (the weisssrv-development agent skill).
+# `.claude/*` (not `.claude/`) so the negations can re-include specific paths.
 .claude/*
 !.claude/settings.json
+!.claude/skills/
 .remember/
 *.swp
 *.swo

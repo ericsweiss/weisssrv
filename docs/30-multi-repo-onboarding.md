@@ -10,7 +10,7 @@ How to attach an external Git repository to the weisssrv k3s cluster so Flux rec
 4. [Namespace Isolation](#namespace-isolation)
 5. [Rate Limits (1Password Families Plan)](#rate-limits-1password-families-plan)
 6. [Removal](#removal)
-7. [Future: weisssrv-project-template Repo](#future-weisssrv-project-template-repo)
+7. [weisssrv-project-template Repo](#weisssrv-project-template-repo)
 8. [Worked Example: Onboarding `example-app`](#worked-example-onboarding-example-app)
 
 ---
@@ -568,23 +568,26 @@ PVCs have `pvc-protection` finalizers and aren't deleted during tenant removal u
 
 ---
 
-## Future: weisssrv-project-template Repo
+## weisssrv-project-template Repo
 
-Target: a dedicated GitLab template project that new tenant repos fork. Pre-wired with:
+The tenant-side scaffold lives in its own repo:
+`https://git.ericsweiss.com/eric/weisssrv-project-template`. New tenant repos fork
+it. It is pre-wired with:
 
-- `.gitlab-ci.yml` with lint/validate/Flux-deploy stubs.
+- `.gitlab-ci.yml` with lint/validate/Flux-deploy stubs (tag-less so jobs land on
+  the shared runner).
 - `kubernetes/flux/` skeleton with a namespace-scoped example.
 - `README.md` walking through onboarding from the tenant side.
 - Pre-configured kubeconform + yamllint CI jobs.
 
-Once it exists, onboarding becomes:
+Onboarding is therefore:
 
 1. Tenant forks the template.
 2. Tenant fills in their workloads.
 3. Operator (me) adds the wiring file to this repo.
 4. Push — running.
 
-Tracked in `docs/16-next-steps.md`.
+See `docs/16-next-steps.md` for the template's full contents.
 
 ---
 

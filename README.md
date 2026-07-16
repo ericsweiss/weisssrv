@@ -393,6 +393,11 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
 
+**Agent guidance**: coding agents should start from the
+[`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it
+maps the repo workflow, pre-MR gates, and change-type decision tree onto the docs
+above. `CLAUDE.md` / `AGENTS.md` / `.cursorrules` all defer to it.
+
 ## User Management
 
 All hosts use user `eric` with passwordless sudo:

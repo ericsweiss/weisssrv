@@ -8,6 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Complete GitOps repository for a Proxmox-based homelab using Ansible, Terraform, and Kubernetes.
 
+## Agents: start here
+
+Before making ANY change in this repo, invoke the `weisssrv-development` skill
+(Skill tool) and follow it — it carries the repo's workflow, pre-MR gates, and a
+change-type decision tree pointing at every canonical doc, so the guardrails
+below are applied consistently. The skill lives at
+`.claude/skills/weisssrv-development/`.
+
 ## Repository Structure
 
 **Canonical source**: https://git.ericsweiss.com/eric/weisssrv (GitLab)
@@ -85,7 +93,6 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-tr
 
 **Planned** (not yet created) — roadmap source of truth is `docs/16-next-steps.md`:
 - Apps: Immich, Nextcloud
-- `weisssrv-project-template` GitLab template project for tenant-side scaffold — does not exist yet; the multi-repo onboarding flow in `docs/30-multi-repo-onboarding.md` depends on it
 
 ## Common Development Commands
 

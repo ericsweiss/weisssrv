@@ -6,6 +6,8 @@ You are working in the weisssrv homelab infrastructure repository. This reposito
 
 See `CLAUDE.md` for the project overview, architecture, storage and secrets/version management, and agent-specific guidance. CLAUDE.md points to the canonical sources for things owned elsewhere: `README.md` for the roles table and documentation index, `docs/01-overview.md` for IP allocation, `docs/15-credential-rotation.md` for the 1Password items list, and `task --list` for commands.
 
+**At the start of any task**, read `.claude/skills/weisssrv-development/SKILL.md` and follow it, then read the `references/` file for the change-type at hand (add-k8s-app, add-vm-app, debugging, maintenance-upgrades, cluster-access). It encodes the repo's workflow, pre-MR gates, and doc decision-tree.
+
 ## Critical Rules
 
 ### NEVER

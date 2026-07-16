@@ -9,10 +9,11 @@ top-level `Kustomization`. One file per tenant keeps ownership clear and
 makes removal trivial (delete the file, remove the entry from
 `kustomization.yaml`, push — Flux prunes the resources it created).
 
-For the tenant-side repo scaffold (CI/lint/AI-review/flux-deploy stubs), use
-the forthcoming `weisssrv-project-template` GitLab template project — see
-`docs/16-next-steps.md`. Until that exists, tenants hand-author their
-`kubernetes/` tree following the patterns in this repo.
+For the tenant-side repo scaffold (CI/lint/AI-review/flux-deploy stubs), fork
+the `weisssrv-project-template` GitLab project
+(`git.ericsweiss.com/eric/weisssrv-project-template`) — see
+`docs/16-next-steps.md`. Tenants can instead hand-author their `kubernetes/`
+tree following the patterns in this repo.
 
 See `docs/30-multi-repo-onboarding.md` for the full onboarding procedure.
 

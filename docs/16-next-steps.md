@@ -265,10 +265,11 @@ runs on a weekly schedule and surfaces updates without noise.
 
 ---
 
-## Future: weisssrv-project-template GitLab template project
+## weisssrv-project-template GitLab template project
 
-Create a dedicated GitLab project template (separate repo) that new repos
-deploying to this cluster fork/copy. Pre-wired with:
+The tenant-side scaffold lives in its own repo:
+`https://git.ericsweiss.com/eric/weisssrv-project-template`. New repos deploying
+to this cluster fork/copy it. It is pre-wired with:
 
 - `.gitlab-ci.yml` with standard stages (lint, validate, security,
   AI review conditional on OP/openai secrets)
@@ -279,7 +280,7 @@ deploying to this cluster fork/copy. Pre-wired with:
 - `.cursorrules`, `CLAUDE.md`, `AGENTS.md` templates
 - `CODEOWNERS`, issue/MR templates, LICENSE, README scaffold
 
-Tracked as a future separate project (see docs/30-multi-repo-onboarding.md for the tenant onboarding pattern it would use).
+See docs/30-multi-repo-onboarding.md for the tenant onboarding pattern it uses.
 
 Onboarding flow: fork template → add CI vars → add wiring YAML under
 `kubernetes/clusters/weisssrv/tenants/` in this repo.
