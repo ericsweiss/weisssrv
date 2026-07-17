@@ -142,6 +142,22 @@
     - proxmox_resource_pools is defined
     - proxmox_resource_pool not in proxmox_resource_pools
 
+# Only reach out to cloud.debian.org when the image is genuinely missing.
+# get_url does a conditional (timestamp) request to the URL even when dest
+# already exists, so an unconditional get_url makes every VM provision depend on
+# cloud.debian.org being reachable — which fails on this IPv4-only estate when
+# the round-robin resolves to an IPv6-only (or egress-filtered) mirror. Stat
+# first and skip the download when the image is already staged.
+- name: Check whether the cloud image is already staged on the node
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.stat:
+    path: "/var/lib/vz/template/iso/{{ cloud_image_name }}"
+  register: proxmox_vm_cloud_image
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - not (proxmox_vm_skip_create | default(false))
+
 - name: Download cloud image if not present
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.get_url:
@@ -153,6 +169,7 @@
     - not ansible_check_mode
     - vm_exists.rc != 0
     - not (proxmox_vm_skip_create | default(false))
+    - not (proxmox_vm_cloud_image.stat.exists | default(false))
 
 - name: Create VM
   delegate_to: "{{ proxmox_host }}"
