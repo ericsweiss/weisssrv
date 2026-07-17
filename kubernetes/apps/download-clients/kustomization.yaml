@@ -4,9 +4,9 @@ kind: Kustomization
 namespace: downloads
 resources:
   - namespace.yaml
-  # VPN credentials secret is managed by External Secrets Operator (ESO) from
-  # 1Password "PrivadoVPN Credentials" via the onepassword-homelab
-  # ClusterSecretStore. See externalsecret.yaml.
+  # ESO ExternalSecrets (onepassword-homelab ClusterSecretStore): vpn-credentials
+  # (provider OpenVPN creds, mounted at /vpn-secrets) + gluetun-control-auth
+  # (control-server roles config.toml + exporter apikey). See externalsecret.yaml.
   - externalsecret.yaml
   # Storage: shared media volume + per-app config PV/PVC pairs generated from the
   # _nfs-pv Kustomize component (TLS mountOptions defined once there).

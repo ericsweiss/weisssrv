@@ -8,7 +8,7 @@
 # the vpn-config volume, and append qBittorrent's ports to the gluetun container
 # (which owns the shared pod network namespace): the WebUI and the BT peer
 # ports. Indices are fixed by the component:
-# gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0], SERVER_COUNTRIES=env[3],
+# gluetun=containers[0], VPN_SERVICE_PROVIDER=env[0], SERVER_COUNTRIES=env[1],
 # vpn-config=volumes[1].
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -32,7 +32,7 @@ patches:
         path: /spec/template/spec/containers/0/env/0/name
         value: VPN_SERVICE_PROVIDER
       - op: test
-        path: /spec/template/spec/containers/0/env/3/name
+        path: /spec/template/spec/containers/0/env/1/name
         value: SERVER_COUNTRIES
       - op: test
         path: /spec/template/spec/volumes/1/name
@@ -41,7 +41,7 @@ patches:
         path: /spec/template/spec/containers/0/env/0/valueFrom/configMapKeyRef/name
         value: qbittorrent-vpn-config
       - op: replace
-        path: /spec/template/spec/containers/0/env/3/valueFrom/configMapKeyRef/name
+        path: /spec/template/spec/containers/0/env/1/valueFrom/configMapKeyRef/name
         value: qbittorrent-vpn-config
       - op: replace
         path: /spec/template/spec/volumes/1/configMap/name

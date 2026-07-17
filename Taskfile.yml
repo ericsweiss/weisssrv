@@ -725,8 +725,15 @@ tasks:
             ;;
           downloads|vpn)
             task flux:refresh-secret -- downloads/vpn-credentials
-            # Only nzbget + qbittorrent consume vpn-credentials (Gluetun sidecars);
-            # the other *arr apps don't need VPN creds and restarting them wastes time.
+            # gluetun-control-auth (control-server config.toml + exporter apikey)
+            # is a SEPARATE ExternalSecret with a 24h refreshInterval, and Reloader
+            # ignores Secret changes — so it must be force-synced here too, else a
+            # bare pod restart just re-reads the stale apikey and the rotation is a
+            # silent no-op until the next 24h refresh.
+            task flux:refresh-secret -- downloads/gluetun-control-auth
+            # Only nzbget + qbittorrent consume these Secrets (Gluetun sidecars +
+            # the qbittorrent gluetun-exporter); the other *arr apps don't need
+            # them and restarting them wastes time.
             kubectl rollout restart deployment -n downloads -l app.kubernetes.io/name=nzbget
             kubectl rollout restart deployment -n downloads -l app.kubernetes.io/name=qbittorrent
             ;;
@@ -1373,6 +1380,241 @@ tasks:
       - echo "=== IngressRoutes ==="
       - kubectl get ingressroute -n downloads
 
+  downloads:vpn:
+    desc: "Toggle a client's VPN live (task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>)"
+    vars:
+      APP: '{{.APP | default ""}}'
+      STATE: '{{.STATE | default ""}}'
+    cmds:
+      # Live, GitOps-safe VPN toggle. The per-app vpn-config ConfigMaps carry the
+      # kustomize.toolkit.fluxcd.io/ssa: IfNotPresent annotation, so this
+      # kubectl patch is NOT drift-reverted by Flux; Reloader rolls the pod on
+      # the ConfigMap change. Accepts both `-- APP=.. STATE=..` (CLI_ARGS) and
+      # the native `APP=.. STATE=..` go-task var form.
+      - |
+        set -eo pipefail
+        APP="{{.APP}}"; STATE="{{.STATE}}"
+        usage() {
+          echo "Usage: task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>"
+          echo "  e.g. task downloads:vpn -- APP=nzbget STATE=on"
+        }
+        for kv in {{.CLI_ARGS}}; do
+          case "$kv" in
+            APP=*) APP="${kv#APP=}";;
+            STATE=*) STATE="${kv#STATE=}";;
+            *) echo "ERROR: unexpected argument '$kv' (expected KEY=value)"; usage; exit 1;;
+          esac
+        done
+        case "$APP" in nzbget|qbittorrent) ;; *) echo "ERROR: APP must be nzbget or qbittorrent"; usage; exit 1;; esac
+        case "$STATE" in
+          on)  VAL=true;;
+          off) VAL=false;;
+          *) echo "ERROR: STATE must be on or off"; usage; exit 1;;
+        esac
+        CM="$APP-vpn-config"
+        CUR=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "")
+        if [ "$CUR" = "$VAL" ]; then
+          echo "$APP VPN already $STATE (vpn_enabled=$VAL) — nothing to do."
+          exit 0
+        fi
+        # Pre-flight the provider credentials BEFORE enabling the VPN. Turning it
+        # on rolls the pod through gluetun's settings validation; if the
+        # ConfigMap's vpn_provider points at a provider whose vpn-credentials
+        # keys aren't wired, that validation fails and the pod CrashLoopBackOffs
+        # (and under the Recreate strategy the app is fully DOWN until reverted).
+        # Same single-source check downloads:vpn-provider uses (the provider is
+        # read from the CM here, i.e. the one the pod would actually start with).
+        if [ "$VAL" = "true" ]; then
+          MISSING=$(scripts/vpn-credcheck.sh "$APP")
+          if [ -n "$MISSING" ]; then
+            PROV=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "")
+            echo "ERROR: cannot enable VPN — provider '$PROV' is not fully wired;"
+            echo "       vpn-credentials is missing: $MISSING"
+            echo "       Enabling now would roll $APP into CrashLoopBackOff (gluetun"
+            echo "       settings validation fails on the missing OPENVPN_*_SECRETFILE)."
+            echo "       Populate 1Password + uncomment the provider block in"
+            echo "       externalsecret.yaml first (docs/21), or pick a wired provider:"
+            echo "         task downloads:vpn-provider -- APP=$APP PROVIDER=<privadovpn|vpnunlimited>"
+            exit 1
+          fi
+        fi
+        if [ "$APP" = "qbittorrent" ] && [ "$VAL" = "false" ]; then
+          echo "WARNING: qbittorrent keeps its gluetun-exporter + PodMonitor when the VPN is"
+          echo "         off, so gluetun_vpn_status=0 and VPNDown will fire after 15m. This"
+          echo "         live toggle is for short-lived ops; for a durable VPN-off qbittorrent"
+          echo "         also drop the exporter + PodMonitor in git (README § Per-App VPN Control)."
+        fi
+        GEN_BEFORE=$(kubectl get deployment "$APP" -n downloads -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "0")
+        echo "Patching $CM: vpn_enabled=$VAL ..."
+        kubectl patch configmap "$CM" -n downloads --type merge -p "{\"data\":{\"vpn_enabled\":\"$VAL\"}}"
+        # We only reach here on a real vpn_enabled change (the idempotent case
+        # exited above), so Reloader MUST bump the deployment generation. Watch
+        # for it and treat a 60s no-change as a failure — otherwise `rollout
+        # status` would run against the unchanged (already-complete) generation
+        # and report a premature, false success before the pod adopts the value.
+        echo "Waiting for Reloader to roll deployment/$APP ..."
+        i=0; ROLLED=false
+        while [ "$i" -lt 30 ]; do
+          GEN_NOW=$(kubectl get deployment "$APP" -n downloads -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "0")
+          if [ "$GEN_NOW" != "$GEN_BEFORE" ]; then ROLLED=true; break; fi
+          i=$((i+1)); sleep 2
+        done
+        if [ "$ROLLED" != "true" ]; then
+          echo "ERROR: Reloader did not roll deployment/$APP within 60s (generation still $GEN_BEFORE)."
+          echo "       The vpn_enabled patch applied, but the pod has NOT restarted to adopt it."
+          echo "       Check Reloader (kubectl logs -n reloader deploy/reloader), then force it:"
+          echo "         kubectl rollout restart deployment/$APP -n downloads"
+          exit 1
+        fi
+        kubectl rollout status deployment/"$APP" -n downloads --timeout=180s
+        echo "$APP VPN is now: vpn_enabled=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_enabled}')"
+        if [ "$VAL" = "true" ]; then
+          echo "Verify egress with: task downloads:verify-vpn"
+        fi
+
+  downloads:vpn-provider:
+    desc: "Switch a client's VPN provider live (task downloads:vpn-provider -- APP=<nzbget|qbittorrent> PROVIDER=<privadovpn|vpnunlimited> [COUNTRIES=<country[,country]>])"
+    vars:
+      APP: '{{.APP | default ""}}'
+      PROVIDER: '{{.PROVIDER | default ""}}'
+      COUNTRIES: '{{.COUNTRIES | default ""}}'
+    cmds:
+      # Live provider switch (GitOps-safe, same IfNotPresent + Reloader path as
+      # downloads:vpn). Validates PROVIDER against the wired providers and
+      # normalises the alias to gluetun's exact VPN_SERVICE_PROVIDER string.
+      # NOTE: multi-word COUNTRIES need the native form (quoting), e.g.
+      #   task downloads:vpn-provider APP=qbittorrent PROVIDER=privadovpn COUNTRIES="United States"
+      - |
+        set -eo pipefail
+        APP="{{.APP}}"; PROVIDER="{{.PROVIDER}}"; COUNTRIES="{{.COUNTRIES}}"
+        usage() {
+          echo "Usage: task downloads:vpn-provider -- APP=<nzbget|qbittorrent> PROVIDER=<privadovpn|vpnunlimited> [COUNTRIES=<country[,country]>]"
+          echo "  privadovpn  -> gluetun 'privado'       (OpenVPN user/pass; wired)"
+          echo "  vpnunlimited-> gluetun 'vpn unlimited'  (OpenVPN client cert/key; operator must populate 1P, see docs/21)"
+        }
+        for kv in {{.CLI_ARGS}}; do
+          case "$kv" in
+            APP=*) APP="${kv#APP=}";;
+            PROVIDER=*) PROVIDER="${kv#PROVIDER=}";;
+            COUNTRIES=*) COUNTRIES="${kv#COUNTRIES=}";;
+            # A bare (non KEY=value) token means a multi-word COUNTRIES value was
+            # word-split by the `--` form (e.g. `COUNTRIES=United States` -> tokens
+            # `COUNTRIES=United` + `States`). Left unhandled this silently truncates
+            # the country to "United", which gluetun then can't match — rolling a
+            # VPN-on app onto a server-less config and taking egress down. Reject it
+            # and point at the native quoted form, which preserves the whole value.
+            *)
+              echo "ERROR: unexpected token '$kv' — a multi-word COUNTRIES value is word-split by the '--' form."
+              echo "       Use the native quoted form for multi-word countries, e.g.:"
+              echo "         task downloads:vpn-provider APP=qbittorrent PROVIDER=privadovpn COUNTRIES=\"United States\""
+              usage
+              exit 1
+              ;;
+          esac
+        done
+        case "$APP" in nzbget|qbittorrent) ;; *) echo "ERROR: APP must be nzbget or qbittorrent"; usage; exit 1;; esac
+        # PROVIDER is whitelisted (alias -> gluetun's exact string) here, so only
+        # a known GLUE value ever reaches the kubectl patch below. Note the real
+        # provider name "vpn unlimited" CONTAINS A SPACE — GLUE is always used
+        # double-quoted (JSON payload, comparisons, script arg) for that reason.
+        case "$PROVIDER" in
+          privado|privadovpn) GLUE="privado";;
+          vpnunlimited|vpn-unlimited|"vpn unlimited") GLUE="vpn unlimited";;
+          *) echo "ERROR: unknown/unwired PROVIDER '$PROVIDER'"; usage; exit 1;;
+        esac
+        # COUNTRIES is the one free-form user value that reaches the JSON patch.
+        # Restrict it to a country-name charset (letters, digits, spaces, commas
+        # for the list form, plus . - ') so a stray quote/brace/backslash/$ can't
+        # break the merge-patch JSON or the shell. Strip the allowed chars and
+        # reject if anything survives.
+        if [ -n "$COUNTRIES" ]; then
+          BAD=$(printf '%s' "$COUNTRIES" | tr -d "A-Za-z0-9 ,.'-")
+          if [ -n "$BAD" ]; then
+            echo "ERROR: COUNTRIES contains unsupported characters: '$BAD'"
+            echo "       Allowed: letters, digits, spaces, commas, '.', '-', apostrophe."
+            echo "       e.g. COUNTRIES=Netherlands  or  COUNTRIES=\"United States,Canada\""
+            usage
+            exit 1
+          fi
+        fi
+        CM="$APP-vpn-config"
+        VPN_ENABLED=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_enabled}' 2>/dev/null || echo "")
+        # Pre-flight the target provider against the credentials ACTUALLY WIRED —
+        # not just the alias allowlist above. `vpnunlimited` is a valid alias but
+        # its keys ship commented-out in externalsecret.yaml until the operator
+        # populates 1Password. Switching a VPN-ON app onto a provider with no
+        # creds patches the ConfigMap and Reloader rolls the pod, gluetun's
+        # settings validation then fails on the missing OPENVPN_*_SECRETFILE, and
+        # (the old pod already gone under the Recreate strategy) the default
+        # VPN-on client is fully down until someone switches back — a one-command
+        # outage. Refuse before the patch when the app is ON; when it's OFF let
+        # the selection be staged but warn that turning it on will crash-loop.
+        # Single-source provider->required-keys + Secret lookup (also used by
+        # downloads:vpn) so the two commands' pre-flight can't drift.
+        MISSING=$(scripts/vpn-credcheck.sh "$APP" "$GLUE")
+        if [ -n "$MISSING" ]; then
+          if [ "$VPN_ENABLED" = "true" ]; then
+            echo "ERROR: provider '$GLUE' is not fully wired — vpn-credentials is missing: $MISSING"
+            echo "       $APP has the VPN ON, so switching now would roll it into CrashLoopBackOff"
+            echo "       (gluetun settings validation fails on the missing OPENVPN_*_SECRETFILE)."
+            echo "       Populate 1Password + uncomment the provider block in externalsecret.yaml first (docs/21)."
+            exit 1
+          fi
+          echo "WARNING: provider '$GLUE' is not fully wired — vpn-credentials is missing: $MISSING"
+          echo "         Saving the selection, but 'task downloads:vpn -- APP=$APP STATE=on' will"
+          echo "         crash-loop until 1Password is populated (docs/21)."
+        fi
+        # Detect whether this patch actually changes anything. Unlike
+        # downloads:vpn there is no early idempotency exit here, so a no-op
+        # re-set (same provider/country) would leave the deployment generation
+        # unchanged — we must NOT treat that as a failed roll below.
+        CUR_PROVIDER=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "")
+        CUR_COUNTRIES=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.server_countries}' 2>/dev/null || echo "")
+        CHANGED=false
+        if [ "$CUR_PROVIDER" != "$GLUE" ]; then CHANGED=true; fi
+        if [ -n "$COUNTRIES" ] && [ "$CUR_COUNTRIES" != "$COUNTRIES" ]; then CHANGED=true; fi
+        GEN_BEFORE=$(kubectl get deployment "$APP" -n downloads -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "0")
+        if [ -n "$COUNTRIES" ]; then
+          PATCH="{\"data\":{\"vpn_provider\":\"$GLUE\",\"server_countries\":\"$COUNTRIES\"}}"
+        else
+          PATCH="{\"data\":{\"vpn_provider\":\"$GLUE\"}}"
+        fi
+        echo "Patching $CM: vpn_provider=$GLUE${COUNTRIES:+, server_countries=$COUNTRIES} ..."
+        kubectl patch configmap "$CM" -n downloads --type merge -p "$PATCH"
+        if [ "$VPN_ENABLED" != "true" ]; then
+          echo "$APP vpn_enabled=$VPN_ENABLED — provider saved; turn the VPN on with: task downloads:vpn -- APP=$APP STATE=on"
+          exit 0
+        fi
+        if [ "$CHANGED" = "true" ]; then
+          # A real change: Reloader MUST bump the generation. Treat a 60s
+          # no-change as a failure instead of falling through to a premature,
+          # false `rollout status` success against the unchanged generation.
+          echo "Waiting for Reloader to roll deployment/$APP ..."
+          i=0; ROLLED=false
+          while [ "$i" -lt 30 ]; do
+            GEN_NOW=$(kubectl get deployment "$APP" -n downloads -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "0")
+            if [ "$GEN_NOW" != "$GEN_BEFORE" ]; then ROLLED=true; break; fi
+            i=$((i+1)); sleep 2
+          done
+          if [ "$ROLLED" != "true" ]; then
+            echo "ERROR: Reloader did not roll deployment/$APP within 60s (generation still $GEN_BEFORE)."
+            echo "       The provider patch applied, but the pod has NOT restarted to adopt it."
+            echo "       Check Reloader (kubectl logs -n reloader deploy/reloader), then force it:"
+            echo "         kubectl rollout restart deployment/$APP -n downloads"
+            exit 1
+          fi
+          # A switch to an unpopulated provider (e.g. vpnunlimited before its 1P
+          # cert/key exist) makes gluetun fail to start — rollout status then
+          # times out and this exits non-zero (the app is briefly down under
+          # Recreate).
+          kubectl rollout status deployment/"$APP" -n downloads --timeout=180s
+        else
+          echo "$APP already on provider '$GLUE'${COUNTRIES:+ / '$COUNTRIES'} — no roll needed."
+        fi
+        echo "Provider now: $(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_provider}')"
+        echo "Public IP via $APP's tunnel:"
+        kubectl exec -n downloads deployment/"$APP" -c gluetun -- wget -qO- -T 10 https://checkip.amazonaws.com 2>/dev/null || echo "  (could not fetch public IP — see task downloads:vpn-status)"
+
   downloads:vpn-status:
     desc: Check VPN connection status for all download clients
     cmds:
@@ -1401,6 +1643,11 @@ tasks:
           echo "Public IP:"
           kubectl exec -n downloads deployment/qbittorrent -c gluetun -- wget -qO- https://checkip.amazonaws.com 2>/dev/null || echo "  Cannot reach checkip.amazonaws.com"
         fi
+      - echo ""
+      - echo "=== Live VPN Ops (GitOps-safe; changes stick, Reloader rolls the pod) ==="
+      - 'echo "  task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>"'
+      - 'echo "  task downloads:vpn-provider -- APP=<...> PROVIDER=<privadovpn|vpnunlimited> [COUNTRIES=<...>]"'
+      - 'echo "  Resync git default: kubectl delete configmap <app>-vpn-config -n downloads && task flux:reconcile"'
 
   downloads:verify-vpn:
     desc: Assert VPN egress differs from LAN egress and the NetworkPolicy blocks direct LAN access from VPN-routed pods

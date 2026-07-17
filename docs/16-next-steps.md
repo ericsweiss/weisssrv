@@ -32,6 +32,10 @@ This document tracks remaining work and planned improvements for the weisssrv ho
   - Media managers (Sonarr, Radarr, Lidarr, Prowlarr)
   - Plex Watchlist automation (Pulsarr)
   - All services with Authentik SSO protection
+  - Live VPN ops (GitOps-safe): `task downloads:vpn` / `vpn-provider` toggle
+    per-app VPN on/off and provider via create-only ConfigMaps (Flux
+    `ssa: IfNotPresent`); Gluetun control-server API-key auth kills the
+    "route unprotected" WARN spam; per-provider credential switching (docs/21)
 - [x] Recipe management stack deployed:
   - Mealie (food.esweiss.com) with PostgreSQL on ZFS zvol
   - Bar Assistant (bar.esweiss.com) with Meilisearch
@@ -862,6 +866,8 @@ task flux:lint            # kustomize build + envsubst + kubeconform on every Ku
 # Operational (workload introspection)
 task downloads:status     # Show downloads namespace status
 task downloads:vpn-status # Check VPN connection
+task downloads:vpn -- APP=<nzbget|qbittorrent> STATE=<on|off>          # live VPN toggle (GitOps-safe)
+task downloads:vpn-provider -- APP=<...> PROVIDER=<privadovpn|vpnunlimited> [COUNTRIES=<...>]
 task downloads:restart    # Restart all download/media apps
 task downloads:logs       # View app logs (APP=nzbget [CONTAINER=gluetun])
 task downloads:shell      # Shell into container

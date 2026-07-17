@@ -27,6 +27,19 @@ metadata:
   labels:
     app.kubernetes.io/name: nzbget
     app.kubernetes.io/component: config
+  annotations:
+    # CREATE-ONLY under Flux (create-only server-side apply): Flux creates this
+    # ConfigMap on a fresh cluster from the committed default below, then never
+    # reconciles/reverts it. This is what makes the live VPN toggle tasks work —
+    # `task downloads:vpn -- APP=nzbget STATE=on` kubectl-patches vpn_enabled and
+    # the change STICKS instead of being drift-reverted on the next reconcile
+    # (Reloader rolls the pod on the patch). TRADE-OFF: the committed values here
+    # are only the BOOTSTRAP default; once the object exists, editing them in git
+    # does NOT propagate. Live state is the source of truth. To force git back on
+    # top (resync): `kubectl delete configmap nzbget-vpn-config -n downloads`
+    # then `task flux:reconcile` recreates it from this file. The object is still
+    # tracked/prunable (unlike reconcile:disabled). See README § Live VPN Toggles.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 data:
   vpn_enabled: "false"
   # VPN provider: "privado", "vpn unlimited"

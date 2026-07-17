@@ -28,6 +28,23 @@ metadata:
   labels:
     app.kubernetes.io/name: qbittorrent
     app.kubernetes.io/component: config
+  annotations:
+    # CREATE-ONLY under Flux (create-only server-side apply): Flux creates this
+    # ConfigMap on a fresh cluster from the committed default below, then never
+    # reconciles/reverts it — so `task downloads:vpn -- APP=qbittorrent STATE=off`
+    # (and vpn-provider) kubectl-patch it live and the change STICKS (Reloader
+    # rolls the pod). TRADE-OFF: the values here are only the BOOTSTRAP default;
+    # once the object exists, git edits do NOT propagate — live state wins. To
+    # resync git on top: `kubectl delete configmap qbittorrent-vpn-config -n
+    # downloads` then `task flux:reconcile`. Still tracked/prunable (unlike
+    # reconcile:disabled). See README § Live VPN Toggles.
+    #
+    # NOTE: turning the VPN OFF here via the live task does NOT remove the
+    # gluetun-exporter/PodMonitor (they are Flux-managed, not toggled), so the
+    # exporter will report gluetun_vpn_status=0 and VPNDown will fire after 15m.
+    # The live toggle is for short-lived ops; for a durable VPN-off qbittorrent,
+    # also drop the exporter + PodMonitor in git (see README § Per-App VPN Control).
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 data:
   # COUPLED: vpn_enabled + the gluetun-exporter container + the
   # gluetun-qbittorrent PodMonitor below must change together — see the
@@ -167,6 +184,28 @@ spec:
             # standalone build has no netlink throughput collection
             - name: EXPORTER_BUNDLED
               value: "false"
+            # Authenticate to the now role-protected gluetun control server. The
+            # exporter (v0.1.1+) sends this as the X-API-Key header on its three
+            # status GETs (/v1/vpn/status, /v1/publicip/ip,
+            # /v1/openvpn/portforwarded). Same key that config.toml grants the
+            # "exporter" role — both sourced from the gluetun-control-auth Secret,
+            # so they can never drift. Reloader ignores Secret changes, so an
+            # apikey rotation is a manual pod restart (README § Control-Server
+            # Auth / docs/21; docs/15 lists the field).
+            #
+            # optional: mirrors the optional gluetun-auth volume in
+            # _vpn-sidecar/vpn-sidecar.yaml. If the MR merges before the 1P
+            # gluetun-control-apikey field exists, ESO can't render the Secret;
+            # a required ref would wedge qbittorrent in CreateContainerConfigError
+            # (VPN-on client DOWN). With optional, the env is simply unset → the
+            # exporter sends no X-API-Key → the (also-unauthenticated) control
+            # server still answers, so the scrape succeeds and the pod stays up.
+            - name: GLUETUN_APIKEY
+              valueFrom:
+                secretKeyRef:
+                  name: gluetun-control-auth
+                  key: apikey
+                  optional: true
           ports:
             - name: vpn-metrics
               containerPort: 8002

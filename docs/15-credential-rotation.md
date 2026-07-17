@@ -39,8 +39,8 @@ when an item is added or its fields change.
 - **K3s Cluster Token** - cluster join token (credential)
 - **K3s Agent Token** - lower-privilege worker-join token (credential). Optional: when absent the role falls back to the cluster token. See docs/19 "Agent token".
 - **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
-- **PrivadoVPN Credentials** - openvpn-user, openvpn-password (for Gluetun VPN sidecar)
-- **VPN Unlimited Credentials** - openvpn-user, openvpn-password (alternate VPN provider)
+- **PrivadoVPN Credentials** - openvpn-user, openvpn-password (default Gluetun VPN provider; user/pass auth)
+- **VPN Unlimited Credentials** - alternate Gluetun provider (KeepSolid). Gluetun needs **all four** of openvpn-user, openvpn-password, openvpn-clientcrt and openvpn-clientkey: its generated OpenVPN config is cert/key-based (auth-user-pass off) but its settings validation still requires a non-empty user + password for the provider. To enable `task downloads:vpn-provider -- PROVIDER=vpnunlimited`, generate a Manual/OpenVPN config for one device in the VPN Unlimited portal, then add fields **openvpn-user**, **openvpn-password**, **openvpn-clientcrt** (full PEM `<cert>` block) and **openvpn-clientkey** (full PEM `<key>` block), and uncomment the `vpnunlimited-*` entries in `kubernetes/apps/download-clients/externalsecret.yaml` (docs/21)
 - **Mealie Secrets** - postgres-password
 - **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **Bar Assistant Secrets** - meilisearch-master-key
@@ -61,7 +61,7 @@ when an item is added or its fields change.
 - **Flux GitLab PAT** - personal access token used by Flux to read `kubernetes/` from the GitLab repo
 - **Flux Webhook Token** - auto-generated hex token shared between GitLab webhook config and a Flux `Receiver` (reserved for the optional Receiver-based webhook path; day-to-day push-triggered reconciliation comes from the GitLab agent's Flux integration — see docs/29)
 - **Plex Token** - token (X-Plex-Token for Plex exporter metrics)
-- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General)
+- **Download Client API Keys** - sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key (from each app's Settings > General); **gluetun-control-apikey** (auth key for the Gluetun control server; generate with `openssl rand -hex 32`) — rendered into the `gluetun-control-auth` Secret's `config.toml` and consumed by the gluetun-exporter as `GLUETUN_APIKEY`. Rotating this field requires re-syncing the `gluetun-control-auth` ExternalSecret from 1Password **and then** restarting the pods: ESO only re-fetches on its 24h `refreshInterval` and Reloader ignores Secret changes (`ignoreSecrets: true`), so a bare pod restart would just re-read the stale apikey and the rotation would be a silent no-op. Use `task flux:rotate-secret -- downloads` (force-syncs both `gluetun-control-auth` and `vpn-credentials`, then restarts nzbget/qbittorrent), or manually `task flux:refresh-secret -- downloads/gluetun-control-auth && kubectl rollout restart deployment/qbittorrent -n downloads`. See docs/21 § Control-Server Auth
 - **Grafana SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC for Grafana)
 - **Loki Push Auth** - htpasswd (bcrypt users file for the Loki push IngressRoute basicAuth middleware)
 - **Proxmox API Token** - user, token-name, token-secret (PVEAuditor role, for Proxmox exporter)

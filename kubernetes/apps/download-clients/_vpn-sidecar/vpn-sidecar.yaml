@@ -77,41 +77,75 @@ spec:
           command:
             - sh
             - -c
+            # NOTE: no `set -x` and never echo a credential — this wrapper runs
+            # in the gluetun sidecar for BOTH nzbget and qbittorrent and its
+            # stdout goes to the pod log. It only prints the provider NAME.
             - |
               VPN_ENABLED=$(cat /gluetun/vpn_enabled)
               if [ "$VPN_ENABLED" != "true" ]; then
                 echo "VPN disabled - sleeping indefinitely"
-                # Sleep but stay alive so pod doesn't restart
+                # Sleep but stay alive so pod doesn't restart. This early exec
+                # runs BEFORE any provider/credential logic below, so the
+                # disabled path (nzbget default) can never touch the new code.
                 exec sleep infinity
               fi
-              echo "VPN enabled - starting Gluetun"
+              # Provider-aware credential wiring (Part C — live provider switch).
+              # Read the provider the operator selected in the mounted vpn-config
+              # ConfigMap and point Gluetun at the matching credential FILES.
+              # SECRETFILE variants (files, not env) keep the secrets out of the
+              # container environment and `kubectl describe pod`. PrivadoVPN uses
+              # an OpenVPN user/password. VPN Unlimited (KeepSolid) needs ALL of
+              # user, password, client cert AND client key: gluetun's generated
+              # OpenVPN config is cert/key-based (auth-user-pass off), but its
+              # settings validation still REQUIRES a non-empty user + password for
+              # the provider — omit either and gluetun fails validation and the
+              # sidecar crash-loops. The CLIENTCRT/CLIENTKEY *_SECRETFILE names are
+              # gluetun's secret-file override vars for its openvpn_clientcrt /
+              # openvpn_clientkey secrets (the OPENVPN_CERT / OPENVPN_KEY value
+              # envs map to the same two secrets); gluetun parses the mounted file
+              # as PEM, so the stored value is the full PEM block. See the
+              # download-clients README § Provider Switching and docs/21.
+              VPN_PROVIDER=$(cat /gluetun/vpn_provider 2>/dev/null || echo "")
+              case "$VPN_PROVIDER" in
+                privado)
+                  export OPENVPN_USER_SECRETFILE=/vpn-secrets/privadovpn-user
+                  export OPENVPN_PASSWORD_SECRETFILE=/vpn-secrets/privadovpn-password
+                  ;;
+                "vpn unlimited")
+                  export OPENVPN_USER_SECRETFILE=/vpn-secrets/vpnunlimited-user
+                  export OPENVPN_PASSWORD_SECRETFILE=/vpn-secrets/vpnunlimited-password
+                  export OPENVPN_CLIENTCRT_SECRETFILE=/vpn-secrets/vpnunlimited-clientcrt
+                  export OPENVPN_CLIENTKEY_SECRETFILE=/vpn-secrets/vpnunlimited-clientkey
+                  ;;
+                *)
+                  echo "ERROR: unsupported vpn_provider '$VPN_PROVIDER'" >&2
+                  echo "       expected 'privado' or 'vpn unlimited'" >&2
+                  exit 1
+                  ;;
+              esac
+              echo "VPN enabled - starting Gluetun (provider: $VPN_PROVIDER)"
               exec /gluetun-entrypoint
           securityContext:
             capabilities:
               add:
                 - NET_ADMIN
+          # env[0]=VPN_SERVICE_PROVIDER and env[1]=SERVER_COUNTRIES are the two
+          # per-app configMapKeyRef entries the overlays repoint at their own
+          # ConfigMap (nzbget-vpn-config / qbittorrent-vpn-config) — kept as the
+          # first two entries so the overlay index guards stay simple.
+          #
+          # VPN credentials are NO LONGER static env here: the command wrapper
+          # above reads vpn_provider and exports the matching OPENVPN_*_SECRETFILE
+          # paths pointing at the vpn-credentials Secret mounted read-only at
+          # /vpn-secrets (see volumeMounts). Files (not env) keep the creds out of
+          # `kubectl describe pod`, and per-provider selection means one sidecar
+          # serves PrivadoVPN (user/pass) or VPN Unlimited (client cert/key).
           env:
             - name: VPN_SERVICE_PROVIDER
               valueFrom:
                 configMapKeyRef:
                   name: placeholder-vpn-config
                   key: vpn_provider
-            # VPN credentials: NOT optional. If vpn-credentials is missing or
-            # a field is blank (e.g., ESO lost access to 1Password), we want the
-            # pod to fail to start — that's clearer than Gluetun CrashLoopBackOff
-            # with silent auth failures. Gluetun reads these only when it
-            # actually starts (OpenVPN mode); with vpn_enabled=false the
-            # sidecar execs `sleep infinity` and never consumes them.
-            - name: OPENVPN_USER
-              valueFrom:
-                secretKeyRef:
-                  name: vpn-credentials
-                  key: openvpn-user
-            - name: OPENVPN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: vpn-credentials
-                  key: openvpn-password
             - name: SERVER_COUNTRIES
               valueFrom:
                 configMapKeyRef:
@@ -126,13 +160,26 @@ spec:
               value: "10.42.0.0/16,10.43.0.0/16,192.168.0.150/32,192.168.0.160/32"
             # Health + control servers bind loopback only: every consumer (the
             # exec probes below, the gluetun-exporter sidecar) shares the pod
-            # network namespace, and the control API is unauthenticated.
+            # network namespace. The control API is now role-authenticated via
+            # the config.toml mounted at HTTP_CONTROL_SERVER_AUTH_CONFIG_FILEPATH
+            # (below): the exporter's three read-only status routes require an
+            # X-API-Key, every other control route returns 401. This also
+            # silences gluetun's per-request "route ... is unprotected by
+            # default" WARN spam (v3.40+ warns only for the auto-generated
+            # `public`/none role; a named role suppresses it).
             - name: HEALTH_SERVER_ADDRESS
               value: "127.0.0.1:8000"
             - name: HEALTH_VPN_DURATION_INITIAL
               value: "30s"
             - name: HTTP_CONTROL_SERVER_ADDRESS
               value: "127.0.0.1:8001"
+            # Auth roles TOML. Default is /gluetun/auth/config.toml, but /gluetun
+            # is the read-only vpn-config configMap mount here, so a nested mount
+            # under it can't be created — point gluetun at a separate mount path
+            # instead. Rendered by ESO (Secret gluetun-control-auth) and mounted
+            # read-only at /gluetun-auth (see volumeMounts / volumes).
+            - name: HTTP_CONTROL_SERVER_AUTH_CONFIG_FILEPATH
+              value: "/gluetun-auth/config.toml"
             - name: DNS_ADDRESS
               # Gluetun v3.41 rejects comma-separated values (only a single
               # address is accepted) — a single-resolver dependency on dns-01.
@@ -195,6 +242,18 @@ spec:
               mountPath: /dev/net/tun
             - name: vpn-config
               mountPath: /gluetun
+            # Control-server auth roles (config.toml with the exporter's apikey).
+            # Rendered by ESO; read-only. Only the config.toml key is projected.
+            - name: gluetun-auth
+              mountPath: /gluetun-auth
+              readOnly: true
+            # VPN provider credentials, mounted as files. The command wrapper
+            # exports the matching OPENVPN_*_SECRETFILE paths into here based on
+            # vpn_provider. Read-only; never referenced as env, so credentials
+            # stay out of `kubectl describe pod`.
+            - name: vpn-secrets
+              mountPath: /vpn-secrets
+              readOnly: true
       volumes:
         - name: tun
           hostPath:
@@ -203,3 +262,41 @@ spec:
         - name: vpn-config
           configMap:
             name: placeholder-vpn-config
+        # config.toml rendered by ESO (ExternalSecret gluetun-control-auth). The
+        # secret also carries an `apikey` key for the exporter env; the items
+        # filter projects only config.toml into the gluetun container.
+        #
+        # optional (DELIBERATE — do NOT make this a required mount): the VPN-off
+        # path (nzbget default) execs `sleep infinity` BEFORE gluetun ever reads
+        # config.toml, and a fresh cluster has no gluetun-control-auth Secret
+        # until the operator adds the gluetun-control-apikey field to 1Password.
+        # A required mount would wedge nzbget (and any new deploy) in
+        # ContainerCreating at bootstrap, breaking the fresh-cluster guarantee.
+        # With the Secret present (happy path) the flag is a no-op; with it
+        # absent gluetun falls back to the unprotected control server (the WARNs
+        # return) rather than taking the pod down under the Recreate strategy.
+        # FAIL-OPEN IS ACCEPTABLE because the control server binds 127.0.0.1
+        # (HTTP_CONTROL_SERVER_ADDRESS above) and is reachable only from inside
+        # this pod's shared network namespace — there is no Service and no
+        # NetworkPolicy ingress to it, so an unauthenticated control API is not
+        # reachable off-pod. The apikey auth is defence-in-depth over that
+        # loopback+netns boundary, not the sole control.
+        # qbittorrent's gluetun-exporter reads the same Secret's apikey via an
+        # OPTIONAL secretKeyRef (resources.yaml), so a missing key leaves the
+        # exporter unauthenticated against the then-also-unauthenticated control
+        # server — the scrape still succeeds — instead of wedging that pod. Both
+        # apps therefore degrade symmetrically; neither hard-blocks.
+        - name: gluetun-auth
+          secret:
+            secretName: gluetun-control-auth
+            optional: true
+            items:
+              - key: config.toml
+                path: config.toml
+        # Provider credential files (vpn-credentials Secret). Both PrivadoVPN
+        # (privadovpn-user/-password) and, once the operator populates them,
+        # VPN Unlimited (vpnunlimited-user/-password + vpnunlimited-clientcrt/
+        # -clientkey) keys land here.
+        - name: vpn-secrets
+          secret:
+            secretName: vpn-credentials
