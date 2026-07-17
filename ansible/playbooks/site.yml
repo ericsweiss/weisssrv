@@ -124,6 +124,13 @@
 - name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, and k3s-server hosts)
   hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:k3s_servers
   become: true
+  # App VMs (nextcloud, immich) are provisioned by their own deploy jobs, which
+  # need deploy-ansible-base to succeed first — so on a first deploy the VM does
+  # not exist yet and this metrics play would otherwise fail the whole base
+  # deploy with UNREACHABLE. Skip unreachable hosts here (their own playbook also
+  # deploys node_exporter_host); a genuinely-down host surfaces via NodeDown, not
+  # by failing every base deploy.
+  ignore_unreachable: true
   roles:
     - role: node_exporter_host
       tags: [node_exporter_host]
@@ -131,6 +138,9 @@
 - name: Deploy host-side log collection (Alloy → Loki)
   hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:k3s_servers:k3s_agents
   become: true
+  # Same first-deploy ordering as the metrics play above: skip a not-yet-provisioned
+  # app VM instead of failing the base deploy (the app's own playbook ships alloy_host).
+  ignore_unreachable: true
   roles:
     - role: alloy_host
       tags: [alloy_host]
