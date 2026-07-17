@@ -1,0 +1,163 @@
+---
+# Verify the rendered artefacts + config contract.
+- name: Verify
+  hosts: all
+  become: true
+  vars:
+    compose_file: /mnt/nextcloud-app/compose/docker-compose.yml
+    env_file: /mnt/nextcloud-app/compose/.env
+  tasks:
+    - name: Read the rendered compose file
+      ansible.builtin.slurp:
+        src: "{{ compose_file }}"
+      register: compose_raw
+
+    - name: Parse the compose file as YAML (structural validity)
+      ansible.builtin.set_fact:
+        compose_doc: "{{ compose_raw.content | b64decode | from_yaml }}"
+
+    - name: Assert the compose file defines every expected service
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud' in compose_doc.services"
+          - "'nextcloud-cron' in compose_doc.services"
+          - "'nextcloud-db' in compose_doc.services"
+          - "'nextcloud-redis' in compose_doc.services"
+          - "'nextcloud-exporter' in compose_doc.services"
+        fail_msg: "compose file is missing an expected service"
+
+    - name: Assert the image tags resolved from the version pins
+      ansible.builtin.assert:
+        that:
+          - compose_doc.services.nextcloud.image == 'nextcloud:34.0.1-apache'
+          - compose_doc.services['nextcloud-db'].image == 'postgres:18.4-trixie'
+          - compose_doc.services['nextcloud-redis'].image == 'redis:8.8.0-alpine'
+          - "compose_doc.services['nextcloud-exporter'].image == 'ghcr.io/xperimental/nextcloud-exporter:0.9.1'"
+        fail_msg: "an image tag did not resolve from its version pin"
+
+    - name: Assert the web port is loopback-bound and the exporter is exposed
+      ansible.builtin.assert:
+        that:
+          - "'127.0.0.1:8080:80' in compose_doc.services.nextcloud.ports"
+          - "'9205:9205' in compose_doc.services['nextcloud-exporter'].ports"
+        fail_msg: "port bindings are wrong"
+
+    - name: Assert trusted domains cover both hosts + the exporter service name
+      ansible.builtin.assert:
+        that:
+          - "'cloud.ericsweiss.test' in compose_doc.services.nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS"
+          - "'cloud.esweiss.test' in compose_doc.services.nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS"
+          - "'nextcloud' in compose_doc.services.nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS"
+
+    - name: Assert trusted proxies are only the immediate hop (no LAN /24)
+      ansible.builtin.assert:
+        that:
+          # nginx resolves the real client IP and replaces XFF, so the container
+          # trusts only loopback + the compose bridge gateway.
+          - "'127.0.0.1' in compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          - "'172.28.0.0/16' in compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          # Regression guard for the XFF-spoofing fix: the LAN /24 and pod CIDR
+          # must NOT be trusted at the container level.
+          - "'192.168.0.0/24' not in compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          - "'10.42.0.0/16' not in compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+        fail_msg: "container-level TRUSTED_PROXIES must be the immediate hop only"
+
+    - name: Stat the secret env file
+      ansible.builtin.stat:
+        path: "{{ env_file }}"
+      register: env_stat
+
+    - name: Assert the .env is root-only (0600)
+      ansible.builtin.assert:
+        that:
+          - env_stat.stat.exists
+          - env_stat.stat.mode == '0600'
+        fail_msg: ".env must exist with mode 0600"
+
+    - name: Read the .env
+      ansible.builtin.slurp:
+        src: "{{ env_file }}"
+      register: env_raw
+
+    - name: Assert the .env carries the interpolated secret keys (double-quoted)
+      ansible.builtin.assert:
+        that:
+          # Double-quoted so compose-go dotenv treats the value literally (no
+          # $-interpolation of a generated password).
+          - "'NEXTCLOUD_POSTGRES_PASSWORD=\"' in (env_raw.content | b64decode)"
+          - "'NEXTCLOUD_ADMIN_PASSWORD=\"' in (env_raw.content | b64decode)"
+          - "'NEXTCLOUD_SERVERINFO_TOKEN=\"' in (env_raw.content | b64decode)"
+
+    - name: Stat the compose systemd unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/nextcloud-compose.service
+      register: unit_stat
+
+    - name: Read the compose systemd unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/nextcloud-compose.service
+      register: unit_raw
+
+    - name: Assert the unit orders on the zvol mounts
+      ansible.builtin.assert:
+        that:
+          - unit_stat.stat.exists
+          - "'RequiresMountsFor=/mnt/nextcloud-app /mnt/nextcloud-postgres /mnt/nextcloud-data' in (unit_raw.content | b64decode)"
+
+    - name: Read the nginx site
+      ansible.builtin.slurp:
+        src: /etc/nginx/sites-available/nextcloud.conf
+      register: nginx_raw
+
+    - name: Assert the nginx site proxies with unlimited body size + real_ip
+      ansible.builtin.assert:
+        that:
+          - "'proxy_pass http://127.0.0.1:8080;' in (nginx_raw.content | b64decode)"
+          - "'client_max_body_size 0;' in (nginx_raw.content | b64decode)"
+          - "'server_name cloud.ericsweiss.test cloud.esweiss.test;' in (nginx_raw.content | b64decode)"
+          # real_ip resolves the true client from Traefik's XFF, trusting only
+          # the k3s node IPs, then replaces XFF with the single resolved value.
+          - "'set_real_ip_from 192.168.0.222;' in (nginx_raw.content | b64decode)"
+          - "'real_ip_recursive on;' in (nginx_raw.content | b64decode)"
+          - "'proxy_set_header X-Forwarded-For $remote_addr;' in (nginx_raw.content | b64decode)"
+          # Regression guard: the append-the-whole-chain form must not return.
+          - "'$proxy_add_x_forwarded_for' not in (nginx_raw.content | b64decode)"
+
+    - name: Read the backup wrapper
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/nextcloud-backup-run.sh
+      register: backup_raw
+
+    - name: Assert the backup wrapper emits the expected metric series
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud_backup_last_run_success' in (backup_raw.content | b64decode)"
+          - "'nextcloud_backup_last_success_timestamp_seconds' in (backup_raw.content | b64decode)"
+          - "'pg_dump' in (backup_raw.content | b64decode)"
+          # Both pipeline stages (pg_dump AND gzip) must gate promotion, so a
+          # gzip/disk-full failure cannot ship a truncated dump as a success.
+          - "'pipe_status[1]' in (backup_raw.content | b64decode)"
+
+    - name: Assert the backup timer + service exist
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ item }}"
+      loop:
+        - nextcloud-backup.service
+        - nextcloud-backup.timer
+      register: backup_units
+      failed_when: not backup_units.stat.exists
+
+    # Only when a real Docker CLI is available (it isn't in the CI molecule
+    # image) validate the compose file semantically.
+    - name: Detect the docker CLI
+      ansible.builtin.command: which docker
+      register: docker_cli
+      changed_when: false
+      failed_when: false
+
+    - name: Validate the compose file with docker compose config
+      ansible.builtin.command:
+        cmd: docker compose config -q
+        chdir: /mnt/nextcloud-app/compose
+      changed_when: false
+      when: docker_cli.rc == 0

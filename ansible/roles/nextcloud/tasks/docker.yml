@@ -1,0 +1,71 @@
+---
+# Docker Engine + compose plugin from the official download.docker.com apt repo.
+# The signed-repo key/verify/dearmor pipeline is the shared apt_signed_repo role
+# (same helper plex + gitlab use); only the Docker specifics are passed here.
+
+- name: Install Docker apt prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+
+# Docker's repo line pins arch to the dpkg architecture (amd64), not the kernel
+# name (x86_64), so resolve it rather than hardcoding.
+- name: Resolve the dpkg architecture for the Docker repo line
+  ansible.builtin.command: dpkg --print-architecture
+  register: nextcloud_dpkg_arch
+  changed_when: false
+
+- name: Add the Docker signed APT repository
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://download.docker.com/linux/debian/gpg
+    apt_signed_repo_fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+    apt_signed_repo_keyring_path: /usr/share/keyrings/docker.gpg
+    apt_signed_repo_repo_line: >-
+      deb [arch={{ nextcloud_dpkg_arch.stdout }}
+      signed-by=/usr/share/keyrings/docker.gpg]
+      https://download.docker.com/linux/debian
+      {{ ansible_distribution_release }} stable
+    apt_signed_repo_filename: docker
+    apt_signed_repo_keyring_mode: "0644"
+    apt_signed_repo_install_gnupg: true
+
+# Pinned engine + plugins (download.docker.com Debian trixie). Versions are in
+# group_vars/all.yml; bump all three together when the repo prunes a pin.
+- name: Install Docker Engine, CLI, containerd, and the compose plugin (pinned)
+  ansible.builtin.apt:
+    name:
+      - "docker-ce={{ nextcloud_docker_ce_apt_version }}"
+      - "docker-ce-cli={{ nextcloud_docker_ce_apt_version }}"
+      - "containerd.io={{ nextcloud_containerd_apt_version }}"
+      - "docker-compose-plugin={{ nextcloud_docker_compose_apt_version }}"
+    state: present
+    update_cache: true
+    allow_change_held_packages: true
+
+# Route container logs to journald so alloy_host ships them to Loki (the same
+# journald->Loki path the host uses for its own units); without this the default
+# json-file driver keeps container logs off the shipping path.
+- name: Configure the Docker daemon (journald log driver)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "journald",
+        "live-restore": true
+      }
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+- name: Enable + start the Docker service
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started

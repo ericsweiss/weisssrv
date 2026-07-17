@@ -1,0 +1,13 @@
+---
+# Nextcloud servers configuration
+#
+# App configuration and all image/version pins live in the nextcloud role
+# defaults and group_vars/all.yml respectively. This file is the home for any
+# Nextcloud-group-wide overrides.
+#
+# Postfix null client uses the role default postfix_config (relay via
+# smtp-relay over SASL+TLS, loopback-only). postfix_sasl_user,
+# postfix_sasl_password, and mail_aliases are defined in all.yml.
+
+# Nextcloud state rides ZFS zvol passthrough disks only (no NFS); the VM is
+# pinned to pve-nas-01. See hosts.yml (vm_additional_disks) and docs/35.

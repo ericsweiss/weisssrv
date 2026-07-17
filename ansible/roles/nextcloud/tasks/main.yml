@@ -1,0 +1,216 @@
+---
+# Nextcloud on a NAS-pinned Debian VM via Docker Compose.
+#
+# Layout: three ZFS zvol passthrough disks (attached by proxmox_vm, mounted by
+# zvol_mount) hold the app dir, the PostgreSQL data, and the bulk user data.
+# The stack (nextcloud-apache + postgres + redis + cron + exporter) runs under a
+# single systemd-managed compose project; a host-level nginx terminates TLS with
+# the distributed *.esweiss.com wildcard cert and proxies to the loopback-bound
+# web container. There is NO NFS anywhere — all state rides the zvols.
+
+# =============================================================================
+# Persistent disks (ZFS zvols attached as SCSI devices by proxmox_vm)
+# =============================================================================
+- name: Mount additional persistent disks
+  ansible.builtin.include_role:
+    name: zvol_mount
+  vars:
+    zvol_mount_disks: "{{ vm_additional_disks | default([]) }}"
+  when: vm_additional_disks is defined and vm_additional_disks | length > 0
+
+# =============================================================================
+# Secret-presence assertions (fail fast with a clear pointer)
+# =============================================================================
+- name: Validate required Nextcloud secrets are present
+  ansible.builtin.assert:
+    that:
+      - nextcloud_admin_password | default('') | length > 0
+      - nextcloud_db_password | default('') | length > 0
+      - nextcloud_serverinfo_token | default('') | length > 0
+    fail_msg: >-
+      Nextcloud secrets not set. NEXTCLOUD_ADMIN_PASSWORD,
+      NEXTCLOUD_POSTGRES_PASSWORD, and NEXTCLOUD_SERVERINFO_TOKEN must be
+      provided via 'op run'. Run: task nextcloud:deploy
+    success_msg: "Nextcloud core secrets present"
+  no_log: true
+  when: not (skip_nextcloud_deploy | default(false))
+
+- name: Validate required Nextcloud OIDC secrets are present
+  ansible.builtin.assert:
+    that:
+      - nextcloud_oidc_client_id | default('') | length > 0
+      - nextcloud_oidc_client_secret | default('') | length > 0
+    fail_msg: >-
+      Nextcloud OIDC secrets not set. NEXTCLOUD_OIDC_CLIENT_ID and
+      NEXTCLOUD_OIDC_CLIENT_SECRET must be provided via 'op run' (1Password item
+      "Nextcloud SSO"). Set nextcloud_oidc_enabled: false to skip SSO wiring.
+      Run: task nextcloud:deploy
+    success_msg: "Nextcloud OIDC secrets present"
+  no_log: true
+  when:
+    - not (skip_nextcloud_deploy | default(false))
+    - nextcloud_oidc_enabled | default(true)
+
+# =============================================================================
+# Docker Engine + Compose plugin (download.docker.com apt repo)
+# =============================================================================
+- name: Install Docker Engine and the compose plugin
+  ansible.builtin.include_tasks: docker.yml
+  when: not (skip_nextcloud_deploy | default(false))
+
+# =============================================================================
+# Persistent directories on the zvols
+# =============================================================================
+- name: Create Nextcloud application directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ nextcloud_app_dir }}"
+    - "{{ nextcloud_compose_dir }}"
+
+- name: Create Nextcloud backup directory
+  ansible.builtin.file:
+    path: "{{ nextcloud_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# html + data are bind-mounted into the container and written by www-data
+# (uid/gid 33). Pre-create + chown so the container never has to chown a large
+# populated data tree on start.
+- name: Create Nextcloud html + data directories (owned by www-data uid/gid)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ nextcloud_uid }}"
+    group: "{{ nextcloud_gid }}"
+    mode: "0750"
+  loop:
+    - "{{ nextcloud_html_dir }}"
+    - "{{ nextcloud_data_dir }}"
+
+# =============================================================================
+# Host nginx TLS front end
+# =============================================================================
+- name: Configure the host nginx reverse proxy
+  ansible.builtin.include_tasks: nginx.yml
+  when: nextcloud_nginx_enabled | default(true)
+
+# =============================================================================
+# Compose project (.env holds secrets; compose file is secret-free)
+# =============================================================================
+- name: Deploy the Nextcloud compose environment file
+  ansible.builtin.template:
+    src: nextcloud.env.j2
+    dest: "{{ nextcloud_compose_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart nextcloud compose
+
+- name: Deploy the Nextcloud compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ nextcloud_compose_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nextcloud compose
+
+- name: Deploy the nextcloud-compose systemd unit
+  ansible.builtin.template:
+    src: nextcloud-compose.service.j2
+    dest: /etc/systemd/system/nextcloud-compose.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart nextcloud compose
+
+- name: Enable + start the nextcloud compose stack
+  ansible.builtin.systemd:
+    name: nextcloud-compose.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not (skip_nextcloud_deploy | default(false))
+
+# Bring the stack up now (flush the compose restart) so the readiness wait and
+# occ/SSO tasks below act on the freshly-applied containers.
+- name: Apply pending compose changes before configuring Nextcloud
+  ansible.builtin.meta: flush_handlers
+
+# =============================================================================
+# Wait for first-install to complete, then configure SSO + serverinfo
+# =============================================================================
+- name: Wait for Nextcloud to finish installing
+  ansible.builtin.command:
+    cmd: docker compose exec -T -u www-data nextcloud php occ status --output=json
+    chdir: "{{ nextcloud_compose_dir }}"
+  register: nextcloud_status
+  changed_when: false
+  failed_when: false
+  retries: "{{ nextcloud_install_wait_retries }}"
+  delay: "{{ nextcloud_install_wait_delay }}"
+  # Single short-circuiting expression: `and` skips the from_json parse while the
+  # command is still failing during first-install init (stdout not yet valid JSON).
+  until: >-
+    nextcloud_status.rc == 0
+    and (nextcloud_status.stdout | from_json).installed | default(false)
+  when: not (skip_nextcloud_deploy | default(false))
+
+- name: Configure Authentik OIDC SSO
+  ansible.builtin.include_tasks: sso.yml
+  when:
+    - not (skip_nextcloud_deploy | default(false))
+    - nextcloud_oidc_enabled | default(true)
+
+# The serverinfo app ships enabled; the exporter authenticates to its API with
+# this token (NEXTCLOUD_AUTH_TOKEN). Set it idempotently.
+- name: Set the serverinfo token consumed by the exporter
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T -u www-data nextcloud
+      php occ config:app:set serverinfo token --value={{ nextcloud_serverinfo_token | quote }}
+    chdir: "{{ nextcloud_compose_dir }}"
+  no_log: true
+  changed_when: false
+  when: not (skip_nextcloud_deploy | default(false))
+
+# =============================================================================
+# Nightly PostgreSQL logical backup (rides the app zvol -> archive + vzdump)
+# =============================================================================
+- name: Deploy the Nextcloud backup wrapper
+  ansible.builtin.template:
+    src: nextcloud-backup-run.sh.j2
+    dest: /usr/local/sbin/nextcloud-backup-run.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Nextcloud backup service + timer
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: nextcloud-backup.service.j2, dest: nextcloud-backup.service }
+    - { src: nextcloud-backup.timer.j2, dest: nextcloud-backup.timer }
+  notify: Reload systemd
+
+- name: Enable + start the Nextcloud backup timer
+  ansible.builtin.systemd:
+    name: nextcloud-backup.timer
+    enabled: "{{ nextcloud_backup_enabled | default(true) }}"
+    state: "{{ 'started' if (nextcloud_backup_enabled | default(true)) else 'stopped' }}"
+    daemon_reload: true
+  when: not (skip_nextcloud_deploy | default(false))

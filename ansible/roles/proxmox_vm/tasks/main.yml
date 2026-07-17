@@ -402,11 +402,15 @@
     - vm_additional_disks | length > 0
 
 # With loops + register, changed_when is evaluated per-iteration using the current result
+# sparse: true creates a thin-provisioned zvol (`zfs create -s`), so the volsize
+# is reserved lazily as data is written (used for large data disks like the
+# Nextcloud/Immich bulk user-data stores). Omitting the key preserves the
+# historical thick-provisioned behavior — existing disks are unaffected.
 - name: Create ZFS zvol for additional disks
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     if ! zfs list {{ item.zvol }} 2>/dev/null; then
-      zfs create -p -V {{ item.size }} {{ item.zvol }}
+      zfs create -p {{ '-s ' if (item.sparse | default(false) | bool) else '' }}-V {{ item.size }} {{ item.zvol }}
       echo "created"
     else
       echo "exists"

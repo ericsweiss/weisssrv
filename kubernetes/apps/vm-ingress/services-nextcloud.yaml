@@ -1,0 +1,36 @@
+---
+# Service + EndpointSlice for the Nextcloud VM (192.168.0.156).
+# Nextcloud runs outside the cluster on a NAS-pinned VM; the host nginx
+# terminates TLS on 443 with the distributed *.esweiss.com wildcard cert and
+# proxies to the loopback-bound Nextcloud container. Traefik connects with
+# scheme: https + the vm-tls-wildcard ServersTransport (serverName
+# vm.esweiss.com) so the Traefik->VM hop validates against that wildcard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-web
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: nextcloud-web
+  namespace: default
+  labels:
+    kubernetes.io/service-name: nextcloud-web
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - port: 443
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 192.168.0.156
+    conditions:
+      ready: true

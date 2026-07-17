@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nextcloud Docker Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# Path-based mount ordering (systemd escapes these to the right .mount units):
+# the zvol data disks must be mounted before the stack starts.
+RequiresMountsFor={{ nextcloud_app_dir }} {{ nextcloud_postgres_dir }} {{ nextcloud_data_mount }}
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ nextcloud_compose_dir }}
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

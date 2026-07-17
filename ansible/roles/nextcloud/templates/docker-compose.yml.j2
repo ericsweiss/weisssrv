@@ -1,0 +1,99 @@
+# {{ ansible_managed }}
+# Nextcloud stack. Secrets are interpolated from the sibling .env file
+# (${NEXTCLOUD_*}); this file is secret-free and world-readable.
+---
+name: nextcloud
+
+services:
+  nextcloud:
+    image: {{ nextcloud_image }}
+    restart: unless-stopped
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_started
+    ports:
+      # Loopback-only: the host nginx terminates TLS and proxies here.
+      - "{{ nextcloud_http_bind_address }}:{{ nextcloud_http_bind_port }}:80"
+    volumes:
+      - {{ nextcloud_html_dir }}:/var/www/html
+      - {{ nextcloud_data_dir }}:/var/www/html/data
+    environment:
+      POSTGRES_HOST: nextcloud-db
+      POSTGRES_DB: {{ nextcloud_db_name }}
+      POSTGRES_USER: {{ nextcloud_db_user }}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_POSTGRES_PASSWORD}
+      REDIS_HOST: nextcloud-redis
+      REDIS_HOST_PORT: "6379"
+      NEXTCLOUD_ADMIN_USER: {{ nextcloud_admin_user }}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: "{{ nextcloud_trusted_domains | trim }}"
+      NEXTCLOUD_DATA_DIR: /var/www/html/data
+      OVERWRITEPROTOCOL: {{ nextcloud_overwrite_protocol }}
+      OVERWRITECLIURL: {{ nextcloud_overwrite_cli_url }}
+      TRUSTED_PROXIES: "{{ nextcloud_trusted_proxies }}"
+      APACHE_DISABLE_REWRITE_IP: "1"
+      PHP_MEMORY_LIMIT: {{ nextcloud_php_memory_limit }}
+      PHP_UPLOAD_LIMIT: {{ nextcloud_php_upload_limit }}
+
+  # Runs cron.php every 15 min (background jobs). Shares the app + data volumes.
+  nextcloud-cron:
+    image: {{ nextcloud_image }}
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    depends_on:
+      nextcloud:
+        condition: service_started
+    volumes:
+      - {{ nextcloud_html_dir }}:/var/www/html
+      - {{ nextcloud_data_dir }}:/var/www/html/data
+
+  nextcloud-db:
+    image: {{ nextcloud_postgres_image }}
+    restart: unless-stopped
+    volumes:
+      - {{ nextcloud_postgres_dir }}:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: {{ nextcloud_db_name }}
+      POSTGRES_USER: {{ nextcloud_db_user }}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_POSTGRES_PASSWORD}
+      # Data lives in a subdir so the ext4 mountpoint's lost+found never
+      # collides with initdb's empty-dir check (same pattern as the k3s PG pods).
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ nextcloud_db_user }} -d {{ nextcloud_db_name }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Cache + transactional file locking only; no persistence (deliberately no
+  # volume). Reachable only on the internal compose network.
+  nextcloud-redis:
+    image: {{ nextcloud_redis_image }}
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  nextcloud-exporter:
+    image: {{ nextcloud_exporter_image }}
+    restart: unless-stopped
+    depends_on:
+      nextcloud:
+        condition: service_started
+    ports:
+      # All-interfaces: the in-cluster Prometheus scrapes 192.168.0.156:9205
+      # (firewall sg-nextcloud opens it from k3s_nodes only).
+      - "{{ nextcloud_exporter_port }}:9205"
+    environment:
+      NEXTCLOUD_SERVER: http://nextcloud
+      NEXTCLOUD_AUTH_TOKEN: ${NEXTCLOUD_SERVERINFO_TOKEN}
+      NEXTCLOUD_LISTEN_ADDRESS: ":9205"
+
+networks:
+  default:
+    name: nextcloud
+    ipam:
+      config:
+        # Fixed subnet so nextcloud_trusted_proxies can name the bridge gateway
+        # docker-proxy presents as the client of the loopback-published web port.
+        - subnet: {{ nextcloud_docker_subnet }}

@@ -1666,6 +1666,8 @@ molecule-tests:
         SCENARIO: agent
       - ROLE: nas_storage
         SCENARIO: default
+      - ROLE: nextcloud
+        SCENARIO: default
       - ROLE: nfs_tls
         SCENARIO: default
       - ROLE: nic_tuning
@@ -2363,6 +2365,49 @@ deploy-gitlab:
         # on unrelated version bumps but the playbook is idempotent and safe to re-run
         - ansible/inventories/prod/group_vars/all.yml
 
+deploy-nextcloud:
+  stage: deploy
+  extends: .deploy-base
+  resource_group: deploy-nextcloud
+  needs:
+    - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
+  variables:
+    # nextcloud.yml runs postfix_null_client (ROOT_EMAIL_ALIAS + SMTP creds),
+    # base (SSH_PUBLIC_KEY), and alloy_host (LOKI_PUSH_* from .deploy-base). The
+    # nextcloud role reads its secrets from env via lookup('ansible.builtin.env').
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+    NEXTCLOUD_ADMIN_PASSWORD: "op://Homelab/Nextcloud Secrets/admin-password"
+    NEXTCLOUD_POSTGRES_PASSWORD: "op://Homelab/Nextcloud Secrets/postgres-password"
+    NEXTCLOUD_SERVERINFO_TOKEN: "op://Homelab/Nextcloud Secrets/serverinfo-token"
+    NEXTCLOUD_OIDC_CLIENT_ID: "op://Homelab/Nextcloud SSO/client-id"
+    NEXTCLOUD_OIDC_CLIENT_SECRET: "op://Homelab/Nextcloud SSO/client-secret"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/nextcloud.yml
+  environment:
+    name: production/nextcloud
+  rules:
+    - !reference [.skip-schedule-web, rules]
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/nextcloud/**/*
+        # apt_signed_repo: shared signed-repo helper the nextcloud role includes
+        # for the Docker apt repo — a helper-only change must redeploy nextcloud.
+        - ansible/roles/apt_signed_repo/**/*
+        # zvol_mount is invoked by the nextcloud role for the three passthrough
+        # data disks.
+        - ansible/roles/zvol_mount/**/*
+        - ansible/playbooks/nextcloud.yml
+        - ansible/inventories/prod/group_vars/nextcloud_servers.yml
+        # all.yml triggers deploy for nextcloud_* version changes; may also
+        # trigger on unrelated bumps but the playbook is idempotent.
+        - ansible/inventories/prod/group_vars/all.yml
+
 deploy-home-assistant-config:
   stage: deploy
   extends: .deploy-base
@@ -2476,6 +2521,8 @@ deploy-verify:
       optional: true
     - job: deploy-gitlab
       optional: true
+    - job: deploy-nextcloud
+      optional: true
     - job: deploy-home-assistant-config
       optional: true
     - job: deploy-gitlab-verify
@@ -2518,6 +2565,7 @@ deploy-verify:
     - !reference [deploy-ansible-certs, rules]
     - !reference [deploy-plex, rules]
     - !reference [deploy-gitlab, rules]
+    - !reference [deploy-nextcloud, rules]
     - !reference [deploy-home-assistant-config, rules]
     # Flux-only changes (kubernetes/ manifests with no Ansible or all.yml edit)
     # match none of the deploy-* rules above, so the live Flux reconcile +

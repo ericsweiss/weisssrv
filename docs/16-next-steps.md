@@ -761,17 +761,27 @@ from DHCP), enable metrics in the UI, and create the Authentik proxy provider +
 - [ ] Configure Authentik SSO
 - [ ] Mobile app testing
 
-### Nextcloud (File Sync)
+### Nextcloud (File Sync) (COMPLETE)
 
-**Open Questions**:
-- Primary use: File sync only, or also Collabora/OnlyOffice?
-- Storage: Dedicated dataset or reuse `tank/share`?
-- Auth: Authentik OIDC from day 1
+Deployed on a dedicated NAS-pinned Debian VM (`192.168.0.156`, vmid 156) as a
+Docker Compose stack (nextcloud-apache + postgres + redis + cron + exporter).
+Reachable at `cloud.ericsweiss.com` (external + internal) and `cloud.esweiss.com`
+(internal), SSO-only via Authentik OIDC (`user_oidc`, groups
+`nextcloud-admins` / `nextcloud-users`). Storage rides ZFS zvol passthrough
+disks (no NFS): app + postgres on encrypted `ssd/appdata/nextcloud/*`, bulk data
+on a 2T sparse child of the encrypted `tank/nextcloud-data`. Backups: root disk
+via vzdump, app/postgres zvols + a nightly `pg_dump` via `ssd/appdata` -> archive
+(raw-encrypted), bulk data via `tank/nextcloud-data` -> archive. Full
+observability (node_exporter, alloy journald->Loki, nextcloud-exporter
+ServiceMonitor, blackbox probe, `NextcloudDown` / `NextcloudBackup*` alerts).
 
-- [ ] Finalize deployment decisions
-- [ ] Deploy Nextcloud Helm chart (or AIO container)
-- [ ] Configure Authentik SSO
-- [ ] Desktop/mobile client testing
+Runbook: **docs/35-nextcloud.md**.
+
+Follow-ups (not blockers):
+- [ ] Grafana dashboard: the upstream xperimental exporter dashboard uses a
+  `${DS_LOCAL}` import-input datasource that needs adapting for the sidecar;
+  skipped for now (metrics are queryable in Explore + covered by alerts).
+- [ ] Optional Collabora/OnlyOffice office suite (not deployed).
 
 ---
 

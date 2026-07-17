@@ -121,15 +121,15 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
-- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, and k3s-server hosts)
-  hosts: proxmox:dns:mail:gitlab_servers:k3s_servers
+- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, and k3s-server hosts)
+  hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:k3s_servers
   become: true
   roles:
     - role: node_exporter_host
       tags: [node_exporter_host]
 
 - name: Deploy host-side log collection (Alloy → Loki)
-  hosts: base_managed:plex_servers:gitlab_servers:k3s_servers:k3s_agents
+  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:k3s_servers:k3s_agents
   become: true
   roles:
     - role: alloy_host

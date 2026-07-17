@@ -16,6 +16,8 @@ vars:
   GITLAB_PROJECT_ID: "1"
   # GitLab VM IP (ssh + smoke tests)
   GITLAB_VM_IP: "192.168.0.153"
+  # Nextcloud VM IP (ssh + smoke tests)
+  NEXTCLOUD_VM_IP: "192.168.0.156"
   # Home Assistant VM configuration
   HA_VM_ID: "154"
   HA_VM_IP: "192.168.0.154"
@@ -2327,4 +2329,132 @@ tasks:
     desc: Reconfigure GitLab after changes
     cmds:
       - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl reconfigure"
+
+  # =============================================================================
+  # Nextcloud Deployment Tasks
+  # =============================================================================
+
+  nextcloud:deploy:
+    desc: Deploy Nextcloud (provisions VM and installs the compose stack)
+    dir: "{{.ANSIBLE_DIR}}"
+    # Anchors shared with nextcloud:deploy-check so dry-run and deploy can't diverge.
+    env: &nextcloud_env
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      # nextcloud.yml runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+      NEXTCLOUD_ADMIN_PASSWORD: op://Homelab/Nextcloud Secrets/admin-password
+      NEXTCLOUD_POSTGRES_PASSWORD: op://Homelab/Nextcloud Secrets/postgres-password
+      NEXTCLOUD_SERVERINFO_TOKEN: op://Homelab/Nextcloud Secrets/serverinfo-token
+      NEXTCLOUD_OIDC_CLIENT_ID: op://Homelab/Nextcloud SSO/client-id
+      NEXTCLOUD_OIDC_CLIENT_SECRET: op://Homelab/Nextcloud SSO/client-secret
+    preconditions: &nextcloud_deploy_preconditions
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/nextcloud.yml {{.CLI_ARGS}}
+
+  nextcloud:deploy-check:
+    desc: Check mode - show what Nextcloud deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *nextcloud_env
+    preconditions: *nextcloud_deploy_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/nextcloud.yml --check --diff {{.CLI_ARGS}}
+
+  nextcloud:status:
+    desc: Show Nextcloud status
+    cmds:
+      - echo "=== Nextcloud compose stack ==="
+      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml ps" || echo "Nextcloud VM not reachable or not installed"
+      - echo ""
+      - echo "=== Nextcloud IngressRoutes ==="
+      - kubectl get ingressroute -n default nextcloud nextcloud-internal 2>/dev/null || echo "No IngressRoutes found"
+
+  nextcloud:verify:
+    desc: Run Nextcloud smoke tests (web UI both hosts, occ status, exporter)
+    # Task's built-in interpreter (mvdan/sh) supports the 'local' keyword used below.
+    cmds:
+      - |
+        echo "=== Nextcloud Smoke Tests ==="
+        echo ""
+        PASS=0
+        FAIL=0
+
+        check_http_ok() {
+          local url="$1"
+          local status
+          status=$(curl -sI --max-time 10 "$url" 2>/dev/null | head -1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$')
+          if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ]; then
+            return 0
+          fi
+          return 1
+        }
+
+        # Test 1: Web UI (external) — SSO-only, so a 302 redirect to Authentik is a pass.
+        echo -n "Nextcloud Web UI (cloud.ericsweiss.com)... "
+        if check_http_ok "https://cloud.ericsweiss.com"; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 2: Web UI (internal)
+        echo -n "Nextcloud Web UI (cloud.esweiss.com)... "
+        if check_http_ok "https://cloud.esweiss.com"; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 3: occ reports the instance installed
+        echo -n "Nextcloud occ status (installed)... "
+        if ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml exec -T -u www-data nextcloud php occ status --output=json" 2>/dev/null | grep -q '"installed":true'; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 4: exporter metrics on :9205
+        echo -n "Nextcloud exporter ({{.NEXTCLOUD_VM_IP}}:9205)... "
+        if curl -s --max-time 10 "http://{{.NEXTCLOUD_VM_IP}}:9205/metrics" 2>/dev/null | grep -q '^nextcloud_up'; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        echo ""
+        echo "=== Results: $PASS passed, $FAIL failed ==="
+        if [ $FAIL -gt 0 ]; then
+          exit 1
+        fi
+
+  nextcloud:backup:
+    desc: Run the Nextcloud PostgreSQL backup now (also seeds the freshness metric)
+    cmds:
+      - echo "Running Nextcloud database backup..."
+      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo /usr/local/sbin/nextcloud-backup-run.sh"
+      - echo ""
+      - 'echo "Backup complete. List dumps with:"'
+      - echo "  ssh eric@{{.NEXTCLOUD_VM_IP}} 'sudo ls -la /mnt/nextcloud-app/backups/'"
+
+  nextcloud:console:
+    desc: SSH to the Nextcloud VM
+    cmds:
+      - ssh eric@{{.NEXTCLOUD_VM_IP}}
+
+  nextcloud:logs:
+    desc: Tail the Nextcloud compose logs
+    cmds:
+      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml logs -f --tail=100"
+
+  nextcloud:restart:
+    desc: Restart the Nextcloud compose stack
+    cmds:
+      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo systemctl restart nextcloud-compose.service"
 

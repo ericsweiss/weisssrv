@@ -34,6 +34,7 @@ def _minimal_inventory() -> dict:
                 "mail": {"hosts": {"smtp": host("10.0.0.151")}},
                 "plex_servers": {"hosts": {"plex": host("10.0.0.152")}},
                 "gitlab_servers": {"hosts": {"gitlab": host("10.0.0.153")}},
+                "nextcloud_servers": {"hosts": {"nextcloud": host("10.0.0.156")}},
                 "services": {"hosts": {"home": host("10.0.0.154"), "windows": host("10.0.0.155")}},
                 "k3s_servers": {"hosts": {"s1": host("10.0.0.222"), "s2": host("10.0.0.223")}},
                 "k3s_agents": {"hosts": {"a1": host("10.0.0.202")}},
@@ -59,6 +60,14 @@ class TestBuild:
         # but includes the home HAOS guest and every k3s VM
         assert "10.0.0.154" in pairs["ALL_SSH_IPS"].split()
         assert "10.0.0.222" in pairs["ALL_SSH_IPS"].split()
+
+    def test_app_vms_in_all_ssh(self):
+        pairs = dict(gen.build(_minimal_inventory()))
+        # the SSH-managed app VMs each get a per-app key and land in ALL_SSH_IPS
+        assert pairs["GITLAB_IP"] == "10.0.0.153"
+        assert pairs["NEXTCLOUD_IP"] == "10.0.0.156"
+        assert "10.0.0.153" in pairs["ALL_SSH_IPS"].split()
+        assert "10.0.0.156" in pairs["ALL_SSH_IPS"].split()
 
     def test_missing_ansible_host_raises(self):
         inv = _minimal_inventory()

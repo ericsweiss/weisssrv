@@ -106,6 +106,12 @@ spec:
         - name: gitlab
           url: https://git.esweiss.com
           module: http_2xx
+        # Nextcloud is SSO-only: the root redirects to Authentik (302), which
+        # http_sso accepts (200/301/302/401/403) — the probe verifies the
+        # ingress + TLS + backend reachability, not an authenticated session.
+        - name: nextcloud
+          url: https://cloud.esweiss.com
+          module: http_sso
         - name: pulsarr
           url: https://pulsarr.esweiss.com
           module: http_sso

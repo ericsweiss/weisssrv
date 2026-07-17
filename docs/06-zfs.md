@@ -309,7 +309,11 @@ compression: lz4 (ssd/appdata; pool default zstd)
 
 **Datasets**:
 - `ssd/appdata` - Application persistent data (per-app children:
-  authentik, gitlab, loki, mealie, prometheus)
+  authentik, gitlab, loki, mealie, nextcloud, prometheus). The Nextcloud VM
+  (156) adds `ssd/appdata/nextcloud/app` (20G, /mnt/nextcloud-app: compose +
+  html/config + backups) and `ssd/appdata/nextcloud/postgres` (16G, PGDATA).
+  Its bulk user data is a 2T **sparse** zvol `tank/nextcloud-data/disk` under the
+  encrypted `tank/nextcloud-data` root (already in the archive SRC_LIST).
 - `ssd/databases` - Database storage (encryption root; replicated to `archive`)
 - `ssd/pve` - GitLab VM disks (encryption root; intentionally NOT replicated by
   `archive-backupctl` — the GitLab repos zvol under `ssd/appdata` is the backed-up copy)

@@ -39,11 +39,13 @@ zfs_encryption_pools:
 #   202 = k3s-agt-nas-01 (4 data zvols scsi1-4 on ssd: authentik/mealie pg,
 #         prometheus, loki)
 #   153 = gitlab (scsi0 + repos zvol on ssd)
+#   156 = nextcloud (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
+#         tank/nextcloud-data)
 #   152 = plex LXC (mp0 /config on ssd)
 # Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
-# gitlab app (153, order 50); pve-start-encrypted-guests.sh starts VMs in this
-# list order, then CTs.
-zfs_encryption_guest_vmids: [202, 153]
+# gitlab app (153, order 50) and nextcloud (156, order 55);
+# pve-start-encrypted-guests.sh starts VMs in this list order, then CTs.
+zfs_encryption_guest_vmids: [202, 153, 156]
 zfs_encryption_guest_ctids: [152]
 
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
@@ -90,6 +92,20 @@ zfs_pools:
           atime: "off"
           compression: zstd
           com.sun:auto-snapshot: "false"
+      # Nextcloud bulk user data. Pre-existing encryption root (created manually
+      # like ssd/k3s-etcd — nas_storage does not create datasets), already in the
+      # archive SRC_LIST (raw-encrypted recursive send). The 2T sparse data zvol
+      # tank/nextcloud-data/disk (created by proxmox_vm for VM 156) is a CHILD
+      # and inherits this encryption. The properties below are declared to MATCH
+      # the live dataset exactly (mountpoint/compression/encryption verified on
+      # the NAS) so nas_storage never mutates it — the encryption property is a
+      # guard: `zfs set encryption` errors loudly if the dataset were ever
+      # recreated plaintext.
+      - name: tank/nextcloud-data
+        properties:
+          mountpoint: /mnt/tank/nextcloud-data
+          compression: zstd
+          encryption: aes-256-gcm
 
   - name: ssd
     datasets:

@@ -1,11 +1,12 @@
 ---
 # Node Exporter (host-level) — remote scrape of prometheus-node-exporter running
 # directly on the bare-metal Proxmox hosts, the dns-01/dns-02 LXCs, the
-# smtp-relay LXC, the GitLab VM, and the three k3s server VMs (see the
-# Endpoints list below for the authoritative set). Provides hardware metrics
+# smtp-relay LXC, the GitLab + Nextcloud VMs, and the three k3s server VMs (see
+# the Endpoints list below for the authoritative set). Provides hardware metrics
 # (hwmon thermals, SMART, NIC details, disk I/O) that VMs cannot see; the
 # LXCs and VMs contribute filesystem/textfile metrics only (e.g. the GitLab
-# VM exposes gitlab_backup_* backup-freshness via its textfile collector).
+# and Nextcloud VMs expose gitlab_backup_* / nextcloud_backup_* backup-freshness
+# via their textfile collectors).
 # Runs on port 9101 to avoid conflicting with the k3s DaemonSet on 9100.
 #
 # One selectorless headless Service + one manual Endpoints list every host: the
@@ -48,6 +49,8 @@ subsets:
       - ip: 192.168.0.151   # smtp-relay
       # GitLab VM (192.168.0.153) — textfile gitlab_backup_* freshness metric
       - ip: 192.168.0.153   # gitlab
+      # Nextcloud VM (192.168.0.156) — textfile nextcloud_backup_* freshness
+      - ip: 192.168.0.156   # nextcloud
       # k3s servers — off-node etcd snapshot textfile metric
       - ip: 192.168.0.222   # k3s-srv-nas-01
       - ip: 192.168.0.223   # k3s-srv-laptop-01

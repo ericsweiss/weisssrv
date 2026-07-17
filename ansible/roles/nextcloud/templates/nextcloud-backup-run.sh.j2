@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Nightly Nextcloud PostgreSQL logical backup + node_exporter textfile metrics.
+# Invoked by nextcloud-backup.service (nextcloud-backup.timer).
+#
+# The bulk file data lives on tank/nextcloud-data/disk and is captured by the
+# ssd/appdata->archive raw-encrypted replication and the nightly vzdump; this
+# wrapper adds a transactionally-consistent DB dump for logical restore. The
+# dump lands under the app zvol so it rides those same two backup tiers.
+#
+# NOT `set -e`: the dump's exit code must be captured and the metric written
+# regardless, so NextcloudBackupFailed/Stale can fire. The prior success
+# timestamp is preserved on failure so staleness measures time-since-success.
+set -uo pipefail
+
+COMPOSE_DIR="{{ nextcloud_compose_dir }}"
+BACKUP_DIR="{{ nextcloud_backup_dir }}"
+KEEP_DAYS="{{ nextcloud_backup_keep_days }}"
+DB_NAME="{{ nextcloud_db_name }}"
+DB_USER="{{ nextcloud_db_user }}"
+PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+{% raw %}
+PROM_FILE="${PROM_DIR}/nextcloud_backup.prom"
+START_TS="$(date +%s)"
+
+write_prom_metrics() {
+  local success="$1" duration="$2" size="$3"
+  local ts tmp prev
+  ts="$(date +%s)"
+  tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP nextcloud_backup_last_run_duration_seconds Duration of last backup run"
+    echo "# TYPE nextcloud_backup_last_run_duration_seconds gauge"
+    echo "nextcloud_backup_last_run_duration_seconds ${duration}"
+    echo "# HELP nextcloud_backup_last_run_success Whether the last run succeeded (1=success, 0=failure)"
+    echo "# TYPE nextcloud_backup_last_run_success gauge"
+    echo "nextcloud_backup_last_run_success ${success}"
+    echo "# HELP nextcloud_backup_last_size_bytes Size of the most recent dump in bytes (0 = unknown)"
+    echo "# TYPE nextcloud_backup_last_size_bytes gauge"
+    echo "nextcloud_backup_last_size_bytes ${size}"
+    if [ "$success" -eq 1 ]; then
+      echo "# HELP nextcloud_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+      echo "# TYPE nextcloud_backup_last_success_timestamp_seconds gauge"
+      echo "nextcloud_backup_last_success_timestamp_seconds ${ts}"
+    else
+      prev="$(awk '/^nextcloud_backup_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+      if [ -n "$prev" ]; then
+        echo "# HELP nextcloud_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+        echo "# TYPE nextcloud_backup_last_success_timestamp_seconds gauge"
+        echo "nextcloud_backup_last_success_timestamp_seconds ${prev}"
+      fi
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+mkdir -p "$PROM_DIR" "$BACKUP_DIR"
+cd "$COMPOSE_DIR" || exit 1
+
+OUT="${BACKUP_DIR}/nextcloud-db-$(date +%Y%m%d-%H%M%S).sql.gz"
+TMP="${OUT}.partial"
+
+# pg_dump inside the db container -> gzip on the host. --clean --if-exists makes
+# the dump idempotently restorable over an existing schema. Capture BOTH stages'
+# exit codes immediately: a gzip / disk-full failure can still leave a non-empty
+# partial file, so promoting on `[ -s ]` alone would ship a truncated dump as a
+# "success". Require pg_dump AND gzip to have exited 0.
+docker compose exec -T nextcloud-db \
+  pg_dump -U "$DB_USER" -d "$DB_NAME" --clean --if-exists 2>/dev/null | gzip -c > "$TMP"
+pipe_status=("${PIPESTATUS[@]}")
+
+size=0
+if [ "${pipe_status[0]}" -eq 0 ] && [ "${pipe_status[1]}" -eq 0 ] && [ -s "$TMP" ]; then
+  mv "$TMP" "$OUT"
+  rc=0
+  size="$(stat -c %s "$OUT" 2>/dev/null || echo 0)"
+  # Prune old dumps only after a successful new one.
+  find "$BACKUP_DIR" -maxdepth 1 -name 'nextcloud-db-*.sql.gz' -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
+else
+  rc=1
+  rm -f "$TMP"
+fi
+
+end_ts="$(date +%s)"
+duration=$(( end_ts - START_TS ))
+if [ "$rc" -eq 0 ]; then
+  write_prom_metrics 1 "$duration" "$size"
+else
+  write_prom_metrics 0 "$duration" "$size"
+fi
+
+exit "$rc"
+{% endraw %}

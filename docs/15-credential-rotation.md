@@ -55,6 +55,8 @@ when an item is added or its fields change.
 - **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
 - **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
 - **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
+- **Nextcloud Secrets** - admin-password (break-glass local admin, reachable at `/login?direct=1`), postgres-password (nextcloud DB role), serverinfo-token (random ≥32 chars; the token the nextcloud-exporter authenticates to Nextcloud's serverinfo API with — the role sets it via `occ config:app:set serverinfo token`)
+- **Nextcloud SSO** - client-id, client-secret (Authentik OIDC via the `user_oidc` app, REQUIRED — SSO-only, local login form hidden)
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
 - **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)

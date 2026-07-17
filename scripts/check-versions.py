@@ -536,6 +536,64 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "plex",
         "source_url": "https://www.plex.tv/media-server-downloads/",
     },
+    # --- Nextcloud (Docker Compose stack on the NAS-pinned VM) ---
+    {
+        "name": "Nextcloud",
+        "var_name": "nextcloud_version",
+        "category": "dockerhub",
+        "docker_image": "library/nextcloud",
+        # Bare X.Y.Z tags only (the compose file appends -apache). Only suggest
+        # patches within the current major — Nextcloud must be upgraded one major
+        # at a time, so a jump to N+1 is a deliberate, documented step.
+        "tag_regex": r"^(\d+\.\d+\.\d+)$",
+        "pin_major_version": True,
+        "source_url": "https://github.com/nextcloud/docker/blob/master/versions.json",
+    },
+    {
+        "name": "PostgreSQL (Nextcloud)",
+        "var_name": "nextcloud_postgres_version",
+        "category": "dockerhub",
+        "docker_image": "library/postgres",
+        "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",
+        "pin_major_version": True,
+        "notes": "Used by Nextcloud (standalone container). Only checks updates within the current major.",
+    },
+    # Nextcloud's Redis reuses the shared `redis_version` pin (the "Redis" entry
+    # above), so it needs no separate registry entry here.
+    {
+        "name": "Nextcloud Exporter",
+        "var_name": "nextcloud_exporter_version",
+        "category": "ghcr",
+        "ghcr_image": "xperimental/nextcloud-exporter",
+        "image_ref": "ghcr.io/xperimental/nextcloud-exporter",
+        "tag_filter": r"^\d+\.\d+\.\d+$",
+        "source_url": "https://github.com/xperimental/nextcloud-exporter/releases",
+    },
+    # Docker Engine apt pins (download.docker.com, Debian trixie). Version
+    # strings are apt-repo-specific (e.g. 5:29.6.1-1~debian.13~trixie) with no
+    # dockerhub/github tag to compare against — bumped manually from the repo's
+    # Packages index (docs/35 upgrade runbook), so category "manual".
+    {
+        "name": "Docker Engine (Nextcloud VM)",
+        "var_name": "nextcloud_docker_version",
+        "category": "manual",
+        "source_url": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages",
+        "notes": "apt pin for docker-ce/docker-ce-cli; bump with containerd + compose plugin together.",
+    },
+    {
+        "name": "containerd.io (Nextcloud VM)",
+        "var_name": "nextcloud_containerd_version",
+        "category": "manual",
+        "source_url": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages",
+        "notes": "apt pin; bump with docker-ce.",
+    },
+    {
+        "name": "docker-compose-plugin (Nextcloud VM)",
+        "var_name": "nextcloud_docker_compose_version",
+        "category": "manual",
+        "source_url": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages",
+        "notes": "apt pin; bump with docker-ce.",
+    },
     # --- CI tooling images (pinned in .gitlab-ci.yml, not all.yml) ---
     {
         # The pr-agent AI reviewer image, pinned by tag+digest in the
@@ -2138,6 +2196,12 @@ def get_deploy_command(result: ServiceVersion) -> str:
     # GitLab VM (Ansible-managed — not Flux)
     if var_name == "gitlab_version":
         return "task gitlab:deploy"
+
+    # Nextcloud VM (Docker Compose, Ansible-managed — not Flux). All the
+    # nextcloud_* pins (app/postgres/redis/exporter images + docker apt) are
+    # applied by re-running the role.
+    if var_name.startswith("nextcloud_"):
+        return "task nextcloud:deploy"
 
     # Fallback when no specific deploy task mapping exists
     return "task infra:deploy"

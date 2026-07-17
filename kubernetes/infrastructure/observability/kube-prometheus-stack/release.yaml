@@ -1391,6 +1391,26 @@ spec:
                     minutes. This endpoint is load-bearing infrastructure
                     (SSO front door, GitOps source, or home automation).
 
+              # App-level Nextcloud health from the nextcloud-exporter on the VM
+              # (192.168.0.156:9205). nextcloud_up flips to 0 when the exporter
+              # cannot reach Nextcloud's serverinfo API (Nextcloud/DB down or in
+              # maintenance mode); absent() covers the exporter or scrape being
+              # down. EndpointDown (blackbox cloud.esweiss.com) covers the
+              # ingress/TLS path separately.
+              - alert: NextcloudDown
+                expr: max(nextcloud_up) == 0 or absent(nextcloud_up)
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+                  summary: 'Nextcloud is unreachable'
+                  description: >-
+                    The nextcloud-exporter reports Nextcloud unreachable
+                    (nextcloud_up == 0) for 10 minutes, or the metric is absent
+                    (exporter/scrape down). Check the compose stack on the
+                    Nextcloud VM (192.168.0.156): `task nextcloud:status`.
+
               # EndpointDown fires per-resolver at warning severity; this is the
               # critical aggregate for total DNS loss — every AdGuard blackbox
               # DNS probe (.150 and .160) failing at once takes name resolution
@@ -1643,6 +1663,38 @@ spec:
                     data lives on a zvol; Proxmox VM snapshots are the only
                     other DR path. Investigate the backup wrapper on the
                     GitLab VM now.
+
+              # Nextcloud nightly PostgreSQL logical dump (nextcloud-backup.timer
+              # on the VM). The wrapper writes nextcloud_backup_last_run_success +
+              # _last_success_timestamp_seconds to the node_exporter textfile dir,
+              # mirroring the gitlab/archive backup collectors. The dump rides the
+              # app zvol -> archive + nightly vzdump; file data is on
+              # tank/nextcloud-data (raw-encrypted archive replication).
+              - alert: NextcloudBackupFailed
+                expr: nextcloud_backup_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+                  summary: 'Nextcloud database backup failed'
+                  description: >-
+                    The nightly Nextcloud pg_dump did not complete successfully.
+                    Check `journalctl -u nextcloud-backup.service` on the
+                    Nextcloud VM (192.168.0.156).
+
+              - alert: NextcloudBackupStale
+                expr: (time() - nextcloud_backup_last_success_timestamp_seconds > 86400 * 2) or absent(nextcloud_backup_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/35-nextcloud.md'
+                  summary: 'Nextcloud database backup has not succeeded in over 2 days'
+                  description: >-
+                    No successful Nextcloud pg_dump has been recorded for more
+                    than 48 hours, or the metric is missing (timer not run,
+                    node_exporter on the VM unreachable, or VM off inventory).
 
               # Off-node etcd snapshot copy (k3s servers -> pve-nas-01,
               # docs/17). The copy timer on each server node writes

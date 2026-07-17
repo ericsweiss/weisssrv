@@ -97,6 +97,13 @@ secrets:
   gitlab_root_password: "op://Homelab/GitLab/root-password"
   gitlab_saml_cert_fingerprint: "op://Homelab/GitLab SSO/saml-cert-fingerprint"
   gitlab_runner_token: "op://Homelab/GitLab Runner/runner-token"
+  # Nextcloud secrets
+  nextcloud_admin_password: "op://Homelab/Nextcloud Secrets/admin-password"
+  nextcloud_postgres_password: "op://Homelab/Nextcloud Secrets/postgres-password"
+  nextcloud_serverinfo_token: "op://Homelab/Nextcloud Secrets/serverinfo-token"
+  # Nextcloud SSO (Authentik OIDC)
+  nextcloud_oidc_client_id: "op://Homelab/Nextcloud SSO/client-id"
+  nextcloud_oidc_client_secret: "op://Homelab/Nextcloud SSO/client-secret"
 
 # Timezone
 timezone: America/Los_Angeles
@@ -216,6 +223,27 @@ gitlab_runner_helm_version: "0.90.1"
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
 gitlab_agent_helm_version: "2.28.0"
+
+# Nextcloud (Docker Compose stack on the NAS-pinned VM, 192.168.0.156)
+# Consumed by Ansible (the nextcloud role) directly from all.yml — the VM
+# containers are NOT Flux-managed, but the pins live here per the
+# single-source-of-truth convention (they flow harmlessly into the versions
+# ConfigMap; no k8s manifest references them).
+# Nextcloud server: https://github.com/nextcloud/docker/blob/master/versions.json (34 = current stable, PHP 8.5, Debian trixie)
+nextcloud_version: "34.0.1"
+# PostgreSQL: PG 18 is Nextcloud-recommended; matches the homelab postgres pin.
+# https://hub.docker.com/_/postgres/tags
+nextcloud_postgres_version: "18.4-trixie"
+# Redis (cache + transactional file locking) reuses the shared `redis_version`
+# pin above — same image/tag, tracked once by the "Redis" version-check entry.
+# Nextcloud exporter: https://github.com/xperimental/nextcloud-exporter/releases
+nextcloud_exporter_version: "0.9.1"
+# Docker Engine apt pins (download.docker.com, Debian trixie). Bump all three
+# together (docs/35 upgrade runbook) when download.docker.com prunes a version.
+# Version strings: apt-cache policy docker-ce on the VM, or the repo Packages index.
+nextcloud_docker_version: "5:29.6.1-1~debian.13~trixie"
+nextcloud_containerd_version: "2.2.6-1~debian.13~trixie"
+nextcloud_docker_compose_version: "5.3.1-1~debian.13~trixie"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.

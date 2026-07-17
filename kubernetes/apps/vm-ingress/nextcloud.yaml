@@ -1,0 +1,56 @@
+---
+# IngressRoutes for Nextcloud (VM 192.168.0.156). Reuses the default-namespace
+# wildcard certs + vm-tls-wildcard ServersTransport (same as Plex/HAOS).
+
+# External - cloud.ericsweiss.com (external-dns creates the proxied CNAME).
+# Nextcloud clients chunk uploads (default 10MiB) so the Cloudflare-proxied
+# path's 100MB single-request cap is not hit; raw single-PUT WebDAV over the
+# external host is still capped by Cloudflare (docs/35 "Upload size").
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nextcloud
+  namespace: default
+  annotations:
+    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`cloud.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: nextcloud-web
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    secretName: ericsweiss-com-tls
+---
+# Internal - cloud.esweiss.com (LAN + Tailscale only).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nextcloud-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`cloud.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: nextcloud-web
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    secretName: esweiss-com-tls

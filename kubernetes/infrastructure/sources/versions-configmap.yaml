@@ -37,6 +37,12 @@ data:
   mealie_postgresql_version: 18.4-alpine
   mealie_version: v3.20.1
   meilisearch_version: v1.15.2
+  nextcloud_containerd_version: 2.2.6-1~debian.13~trixie
+  nextcloud_docker_compose_version: 5.3.1-1~debian.13~trixie
+  nextcloud_docker_version: 5:29.6.1-1~debian.13~trixie
+  nextcloud_exporter_version: 0.9.1
+  nextcloud_postgres_version: 18.4-trixie
+  nextcloud_version: 34.0.1
   nzbget_version: '26.2'
   plex_version: 1.43.3.10828-00f62d37d
   postgresql_version: 18.4-trixie

@@ -1,0 +1,241 @@
+# Nextcloud Deployment
+
+Nextcloud runs on a dedicated, NAS-pinned Debian VM (`192.168.0.156`, vmid 156)
+as a Docker Compose stack. It is reachable at **cloud.ericsweiss.com** (external
++ internal) and **cloud.esweiss.com** (internal only), SSO-only via Authentik
+OIDC. All state rides ZFS zvol passthrough disks — there is **no NFS** anywhere.
+
+- **Ansible role**: `ansible/roles/nextcloud/`
+- **Playbook**: `ansible/playbooks/nextcloud.yml` (`task nextcloud:deploy`)
+- **Ingress**: `kubernetes/apps/vm-ingress/{services-nextcloud,nextcloud}.yaml`
+- **Metrics**: `kubernetes/infrastructure/observability/service-monitors/nextcloud.yaml`
+
+## Architecture
+
+```
+Client ──HTTPS──▶ Traefik (MetalLB .100 public / .101 internal)
+                    │  IngressRoute (default ns), scheme https,
+                    │  serversTransport vm-tls-wildcard (serverName vm.esweiss.com)
+                    ▼
+                host nginx on VM 156 :443  (distributed *.esweiss.com wildcard cert)
+                    │  proxy_pass http://127.0.0.1:8080
+                    ▼
+          docker compose project "nextcloud" (bridge 172.28.0.0/16)
+            ├─ nextcloud:<ver>-apache      (127.0.0.1:8080:80)
+            ├─ nextcloud-cron  (/cron.sh, every 15 min)
+            ├─ nextcloud-db    (postgres, PGDATA on /mnt/nextcloud-postgres)
+            ├─ nextcloud-redis (cache + transactional file locking)
+            └─ nextcloud-exporter  (0.0.0.0:9205  ← Prometheus scrapes VM:9205)
+```
+
+- The VM is **pinned to pve-nas-01** (`vm_cpu_type: host`, `onboot=0`), started by
+  `pve-start-encrypted-guests.service` after the encrypted ssd/tank pools unlock
+  (vmid 156 is in `zfs_encryption_guest_vmids`, host_vars/pve-nas-01.yml).
+- Nextcloud accepts **both** hostnames (`trusted_domains`); only the protocol
+  (`OVERWRITEPROTOCOL=https`) and CLI URL are overwritten, so the served host
+  tracks the incoming `Host` header.
+- **Real client IP / trusted-proxy chain.** The trust chain is
+  `client → Traefik pod → (k3s/flannel SNATs the pod source to the k3s NODE IP,
+  since .156 is a VM outside the pod network) → VM nginx → nextcloud container`.
+  The VM **nginx** resolves the real client IP with its `real_ip` module,
+  trusting **only the k3s node IPs** (`192.168.0.202-207`, `.222/.223/.227`) as
+  `set_real_ip_from` sources and walking Traefik's `X-Forwarded-For` back to the
+  client (`real_ip_recursive on`); it then **replaces** `X-Forwarded-For` with
+  that single resolved value (not `$proxy_add_x_forwarded_for`). Nextcloud's
+  `TRUSTED_PROXIES` is therefore only its immediate hop — `127.0.0.1` plus the
+  compose bridge subnet `172.28.0.0/16` (the gateway docker-proxy presents as
+  the client of the loopback-published port). The firewall also permits direct
+  `:443` from admin/LAN for debugging; because such a directly connected client
+  is **not** in `set_real_ip_from`, nginx ignores its inbound `X-Forwarded-For`
+  and `$remote_addr` stays its true address — so it **cannot** spoof the client
+  IP used for audit logs, brute-force protection, and rate limiting. (Trusting
+  the LAN `/24` at either layer would reopen that spoof, which is why it is
+  deliberately excluded.)
+- Container logs use the **journald** Docker log driver, so `alloy_host` ships
+  them to Loki on the same journald path as the host's own units.
+
+## Storage, encryption, and backup
+
+Three ZFS zvol passthrough disks (created by `proxmox_vm`, mounted by
+`zvol_mount`; see `vm_additional_disks` in `hosts.yml`):
+
+| Mount | zvol | Size | scsi | Contents | Encrypted (root) | Backup |
+|---|---|---|---|---|---|---|
+| `/mnt/nextcloud-app` | `ssd/appdata/nextcloud/app` | 20G | 1 | compose dir, html/config, nightly pg_dump | Yes (`ssd/appdata`) | archive (raw) + pg_dump; vzdump-excluded |
+| `/mnt/nextcloud-postgres` | `ssd/appdata/nextcloud/postgres` | 16G | 2 | PostgreSQL PGDATA | Yes (`ssd/appdata`) | archive (raw); vzdump-excluded |
+| `/mnt/nextcloud-data` | `tank/nextcloud-data/disk` | 2T **sparse** | 3 | Nextcloud user data (`/data`) | Yes (`tank/nextcloud-data`) | archive (raw); vzdump-excluded |
+| VM root (scsi0) | `ssd/pve` | 40G | 0 | OS + Docker | Yes (`ssd/pve`) | vzdump (`all: true`) |
+
+- `tank/nextcloud-data` is a **pre-existing** encryption root (created manually,
+  like `ssd/k3s-etcd`) and is already in the `archive-backupctl` `SRC_LIST`, so
+  the 2T data zvol inherits `aes-256-gcm` encryption and rides the nightly
+  raw-encrypted `zfs send -w` to `archive/nextcloud-data` — **zero backup-config
+  change**. The app/postgres zvols are children of `ssd/appdata`, likewise
+  already covered by `ssd/appdata` → `archive/appdata`.
+- The data zvols carry `vzdump_backup: false` (`backup=0`) so the nightly vzdump
+  captures only the OS root disk and doesn't double-store the app data.
+- A **nightly `pg_dump`** (`nextcloud-backup.timer`, 02:30) writes a
+  gzip'd logical dump to `/mnt/nextcloud-app/backups` (which rides the app zvol →
+  archive), keeping `nextcloud_backup_keep_days` (7) locally, and emits
+  `nextcloud_backup_*` node_exporter textfile metrics.
+- **Data ownership**: the container runs as `www-data` (uid/gid 33); the role
+  chowns `/mnt/nextcloud-app/html` and `/mnt/nextcloud-data/data` to `33:33`.
+
+### Growing the data volume
+
+The bulk data zvol is thin-provisioned at a 2T ceiling. To raise it:
+
+```bash
+ssh eric@192.168.0.102 "sudo zfs set volsize=4T tank/nextcloud-data/disk"
+ssh eric@192.168.0.156 "sudo resize2fs /dev/disk/by-id/... "   # the ext4 fs on the zvol
+```
+
+(Increase `size:` in `hosts.yml` to keep inventory truthful; `proxmox_vm` never
+shrinks or reprovisions an existing zvol.)
+
+## SSO (Authentik OIDC, SSO-only)
+
+Login is **SSO-only**: the local login form is hidden and users are auto-redirected
+to Authentik. The break-glass local admin is reachable at
+`https://cloud.ericsweiss.com/login?direct=1`.
+
+The role installs + configures the `user_oidc` app idempotently via `occ`
+(provider id `authentik`, discovery
+`https://auth.ericsweiss.com/application/o/cloud/.well-known/openid-configuration`,
+scopes `openid email profile groups`, `preferred_username`→uid, `groups`→groups,
+group provisioning on, `allow_multiple_user_backends=0`).
+
+### Authentik setup (manual, one-time — do this BEFORE `task nextcloud:deploy`)
+
+1. **Groups** — Directory → Groups → Create: `nextcloud-admins` and
+   `nextcloud-users`. Add the appropriate users.
+2. **Provider** — Applications → Providers → Create → **OAuth2/OpenID Provider**:
+   - Name: `Nextcloud`
+   - Authorization flow: `default-provider-authorization-implicit-consent`
+   - Client type: **Confidential**
+   - Redirect URIs (**Strict**), one per line:
+     - `https://cloud.ericsweiss.com/apps/user_oidc/code`
+     - `https://cloud.esweiss.com/apps/user_oidc/code`
+   - Signing Key: the Authentik self-signed certificate (enables RS256 / a JWKS).
+   - Scopes: `openid`, `email`, `profile`, and a mapping that emits the `groups`
+     claim (Authentik ships *"authentik default OAuth Mapping: OpenID 'profile'"*
+     which includes `groups`; otherwise add a Scope Mapping named `groups`
+     returning `[g.name for g in request.user.ak_groups.all()]`).
+   - Copy the generated **Client ID** and **Client Secret**.
+3. **Application** — Applications → Applications → Create:
+   - Name: `Nextcloud`, **Slug: `nextcloud`** (must match the discovery URI).
+   - Provider: `Nextcloud` (the provider above).
+   - Under **Policy / Group / User Bindings**, bind the app to
+     `nextcloud-admins` and `nextcloud-users` so only those groups can launch it.
+4. **1Password** — put the client id/secret in item **Nextcloud SSO**
+   (`client-id`, `client-secret`).
+
+> Nextcloud admin membership is managed inside Nextcloud (Settings → Users), not
+> mapped from the `nextcloud-admins` group automatically — first admin logs in
+> via SSO and is promoted, or use the break-glass local admin.
+
+## Deploy runbook
+
+**Prerequisites** (one-time):
+
+1. Create the two 1Password items (Homelab vault) — see docs/15:
+   - **Nextcloud Secrets**: `admin-password`, `postgres-password`,
+     `serverinfo-token` (random ≥32 chars each).
+   - **Nextcloud SSO**: `client-id`, `client-secret` (from the Authentik steps).
+2. Complete the **Authentik setup** above.
+
+**Deploy** (`main` merge triggers the `deploy-nextcloud` CI job; or run locally):
+
+```bash
+task nextcloud:deploy-check        # dry-run
+task nextcloud:deploy              # provisions VM 156 + installs the stack
+```
+
+The role generates a **self-signed bootstrap cert** so nginx starts before the
+real wildcard cert is distributed. To install the real cert (POST-PROVISION):
+
+3. Capture the new VM's SSH host key and add the cert-distribution target:
+   ```bash
+   task certs:show-host-keys        # copy the nextcloud (192.168.0.156) ssh-ed25519 line
+   ```
+   Uncomment the `nextcloud` block in
+   `ansible/inventories/prod/host_vars/dns-01.yml` (`cert_distribution_targets`),
+   paste the real `host_key`, commit, then:
+   ```bash
+   task dns:deploy                  # issues + pushes *.esweiss.com to /etc/ssl/nextcloud, reloads nginx
+   ```
+4. Flux reconciles `kubernetes/apps/vm-ingress` (Service/EndpointSlice +
+   IngressRoutes) on push; external-dns creates the `cloud.ericsweiss.com`
+   proxied CNAME.
+5. Verify:
+   ```bash
+   task nextcloud:verify            # both hosts, occ status, exporter :9205
+   task nextcloud:status            # compose ps + IngressRoutes
+   ```
+
+## Upload size
+
+- The VM nginx and the container apache impose **no** upload cap
+  (`client_max_body_size 0`, `PHP_UPLOAD_LIMIT=16G`).
+- Nextcloud clients (desktop/mobile/web) **chunk** uploads (default 10 MiB), so
+  the Cloudflare-proxied external path's 100 MB single-request limit is not hit
+  for normal uploads.
+- A **raw single-PUT WebDAV** upload over the external host
+  (`cloud.ericsweiss.com`) larger than ~100 MB will be rejected by Cloudflare.
+  Use `cloud.esweiss.com` (internal, non-proxied) for large raw WebDAV, or rely
+  on the chunked client. Adjust chunk size with
+  `occ config:app:set files max_chunk_size --value=<bytes>` if needed.
+
+## Observability
+
+- **Logs**: `alloy_host` (journald → Loki); Docker's journald log driver puts
+  container logs on the same path.
+- **Metrics**: `nextcloud-exporter` on `:9205` (auth via the serverinfo token),
+  scraped by the in-cluster Prometheus through
+  `service-monitors/nextcloud.yaml` (static Endpoints → 192.168.0.156:9205).
+  Host metrics via `node_exporter_host` (`:9101`).
+- **Blackbox**: `cloud.esweiss.com` probed (`http_sso` module — SSO redirect
+  counts as up) in `exporters/blackbox-exporter.yaml`.
+- **Alerts** (kube-prometheus-stack `release.yaml`):
+  `NextcloudDown` (`nextcloud_up == 0` / absent, `homelab.monitoring`),
+  `NextcloudBackupFailed` / `NextcloudBackupStale` (`homelab.scripts`), plus the
+  generic `EndpointDown` on the blackbox probe.
+- **Grafana**: no dashboard shipped yet — the upstream xperimental exporter
+  dashboard uses a `${DS_LOCAL}` import-input datasource that needs adapting for
+  the sidecar. Metrics are queryable in Explore; see docs/16 follow-up.
+
+## Restore runbook
+
+**Database (logical dump):**
+
+```bash
+ssh eric@192.168.0.156
+cd /mnt/nextcloud-app/compose
+sudo docker compose exec -T nextcloud php occ maintenance:mode --on
+gunzip -c /mnt/nextcloud-app/backups/nextcloud-db-<ts>.sql.gz \
+  | sudo docker compose exec -T nextcloud-db psql -U nextcloud -d nextcloud
+sudo docker compose exec -T nextcloud php occ maintenance:mode --off
+```
+
+**Whole-VM / zvol restore**: the OS root disk is in the nightly vzdump
+(`tank/proxmox` → `archive/proxmox`); the data zvols are in the raw-encrypted
+archive replicas (`archive/appdata`, `archive/nextcloud-data`). Restore per
+docs/17 (App-data zvols: stop VM 156 to release the passthrough zvols first;
+encrypted-tree restores need the source pool key loaded before mount).
+
+## Docker Engine version bumps
+
+Docker Engine + the compose plugin are pinned in `group_vars/all.yml`
+(`nextcloud_docker_version`, `nextcloud_containerd_version`,
+`nextcloud_docker_compose_version`) from `download.docker.com` (Debian trixie).
+Because download.docker.com prunes old versions over time, bump all three
+together when a pin ages out:
+
+```bash
+apt-cache policy docker-ce            # on the VM, or read the repo Packages index
+# update the three nextcloud_*_version pins in all.yml, then:
+task nextcloud:deploy
+```
+
+(`task maintenance:check-versions` tracks the four image pins; the docker apt
+pins are `category: manual` there — bumped from the repo Packages index.)

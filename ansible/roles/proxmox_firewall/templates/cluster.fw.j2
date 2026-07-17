@@ -84,6 +84,16 @@ IN ACCEPT -p tcp -dport 2222 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog
 
+[group sg-nextcloud]
+
+# Nextcloud web — host nginx terminates 443 with the distributed wildcard cert;
+# Traefik (k3s_nodes) proxies to it, admin sources allowed for direct debug.
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
+# nextcloud-exporter (:9205), scraped by the in-cluster Prometheus.
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9205 -log nolog
+
 [group sg-haos]
 
 IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog

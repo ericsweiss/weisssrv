@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nextcloud PostgreSQL logical backup
+After=nextcloud-compose.service
+Requires=nextcloud-compose.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nextcloud-backup-run.sh

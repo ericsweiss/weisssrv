@@ -1,0 +1,50 @@
+---
+# Authentik OIDC SSO via the user_oidc app. Idempotent: app install is guarded
+# on the enabled-apps list, and user_oidc:provider is an upsert (safe to
+# re-run). All tasks run occ inside the web container as www-data.
+
+- name: Query the enabled Nextcloud apps
+  ansible.builtin.command:
+    cmd: docker compose exec -T -u www-data nextcloud php occ app:list --output=json
+    chdir: "{{ nextcloud_compose_dir }}"
+  register: nextcloud_app_list
+  changed_when: false
+
+# app:install downloads from the app store AND enables in one step; only run it
+# when user_oidc is not already enabled.
+- name: Install the user_oidc app
+  ansible.builtin.command:
+    cmd: docker compose exec -T -u www-data nextcloud php occ app:install user_oidc
+    chdir: "{{ nextcloud_compose_dir }}"
+  when: "'user_oidc' not in (nextcloud_app_list.stdout | from_json).enabled | default({})"
+  changed_when: true
+
+# Upsert the Authentik provider. Contains the client secret, so no_log.
+- name: Configure the Authentik OIDC provider
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T -u www-data nextcloud php occ user_oidc:provider
+      {{ nextcloud_oidc_provider_id | quote }}
+      --clientid={{ nextcloud_oidc_client_id | quote }}
+      --clientsecret={{ nextcloud_oidc_client_secret | quote }}
+      --discoveryuri={{ nextcloud_oidc_discovery_uri | quote }}
+      --scope={{ nextcloud_oidc_scope | quote }}
+      --unique-uid={{ nextcloud_oidc_unique_uid }}
+      --mapping-uid={{ nextcloud_oidc_mapping_uid | quote }}
+      --mapping-display-name={{ nextcloud_oidc_mapping_display_name | quote }}
+      --mapping-email={{ nextcloud_oidc_mapping_email | quote }}
+      --mapping-groups={{ nextcloud_oidc_mapping_groups | quote }}
+      --group-provisioning={{ nextcloud_oidc_group_provisioning }}
+    chdir: "{{ nextcloud_compose_dir }}"
+  no_log: true
+  changed_when: false
+
+# SSO-only: make user_oidc the default backend and auto-redirect to Authentik
+# (hides the local login form; ?direct=1 bypasses for break-glass admin login).
+- name: Enforce SSO-only login (auto-redirect to the provider)
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T -u www-data nextcloud php occ config:app:set
+      user_oidc allow_multiple_user_backends --value={{ 0 if (nextcloud_oidc_sso_only | default(true)) else 1 }}
+    chdir: "{{ nextcloud_compose_dir }}"
+  changed_when: false

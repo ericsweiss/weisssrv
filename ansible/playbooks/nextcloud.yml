@@ -1,0 +1,53 @@
+---
+# Nextcloud deployment playbook
+#
+# Provisions the Nextcloud VM (192.168.0.156) and deploys the Docker Compose
+# stack. Nextcloud state rides ZFS zvol passthrough disks only (no NFS).
+#
+# Prerequisites:
+#   - Authentik OIDC provider + application configured (for SSO); see docs/35.
+#   - 1Password items created ("Nextcloud Secrets", "Nextcloud SSO"); see docs/15.
+#   - Cert distribution target added for the VM in host_vars/dns-01.yml, then
+#     `task dns:deploy` to push the *.esweiss.com wildcard cert (docs/35).
+#
+# Usage:
+#   task nextcloud:deploy          # Full deployment (VM + Nextcloud)
+#   task nextcloud:deploy-check    # Dry-run
+
+- name: Provision Nextcloud VM
+  hosts: nextcloud
+  gather_facts: false
+  roles:
+    - proxmox_vm
+
+- name: Deploy Nextcloud
+  hosts: nextcloud
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for Nextcloud VM to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      when: not ansible_check_mode
+
+    - name: Guard against unreachable host in check mode
+      ansible.builtin.include_tasks: tasks/_check-mode-reachable.yml
+      vars:
+        reachable_check_timeout: 10
+
+    - name: Gather facts after connection is established
+      ansible.builtin.setup:
+  roles:
+    - base
+    - postfix_null_client
+    # node_exporter_host exposes the backup wrapper's nextcloud_backup.prom
+    # (the wrapper creates the textfile dir + file; ordered before nextcloud so
+    # the exporter is in place when the wrapper lands). site.yml also deploys it
+    # to nextcloud_servers, but a standalone `task nextcloud:deploy` would not.
+    - node_exporter_host
+    # alloy_host ships host journald -> Loki (Docker's journald log driver puts
+    # container logs on the same path). site.yml deploys it to nextcloud_servers;
+    # include it here so a standalone deploy keeps log shipping in sync.
+    - alloy_host
+    - nextcloud
+    - proxmox_firewall

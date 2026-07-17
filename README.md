@@ -196,9 +196,10 @@ weisssrv/
 | plex | Plex Media Server with Intel GPU transcoding |
 | home_assistant | Home Assistant OS configuration management |
 | gitlab | GitLab EE installation and configuration |
+| nextcloud | Nextcloud (Docker Compose: nextcloud-apache + postgres + redis + cron + exporter) on a NAS-pinned VM, host-nginx TLS, Authentik OIDC SSO (docs/35) |
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
-| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex) |
+| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex, nextcloud) |
 | nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in, active-backup bond `all_slaves_active` MAC-flap guard — docs/34) |
 | prometheus_exporter | Shared install pipeline for download-based exporters (tarball/.deb); backs zfs_exporter + unbound_exporter |
 | textfile_collector | Shared textfile-collector oneshot service + timer scaffold; backs node_exporter_host (corosync/zpool/smartmon) and smtp_relay (postfix queue) |
@@ -405,6 +406,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
 | [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
+| [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 
 **Agent guidance**: coding agents should start from the

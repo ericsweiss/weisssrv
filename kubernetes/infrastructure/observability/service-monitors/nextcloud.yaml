@@ -1,0 +1,48 @@
+---
+# Scrape the nextcloud-exporter running on the Nextcloud VM (192.168.0.156).
+# The exporter serves plain HTTP on :9205 (bound to all interfaces; firewall
+# sg-nextcloud opens 9205 from k3s_nodes only). Pod scrape traffic leaves the
+# cluster masqueraded to node IPs in the LAN /24, so no token/TLS is needed —
+# same static-endpoint shape as gitlab.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-metrics
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: nextcloud
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9205
+      targetPort: 9205
+
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: nextcloud-metrics
+  namespace: observability
+subsets:
+  - addresses:
+      - ip: 192.168.0.156
+    ports:
+      - name: metrics
+        port: 9205
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nextcloud
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nextcloud
+  endpoints:
+    - port: metrics
+      interval: 60s
+      path: /metrics
+      scheme: http

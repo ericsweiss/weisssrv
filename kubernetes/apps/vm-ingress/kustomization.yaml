@@ -11,9 +11,11 @@ resources:
   - serverstransport.yaml
   - services-default.yaml
   - services-gitlab.yaml
+  - services-nextcloud.yaml
   - gitlab-certificate.yaml
   - adguard-home.yaml
   - plex.yaml
   - router.yaml
   - home-assistant.yaml
   - gitlab.yaml
+  - nextcloud.yaml
