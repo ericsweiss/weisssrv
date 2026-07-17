@@ -142,6 +142,14 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog
 
 IN ACCEPT -p tcp -dport 443 -log nolog
 IN ACCEPT -p tcp -dport 80 -log nolog
+# wg-easy WireGuard VPN endpoint from the WAN (router forwards :51820/udp to the
+# MetalLB VIP .99). -dest scopes this to the VIP so it does NOT open the node's
+# own :51820/udp — that is flannel wireguard-native (sg-k3s-core, k3s_nodes
+# only), which must stay off the WAN. The wg-easy pod nodeSelects
+# esweiss.com/ingress, so it only ever lands on an agent carrying this group and
+# the ETP-Local VIP is always announced from a node that admits this rule.
+# WireGuard silently drops unauthenticated peers. See docs/38.
+IN ACCEPT -dest 192.168.0.99 -p udp -dport 51820 -log nolog
 
 [group sg-nfs-server]
 

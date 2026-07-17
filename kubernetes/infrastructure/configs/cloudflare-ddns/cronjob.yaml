@@ -4,6 +4,7 @@
 # - ericsweiss.com (proxied) - main domain through Cloudflare
 # - direct.ericsweiss.com (not proxied) - for services needing direct TLS (GitLab Pages wildcard)
 # - git.ericsweiss.com (not proxied) - GitLab web + SSH (unified URL for both)
+# - vpn.ericsweiss.com (not proxied) - wg-easy WireGuard VPN endpoint (UDP)
 #
 # Runs every 5 minutes to keep records pointing to the current public IP
 apiVersion: batch/v1
@@ -233,6 +234,9 @@ spec:
               success = update_record(zone_id, "ericsweiss.com", current_ip, True) and success
               success = update_record(zone_id, "direct.ericsweiss.com", current_ip, False) and success
               success = update_record(zone_id, "git.ericsweiss.com", current_ip, False) and success
+              # wg-easy WireGuard VPN endpoint (DNS-only/UDP). proxied=False on
+              # create only; Terraform owns proxied, DDNS owns the IP.
+              success = update_record(zone_id, "vpn.ericsweiss.com", current_ip, False) and success
 
               print("\nDDNS update complete")
               sys.exit(0 if success else 1)

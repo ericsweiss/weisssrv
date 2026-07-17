@@ -1,0 +1,37 @@
+---
+# Scrape wg-easy's native Prometheus metrics (kubernetes/apps/wg-easy). Metrics
+# are served on the UI port (51821) at /metrics/prometheus and fronted by the
+# wg-easy-ui ClusterIP Service. Lives in observability (with its Bearer secret)
+# per the repo convention — same shape as the meilisearch / home-assistant
+# ServiceMonitors.
+#
+# REQUIRES a one-time UI step: wg-easy only serves metrics after Prometheus is
+# enabled in Admin Panel > General, where the Bearer password must be set to the
+# same value as `wg-easy-metrics-token` (1Password "WireGuard VPN" > metrics-token,
+# synced into observability-exporter-secrets). Until then the scrape returns 401
+# (up=0) — no alert keys off this; WgEasyDown watches Deployment availability.
+# The observability->51821 ingress is opened by allow-wg-easy-ingress
+# (kubernetes/apps/wg-easy/networkpolicy.yaml).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: wg-easy
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - wg-easy
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wg-easy
+  endpoints:
+    # Only the wg-easy-ui Service exposes a port named "ui"; the WireGuard
+    # LoadBalancer Service (same app label, UDP-only) contributes no targets.
+    - port: ui
+      interval: 30s
+      path: /metrics/prometheus
+      authorization:
+        type: Bearer
+        credentials:
+          name: observability-exporter-secrets
+          key: wg-easy-metrics-token

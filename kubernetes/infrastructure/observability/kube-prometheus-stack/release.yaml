@@ -744,6 +744,34 @@ spec:
                     unknown, but the killswitch still blocks egress while the
                     tunnel is down; investigate when convenient.
 
+              # wg-easy internet-exit VPN (kubernetes/apps/wg-easy). Keyed on
+              # kube-state-metrics deployment availability, NOT the app's own
+              # /metrics scrape: wg-easy only serves Prometheus metrics after a
+              # one-time UI enablement (Admin Panel > General + Bearer token), so
+              # a metrics-based `up==0` would false-fire until then. Deployment
+              # availability is true from first reconcile. The `or absent(...)`
+              # arm (same pattern as OnePasswordConnectDown) keeps the page
+              # covering the outage if the series itself vanishes — deployment
+              # pruned/renamed or kube-state-metrics down — instead of silently
+              # never evaluating. 15m rides out a Recreate rollout. When the pod
+              # is down, the VPN endpoint is dead (no client can connect) — page
+              # it. Blackbox EndpointDown (vpn.esweiss.com) covers the UI/ingress
+              # path separately.
+              - alert: WgEasyDown
+                expr: >-
+                  kube_deployment_status_replicas_available{namespace="wg-easy", deployment="wg-easy"} == 0
+                  or absent(kube_deployment_status_replicas_available{namespace="wg-easy", deployment="wg-easy"})
+                for: 15m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/38-wireguard-vpn.md'
+                  summary: 'wg-easy VPN has no available replica'
+                  description: >-
+                    The wg-easy Deployment has 0 available replicas for 15m — the
+                    WireGuard internet-exit VPN endpoint is down and no client can
+                    connect. See docs/38-wireguard-vpn.md.
+
               # Loki is a single-replica RF=1 SPOF pinned to the NAS (accepted
               # homelab tradeoff); senders do not buffer, so silent ingestion
               # breakage loses logs without surfacing. This catches a sustained

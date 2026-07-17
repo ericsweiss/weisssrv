@@ -109,6 +109,13 @@ spec:
         - name: pulsarr
           url: https://pulsarr.esweiss.com
           module: http_sso
+        # wg-easy admin UI reachability. It sits behind authentik-auth
+        # ForwardAuth, so an unauthenticated probe gets a 302 to Authentik —
+        # http_sso (accepts 200/301/302/401/403) verifies the ingress + TLS +
+        # ForwardAuth hop are alive. EndpointDown fires on probe_success==0.
+        - name: wg-easy
+          url: https://vpn.esweiss.com
+          module: http_sso
         # Host-side Alloy's log-shipping path: loki-push-auth returns 401
         # without credentials, which http_sso accepts — the probe verifies the
         # ingress + TLS + Loki hop, not auth.

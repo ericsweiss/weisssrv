@@ -41,6 +41,7 @@ when an item is added or its fields change.
 - **Authentik Secrets** - secret-key, postgresql-password, postgresql-admin-password
 - **PrivadoVPN Credentials** - openvpn-user, openvpn-password (default Gluetun VPN provider; user/pass auth)
 - **VPN Unlimited Credentials** - alternate Gluetun provider (KeepSolid). Gluetun needs **all four** of openvpn-user, openvpn-password, openvpn-clientcrt and openvpn-clientkey: its generated OpenVPN config is cert/key-based (auth-user-pass off) but its settings validation still requires a non-empty user + password for the provider. To enable `task downloads:vpn-provider -- PROVIDER=vpnunlimited`, generate a Manual/OpenVPN config for one device in the VPN Unlimited portal, then add fields **openvpn-user**, **openvpn-password**, **openvpn-clientcrt** (full PEM `<cert>` block) and **openvpn-clientkey** (full PEM `<key>` block), and uncomment the `vpnunlimited-*` entries in `kubernetes/apps/download-clients/externalsecret.yaml` (docs/21)
+- **WireGuard VPN** - init-username, init-password (wg-easy admin, bootstrapped on first boot; later rotation is a UI action), metrics-token (Bearer password for the `/metrics/prometheus` endpoint — must be pasted into Admin Panel > General to enable metrics). See docs/38-wireguard-vpn.md
 - **Mealie Secrets** - postgres-password
 - **Mealie SSO** - oidc-client-id, oidc-client-secret (Authentik OIDC, REQUIRED - password login disabled)
 - **Bar Assistant Secrets** - meilisearch-master-key

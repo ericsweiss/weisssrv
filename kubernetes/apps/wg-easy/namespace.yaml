@@ -1,0 +1,25 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wg-easy
+  labels:
+    app.kubernetes.io/name: wg-easy
+    app.kubernetes.io/component: vpn
+    app.kubernetes.io/managed-by: flux
+    # Pod Security Standards.
+    #
+    # enforce: privileged — REQUIRED. wg-easy runs as root with CAP_NET_ADMIN to
+    # create the wg0 kernel interface + program iptables NAT/forward, and a
+    # privileged initContainer sets the pod-netns sysctls (net.ipv4.ip_forward,
+    # conf.all.src_valid_mark). None of that satisfies the baseline/restricted
+    # profiles. PSA is namespace-scoped and cannot isolate to the VPN pod, so
+    # the whole namespace is privileged — but wg-easy is the ONLY workload here.
+    #
+    # warn/audit: restricted — kept strict (not privileged like the downloads
+    # ns) on purpose: any pod that lands here that ISN'T the intentionally
+    # privileged wg-easy pod still trips an admission warning + audit annotation,
+    # so a stray/over-privileged addition is visible instead of silently blessed.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

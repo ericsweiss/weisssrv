@@ -13,3 +13,4 @@ resources:
   - gitlab-runner-reaper
   - gitlab-agent
   - vm-ingress
+  - wg-easy

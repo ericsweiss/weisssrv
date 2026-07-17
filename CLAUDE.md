@@ -90,6 +90,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-tr
 - Home Assistant (home.esweiss.com / home.ericsweiss.com, docs/24): HAOS VM (.154, Proxmox-HA-managed), websocket ingress, hass-openid SSO, full-host SSO bypass routes for the \*arr integrations scoped to HA's IP, read-only NFS media mount
 - GitLab (git.esweiss.com / git.ericsweiss.com, docs/27): EE omnibus VM on pve-nas-01 (.153), repos on 200GB zvol, Container Registry, Pages, Web IDE extension host (CVE-2026-5816 SOP isolation), k3s CI runners (infrastructure + shared), SAML SSO, SSH 22/2222
 - Grafana (grafana.esweiss.com, docs/31): community + custom dashboards via `grafana_dashboard` ConfigMap sidecar, Authentik OIDC, Loki datasource
+- wg-easy WireGuard VPN (endpoint vpn.ericsweiss.com:51820/udp via MetalLB VIP .99; admin UI vpn.esweiss.com internal-only behind Authentik, docs/38): internet-exit VPN for the user + friends/family with a two-layer egress no-LAN fence (client full-tunnel + public DNS, CNI egress NetworkPolicy killswitch that also blocks internal DNS via pod dnsPolicy:None) plus a separate `-dest`-scoped WAN firewall rule that scopes the inbound endpoint; NFS-backed state, IPv4-only
 
 **Planned** (not yet created) — roadmap source of truth is `docs/16-next-steps.md`:
 - Apps: Immich, Nextcloud

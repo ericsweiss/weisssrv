@@ -1,0 +1,48 @@
+---
+# WireGuard UDP endpoint. MetalLB L2 announces the pinned VIP .99 (vpn-pool in
+# infrastructure/configs/metallb-ip-pools.yaml). externalTrafficPolicy: Local
+# preserves the real client source IP (WireGuard needs it for peer endpoint
+# tracking + roaming) and, with MetalLB L2, forces the announcing node to be the
+# one running the pod. The physical router forwards WAN :51820/udp -> .99.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wg-easy
+  namespace: wg-easy
+  labels:
+    app.kubernetes.io/name: wg-easy
+  annotations:
+    metallb.io/loadBalancerIPs: 192.168.0.99
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  # MetalLB L2 does not need per-node NodePorts; don't allocate one.
+  allocateLoadBalancerNodePorts: false
+  selector:
+    app.kubernetes.io/name: wg-easy
+  ports:
+    - name: wireguard
+      port: 51820
+      targetPort: wireguard
+      protocol: UDP
+
+---
+# Admin UI (+ /metrics/prometheus) — ClusterIP only. Reached exclusively through
+# Traefik (internal IngressRoute, vpn.esweiss.com) and scraped by the ServiceMonitor.
+# There is deliberately NO LoadBalancer / external route for the UI.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wg-easy-ui
+  namespace: wg-easy
+  labels:
+    app.kubernetes.io/name: wg-easy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: wg-easy
+  ports:
+    - name: ui
+      port: 51821
+      targetPort: ui
+      protocol: TCP

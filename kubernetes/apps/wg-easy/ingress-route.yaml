@@ -1,0 +1,39 @@
+---
+# Internal-only admin UI: vpn.esweiss.com.
+#
+# Defense in depth on the front door:
+#   1. lan-tailscale-only — reachable only from the LAN / tailnet / pod CIDR.
+#   2. authentik-auth      — ForwardAuth SSO; only members of the vpn-admins
+#                            group (bound in the Authentik provider) get through.
+#                            The pinned wg-easy 15.3.0 has no native OIDC
+#                            (OAUTH_PROVIDERS landed on upstream master ~4 weeks
+#                            after the 15.3.0 release, so it is not in this tag),
+#                            so SSO is enforced at the proxy; wg-easy keeps its
+#                            own admin login too.
+#   3. hsts-header.
+#
+# There is intentionally NO public IngressRoute — the UI must never be reachable
+# from the internet. Do not add an external-dns annotation here.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: wg-easy-internal
+  namespace: wg-easy
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`vpn.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: authentik-auth
+          namespace: authentik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: wg-easy-ui
+          port: 51821
+  tls:
+    secretName: wg-easy-esweiss-tls

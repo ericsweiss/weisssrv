@@ -134,6 +134,15 @@ SERVICE_REGISTRY: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": True,
     },
+    {
+        "name": "wg-easy",
+        "var_name": "wg_easy_version",
+        "category": "github",
+        "github_repo": "wg-easy/wg-easy",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
     # --- Container images ---
     {
         "name": "Gluetun",
@@ -2084,7 +2093,7 @@ def get_deploy_command(result: ServiceVersion) -> str:
     flux_managed = (
         "gluetun_version", "nzbget_version", "qbittorrent_version",
         "prowlarr_version", "sonarr_version", "radarr_version",
-        "lidarr_version", "pulsarr_version",
+        "lidarr_version", "pulsarr_version", "wg_easy_version",
         "mealie_version", "mealie_postgresql_version",
         "bar_assistant_version", "salt_rim_version",
         "meilisearch_version", "redis_version", "busybox_version",

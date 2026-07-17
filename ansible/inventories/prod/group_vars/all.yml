@@ -181,6 +181,11 @@ radarr_version: "6.3.0.10514"
 lidarr_version: "3.1.0.4875"
 pulsarr_version: "0.17.3"
 
+# wg-easy WireGuard VPN (internet-exit VPN for the user + friends/family).
+# Container tag has NO leading "v" (upstream convention: :15.3.0, not :v15.3.0).
+# https://github.com/wg-easy/wg-easy/releases
+wg_easy_version: "15.3.0"
+
 # Recipe management stack versions
 # Mealie: https://github.com/mealie-recipes/mealie/releases
 # Bar Assistant: https://github.com/bar-assistant/bar-assistant/releases

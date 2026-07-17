@@ -724,6 +724,29 @@ obvious.
 
 ## Priority 6: Additional Applications
 
+### wg-easy internet-exit VPN (DONE)
+
+WireGuard VPN (`wg-easy` v15) for the user + friends/family, providing
+**internet-only egress** through the home connection. Clients are fenced out of
+the LAN by a two-layer egress no-LAN fence (client full-tunnel config + public
+DNS, and a CNI egress NetworkPolicy killswitch that also blocks internal DNS),
+plus a separate `-dest`-scoped WAN firewall rule that scopes the inbound
+endpoint. Admin UI is
+internal-only behind Authentik (`vpn-admins`); endpoint is
+`vpn.ericsweiss.com:51820/udp` via MetalLB VIP `.99` (`vpn-pool`).
+
+- [x] Deploy `kubernetes/apps/wg-easy/` (namespace, NFS-backed state, MetalLB
+  UDP LoadBalancer, internal IngressRoute, ServiceMonitor, VPA, NetworkPolicies)
+- [x] External DNS (`vpn.ericsweiss.com`, Terraform + DDNS) + internal AdGuard
+  rewrite + `sg-k3s-ingress-pub` WireGuard rule + observability
+- [x] Docs: [docs/38-wireguard-vpn.md](38-wireguard-vpn.md) (architecture,
+  security/threat model, deploy plan, client onboarding, restore)
+
+Remaining operator steps (one-time, in docs/38): create the `WireGuard VPN`
+1Password item, forward WAN `:51820/udp` → `.99` on the router (and exclude `.99`
+from DHCP), enable metrics in the UI, and create the Authentik proxy provider +
+`vpn-admins` group.
+
 ### Immich (Photo Management)
 
 **Open Questions** (decide before deployment):

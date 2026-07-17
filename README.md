@@ -331,6 +331,19 @@ Self-hosted Git repository and CI/CD platform:
   - Git SSH access on port 2222 (external)
 - **Documentation**: [docs/27-gitlab-deployment.md](docs/27-gitlab-deployment.md)
 
+### WireGuard VPN (wg-easy)
+
+Internet-exit VPN for the user + friends/family (`wg-easy` v15):
+
+- **Endpoint**: vpn.ericsweiss.com:51820/udp (WAN → MetalLB VIP .99)
+- **Admin UI**: vpn.esweiss.com (internal-only, Authentik `vpn-admins`)
+- **Model**: full-tunnel internet exit; clients are fenced out of the LAN by a
+  two-layer egress no-LAN fence (client full-tunnel + public DNS, and a CNI
+  egress NetworkPolicy killswitch that also blocks internal DNS), plus a
+  separate `-dest`-scoped WAN firewall rule that scopes the inbound endpoint.
+  Public client DNS (1.1.1.1), IPv4-only.
+- **Documentation**: [docs/38-wireguard-vpn.md](docs/38-wireguard-vpn.md)
+
 ### Observability (Grafana)
 
 Metrics, logs, dashboards, and alerting for the whole platform:
@@ -392,6 +405,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
 | [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
+| [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it

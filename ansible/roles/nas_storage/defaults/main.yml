@@ -57,3 +57,4 @@ nas_appdata_dirs:
   - pulsarr
   - mealie
   - bar-assistant
+  - wg-easy

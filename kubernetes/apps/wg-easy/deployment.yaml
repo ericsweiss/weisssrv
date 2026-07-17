@@ -1,0 +1,206 @@
+---
+# wg-easy — WireGuard VPN + admin UI (internet-exit only; see docs/38 for the
+# two-layer no-LAN egress security model). Image tag has no leading "v"
+# (upstream container convention: ghcr.io/wg-easy/wg-easy:15.3.0).
+#
+# replicas:1 + Recreate: the SQLite state on NFS tolerates exactly one writer,
+# and only one node may own the WireGuard listener behind the MetalLB VIP.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wg-easy
+  namespace: wg-easy
+  labels:
+    app.kubernetes.io/name: wg-easy
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wg-easy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wg-easy
+    spec:
+      # Pin to an ingress agent (HARD). With ETP Local, MetalLB L2 announces the
+      # VIP .99 from the node running the pod, so that node MUST carry the
+      # sg-k3s-ingress-pub firewall group that admits the WAN :51820/udp -> .99
+      # forward. Exactly the 5 esweiss.com/ingress agents
+      # (laptop/opt-01/02/03/prec-01) carry that group. The NAS agent
+      # (k3s-agt-nas-01) is esweiss.com/general BUT NOT esweiss.com/ingress and
+      # does NOT carry sg-k3s-ingress-pub — so a `general` nodeSelector plus only
+      # a *soft* NAS-avoid could, under scheduling pressure, land the pod on NAS
+      # and silently black-hole the WAN endpoint. Selecting on esweiss.com/ingress
+      # excludes NAS by construction. Same ETP-Local pattern as Traefik
+      # (controllers/traefik/release.yaml). State floats on NFS, so there is no
+      # locality reason to pin harder.
+      nodeSelector:
+        esweiss.com/ingress: "true"
+      # wg-easy is not a Kubernetes-integrated app; it needs no API access.
+      automountServiceAccountToken: false
+      # Public resolvers for the POD itself — deliberately NOT kube-dns. wg-easy
+      # is not cluster-integrated and only ever resolves public names (e.g. its
+      # ip-info lookup), so it has no need for internal DNS. Using 1.1.1.1 lets
+      # the egress NetworkPolicy drop its kube-dns allow entirely: without that
+      # allow, forwarded client traffic aimed at the CoreDNS ClusterIP
+      # (10.43.0.10, inside the excepted 10.0.0.0/8) is dropped at the CNI layer,
+      # so a connected client genuinely cannot reach internal DNS (docs/38,
+      # no-LAN model). ndots:1 avoids pointless search-domain expansion.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 1.1.1.1
+          - 1.0.0.1
+        options:
+          - name: ndots
+            value: "1"
+      initContainers:
+        # The pod network namespace starts with ip_forward=0. WireGuard needs
+        # forwarding + src_valid_mark (fwmark-routed return path) to relay client
+        # traffic out eth0. These are namespaced sysctls, so setting them in an
+        # initContainer that shares this pod's netns persists them for the main
+        # container. Done here — NOT via pod securityContext.sysctls — because
+        # the k3s kubelet does not allowlist these as unsafe sysctls
+        # (group_vars/k3s.yml k3s_kubelet_args), so a pod-level sysctl would be
+        # rejected SysctlForbidden. This keeps the change pod-local instead of a
+        # fleet-wide kubelet allowed-unsafe-sysctls change. privileged (the ns is
+        # PSA privileged) guarantees /proc/sys/net is writable; the container
+        # exits immediately.
+        - name: sysctl
+          image: busybox:${busybox_version}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              sysctl -w net.ipv4.ip_forward=1
+              sysctl -w net.ipv4.conf.all.src_valid_mark=1
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
+      containers:
+        - name: wg-easy
+          image: ghcr.io/wg-easy/wg-easy:${wg_easy_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            # --- First-boot bootstrap (INIT_*) -------------------------------
+            # Applied ONLY when /etc/wireguard has no database yet. Editing these
+            # later is a no-op; change config in the UI. See docs/38.
+            - name: INIT_ENABLED
+              value: "true"
+            - name: INIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: wg-easy-secrets
+                  key: init-username
+            - name: INIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: wg-easy-secrets
+                  key: init-password
+            # Endpoint clients dial. External host (Cloudflare DNS-only A record
+            # + DDNS follows the home IP); router forwards WAN :51820/udp here.
+            - name: INIT_HOST
+              value: "vpn.ericsweiss.com"
+            - name: INIT_PORT
+              value: "51820"
+            # Public resolvers pushed to clients — NEVER the internal AdGuard.
+            # Friends' devices are untrusted and must not learn internal names
+            # or reach 192.168.0.150/.160. Part of the no-LAN model (docs/38).
+            - name: INIT_DNS
+              value: "1.1.1.1,1.0.0.1"
+            - name: INIT_IPV4_CIDR
+              value: "10.8.0.0/24"
+            # Required paired with INIT_IPV4_CIDR (same INIT group). IPv6 is
+            # disabled below, so this ULA range is stored but never assigned.
+            - name: INIT_IPV6_CIDR
+              value: "fdcc:ad94:bacf:61a3::/64"
+            # Full-tunnel: every client routes ALL v4 traffic through the VPN.
+            # The no-LAN guarantee is enforced server-side by the egress
+            # NetworkPolicy (networkpolicy.yaml), not by trusting this client
+            # route.
+            - name: INIT_ALLOWED_IPS
+              value: "0.0.0.0/0"
+            # --- Runtime config ----------------------------------------------
+            # v4-only: the LAN has no working IPv6 egress, so an IPv6 tunnel
+            # would black-hole. Disables v6 interface addrs + firewall rules.
+            - name: DISABLE_IPV6
+              value: "true"
+            # TLS terminates at Traefik; the pod serves the UI over plain HTTP on
+            # 51821. The UI is never exposed outside Traefik (ClusterIP + the
+            # ingress NetworkPolicy only admits the traefik + observability ns).
+            - name: INSECURE
+              value: "true"
+            - name: PORT
+              value: "51821"
+            - name: HOST
+              value: "0.0.0.0"
+          ports:
+            - name: wireguard
+              containerPort: 51820
+              protocol: UDP
+            - name: ui
+              containerPort: 51821
+              protocol: TCP
+          securityContext:
+            # Root + NET_ADMIN ONLY: drop the container runtime's default
+            # capability set (CHOWN, DAC_OVERRIDE, NET_RAW, SETUID, MKNOD, …) and
+            # add back only NET_ADMIN — the single capability WireGuard needs to
+            # drive wg0 + the iptables/nftables NAT rules. Without `drop: [ALL]`
+            # the pod would silently keep the full default set on top of
+            # NET_ADMIN, contradicting the documented "NET_ADMIN only" posture and
+            # widening blast radius if the UI/container is compromised.
+            #   - NOT SYS_MODULE: the wireguard kernel module is already loaded on
+            #     every k3s node (flannel wireguard-native backend,
+            #     group_vars/k3s.yml), so wg-easy attaches to it rather than
+            #     insmod-ing — verified `lsmod | grep wireguard` on the agents.
+            #   - NOT NET_RAW: WireGuard uses ordinary UDP sockets and drives the
+            #     interface/NAT via netlink (covered by NET_ADMIN); no raw sockets.
+            #   - NOT DAC_OVERRIDE: root's NFS writes to /etc/wireguard still work
+            #     without it — the appdata export is all_squash,anonuid=1000,
+            #     anongid=2000 (host_vars/pve-nas-01.yml: "Maps ALL clients
+            #     including root to 1000:2000"), so NFSv4.2 sec=sys authorization
+            #     is delegated to the server's ACCESS RPC, which squashes every
+            #     request to uid 1000 — the owner of the files — and grants it;
+            #     the client-side DAC_OVERRIDE path is never reached.
+            # root is required because wg-easy's entrypoint runs as uid 0.
+            runAsUser: 0
+            runAsGroup: 0
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_ADMIN
+          readinessProbe:
+            tcpSocket:
+              port: ui
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: ui
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/wireguard
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: wg-easy-config

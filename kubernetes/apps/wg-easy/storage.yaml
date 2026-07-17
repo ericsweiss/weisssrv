@@ -1,0 +1,58 @@
+---
+# wg-easy state on NFS (/appdata/wg-easy from pve-nas-01). This holds the
+# SQLite database + wg0 config = the server keypair, every peer's public key and
+# preshared key, and the admin credential hash. Sensitive at rest — it lives on
+# ssd/appdata (ZFS native encryption) and is captured by the archive replicator
+# for free (child of the ssd/appdata SRC_LIST root; no SRC_LIST edit needed).
+#
+# NFS (not a zvol) because wg-easy state is tiny and the pod is not pinned to
+# the NAS node — a single-writer SQLite DB over nfsvers=4.2/hard is safe with
+# replicas:1 + Recreate (no concurrent openers). server: is the hostname (never
+# the IP) so xprtsec=tls verifies against the *.esweiss.com SAN.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wg-easy-appdata
+  annotations:
+    # Lets Flux delete+recreate this PV when an immutable field (server,
+    # mountOptions) changes instead of stalling the Kustomization. Retain
+    # reclaim policy keeps the NFS data — data safe.
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
+  labels:
+    type: nfs
+    app: wg-easy
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
+    # The IP fails cert verification; pve-nas-01.esweiss.com resolves to .102 via
+    # AdGuard and matches the wildcard. See docs/07 Transport Security.
+    server: pve-nas-01.esweiss.com
+    path: /appdata/wg-easy
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - noatime
+    # The /appdata k3s client lines require TLS (xprtsec=tls) — plaintext is
+    # rejected. tlshd runs on every agent (nfs_tls role).
+    - xprtsec=tls
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wg-easy-config
+  namespace: wg-easy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: wg-easy-appdata

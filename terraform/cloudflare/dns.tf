@@ -208,6 +208,31 @@ resource "cloudflare_record" "direct" {
   }
 }
 
+# WireGuard VPN endpoint - vpn.ericsweiss.com (wg-easy, kubernetes/apps/wg-easy)
+# DNS-only (grey cloud): WireGuard is UDP and Cloudflare's proxy can't front it,
+# so this must resolve to the origin IP directly. Exposes the home public IP —
+# same posture as git/direct — but WireGuard silently drops any packet without a
+# valid peer key, so an exposed :51820/udp endpoint is safe by design (docs/38
+# threat model). The physical router forwards WAN :51820/udp -> MetalLB VIP .99.
+# IP is DDNS-owned (cloudflare-ddns CronJob); config is Terraform-owned.
+resource "cloudflare_record" "vpn" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "vpn"
+  type    = "A"
+  content = local.ddns_placeholder_ip # placeholder; DDNS owns the live value
+  proxied = false                     # DNS-only — WireGuard/UDP can't be proxied
+  ttl     = 60                        # short TTL since DDNS updates this record
+  comment = "wg-easy WireGuard VPN endpoint - DNS only (UDP), IP updated by DDNS"
+
+  lifecycle {
+    # Allow DDNS to update the IP without Terraform reverting it.
+    # The cloudflare-ddns CronJob preserves the record's existing `proxied` on
+    # update; its per-record literal only seeds record creation, so `proxied`
+    # below stays Terraform-owned.
+    ignore_changes = [content]
+  }
+}
+
 # Nested-subdomain records pointing at direct.${var.external_domain} (DNS-only,
 # TLS via Traefik). Nested subdomains and nested wildcards aren't covered by
 # Cloudflare Universal SSL (first-level wildcards only — nested would need

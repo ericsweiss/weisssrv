@@ -6,3 +6,4 @@ resources:
   - gitlab.yaml
   - home-assistant.yaml
   - meilisearch.yaml
+  - wg-easy.yaml

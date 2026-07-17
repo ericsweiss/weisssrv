@@ -1795,6 +1795,45 @@ tasks:
         echo "  task flux:suspend -- flux-system/kustomization/apps"
         echo "  kubectl delete namespace downloads"
 
+  # === wg-easy WireGuard VPN Tasks ===
+  # Internet-exit VPN for the user + friends/family (kubernetes/apps/wg-easy).
+  # Admin UI: vpn.esweiss.com (internal, Authentik). Endpoint: vpn.ericsweiss.com:51820/udp.
+
+  vpn:status:
+    desc: Show status of the wg-easy VPN (pods, services, VIP, PVC, ingress)
+    cmds:
+      - echo "=== wg-easy Namespace ==="
+      - kubectl get pods -n wg-easy -o wide
+      - echo ""
+      - echo "=== Services (LoadBalancer VIP should be 192.168.0.99) ==="
+      - kubectl get svc -n wg-easy
+      - echo ""
+      - echo "=== PVC ==="
+      - kubectl get pvc -n wg-easy
+      - echo ""
+      - echo "=== IngressRoute ==="
+      - kubectl get ingressroute -n wg-easy
+
+  vpn:peers:
+    desc: Show live WireGuard peers/handshakes (kubectl exec wg show)
+    cmds:
+      - kubectl exec -n wg-easy deployment/wg-easy -- wg show 2>/dev/null || echo "wg0 not up yet (no clients configured, or pod not ready)"
+
+  vpn:logs:
+    desc: Tail wg-easy logs
+    cmds:
+      - kubectl logs -n wg-easy deployment/wg-easy --tail=50 -f
+
+  vpn:restart:
+    desc: Restart the wg-easy pod (pod delete; Flux-managed, replicas:1 + Recreate)
+    cmds:
+      # Pod delete, NOT `kubectl rollout restart`: the Deployment is
+      # Flux-kustomize-managed, so a rollout restart's restartedAt annotation is
+      # drift the kustomize-controller reverts. replicas:1 + Recreate => a pod
+      # delete is a clean restart.
+      - kubectl delete pod -n wg-easy -l app.kubernetes.io/name=wg-easy
+      - kubectl wait --namespace wg-easy --for=condition=ready pod -l app.kubernetes.io/name=wg-easy --timeout=180s
+
   # === Recipe Management Stack Tasks ===
   # Mealie (recipe management) and Bar Assistant (cocktail recipes)
   # Data services pinned to NAS node for NFS locality and backup consistency

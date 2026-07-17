@@ -26,6 +26,23 @@ spec:
   addresses:
     - 192.168.0.101/32
 ---
+# VPN pool: 192.168.0.99 — the wg-easy WireGuard UDP endpoint (kubernetes/apps/
+# wg-easy). A discrete /32 pool kept separate from the .100/.101 Traefik VIPs so
+# the public/internal ingress semantics stay clean; the wg-easy LoadBalancer
+# Service claims it explicitly via metallb.io/loadBalancerIPs. autoAssign:false —
+# same rationale as the others (never hand this pinned VIP to another Service).
+# NOTE: .99 sits in the documented DHCP/workstation range (.1-99); it must be
+# excluded from the router's DHCP pool (operator step, see docs/38).
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: vpn-pool
+  namespace: metallb-system
+spec:
+  autoAssign: false
+  addresses:
+    - 192.168.0.99/32
+---
 # L2Advertisement — Announce IPs via ARP on the local network.
 # No interface restrictions: MetalLB auto-filters CNI/virtual interfaces; explicit
 # lists would break announcement on nodes with non-eth0/ens18 NIC names (enp*, eno*, bond*).
@@ -38,3 +55,4 @@ spec:
   ipAddressPools:
     - public-pool
     - internal-pool
+    - vpn-pool
