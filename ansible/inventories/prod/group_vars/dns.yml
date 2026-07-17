@@ -155,6 +155,9 @@ adguard_rewrites:
   # itself is vpn.ericsweiss.com (external, UDP) — no esweiss rewrite for it.
   - domain: "vpn.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # Hermes Agent web dashboard (Authentik forward-auth)
+  - domain: "agent.{{ internal_domain }}"
+    answer: "192.168.0.101"
   # Internal-only services - esweiss.com only (internal domain)
   # No external DNS in Cloudflare, no AdGuard rewrite for ericsweiss.com
   # ericsweiss.com variants won't resolve (cleaner separation of internal vs external domains)

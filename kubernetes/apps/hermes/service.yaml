@@ -1,0 +1,20 @@
+---
+# ClusterIP fronting the dashboard container's :9119. Both containers share the
+# pod (and its IP), so the selector resolves to the pod and :9119 lands on the
+# dashboard listener. Consumed by the Traefik IngressRoutes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-dashboard
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes
+    app.kubernetes.io/component: dashboard
+spec:
+  selector:
+    app.kubernetes.io/name: hermes
+  ports:
+    - name: http
+      port: 9119
+      targetPort: http
+  type: ClusterIP

@@ -157,6 +157,31 @@ SERVICE_REGISTRY: list[dict] = [
         "strip_prefix": False,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
+    {
+        # CalVer release tags (vYYYY.M.D[.N]); the pin keeps the leading "v"
+        # because the CI image build checks out the upstream tag verbatim.
+        "name": "Hermes Agent",
+        "var_name": "hermes_version",
+        "category": "github",
+        "github_repo": "NousResearch/hermes-agent",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d{4}\.\d+\.\d+(\.\d+)?$",
+    },
+    {
+        # OpenAI Codex CLI, baked into the hermes-agent image (npm @openai/codex)
+        # so Hermes' Codex app-server runtime can delegate OpenAI/Codex turns to
+        # it. Upstream tags stable releases `rust-vX.Y.Z`; the pin is the bare npm
+        # version (0.144.5), so strip the "rust-v" prefix. The tag_filter excludes
+        # the per-platform alpha tags (rust-vX.Y.Z-alpha.N). Requires >=0.130.0.
+        "name": "Codex CLI (Hermes)",
+        "var_name": "hermes_codex_version",
+        "category": "github",
+        "github_repo": "openai/codex",
+        "version_prefix": "rust-v",
+        "strip_prefix": True,
+        "tag_filter": r"^rust-v\d+\.\d+\.\d+$",
+    },
     # --- Container images ---
     {
         "name": "Gluetun",
@@ -2178,7 +2203,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
     flux_managed = (
         "gluetun_version", "nzbget_version", "qbittorrent_version",
         "prowlarr_version", "sonarr_version", "radarr_version",
-        "lidarr_version", "pulsarr_version", "wg_easy_version",
+        "lidarr_version", "pulsarr_version", "wg_easy_version", "hermes_version",
+        "hermes_codex_version",
         "mealie_version", "mealie_postgresql_version",
         "bar_assistant_version", "salt_rim_version",
         "meilisearch_version", "redis_version", "busybox_version",

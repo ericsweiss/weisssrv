@@ -7,6 +7,7 @@ kind: Kustomization
 resources:
   - authentik
   - download-clients
+  - hermes
   - recipes
   - gitlab-runner
   - gitlab-runner-privileged

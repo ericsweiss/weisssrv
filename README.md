@@ -356,6 +356,15 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 - **Features**: community + custom dashboards via the `grafana_dashboard` ConfigMap sidecar, Loki log datasource, Discord/email alerting
 - **Documentation**: [docs/31-observability.md](docs/31-observability.md)
 
+### Hermes Agent
+
+NousResearch autonomous AI agent platform with a web dashboard:
+
+- **URLs**: agent.esweiss.com (internal), agent.ericsweiss.com (external)
+- **Authentication**: layered SSO — an Authentik forward-auth (`hermes-users` group) perimeter plus the dashboard's own `basic` auth provider (mandatory on its 0.0.0.0 bind); a Traefik-only NetworkPolicy makes the middleware the only path to it
+- **Workload**: one pod, two containers (gateway supervisor + FastAPI dashboard) off a self-built image (upstream ships none — built by the `build-hermes-agent` CI job); NFS `/opt/data` state on encrypted `ssd/appdata`
+- **Documentation**: [docs/37-hermes.md](docs/37-hermes.md)
+
 ## Documentation
 
 ### Getting Started
@@ -409,6 +418,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
 | [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
 | [36-immich](docs/36-immich.md) | Immich photo management (NAS-pinned VM, docker-compose, encrypted zvols, Authentik OIDC, backups) |
+| [37-hermes](docs/37-hermes.md) | Hermes Agent (NousResearch AI agent + dashboard): self-built image, two-container pod, layered Authentik + dashboard SSO |
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 | [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
 

@@ -1,0 +1,37 @@
+---
+# TLS certificates for the Hermes namespace. Per-host (not wildcard) and in the
+# same namespace as the IngressRoutes that reference them (Traefik reads TLS
+# Secrets only from the route's own namespace).
+
+# External - agent.ericsweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hermes-tls
+  namespace: hermes
+spec:
+  secretName: hermes-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "agent.ericsweiss.com"
+  dnsNames:
+    - "agent.ericsweiss.com"
+  renewBefore: 720h
+
+---
+# Internal - agent.esweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hermes-tls-internal
+  namespace: hermes
+spec:
+  secretName: hermes-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "agent.esweiss.com"
+  dnsNames:
+    - "agent.esweiss.com"
+  renewBefore: 720h

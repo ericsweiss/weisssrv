@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hermes
+  labels:
+    app.kubernetes.io/name: hermes
+    app.kubernetes.io/part-of: hermes
+    app.kubernetes.io/managed-by: flux
+    # Baseline is sufficient: the upstream image is an s6-overlay build that
+    # starts as root to drop privileges to the hermes user (HERMES_UID/GID),
+    # exactly like the LinuxServer.io *arr images in the downloads namespace.
+    # runAsNonRoot / drop-ALL would break the s6 privilege drop, so enforce
+    # baseline (warn/audit restricted flags the root start without blocking it).
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

@@ -1,0 +1,62 @@
+---
+# Hermes Agent dashboard — external + internal IngressRoutes.
+#
+# SSO model: layered. The Authentik forward-auth (authentik-auth) middleware is
+# the perimeter gate — only members of the Authentik `hermes-users` group ever
+# reach the dashboard, and the default-deny NetworkPolicy admits only the
+# Traefik namespace on :9119, so no path bypasses this middleware. Behind it the
+# dashboard runs its own `basic` auth provider (its 0.0.0.0 bind is fail-closed:
+# it will not start without one — see deployment.yaml + docs/37 §SSO). See
+# docs/37 for provider/app setup. The internal route additionally scopes to
+# LAN/Tailscale sources.
+
+# External - agent.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: hermes
+  namespace: hermes
+  annotations:
+    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`agent.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: authentik-auth
+          namespace: authentik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: hermes-dashboard
+          port: 9119
+  tls:
+    secretName: hermes-ericsweiss-tls
+
+---
+# Internal - agent.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: hermes-internal
+  namespace: hermes
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`agent.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: authentik-auth
+          namespace: authentik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: hermes-dashboard
+          port: 9119
+  tls:
+    secretName: hermes-esweiss-tls

@@ -382,6 +382,57 @@ tasks:
       - kubectl rollout status deployment/authentik-server -n authentik --timeout=300s
       - kubectl rollout status deployment/authentik-worker -n authentik --timeout=300s
 
+  # ── Hermes Agent ──────────────────────────────────────────────────────
+  hermes:status:
+    desc: Show Hermes Agent status
+    cmds:
+      - echo "=== Hermes Namespace ==="
+      - kubectl get pods -n hermes -o wide
+      - echo ""
+      - echo "=== Services ==="
+      - kubectl get svc -n hermes
+      - echo ""
+      - echo "=== PVC ==="
+      - kubectl get pvc -n hermes
+      - echo ""
+      - echo "=== IngressRoutes ==="
+      - kubectl get ingressroute -n hermes
+      - echo ""
+      - echo "=== ExternalSecrets ==="
+      - kubectl get externalsecrets -n hermes
+
+  hermes:logs:
+    desc: "View Hermes logs (task hermes:logs [COMPONENT=dashboard|gateway])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "dashboard"}}'
+    cmds:
+      - |
+        COMPONENT="{{.COMPONENT}}"
+        echo "=== Hermes $COMPONENT logs ==="
+        kubectl logs -n hermes deploy/hermes -c "$COMPONENT" -f
+
+  hermes:restart:
+    desc: Restart Hermes Agent (gateway + dashboard)
+    cmds:
+      - echo "Restarting Hermes..."
+      - kubectl rollout restart deployment/hermes -n hermes
+      - echo "Waiting for rollout to complete..."
+      - kubectl rollout status deployment/hermes -n hermes --timeout=300s
+
+  hermes:shell:
+    desc: "Open a shell in the Hermes dashboard container (task hermes:shell [COMPONENT=dashboard|gateway])"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "dashboard"}}'
+    cmds:
+      - kubectl exec -it -n hermes deploy/hermes -c "{{.COMPONENT}}" -- /bin/sh
+
+  hermes:codex-login:
+    desc: "One-time ChatGPT-subscription login for the Codex runtime (device-code flow; see docs/37)"
+    cmds:
+      - echo "Starting Codex device-code login in the gateway container."
+      - echo "Open the printed URL in your browser, sign in to ChatGPT, and enter the code."
+      - kubectl exec -it -n hermes deploy/hermes -c gateway -- codex login --device-auth
+
   # ── Observability ────────────────────────────────────────────────────
   observability:status:
     desc: Show observability namespace health

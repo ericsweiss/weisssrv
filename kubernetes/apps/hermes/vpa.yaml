@@ -1,0 +1,19 @@
+---
+# VPA: Initial for the hermes Deployment — resize CPU+memory on natural pod
+# restarts (single stateless-scheduling workload; no HPA owns CPU). Applies to
+# both containers (containerName "*"). Bounded so a runaway agent session can't
+# request the whole node.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hermes
+  namespace: hermes
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: hermes}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 2, memory: 2Gi}
+        controlledResources: [cpu, memory]

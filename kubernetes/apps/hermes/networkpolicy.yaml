@@ -1,0 +1,82 @@
+---
+# Default-deny egress; explicit allows below. (default-deny-ingress comes from
+# the shared ../../components/netpol-baseline component.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: hermes
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Ingress: only Traefik may reach the dashboard on :9119. Everything else
+# (cross-pod, cross-namespace) is denied by the baseline default-deny-ingress.
+# Kubelet health probes are node-local and not gated by NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-hermes-ingress
+  namespace: hermes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hermes
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 9119
+
+---
+# Egress for the hermes pod:
+#   * kube-dns (name resolution)
+#   * public HTTPS (:443) for the Codex runtime's OpenAI/ChatGPT backend and
+#     messaging-platform APIs (Telegram / Discord / Slack are all 443/WSS).
+# No LAN/RFC1918 egress (the pod never dials internal services), no SMTP, and
+# no kube-apiserver (automountServiceAccountToken is false — it uses no
+# in-cluster API). A messaging platform that needs a non-443 port would require
+# an added rule here (documented in docs/37).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-hermes
+  namespace: hermes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hermes
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

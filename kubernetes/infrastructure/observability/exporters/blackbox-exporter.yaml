@@ -97,6 +97,15 @@ spec:
         - name: bar-assistant
           url: https://bar.esweiss.com
           module: http_sso
+        # Hermes dashboard sits behind the Authentik forward-auth middleware, so
+        # an unauthenticated probe is answered with a 302 -> Authentik (the
+        # dashboard's own auth gate is never reached — Authentik intercepts
+        # first). http_sso accepts the 302, so the probe verifies ingress + TLS
+        # + reachability. The generic EndpointDown alert covers it (warning at
+        # probe_success==0 for 5m).
+        - name: hermes
+          url: https://agent.esweiss.com
+          module: http_sso
         - name: plex
           url: https://plex.esweiss.com
           module: http_sso

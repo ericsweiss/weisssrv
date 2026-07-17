@@ -1,0 +1,28 @@
+# Thin wrapper over the upstream-built Hermes Agent image that bakes in the
+# OpenAI Codex CLI. Hermes' Codex app-server runtime delegates OpenAI/Codex
+# turns to the `codex` CLI over JSON-RPC stdio (ChatGPT-subscription OAuth via
+# `codex login` — no API billing), so the CLI must be on PATH in the runtime
+# image. Upstream ships no Codex CLI, so build-hermes-agent (.gitlab-ci.yml)
+# builds the upstream Dockerfile first, then this wrapper as the FINAL published
+# image (tagged :<hermes_version> / :<sha> / :latest exactly as before).
+#
+# The base already bundles Node 22 LTS + npm at /usr/local/bin (its multi-stage
+# build copies them from node:22-bookworm-slim), so we only add the pinned CLI.
+# It also ends on `USER root` (s6-overlay's /init needs root to remap the hermes
+# user to HERMES_UID/GID, then drops privileges), so `npm i -g` here installs to
+# /usr/local (on PATH) without a permission dance and the runtime user model is
+# unchanged — ENTRYPOINT/CMD/ENV/WORKDIR/USER are all inherited from the base.
+ARG HERMES_IMAGE
+FROM ${HERMES_IMAGE}
+
+# Pinned in ansible/inventories/prod/group_vars/all.yml as hermes_codex_version;
+# passed through by the build-hermes-agent CI job.
+ARG HERMES_CODEX_VERSION
+
+# Fail loudly if Node/npm somehow isn't present (a future upstream base change),
+# install the pinned Codex CLI globally, and verify the binary resolves on PATH.
+RUN command -v node >/dev/null 2>&1 || { echo "node not found in base image"; exit 1; } \
+    && command -v npm  >/dev/null 2>&1 || { echo "npm not found in base image";  exit 1; } \
+    && npm install -g --no-audit --no-fund "@openai/codex@${HERMES_CODEX_VERSION}" \
+    && npm cache clean --force \
+    && codex --version

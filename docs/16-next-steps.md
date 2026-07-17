@@ -47,6 +47,18 @@ This document tracks remaining work and planned improvements for the weisssrv ho
   - Authentik SSO via hass-openid custom integration
   - API bypass routes for *arr integrations
   - NFS media mount for browsing
+- [x] Hermes Agent deployed (NousResearch autonomous AI agent + web dashboard):
+  - `hermes` namespace, gateway + dashboard containers, self-built image via the
+    `build-hermes-agent` CI job (upstream ships no image)
+  - Dashboard at agent.ericsweiss.com / agent.esweiss.com behind layered SSO
+    (Authentik forward-auth `hermes-users` group + the dashboard's own `basic`
+    auth provider); Traefik-only NetworkPolicy
+  - NFS `/appdata/hermes` on encrypted `ssd/appdata` (archive-backed)
+  - LLM engine is the bundled Codex app-server runtime (ChatGPT-subscription
+    OAuth via a one-time `codex login`, token persisted in `CODEX_HOME` on NFS —
+    subscription billing, no API key)
+  - See docs/37-hermes.md (Codex login + messaging-platform onboarding are user
+    follow-ups)
 
 ---
 

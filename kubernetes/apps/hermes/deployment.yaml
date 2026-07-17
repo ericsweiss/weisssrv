@@ -1,0 +1,207 @@
+---
+# Hermes Agent (NousResearch) — one pod, two containers off the same
+# self-built image, mirroring upstream's docker-compose semantics:
+#   * gateway   — `gateway run`: the always-on agent supervisor (messaging
+#                 platform adapters register here; runs even with zero
+#                 platforms configured — see docs/37). Its LLM engine is the
+#                 bundled Codex app-server runtime: Hermes delegates OpenAI/Codex
+#                 turns to the `codex` CLI (baked into the image) over JSON-RPC
+#                 stdio, authenticated by a one-time `codex login` whose OAuth
+#                 token persists in CODEX_HOME on the NFS volume (docs/37).
+#   * dashboard — the FastAPI web UI (config, API keys, session monitoring)
+#                 on :9119, the user-facing surface at agent.*.
+# Both containers share /opt/data (the NFS PVC) exactly as the compose file
+# bind-mounts ~/.hermes into both services, and — being in one pod — share
+# localhost, so the dashboard reaches the gateway over 127.0.0.1 just like the
+# compose `network_mode: host` setup. strategy: Recreate because the single
+# RWO NFS volume must not be dual-mounted across a rolling update.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes
+    app.kubernetes.io/part-of: hermes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hermes
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hermes
+        app.kubernetes.io/part-of: hermes
+    spec:
+      # NAS-avoid: this is a stateless-scheduling general workload (its state
+      # lives on NFS, not a node-local zvol), so steer it OFF the NAS node
+      # (soft preference reinforced by the NAS node's PreferNoSchedule taint,
+      # which this pod does NOT tolerate). modern CPU: the image bundles a
+      # Node/Chromium/uv toolchain — keep it off the Core2-era legacy nodes.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+        esweiss.com/cpu: "modern"
+      imagePullSecrets:
+        - name: hermes-registry-pull
+      # This is an s6-overlay image (like the LinuxServer.io *arr images in the
+      # downloads namespace): /init starts as root, remaps the hermes user to
+      # HERMES_UID/GID, chowns /opt/data, then drops every service to the hermes
+      # user via s6-setuidgid. runAsNonRoot / drop-ALL / allowPrivilegeEscalation
+      # false would break that privilege drop, so — matching the *arr precedent —
+      # only the universally-safe subset is applied.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
+          # fresh socket for glibc's parallel A/AAAA queries so the conntrack
+          # DNAT-insert race can't cost a ~5s resolver stall. Kept in sync with
+          # recipes/mealie.yaml and the *arr deployments.
+          - name: single-request-reopen
+      containers:
+        # ── Gateway: always-on agent supervisor ──────────────────────────
+        - name: gateway
+          # Version managed in ansible/inventories/prod/group_vars/all.yml
+          # (hermes_version); built by the build-hermes-agent CI job. Pulled
+          # from the internal registry host (AdGuard rewrite -> Traefik .101).
+          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}
+          imagePullPolicy: IfNotPresent
+          args: ["gateway", "run"]
+          env:
+            # Match the NFS export's anon mapping (all_squash anonuid=1000/
+            # anongid=2000) so on-disk files land 1000:2000, same as the *arr
+            # PUID/PGID convention. stage2-hook remaps the hermes user to these.
+            - name: HERMES_UID
+              value: "1000"
+            - name: HERMES_GID
+              value: "2000"
+            - name: TZ
+              value: America/Los_Angeles
+            # Codex app-server runtime state (auth.json from `codex login`,
+            # config.toml, sessions) lives here. Pointing CODEX_HOME at the NFS
+            # volume makes the ChatGPT-subscription OAuth token survive pod
+            # restarts — the container HOME is /opt/data too, but we set this
+            # explicitly so the persisted path is unambiguous. Both containers
+            # share it (one pod, one PVC) so the operator can `codex login` in
+            # either and Hermes finds the token.
+            - name: CODEX_HOME
+              value: /opt/data/.codex
+          # No HTTP liveness/readiness probe: with no messaging platforms and
+          # the OpenAI-compatible API server left off (its default), an idle
+          # gateway exposes no health port. It runs as a persistent supervisor
+          # (upstream ships `gateway run` under `restart: unless-stopped`);
+          # crash-loops are caught by the standard kube-state-metrics alerts.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+        # ── Dashboard: user-facing FastAPI web UI on :9119 ───────────────
+        - name: dashboard
+          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}
+          imagePullPolicy: IfNotPresent
+          # Bind 0.0.0.0 (upstream's compose defaults to 127.0.0.1) so Traefik
+          # can reach the dashboard through the Service. Binding to a
+          # non-loopback address engages the dashboard's fail-closed auth gate:
+          # upstream refuses to start the dashboard on 0.0.0.0 unless a dashboard
+          # auth provider is registered, so we supply the bundled `basic`
+          # provider via the HERMES_DASHBOARD_BASIC_AUTH_* env below. Access is
+          # therefore defence-in-depth: the Authentik forward-auth perimeter
+          # (group-based SSO on both IngressRoutes) in front of the dashboard's
+          # own username/password login, with the NetworkPolicy admitting only
+          # the Traefik namespace on :9119. 9119 is the image's default port, so
+          # no --port.
+          args: ["dashboard", "--host", "0.0.0.0", "--no-open"]
+          env:
+            - name: HERMES_UID
+              value: "1000"
+            - name: HERMES_GID
+              value: "2000"
+            - name: TZ
+              value: America/Los_Angeles
+            # Codex app-server runtime state on the NFS volume (see gateway).
+            - name: CODEX_HOME
+              value: /opt/data/.codex
+            # Dashboard auth provider — required because the 0.0.0.0 bind above
+            # engages upstream's fail-closed gate (it refuses to start without a
+            # registered provider). The bundled `basic` provider registers from
+            # these values; it is the inner login behind the Authentik
+            # forward-auth perimeter (docs/37 §SSO). All three are 1P-sourced via
+            # ESO (never in git) — see docs/15.
+            - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: dashboard-username
+            - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: dashboard-password
+            # Stable session-signing key so dashboard logins survive pod
+            # restarts (without it the provider mints a random per-process
+            # secret and every restart forces a re-login).
+            - name: HERMES_DASHBOARD_BASIC_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: dashboard-session-secret
+          ports:
+            - name: http
+              containerPort: 9119
+              protocol: TCP
+          # Bare TCP connect to the dashboard port, NOT an HTTP GET: a
+          # listener-up check is sufficient health for this single-process
+          # FastAPI dashboard and avoids coupling pod health to any specific
+          # HTTP route or status code (the UI is a redirect-heavy SPA).
+          # startupProbe covers the slow first boot (s6 cont-init: volume chown,
+          # config migrate, skills sync).
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data

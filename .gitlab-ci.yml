@@ -211,6 +211,16 @@ workflow:
     - docker/molecule-ci/**/*
     - requirements.txt
     - ansible/requirements.yml
+.paths-build-hermes-agent:
+  changes:
+    # The build clones upstream at hermes_version and builds THEIR Dockerfile,
+    # so the only real build inputs are the pin (all.yml) and the build notes
+    # under docker/hermes-agent/. Deliberately NOT gated on .gitlab-ci.yml —
+    # matching the sibling build jobs (.paths-build-molecule-{test,ci}) — so an
+    # unrelated CI edit can't trigger a multi-minute DinD rebuild + re-push of
+    # the :<version>/:latest tags.
+    - docker/hermes-agent/**/*
+    - ansible/inventories/prod/group_vars/all.yml
 .paths-shellcheck:
   changes:
     - scripts/**/*
@@ -605,6 +615,121 @@ build-molecule-ci:
       changes: !reference [.paths-build-molecule-ci, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes: !reference [.paths-build-molecule-ci, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+
+# build-hermes-agent: NousResearch Hermes Agent publishes no container image, so
+# we build our own into the GitLab registry. The job clones the upstream repo at
+# the pinned tag (hermes_version in all.yml) and builds THEIR self-contained
+# Dockerfile (baking the commit SHA via HERMES_GIT_SHA) to a local intermediate
+# tag, then layers a thin wrapper (docker/hermes-agent/Dockerfile.codex) that
+# bakes in the pinned OpenAI Codex CLI (hermes_codex_version) — Hermes' LLM engine
+# is the Codex app-server runtime, so the `codex` CLI must be on PATH. The wrapper
+# is the FINAL image, tagged ${CI_REGISTRY_IMAGE}/hermes-agent:<hermes_version>;
+# the in-cluster Deployment pulls that tag via the internal registry host. On MR
+# the image is only built (+ pushed under the commit SHA to prove the build) — the
+# load-bearing :<hermes_version> and :latest tags are pushed only on main so an
+# unmerged branch can't repoint a running deployment.
+build-hermes-agent:
+  extends: .build-molecule-base
+  variables:
+    HERMES_UPSTREAM_REPO: "https://github.com/NousResearch/hermes-agent.git"
+  script:
+    - |
+      # Install the Docker buildx CLI plugin (pinned + sha256, matching the
+      # checksum discipline used for the static docker CLI in .build-molecule-base).
+      # The static docker binary ships no buildx plugin, and upstream Hermes's
+      # Dockerfile uses BuildKit-only features (COPY --link / --chmod), so the
+      # classic builder cannot build it and DOCKER_BUILDKIT=1 `docker build`
+      # fails with "buildx component is missing". Installing the plugin lets
+      # `docker build` route through the daemon's embedded BuildKit (dind 24.0).
+      BUILDX_ARCH=$(dpkg --print-architecture)
+      BUILDX_VERSION=v0.35.0
+      case "$BUILDX_ARCH" in
+        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
+        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
+        *) echo "unsupported arch: $BUILDX_ARCH"; exit 1 ;;
+      esac
+      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" -o /tmp/docker-buildx
+      echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
+      mkdir -p "$HOME/.docker/cli-plugins"
+      install -m 0755 /tmp/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx"
+      rm /tmp/docker-buildx
+      docker buildx version
+    - |
+      # Read the pinned tag from all.yml (same single-source pattern the other
+      # version-gated jobs use). No YAML lib in this image — grep the scalar.
+      HERMES_VERSION=$(grep -E '^hermes_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$HERMES_VERSION" ]; then echo "could not read hermes_version from all.yml"; exit 1; fi
+      # Codex CLI version baked into the image by the wrapper (see below).
+      HERMES_CODEX_VERSION=$(grep -E '^hermes_codex_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_codex_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$HERMES_CODEX_VERSION" ]; then echo "could not read hermes_codex_version from all.yml"; exit 1; fi
+      echo "Building Hermes Agent ${HERMES_VERSION} (Codex CLI ${HERMES_CODEX_VERSION})"
+      ref="${CI_REGISTRY_IMAGE}/hermes-agent"
+      rm -rf /tmp/hermes-src
+      git clone --depth 1 --branch "$HERMES_VERSION" "$HERMES_UPSTREAM_REPO" /tmp/hermes-src
+      HERMES_SHA=$(git -C /tmp/hermes-src rev-parse HEAD)
+      # Verify the tag resolves to the immutable commit pinned alongside it in
+      # all.yml. A tag is mutable upstream; without this check a moved or
+      # compromised tag would let CI build+publish attacker-controlled steps into
+      # an image Flux deploys. Bump hermes_git_sha whenever hermes_version changes.
+      HERMES_EXPECTED_SHA=$(grep -E '^hermes_git_sha:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_git_sha:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$HERMES_EXPECTED_SHA" ]; then echo "hermes_git_sha not pinned in all.yml — refusing to build"; exit 1; fi
+      if [ "$HERMES_SHA" != "$HERMES_EXPECTED_SHA" ]; then
+        echo "SECURITY: tag ${HERMES_VERSION} resolved to ${HERMES_SHA}, but all.yml pins ${HERMES_EXPECTED_SHA}."
+        echo "The upstream tag may have moved. Refusing to build. Re-verify upstream and update hermes_git_sha."
+        exit 1
+      fi
+      echo "Upstream ${HERMES_VERSION} -> ${HERMES_SHA} (matches pinned hermes_git_sha)"
+      cache_args=""
+      if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
+        cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
+      fi
+      # Two-stage build, both on every pipeline (proves the image builds);
+      # publish ONLY on main. Stage 1 builds upstream's self-contained Dockerfile
+      # to a local intermediate tag. Stage 2 layers our thin Codex-CLI wrapper
+      # (docker/hermes-agent/Dockerfile.codex — `npm i -g @openai/codex@<pin>`) on
+      # top as the FINAL image, carrying the load-bearing :<version>/:<sha> tags
+      # the cluster pulls. Node 22 + npm are already in the base, so the wrapper
+      # only adds the pinned CLI. A single retry loop covers both builds (either
+      # can hit a transient registry/npm hiccup). MR pipelines are build-only, so
+      # an MR can never publish a registry image.
+      upstream_ref="${ref}:upstream-${CI_COMMIT_SHORT_SHA}"
+      attempt=1; max=3
+      # shellcheck disable=SC2086  # intentional word-split of cache_args
+      until docker build $cache_args \
+              --build-arg HERMES_GIT_SHA="$HERMES_SHA" \
+              -t "$upstream_ref" \
+              /tmp/hermes-src \
+            && docker build \
+              --build-arg HERMES_IMAGE="$upstream_ref" \
+              --build-arg HERMES_CODEX_VERSION="$HERMES_CODEX_VERSION" \
+              --build-arg BUILDKIT_INLINE_CACHE=1 \
+              -t "${ref}:${HERMES_VERSION}" \
+              -t "${ref}:${CI_COMMIT_SHORT_SHA}" \
+              -f docker/hermes-agent/Dockerfile.codex \
+              docker/hermes-agent; do
+        attempt=$((attempt+1))
+        if [ "$attempt" -gt "$max" ]; then echo "hermes build failed after ${max} attempts"; exit 1; fi
+        echo "build attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
+        sleep $(( (RANDOM % 20) + 10 ))
+      done
+      # The load-bearing tags (:<version> that the cluster pulls, :<sha> for
+      # traceability, and :latest for the layer cache) are pushed only on main.
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        docker push "${ref}:${CI_COMMIT_SHORT_SHA}"
+        docker push "${ref}:${HERMES_VERSION}"
+        docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
+        docker push "${ref}:latest"
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-build-hermes-agent, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-build-hermes-agent, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true

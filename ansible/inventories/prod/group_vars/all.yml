@@ -283,6 +283,31 @@ docker_compose_plugin_version: "5.3.1-1~debian.13~trixie"
 # https://github.com/virtio-win/virtio-win-pkg-scripts
 virtio_win_version: "0.1.285"
 virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+# Hermes Agent (NousResearch) - autonomous AI agent + web dashboard
+# https://github.com/NousResearch/hermes-agent/releases
+# Upstream ships no published image; the build-hermes-agent CI job clones the
+# repo at this git tag and builds THEIR Dockerfile into the GitLab registry as
+# hermes-agent:${hermes_version}. The value is the upstream RELEASE TAG (used
+# verbatim both as `git clone --branch` and as the built image tag), NOT the
+# semver whl version (v2026.7.7.2 == release 0.18.2). Bump = pick a newer tag,
+# update hermes_git_sha below to that tag's commit, run task flux:sync-versions,
+# commit — CI verifies the tag→SHA, rebuilds, Flux rolls the pods.
+hermes_version: "v2026.7.7.2"
+# Immutable commit the pinned tag must resolve to. build-hermes-agent refuses to
+# build if `git clone --branch hermes_version` resolves to a different HEAD,
+# defending against a moved/compromised upstream tag. Update in lockstep with
+# hermes_version (get it from the tag on GitHub or the CI build log).
+hermes_git_sha: "9de9c25f620ff7f1ce0fd5457d596052d5159596"
+# OpenAI Codex CLI (https://github.com/openai/codex/releases, npm @openai/codex).
+# Hermes' Codex app-server runtime delegates OpenAI/Codex turns to this CLI over
+# JSON-RPC stdio, authenticated with a ChatGPT subscription (OAuth) — no API
+# billing. The build-hermes-agent CI job bakes it into the image via the thin
+# docker/hermes-agent/Dockerfile.codex wrapper (npm i -g @openai/codex@<pin>).
+# Requires >=0.130.0 for the Hermes runtime; the image already ships Node 22.
+# Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
+# wrapper, Flux rolls the pods. NOT substituted into any manifest (build-time
+# only); it rides in the versions ConfigMap as a harmless superset.
+hermes_codex_version: "0.144.5"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.
