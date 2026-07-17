@@ -70,18 +70,21 @@
 # completion is recorded as a delegate_facts fact on the reachable delegate (a
 # global, evaluable on every host) and later plays skip via hostvars[...].
 - name: Deploy cluster firewall configuration
-  ansible.builtin.template:
-    src: cluster.fw.j2
-    dest: "{{ pve_firewall_config_dir }}/cluster.fw"
-    owner: root
-    group: www-data
-    mode: "0640"
-    unsafe_writes: true  # Required for /etc/pve clustered filesystem
+  ansible.builtin.include_tasks:
+    file: deploy-pmxcfs-config.yml
+    # apply propagates become/delegate_to to every task in the included file
+    # (delegate_to is not a valid attribute directly on include_tasks).
+    apply:
+      become: true
+      delegate_to: "{{ _pve_fw_delegate }}"
+  vars:
+    pmxcfs_config_src: cluster.fw.j2
+    pmxcfs_config_dest: "{{ pve_firewall_config_dir }}/cluster.fw"
+    pmxcfs_config_label: cluster.fw
   # cluster.fw is on the shared /etc/pve filesystem - only deploy once, via a Proxmox node.
   # delegate_to ensures this works even when the play runs for non-Proxmox groups (services, etc.)
   # where inventory_hostname may not be in groups['proxmox'].
   run_once: true
-  delegate_to: "{{ _pve_fw_delegate }}"
   when:
     - pve_firewall_enabled | default(true)
     - (groups['proxmox'] | default([]) | length) > 0
@@ -98,13 +101,16 @@
     - (groups['proxmox'] | default([]) | length) > 0
 
 - name: Deploy node-specific host.fw configuration
-  ansible.builtin.template:
-    src: host.fw.j2
-    dest: "{{ pve_firewall_node_dir }}/{{ inventory_hostname }}/host.fw"
-    owner: root
-    group: www-data
-    mode: "0640"
-    unsafe_writes: true  # Required for /etc/pve clustered filesystem
+  ansible.builtin.include_tasks:
+    file: deploy-pmxcfs-config.yml
+    apply:
+      become: true
+  vars:
+    pmxcfs_config_src: host.fw.j2
+    pmxcfs_config_dest: "{{ pve_firewall_node_dir }}/{{ inventory_hostname }}/host.fw"
+    # Runs on each node itself (no delegate), so the per-node inventory_hostname
+    # keeps the staging filename unique across a shared staging dir.
+    pmxcfs_config_label: "host-{{ inventory_hostname }}.fw"
   when:
     - pve_firewall_enabled | default(true)
     - inventory_hostname in groups['proxmox'] | default([])

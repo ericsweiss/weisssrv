@@ -24,6 +24,12 @@ proxmox_firewall_egress_filtering: false
 # template writes to a stub directory.
 pve_firewall_config_dir: /etc/pve/firewall
 pve_firewall_node_dir: /etc/pve/nodes
+# Staging directory on the node's NORMAL root filesystem (never /etc/pve). The
+# .fw configs are rendered here first, then published into pmxcfs with a plain
+# `cp` — pmxcfs rejects the metadata syscalls (utime/chmod/chown) that
+# template/copy's atomic_move performs, so a direct template write to /etc/pve
+# false-fails on first create. See tasks/deploy-pmxcfs-config.yml.
+pve_firewall_staging_dir: /var/lib/pve-firewall-ansible
 # When true, skip pveum / pve-firewall systemd tasks so the role can run in
 # a container without the real Proxmox CLI.
 pve_firewall_skip_pveum: false

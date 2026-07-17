@@ -96,10 +96,26 @@ Proxmox Cluster Firewall
 
 - `tasks/main.yml` - Main orchestration (firewall configs + pveum monitoring user/token)
 - `tasks/guest.yml` - Per-guest firewall deployment (included when `vmid` is set)
+- `tasks/deploy-pmxcfs-config.yml` - Shared pmxcfs-safe publisher for the `.fw`
+  files (see "Writing into pmxcfs" below); used by cluster.fw, host.fw, and guest configs
 - `templates/cluster.fw.j2` - Cluster firewall with IPSets and Security Groups
 - `templates/host.fw.j2` - Per-host firewall rules
 - `templates/guest.fw.j2` - Per-guest firewall rules
 - `templates/ipsets.j2` - IPSet generation from inventory membership lists
+
+### Writing into pmxcfs
+
+`/etc/pve` is the Proxmox clustered FUSE filesystem (pmxcfs). It auto-enforces
+`root:www-data 0640` on the firewall files and **rejects every explicit
+`chown` / `chmod` / `utime` with `EPERM`**. Ansible's `template`/`copy` land
+content through `atomic_move`, whose fallback runs `shutil.copy2` (which calls
+`utime`) and then re-applies the requested owner/group/mode — so a first create
+or any content change false-fails on "Operation not permitted" even though the
+bytes were written (`unsafe_writes` does not route around it on ansible-core
+2.20+). `tasks/deploy-pmxcfs-config.yml` therefore renders each config to a
+staging file on the node's normal root filesystem (`pve_firewall_staging_dir`),
+then publishes it with a plain `cp` — no metadata syscalls — only when the live
+content differs, letting pmxcfs stamp its enforced ownership and mode.
 
 ## Dependencies
 

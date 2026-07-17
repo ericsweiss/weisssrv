@@ -2,15 +2,15 @@
 # Deploy per-guest firewall configuration
 
 - name: Deploy guest firewall configuration
-  ansible.builtin.template:
-    src: guest.fw.j2
-    dest: "{{ pve_firewall_config_dir }}/{{ vmid }}.fw"
-    owner: root
-    group: www-data
-    mode: "0640"
-    unsafe_writes: true  # Required for /etc/pve clustered filesystem
-  become: true
-  delegate_to: "{{ firewall_deploy_host | default(groups['proxmox'][0]) }}"
+  ansible.builtin.include_tasks:
+    file: deploy-pmxcfs-config.yml
+    apply:
+      become: true
+      delegate_to: "{{ firewall_deploy_host | default(groups['proxmox'][0]) }}"
+  vars:
+    pmxcfs_config_src: guest.fw.j2
+    pmxcfs_config_dest: "{{ pve_firewall_config_dir }}/{{ vmid }}.fw"
+    pmxcfs_config_label: "{{ vmid }}.fw"
   when:
     - guest_security_groups is defined
     - guest_security_groups | length > 0
