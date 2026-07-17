@@ -1,0 +1,257 @@
+---
+# Immich compose stack on a NAS-pinned Debian VM. Order: mount the persistent
+# zvols -> install Docker + nginx -> render config/compose/nginx -> bring the
+# stack up via a systemd unit -> install the pg_dump backup timer.
+
+# =============================================================================
+# Persistent storage (ZFS zvols attached as SCSI devices by proxmox_vm)
+# =============================================================================
+- name: Mount additional persistent disks
+  ansible.builtin.include_role:
+    name: zvol_mount
+  vars:
+    zvol_mount_disks: "{{ vm_additional_disks | default([]) }}"
+  when: vm_additional_disks is defined and vm_additional_disks | length > 0
+
+# =============================================================================
+# Credential guards (fail early + clearly if `op run` didn't inject secrets)
+# =============================================================================
+- name: Validate required database credential
+  ansible.builtin.assert:
+    that:
+      - immich_db_password | default('') | length > 0
+    fail_msg: >-
+      IMMICH_DB_PASSWORD is not set. Deploy via `task immich:deploy` so `op run`
+      injects it from 1Password ("Immich Secrets"/postgres-password).
+    success_msg: "Database credential present"
+  no_log: true
+
+- name: Validate required OIDC credentials
+  ansible.builtin.assert:
+    that:
+      - immich_oauth_client_id | default('') | length > 0
+      - immich_oauth_client_secret | default('') | length > 0
+    fail_msg: >-
+      IMMICH_OAUTH_CLIENT_ID / IMMICH_OAUTH_CLIENT_SECRET not set. Deploy via
+      `task immich:deploy` so `op run` injects them from 1Password ("Immich
+      SSO"). Create the Authentik OAuth2/OpenID provider first — see
+      docs/36-immich.md (SSO setup).
+    success_msg: "OIDC credentials present"
+  no_log: true
+
+# =============================================================================
+# Docker Engine
+# =============================================================================
+# immich_skip_install gates the install/service-management steps so the molecule
+# scenario can render + assert every template without Docker/systemd services in
+# the CI container. It defaults false, so real deploys run the full flow.
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.include_tasks: docker.yml
+  when: not (immich_skip_install | default(false))
+
+# =============================================================================
+# Compose project directories (on the encrypted zvols)
+# =============================================================================
+- name: Create Immich compose project directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ immich_compose_dir }}"
+    - "{{ immich_config_dir }}"
+    - "{{ immich_model_cache_dir }}"
+    - "{{ immich_backup_dir }}"
+
+# The immich-server container runs as root (upstream default) and writes the
+# library tree here; the mount root gets a dedicated library subdir so the tank
+# zvol root stays single-purpose.
+- name: Create the photo library directory on the data zvol
+  ansible.builtin.file:
+    path: "{{ immich_upload_location }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# =============================================================================
+# Host nginx (TLS terminator in front of the compose stack)
+# =============================================================================
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when: not (immich_skip_install | default(false))
+
+- name: Ensure the nginx TLS material directory exists
+  ansible.builtin.file:
+    path: "{{ immich_nginx_ssl_cert | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# acme_certs (running on dns-01) distributes the real *.esweiss.com wildcard
+# cert to this directory after every Let's Encrypt renewal (cert_distribution_
+# targets in host_vars/dns-01.yml) and reloads nginx. On a brand-new VM that
+# push hasn't fired yet, so seed a self-signed *.esweiss.com placeholder — nginx
+# starts and the VM is reachable for the first cert push instead of the role
+# hard-failing. acme_certs overwrites both files unconditionally; the `creates`
+# guard makes this a one-shot that never clobbers a distributed cert.
+- name: Seed a self-signed TLS placeholder until acme_certs distributes the real cert
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey rsa:2048 -nodes
+      -keyout {{ immich_nginx_ssl_key }}
+      -out {{ immich_nginx_ssl_cert }}
+      -days 3650 -subj "/CN=vm.esweiss.com"
+      -addext "subjectAltName=DNS:*.esweiss.com"
+    creates: "{{ immich_nginx_ssl_cert }}"
+
+- name: Secure the nginx private key
+  ansible.builtin.file:
+    path: "{{ immich_nginx_ssl_key }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Deploy the Immich nginx site
+  ansible.builtin.template:
+    src: immich.nginx.conf.j2
+    dest: /etc/nginx/sites-available/immich.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Enable the Immich nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/immich.conf
+    dest: /etc/nginx/sites-enabled/immich.conf
+    state: link
+  notify: Reload nginx
+
+# Immich is the only site on this host; the packaged default vhost would
+# otherwise shadow it as the default_server on 80.
+- name: Remove the default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+# =============================================================================
+# Rendered config: the SSO/telemetry config file, the compose .env, the stack
+# =============================================================================
+# IMMICH_CONFIG_FILE holds the system config (oauth secret inline) — no_log.
+- name: Render the Immich system config file
+  ansible.builtin.template:
+    src: immich-config.json.j2
+    dest: "{{ immich_config_dir }}/immich-config.json"
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: Restart immich
+
+# Compose .env carries DB_PASSWORD — no_log.
+- name: Render the compose environment file
+  ansible.builtin.template:
+    src: immich.env.j2
+    dest: "{{ immich_compose_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: Restart immich
+
+- name: Render the docker-compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ immich_compose_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart immich
+
+# =============================================================================
+# Systemd unit that owns the compose lifecycle
+# =============================================================================
+- name: Deploy the Immich compose systemd unit
+  ansible.builtin.template:
+    src: immich-compose.service.j2
+    dest: /etc/systemd/system/immich-compose.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart immich
+
+- name: Enable the Immich compose unit
+  ansible.builtin.systemd:
+    name: immich-compose.service
+    enabled: true
+    daemon_reload: true
+  when: not (immich_skip_install | default(false))
+
+# Bring the stack up (and apply any pending config/compose changes) before the
+# backup + verify steps run.
+- name: Flush handlers so the stack is (re)started with current config
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the Immich stack is running
+  ansible.builtin.systemd:
+    name: immich-compose.service
+    state: started
+  when: not (immich_skip_install | default(false))
+
+# =============================================================================
+# Nightly pg_dump backup (textfile metric + timer)
+# =============================================================================
+- name: Ensure the node_exporter textfile collector directory exists
+  ansible.builtin.file:
+    path: "{{ immich_backup_metrics_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Immich backup wrapper (pg_dump + freshness metric)
+  ansible.builtin.template:
+    src: immich-backup-run.sh.j2
+    dest: /usr/local/sbin/immich-backup-run.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Immich backup service unit
+  ansible.builtin.template:
+    src: immich-backup.service.j2
+    dest: /etc/systemd/system/immich-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Deploy the Immich backup timer
+  ansible.builtin.template:
+    src: immich-backup.timer.j2
+    dest: /etc/systemd/system/immich-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Flush handlers so the backup timer unit is loaded before enabling
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the Immich backup timer
+  ansible.builtin.systemd:
+    name: immich-backup.timer
+    enabled: true
+    state: started
+  when: not (immich_skip_install | default(false))

@@ -21,6 +21,8 @@ vars:
   # Home Assistant VM configuration
   HA_VM_ID: "154"
   HA_VM_IP: "192.168.0.154"
+  # Immich VM IP (ssh + smoke tests)
+  IMMICH_VM_IP: "192.168.0.157"
 
 tasks:
   default:
@@ -2460,4 +2462,155 @@ tasks:
     desc: Restart the Nextcloud compose stack
     cmds:
       - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo systemctl restart nextcloud-compose.service"
+
+  # =============================================================================
+  # Immich Deployment Tasks
+  # =============================================================================
+
+  immich:deploy:
+    desc: Deploy Immich (provisions the VM and installs the compose stack)
+    dir: "{{.ANSIBLE_DIR}}"
+    # Anchors shared with immich:deploy-check so dry-run and deploy can't diverge.
+    env: &immich_env
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+      # immich.yml runs alloy_host, which asserts the Loki push creds.
+      LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
+      LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+      # Immich stack secrets.
+      IMMICH_DB_PASSWORD: op://Homelab/Immich Secrets/postgres-password
+      IMMICH_OAUTH_CLIENT_ID: op://Homelab/Immich SSO/client-id
+      IMMICH_OAUTH_CLIENT_SECRET: op://Homelab/Immich SSO/client-secret
+    preconditions: &immich_deploy_preconditions
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/immich.yml {{.CLI_ARGS}}
+
+  immich:deploy-check:
+    desc: Check mode - show what the Immich deployment would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *immich_env
+    preconditions: *immich_deploy_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/immich.yml --check --diff {{.CLI_ARGS}}
+
+  immich:status:
+    desc: Show Immich status (compose stack + IngressRoutes)
+    cmds:
+      - echo "=== Immich compose stack ==="
+      - ssh eric@{{.IMMICH_VM_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose ps" || echo "Immich VM not reachable or stack not up"
+      - echo ""
+      - echo "=== Immich IngressRoutes ==="
+      - kubectl get ingressroute -n default 2>/dev/null | grep -i immich || echo "No Immich IngressRoutes found"
+      - echo ""
+      - echo "=== Immich ServiceMonitor ==="
+      - kubectl get servicemonitor -n observability immich 2>/dev/null || echo "No Immich ServiceMonitor found"
+
+  immich:verify:
+    desc: Run Immich smoke tests (web UI both hosts, health, metrics, DB, mounts)
+    # Task's built-in interpreter (mvdan/sh) supports the 'local' keyword used
+    # in the helpers below. IMMICH_VM_IP comes from top-level vars.
+    cmds:
+      - |
+        echo "=== Immich Smoke Tests ==="
+        echo ""
+        PASS=0
+        FAIL=0
+
+        check_http_ok() {
+          local url="$1"
+          local status
+          status=$(curl -sI --max-time 10 "$url" 2>/dev/null | head -1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$')
+          if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ]; then
+            return 0
+          fi
+          return 1
+        }
+
+        # Test 1: Web UI (external)
+        echo -n "Immich Web UI (photos.ericsweiss.com)... "
+        if check_http_ok "https://photos.ericsweiss.com"; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 2: Web UI (internal)
+        echo -n "Immich Web UI (photos.esweiss.com)... "
+        if check_http_ok "https://photos.esweiss.com"; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 3: Server health endpoint (unauthenticated)
+        echo -n "Immich health (/api/server/ping)... "
+        if curl -s --max-time 10 "https://photos.esweiss.com/api/server/ping" 2>/dev/null | grep -q 'pong'; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 4: Native metrics served on the API port (8081). Probed over SSH on
+        # the VM's loopback — sg-immich scopes 8081/8082 to the k3s scrapers only
+        # (least-privilege), so a direct probe from the operator's LAN/tailnet
+        # source is firewall-dropped by design. The in-cluster ServiceMonitor +
+        # ImmichDown alert cover scrape reachability from the k3s nodes.
+        echo -n "Immich API metrics (127.0.0.1:8081 on the VM)... "
+        if ssh eric@{{.IMMICH_VM_IP}} "curl -s --max-time 10 http://127.0.0.1:8081/metrics" 2>/dev/null | grep -q '.'; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 5: Database container healthy
+        echo -n "Postgres container healthy... "
+        if ssh eric@{{.IMMICH_VM_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose exec -T database pg_isready -U postgres -d immich" 2>/dev/null | grep -q 'accepting connections'; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        # Test 6: The three zvol mounts are present
+        echo -n "zvol mounts (app/postgres/data)... "
+        if ssh eric@{{.IMMICH_VM_IP}} "mountpoint -q /mnt/immich-app && mountpoint -q /mnt/immich-postgres && mountpoint -q /mnt/immich-data" 2>/dev/null; then
+          echo "PASS"; PASS=$((PASS + 1))
+        else
+          echo "FAIL"; FAIL=$((FAIL + 1))
+        fi
+
+        echo ""
+        echo "=== Results: $PASS passed, $FAIL failed ==="
+        if [ $FAIL -gt 0 ]; then
+          exit 1
+        fi
+
+  immich:backup:
+    desc: Run the Immich database backup (pg_dumpall + freshness metric)
+    cmds:
+      - echo "Creating Immich database backup..."
+      - ssh eric@{{.IMMICH_VM_IP}} "sudo /usr/local/sbin/immich-backup-run.sh"
+      - echo ""
+      - 'echo "Backup complete. List backups with:"'
+      - echo "  ssh eric@{{.IMMICH_VM_IP}} 'sudo ls -la /mnt/immich-app/backups/'"
+
+  immich:console:
+    desc: SSH to the Immich VM
+    cmds:
+      - ssh eric@{{.IMMICH_VM_IP}}
+
+  immich:logs:
+    desc: Tail the Immich compose logs
+    cmds:
+      - ssh eric@{{.IMMICH_VM_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose logs -f --tail=200"
+
+  immich:restart:
+    desc: Restart the Immich compose stack
+    cmds:
+      - ssh eric@{{.IMMICH_VM_IP}} "sudo systemctl restart immich-compose.service"
 

@@ -36,7 +36,10 @@ recordsize: 1M (tank/media), 128K (tank/share, default)
 - `tank/pve` - Ephemeral Proxmox VM/LXC images (mounted `/mnt/tank/pve`)
 - `tank/backups` - General backup target (encryption root; replicated to `archive`)
 - `tank/nextcloud-data` - Nextcloud data (planned app; encryption root, replicated)
-- `tank/immich-data` - Immich data (planned app; encryption root, replicated)
+- `tank/immich-data` - Immich data (encryption root, replicated). Holds the
+  `tank/immich-data/disk` zvol — the 2 TB **sparse** photo library for the Immich
+  VM (.157), ext4, mounted `/mnt/immich-data` on the guest. Inherits the parent's
+  aes-256-gcm encryption and rides the existing archive SRC_LIST entry (docs/36).
 
 > The canonical dataset inventory is the encryption table (§At Rest) and the
 > backup section below — these per-pool lists are a quick reference.

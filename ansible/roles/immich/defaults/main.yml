@@ -1,0 +1,148 @@
+---
+# Immich photo-management stack (docker compose) on a dedicated NAS-pinned
+# Debian VM. Mirrors the GitLab VM pattern: proxmox_vm provisions the guest,
+# this role installs Docker Engine + the compose stack and fronts it with a
+# host nginx that terminates the distributed *.esweiss.com wildcard cert.
+#
+# IMPORTANT: this role requires environment variables for secrets, injected by
+# `op run` from 1Password. Always deploy via `task immich:deploy` — a bare
+# ansible-playbook run fails the credential assertions below.
+#
+# Required environment variables (set by the Taskfile / CI from 1Password):
+#   - IMMICH_DB_PASSWORD          Postgres password (compose .env DB_PASSWORD)
+#   - IMMICH_OAUTH_CLIENT_ID      Authentik OIDC client id
+#   - IMMICH_OAUTH_CLIENT_SECRET  Authentik OIDC client secret
+#
+# See docs/36-immich.md for the deployment runbook and the SSO bootstrap flow.
+
+# --- Compose project layout (all on the encrypted ssd/tank zvols) -----------
+# App zvol  (ssd/appdata/immich/app, /mnt/immich-app): compose dir, rendered
+#   config + .env, ML model cache, pg_dump backups.
+# DB zvol   (ssd/appdata/immich/postgres, /mnt/immich-postgres): Postgres data.
+# Data zvol (tank/immich-data/disk, /mnt/immich-data): the photo library.
+immich_app_dir: /mnt/immich-app
+immich_compose_dir: "{{ immich_app_dir }}/compose"
+immich_config_dir: "{{ immich_app_dir }}/config"
+immich_model_cache_dir: "{{ immich_app_dir }}/model-cache"
+immich_backup_dir: "{{ immich_app_dir }}/backups"
+immich_db_data_location: /mnt/immich-postgres
+# The tank zvol is mounted at /mnt/immich-data; Immich's UPLOAD_LOCATION maps to
+# the container's /data. Keep the library under a dedicated subdir so the mount
+# root stays a clean single-purpose directory.
+immich_data_dir: /mnt/immich-data
+immich_upload_location: "{{ immich_data_dir }}/library"
+
+# --- URLs --------------------------------------------------------------------
+# External (canonical) URL; internal access works via the AdGuard rewrite.
+immich_external_url: "https://photos.ericsweiss.com"
+immich_internal_url: "https://photos.esweiss.com"
+
+# --- Container image pins (from group_vars/all.yml) --------------------------
+# immich_version / immich_postgres_version(+digest) / immich_valkey_version(+
+# digest) are pinned centrally in all.yml. Immich couples its Postgres image to
+# each release (vectorchord/pgvectors build), so the DB tag MUST come from the
+# pinned release's own docker-compose.yml — never bump independently. See
+# docs/36-immich.md (Upgrades).
+immich_server_image: "ghcr.io/immich-app/immich-server:{{ immich_version }}"
+immich_ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}"
+immich_postgres_image: "ghcr.io/immich-app/postgres:{{ immich_postgres_version }}@{{ immich_postgres_digest }}"
+immich_valkey_image: "docker.io/valkey/valkey:{{ immich_valkey_version }}@{{ immich_valkey_digest }}"
+
+# Deterministic compose network so IMMICH_TRUSTED_PROXIES can name the bridge
+# gateway the host nginx SNATs through (docker userland-proxy rewrites the
+# 127.0.0.1 source to the gateway). 172.28/16 does not collide with the LAN
+# (192.168.0.0/24) or the k3s pod/service CIDRs.
+immich_compose_subnet: "172.28.0.0/16"
+immich_compose_gateway: "172.28.0.1"
+
+# --- Database ----------------------------------------------------------------
+# Matches Immich's own example.env: the Postgres superuser is `postgres`, the
+# database is `immich`. Keeping the superuser name means pg_dumpall inside the
+# container authenticates over the local socket (peer/trust) with no password.
+immich_db_username: postgres
+immich_db_database_name: immich
+immich_db_password: "{{ lookup('ansible.builtin.env', 'IMMICH_DB_PASSWORD') }}"
+
+# --- Native Prometheus telemetry (immich-server) -----------------------------
+# IMMICH_TELEMETRY_INCLUDE=all exposes /metrics on the API (8081) and
+# microservices (8082) ports of the immich-server container. Both are published
+# on the VM and scraped by the in-cluster ServiceMonitor; the guest firewall
+# (sg-immich) restricts them to the k3s node IPs.
+immich_telemetry_include: all
+immich_api_metrics_port: 8081
+immich_microservices_metrics_port: 8082
+
+# --- SSO (Authentik OIDC) ----------------------------------------------------
+# Issuer = the Authentik provider's application slug URL (external host always).
+# Immich appends /.well-known/openid-configuration itself.
+immich_oauth_issuer_url: "https://auth.ericsweiss.com/application/o/photos/"
+immich_oauth_scope: "openid email profile"
+immich_oauth_button_text: "Sign in with Authentik"
+# preferred_username -> a stable per-user storage label (folder naming).
+immich_oauth_storage_label_claim: "preferred_username"
+# autoRegister provisions an Immich account on first OIDC login. Access is gated
+# upstream by the Authentik application policy binding (immich-users group), so a
+# non-member never reaches Immich's callback. Admin is the bootstrap user
+# (linked by email); see the bootstrap flow below.
+immich_oauth_auto_register: true
+immich_oauth_auto_launch: true
+# Per-user default quota in GiB for auto-registered accounts. Empty/none =
+# unlimited (rendered as JSON null). Set an integer to cap new users.
+immich_oauth_default_storage_quota: ""
+immich_oauth_client_id: "{{ lookup('ansible.builtin.env', 'IMMICH_OAUTH_CLIENT_ID') }}"
+immich_oauth_client_secret: "{{ lookup('ansible.builtin.env', 'IMMICH_OAUTH_CLIENT_SECRET') }}"
+
+# One-time SSO bootstrap. The FIRST Immich account (the admin/owner) is created
+# through the password Admin-Registration page, NOT via OIDC (OIDC auto-register
+# only ever mints regular users). Set immich_bootstrap_mode: true for the very
+# first deploy so password login is enabled and OIDC auto-launch is off; open the
+# direct-to-VM host https://immich.esweiss.com (LAN/Tailscale only) BEFORE the
+# public photos.ericsweiss.com record exists, register the admin with the SAME
+# email as your Authentik account (from 1Password "Immich Secrets"/
+# admin-bootstrap-password), then flip this back to false and redeploy for
+# SSO-only. OIDC then links to the admin user by email. Full procedure in
+# docs/36-immich.md.
+immich_bootstrap_mode: false
+
+# Immich ships a built-in nightly DB dump; disabled here so the external
+# pg_dump timer (below) is the single backup path (uniform with GitLab and the
+# textfile-metric/alert plumbing). Verify the config key on major upgrades.
+immich_builtin_db_backup_enabled: false
+
+# --- Host nginx (TLS terminator in front of the compose stack) ---------------
+# Terminates 443 with the acme_certs-distributed *.esweiss.com wildcard and
+# reverse-proxies to the immich-server container bound on loopback. Traefik
+# reaches this over the LAN with serversTransport vm-tls-wildcard.
+immich_server_listen_port: 2283
+immich_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem
+immich_nginx_ssl_key: /etc/nginx/ssl/privkey.pem
+# Sources whose X-Forwarded-For nginx trusts when resolving the real client IP.
+# Trust chain: client -> Traefik pod -> (k3s/flannel SNATs the pod source to the
+# k3s NODE IP, since .157 is a VM outside the pod network) -> this nginx ->
+# immich-server. The k3s node IPs (servers .222/.223/.227 + agents .202-.207)
+# are the ONLY legitimate proxy source, so nginx trusts ONLY those. It must NOT
+# trust the LAN /24: the firewall also permits direct :443 from admin/LAN for
+# debugging (and the bootstrap host immich.esweiss.com), and trusting the /24
+# would let such a directly connected client forge X-Forwarded-For and have it
+# walked back past nginx — spoofing the client IP Immich logs. A non-trusted
+# direct client's inbound XFF is ignored and $remote_addr stays its true
+# address. Keep in sync with the k3s_servers/k3s_agents groups in hosts.yml.
+immich_nginx_real_ip_from:
+  - 192.168.0.202
+  - 192.168.0.203
+  - 192.168.0.204
+  - 192.168.0.205
+  - 192.168.0.206
+  - 192.168.0.207
+  - 192.168.0.222
+  - 192.168.0.223
+  - 192.168.0.227
+
+# --- Backups -----------------------------------------------------------------
+# Nightly pg_dump into the app zvol (rides ssd/appdata -> archive raw-encrypted,
+# and the app zvol is itself covered). node_exporter_host exposes the freshness
+# textfile metric that ImmichBackupFailed/Stale read.
+immich_backup_hour: "02"
+immich_backup_minute: "30"
+immich_backup_keep_days: 7
+immich_backup_metrics_dir: /var/lib/node_exporter

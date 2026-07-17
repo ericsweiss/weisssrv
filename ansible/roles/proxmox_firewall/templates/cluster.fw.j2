@@ -94,6 +94,19 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
 # nextcloud-exporter (:9205), scraped by the in-cluster Prometheus.
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9205 -log nolog
 
+[group sg-immich]
+
+# Immich web — host nginx terminates 443 with the distributed wildcard cert;
+# Traefik connects to it with serversTransport vm-tls-wildcard.
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
+IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
+# Immich native Prometheus telemetry (immich-server): API 8081 + microservices
+# 8082, scraped by the in-cluster ServiceMonitor. k3s SNATs pod traffic to node
+# IPs, so k3s_nodes is the scrape source. (sg-metrics covers node_exporter :9101.)
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8081 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8082 -log nolog
+
 [group sg-haos]
 
 IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog

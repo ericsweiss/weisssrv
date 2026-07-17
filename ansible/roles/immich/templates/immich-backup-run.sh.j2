@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Nightly Immich database backup: pg_dumpall from the compose `database`
+# service, gzipped onto the app zvol (which rides ssd/appdata -> archive
+# raw-encrypted). Emits node_exporter textfile metrics so ImmichBackupFailed /
+# ImmichBackupStale can fire.
+#
+# NOT `set -e`: the dump's exit code must be captured and the metric written
+# regardless. pipefail so a pg_dumpall failure isn't masked by a succeeding
+# gzip. The wrapper preserves the prior success timestamp on failure so
+# staleness measures time-since-last-success.
+set -uo pipefail
+
+COMPOSE_DIR="{{ immich_compose_dir }}"
+BACKUP_DIR="{{ immich_backup_dir }}"
+KEEP_DAYS="{{ immich_backup_keep_days }}"
+DB_USER="{{ immich_db_username }}"
+PROM_DIR="{{ immich_backup_metrics_dir }}"
+{% raw %}
+PROM_FILE="${PROM_DIR}/immich_backup.prom"
+START_TS="$(date +%s)"
+DUMP_FILE="${BACKUP_DIR}/immich-$(date +%Y%m%d-%H%M%S).sql.gz"
+
+write_prom_metrics() {
+  local success="$1" duration="$2" size="$3"
+  local ts tmp prev
+  ts="$(date +%s)"
+  tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP immich_backup_last_run_duration_seconds Duration of last backup run"
+    echo "# TYPE immich_backup_last_run_duration_seconds gauge"
+    echo "immich_backup_last_run_duration_seconds ${duration}"
+    echo "# HELP immich_backup_last_run_success Whether the last run succeeded (1=success, 0=failure)"
+    echo "# TYPE immich_backup_last_run_success gauge"
+    echo "immich_backup_last_run_success ${success}"
+    echo "# HELP immich_backup_last_size_bytes Size of the most recent database dump in bytes (0 = unknown)"
+    echo "# TYPE immich_backup_last_size_bytes gauge"
+    echo "immich_backup_last_size_bytes ${size}"
+    if [ "$success" -eq 1 ]; then
+      echo "# HELP immich_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+      echo "# TYPE immich_backup_last_success_timestamp_seconds gauge"
+      echo "immich_backup_last_success_timestamp_seconds ${ts}"
+    else
+      # Preserve the last-known success timestamp so the staleness alert
+      # measures time-since-last-success, not time-since-last-attempt.
+      prev="$(awk '/^immich_backup_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+      if [ -n "$prev" ]; then
+        echo "# HELP immich_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
+        echo "# TYPE immich_backup_last_success_timestamp_seconds gauge"
+        echo "immich_backup_last_success_timestamp_seconds ${prev}"
+      fi
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+mkdir -p "$BACKUP_DIR" "$PROM_DIR"
+
+# pg_dumpall via the compose `database` service. -T disables the pseudo-TTY
+# (required under systemd/cron). Runs as the container's postgres OS user over
+# the local socket, so no password is needed.
+docker compose --project-directory "$COMPOSE_DIR" exec -T database \
+  pg_dumpall --clean --if-exists "--username=${DB_USER}" \
+  | gzip > "$DUMP_FILE"
+rc=$?
+
+# Validate the dump: rc 0 with a plausibly-sized file. A truncated/empty gzip
+# (e.g. the container was mid-restart) must NOT report a healthy backup.
+size=0
+if [ "$rc" -eq 0 ] && [ -f "$DUMP_FILE" ]; then
+  size="$(stat -c %s "$DUMP_FILE" 2>/dev/null || echo 0)"
+  if [ "$size" -lt 1000 ]; then
+    rc=1
+  fi
+fi
+
+if [ "$rc" -ne 0 ]; then
+  rm -f "$DUMP_FILE"
+fi
+
+# Prune old dumps only after a successful run (never delete the last good copy
+# because a fresh run failed).
+if [ "$rc" -eq 0 ]; then
+  find "$BACKUP_DIR" -name 'immich-*.sql.gz' -type f -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
+fi
+
+end_ts="$(date +%s)"
+duration=$(( end_ts - START_TS ))
+if [ "$rc" -eq 0 ]; then
+  write_prom_metrics 1 "$duration" "$size"
+else
+  write_prom_metrics 0 "$duration" "$size"
+fi
+
+exit "$rc"
+{% endraw %}

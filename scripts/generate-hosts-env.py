@@ -74,6 +74,7 @@ def build(data: dict) -> list[tuple[str, str]]:
     plex_ips = _required_ips(data, "plex_servers")
     gitlab_ips = _required_ips(data, "gitlab_servers")
     nextcloud_ips = _required_ips(data, "nextcloud_servers")
+    immich_ips = _required_ips(data, "immich_servers")
 
     services = _group_hosts(data, "services")
     home_ip = str((services.get("home") or {}).get("ansible_host") or "")
@@ -94,6 +95,7 @@ def build(data: dict) -> list[tuple[str, str]]:
         + plex_ips
         + gitlab_ips
         + nextcloud_ips
+        + immich_ips
         + [home_ip]
         + k3s_servers
         + k3s_agents
@@ -107,6 +109,7 @@ def build(data: dict) -> list[tuple[str, str]]:
         ("PLEX_IP", " ".join(plex_ips)),
         ("GITLAB_IP", " ".join(gitlab_ips)),
         ("NEXTCLOUD_IP", " ".join(nextcloud_ips)),
+        ("IMMICH_IP", " ".join(immich_ips)),
         ("HOME_ASSISTANT_IP", home_ip),
         ("WINDOWS_IP", windows_ip),
         ("K3S_SERVERS", " ".join(k3s_servers)),

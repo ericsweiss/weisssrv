@@ -1,0 +1,34 @@
+---
+# Service + EndpointSlice for the Immich VM (192.168.0.157). Immich runs outside
+# the cluster; Traefik routes to it via this Service. The host nginx on the VM
+# terminates 443 with the distributed *.esweiss.com wildcard cert, so Traefik
+# connects with scheme: https + the vm-tls-wildcard ServersTransport (default ns).
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-backend
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: immich-backend
+  namespace: default
+  labels:
+    kubernetes.io/service-name: immich-backend
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - port: 443
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 192.168.0.157
+    conditions:
+      ready: true

@@ -1368,6 +1368,27 @@ spec:
                   summary: 'Endpoint {{ $labels.instance }} is down'
                   description: 'Blackbox probe for {{ $labels.instance }} has failed for 5 minutes.'
 
+              # Immich native-metrics liveness (immich-server 8081/8082). Both
+              # ports live on the one monolithic server, so a full outage takes
+              # them down together — but min by (job) also fires if EITHER
+              # endpoint stops scraping (a partial failure max by (job) would
+              # mask while the other stays up), still as a single alert. absent()
+              # catches the whole target vanishing (VM off inventory / stack
+              # removed). EndpointDown covers the photos.esweiss.com path too.
+              - alert: ImmichDown
+                expr: min by (job) (up{job="immich-metrics"}) == 0 or absent(up{job="immich-metrics"})
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/36-immich.md'
+                  summary: 'Immich is down'
+                  description: >-
+                    Prometheus has been unable to scrape Immich's native metrics
+                    (immich-server 8081/8082) for 5 minutes — the compose stack on
+                    the Immich VM (192.168.0.157) is down or unreachable, or the
+                    scrape target is missing. Photo access is offline.
+
               # Uniform warning severity is wrong for the load-bearing three:
               # Authentik is the OIDC front door for every SSO app, GitLab is
               # the GitOps source of truth, Home Assistant is the HA-managed
@@ -1695,6 +1716,36 @@ spec:
                     No successful Nextcloud pg_dump has been recorded for more
                     than 48 hours, or the metric is missing (timer not run,
                     node_exporter on the VM unreachable, or VM off inventory).
+
+              # Immich nightly pg_dumpall onto the app zvol (rides ssd/appdata ->
+              # archive raw-encrypted). The immich-backup-run.sh wrapper writes
+              # immich_backup_last_run_success + _last_success_timestamp_seconds
+              # to the node_exporter textfile dir, mirroring the gitlab/archive
+              # backup collectors. 48h staleness window like GitLab (nightly + grace).
+              - alert: ImmichBackupFailed
+                expr: immich_backup_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Immich database backup failed'
+                  description: 'The nightly Immich pg_dumpall did not complete successfully.'
+
+              - alert: ImmichBackupStale
+                expr: (time() - immich_backup_last_success_timestamp_seconds > 86400 * 2) or absent(immich_backup_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Immich database backup has not succeeded in over 2 days'
+                  description: >-
+                    No successful Immich database backup has been recorded for
+                    more than 48 hours, or the metric is missing (backup timer not
+                    run, node_exporter on the Immich VM unreachable, or VM off
+                    inventory). The photo library and DB live on encrypted zvols;
+                    the pg_dumpall is the point-in-time DB recovery path.
 
               # Off-node etcd snapshot copy (k3s servers -> pve-nas-01,
               # docs/17). The copy timer on each server node writes

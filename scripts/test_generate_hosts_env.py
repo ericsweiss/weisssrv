@@ -35,6 +35,7 @@ def _minimal_inventory() -> dict:
                 "plex_servers": {"hosts": {"plex": host("10.0.0.152")}},
                 "gitlab_servers": {"hosts": {"gitlab": host("10.0.0.153")}},
                 "nextcloud_servers": {"hosts": {"nextcloud": host("10.0.0.156")}},
+                "immich_servers": {"hosts": {"immich": host("10.0.0.157")}},
                 "services": {"hosts": {"home": host("10.0.0.154"), "windows": host("10.0.0.155")}},
                 "k3s_servers": {"hosts": {"s1": host("10.0.0.222"), "s2": host("10.0.0.223")}},
                 "k3s_agents": {"hosts": {"a1": host("10.0.0.202")}},
@@ -68,6 +69,12 @@ class TestBuild:
         assert pairs["NEXTCLOUD_IP"] == "10.0.0.156"
         assert "10.0.0.153" in pairs["ALL_SSH_IPS"].split()
         assert "10.0.0.156" in pairs["ALL_SSH_IPS"].split()
+
+    def test_immich_ip_and_ssh_inclusion(self):
+        pairs = dict(gen.build(_minimal_inventory()))
+        assert pairs["IMMICH_IP"] == "10.0.0.157"
+        # the Immich VM is an SSH/CI target (like gitlab), so it must keyscan
+        assert "10.0.0.157" in pairs["ALL_SSH_IPS"].split()
 
     def test_missing_ansible_host_raises(self):
         inv = _minimal_inventory()

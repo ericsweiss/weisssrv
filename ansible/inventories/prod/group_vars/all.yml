@@ -104,6 +104,10 @@ secrets:
   # Nextcloud SSO (Authentik OIDC)
   nextcloud_oidc_client_id: "op://Homelab/Nextcloud SSO/client-id"
   nextcloud_oidc_client_secret: "op://Homelab/Nextcloud SSO/client-secret"
+  # Immich secrets (photo-management VM)
+  immich_postgres_password: "op://Homelab/Immich Secrets/postgres-password"
+  immich_oauth_client_id: "op://Homelab/Immich SSO/client-id"
+  immich_oauth_client_secret: "op://Homelab/Immich SSO/client-secret"
 
 # Timezone
 timezone: America/Los_Angeles
@@ -244,6 +248,27 @@ nextcloud_exporter_version: "0.9.1"
 nextcloud_docker_version: "5:29.6.1-1~debian.13~trixie"
 nextcloud_containerd_version: "2.2.6-1~debian.13~trixie"
 nextcloud_docker_compose_version: "5.3.1-1~debian.13~trixie"
+
+# Immich (photo-management VM, docker-compose stack — consumed by the immich
+# Ansible role; the VM-only pins ride the versions-configmap as a harmless
+# superset). App: https://github.com/immich-app/immich/releases
+# The Postgres + Valkey images (tag AND digest) are whatever Immich's pinned
+# release pins in its own docker/docker-compose.yml — the DB is release-coupled
+# (vectorchord/pgvectors build), so NEVER bump it independently of immich_version.
+immich_version: "v3.0.3"
+immich_postgres_version: "14-vectorchord0.4.3-pgvectors0.2.0"
+immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
+immich_valkey_version: "9"
+immich_valkey_digest: "sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9"
+
+# Docker Engine — pinned apt versions for the Debian 13/trixie VM compose stacks
+# (immich; shared with the sibling Nextcloud VM). Held via apt-mark hold so the
+# maintenance apt-upgrade never bumps them under a running stack. Bump workflow:
+# https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages
+docker_ce_version: "5:29.6.1-1~debian.13~trixie"
+containerd_version: "2.2.6-1~debian.13~trixie"
+docker_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
+docker_compose_plugin_version: "5.3.1-1~debian.13~trixie"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.

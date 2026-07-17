@@ -1,0 +1,43 @@
+{# {{ ansible_managed }} — rendered by the immich role (no_log; contains the OIDC client secret). #}
+{#
+  IMMICH_CONFIG_FILE. When present, Immich sources system config from here and
+  the admin UI settings become read-only. Keys not listed fall back to Immich's
+  built-in defaults (the file is a partial override).
+
+  immich_bootstrap_mode drives the one-time admin-registration escape hatch:
+    true  -> passwordLogin on, oauth off/no-autolaunch (reach the admin signup)
+    false -> passwordLogin off, oauth on + autoLaunch (SSO-only; the default)
+#}
+{% set bootstrap = immich_bootstrap_mode | bool %}
+{% set _quota = immich_oauth_default_storage_quota | string %}
+{% set quota = (_quota | int) if (_quota | length > 0) else none %}
+{{ {
+  "passwordLogin": {
+    "enabled": bootstrap
+  },
+  "oauth": {
+    "enabled": (not bootstrap),
+    "issuerUrl": immich_oauth_issuer_url,
+    "clientId": immich_oauth_client_id,
+    "clientSecret": immich_oauth_client_secret,
+    "scope": immich_oauth_scope,
+    "signingAlgorithm": "RS256",
+    "profileSigningAlgorithm": "none",
+    "storageLabelClaim": immich_oauth_storage_label_claim,
+    "storageQuotaClaim": "immich_quota",
+    "defaultStorageQuota": quota,
+    "buttonText": immich_oauth_button_text,
+    "autoRegister": (immich_oauth_auto_register | bool),
+    "autoLaunch": ((immich_oauth_auto_launch | bool) and not bootstrap),
+    "mobileOverrideEnabled": false,
+    "mobileRedirectUri": ""
+  },
+  "backup": {
+    "database": {
+      "enabled": (immich_builtin_db_backup_enabled | bool)
+    }
+  },
+  "server": {
+    "externalDomain": immich_external_url
+  }
+} | to_nice_json }}

@@ -197,6 +197,7 @@ weisssrv/
 | home_assistant | Home Assistant OS configuration management |
 | gitlab | GitLab EE installation and configuration |
 | nextcloud | Nextcloud (Docker Compose: nextcloud-apache + postgres + redis + cron + exporter) on a NAS-pinned VM, host-nginx TLS, Authentik OIDC SSO (docs/35) |
+| immich | Immich photo management (docker-compose stack + host nginx) on a NAS-pinned VM |
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
 | apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex, nextcloud) |
@@ -407,6 +408,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
 | [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
+| [36-immich](docs/36-immich.md) | Immich photo management (NAS-pinned VM, docker-compose, encrypted zvols, Authentik OIDC, backups) |
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 
 **Agent guidance**: coding agents should start from the

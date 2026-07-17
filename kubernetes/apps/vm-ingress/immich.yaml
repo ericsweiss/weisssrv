@@ -1,0 +1,57 @@
+---
+# IngressRoutes for Immich (photos.*). Routes Traefik to the Immich VM
+# (192.168.0.157) via the immich-backend Service. Authentication is Immich's own
+# Authentik OIDC (SSO-only) at the application layer — no forward-auth middleware.
+
+# External - photos.ericsweiss.com
+# NO external-dns annotation: the record is a DNS-only CNAME managed in Terraform
+# (terraform/cloudflare/dns.tf cloudflare_record.photos) so it bypasses the
+# Cloudflare proxy's 100 MB body cap for large mobile uploads. Traffic still
+# lands on MetalLB .100 via the router :443 forward.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: immich
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`photos.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: immich-backend
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    # The default-ns *.ericsweiss.com wildcard covers the single-label host.
+    secretName: ericsweiss-com-tls
+---
+# Internal - photos.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: immich-internal
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`photos.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: immich-backend
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    secretName: esweiss-com-tls

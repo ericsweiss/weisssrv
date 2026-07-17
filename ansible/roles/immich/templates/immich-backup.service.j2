@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Immich nightly database backup (pg_dumpall)
+Requires=docker.service
+After=docker.service immich-compose.service
+# The dump is written under the app zvol; require it mounted.
+RequiresMountsFor={{ immich_backup_dir }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/immich-backup-run.sh

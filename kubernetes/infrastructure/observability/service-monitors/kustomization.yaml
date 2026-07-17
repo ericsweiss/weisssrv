@@ -5,6 +5,7 @@ resources:
   - flux-system.yaml
   - gitlab.yaml
   - home-assistant.yaml
+  - immich.yaml
   - meilisearch.yaml
   - nextcloud.yaml
   - wg-easy.yaml

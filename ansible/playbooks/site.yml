@@ -1,6 +1,6 @@
 ---
 # Base infrastructure playbook (Proxmox hosts, DNS, mail, NAS, firewall,
-# host-level observability). k3s, Plex, GitLab, and Home Assistant have
+# host-level observability). k3s, Plex, GitLab, Home Assistant, and Immich have
 # dedicated playbooks with separate lifecycles.
 
 # smtp-relay has no dedicated playbook (dns/plex/gitlab provision via their
@@ -121,8 +121,8 @@
     - role: proxmox_firewall
       tags: [proxmox_firewall]
 
-- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, and k3s-server hosts)
-  hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:k3s_servers
+- name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, Immich, and k3s-server hosts)
+  hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers
   become: true
   # App VMs (nextcloud, immich) are provisioned by their own deploy jobs, which
   # need deploy-ansible-base to succeed first — so on a first deploy the VM does
@@ -136,7 +136,7 @@
       tags: [node_exporter_host]
 
 - name: Deploy host-side log collection (Alloy → Loki)
-  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:k3s_servers:k3s_agents
+  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers:k3s_agents
   become: true
   # Same first-deploy ordering as the metrics play above: skip a not-yet-provisioned
   # app VM instead of failing the base deploy (the app's own playbook ships alloy_host).

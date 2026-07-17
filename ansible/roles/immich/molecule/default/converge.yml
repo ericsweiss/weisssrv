@@ -1,0 +1,22 @@
+---
+# Converge: render the Immich stack in skip-install mode (no Docker/nginx/systemd
+# services), then side-render the SSO bootstrap branch for verify to assert.
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: immich
+      vars:
+        immich_skip_install: true
+
+  post_tasks:
+    # Branch coverage for the one-time SSO bootstrap state (prod default is
+    # bootstrap_mode: false — SSO-only). Rendered to a side path so verify can
+    # assert both states from one converge without flip-flopping the live config.
+    - name: Render the SSO bootstrap-mode config (branch coverage)  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/immich-config.json.j2"
+        dest: /tmp/immich-config-bootstrap.json
+        mode: "0640"
+      vars:
+        immich_bootstrap_mode: true

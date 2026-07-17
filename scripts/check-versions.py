@@ -143,6 +143,20 @@ SERVICE_REGISTRY: list[dict] = [
         "strip_prefix": True,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
+    {
+        # Immich app (immich-server + immich-machine-learning images share this
+        # tag). The coupled DB/Valkey pins (immich_postgres_version,
+        # immich_valkey_version) are NOT tracked here — they must be taken from
+        # the SAME release's docker-compose.yml (vectorchord/pgvectors coupling),
+        # so they are allow-listed in the check-versions test, not auto-bumped.
+        "name": "Immich",
+        "var_name": "immich_version",
+        "category": "github",
+        "github_repo": "immich-app/immich",
+        "version_prefix": "v",
+        "strip_prefix": False,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
     # --- Container images ---
     {
         "name": "Gluetun",
@@ -2202,6 +2216,10 @@ def get_deploy_command(result: ServiceVersion) -> str:
     # applied by re-running the role.
     if var_name.startswith("nextcloud_"):
         return "task nextcloud:deploy"
+
+    # Immich VM (docker-compose, Ansible-managed — not Flux)
+    if var_name == "immich_version":
+        return "task immich:deploy"
 
     # Fallback when no specific deploy task mapping exists
     return "task infra:deploy"

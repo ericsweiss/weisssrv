@@ -57,6 +57,8 @@ when an item is added or its fields change.
 - **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
 - **Nextcloud Secrets** - admin-password (break-glass local admin, reachable at `/login?direct=1`), postgres-password (nextcloud DB role), serverinfo-token (random ≥32 chars; the token the nextcloud-exporter authenticates to Nextcloud's serverinfo API with — the role sets it via `occ config:app:set serverinfo token`)
 - **Nextcloud SSO** - client-id, client-secret (Authentik OIDC via the `user_oidc` app, REQUIRED — SSO-only, local login form hidden)
+- **Immich Secrets** - postgres-password (compose DB_PASSWORD); admin-bootstrap-password (operator-only — the password you set on the one-time Immich admin-registration page during SSO bootstrap; NOT injected by Ansible)
+- **Immich SSO** - client-id, client-secret (Authentik OIDC, REQUIRED - password login disabled after bootstrap)
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
 - **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)

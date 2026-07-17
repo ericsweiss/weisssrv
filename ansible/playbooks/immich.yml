@@ -1,0 +1,52 @@
+---
+# Immich deployment playbook.
+#
+# Provisions the Immich VM (proxmox_vm) and deploys the docker-compose stack.
+#
+# Prerequisites:
+#   - Authentik OAuth2/OpenID provider + application configured (SSO)
+#   - 1Password items created ("Immich Secrets", "Immich SSO")
+#   - The wildcard cert distributed to the VM (task dns:deploy) — see
+#     docs/36-immich.md for the first-deploy order and the SSO bootstrap flow.
+#
+# Usage:
+#   task immich:deploy              # Full deployment (VM + stack)
+#   task immich:deploy-check        # Dry-run
+
+- name: Provision Immich VM
+  hosts: immich
+  gather_facts: false
+  roles:
+    - proxmox_vm
+
+- name: Deploy Immich
+  hosts: immich
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for Immich VM to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+      when: not ansible_check_mode
+
+    - name: Guard against unreachable host in check mode
+      ansible.builtin.include_tasks: tasks/_check-mode-reachable.yml
+      vars:
+        reachable_check_timeout: 10
+
+    - name: Gather facts after connection is established
+      ansible.builtin.setup:
+  roles:
+    - base
+    - postfix_null_client
+    # node_exporter_host exposes the immich_backup.prom textfile the backup
+    # wrapper writes (ImmichBackupFailed/Stale read it). site.yml also targets
+    # immich_servers with node_exporter_host, but a standalone task immich:deploy
+    # must ship it too. Ordered before immich so the exporter is in place first.
+    - node_exporter_host
+    # alloy_host ships the VM's journald (incl. docker journald-driver container
+    # logs) to Loki. site.yml targets immich_servers too; include here so a
+    # standalone deploy keeps log shipping in sync.
+    - alloy_host
+    - immich
+    - proxmox_firewall

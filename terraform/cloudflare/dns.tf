@@ -233,6 +233,24 @@ resource "cloudflare_record" "vpn" {
   }
 }
 
+# Immich (photos.${var.external_domain}) — CNAME to direct.${var.external_domain}
+# so it BYPASSES the Cloudflare proxy (grey cloud). The proxy imposes a 100 MB
+# request-body cap, which mobile video uploads routinely exceed; DNS-only sends
+# uploads straight to the origin :443 (router forward -> MetalLB .100 -> Traefik
+# -> the photos.${var.external_domain} IngressRoute -> the Immich VM). This is
+# why the IngressRoute carries NO external-dns annotation — the record is managed
+# here, not derived from the route. Protected by sg-immich on the VM and
+# sg-k3s-ingress-pub on the Traefik path, plus Authentik SSO.
+resource "cloudflare_record" "photos" {
+  zone_id = data.cloudflare_zone.external.id
+  name    = "photos"
+  type    = "CNAME"
+  content = "direct.${var.external_domain}"
+  proxied = false # DNS-only: mobile uploads exceed the 100 MB proxied body cap
+  ttl     = 1
+  comment = "Immich - DNS only (proxy bypass for large uploads), TLS via Traefik"
+}
+
 # Nested-subdomain records pointing at direct.${var.external_domain} (DNS-only,
 # TLS via Traefik). Nested subdomains and nested wildcards aren't covered by
 # Cloudflare Universal SSL (first-level wildcards only — nested would need

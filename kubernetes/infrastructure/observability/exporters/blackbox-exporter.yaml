@@ -112,6 +112,9 @@ spec:
         - name: nextcloud
           url: https://cloud.esweiss.com
           module: http_sso
+        - name: immich
+          url: https://photos.esweiss.com
+          module: http_2xx
         - name: pulsarr
           url: https://pulsarr.esweiss.com
           module: http_sso

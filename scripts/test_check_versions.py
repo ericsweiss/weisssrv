@@ -609,7 +609,23 @@ class TestGetDeployCommand(unittest.TestCase):
         legitimately have no upstream to check are allow-listed explicitly."""
         # Pins that are intentionally not tracked by SERVICE_REGISTRY: the base
         # OS release is set by the distro, not a per-service upstream.
-        allowed_untracked = {"debian_version"}
+        allowed_untracked = {
+            "debian_version",
+            # Immich's Postgres + Valkey images are release-coupled — the tags +
+            # digests come from the pinned immich_version's own docker-compose.yml
+            # (vectorchord/pgvectors build). Auto-bumping them independently would
+            # break Immich. Bumped alongside immich_version per docs/36.
+            "immich_postgres_version",
+            "immich_valkey_version",
+            # Docker Engine apt pins for the Debian/trixie VM compose stacks. The
+            # apt version format (5:29.6.1-1~debian.13~trixie) has no simple
+            # GitHub/DockerHub tracker; bumped manually from the download.docker.com
+            # Packages index (see the all.yml comment + docs/36 Upgrades).
+            "docker_ce_version",
+            "containerd_version",
+            "docker_buildx_plugin_version",
+            "docker_compose_plugin_version",
+        }
         current = check_versions.read_current_versions()
         registry_vars = {s["var_name"] for s in check_versions.SERVICE_REGISTRY}
         missing = [

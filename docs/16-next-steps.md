@@ -747,19 +747,26 @@ Remaining operator steps (one-time, in docs/38): create the `WireGuard VPN`
 from DHCP), enable metrics in the UI, and create the Authentik proxy provider +
 `vpn-admins` group.
 
-### Immich (Photo Management)
+### Immich (Photo Management) — IMPLEMENTED
 
-**Open Questions** (decide before deployment):
-- Exposure: Internal-only or also external?
-- Storage: `tank/photos` dataset or under `ssd/appdata`?
-- Performance: NFS-backed DB acceptable? (likely needs local SSD for PostgreSQL)
-- ML acceleration: GPU passthrough for face recognition?
+Deployed as a docker-compose stack on a dedicated NAS-pinned Debian VM
+(`immich`, 192.168.0.157, vmid 157 on pve-nas-01), fronted by a host nginx.
+Full architecture, storage, backup, SSO, and runbooks: **[docs/36-immich.md](36-immich.md)**.
 
-- [ ] Finalize deployment decisions
-- [ ] Create ZFS dataset for photos
-- [ ] Deploy Immich Helm chart
-- [ ] Configure Authentik SSO
-- [ ] Mobile app testing
+Decisions taken:
+- **Exposure**: internal (`photos.esweiss.com`) + external
+  (`photos.ericsweiss.com`). The external record is a DNS-only Cloudflare CNAME
+  (proxy bypass) so large mobile uploads aren't capped by the 100 MB proxied
+  body limit.
+- **Storage**: all data on encrypted passthrough zvols (no NFS). App + Postgres
+  on `ssd/appdata/immich/*`; the photo library on a 2 TB sparse zvol under the
+  pre-existing encrypted `tank/immich-data` dataset (rides the archive tier).
+- **Database**: Immich's release-pinned Postgres image (vectorchord/pgvectors)
+  on a dedicated fast encrypted zvol — not NFS.
+- **ML acceleration**: CPU only (no GPU — the NAS iGPU is allocated to Plex);
+  6 vCPU / 12 GB sizes the CPU-hungry ML jobs.
+- **SSO**: Authentik OIDC, SSO-only (password login off after the one-time admin
+  bootstrap), access gated by the `immich-users` Authentik group.
 
 ### Nextcloud (File Sync) (COMPLETE)
 

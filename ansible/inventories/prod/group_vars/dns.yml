@@ -84,6 +84,10 @@ adguard_rewrites:
     answer: "192.168.0.154"
   - domain: "windows.{{ internal_domain }}"
     answer: "192.168.0.155"
+  # Immich VM direct address (admin/SSH convenience; the web UI is fronted by
+  # Traefik at photos.{{ internal_domain }} -> .101 below).
+  - domain: "immich.{{ internal_domain }}"
+    answer: "192.168.0.157"
   - domain: "pve-nas-01.{{ internal_domain }}"
     answer: "192.168.0.102"
   - domain: "pve-laptop-01.{{ internal_domain }}"
@@ -182,6 +186,9 @@ adguard_rewrites:
   # Nextcloud web frontend via Traefik Internal VIP
   - domain: "cloud.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # Immich photo management via Traefik Internal VIP
+  - domain: "photos.{{ internal_domain }}"
+    answer: "192.168.0.101"
 
 # Custom filtering rules
 adguard_user_rules:
@@ -196,6 +203,7 @@ adguard_user_rules:
   - '||154.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;home-direct.{{ internal_domain }}.'
   - '||155.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;windows.{{ internal_domain }}.'
   - '||156.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;nextcloud.{{ internal_domain }}.'
+  - '||157.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;immich.{{ internal_domain }}.'
   - '||102.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-nas-01.{{ internal_domain }}.'
   - '||103.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-laptop-01.{{ internal_domain }}.'
   - '||104.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;pve-opt-01.{{ internal_domain }}.'

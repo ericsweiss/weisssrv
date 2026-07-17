@@ -1,0 +1,75 @@
+---
+# Docker Engine (CE) install from the official download.docker.com apt repo.
+# Kept inside the immich role (rather than a shared role) so this MR stays fully
+# independent of the sibling Nextcloud MR, which ships its own compose stack.
+# The signing key + repo are added via the shared apt_signed_repo helper (same
+# pipeline gitlab/plex/alloy_host use); the engine + compose plugin are pinned
+# in group_vars/all.yml and held so the maintenance apt-upgrade never bumps them
+# out from under a running stack.
+
+- name: Add the Docker apt repository (fingerprint-verified)
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://download.docker.com/linux/debian/gpg
+    # Docker's apt signing key primary fingerprint (docs.docker.com/engine/install/debian).
+    apt_signed_repo_fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+    apt_signed_repo_keyring_path: /etc/apt/keyrings/docker.gpg
+    apt_signed_repo_repo_line: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable
+    apt_signed_repo_filename: docker
+    apt_signed_repo_keyring_mode: "0644"
+    # Docker's gpg key is ASCII-armored and gnupg is guaranteed by the base
+    # role (common_packages), so no extra gnupg install is needed.
+
+- name: Install Docker Engine + compose plugin (pinned)
+  ansible.builtin.apt:
+    name:
+      - "docker-ce={{ docker_ce_version }}"
+      - "docker-ce-cli={{ docker_ce_version }}"
+      - "containerd.io={{ containerd_version }}"
+      - "docker-buildx-plugin={{ docker_buildx_plugin_version }}"
+      - "docker-compose-plugin={{ docker_compose_plugin_version }}"
+    state: present
+    update_cache: true
+    # The packages are held below so `apt upgrade` never bumps the engine out
+    # from under a running stack — but that same hold would make THIS task fail
+    # ("held packages were changed") the day a pin in group_vars is bumped.
+    # allow_change_held_packages lets the new pin reconcile through the hold in
+    # place (the idiom gitlab/plex/alloy_host use); the Hold task re-applies the
+    # hold at the new version afterward. A deliberate rollback to a lower exact
+    # pin needs a manual `apt install --allow-downgrades` — see docs/36-immich.md.
+    allow_change_held_packages: true
+
+- name: Hold Docker packages at the pinned versions
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - docker-ce
+    - docker-ce-cli
+    - containerd.io
+    - docker-buildx-plugin
+    - docker-compose-plugin
+
+- name: Deploy Docker daemon configuration (journald log driver)
+  ansible.builtin.copy:
+    # journald so container stdout/stderr lands in the systemd journal, which
+    # alloy_host already ships to Loki (no docker-specific log pipeline needed).
+    content: |
+      {
+        "log-driver": "journald",
+        "live-restore": true
+      }
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started

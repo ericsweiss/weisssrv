@@ -41,11 +41,15 @@ zfs_encryption_pools:
 #   153 = gitlab (scsi0 + repos zvol on ssd)
 #   156 = nextcloud (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
 #         tank/nextcloud-data)
+#   157 = immich (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
+#         tank/immich-data)
 #   152 = plex LXC (mp0 /config on ssd)
 # Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
-# gitlab app (153, order 50) and nextcloud (156, order 55);
-# pve-start-encrypted-guests.sh starts VMs in this list order, then CTs.
-zfs_encryption_guest_vmids: [202, 153, 156]
+# gitlab app (153, order 50), nextcloud (156, order 55), and immich
+# (157, order 56); pve-start-encrypted-guests.sh starts VMs in this list order,
+# then CTs. 157 (immich) has disks on both the ssd pool and tank/immich-data —
+# both unlocked by zfs-mount-encrypted before this cohort starts.
+zfs_encryption_guest_vmids: [202, 153, 156, 157]
 zfs_encryption_guest_ctids: [152]
 
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their

@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: immich
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Immich photo-management stack (docker compose) on a NAS-pinned Debian VM
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Dependencies are handled in the playbook, not in meta, to allow isolated unit
+# testing of this role. The immich playbook applies base + postfix_null_client +
+# node_exporter_host + alloy_host + proxmox_firewall around it. The apt_signed_repo
+# helper is included directly from tasks/docker.yml.
+dependencies: []

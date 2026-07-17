@@ -12,6 +12,7 @@ resources:
   - services-default.yaml
   - services-gitlab.yaml
   - services-nextcloud.yaml
+  - services-immich.yaml
   - gitlab-certificate.yaml
   - adguard-home.yaml
   - plex.yaml
@@ -19,3 +20,4 @@ resources:
   - home-assistant.yaml
   - gitlab.yaml
   - nextcloud.yaml
+  - immich.yaml
