@@ -105,22 +105,20 @@ cert_distribution_targets:
     cert_mode: "0644"
     key_mode: "0600"
     restart_command: "sudo systemctl reload nginx"
-  # Immich VM (.157): host nginx serves the wildcard cert on 443 and reloads on
-  # each renewal. COMMENTED OUT until the VM exists — the host_key can only be
-  # captured AFTER first provision. Post-provision (one-time): run
-  #   task certs:show-host-keys   (or: ssh-keyscan -t ed25519 192.168.0.157)
-  # paste the real ed25519 key below, uncomment this block, then `task dns:deploy`
-  # to push the wildcard cert to the VM. Do NOT invent a key — a wrong one fails
-  # the SSH host-key pin. See docs/36-immich.md (Deploy).
-  # - host: immich
-  #   ip: 192.168.0.157
-  #   host_key: "ssh-ed25519 REPLACE_ME_WITH_REAL_IMMICH_HOST_KEY"
-  #   cert_dir: /etc/nginx/ssl
-  #   owner: root
-  #   group: root
-  #   cert_mode: "0644"
-  #   key_mode: "0600"
-  #   restart_command: "sudo systemctl reload nginx"
+  # Immich VM (.157): host nginx serves the wildcard cert on 443 (/etc/nginx/ssl)
+  # and reloads on each renewal. Pushing the real *.esweiss.com cert here replaces
+  # the self-signed bootstrap cert the immich role seeds — which is what lets
+  # Traefik's vm-tls-wildcard backend validation succeed for photos.esweiss.com.
+  # host_key captured post-provision via `task certs:show-host-keys`. See docs/36-immich.md.
+  - host: immich
+    ip: 192.168.0.157
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKpGixylnIRe8EO9BLIeDB2xg1fF7xKMy3vTjpDmpU2m"
+    cert_dir: /etc/nginx/ssl
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "sudo systemctl reload nginx"
   # NFS+TLS endpoint: ONLY the NFS server (pve-nas-01) gets the wildcard cert +
   # key here. The six k3s agents are pure NFSv4 xprtsec=tls CLIENTS — they
   # validate pve-nas-01's server cert against the system CA truststore
