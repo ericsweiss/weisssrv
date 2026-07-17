@@ -269,6 +269,20 @@ docker_ce_version: "5:29.6.1-1~debian.13~trixie"
 containerd_version: "2.2.6-1~debian.13~trixie"
 docker_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
 docker_compose_plugin_version: "5.3.1-1~debian.13~trixie"
+# VirtIO driver ISO for the Windows 11 VM (proxmox_vm windows guest path).
+# The proxmox_vm role downloads + checksum-verifies this ISO to the
+# tank-proxmox store so Windows setup can load the virtio-scsi (viostor) and
+# virtio-net (netkvm) drivers. Pinned to a versioned Fedora ARCHIVE URL (the
+# stable-virtio/ symlink is a moving target that breaks the pin on the next
+# upstream release). Fedora publishes no ISO checksum in its CHECKSUM file
+# (RPMs only), so this sha256 is computed from the pinned archive artifact.
+# On bump: change virtio_win_version, then recompute the sha256 of the new ISO
+#   curl -sL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-<ver>-1/virtio-win-<ver>.iso | sha256sum
+# and update both lines. The Windows install ISO itself is downloaded manually
+# from Microsoft (it can't be redistributed) — see docs/39-windows-vm.md.
+# https://github.com/virtio-win/virtio-win-pkg-scripts
+virtio_win_version: "0.1.285"
+virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.

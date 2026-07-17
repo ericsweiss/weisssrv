@@ -64,6 +64,7 @@ data:
   sonarr_version: 4.0.19.2979
   tailscale_version: 1.98.9
   unbound_exporter_version: 0.6.0
+  virtio_win_version: 0.1.285
   wg_easy_version: 15.3.0
   zfs_exporter_version: 2.3.12
 kind: ConfigMap

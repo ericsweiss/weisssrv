@@ -1,0 +1,36 @@
+---
+# Windows 11 VM provisioning playbook.
+#
+# Builds the IaC-managed Win11 VM SHELL on pve-nas-01 (q35 + OVMF/UEFI +
+# pre-enrolled Secure Boot keys + TPM 2.0 + VirtIO disk/NIC + install & VirtIO
+# driver CDROMs) and deploys its guest firewall (sg-windows: RDP 3389 from
+# admin_lan + admin_ts). The VM is created STOPPED — Windows itself is installed
+# and activated INTERACTIVELY by the operator via the Proxmox console.
+#
+# gather_facts: false — the windows guest is ansible_connection: local (there is
+# no SSH into it); gathering facts would collect the operator's workstation
+# facts. Every provisioning task in proxmox_vm/proxmox_firewall delegates to the
+# Proxmox host, where it escalates via the inherited ansible_become: true.
+#
+# Prerequisites (see docs/39-windows-vm.md):
+#   - Windows 11 ISO downloaded from Microsoft to the tank-proxmox ISO store,
+#     named to match vm_install_iso in hosts.yml.
+#   - VirtIO driver ISO is fetched + checksum-verified automatically by the role.
+#
+# Usage:
+#   task windows:provision          # Create/reconcile the VM shell + firewall
+#   task windows:provision-check    # Dry-run
+#   task windows:status             # qm status + config
+#   task windows:verify             # RDP 3389 reachability (post-install)
+
+- name: Provision Windows VM
+  hosts: windows_vms
+  gather_facts: false
+  roles:
+    - proxmox_vm
+
+- name: Deploy Windows guest firewall rules
+  hosts: windows_vms
+  gather_facts: false
+  roles:
+    - proxmox_firewall

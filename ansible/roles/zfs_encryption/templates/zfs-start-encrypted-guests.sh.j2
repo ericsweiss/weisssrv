@@ -19,8 +19,18 @@
 #
 # Idempotent: a guest already running is skipped.
 #
+# Not-yet-provisioned guests are skipped, not started. A VMID/CTID can be
+# listed in the cohort before the guest actually exists (a new app is wired
+# into inventory ahead of `task <app>:provision`, or a DR rebuild hasn't
+# recreated it yet). `qm start`/`pct start` on a missing guest fails, which
+# would set start_failed=1 and wedge this oneshot into a permanent
+# Restart=on-failure loop (StartLimitIntervalSec=0) on every boot — silently,
+# since nothing alerts on a failed systemd unit. The config-exists guard below
+# turns that into a logged skip so the unit still converges to success.
+#
 # Exit codes:
-#   0 — storage ready; every configured guest is running (or was already)
+#   0 — storage ready; every configured guest is running (or was already, or is
+#       not provisioned yet)
 #   1 — storage not ready yet, OR a guest start failed (RETRY). Exiting non-zero
 #       lets Restart=on-failure re-attempt, so a transient qm/pct race self-heals
 #       rather than silently leaving a guest down. The grep-running guard makes
@@ -55,6 +65,10 @@ udevadm settle --timeout=30 || true
 start_failed=0
 
 for vm in "${VMIDS[@]}"; do
+    if ! qm config "$vm" >/dev/null 2>&1; then
+        log "VM $vm not provisioned yet; skipping (will start once it exists)"
+        continue
+    fi
     if qm status "$vm" 2>/dev/null | grep -q running; then
         log "VM $vm already running"
         continue
@@ -68,6 +82,10 @@ for vm in "${VMIDS[@]}"; do
 done
 
 for ct in "${CTIDS[@]}"; do
+    if ! pct config "$ct" >/dev/null 2>&1; then
+        log "CT $ct not provisioned yet; skipping (will start once it exists)"
+        continue
+    fi
     if pct status "$ct" 2>/dev/null | grep -q running; then
         log "CT $ct already running"
         continue

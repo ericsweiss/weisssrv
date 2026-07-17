@@ -23,6 +23,9 @@ vars:
   HA_VM_IP: "192.168.0.154"
   # Immich VM IP (ssh + smoke tests)
   IMMICH_VM_IP: "192.168.0.157"
+  # Windows 11 VM (RDP + qm status)
+  WINDOWS_VM_ID: "155"
+  WINDOWS_VM_IP: "192.168.0.155"
 
 tasks:
   default:
@@ -2613,4 +2616,59 @@ tasks:
     desc: Restart the Immich compose stack
     cmds:
       - ssh eric@{{.IMMICH_VM_IP}} "sudo systemctl restart immich-compose.service"
+
+
+  # === Windows 11 VM Tasks ===
+  # Provisions the VM SHELL only (OVMF/TPM/q35 + VirtIO + install/driver ISOs).
+  # Windows itself is installed + activated interactively via the Proxmox
+  # console — see docs/39-windows-vm.md. The VM is created STOPPED.
+  windows:provision:
+    desc: Provision the Windows 11 VM shell + guest firewall (VM created stopped)
+    dir: "{{.ANSIBLE_DIR}}"
+    # SSH_PUBLIC_KEY resolves the lazy ssh_authorized_keys lookup in all.yml even
+    # though the windows path never consumes it (no cloud-init). op run keeps the
+    # wrapper consistent with the other provisioning tasks.
+    env: &windows_env
+      SSH_PUBLIC_KEY: op://Homelab/SSH Key/public key
+    preconditions: &windows_preconditions
+      - sh: command -v ansible-playbook
+        msg: "ansible-playbook is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/windows.yml {{.CLI_ARGS}}
+
+  windows:provision-check:
+    desc: Check mode - show what Windows VM provisioning would change
+    dir: "{{.ANSIBLE_DIR}}"
+    env: *windows_env
+    preconditions: *windows_preconditions
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/windows.yml --check --diff {{.CLI_ARGS}}
+
+  windows:status:
+    desc: Show the Windows VM status (qm status + config) on pve-nas-01
+    cmds:
+      - echo "=== Windows VM ({{.WINDOWS_VM_ID}}) status ==="
+      - ssh eric@192.168.0.102 "sudo qm status {{.WINDOWS_VM_ID}}" || echo "VM not found — run 'task windows:provision'"
+      - echo ""
+      - echo "=== Windows VM config ==="
+      - ssh eric@192.168.0.102 "sudo qm config {{.WINDOWS_VM_ID}}" || true
+
+  windows:verify:
+    desc: Verify Windows RDP reachability (fails until Windows is installed + running)
+    cmds:
+      - |
+        echo "=== Windows VM Smoke Test ==="
+        echo -n "RDP 3389 ({{.WINDOWS_VM_IP}})... "
+        if nc -z -w 5 {{.WINDOWS_VM_IP}} 3389 2>/dev/null; then
+          echo "PASS (RDP reachable — Windows is installed + running)"
+        else
+          # Non-zero on purpose: this is a post-install smoke test, so an
+          # unreachable RDP is a real FAIL that must be detected (not silently
+          # swallowed). Before Windows is installed the VM is created stopped,
+          # so this failing is expected — see docs/39.
+          echo "FAIL (no RDP — VM stopped or Windows not yet installed; see docs/39)"
+          exit 1
+        fi
 

@@ -78,9 +78,13 @@ def build(data: dict) -> list[tuple[str, str]]:
 
     services = _group_hosts(data, "services")
     home_ip = str((services.get("home") or {}).get("ansible_host") or "")
-    windows_ip = str((services.get("windows") or {}).get("ansible_host") or "")
     if not home_ip:
         raise ValueError("services.home has no ansible_host")
+    # windows lives in its own windows_vms group (now IaC-provisioned by
+    # proxmox_vm — see hosts.yml). It still runs no sshd we manage, so it stays
+    # excluded from ALL_SSH_IPS below.
+    windows_vms = _group_hosts(data, "windows_vms")
+    windows_ip = str((windows_vms.get("windows") or {}).get("ansible_host") or "")
 
     k3s_servers = _required_ips(data, "k3s_servers")
     k3s_agents = _required_ips(data, "k3s_agents")

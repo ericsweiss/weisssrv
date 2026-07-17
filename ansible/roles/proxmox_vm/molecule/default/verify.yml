@@ -18,6 +18,7 @@
         - 08-disk-vzdump-backup.json
         - 09-disk-slot-assert.json
         - 10-meta-drift.json
+        - 11-windows-guest.json
       register: artifacts
 
     - name: Decode artifacts
@@ -32,6 +33,7 @@
         disk_backup: "{{ artifacts.results[7].content | b64decode | from_json }}"
         slot_assert: "{{ artifacts.results[8].content | b64decode | from_json }}"
         meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
+        windows: "{{ artifacts.results[10].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -134,3 +136,27 @@
           #     written with the canonical desired `order=100,up=0` string
           - meta_drift.startup_set == 1
           - meta_drift.any_onboot_set == 1
+
+    # The Windows guest path (vm_guest_type: windows) must assemble a full
+    # Win11-capable VM and emit NONE of the Linux cloud-init artifacts.
+    - name: Windows guest assembles OVMF/TPM/q35 + VirtIO + ISOs, no cloud-init
+      ansible.builtin.assert:
+        that:
+          # Firmware + machine type + ostype in the qm create
+          - windows.machine == 1
+          - windows.ovmf == 1
+          - windows.ostype == 1
+          # EFI vars disk + TPM 2.0 + empty SSD-flagged boot disk
+          - windows.efidisk == 1
+          - windows.tpm == 1
+          - windows.bootdisk == 1
+          # Install + VirtIO driver CDROMs + std VGA + install-CD-first boot order
+          - windows.install_iso == 1
+          - windows.virtio_iso == 1
+          - windows.vga >= 1
+          - windows.bootorder == 1
+          # Negative: no Linux cloud-init path, and the VM is left STOPPED
+          - windows.cloudinit == 0
+          - windows.importdisk == 0
+          - windows.ciuser == 0
+          - windows.start == 0

@@ -36,7 +36,8 @@ def _minimal_inventory() -> dict:
                 "gitlab_servers": {"hosts": {"gitlab": host("10.0.0.153")}},
                 "nextcloud_servers": {"hosts": {"nextcloud": host("10.0.0.156")}},
                 "immich_servers": {"hosts": {"immich": host("10.0.0.157")}},
-                "services": {"hosts": {"home": host("10.0.0.154"), "windows": host("10.0.0.155")}},
+                "services": {"hosts": {"home": host("10.0.0.154")}},
+                "windows_vms": {"hosts": {"windows": host("10.0.0.155")}},
                 "k3s_servers": {"hosts": {"s1": host("10.0.0.222"), "s2": host("10.0.0.223")}},
                 "k3s_agents": {"hosts": {"a1": host("10.0.0.202")}},
             }

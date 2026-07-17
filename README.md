@@ -44,7 +44,7 @@ Internet
     |   +-- plex          (.152) - Plex Media Server
     |   +-- gitlab        (.153) - GitLab EE
     |   +-- home-assistant (.154) - Home Assistant OS
-    |   +-- windows        (.155) - Windows guest (manual; firewall-only IaC)
+    |   +-- windows        (.155) - Windows 11 VM (IaC shell, interactive install)
     |
     +-- K3s Cluster (9 nodes)
         +-- k3s-srv-nas-01    (.222) - Server + etcd
@@ -182,7 +182,7 @@ weisssrv/
 | postfix_null_client | Local mail relay to smtp-relay |
 | tailscale | VPN setup |
 | proxmox_firewall | IPSets and security groups |
-| proxmox_vm | VM provisioning with cloud-init and autostart |
+| proxmox_vm | VM provisioning (Linux cloud-init or Windows 11 OVMF/TPM shell) + autostart |
 | proxmox_lxc | LXC container provisioning with autostart |
 | proxmox_ha | Proxmox HA rules, resources, and ZFS replication |
 | proxmox_backup | Declarative Proxmox backup config (storage.cfg entries + nightly vzdump jobs) |
@@ -410,6 +410,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 | [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
 | [36-immich](docs/36-immich.md) | Immich photo management (NAS-pinned VM, docker-compose, encrypted zvols, Authentik OIDC, backups) |
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
+| [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it

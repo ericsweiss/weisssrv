@@ -1,17 +1,46 @@
 # Proxmox VM Role
 
-Provisions Debian VMs on Proxmox VE using cloud-init. Handles networking, storage selection, resource pool assignment, and optional persistent ZFS zvol disks.
+Provisions VMs on Proxmox VE. The default (`vm_guest_type: linux`) path builds
+Debian VMs using cloud-init; the `vm_guest_type: windows` path builds a
+Windows 11 VM shell (OVMF/UEFI + TPM 2.0 + q35 + VirtIO + install/driver ISOs).
+Handles networking, storage selection, resource pool assignment, and optional
+persistent ZFS zvol disks.
 
 ## What This Role Manages
 
 - Automatic storage selection based on Proxmox host role
 - Resource pool creation and validation
-- Cloud-init template download (Debian Trixie)
+- Cloud-init template download (Debian Trixie) — Linux guests
 - VM creation with proper VMID, CPU, memory, disk
-- Cloud-init configuration (user, SSH keys, networking)
+- Cloud-init configuration (user, SSH keys, networking) — Linux guests
+- Windows 11 firmware/media (OVMF EFI vars, TPM 2.0, install + VirtIO CDROMs) —
+  Windows guests
 - Additional persistent disks (ZFS zvols for databases)
 - Autostart configuration (order, delay)
-- VM start after provisioning
+- VM start after provisioning (Linux); Windows guests are created STOPPED
+
+## Guest types
+
+`vm_guest_type` selects the provisioning path (default `linux`):
+
+| Var | `linux` (default) | `windows` |
+|-----|-------------------|-----------|
+| Firmware | SeaBIOS (i440fx) | **OVMF/UEFI**, `--machine q35`, `--efidisk0 <storage>:1,efitype=4m,pre-enrolled-keys=1` (Secure Boot), `--tpmstate0 <storage>:1,version=v2.0` |
+| ostype | `l26` (`vm_ostype`) | `win11` (`vm_windows_ostype`) |
+| Boot disk | imported Debian cloud image | **empty** zvol `<storage>:<GiB>,discard=on,ssd=1` |
+| Provisioning | cloud-init (`--ciuser`, `--sshkeys`, `--ipconfig0`) | none — interactive install |
+| Media | cloud-init drive | `--ide2 <iso-store>:iso/<install>.iso` + `--ide0 <iso-store>:iso/virtio-win.iso` (both `media=cdrom`), `--vga std` |
+| Boot order | `--boot c --bootdisk scsi0` | `--boot 'order=ide2;scsi0'` (install CD first; flip to `order=scsi0` post-install by hand) |
+| Post-create | `qm start` + wait for SSH:22 | **created stopped** — no start, no SSH wait |
+| Backwards-compat | unchanged for every existing Linux VM | new path, fully guarded |
+
+Windows-guest vars (see `defaults/main.yml`): `vm_install_iso` (REQUIRED — the
+Win11 ISO the operator downloads manually to the ISO store; the role asserts
+it), `vm_virtio_iso`/`virtio_win_url`/`virtio_win_checksum` (the VirtIO driver
+ISO the role downloads + checksum-verifies; version pinned in
+`group_vars/all.yml`), `vm_iso_storage` (default `tank-proxmox`),
+`vm_windows_machine`/`vm_windows_ostype`/`vm_windows_vga`. Full runbook:
+`docs/39-windows-vm.md`.
 
 ## Storage Selection
 

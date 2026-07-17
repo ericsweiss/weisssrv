@@ -5,6 +5,14 @@
   ansible.builtin.set_fact:
     vm_id: "{{ vmid | default(proxmox_vm_target_ip.split('.')[-1]) }}"
 
+# Guest-type gate. Recomputed every run (never a persisted host fact), so a
+# subsequent include of this role with a different vm_guest_type re-evaluates
+# cleanly. Every Linux-only task below guards on `not _vm_is_windows`; the
+# Windows-only tasks guard on `_vm_is_windows`.
+- name: Determine guest type
+  ansible.builtin.set_fact:
+    _vm_is_windows: "{{ (vm_guest_type | default('linux')) == 'windows' }}"
+
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
   ansible.builtin.set_fact:
@@ -168,6 +176,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
     - not (proxmox_vm_cloud_image.stat.exists | default(false))
 
@@ -185,6 +194,96 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
+  changed_when: true
+
+# --- Windows guest: create the VM shell (firmware + disk + media configured
+# in the "Configure Windows …" tasks after the Linux boot-order block below).
+# Kept adjacent to the Linux create so the shared NIC/agent reconciles that
+# follow see an already-created VM for both guest types.
+#
+# Media is validated and the VirtIO ISO downloaded BEFORE `qm create` on
+# purpose: the create-path tasks are guarded on `vm_exists.rc != 0`, so a
+# failure AFTER create (missing install ISO, download/checksum error) would
+# strand a bare VM shell that every rerun then skips. Front-loading the media
+# checks means a prerequisite failure aborts before any VM exists, and the
+# rerun is clean.
+- name: Assert the Windows install ISO is specified
+  ansible.builtin.assert:
+    that:
+      - vm_install_iso | default('') | length > 0
+    fail_msg: >-
+      vm_install_iso is empty. Download the Windows 11 ISO from Microsoft to the
+      tank-proxmox ISO store ({{ vm_iso_storage_path }}/) and set vm_install_iso
+      to its filename in hosts.yml. See docs/39-windows-vm.md.
+    success_msg: "Windows install ISO: {{ vm_install_iso }}"
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
+
+- name: Stat the Windows install ISO on the Proxmox ISO store
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.stat:
+    path: "{{ vm_iso_storage_path }}/{{ vm_install_iso }}"
+  register: _windows_install_iso_stat
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
+    - not (proxmox_vm_skip_create | default(false))
+
+- name: Assert the Windows install ISO is present on the Proxmox ISO store
+  ansible.builtin.assert:
+    that:
+      - _windows_install_iso_stat.stat.exists
+      - _windows_install_iso_stat.stat.isreg
+    fail_msg: >-
+      Windows install ISO not found at
+      {{ vm_iso_storage_path }}/{{ vm_install_iso }}. Download the Windows 11 ISO
+      from Microsoft to the tank-proxmox ISO store and name the file
+      {{ vm_install_iso }} (matching vm_install_iso in hosts.yml). See
+      docs/39-windows-vm.md.
+    success_msg: "Windows install ISO present on the ISO store: {{ vm_install_iso }}"
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
+    - not (proxmox_vm_skip_create | default(false))
+
+# Download BEFORE create (see block header). Idempotent + checksum-verified;
+# virtio_win_version / virtio_win_checksum are pinned in group_vars/all.yml.
+- name: Download the VirtIO driver ISO to the Proxmox ISO store
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.get_url:
+    url: "{{ virtio_win_url }}"
+    dest: "{{ vm_iso_storage_path }}/{{ vm_virtio_iso }}"
+    mode: "0644"
+    checksum: "{{ virtio_win_checksum }}"
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
+    - not (proxmox_vm_skip_create | default(false))
+
+- name: Create Windows VM
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm create {{ vm_id }} \
+      --name {{ inventory_hostname }} \
+      --memory {{ vm_memory }} \
+      --cores {{ vm_cores }} \
+      --machine {{ vm_windows_machine }} \
+      --bios ovmf \
+      --cpu {{ vm_cpu_type | default('host') }} \
+      --ostype {{ vm_windows_ostype }} \
+      --scsihw virtio-scsi-pci \
+      --net0 virtio,bridge={{ vm_bridge }},firewall=1 \
+      --agent enabled={{ vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
   changed_when: true
 
 # Per-guest .fw rules are only enforced when the NIC carries firewall=1;
@@ -216,6 +315,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
   changed_when: true
 
 - name: Attach disk to VM
@@ -227,6 +327,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
   changed_when: true
 
 - name: Resize disk
@@ -236,6 +337,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
   changed_when: true
 
 - name: Configure cloud-init drive
@@ -245,6 +347,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
   changed_when: true
 
 - name: Configure boot order
@@ -254,6 +357,70 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
+  changed_when: true
+
+# --- Windows guest: firmware (EFI vars + TPM 2.0), empty boot disk, and the
+# install + VirtIO driver CDROMs. The install/VirtIO media is validated and
+# fetched in the preflight block above (before `qm create`). Boot order is set
+# to the install CD first so Windows setup runs; the post-install flip to
+# `order=scsi0` is a documented manual runbook step (docs/39). All create-time
+# only (guarded on the VM not yet existing) — an existing Windows VM is never
+# re-clobbered.
+- name: Configure Windows EFI vars disk, TPM 2.0, and boot disk
+  delegate_to: "{{ proxmox_host }}"
+  # efidisk0/tpmstate0 take `<storage>:1` — the size arg is a placeholder that
+  # Proxmox ignores and allocates a zvol of the correct fixed size (EFI vars,
+  # 4M TPM state) on the zfspool. pre-enrolled-keys=1 ships Microsoft's Secure
+  # Boot keys so Win11's Secure Boot check passes out of the box. The boot disk
+  # is an EMPTY zvol (`<storage>:<GiB>`) — no cloud image import — with discard
+  # + ssd flags for the SSD-backed pool (virtio-scsi-pci carries no iothread,
+  # matching the Linux path).
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} \
+      --efidisk0 {{ _effective_storage }}:1,efitype=4m,pre-enrolled-keys=1 \
+      --tpmstate0 {{ _effective_storage }}:1,version=v2.0 \
+      --scsi0 {{ _effective_storage }}:{{ vm_disk_size | regex_replace('[Gg]$', '') }},discard=on,ssd=1
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
+  changed_when: true
+
+- name: Attach Windows install + VirtIO driver CDROMs and set VGA
+  delegate_to: "{{ proxmox_host }}"
+  # command + argv (not shell): the ISO filenames come from inventory / all.yml,
+  # so each is passed as a single literal argv token. A filename containing a
+  # space or a shell metacharacter can then neither break qm's argument parsing
+  # nor inject a command on the delegated Proxmox host.
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ vm_id }}"
+      - --ide2
+      - "{{ vm_iso_storage }}:iso/{{ vm_install_iso }},media=cdrom"
+      - --ide0
+      - "{{ vm_iso_storage }}:iso/{{ vm_virtio_iso }},media=cdrom"
+      - --vga
+      - "{{ vm_windows_vga }}"
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
+  changed_when: true
+
+- name: Configure Windows boot order (install CD first)
+  delegate_to: "{{ proxmox_host }}"
+  # order=ide2;scsi0 is quoted so the shell doesn't split on the semicolon.
+  # Post-install, flip to `qm set {{ vm_id }} --boot order=scsi0` by hand
+  # (docs/39) so the VM boots from disk instead of the installer.
+  ansible.builtin.shell: |
+    qm set {{ vm_id }} --boot 'order=ide2;scsi0'
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - _vm_is_windows
   changed_when: true
 
 # An empty key would still "provision successfully" — and leave the VM
@@ -268,6 +435,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
 
 # Private temp file (mode 0600, random suffix) instead of a guessable
@@ -282,6 +450,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
   block:
     - name: Create private temp file for cloud-init SSH key
       ansible.builtin.tempfile:
@@ -514,6 +683,9 @@
 # "Stage and consume the cloud-init SSH public key" block above, so it is
 # cleaned up even when a create-path task between staging and consuming fails.)
 
+# Linux VMs are started + waited-on here. A Windows VM is deliberately created
+# STOPPED: the operator boots it from the Proxmox console to run the interactive
+# installer (docs/39). `qm start 155` is a runbook step, not part of provisioning.
 - name: Start VM
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -521,6 +693,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
   changed_when: true
   register: vm_start
 
@@ -534,6 +707,7 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
+    - not _vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
 
 - name: Display VM creation status
@@ -542,6 +716,8 @@
       VM {{ inventory_hostname }} (ID {{ vm_id }})
       {% if ansible_check_mode and vm_exists.rc != 0 %}
       would be created (check mode - no changes made)
+      {% elif vm_exists.rc != 0 and _vm_is_windows %}
+      created STOPPED — boot from the Proxmox console to install Windows (docs/39)
       {% elif vm_exists.rc != 0 %}
       created and started
       {% else %}

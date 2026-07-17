@@ -42,3 +42,44 @@ cloudinit_dns:
   - 192.168.0.150
   - 192.168.0.160
 cloudinit_gateway: 192.168.0.1
+
+# ---------------------------------------------------------------------------
+# Guest type
+# ---------------------------------------------------------------------------
+# 'linux'  (default) — the cloud-init Debian path above; every existing VM
+#          (k3s nodes, gitlab, …) uses this and is unaffected.
+# 'windows' — a full-spec Win11 guest: q35 + OVMF/UEFI + pre-enrolled Secure
+#          Boot keys + TPM 2.0 + VirtIO disk/NIC + install & driver CDROMs.
+#          The cloud image download/import, cloud-init drive, SSH-key assert,
+#          and post-create SSH wait are all skipped. The VM is created STOPPED
+#          — the operator installs Windows interactively (see docs/39). Nothing
+#          about the config is a "compatibility mode"; the NAS is 12th-gen Intel.
+vm_guest_type: linux
+
+# Windows guest knobs (ignored unless vm_guest_type == 'windows').
+vm_windows_machine: q35
+vm_windows_ostype: win11
+# std VGA is the most install-compatible: virtio-gpu needs its driver loaded,
+# which isn't available at Windows' first boot. Switch to virtio post-install
+# by hand if desired (documented in docs/39).
+vm_windows_vga: std
+
+# ISO store used for the install + VirtIO CDROMs. tank-proxmox is the NFS
+# storage on the NAS whose content list includes `iso`; its on-host mount is
+# /mnt/pve/<id>/template/iso. See host_vars/pve-nas-01.yml (pve_storage).
+vm_iso_storage: tank-proxmox
+vm_iso_storage_path: "/mnt/pve/{{ vm_iso_storage }}/template/iso"
+
+# Windows 11 install media — downloaded MANUALLY from Microsoft to the ISO
+# store (it cannot be redistributed). REQUIRED when vm_guest_type == 'windows';
+# the role asserts it is set. Set to the ISO's filename in hosts.yml.
+vm_install_iso: ""
+
+# VirtIO driver ISO — DOWNLOADED + checksum-verified by the role (idempotent)
+# from the pinned Fedora archive URL. virtio_win_version / virtio_win_checksum
+# are pinned centrally in group_vars/all.yml.
+vm_virtio_iso: "virtio-win-{{ virtio_win_version }}.iso"
+# Double-quoted YAML `\<newline>` is an escaped line-continuation that inserts
+# NO character (and trims the next line's leading space), so this wraps cleanly.
+virtio_win_url: "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-\
+  {{ virtio_win_version }}-1/virtio-win-{{ virtio_win_version }}.iso"

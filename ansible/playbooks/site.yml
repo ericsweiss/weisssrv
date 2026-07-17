@@ -145,11 +145,15 @@
     - role: alloy_host
       tags: [alloy_host]
 
-# Deploy guest firewall rules for unmanaged VMs (Home Assistant, etc.)
-# These VMs can't run Ansible directly; firewall rules are deployed via
-# delegation to a Proxmox host (the /etc/pve/ filesystem is clustered)
-- name: Deploy guest firewall rules for unmanaged VMs
-  hosts: services
+# Deploy guest firewall rules for VMs that can't run Ansible directly (Home
+# Assistant, the Windows 11 VM): firewall rules are deployed via delegation to a
+# Proxmox host (the /etc/pve/ filesystem is clustered). windows_vms is included
+# so an inventory-only guest_security_groups edit still deploys 155.fw via
+# deploy-ansible-firewall (which runs `site.yml --tags proxmox_firewall`). The
+# services hosts inherit ansible_become: false and windows_vms true, but the
+# guest .fw write carries its own explicit become: true, so both render.
+- name: Deploy guest firewall rules for delegation-only VMs
+  hosts: services:windows_vms
   gather_facts: false
   roles:
     - role: proxmox_firewall

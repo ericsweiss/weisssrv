@@ -302,8 +302,9 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
 #### Network segmentation / admin-IPSet tightening
 
 - **Current state**: the whole estate is one flat L2 `192.168.0.0/24` (single
-  `vmbr0`, `vlan: null`) shared with Home-Assistant-managed IoT and an
-  unmanaged, un-Ansible'd Windows box (.155). The `admin_lan` firewall IPSet is
+  `vmbr0`, `vlan: null`) shared with Home-Assistant-managed IoT and the
+  Windows 11 VM (.155, now IaC-provisioned — [docs/39](39-windows-vm.md) — but
+  still on the flat LAN). The `admin_lan` firewall IPSet is
   the entire /24, so SSH (22), the Proxmox API (8006), the kube-apiserver
   (6443), RDP (3389), and the AdGuard admin plane (:3000/:443/:853) accept from
   every device on the LAN. The services stay authenticated, so this is a

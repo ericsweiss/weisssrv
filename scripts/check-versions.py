@@ -669,6 +669,19 @@ SERVICE_REGISTRY: list[dict] = [
         "source_url": "https://github.com/jsclayton/prometheus-plex-exporter",
         "notes": "Digest-pinned `latest` (no upstream version tags); re-resolve the digest manually to update.",
     },
+    {
+        # virtio-win publishes no GitHub releases/tags (the virtio-win-pkg-scripts
+        # repo has neither) — versions are cut only to the Fedora ISO archive, so
+        # this is a manual check. On bump: pick the newest virtio-win-X.Y.NNN at
+        # the source_url, update virtio_win_version in all.yml, and recompute the
+        # ISO sha256 (virtio_win_checksum) since Fedora ships no ISO checksum.
+        # Current tag is read from all.yml (no version_file). See docs/39.
+        "name": "virtio-win",
+        "var_name": "virtio_win_version",
+        "category": "manual",
+        "source_url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/",
+        "notes": "VirtIO driver ISO for the Windows 11 VM; no GitHub releases — check the Fedora stable-virtio dir and recompute virtio_win_checksum on bump.",
+    },
 ]
 
 
@@ -2220,6 +2233,14 @@ def get_deploy_command(result: ServiceVersion) -> str:
     # Immich VM (docker-compose, Ansible-managed — not Flux)
     if var_name == "immich_version":
         return "task immich:deploy"
+
+    if var_name == "virtio_win_version":
+        # The driver ISO download is guarded to fresh-VM-only (get_url runs when
+        # vm_exists.rc != 0), so bumping the pin only fetches + attaches the new
+        # ISO when the VM does not yet exist. On the already-provisioned guest
+        # this is a no-op: it keeps its old drivers until destroy+re-provision
+        # (docs/39).
+        return "task windows:provision  # only downloads the new ISO on a fresh VM; an existing guest keeps its drivers until destroy+re-provision"
 
     # Fallback when no specific deploy task mapping exists
     return "task infra:deploy"

@@ -104,6 +104,11 @@ INTENTIONALLY_UNMAPPED_ROLES=(
 #                                  `task k3s:deploy`. Never CI-driven.
 #   k3s-provision-vms.yml        — VM provisioning on Proxmox hosts
 #                                  via `task k3s:provision-vms`. Manual.
+#   windows.yml                  — Windows 11 VM provisioning (proxmox_vm shell
+#                                  + guest firewall) via `task windows:provision`.
+#                                  VM provisioning is out of CI (same reasoning
+#                                  as k3s-provision-vms); Windows is then
+#                                  installed interactively by the operator.
 #   zfs-encryption.yml           — Sensitive cold-boot ZFS passphrase
 #                                  activation. Manual via
 #                                  `task zfs:encrypt`.
@@ -135,6 +140,7 @@ INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
     site.yml
     k3s.yml
     k3s-provision-vms.yml
+    windows.yml
     zfs-encryption.yml
     proxmox-ha.yml
     proxmox-enable-autostart.yml

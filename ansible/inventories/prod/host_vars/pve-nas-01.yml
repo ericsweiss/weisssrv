@@ -43,13 +43,20 @@ zfs_encryption_pools:
 #         tank/nextcloud-data)
 #   157 = immich (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
 #         tank/immich-data)
+#   155 = windows (scsi0 root + EFI/TPM state on ssd; docs/39). Once the VM
+#         exists, pve-start-encrypted-guests WILL start it on every NAS reboot
+#         (post-unlock) — into the installer CD until Windows is installed and
+#         the boot order is flipped to scsi0 (docs/39). That is harmless (empty
+#         disk falls through to the UEFI shell) but expected, not a no-op.
+#         Before the VM is provisioned the start is a logged skip (the script's
+#         config-exists guard), so listing it here early can't wedge the unit.
 #   152 = plex LXC (mp0 /config on ssd)
 # Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
-# gitlab app (153, order 50), nextcloud (156, order 55), and immich
-# (157, order 56); pve-start-encrypted-guests.sh starts VMs in this list order,
-# then CTs. 157 (immich) has disks on both the ssd pool and tank/immich-data —
-# both unlocked by zfs-mount-encrypted before this cohort starts.
-zfs_encryption_guest_vmids: [202, 153, 156, 157]
+# gitlab app (153, order 50), nextcloud (156, order 55), immich (157, order 56),
+# and windows (155, order 60); pve-start-encrypted-guests.sh starts VMs in this
+# list order, then CTs. 157 (immich) has disks on both the ssd pool and
+# tank/immich-data — both unlocked by zfs-mount-encrypted before this cohort starts.
+zfs_encryption_guest_vmids: [202, 153, 156, 157, 155]
 zfs_encryption_guest_ctids: [152]
 
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
@@ -471,6 +478,16 @@ pve_vzdump_jobs:
     # is why media-mover runs at 06:00 and the archive-backup timer at 06:30.
     # Raise only if the ProxmoxHost I/O-pressure alerts stay quiet through a
     # full backup window, and keep those two downstream schedules in mind.
+    #
+    # NEW pve-nas-01 local guest to weigh here: VM 155 (windows, 250 GiB on
+    # ssd/pve — docs/39). It backs up as part of THIS host's slice of the `all`
+    # job, so once Windows is installed its image (~15-25 min at the bwlimit for
+    # a typical footprint, growing with the guest/pagefile) lengthens the
+    # pve-nas-01 portion and eats into the ~15-min headroom between the 05:45
+    # window end and the 06:00 media-mover. After the guest is installed,
+    # re-verify pve-nas-01's backup still finishes before 06:00 (I/O-pressure
+    # quiet through a full window). If it slips, add `exclude: [155]` here or
+    # move VM 155 to a separate, lower-frequency job.
     bwlimit: 30720
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system

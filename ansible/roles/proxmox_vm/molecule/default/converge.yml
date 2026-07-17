@@ -71,6 +71,71 @@
         content: |
           {"effective_storage": "{{ _effective_storage | trim }}"}
 
+    # 2w. Windows guest — vm_guest_type: windows must assemble a Win11-capable
+    # VM (q35 + OVMF + EFI vars + TPM 2.0 + win11 ostype + empty boot disk +
+    # install/VirtIO CDROMs + std VGA, boot order install-CD-first) and issue
+    # NONE of the Linux cloud-init path (no cloud-image importdisk, no
+    # `--ide2 …cloudinit`, no `--ciuser`) and NOT start the VM (created stopped).
+    # Runs in the "missing" state (before case 5 flips the stub to "exists").
+    - name: Reset qm.log for the Windows-guest case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Windows-guest run
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_guest_type: windows
+        vm_cpu_type: host
+        vm_disk_size: 250G
+        vm_install_iso: Win11_Test.iso
+        virtio_win_version: "0.1.285"
+        # Explicit (the scenario group_vars also sets it): this run only
+        # validates the assembled qm commands, so skip the real preflight —
+        # the install-ISO stat/assert against a store that doesn't exist in
+        # the container and the large external VirtIO ISO get_url. The qm
+        # create/EFI/TPM/CDROM/boot tasks are NOT skip_create-gated, so the
+        # command-assembly assertions below still exercise the full path.
+        proxmox_vm_skip_create: true
+
+    - name: Scan the Windows-guest qm.log for the expected assembly
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        machine=$(grep -c -- '^qm create 999 .* --machine q35 ' "$log" || true)
+        ovmf=$(grep -c -- '^qm create 999 .* --bios ovmf ' "$log" || true)
+        ostype=$(grep -c -- '^qm create 999 .* --ostype win11 ' "$log" || true)
+        efidisk=$(grep -c -- 'efidisk0 ssd:1,efitype=4m,pre-enrolled-keys=1' "$log" || true)
+        tpm=$(grep -c -- 'tpmstate0 ssd:1,version=v2.0' "$log" || true)
+        bootdisk=$(grep -c -- 'scsi0 ssd:250,discard=on,ssd=1' "$log" || true)
+        install_iso=$(grep -c -- 'ide2 tank-proxmox:iso/Win11_Test.iso,media=cdrom' "$log" || true)
+        virtio_iso=$(grep -c -- 'ide0 tank-proxmox:iso/virtio-win-0.1.285.iso,media=cdrom' "$log" || true)
+        vga=$(grep -c -- '--vga std' "$log" || true)
+        bootorder=$(grep -c -- 'boot order=ide2;scsi0' "$log" || true)
+        cloudinit=$(grep -c -- 'ide2 ssd:cloudinit' "$log" || true)
+        importdisk=$(grep -c -- '^qm importdisk ' "$log" || true)
+        ciuser=$(grep -c -- '--ciuser ' "$log" || true)
+        start=$(grep -c -- '^qm start ' "$log" || true)
+        # Emitted as four printfs (stdout concatenates into the registered
+        # result) so no single line exceeds the 160-char lint cap.
+        printf '{"machine": %s, "ovmf": %s, "ostype": %s, "efidisk": %s,' "$machine" "$ovmf" "$ostype" "$efidisk"
+        printf ' "tpm": %s, "bootdisk": %s, "install_iso": %s,' "$tpm" "$bootdisk" "$install_iso"
+        printf ' "virtio_iso": %s, "vga": %s, "bootorder": %s,' "$virtio_iso" "$vga" "$bootorder"
+        printf ' "cloudinit": %s, "importdisk": %s, "ciuser": %s, "start": %s}\n' "$cloudinit" "$importdisk" "$ciuser" "$start"
+      args:
+        executable: /bin/bash
+      register: win_scan
+      changed_when: false
+
+    - name: Capture Windows-guest result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/11-windows-guest.json
+        mode: "0644"
+        content: "{{ win_scan.stdout }}"
+
     # 3. Pool-validation failure path
     - name: Pool-validation failure (expect failure)
       block:

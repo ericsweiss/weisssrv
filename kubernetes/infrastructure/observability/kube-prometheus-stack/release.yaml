@@ -1359,7 +1359,11 @@ spec:
                   description: 'ZFS pool {{ $labels.pool }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% capacity.'
 
               - alert: EndpointDown
-                expr: max by (instance) (probe_success) == 0
+                # The Windows VM RDP target (192.168.0.155:3389) is excluded and
+                # routed to the purpose-built WindowsRdpDown (30m) below: it's an
+                # on-demand desktop that is legitimately powered off much of the
+                # time, so a 5m catch-all warning would be noise.
+                expr: max by (instance) (probe_success{instance!="192.168.0.155:3389"}) == 0
                 for: 5m
                 labels:
                   severity: warning
@@ -1388,6 +1392,26 @@ spec:
                     (immich-server 8081/8082) for 5 minutes — the compose stack on
                     the Immich VM (192.168.0.157) is down or unreachable, or the
                     scrape target is missing. Photo access is offline.
+              # Purpose-built RDP-down alert for the Windows 11 desktop VM. INERT
+              # until the windows-rdp blackbox target is uncommented post-install
+              # (no probe_success series -> nothing to evaluate). The 30m `for`
+              # tolerates the VM being briefly/occasionally powered off; the
+              # windows target is excluded from EndpointDown above so only this
+              # fires. Uncomment the target in exporters/blackbox-exporter.yaml
+              # to arm it. See docs/39-windows-vm.md.
+              - alert: WindowsRdpDown
+                expr: probe_success{instance="192.168.0.155:3389"} == 0
+                for: 30m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/39-windows-vm.md'
+                  summary: 'Windows VM RDP (192.168.0.155:3389) unreachable'
+                  description: >-
+                    The Windows 11 VM has not answered an RDP (3389) blackbox
+                    probe for 30 minutes. If it is intentionally powered off this
+                    is expected; otherwise check `task windows:status` and the
+                    Proxmox console. See docs/39-windows-vm.md.
 
               # Uniform warning severity is wrong for the load-bearing three:
               # Authentik is the OIDC front door for every SSO app, GitLab is
