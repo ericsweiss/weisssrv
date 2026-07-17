@@ -2420,9 +2420,12 @@ tasks:
           echo "FAIL"; FAIL=$((FAIL + 1))
         fi
 
-        # Test 4: exporter metrics on :9205
-        echo -n "Nextcloud exporter ({{.NEXTCLOUD_VM_IP}}:9205)... "
-        if curl -s --max-time 10 "http://{{.NEXTCLOUD_VM_IP}}:9205/metrics" 2>/dev/null | grep -q '^nextcloud_up'; then
+        # Test 4: exporter metrics on :9205. sg-nextcloud scopes :9205 to
+        # k3s_nodes (the in-cluster Prometheus scrape source), so the deploy host
+        # is firewall-blocked by design — check via the VM's loopback instead,
+        # the same way the occ test reaches the VM.
+        echo -n "Nextcloud exporter (:9205 on {{.NEXTCLOUD_VM_IP}})... "
+        if ssh eric@{{.NEXTCLOUD_VM_IP}} "curl -s --max-time 10 http://localhost:9205/metrics" 2>/dev/null | grep -q '^nextcloud_up'; then
           echo "PASS"; PASS=$((PASS + 1))
         else
           echo "FAIL"; FAIL=$((FAIL + 1))

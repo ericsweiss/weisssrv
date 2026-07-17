@@ -90,22 +90,21 @@ cert_distribution_targets:
     cert_mode: "0644"
     key_mode: "0600"
     restart_command: "sudo gitlab-ctl hup nginx"
-  # Nextcloud: the host nginx serves the wildcard cert from /etc/ssl/nextcloud,
-  # reloaded with `systemctl reload nginx`. host_key is UNKNOWN until the VM is
-  # provisioned — this entry stays COMMENTED until then. POST-PROVISION STEP:
-  # after `task nextcloud:deploy` creates VM 156, run `task certs:show-host-keys`,
-  # paste the ssh-ed25519 line below, uncomment this block, commit, and run
-  # `task dns:deploy` to push the real *.esweiss.com cert (nginx runs a
-  # self-signed bootstrap cert until then). See docs/35-nextcloud.md.
-  # - host: nextcloud
-  #   ip: 192.168.0.156
-  #   host_key: "ssh-ed25519 AAAA...REPLACE_WITH_REAL_KEY_FROM_certs:show-host-keys"
-  #   cert_dir: /etc/ssl/nextcloud
-  #   owner: root
-  #   group: root
-  #   cert_mode: "0644"
-  #   key_mode: "0600"
-  #   restart_command: "sudo systemctl reload nginx"
+  # Nextcloud (VM 156): the host nginx serves the wildcard cert from
+  # /etc/ssl/nextcloud, reloaded with `systemctl reload nginx`. Pushing the real
+  # *.esweiss.com cert here replaces the self-signed bootstrap cert the nextcloud
+  # role seeds — which is what lets Traefik's vm-tls-wildcard backend validation
+  # succeed for cloud.esweiss.com. host_key captured post-provision via
+  # `task certs:show-host-keys`. See docs/35-nextcloud.md.
+  - host: nextcloud
+    ip: 192.168.0.156
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFSwM0yVCXOQ6t0PO2o54hGwdYvXcy/eZ/+rU4gtG11P"
+    cert_dir: /etc/ssl/nextcloud
+    owner: root
+    group: root
+    cert_mode: "0644"
+    key_mode: "0600"
+    restart_command: "sudo systemctl reload nginx"
   # NFS+TLS endpoint: ONLY the NFS server (pve-nas-01) gets the wildcard cert +
   # key here. The six k3s agents are pure NFSv4 xprtsec=tls CLIENTS — they
   # validate pve-nas-01's server cert against the system CA truststore
