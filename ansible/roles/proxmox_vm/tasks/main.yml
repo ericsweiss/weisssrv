@@ -185,7 +185,7 @@
   ansible.builtin.shell: |
     qm create {{ vm_id }} \
       --name {{ inventory_hostname }} \
-      --memory {{ vm_memory }} \
+      --memory {{ vm_memory }}{{ ' --balloon ' + (vm_balloon | string) if vm_balloon is defined else '' }} \
       --cores {{ vm_cores }} \
       --cpu {{ vm_cpu_type | default('host') }} \
       --net0 virtio,bridge={{ vm_bridge }},firewall=1 \
@@ -271,7 +271,7 @@
   ansible.builtin.shell: |
     qm create {{ vm_id }} \
       --name {{ inventory_hostname }} \
-      --memory {{ vm_memory }} \
+      --memory {{ vm_memory }}{{ ' --balloon ' + (vm_balloon | string) if vm_balloon is defined else '' }} \
       --cores {{ vm_cores }} \
       --machine {{ vm_windows_machine }} \
       --bios ovmf \
@@ -305,6 +305,29 @@
   register: vm_net0_firewall
   changed_when: "'CHANGED' in (vm_net0_firewall.stdout | default(''))"
   when: not ansible_check_mode
+
+# Memory ballooning floor (vm_balloon) is set at qm create above; reconcile VMs
+# created before it was added, or when the floor changes. `qm set --balloon <min>`
+# takes effect live on a running guest that has the balloon driver, so Proxmox
+# starts reclaiming idle RAM down to the floor immediately (no reboot). Guarded on
+# vm_balloon being defined, so VMs without a floor (e.g. k3s nodes, whose kubelet
+# accounts for the full node RAM) are never ballooned.
+- name: Reconcile VM memory ballooning floor
+  delegate_to: "{{ vm_reconcile_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$(qm config {{ vm_id }} | sed -n 's/^balloon: //p')
+    if [ "$current" != "{{ vm_balloon }}" ]; then
+      qm set {{ vm_id }} --balloon {{ vm_balloon }}
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: vm_balloon_reconcile
+  changed_when: "'CHANGED' in (vm_balloon_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - vm_balloon is defined
 
 - name: Import cloud image disk
   delegate_to: "{{ proxmox_host }}"

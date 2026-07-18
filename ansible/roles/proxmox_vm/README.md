@@ -82,6 +82,17 @@ k3s-agt-nas-01:
   proxmox_startup_delay: 10
 ```
 
+## Memory ballooning (`vm_balloon`)
+
+Optional. When set, the VM is created with `--balloon <vm_balloon>` (and existing
+VMs are reconciled live via `qm set --balloon`), letting Proxmox reclaim idle guest
+RAM down to this floor under host memory pressure: the guest boots at `vm_memory`
+and returns everything above `vm_balloon` when the host is tight. Requires the
+virtio balloon driver in the guest (built into Linux; the VirtIO Balloon
+driver + service on Windows). **Do not set it on k3s nodes** — the kubelet accounts
+for the full node RAM and schedules pods to it, so reclaiming underneath causes pod
+OOMs. Leave `vm_balloon` unset (the default) for a fixed allocation.
+
 ## Deployment
 
 ```bash
