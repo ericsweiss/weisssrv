@@ -152,14 +152,13 @@ spec:
         - name: k3s-api-vip
           url: 192.168.0.161:6443
           module: tcp_connect
-        # Windows 11 VM RDP reachability. Shipped COMMENTED OUT: before the
-        # interactive Windows install completes, RDP (3389) is closed, so a live
-        # probe would sit red. UNCOMMENT this one target after install (docs/39)
-        # to arm the probe + the WindowsRdpDown alert (kube-prometheus-stack
-        # release.yaml, homelab.monitoring). instance becomes "192.168.0.155:3389".
-        # - name: windows-rdp
-        #   url: 192.168.0.155:3389
-        #   module: tcp_connect
+        # Windows 11 VM RDP reachability — armed post-install (docs/39). Feeds the
+        # WindowsRdpDown alert (kube-prometheus-stack release.yaml, homelab.monitoring);
+        # instance is "192.168.0.155:3389". The 30m `for` on the alert tolerates the
+        # VM being briefly/occasionally powered off.
+        - name: windows-rdp
+          url: 192.168.0.155:3389
+          module: tcp_connect
         # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS
         # drift and public-ingress breakage that the internal probes can't see.
         - name: home-assistant-external
