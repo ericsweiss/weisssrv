@@ -1,0 +1,60 @@
+---
+# Split-horizon resolver for Tailscale clients. Reachable on the tailnet as the
+# operator device "ts-dns" and wired as the Split-DNS nameserver for esweiss.com
+# (terraform/tailscale/split_dns.tf). It rewrites the *internal* view so that:
+#
+#   Traefik-fronted *.esweiss.com  -> CNAME traefik-tailnet.<tailnet>.ts.net
+#       The client's MagicDNS resolves that to the Traefik tailnet device's
+#       100.x and opens :443 there (mesh path — no subnet-router return path).
+#   Direct/admin + infra names       -> forwarded to AdGuard (.150/.160), which
+#       returns their real LAN IP (reachable via subnet routing, which works for
+#       plain hosts). This override list mirrors the non-.101 entries of
+#       ansible .../group_vars/dns.yml `adguard_rewrites` — keep in sync when a
+#       new direct-IP (bypass-Traefik) name is added there. Every OTHER
+#       *.esweiss.com name is assumed Traefik-fronted and needs no change here
+#       when new web apps are added.
+#
+# <tailnet> suffix is taile792d8.ts.net (from `tailscale status`). It is a
+# compile-time constant (the Traefik device's MagicDNS name is deterministic
+# from its tailscale.com/hostname), so there is no bootstrap circularity.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tailnet-dns-corefile
+  namespace: tailnet-dns
+data:
+  Corefile: |
+    # Override zone: names that must resolve to their real LAN IP, not Traefik.
+    dns.esweiss.com smtp-relay.esweiss.com plex-direct.esweiss.com gitlab.esweiss.com nextcloud.esweiss.com home-direct.esweiss.com windows.esweiss.com immich.esweiss.com vip-public.esweiss.com k3s.esweiss.com pve-nas-01.esweiss.com pve-laptop-01.esweiss.com pve-opt-01.esweiss.com pve-opt-02.esweiss.com pve-opt-03.esweiss.com pve-prec-01.esweiss.com k3s-srv-nas-01.esweiss.com k3s-srv-laptop-01.esweiss.com k3s-srv-prec-01.esweiss.com k3s-agt-nas-01.esweiss.com k3s-agt-laptop-01.esweiss.com k3s-agt-opt-01.esweiss.com k3s-agt-opt-02.esweiss.com k3s-agt-opt-03.esweiss.com k3s-agt-prec-01.esweiss.com {
+        errors
+        forward . 192.168.0.150 192.168.0.160
+        cache 30
+    }
+
+    # Default: every other *.esweiss.com is Traefik-fronted -> CNAME the tailnet
+    # Traefik device. A/AAAA are answered with the CNAME (the client's MagicDNS
+    # resolves the ts.net target to the device's 100.x); other qtypes fall
+    # through to AdGuard.
+    esweiss.com {
+        errors
+        template IN A esweiss.com {
+            answer "{{ .Name }} 60 IN CNAME traefik-tailnet.taile792d8.ts.net."
+        }
+        template IN AAAA esweiss.com {
+            answer "{{ .Name }} 60 IN CNAME traefik-tailnet.taile792d8.ts.net."
+        }
+        forward . 192.168.0.150 192.168.0.160
+        cache 30
+    }
+
+    # Catch-all (Split-DNS scopes queries to esweiss.com, so this is belt-and-
+    # braces) + server-level health/readiness/metrics endpoints.
+    .:53 {
+        errors
+        forward . 192.168.0.150 192.168.0.160
+        cache 30
+        health :8080
+        ready :8181
+        prometheus :9153
+        reload
+    }

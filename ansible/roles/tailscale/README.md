@@ -50,9 +50,39 @@ tailscale_accept_dns: false
 # Subnet advertisement (for subnet routers only)
 tailscale_advertise_routes: []  # e.g., ["192.168.0.0/24"]
 
+# ACL tags to advertise (least-privilege tailnet policy). The tag must exist in
+# tagOwners in terraform/tailscale/policy.hujson before a host can adopt it.
+tailscale_advertise_tags: []  # e.g., ["tag:subnet-router"]
+
+# Strict tag adoption (see below). Default false = best-effort.
+tailscale_tags_require_adoption: false
+
 # Additional flags
 tailscale_additional_flags: []  # e.g., ["--operator=eric", "--ssh"]
 ```
+
+`tailscale_advertise_tags` is a first-class var (like `tailscale_advertise_routes`)
+adopted **only** via the reconcile `tailscale set --advertise-tags` task — it is
+deliberately **not** passed to the initial `tailscale up` (a tag on `up` would
+hard-fail a first-time join while the live ACL has no `tagOwners` entry, or
+trigger a reauth `up` cannot complete non-interactively). It is applied
+best-effort on running hosts: the first transition of a user-owned device to a
+tag-owned identity needs an interactive reauthentication (a Tailscale platform
+behavior), so that one-time migration is a supervised step — see
+`terraform/tailscale/README.md`. Deploy order matters: apply the ACL (which
+defines `tagOwners` and the tag-based route auto-approver) **before** running
+this role so the tag can be adopted.
+
+`tailscale_tags_require_adoption` controls how a failed tag reconcile is treated:
+
+- **`false` (default)** — best-effort. A non-zero `tailscale set --advertise-tags`
+  does not fail the play (the pre-cutover / automatic-pipeline state where "needs
+  reauth" is expected, so the pipeline stays green). The reconcile's debug task
+  still prints `rc` + `stderr`, so an unexpected error is visible, not swallowed.
+- **`true`** — strict. Any non-zero rc fails the play. Set this **only** for the
+  supervised adoption step, run *after* the ACL defines `tagOwners`
+  (`-e tailscale_tags_require_adoption=true`), so a host that silently fails to
+  adopt the tag is caught instead of leaving the lockdown half-applied.
 
 ### 1Password Secrets
 
@@ -152,8 +182,13 @@ With this setting:
    ├─ Set --accept-dns flag
    ├─ Set --advertise-routes (if configured)
    └─ Add additional flags (if configured)
-10. Reconcile preferences on already-running nodes (tailscale set)
-11. Display authentication status
+       (--advertise-tags is NOT passed here — see step 11)
+10. Reconcile preferences on already-running nodes (tailscale set: routes/DNS)
+11. Reconcile advertised ACL tags on already-running nodes via
+    `tailscale set --advertise-tags` (best-effort by default; may need a
+    supervised reauth on first tag adoption; strict when
+    tailscale_tags_require_adoption=true)
+12. Display authentication status
 ```
 
 ## Files

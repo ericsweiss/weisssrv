@@ -1,0 +1,49 @@
+---
+# Tailscale Kubernetes operator. Watches for Services with
+# `loadBalancerClass: tailscale` and creates a proxy StatefulSet + a tailnet
+# device (real 100.x mesh node) that L3-forwards to the backing Service. We use
+# it to put the internal Traefik ingress (traefik-tailnet) and the tailnet-dns
+# CoreDNS resolver (ts-dns) directly on the tailnet, so remote clients reach the
+# internal *.esweiss.com web apps over the mesh instead of via subnet routing
+# (whose return path to a MetalLB VIP is broken). See docs/05-tailscale.md.
+#
+# OAuth: the `oauth` values are intentionally left unset so the chart consumes
+# the pre-existing `operator-oauth` Secret (keys client_id/client_secret) that
+# ESO renders from 1Password (externalsecret.yaml). Every device the operator
+# creates carries the default tag tag:k8s (policy.hujson tagOwners +
+# group:admins -> tag:k8s:53,443 grant the operator's tag and admin access).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tailscale-operator
+  namespace: tailscale
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: tailscale-operator
+      version: "${helm_chart_versions_tailscale_operator}"
+      sourceRef:
+        kind: HelmRepository
+        name: tailscale
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # oauth.* deliberately unset -> chart uses the pre-created `operator-oauth`
+    # Secret (ESO). operatorConfig.hostname names the operator's own device.
+    operatorConfig:
+      hostname: tailscale-operator
+    # Default tag applied to every proxy device the operator registers.
+    # (This is also the chart default; pinned explicitly for clarity + review.)
+    proxyConfig:
+      defaultTags: "tag:k8s"
+    # We only need ingress/egress proxies, not the in-process kube-API proxy.
+    apiServerProxyConfig:
+      mode: "false"

@@ -5,7 +5,15 @@ tailscale_enabled: true
 tailscale_accept_routes: false  # CRITICAL: Should be false to prevent routing loops (especially for subnet routers)
 tailscale_accept_dns: false  # We use our own DNS infrastructure
 tailscale_advertise_routes: []  # Subnet routes to advertise (e.g., ["192.168.0.0/24"])
+tailscale_advertise_tags: []  # ACL tags to advertise (e.g., ["tag:subnet-router"]); the tag must exist in tagOwners (terraform/tailscale)
 tailscale_additional_flags: []  # Additional flags for tailscale up (e.g., ["--operator=eric", "--ssh"])
+
+# Strict tag adoption. Default false = best-effort (`tailscale set --advertise-tags`
+# non-zero rc does not fail the play — the expected pre-cutover "needs reauth"
+# state stays green). Set true ONLY for the supervised adoption step AFTER the ACL
+# defines tagOwners, so a host that silently fails to adopt the tag fails the play
+# instead of leaving the lockdown half-applied. See terraform/tailscale/README.md.
+tailscale_tags_require_adoption: false
 
 # 1Password reference for auth key (resolved at runtime)
 # secrets:

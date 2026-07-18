@@ -8,6 +8,7 @@ resources:
   - namespace.yaml
   - release.yaml
   - traefik-internal-service.yaml
+  - traefik-tailnet-service.yaml
   - networkpolicy.yaml
 
 # default-deny-ingress from the shared baseline component (see

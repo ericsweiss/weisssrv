@@ -12,6 +12,7 @@ data:
   bar_assistant_version: 5.15.3
   busybox_version: '1.38'
   containerd_version: 2.2.6-1~debian.13~trixie
+  coredns_tailnet_version: 1.14.4
   debian_version: '13'
   docker_buildx_plugin_version: 0.35.0-1~debian.13~trixie
   docker_ce_version: 5:29.6.1-1~debian.13~trixie
@@ -33,6 +34,7 @@ data:
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.15.1
   helm_chart_versions_reloader: 2.2.14
+  helm_chart_versions_tailscale_operator: 1.98.9
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
   hermes_codex_version: 0.144.5

@@ -1,0 +1,62 @@
+---
+# Default-deny egress; explicit allows below. (default-deny-ingress comes from
+# the shared netpol-baseline component in kustomization.yaml.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: tailnet-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Egress: the resolver forwards non-Traefik names to AdGuard (.150/.160) on 53.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-adguard
+  namespace: tailnet-dns
+spec:
+  podSelector:
+    matchLabels:
+      app: tailnet-dns
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.150/32
+        - ipBlock:
+            cidr: 192.168.0.160/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Ingress: DNS queries arrive from the ts-dns tailscale proxy pod (namespace
+# tailscale) on 53. Kubelet health/readiness probes are host-sourced and exempt.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-ts-proxy
+  namespace: tailnet-dns
+spec:
+  podSelector:
+    matchLabels:
+      app: tailnet-dns
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tailscale
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

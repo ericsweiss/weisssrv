@@ -11,3 +11,4 @@ resources:
   - vpa
   - kured
   - reloader
+  - tailscale-operator

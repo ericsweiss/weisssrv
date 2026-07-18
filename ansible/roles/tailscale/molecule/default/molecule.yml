@@ -32,4 +32,11 @@ provisioner:
         tailscale_accept_dns: false
         tailscale_advertise_routes:
           - 192.168.0.0/24
+        # Exercise the tag-advertisement code path (rendered into the
+        # `tailscale set --advertise-tags` reconcile task; it is not passed to the
+        # initial `tailscale up`). tailscale up/set are skipped in molecule (no
+        # auth key, BackendState never Running), so this validates the role
+        # converges cleanly with a tag configured, not live tag adoption.
+        tailscale_advertise_tags:
+          - tag:subnet-router
         tailscale_additional_flags: []

@@ -23,4 +23,5 @@ resources:
   - fairwinds.yaml
   - kured.yaml
   - stakater.yaml
+  - tailscale-operator.yaml
   - versions-configmap.yaml

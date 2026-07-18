@@ -1,0 +1,39 @@
+---
+# Traefik exposed as a tailnet L3 device via the Tailscale operator.
+#
+# Sibling of traefik-internal-service.yaml (MetalLB .101) — a single Service
+# can't be both MetalLB and tailscale, so this is a second Service selecting the
+# SAME Traefik pods. loadBalancerClass: tailscale makes the operator register a
+# tailnet device named "traefik-tailnet" (stable MagicDNS name
+# traefik-tailnet.<tailnet>.ts.net) that L3/DNAT-forwards 443/80 to Traefik.
+# Because it's plain TCP passthrough, SNI/Host are preserved and Traefik
+# terminates the *.esweiss.com wildcard cert and routes by Host exactly as for a
+# LAN client. The tailnet-dns resolver returns this device's MagicDNS name as
+# the CNAME target for Traefik-fronted *.esweiss.com names, so a remote phone
+# reaches the internal web apps over the mesh (not the broken subnet-route path
+# to the .101 VIP). Tailnet traffic arrives at Traefik from the proxy pod's
+# cluster IP (10.42.0.0/16), which the lan-tailscale-only middleware already
+# permits. See docs/05-tailscale.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-tailnet
+  namespace: traefik
+  annotations:
+    tailscale.com/hostname: "traefik-tailnet"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  selector:
+    app.kubernetes.io/name: traefik
+    # Traefik chart instance label = <releaseName>-<namespace> ("traefik"-"traefik").
+    app.kubernetes.io/instance: traefik-traefik
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+      protocol: TCP
+    - name: websecure
+      port: 443
+      targetPort: websecure
+      protocol: TCP

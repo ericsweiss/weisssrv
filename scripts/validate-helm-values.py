@@ -114,6 +114,13 @@ RELEASES = [
         "repo_name": "stakater",
         "repo_url": "https://stakater.github.io/stakater-charts",
     },
+    {
+        "name": "tailscale-operator",
+        "manifest": "kubernetes/infrastructure/controllers/tailscale-operator/release.yaml",
+        "chart": "tailscale-operator",
+        "repo_name": "tailscale",
+        "repo_url": "https://pkgs.tailscale.com/helmcharts",
+    },
 ]
 
 VERSIONS_CONFIGMAP = "kubernetes/infrastructure/sources/versions-configmap.yaml"

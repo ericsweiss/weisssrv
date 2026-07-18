@@ -1,43 +1,192 @@
 // Tailnet policy for the weisssrv homelab — managed by terraform/tailscale.
 //
-// REVIEW BEFORE FIRST APPLY: this OVERWRITES the live tailnet ACL. It is written
-// to be NON-BREAKING (preserves the current full-mesh member access and Tailscale
-// SSH) while adding route auto-approval so subnet-router failover is real. Verify
-// the owner identity below matches your tailnet before applying.
+// LEAST-PRIVILEGE LOCKDOWN. This replaces the earlier non-breaking baseline
+// (`autogroup:member -> *:*` full mesh + root SSH) with tag/port-scoped rules.
+// It is written to preserve EVERY path the operator uses today (SSH, Proxmox UI,
+// kube-API, all web apps, Plex, Samba, DNS, HAOS, RDP) while removing the flat
+// full-mesh reach a single compromised tailnet device had.
+//
+// APPLY IS SUPERVISED — see README.md. A wrong policy can sever tailnet
+// connectivity and Tailscale SSH (this repo's own remote-admin path). Review the
+// diff (`terraform plan`) against the live Admin-console ACL, and complete the
+// pre-apply checklist in README.md (nonroot+sudo validated on all six hosts)
+// BEFORE the first apply. The staged deploy order is documented in README.md:
+//   1) apply THIS policy (adds tagOwners + tag-based route auto-approval),
+//   2) run the tailscale Ansible role so the six hosts adopt tag:subnet-router,
+//   3) once every host is tagged and route approval is confirmed, tighten the
+//      autoApprovers owner entry (see the comment on it below).
 {
+  // Identity groups. `group:admins` is the tailnet owner's account — the single
+  // human operator of this homelab. Every acls/ssh rule below sources from this
+  // group, NOT `autogroup:member`. That is the least-privilege intent: if a
+  // non-owner device ever joins the tailnet (a shared/guest node, a family
+  // member's device), it inherits ZERO access to SSH / Proxmox / kube-API / NFS
+  // / SMB / Plex / RDP until it is explicitly added to this group. On a
+  // single-owner tailnet the effective set equals `autogroup:member` today, but
+  // scoping to the group makes that a deliberate, documented decision instead of
+  // an accident that silently widens the day a second member appears.
+  "groups": {
+    "group:admins": ["ericsweiss1@gmail.com"],
+  },
+
+  // Owners permitted to APPLY tag:subnet-router to a device. Required before a
+  // host can advertise the tag (`tailscale set/up --advertise-tags`). The owner
+  // owns the tag, so no separate tagged auth key is needed to migrate the hosts.
+  "tagOwners": {
+    "tag:subnet-router": ["ericsweiss1@gmail.com"],
+    // Tailscale Kubernetes operator + the proxy devices it registers.
+    //   tag:k8s-operator  the operator's OWN device. `[]` = owned by tailnet
+    //                     admins, so the owner can create the operator OAuth
+    //                     client (1Password "Tailscale Operator OAuth") bearing
+    //                     this tag.
+    //   tag:k8s           applied to every proxy device the operator creates
+    //                     (traefik-tailnet, ts-dns). MUST be ownable by
+    //                     tag:k8s-operator or the operator cannot register them.
+    "tag:k8s-operator": [],
+    "tag:k8s": ["tag:k8s-operator"],
+  },
+
   "acls": [
-    // Preserve current access: tailnet members reach everything. This matches
-    // the personal-tailnet default; tighten to tag-scoped rules later (see
-    // README "Tightening") once segmentation is validated.
+    // Rule 1 — owner devices reach the subnet-router HOSTS' own services on
+    // their tailnet (100.x) IP directly (not via subnet routing). The Proxmox
+    // hosts themselves serve SSH (22) and the Proxmox UI (8006); 80/443/6443 are
+    // included defensively (the host firewall's sg-host-admin only opens 22/8006
+    // from admin_ts, so the extras are inert unless a host later serves them —
+    // the kube-API is reached via Rule 2 to the server VMs / VIP, not the host).
     {
       "action": "accept",
-      "src": ["autogroup:member"],
-      "dst": ["*:*"],
+      "src": ["group:admins"],
+      "dst": ["tag:subnet-router:22,80,443,6443,8006"],
+    },
+
+    // Rule 2 — owner devices reach the LAN via subnet routing (dst is the routed
+    // 192.168.0.0/24). This is the day-to-day browsing/admin surface. Ports are
+    // proto-agnostic (no "proto" field) so each matches BOTH tcp and udp, which
+    // is what DNS (53/853) needs; ICMP is auto-allowed for any matched pair, so
+    // ping/traceroute work without a port. The set is the honest union of what a
+    // subnet-routed tailnet device can reach today — Tailscale SNATs routed
+    // traffic to the router host's LAN IP, so it lands in the host firewall as an
+    // admin_lan / pve_hosts / nfs_clients / core-cluster source. Each port maps
+    // to a real service + its cluster.fw.j2 security group:
+    //   22    SSH — sg-host-admin / sg-vm-admin / sg-gitlab
+    //   53    DNS (tcp+udp) — AdGuard .150/.160, sg-dns
+    //   80    HTTP ingress + GitLab redirect — sg-k3s-ingress-*, sg-gitlab
+    //   111   rpcbind (NFS debugging companion to 2049) — sg-nfs-server
+    //   443   HTTPS — all Traefik-fronted web apps, GitLab, AdGuard — sg-k3s-ingress-*, sg-gitlab, sg-dns
+    //   445   SMB / Samba shares on the NAS — sg-smb-server
+    //   853   DNS-over-TLS (tcp+udp) — sg-dns
+    //   2049  NFS (debugging from the tailnet) — sg-nfs-server
+    //   2222  GitLab SSH (git protocol) — sg-gitlab
+    //   3000  AdGuard Home admin API — sg-dns
+    //   3389  Windows RDP (.155) — sg-windows
+    //   6443  kube-API — VIP .161 + server VMs .222/.223/.227 — sg-k3s-core
+    //   8006  Proxmox VE web UI (host LAN IP) — sg-host-admin
+    //   8123  Home Assistant (.154) — sg-haos
+    //   22222 HAOS SSH add-on — sg-haos
+    //   32400 Plex direct streaming (.152) — sg-plex
+    //   32469 Plex companion / DLNA server description — sg-plex
+    // Deliberately EXCLUDED (not reachable by a subnet-routed device today, or
+    // not user-initiated): k3s-internal ports (etcd 2379:2380/2381, kubelet
+    // 10250, flannel-wireguard 51820, memberlist 7946, supervisor 9345) and the
+    // metrics ports are firewall-scoped to k3s_nodes, whose membership excludes
+    // the SNAT host IP; GitLab registry 5050 / Pages 8443 are k3s_nodes-only and
+    // are reached over 443 via Traefik; corosync/migration (5405/5406,
+    // 60000:60050) and the Loki push NodePort (31100) are infra-internal, never
+    // operator traffic. LAN-local multicast discovery (SSDP 1900, mDNS 5353, Plex
+    // GDM 32410:32414) is not carried over subnet routes, so it is omitted.
+    {
+      "action": "accept",
+      "src": ["group:admins"],
+      "dst": ["192.168.0.0/24:22,53,80,111,443,445,853,2049,2222,3000,3389,6443,8006,8123,22222,32400,32469"],
+    },
+
+    // Rule 3 — owner devices reach the owner's OWN devices over SSH (port 22).
+    // This is the network-access gate that BACKS the Tailscale SSH rule below:
+    // Tailscale requires BOTH a network `acls` rule AND a matching `ssh` rule for
+    // a connection to be permitted (tailscale.com/kb/1193), so `autogroup:self`
+    // in the ssh rule alone grants nothing without a network rule like this one.
+    // `autogroup:self` selects the source user's own UNTAGGED devices (it excludes
+    // tagged devices), which covers two paths on this single-owner tailnet:
+    //   - inter-device SSH between the owner's own client devices (laptop <-> phone),
+    //   - SSH to the Proxmox hosts DURING the migration window, while they are
+    //     still untagged/user-owned. Once a host adopts tag:subnet-router it stops
+    //     matching autogroup:self and is instead covered by Rule 1
+    //     (tag:subnet-router:22) — a seamless handoff with no SSH gap.
+    // Scoped to port 22 only: this is NOT the broad member->member full mesh the
+    // lockdown removed (same-owner devices, SSH only). DERP/infra relay needs no
+    // explicit rule.
+    {
+      "action": "accept",
+      "src": ["group:admins"],
+      "dst": ["autogroup:self:22"],
+    },
+
+    // Rule 4 — owner devices reach the operator-exposed proxy DEVICES (tag:k8s):
+    //   :443  the traefik-tailnet device — Traefik ingress exposed on the tailnet
+    //         (L3 TCP passthrough; TLS terminated in-cluster on the *.esweiss.com
+    //         wildcard). This is the mesh path a remote phone uses to browse the
+    //         internal web apps, replacing the broken subnet-route path to the
+    //         .101 MetalLB VIP.
+    //   :53   the ts-dns device — the CoreDNS split-horizon resolver that Tailscale
+    //         Split-DNS forwards esweiss.com to (tcp+udp, no proto field). It
+    //         answers Traefik-fronted names with a CNAME to traefik-tailnet.
+    // Standalone (single-proxy) exposure: access is governed by the proxy DEVICE
+    // tag, so no autoApprovers.services block is needed (that is HA-ProxyGroup
+    // only). Both devices carry tag:k8s (the operator's default proxy tag).
+    {
+      "action": "accept",
+      "src": ["group:admins"],
+      "dst": ["tag:k8s:53,443"],
     },
   ],
 
-  // Auto-approve the LAN subnet route advertised by any of the owner's devices
-  // (all six Proxmox hosts are owned by this identity). This is what makes the
-  // multi-host subnet-router redundancy actually fail over instead of depending
-  // on a one-time manual approval of a single host. Referencing the owning user
-  // (not a tag) avoids having to re-auth the hosts with --advertise-tags.
+  // Auto-approve the 192.168.0.0/24 subnet route so failover across all six
+  // subnet-router hosts is real (not a per-host manual approval). BOTH the tag
+  // AND the owner are listed on purpose during the migration:
+  //   - tag:subnet-router      approves routes once a host has adopted the tag,
+  //   - ericsweiss1@gmail.com  keeps still-untagged (user-owned) hosts approved.
+  // This eliminates any approval gap while the six hosts are tagged one by one.
+  // FOLLOW-UP TIGHTENING (post-migration): once `tailscale status` confirms all
+  // six hosts are tagged and their routes approved, REMOVE the owner entry so
+  // only tag-owned devices can auto-approve the LAN route (a stricter posture).
   "autoApprovers": {
     "routes": {
-      "192.168.0.0/24": ["ericsweiss1@gmail.com"],
+      "192.168.0.0/24": ["tag:subnet-router", "ericsweiss1@gmail.com"],
     },
   },
 
-  // Tailscale SSH: members may SSH to their own tagged/owned devices, matching
-  // the existing `tailscale up --ssh` on the Proxmox hosts. Kept at "check"
-  // (periodic re-auth) to match the live Admin-console ACL — this is a security
-  // hardening pass, so we do NOT loosen SSH to "accept" (no re-auth). Verified
-  // 2026-07-05: the live tailnet SSH rule used action "check".
+  // Tailscale SSH. action "check" (periodic reauth) matches the live console
+  // rule — this is a hardening pass, so SSH is not loosened to "accept".
+  //   - dst autogroup:self    covers SSH between the owner's own user-owned
+  //                           devices (untagged clients) AND SSH to the hosts
+  //                           while they are still untagged mid-migration; its
+  //                           network-access gate is acls Rule 3 above (Tailscale
+  //                           requires both a network rule and this ssh rule),
+  //   - dst tag:subnet-router covers SSH INTO the Proxmox hosts, which become
+  //                           TAGGED (autogroup:self does NOT match tagged
+  //                           devices, so the tag must be listed explicitly).
+  //   - users autogroup:nonroot  DROPS root. The operator connects as `eric`
+  //                           (passwordless sudo on every host). This requires
+  //                           nonroot+sudo validated on all six hosts BEFORE
+  //                           apply — see README.md pre-apply checklist.
   "ssh": [
     {
       "action": "check",
-      "src": ["autogroup:member"],
-      "dst": ["autogroup:self"],
-      "users": ["autogroup:nonroot", "root"],
+      "src": ["group:admins"],
+      "dst": ["autogroup:self", "tag:subnet-router"],
+      "users": ["autogroup:nonroot"],
     },
+
+    // BREAK-GLASS FALLBACK (commented). If dropping root ever locks you out
+    // (eric's sudo broke on every host at once), re-add root by uncommenting
+    // this rule and re-applying, OR add it directly in the Admin console
+    // (Access controls) as an emergency edit — the console edit surfaces as
+    // drift in the tailscale-drift-plan CI job until reconciled back here.
+    // {
+    //   "action": "check",
+    //   "src": ["group:admins"],
+    //   "dst": ["autogroup:self", "tag:subnet-router"],
+    //   "users": ["autogroup:nonroot", "root"],
+    // },
   ],
 }

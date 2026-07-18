@@ -1233,6 +1233,56 @@ tasks:
     cmds:
       - op run -- terraform apply {{.CLI_ARGS}}
 
+  # --- Tailscale ACL module (separate state name; SUPERVISED apply) ---
+  # Mirrors the cloudflare terraform:* tasks but points at terraform/tailscale,
+  # its own GitLab state name (does not collide with cloudflare), and the
+  # Tailscale OAuth creds (scope acl). apply is a supervised operator step — a
+  # bad ACL can sever tailnet/SSH. See terraform/tailscale/README.md.
+  terraform:tailscale-init:
+    desc: Initialize Terraform for the tailscale ACL module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    # Anchor shared by terraform:tailscale-init/plan/apply — Tailscale OAuth vars
+    # + the tailscale-specific HTTP state name in one place.
+    env: &tf_tailscale_env
+      TF_VAR_tailscale_oauth_client_id: op://Homelab/Tailscale OAuth/client id
+      TF_VAR_tailscale_oauth_client_secret: op://Homelab/Tailscale OAuth/credential
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/tailscale"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/tailscale/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/tailscale/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  terraform:tailscale-plan:
+    desc: "Plan tailscale ACL changes (review the diff vs the live tailnet ACL)"
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    env: *tf_tailscale_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  terraform:tailscale-apply:
+    desc: "SUPERVISED: apply the tailscale ACL — overwrites the live tailnet ACL; read terraform/tailscale/README.md and complete the pre-apply checklist first. Do NOT pass -auto-approve."
+    dir: "{{.TERRAFORM_DIR}}/tailscale"
+    env: *tf_tailscale_env
+    preconditions: *tf_preconditions
+    cmds:
+      # Hard guard: a bad tailnet ACL can sever SSH/tailnet, so the apply MUST be
+      # supervised (review the plan, type `yes`). Refuse -auto-approve so the plan
+      # review cannot be bypassed by an errant flag / copy-paste.
+      - |
+        case " {{.CLI_ARGS}} " in
+          *-auto-approve*)
+            echo "Refusing -auto-approve: the Tailscale ACL apply is supervised. Review the plan and type 'yes'." >&2
+            exit 1
+            ;;
+        esac
+        op run -- terraform apply {{.CLI_ARGS}}
+
   terraform:validate:
     desc: Validate Terraform configuration (alias for validate-local)
     cmds:

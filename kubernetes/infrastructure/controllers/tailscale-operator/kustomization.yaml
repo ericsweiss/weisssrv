@@ -1,0 +1,14 @@
+---
+# Tailscale operator: namespace + OAuth ExternalSecret + HelmRelease.
+# No shared default-deny-ingress component here: the operator serves an
+# admission webhook to kube-API and its proxy pods bridge the tailnet to
+# in-cluster backends, so a blanket ingress deny would break them (see
+# namespace.yaml). NetworkPolicy hardening for this namespace is tracked as a
+# follow-up once the operator's exact ingress/webhook surface is pinned.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tailscale
+resources:
+  - namespace.yaml
+  - externalsecret.yaml
+  - release.yaml

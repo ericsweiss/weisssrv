@@ -502,6 +502,26 @@ SERVICE_REGISTRY: list[dict] = [
         "source_url": "https://artifacthub.io/packages/helm/stakater/reloader",
     },
     {
+        "name": "Tailscale Operator",
+        "var_name": "helm_chart_versions.tailscale_operator",
+        "category": "helm",
+        "helm_repo": "https://pkgs.tailscale.com/helmcharts",
+        "helm_chart": "tailscale-operator",
+        "source_url": "https://github.com/tailscale/tailscale/releases",
+        "notes": (
+            "Tracks the host tailscale_version; exposes the internal Traefik "
+            "ingress + the tailnet-dns resolver to the tailnet (docs/05)."
+        ),
+    },
+    {
+        "name": "CoreDNS (tailnet-dns resolver)",
+        "var_name": "coredns_tailnet_version",
+        "category": "dockerhub",
+        "docker_image": "rancher/mirrored-coredns-coredns",
+        "tag_regex": r"^(\d+\.\d+\.\d+)$",
+        "notes": "CoreDNS image for the tailnet-dns split-horizon resolver (rancher mirror k3s caches).",
+    },
+    {
         "name": "Flux CLI (CI verify)",
         "var_name": "flux_version",
         "category": "github",
@@ -2214,6 +2234,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "exportarr_version", "proxmox_exporter_version",
         "zfs_exporter_version", "adguard_exporter_version",
         "unbound_exporter_version", "redis_exporter_version",
+        # tailnet-dns CoreDNS resolver image (kubernetes/apps/tailnet-dns)
+        "coredns_tailnet_version",
     )
     if var_name in flux_managed or var_name.startswith("helm_chart") or category == "helm":
         return "task flux:sync-versions && git commit -am '...' && git push  # Flux reconciles on push"

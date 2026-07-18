@@ -32,7 +32,8 @@ when an item is added or its fields change.
 - **Email Config** - root_alias (ericsweiss1@gmail.com)
 - **AdGuard Home** - admin username + password (the `adguard_home` role generates the bcrypt hash in `AdGuardHome.yaml` from this plaintext password at deploy time; no `password_hash` field is injected or consumed)
 - **Tailscale Auth Key** - auth key
-- **Tailscale OAuth** - client id + credential (OAuth client scoped `acl` write; used by `terraform/tailscale` to manage the tailnet ACL policy — see that module's README)
+- **Tailscale OAuth** - client id + credential (OAuth client scoped `acl` **and `dns`** write; used by `terraform/tailscale` to manage the tailnet ACL policy AND the `esweiss.com` Split-DNS nameservers — see that module's README)
+- **Tailscale Operator OAuth** - `client-id` + `client-secret` (OAuth client scoped **write** on Devices/Core, Keys/Auth Keys, and Services, associated with tag `tag:k8s-operator`; consumed in-cluster by ESO → Secret `operator-oauth` for the Tailscale Kubernetes operator that exposes the internal Traefik ingress + `ts-dns` resolver to the tailnet — see docs/05). Distinct from the two items above.
 - **SSH Key** - public + private key
 - **Samba NAS User** - nas user password
 - **DNS-01 SSH Key** - private + public key (for cert distribution)

@@ -145,6 +145,9 @@ adguardhome_sync_version: "0.9.2"
 # helm_chart_versions.alloy chart pin below).
 alloy_host_version: "1.17.1-1"
 tailscale_version: "1.98.9"
+# CoreDNS image for the tailnet-dns split-horizon resolver (kubernetes/apps/
+# tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.
+coredns_tailnet_version: "1.14.4"
 debian_version: "13"
 k3s_version: "v1.36.2+k3s1"
 # Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
@@ -367,6 +370,7 @@ helm_chart_versions:
   vpa: "4.12.3"
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.14"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
+  tailscale_operator: "1.98.9"  # Tailscale K8s operator (appVersion v1.98.9; tracks the host tailscale_version); exposes internal Traefik + tailnet-dns to the tailnet
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

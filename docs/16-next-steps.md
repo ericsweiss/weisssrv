@@ -365,20 +365,31 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
 - **Decision needed**: hardware spend, and whether the compute nodes have a
   spare NIC for ring1.
 
-#### Tailscale ACL least-privilege lockdown
+#### Tailscale ACL least-privilege lockdown — IMPLEMENTED (pending supervised apply)
 
-- **Current state**: `terraform/tailscale/policy.hujson` grants full-mesh member
-  access (`autogroup:member -> *:*`), the SSH rule allows `root` (action
-  `check`), and `autoApprovers` auto-approves `192.168.0.0/24` — so a single
-  compromised tailnet-joined device has lateral reach to the whole LAN. This is
-  an acknowledged, deliberately non-breaking baseline (documented in the file
-  and its README), not a regression.
-- **Proposed change**: follow the file's own plan and
-  [docs/05-tailscale.md](05-tailscale.md) — tag the Proxmox subnet routers
-  `tag:subnet-router`, scope the ACLs to tag/group-based `src -> dst` rules, and
-  drop the `root` SSH user once nonroot+sudo access is validated.
-- **Decision needed**: confirm the tag/group scoping scheme and validate nonroot
-  SSH before tightening.
+- **Status**: the least-privilege policy has **landed in the repo**.
+  `terraform/tailscale/policy.hujson` now defines `group:admins`
+  (`= [ericsweiss1@gmail.com]`, the `src` of every rule instead of
+  `autogroup:member`) and `tag:subnet-router` (tagOwners), scopes access to two
+  port-restricted `src group:admins -> dst` rules (rule 1 → the hosts' own
+  services on their tailnet IP; rule 2 → the LAN via subnet routing, on the honest
+  union of user-facing service ports) plus an SSH network gate (rule 3 →
+  `autogroup:self:22`), auto-approves `192.168.0.0/24` for both the tag and
+  (during migration) the owner, and **drops the `root` Tailscale SSH user**
+  (nonroot + break-glass rule kept commented). The tailscale role advertises the
+  tag via `tailscale_advertise_tags` (`group_vars/proxmox.yml`), adopted through
+  its best-effort `tailscale set --advertise-tags` reconcile (strict under
+  `tailscale_tags_require_adoption=true` for the supervised step).
+- **Remaining step (supervised)**: the first `terraform apply` + tagging the six
+  hosts is a supervised maintenance-window cutover — a botched ACL push can sever
+  tailnet/SSH. Follow the staged runbook in
+  [terraform/tailscale/README.md](../terraform/tailscale/README.md): pre-apply
+  nonroot-SSH checklist on all six hosts, apply the ACL, run the tailscale role to
+  adopt the tag, verify route approval + SSH + kube-API, break-glass ready. Until
+  applied, `tailscale-drift-plan` reports the full policy diff (advisory yellow).
+- **Follow-up tightening (post-migration)**: remove the owner entry from
+  `autoApprovers.routes` once all six hosts are tagged; revisit the host firewall
+  `admin_ts` set now that tag-scoped tailnet ACLs exist.
 
 ### Deferred from the 2026 comprehensive review
 
@@ -410,12 +421,14 @@ supervised live steps that deserve their own change):
   data-safety cases), and ANS-INV-13 (health-verify resilience) need a runnable
   molecule environment to author and validate, so they are deferred from this MR.
 - **Tailscale ACL apply.** The tailnet policy-as-code landed
-  (`terraform/tailscale/`), but the first `terraform apply` remains a
-  supervised live step (a botched ACL push can sever tailnet/SSH access) —
-  follow `terraform/tailscale/README.md` in a maintenance window. Host egress
-  filtering, staged alongside it, is now **enabled on all six Proxmox hosts**
-  (`proxmox_firewall_egress_filtering: true`, docs/11) and the smtp-relay
-  guest enforces default-deny egress (`guest_firewall_policy_out: DROP`).
+  (`terraform/tailscale/`) and is now a **least-privilege lockdown** (tag/port
+  scoped, root SSH dropped — see the section above), but the first `terraform
+  apply` + host tagging remains a supervised live step (a botched ACL push can
+  sever tailnet/SSH access) — follow `terraform/tailscale/README.md` in a
+  maintenance window. Host egress filtering, staged alongside it, is
+  **enabled on all six Proxmox hosts** (`proxmox_firewall_egress_filtering:
+  true`, docs/11) and the smtp-relay guest enforces default-deny egress
+  (`guest_firewall_policy_out: DROP`).
 - **ARCH-4 — split `.gitlab-ci.yml` into `include:` files.** The 2,706-line
   pipeline is anchor-free (extends/!reference only), so a split is safe in
   principle, but `local:` includes can only be validated by pushing and

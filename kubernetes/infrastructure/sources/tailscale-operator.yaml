@@ -1,0 +1,14 @@
+---
+# Helm chart source for the Tailscale Kubernetes operator. The operator exposes
+# selected in-cluster Services to the tailnet as real 100.x mesh devices
+# (loadBalancerClass: tailscale) — used to reach the internal Traefik ingress
+# (and the tailnet-dns resolver) from remote Tailscale clients without depending
+# on the subnet-router return path. See docs/05-tailscale.md.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: tailscale
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://pkgs.tailscale.com/helmcharts

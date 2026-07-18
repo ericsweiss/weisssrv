@@ -88,6 +88,8 @@ secrets:
 # group_vars/proxmox.yml
 tailscale_advertise_routes:
   - "192.168.0.0/24"
+tailscale_advertise_tags:      # least-privilege tailnet ACL (terraform/tailscale)
+  - "tag:subnet-router"
 tailscale_additional_flags:
   - "--operator=eric"
   - "--ssh"
@@ -110,17 +112,96 @@ failover across the six hosts real instead of a per-host manual approval.
 ## Tailnet ACL Policy as Code (terraform/tailscale)
 
 `terraform/tailscale/` manages the tailnet **ACL policy** — access rules,
-Tailscale SSH rules, and subnet-route auto-approvers — as `policy.hujson`,
-mirroring the `terraform/cloudflare` pattern (GitLab HTTP state backend,
-1Password-injected credentials).
+Tailscale SSH rules, tag owners, and subnet-route auto-approvers — as
+`policy.hujson`, mirroring the `terraform/cloudflare` pattern (GitLab HTTP state
+backend, 1Password-injected credentials).
+
+**Least-privilege lockdown.** The policy is tag/port-scoped, replacing the
+earlier non-breaking baseline (`autogroup:member -> *:*` full mesh + root SSH):
+
+- **`group:admins`** (`= [ericsweiss1@gmail.com]`) is the `src` of every rule
+  below, **not** `autogroup:member`. On this single-owner tailnet the two are
+  equivalent today, but scoping to the group is the least-privilege posture: a
+  non-owner device that ever joins the tailnet inherits **zero** access until it
+  is deliberately added to the group.
+- **`tag:subnet-router`** is owned by `ericsweiss1@gmail.com` (`tagOwners`) and
+  advertised by all six Proxmox hosts (`tailscale_advertise_tags` in
+  `group_vars/proxmox.yml`).
+- **Rule 1** — admin devices reach a subnet-router host's own services (SSH 22,
+  Proxmox UI 8006; 80/443/6443 defensive) on its tailnet IP.
+- **Rule 2** — admin devices reach the LAN via subnet routing
+  (`192.168.0.0/24`) on the honest union of user-facing service ports (SSH, DNS
+  53/853, HTTP/HTTPS, SMB 445, NFS 2049, GitLab SSH 2222, AdGuard 3000, RDP
+  3389, kube-API 6443, Proxmox 8006, HAOS 8123/22222, Plex 32400/32469). Ports
+  are proto-agnostic (tcp+udp); ICMP is auto-allowed for matched pairs.
+- **Rule 3** — admin devices reach the owner's own devices on SSH
+  (`group:admins -> autogroup:self:22`). This is the network-access gate that
+  backs the Tailscale SSH rule (Tailscale needs *both* a network `acls` rule and
+  an `ssh` rule); it covers inter-device SSH between the owner's own client
+  devices and SSH to the hosts while they are still untagged during migration
+  (tagged hosts are covered by rule 1, since `autogroup:self` excludes tagged
+  devices). Port 22 only.
+- **`autoApprovers.routes`** — `192.168.0.0/24` auto-approves for BOTH
+  `tag:subnet-router` and (during migration) the owner, so failover across all
+  six hosts stays real with no approval gap while they are tagged one by one.
+- **SSH** — `action check`, `dst [autogroup:self, tag:subnet-router]`, users
+  `autogroup:nonroot` (**root dropped**; break-glass rule kept commented).
+
+Details, per-port justification, and the staged apply runbook are in
+`terraform/tailscale/README.md`.
 
 - **Credentials**: the `Tailscale OAuth` 1Password item (fields `client id`
   and `credential`) holds an OAuth client scoped to `acl` (write). See
   `docs/15-credential-rotation.md` for the item inventory.
 - **Apply is supervised**: a wrong policy can sever tailnet connectivity and
   Tailscale SSH, so `terraform apply` here is a deliberate operator step (a
-  read-only drift `plan` in CI is fine). Follow the runbook in
+  read-only drift `plan` in CI is fine). Wrappers: `task
+  terraform:tailscale-{init,plan,apply}`. Follow the staged runbook (pre-apply
+  nonroot-SSH checklist, tag adoption, verification, break-glass) in
   `terraform/tailscale/README.md`.
+- **Tagging order**: apply the ACL first (defines `tagOwners` + the tag-based
+  route auto-approver), then run the tailscale role so the hosts adopt the tag.
+  First-time tag adoption on a running user-owned host needs a supervised
+  reauthentication.
+
+## Internal web apps over Tailscale (Kubernetes operator)
+
+Subnet routing reaches plain LAN hosts (SSH, Proxmox UI, AdGuard, the VMs by IP)
+but **cannot** reach the k3s Traefik ingress VIP (`192.168.0.101`): that VIP is a
+MetalLB L2 address whose backing k3s node has no route back to the tailnet CGNAT
+range, so the return path of a subnet-routed connection is dropped and every
+`*.esweiss.com` web app times out from a remote client. The fix puts the ingress
+directly on the tailnet instead of routing to it.
+
+**Components** (all Flux-managed; versions pinned in `all.yml`):
+
+- **Tailscale Kubernetes operator** (`kubernetes/infrastructure/controllers/tailscale-operator`) —
+  authenticates with the `Tailscale Operator OAuth` client (via ESO → Secret
+  `operator-oauth`) and turns any Service with `loadBalancerClass: tailscale`
+  into a real 100.x tailnet device tagged `tag:k8s`.
+- **`traefik-tailnet` Service** (`kubernetes/infrastructure/controllers/traefik`) —
+  exposes the existing Traefik pods as the tailnet device
+  `traefik-tailnet.<tailnet>.ts.net` with **L3 TCP passthrough** on 443/80, so
+  Traefik still terminates the `*.esweiss.com` wildcard and routes by `Host`
+  exactly as for a LAN client. (Tailnet traffic reaches Traefik from the proxy
+  pod's cluster IP `10.42.0.0/16`, which the `lan-tailscale-only` middleware
+  already permits.)
+- **`tailnet-dns` CoreDNS resolver** (`kubernetes/apps/tailnet-dns`) — exposed as
+  the tailnet device `ts-dns`. It answers Traefik-fronted `*.esweiss.com` with a
+  CNAME to `traefik-tailnet.<tailnet>.ts.net` and **forwards the direct/admin +
+  infra names to AdGuard** (`.150/.160`) so those keep resolving to their real
+  LAN IPs. The forward list mirrors the non-`.101` `adguard_rewrites` in
+  `group_vars/dns.yml` — keep it in sync when a new bypass-Traefik name is added.
+- **Split-DNS** (`terraform/tailscale/split_dns.tf`) — points the tailnet's
+  `esweiss.com` Split-DNS nameserver at the `ts-dns` device's 100.x, so a remote
+  client resolving `grafana.esweiss.com` gets the CNAME → the Traefik device and
+  connects over the mesh (no subnet-route return path involved).
+
+**Policy**: `policy.hujson` owns `tag:k8s-operator`/`tag:k8s` and grants
+`group:admins → tag:k8s:53,443`. **Deploy order** (supervised terraform brackets
+the Flux merge): apply the ACL tag additions → create the operator OAuth client
+→ merge the Flux changes → once `ts-dns` has a 100.x, apply `split_dns.tf`
+(import the existing console entry first).
 
 ## Usage
 
@@ -208,11 +289,17 @@ If DNS resolution doesn't work over Tailscale:
 ## Security Considerations
 
 - **Auth Keys**: Use ephemeral or reusable auth keys from Tailscale admin console
-- **SSH Access**: Tailscale SSH provides additional security layer; SSH
-  authorization is governed by the tailnet ACL, now versioned in
-  `terraform/tailscale/policy.hujson`
+- **SSH Access**: Tailscale SSH provides an additional security layer; SSH
+  authorization is governed by the tailnet ACL, versioned in
+  `terraform/tailscale/policy.hujson`. The least-privilege policy drops the
+  `root` user (connect as `eric` + sudo) and scopes SSH to `autogroup:self` +
+  `tag:subnet-router`. This is separate from host `sshd` (LAN/corosync
+  root logins for migration/replication are unaffected)
 - **Operator User**: Only `eric` user can manage Tailscale on each host
 - **No Exit Node**: Hosts do not route internet traffic through the homelab
+- **Least privilege**: the tailnet ACL is tag/port-scoped (no `*:*` full mesh),
+  so a single compromised tailnet device no longer has flat lateral reach —
+  see `terraform/tailscale/README.md`
 - **ACL changes**: review `policy.hujson` against the live Admin-console ACL
   before any supervised apply (see `terraform/tailscale/README.md`)
 
