@@ -184,6 +184,28 @@
   changed_when: false
   when: not (skip_nextcloud_deploy | default(false))
 
+# Outgoing mail via the SMTP relay. Applied with occ because the image's SMTP_*
+# env only autoconfigures a FRESH install, not this already-provisioned instance.
+# mail_smtpauth is left at its default (off) — the VM is in the relay's mynetworks
+# so it relays on port 25 without SASL (see defaults). Idempotent set.
+- name: Configure Nextcloud outgoing SMTP (relay)
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T -u www-data nextcloud
+      php occ config:system:set {{ item.key }} --value={{ item.value | quote }}
+    chdir: "{{ nextcloud_compose_dir }}"
+  loop:
+    - { key: mail_smtpmode, value: "smtp" }
+    - { key: mail_smtphost, value: "{{ nextcloud_smtp_host }}" }
+    - { key: mail_smtpport, value: "{{ nextcloud_smtp_port }}" }
+    - { key: mail_smtpsecure, value: "{{ nextcloud_smtp_secure }}" }
+    - { key: mail_from_address, value: "{{ nextcloud_mail_from_address }}" }
+    - { key: mail_domain, value: "{{ nextcloud_mail_domain }}" }
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+  when: not (skip_nextcloud_deploy | default(false))
+
 # =============================================================================
 # Nightly PostgreSQL logical backup (rides the app zvol -> archive + vzdump)
 # =============================================================================

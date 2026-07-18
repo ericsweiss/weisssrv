@@ -65,6 +65,17 @@ nextcloud_trusted_domains: >-
   {{ nextcloud_external_host }} {{ nextcloud_internal_host }} nextcloud localhost
 nextcloud_overwrite_protocol: https
 nextcloud_overwrite_cli_url: "https://{{ nextcloud_external_host }}"
+
+# Outgoing mail via the SMTP relay (smtp-relay.esweiss.com / .151). The Nextcloud
+# VM (.156) is in the relay's mynetworks (192.168.0.0/24), so it relays on port 25
+# WITHOUT SASL (permit_mynetworks) — no credential to manage; the relay adds TLS on
+# the Gmail hop. Applied via occ (the image's SMTP_* env only autoconfigures a
+# FRESH install, not this already-provisioned instance).
+nextcloud_smtp_host: smtp-relay.esweiss.com
+nextcloud_smtp_port: "25"
+nextcloud_smtp_secure: ""            # no encryption on port 25 (plaintext on the LAN)
+nextcloud_mail_from_address: nextcloud
+nextcloud_mail_domain: ericsweiss.com
 # Docker bridge subnet for the compose project. The VM-local nginx publishes to
 # 127.0.0.1:8080; docker-proxy rewrites the source to this network's gateway,
 # so trusted_proxies must include the subnet (not just 127.0.0.1) for Nextcloud

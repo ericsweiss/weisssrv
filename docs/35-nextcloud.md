@@ -134,6 +134,18 @@ group provisioning on, `allow_multiple_user_backends=0`).
 > mapped from the `nextcloud-admins` group automatically — first admin logs in
 > via SSO and is promoted, or use the break-glass local admin.
 
+## Outgoing mail (SMTP relay)
+
+Nextcloud sends notifications, share invites, and password-reset mail through the
+homelab SMTP relay. The Nextcloud VM (`.156`) is in the relay's `mynetworks`
+(`192.168.0.0/24`), so it relays via **`smtp-relay.esweiss.com:25` without SASL**
+(permit_mynetworks — no credential to manage); the relay adds TLS on the Gmail
+hop. The `nextcloud` role applies this with `occ config:system:set mail_*` (the
+image's `SMTP_*` env only autoconfigures a fresh install, not the live instance),
+from-address `nextcloud@ericsweiss.com`. Tune via the `nextcloud_smtp_*` /
+`nextcloud_mail_*` role defaults. Test after deploy from Admin settings → Basic
+settings → Email server → *Send email*.
+
 ## Deploy runbook
 
 **Prerequisites** (one-time):
