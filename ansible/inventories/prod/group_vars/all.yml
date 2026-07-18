@@ -147,7 +147,7 @@ alloy_host_version: "1.17.1-1"
 tailscale_version: "1.98.9"
 # CoreDNS image for the tailnet-dns split-horizon resolver (kubernetes/apps/
 # tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.
-coredns_tailnet_version: "1.14.4"
+coredns_tailnet_version: "1.14.6"
 debian_version: "13"
 k3s_version: "v1.36.2+k3s1"
 # Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
@@ -221,15 +221,15 @@ plex_version: "1.43.3.10828-00f62d37d"
 # current latest patch. Applied by task gitlab:deploy / the deploy-gitlab CI
 # job (triggered on all.yml changes); maintenance apt-upgrade honors the
 # gitlab-ee package hold and will not bump it.
-gitlab_version: "19.1.2-ee.0"
+gitlab_version: "19.2.0-ee.0"
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
-gitlab_runner_helm_version: "0.90.1"
+gitlab_runner_helm_version: "0.91.0"
 
 # GitLab Agent for Kubernetes Helm chart version
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
-gitlab_agent_helm_version: "2.28.0"
+gitlab_agent_helm_version: "2.29.0"
 
 # Nextcloud (Docker Compose stack on the NAS-pinned VM, 192.168.0.156)
 # Consumed by Ansible (the nextcloud role) directly from all.yml — the VM
@@ -362,8 +362,8 @@ helm_chart_versions:
   cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.7.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.16.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
-  loki: "18.5.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  kube_prometheus_stack: "87.17.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  loki: "18.5.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.1"
   prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"

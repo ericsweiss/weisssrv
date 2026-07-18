@@ -277,6 +277,13 @@
         fail_msg: "Gitaly storage not configured correctly for GitLab 18+"
         success_msg: "Gitaly storage configured correctly (GitLab 18+ syntax)"
 
+    - name: Verify Container Registry blob store path is relocated
+      ansible.builtin.assert:
+        that:
+          - "gitlab_config is search(\"gitlab_rails\\\\['registry_path'\\\\] = '/mnt/gitlab-repos/registry'\")"
+        fail_msg: "registry_path not rendered — registry blob store would stay on the OS disk"
+        success_msg: "Registry blob store relocated to /mnt/gitlab-repos/registry"
+
     - name: Verify git-data directories exist
       ansible.builtin.stat:
         path: "{{ item }}"

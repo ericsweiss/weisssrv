@@ -21,6 +21,9 @@ metadata:
   namespace: traefik
   annotations:
     tailscale.com/hostname: "traefik-tailnet"
+    # Sizes the operator-created proxy pod's resources (default request is ~1Mi
+    # memory; actual RSS ~55Mi) — see controllers/tailscale-operator/proxyclass.yaml.
+    tailscale.com/proxy-class: default-proxyclass
 spec:
   type: LoadBalancer
   loadBalancerClass: tailscale

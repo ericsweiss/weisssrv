@@ -73,6 +73,30 @@ spec:
           # DNAT-insert race can't cost a ~5s resolver stall. Kept in sync with
           # recipes/mealie.yaml and the *arr deployments.
           - name: single-request-reopen
+      # CODEX_HOME (/opt/data/.codex) does not exist on a freshly-provisioned
+      # NFS export, so `codex login` fails in either container until the dir is
+      # created (previously a manual mkdir). This initContainer self-heals that:
+      # it mkdir -p's the path on the shared NFS volume before the gateway and
+      # dashboard start, so the persisted Codex OAuth token has a home on first
+      # boot. Runs as 1000:2000 (HERMES_UID/GID) — the export's all_squash maps
+      # every write to anonuid=1000/anongid=2000 (the same ownership the app's
+      # s6 init expects); mkdir -p is idempotent, so it is a no-op on later boots.
+      initContainers:
+        - name: init-codex-home
+          image: busybox:${busybox_version}
+          command: ["/bin/sh", "-c"]
+          args:
+            - mkdir -p /opt/data/.codex
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 2000
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
       containers:
         # ── Gateway: always-on agent supervisor ──────────────────────────
         - name: gateway

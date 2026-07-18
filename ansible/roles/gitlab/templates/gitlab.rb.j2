@@ -87,6 +87,12 @@ registry_nginx['listen_https'] = true
 registry_nginx['listen_port'] = 5050
 registry_nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
 registry_nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
+{% if gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry' %}
+# Registry blob store relocated off the OS disk onto the /mnt/gitlab-repos zvol
+# (~7.5G, the largest component). Mirrors the Gitaly repo relocation above; the
+# role moves the existing store once, then reconfigure repoints it here.
+gitlab_rails['registry_path'] = '{{ gitlab_registry_data_dir }}'
+{% endif %}
 {% endif %}
 
 # =============================================================================

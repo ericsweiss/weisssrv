@@ -184,13 +184,26 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+          # NFS-ESTALE self-heal: /etc/wireguard is NFS-backed (wg-easy-appdata
+          # from pve-nas-01). After a NAS/NFS reboot the established mount returns
+          # stale file handles that wg-easy does not recover from — the UI can
+          # keep answering on :51821 (a tcpSocket liveness would stay green) while
+          # its SQLite state is unreadable, and the pod had to be manually deleted
+          # to remount. stat-ing the mount surfaces ESTALE (immediate error) or a
+          # hung hard-mount (probe timeout); either fails the probe so kubelet
+          # restarts the pod and it remounts. The tcpSocket UI check is retained
+          # as the readinessProbe above. Conservative timing so a brief NFS blip
+          # can't flap-restart. Runs as root (runAsUser 0).
           livenessProbe:
-            tcpSocket:
-              port: ui
+            exec:
+              command:
+                - sh
+                - -c
+                - stat /etc/wireguard >/dev/null 2>&1 || exit 1
             initialDelaySeconds: 30
             periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 4
+            timeoutSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
               cpu: 25m

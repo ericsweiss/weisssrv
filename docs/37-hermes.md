@@ -203,27 +203,42 @@ defence-in-depth — and it is what makes the `0.0.0.0` bind legal.
 Authentik providers/applications are **not** stored in this repo; create them by
 hand in the admin UI at `auth.esweiss.com`:
 
+The dashboard is reachable on **two** hostnames — internal `agent.esweiss.com`
+and external `agent.ericsweiss.com` — and each IngressRoute carries the
+`authentik-auth` middleware. In forward-auth **single-application** mode a proxy
+provider matches one external host, so **each host needs its own provider +
+application**. Register both — with only the internal one, the external host
+404s at the embedded outpost (the outpost has no provider for that host):
+
 1. **Group** → *Directory ▸ Groups* → create `hermes-users`; add the users who
    should have access.
-2. **Provider** → *Applications ▸ Providers ▸ Create* → **Proxy Provider**:
-   - Name: `hermes`
+2. **Providers** → *Applications ▸ Providers ▸ Create* → **Proxy Provider**,
+   once per host. Both are identical except for the external host:
+   - Names: `hermes-internal` and `hermes-external`
    - Authorization flow: `default-provider-authorization-implicit-consent`
      (or your standard explicit-consent flow)
    - **Forward auth (single application)**
-   - External host: `https://agent.ericsweiss.com`
+   - External host: `https://agent.esweiss.com` (internal provider) /
+     `https://agent.ericsweiss.com` (external provider)
    - (Token validity / cookie settings: leave defaults.)
-3. **Application** → *Applications ▸ Applications ▸ Create*:
-   - Name: `Hermes Agent`; Slug: `hermes`
-   - Provider: `hermes` (the proxy provider above)
-   - *Policy / Group / User Bindings* → bind the `hermes-users` group so only
-     that group is authorized.
+3. **Applications** → *Applications ▸ Applications ▸ Create*, one per provider:
+   - `Hermes Agent (internal)`, slug `hermes-internal`, provider
+     `hermes-internal`; and `Hermes Agent (external)`, slug `hermes-external`,
+     provider `hermes-external`.
+   - *Policy / Group / User Bindings* → bind the `hermes-users` group on **both**
+     so only that group is authorized.
 4. **Outpost** → *Applications ▸ Outposts* → edit the **embedded outpost** →
-   add the `hermes` application to its list. (The `authentik-auth` middleware
-   points at the embedded outpost's `/outpost.goauthentik.io/auth/traefik`
-   endpoint — same as every other forward-auth app here.)
+   add **both** `hermes-*` applications to its list. (The `authentik-auth`
+   middleware points at the embedded outpost's
+   `/outpost.goauthentik.io/auth/traefik` endpoint — same as every other
+   forward-auth app here.) Adding the external application here is what clears
+   the `agent.ericsweiss.com` 404.
 
-No client ID/secret is needed for forward-auth. Verify with:
-`curl -sI https://agent.esweiss.com` → `302` to Authentik when unauthenticated.
+No client ID/secret is needed for forward-auth. Verify **both** hosts:
+`curl -sI https://agent.esweiss.com` and
+`curl -sI https://agent.ericsweiss.com` → each `302` to Authentik when
+unauthenticated (a `404` means that host's application is not on the embedded
+outpost).
 
 ---
 
@@ -327,9 +342,12 @@ reports both pins.
     `0.0.0.0` bind is fail-closed and no `basic` provider registered. Confirm the
     three `dashboard-*` fields are populated (an empty username/password won't
     register the provider): `task hermes:logs COMPONENT=dashboard`.
-- **Can't reach `agent.esweiss.com` (302 loop)**: the Authentik `hermes`
-  application/outpost or the `hermes-users` binding is missing — see the SSO
-  setup above.
+- **Can't reach a host (302 loop, or 404 at the outpost)**: the Authentik
+  `hermes-*` application/outpost entry or the `hermes-users` binding for that
+  host is missing. A `404` on `agent.ericsweiss.com` specifically means the
+  `hermes-external` provider/application was never added to the embedded
+  outpost (each host needs its own forward-auth provider) — see the SSO setup
+  above.
 - **LLM turns fail / "not authenticated" from Codex**: the one-time Codex login
   or runtime enable is missing or the token expired. Check
   `kubectl exec -n hermes deploy/hermes -c gateway -- codex login status`; if not

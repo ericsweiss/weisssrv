@@ -1,0 +1,28 @@
+---
+# Default ProxyClass applied to every operator-created proxy StatefulSet
+# (ts-traefik-tailnet-*, ts-ts-dns-*). Referenced by the exposure Services'
+# `tailscale.com/proxy-class: default-proxyclass` annotation
+# (controllers/traefik/traefik-tailnet-service.yaml, apps/tailnet-dns/service.yaml).
+#
+# Without a ProxyClass the operator renders the proxy container with a tiny
+# ~1Mi memory request while the tsnet userspace-networking process actually
+# resides at ~55Mi, giving BestEffort-ish QoS and poor scheduling. We set a
+# realistic request (64Mi) so the pods land in Burstable QoS and the scheduler
+# reserves the right footprint, with a 128Mi memory limit as an OOM ceiling.
+#
+# Per docs/33 (CPU limits, intentionally unset): CPU is compressible, so we set
+# a CPU request but NO CPU limit — a limit only adds CFS throttling.
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: default-proxyclass
+spec:
+  statefulSet:
+    pod:
+      tailscaleContainer:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            memory: 128Mi

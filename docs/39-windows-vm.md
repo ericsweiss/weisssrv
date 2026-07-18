@@ -122,6 +122,16 @@ idempotent — an existing VM is never re-clobbered (create-time-only semantics)
    `192.168.0.155/24`, gw `192.168.0.1`, DNS `192.168.0.150` / `192.168.0.160`,
    or reserve `.155` for the VM's MAC in your router's DHCP).
 
+> **DNS note — disable encrypted DNS (DoH/DoT).** The VM must resolve through
+> the homelab AdGuard servers (`192.168.0.150` / `.160`) in **plaintext**. In
+> Windows 11 (*Settings → Network & internet → Ethernet → DNS server
+> assignment → Edit*) set **DNS over HTTPS = Off** for the adapter, and do not
+> enable any third-party DoH/DoT resolver. Encrypted DNS bypasses AdGuard
+> entirely — it breaks Microsoft-account sign-in, Windows Update, and internal
+> `*.esweiss.com` name resolution (this was the root cause of the earlier
+> Windows login/activation failures). Only plaintext DNS to the AdGuard IPs
+> keeps split-horizon resolution and outbound filtering intact.
+
 ### 4. Enable RDP
 
 - Settings → System → Remote Desktop → **On**.
@@ -231,3 +241,4 @@ this repo:
 | get_url checksum mismatch on the VirtIO ISO | `virtio_win_checksum` in `all.yml` is stale for the pinned version — recompute per the comment there. |
 | VM auto-started into the installer after a NAS reboot | Expected once the VM exists — `pve-start-encrypted-guests` starts the cohort after `ssd` unlocks (docs/32). Harmless before install (empty `scsi0` → UEFI shell); flip the boot order to `scsi0` after install so it boots Windows. If it did *not* start, `ssd` likely didn't unlock. |
 | RDP refused | RDP not enabled / NLA blocking / account has no password (step 4). |
+| Microsoft-account login / activation / Windows Update fails, or `*.esweiss.com` won't resolve | Encrypted DNS (DoH/DoT) is enabled, bypassing AdGuard — set **DNS over HTTPS = Off** and use plaintext DNS to `192.168.0.150` / `.160` (step 4 DNS note). |

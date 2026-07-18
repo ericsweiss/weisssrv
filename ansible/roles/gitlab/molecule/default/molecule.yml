@@ -66,6 +66,10 @@ provisioner:
         gitlab_puma_workers: 2
         gitlab_sidekiq_concurrency: 10
         gitlab_git_data_dir: /mnt/gitlab-repos/git-data
+        # Exercises the registry_path template branch. The Omnibus default store
+        # path is absent in the container, so the stop/mv relocation correctly
+        # skips (only the gitlab.rb render is covered here).
+        gitlab_registry_data_dir: /mnt/gitlab-repos/registry
         skip_ssh_config: true
         skip_dns_config: true
         gitlab_kernel_tuning_enabled: false

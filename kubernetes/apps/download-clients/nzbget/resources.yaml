@@ -120,10 +120,24 @@ spec:
             - name: UMASK
               value: "002"
           # Note: Ports are defined on gluetun sidecar (which owns the network namespace)
+          # NFS-ESTALE self-heal: after a NAS/NFS reboot the established mounts
+          # (/config + /media/downloads, both NFS from pve-nas-01) return stale
+          # file handles that NZBGet does not recover from on its own — the pod
+          # had to be manually deleted to remount. stat-ing both NFS mounts
+          # surfaces ESTALE (immediate error) or a hung hard-mount (probe
+          # timeout); either fails the probe so kubelet restarts the pod and it
+          # remounts. The tcpSocket port check is retained as the readinessProbe
+          # below (still de-rotates an unresponsive UI from the Service).
+          # Conservative timing so a brief NFS blip can't flap-restart. Runs as
+          # root (LSIO s6 pre-drop); stat needs only search perm on the mount
+          # parents.
           livenessProbe:
-            tcpSocket:
-              port: 6789
-            initialDelaySeconds: 60
+            exec:
+              command:
+                - sh
+                - -c
+                - stat /config /media/downloads >/dev/null 2>&1 || exit 1
+            initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3

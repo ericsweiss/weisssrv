@@ -9,6 +9,12 @@
 #   - Easier backup and migration
 gitlab_git_data_dir: "/mnt/gitlab-repos/git-data"
 
+# Container Registry blob store on the same ZFS zvol (raw-ZFS replicated
+# ssd/appdata -> archive). The registry (~7.5G) is the largest component and the
+# DiskUsageCritical culprit; relocating it off the OS disk is a one-time move
+# performed by the gitlab role (brief registry outage on the next deploy).
+gitlab_registry_data_dir: "/mnt/gitlab-repos/registry"
+
 # SAML Group-based access control (Authentik group names)
 # Only users in these groups can access GitLab
 gitlab_saml_required_groups:

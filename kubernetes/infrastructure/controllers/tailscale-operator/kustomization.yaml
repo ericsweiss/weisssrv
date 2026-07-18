@@ -12,3 +12,4 @@ resources:
   - namespace.yaml
   - externalsecret.yaml
   - release.yaml
+  - proxyclass.yaml

@@ -182,6 +182,28 @@ spec:
       initChownData:
         enabled: false
 
+      # NFS-ESTALE self-heal: grafana-data (/var/lib/grafana) is an NFS-backed
+      # PV. After a NAS/NFS reboot the established mount returns stale file
+      # handles that grafana does not recover from on its own — the pod had to be
+      # manually deleted to remount. Override the grafana subchart's livenessProbe
+      # (default httpGet /api/health) with a stat of the NFS mount: it surfaces
+      # ESTALE (immediate error) or a hung hard-mount (probe timeout); either
+      # fails the probe so kubelet restarts the pod and it remounts. The subchart
+      # readinessProbe (httpGet /api/health) is left at its default, so app-health
+      # de-rotation is preserved. Conservative timing so a brief NFS blip can't
+      # flap-restart. stat needs only search perm on the mount parents, so it
+      # works as the grafana user (472) under NFS all_squash.
+      livenessProbe:
+        exec:
+          command:
+            - sh
+            - -c
+            - stat /var/lib/grafana >/dev/null 2>&1 || exit 1
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 3
+
       # SQLite on NFS cannot tolerate two writers; RollingUpdate would run
       # old+new pods against the same DB during every upgrade.
       # rollingUpdate must be explicitly nulled: the live Deployment

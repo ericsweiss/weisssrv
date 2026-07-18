@@ -33,6 +33,12 @@ gitlab_git_data_dir: "/var/opt/gitlab/git-data"
 # Container Registry
 gitlab_registry_enabled: true
 gitlab_registry_external_url: "https://registry.git.ericsweiss.com"
+# Registry blob store path
+# Default: /var/opt/gitlab/gitlab-rails/shared/registry (Omnibus default, on root disk)
+# Override to use separate storage: /mnt/gitlab-repos/registry
+# When overridden, the role relocates the existing store onto the new path
+# once (tasks/main.yml) and gitlab.rb.j2 emits gitlab_rails['registry_path'].
+gitlab_registry_data_dir: "/var/opt/gitlab/gitlab-rails/shared/registry"
 
 # GitLab Pages
 gitlab_pages_enabled: true
@@ -142,11 +148,11 @@ gitlab_backup_path: "/var/opt/gitlab/backups"
 # registry was ~7.5G and CI artifacts ~1.4G — vs a 16K repo — so unfiltered
 # backups were ~6.5-8.5G/day and overran the 99G OS disk (DiskUsageCritical ->
 # failed backups -> no prune -> vicious cycle). Both are non-irreplaceable
-# (registry images are re-pushable from CI, and the registry data lives at the
-# Omnibus default path on the OS disk, which the nightly vzdump of the VM
-# covers; artifacts are ephemeral CI output), so a DB+repos+config backup is
-# the right scope and is sub-GB. Set to "" to back up everything (only with a
-# dedicated/off-OS-disk path).
+# (registry images are re-pushable from CI, and the registry blob store now
+# lives on the /mnt/gitlab-repos zvol — see gitlab_registry_data_dir — which is
+# raw-ZFS replicated ssd/appdata -> archive; artifacts are ephemeral CI
+# output), so a DB+repos+config backup is the right scope and is sub-GB. Set to
+# "" to back up everything (only with a dedicated/off-OS-disk path).
 gitlab_backup_skip: "registry,artifacts"
 # Retention. With registry/artifacts skipped the tarball is small, so 3 days on
 # the OS disk is comfortable; raise only alongside a larger/dedicated (e.g.

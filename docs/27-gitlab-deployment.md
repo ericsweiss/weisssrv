@@ -77,20 +77,38 @@ VM Root Disk (100GB on ssd pool)
 └── /var/log/gitlab/            # Logs
 
 Repository Disk (200GB zvol: ssd/appdata/gitlab/repos)
-└── /mnt/gitlab-repos/git-data/ # Git repositories only
-    └── repositories/           # Bare git repos (@hashed/)
+├── /mnt/gitlab-repos/git-data/ # Git repositories
+│   └── repositories/           # Bare git repos (@hashed/)
+└── /mnt/gitlab-repos/registry/ # Container Registry blob store (~7.5G)
 ```
 
-**Note:** Only Gitaly repository storage is configured to use the separate disk.
-Uploads (issue/MR attachments) and LFS objects remain on the root disk. This is
-intentional - uploads and LFS are typically much smaller than repos, and keeping
-them on root disk simplifies configuration while the separate disk provides the
-primary benefit of isolating large repository I/O.
+**Note:** Gitaly repository storage **and** the Container Registry blob store use
+the separate disk. Uploads (issue/MR attachments) and LFS objects remain on the
+root disk - they are typically much smaller than repos/registry, and keeping them
+on root disk simplifies configuration while the separate disk isolates the two
+largest, fastest-growing consumers.
+
+The registry blob store (~7.5G) was the single largest component and the
+`DiskUsageCritical` culprit on the OS disk. It is relocated via
+`gitlab_registry_data_dir` (role default: the Omnibus path
+`/var/opt/gitlab/gitlab-rails/shared/registry`; prod override:
+`/mnt/gitlab-repos/registry`), which renders `gitlab_rails['registry_path']` in
+`gitlab.rb`.
+
+**One-time migration (brief registry outage):** the first deploy after this
+override lands moves the existing store onto the zvol. The role stops the
+registry (`gitlab-ctl stop registry`), renames the directory across devices
+onto `/mnt/gitlab-repos/registry`, and `gitlab-ctl reconfigure` then repoints
+and restarts it. Expect a **brief registry outage** during that deploy (the web
+UI, Git, Pages, and CI are unaffected). The move is idempotent - after it, the
+source path is gone, so subsequent deploys skip it. A fresh-from-scratch deploy
+never triggers the move (reconfigure creates the store on the zvol directly).
 
 **Benefits:**
-- Independent sizing - repos can grow without affecting root disk
-- Better I/O isolation - git operations don't compete with PostgreSQL
-- Easier backups - zvol can be snapshotted separately
+- Independent sizing - repos and registry can grow without filling the root disk
+- Better I/O isolation - git/registry operations don't compete with PostgreSQL
+- Easier backups - the zvol is raw-ZFS replicated (ssd/appdata -> archive) and
+  can be snapshotted separately
 
 ## Prerequisites
 
