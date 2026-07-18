@@ -41,7 +41,7 @@ spec:
       # backend offline. Companion PodDisruptionBudget (pdb.yaml, minAvailable:1)
       # protects against simultaneous voluntary disruption. replicas stays the
       # HPA floor so the chart's static count never flaps against the HPA.
-      replicas: 2
+      replicas: 3
       # Chart-native HPA: Connect is a stateless API proxy (connect-api +
       # connect-sync) that fronts every ESO secret fetch and bursts under
       # fan-out. avgMemoryUtilization: 0 disables the chart's memory metric so
@@ -50,7 +50,11 @@ spec:
       # drive the same resource. max kept at 3 (tight-RAM hosts).
       hpa:
         enabled: true
-        minReplicas: 2
+        # Floor pinned at 3 (= the 3 modern nodes) so the hard one-per-host
+        # anti-affinity below always keeps 2 endpoints off pve-nas-01 — a
+        # scale-down to 2 could strand both on a NAS+one-other pair (boot-order
+        # review 2026-07). max stays 3; VPA (memory) handles vertical scaling.
+        minReplicas: 3
         maxReplicas: 3
         avgCpuUtilization: 80
         avgMemoryUtilization: 0
@@ -63,22 +67,24 @@ spec:
         - key: esweiss.com/compute
           operator: Exists
           effect: PreferNoSchedule
-      # Anti-affinity is PREFERRED, not required: there are exactly 3
-      # esweiss.com/cpu=modern nodes, so under a hard one-per-host rule the HPA
-      # could never place its 3rd replica (maxReplicas:3), and during a node
-      # drain even a 2nd replica could stay Pending. Preferred keeps replicas on
-      # distinct hosts in steady state but lets them co-locate when a host is
-      # down — trading a momentary loss of spread for schedulability during
-      # maintenance (PDB minAvailable:1 still guards voluntary disruption).
+      # Anti-affinity is REQUIRED (one replica per modern node). pve-nas-01's
+      # boot-time zfs-load-key fetches the pool passphrase from Connect, so if a
+      # NAS reboot could take Connect down to zero off-NAS endpoints the encrypted
+      # pools would fail to unlock (boot-order review 2026-07). 3 replicas across
+      # exactly 3 esweiss.com/cpu=modern nodes fit one-per-host, so a NAS reboot
+      # always leaves 2 endpoints on the other two nodes (laptop + prec). The
+      # trade vs the old PREFERRED rule: while any single modern node is down
+      # (drain/reboot) the 3rd replica stays Pending until it returns — intended,
+      # since 2 surviving endpoints on distinct hosts beats a co-located pair a
+      # single host loss could reduce to one. PDB minAvailable:1 still guards
+      # voluntary disruption.
       affinity:
         podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: onepassword-connect
-                topologyKey: kubernetes.io/hostname
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: onepassword-connect
+              topologyKey: kubernetes.io/hostname
       api:
         resources:
           requests:
