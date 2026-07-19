@@ -45,6 +45,45 @@
           - ip_forward_active.stdout == '1'
         fail_msg: "kernel net.ipv4.ip_forward is not 1 — handler didn't apply"
 
+    # vm.swappiness drop-in: file content + live apply. vm.swappiness is not
+    # network-namespaced, so the privileged container's reload writes the host
+    # kernel's value (benign — a lower swappiness on a runner VM is harmless).
+    - name: Stat swappiness sysctl drop-in
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/99-nic-tuning-swappiness.conf
+      register: swappiness_dropin
+
+    - name: Assert swappiness drop-in exists with expected perms
+      ansible.builtin.assert:
+        that:
+          - swappiness_dropin.stat.exists
+          - swappiness_dropin.stat.pw_name == 'root'
+          - swappiness_dropin.stat.gr_name == 'root'
+          - swappiness_dropin.stat.mode == '0644'
+        fail_msg: "99-nic-tuning-swappiness.conf missing or has wrong owner/perms"
+
+    - name: Read swappiness drop-in content
+      ansible.builtin.slurp:
+        src: /etc/sysctl.d/99-nic-tuning-swappiness.conf
+      register: swappiness_content
+
+    - name: Assert swappiness drop-in sets vm.swappiness=10
+      ansible.builtin.assert:
+        that:
+          - "'vm.swappiness=10' in (swappiness_content.content | b64decode)"
+        fail_msg: "swappiness drop-in missing vm.swappiness=10 directive"
+
+    - name: Read current kernel swappiness
+      ansible.builtin.command: sysctl -n vm.swappiness
+      register: swappiness_active
+      changed_when: false
+
+    - name: Assert kernel has vm.swappiness=10 active
+      ansible.builtin.assert:
+        that:
+          - swappiness_active.stdout == '10'
+        fail_msg: "kernel vm.swappiness is not 10 — handler didn't apply"
+
     - name: Stat ethtool drop-in for lo
       ansible.builtin.stat:
         path: /etc/network/interfaces.d/99-nic-lo-tuning.cfg
@@ -73,10 +112,21 @@
     # Parse validity: ifupdown2 must associate the post-up lines with the
     # interface. A bare post-up line (no iface header) is rejected with
     # "error processing line" and would be silently inert at boot.
+    #
+    # `ifquery lo` reads the RUNNING interface via netlink, which the local
+    # molecule container kernel rejects with EOPNOTSUPP ("Operation not
+    # supported"). Tolerate ONLY that specific limitation (a real non-zero exit
+    # in CI, on a full kernel, still fails the task) and skip the running-state
+    # assertion where it can't run — the "iface header + post-up lines" content
+    # assertion above already catches a missing/orphaned header locally, and CI
+    # runs the full attachment check below.
     - name: Query lo through ifupdown2
       ansible.builtin.command: ifquery lo
       register: ifquery_lo
       changed_when: false
+      failed_when:
+        - ifquery_lo.rc != 0
+        - "'operation not supported' not in (ifquery_lo.stderr | lower)"
 
     - name: Assert ifupdown2 parses the drop-in and attaches the post-up lines
       ansible.builtin.assert:
@@ -88,6 +138,7 @@
         fail_msg: >-
           ifupdown2 did not attach the drop-in's post-up lines to lo — the
           boot-time persistence would be inert
+      when: "'operation not supported' not in (ifquery_lo.stderr | lower)"
 
     - name: Assert ethtool drop-in pipes failures to logger
       ansible.builtin.assert:

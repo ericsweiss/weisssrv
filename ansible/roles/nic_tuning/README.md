@@ -11,6 +11,11 @@ Per-NIC tuning for homelab Proxmox hosts and anywhere else a persistent
   2026-04-04 and 2026-04-07/14; manual `ethtool -K nic1 gro off` fixed it.
 - `pve_firewall` on Proxmox occasionally resets `net.ipv4.ip_forward`, which
   breaks Tailscale subnet routing. A sysctl.d drop-in keeps the value sticky.
+- **pve-nas-01** is memory-committed: it runs the app VMs
+  (Nextcloud/Immich/Windows/GitLab) plus ZFS ARC, and at the kernel default
+  `vm.swappiness=60` it thrashed swap under pressure. A sysctl.d drop-in lowers
+  swappiness so the host reclaims page cache / balloons guest RAM before
+  swapping (pairs with the VM ballooning floors in `hosts.yml`).
 - Bonded hosts (`.104/.105/.106`) run `bond-mode active-backup` with both legs
   on the same **unmanaged** switch. `bond-all_slaves_active 1` made the driver
   deliver frames received on the *inactive* backup leg; the switch floods a
@@ -20,7 +25,7 @@ Per-NIC tuning for homelab Proxmox hosts and anywhere else a persistent
   reboots/HA-moves and hit dns-02 (and any guest that lands on a bonded host).
   Full diagnosis + recovery: `docs/34-bond-mac-flapping.md`.
 
-This role codifies all three.
+This role codifies all four.
 
 ## Variables
 
@@ -29,6 +34,11 @@ This role codifies all three.
   and apply it via a scoped `ansible.posix.sysctl` reload of just
   `net.ipv4.ip_forward` from that drop-in (deliberately not `sysctl --system`,
   so an unrelated bad entry elsewhere in `/etc/sysctl.d/` can't fail the apply).
+- `nic_tuning_vm_swappiness` (default `null`) — set to an integer `0`-`100`
+  per host/group to write `/etc/sysctl.d/99-nic-tuning-swappiness.conf` with
+  `vm.swappiness=<n>` and apply it via a scoped `ansible.posix.sysctl` reload
+  of just `vm.swappiness` (same isolation rationale as `ip_forward`). Leave
+  `null` to leave swappiness unmanaged. pve-nas-01 sets `10`.
 - `nic_tuning_overrides` (default `[]`) — list of per-interface dicts:
   ```yaml
   nic_tuning_overrides:

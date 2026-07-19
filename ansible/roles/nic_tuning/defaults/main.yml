@@ -20,6 +20,13 @@
 nic_tuning_overrides: []
 nic_tuning_ip_forward: false
 
+# Lower vm.swappiness on memory-committed Proxmox hosts. Set to an integer
+# (0-100) per host/group to write a /etc/sysctl.d/ drop-in and apply it live;
+# leave null (the default) to leave swappiness unmanaged (kernel default 60).
+# pve-nas-01 runs the app VMs + ZFS ARC and thrashed swap at the default — it
+# sets 10 (see host_vars/pve-nas-01.yml and the ballooning floors in hosts.yml).
+nic_tuning_vm_swappiness: null
+
 # Guard against a MAC-flap black-hole on active-backup bonds whose two legs
 # share an unmanaged (dumb) switch. With `all_slaves_active=1` the bonding
 # driver DELIVERS frames received on the inactive backup leg; the switch floods

@@ -6,6 +6,11 @@
 #
 # Secondary case: pve_firewall on Proxmox can reset net.ipv4.ip_forward, which
 # breaks Tailscale subnet routing. The sysctl drop-in re-asserts the value.
+#
+# Tertiary case: the memory-committed NAS host (pve-nas-01 runs the app VMs —
+# Nextcloud/Immich/Windows/GitLab — plus ZFS ARC) thrashed swap under pressure at
+# the kernel default vm.swappiness=60. A host-scoped sysctl drop-in lowers it so
+# the host reclaims page cache / balloons guest RAM before swapping.
 
 - name: Install sysctl.d drop-in for ip_forward
   ansible.builtin.copy:
@@ -28,6 +33,29 @@
     state: absent
   when: not (nic_tuning_ip_forward | bool)
   notify: Disable sysctl ip_forward
+
+- name: Install sysctl.d drop-in for vm.swappiness
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-nic-tuning-swappiness.conf
+    content: |
+      # Managed by Ansible nic_tuning role.
+      # Lower swappiness on memory-committed Proxmox hosts so the kernel reclaims
+      # page cache / balloons guest RAM before swapping (the default 60 thrashed
+      # swap on the NAS under VM + ARC pressure). Re-applied on every boot and by
+      # `sysctl --system`.
+      vm.swappiness={{ nic_tuning_vm_swappiness }}
+    owner: root
+    group: root
+    mode: "0644"
+  when: nic_tuning_vm_swappiness is not none
+  notify: Reload sysctl swappiness
+
+- name: Remove sysctl.d vm.swappiness drop-in when unmanaged
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-nic-tuning-swappiness.conf
+    state: absent
+  when: nic_tuning_vm_swappiness is none
+  notify: Disable sysctl swappiness
 
 - name: Install ethtool for NIC overrides
   ansible.builtin.apt:

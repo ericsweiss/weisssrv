@@ -43,20 +43,21 @@ zfs_encryption_pools:
 #         tank/nextcloud-data)
 #   157 = immich (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
 #         tank/immich-data)
-#   155 = windows (scsi0 root + EFI/TPM state on ssd; docs/39). Once the VM
-#         exists, pve-start-encrypted-guests WILL start it on every NAS reboot
-#         (post-unlock) — into the installer CD until Windows is installed and
-#         the boot order is flipped to scsi0 (docs/39). That is harmless (empty
-#         disk falls through to the UEFI shell) but expected, not a no-op.
-#         Before the VM is provisioned the start is a logged skip (the script's
-#         config-exists guard), so listing it here early can't wedge the unit.
+#   155 = windows — DELIBERATELY EXCLUDED (start-on-demand). Windows idles
+#         holding ~13G it can't be reliably ballooned back out of, so it is a
+#         start-when-needed box, not an auto-started service; keeping it off by
+#         default leaves the memory-committed NAS in a healthier spot. Its disks
+#         (scsi0 root + EFI/TPM state) live on the ssd pool, which zfs-mount-
+#         encrypted unlocks at boot for the OTHER guests, so `qm start 155`
+#         works any time after boot with no manual unlock. See docs/39.
 #   152 = plex LXC (mp0 /config on ssd)
 # Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
-# gitlab app (153, order 50), nextcloud (156, order 55), immich (157, order 56),
-# and windows (155, order 60); pve-start-encrypted-guests.sh starts VMs in this
-# list order, then CTs. 157 (immich) has disks on both the ssd pool and
-# tank/immich-data — both unlocked by zfs-mount-encrypted before this cohort starts.
-zfs_encryption_guest_vmids: [202, 153, 156, 157, 155]
+# gitlab app (153, order 50), nextcloud (156, order 55), and immich (157, order
+# 56); pve-start-encrypted-guests.sh starts VMs in this list order, then CTs.
+# 157 (immich) has disks on both the ssd pool and tank/immich-data — both
+# unlocked by zfs-mount-encrypted before this cohort starts. Windows (155) is
+# start-on-demand and intentionally NOT in this auto-start cohort (see above).
+zfs_encryption_guest_vmids: [202, 153, 156, 157]
 zfs_encryption_guest_ctids: [152]
 
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
@@ -529,6 +530,13 @@ nic_tuning_overrides:
     options:
       - feature: gro
         value: "off"
+
+# Lower swappiness: this NAS host runs the memory-committed app VMs
+# (Nextcloud/Immich/Windows/GitLab) plus ZFS ARC and thrashed swap under
+# pressure at the kernel default (60). With the VM ballooning floors set in
+# hosts.yml, 10 makes the host reclaim page cache / balloon guest RAM before
+# swapping. Applied live + persisted via nic_tuning's sysctl.d drop-in.
+nic_tuning_vm_swappiness: 10
 
 # Host egress filtering: pve-nas-01 now inherits the cluster-wide default
 # (proxmox_firewall_egress_filtering: true in group_vars/proxmox.yml). It was

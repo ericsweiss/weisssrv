@@ -25,6 +25,7 @@ provisioner:
     group_vars:
       all:
         nic_tuning_ip_forward: true
+        nic_tuning_vm_swappiness: 10
         nic_tuning_overrides:
           - interface: lo
             options:
