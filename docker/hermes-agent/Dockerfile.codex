@@ -1,10 +1,15 @@
-# Thin wrapper over the upstream-built Hermes Agent image that bakes in the
-# OpenAI Codex CLI. Hermes' Codex app-server runtime delegates OpenAI/Codex
-# turns to the `codex` CLI over JSON-RPC stdio (ChatGPT-subscription OAuth via
-# `codex login` — no API billing), so the CLI must be on PATH in the runtime
-# image. Upstream ships no Codex CLI, so build-hermes-agent (.gitlab-ci.yml)
-# builds the upstream Dockerfile first, then this wrapper as the FINAL published
-# image (tagged :<hermes_version> / :<sha> / :latest exactly as before).
+# Thin wrapper over the upstream-built Hermes Agent image that bakes in the two
+# subscription-billed coding CLIs Hermes relies on:
+#   * OpenAI Codex CLI — Hermes' Codex runtime delegates OpenAI/Codex turns to
+#     the `codex` CLI (ChatGPT-subscription OAuth via `codex login` — no API
+#     billing), and `codex mcp-server` doubles as a coding-task delegate.
+#   * Claude Code CLI — Hermes delegates coding tasks to headless `claude -p`
+#     runs via its terminal tool / bundled claude-code skill (Claude Max
+#     subscription via a `claude setup-token` OAuth token in
+#     CLAUDE_CODE_OAUTH_TOKEN — the CLI holds the credential; no API billing).
+# Upstream ships neither CLI, so build-hermes-agent (.gitlab-ci.yml) builds the
+# upstream Dockerfile first, then this wrapper as the FINAL published image
+# (tagged :<hermes_version> / :<sha> / :latest exactly as before).
 #
 # The base already bundles Node 22 LTS + npm at /usr/local/bin (its multi-stage
 # build copies them from node:22-bookworm-slim), so we only add the pinned CLI.
@@ -15,14 +20,18 @@
 ARG HERMES_IMAGE
 FROM ${HERMES_IMAGE}
 
-# Pinned in ansible/inventories/prod/group_vars/all.yml as hermes_codex_version;
-# passed through by the build-hermes-agent CI job.
+# Pinned in ansible/inventories/prod/group_vars/all.yml as hermes_codex_version /
+# hermes_claude_version; passed through by the build-hermes-agent CI job.
 ARG HERMES_CODEX_VERSION
+ARG HERMES_CLAUDE_VERSION
 
 # Fail loudly if Node/npm somehow isn't present (a future upstream base change),
-# install the pinned Codex CLI globally, and verify the binary resolves on PATH.
+# install both pinned CLIs globally, and verify each binary resolves on PATH.
 RUN command -v node >/dev/null 2>&1 || { echo "node not found in base image"; exit 1; } \
     && command -v npm  >/dev/null 2>&1 || { echo "npm not found in base image";  exit 1; } \
-    && npm install -g --no-audit --no-fund "@openai/codex@${HERMES_CODEX_VERSION}" \
+    && npm install -g --no-audit --no-fund \
+         "@openai/codex@${HERMES_CODEX_VERSION}" \
+         "@anthropic-ai/claude-code@${HERMES_CLAUDE_VERSION}" \
     && npm cache clean --force \
-    && codex --version
+    && codex --version \
+    && claude --version

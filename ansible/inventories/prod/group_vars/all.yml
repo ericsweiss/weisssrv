@@ -310,7 +310,18 @@ hermes_git_sha: "9de9c25f620ff7f1ce0fd5457d596052d5159596"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. NOT substituted into any manifest (build-time
 # only); it rides in the versions ConfigMap as a harmless superset.
-hermes_codex_version: "0.144.5"
+hermes_codex_version: "0.144.6"
+# Claude Code CLI (https://github.com/anthropics/claude-code, npm
+# @anthropic-ai/claude-code). Baked into the hermes-agent image alongside the
+# Codex CLI so Hermes can DELEGATE coding tasks to Claude Code headlessly
+# (`claude -p` via the terminal tool / the bundled claude-code skill),
+# authenticated with a Claude Max subscription long-lived OAuth token
+# (`claude setup-token` -> CLAUDE_CODE_OAUTH_TOKEN via ESO — subscription
+# billing, no API key; the CLI holds the credential, Hermes only reads stdout).
+# Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
+# wrapper, Flux rolls the pods. Build-time only; rides in the versions
+# ConfigMap as a harmless superset (same as hermes_codex_version).
+hermes_claude_version: "2.1.215"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.
@@ -361,7 +372,7 @@ helm_chart_versions:
   traefik: "41.0.2"  # App version v3.7.6 (chart 41.x: logs.general->log, logs.access->accessLog)
   cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
-  external_secrets: "2.7.0"  # ESO with 1Password Connect provider
+  external_secrets: "2.8.0"  # ESO with 1Password Connect provider
   kube_prometheus_stack: "87.17.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
   loki: "18.5.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.1"

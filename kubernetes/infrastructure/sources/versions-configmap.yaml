@@ -26,7 +26,7 @@ data:
   helm_chart_versions_alloy: 1.10.1
   helm_chart_versions_cert_manager: v1.21.0
   helm_chart_versions_external_dns: 1.21.1
-  helm_chart_versions_external_secrets: 2.7.0
+  helm_chart_versions_external_secrets: 2.8.0
   helm_chart_versions_kube_prometheus_stack: 87.17.0
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.5.1
@@ -37,7 +37,8 @@ data:
   helm_chart_versions_tailscale_operator: 1.98.9
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
-  hermes_codex_version: 0.144.5
+  hermes_claude_version: 2.1.215
+  hermes_codex_version: 0.144.6
   hermes_version: v2026.7.7.2
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'

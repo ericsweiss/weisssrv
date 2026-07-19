@@ -182,6 +182,20 @@ SERVICE_REGISTRY: list[dict] = [
         "strip_prefix": True,
         "tag_filter": r"^rust-v\d+\.\d+\.\d+$",
     },
+    {
+        # Claude Code CLI, baked into the hermes-agent image alongside Codex
+        # (npm @anthropic-ai/claude-code) so Hermes can delegate coding tasks to
+        # headless `claude -p` runs on the Claude Max subscription. Upstream tags
+        # stable releases `vX.Y.Z`; the pin is the bare npm version, so strip
+        # the "v" prefix.
+        "name": "Claude Code CLI (Hermes)",
+        "var_name": "hermes_claude_version",
+        "category": "github",
+        "github_repo": "anthropics/claude-code",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
     # --- Container images ---
     {
         "name": "Gluetun",
@@ -2224,7 +2238,7 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "gluetun_version", "nzbget_version", "qbittorrent_version",
         "prowlarr_version", "sonarr_version", "radarr_version",
         "lidarr_version", "pulsarr_version", "wg_easy_version", "hermes_version",
-        "hermes_codex_version",
+        "hermes_codex_version", "hermes_claude_version",
         "mealie_version", "mealie_postgresql_version",
         "bar_assistant_version", "salt_rim_version",
         "meilisearch_version", "redis_version", "busybox_version",

@@ -662,10 +662,13 @@ build-hermes-agent:
       # version-gated jobs use). No YAML lib in this image — grep the scalar.
       HERMES_VERSION=$(grep -E '^hermes_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
       if [ -z "$HERMES_VERSION" ]; then echo "could not read hermes_version from all.yml"; exit 1; fi
-      # Codex CLI version baked into the image by the wrapper (see below).
+      # Codex + Claude Code CLI versions baked into the image by the wrapper
+      # (see below).
       HERMES_CODEX_VERSION=$(grep -E '^hermes_codex_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_codex_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
       if [ -z "$HERMES_CODEX_VERSION" ]; then echo "could not read hermes_codex_version from all.yml"; exit 1; fi
-      echo "Building Hermes Agent ${HERMES_VERSION} (Codex CLI ${HERMES_CODEX_VERSION})"
+      HERMES_CLAUDE_VERSION=$(grep -E '^hermes_claude_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_claude_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$HERMES_CLAUDE_VERSION" ]; then echo "could not read hermes_claude_version from all.yml"; exit 1; fi
+      echo "Building Hermes Agent ${HERMES_VERSION} (Codex CLI ${HERMES_CODEX_VERSION}, Claude Code CLI ${HERMES_CLAUDE_VERSION})"
       ref="${CI_REGISTRY_IMAGE}/hermes-agent"
       rm -rf /tmp/hermes-src
       git clone --depth 1 --branch "$HERMES_VERSION" "$HERMES_UPSTREAM_REPO" /tmp/hermes-src
@@ -688,13 +691,13 @@ build-hermes-agent:
       fi
       # Two-stage build, both on every pipeline (proves the image builds);
       # publish ONLY on main. Stage 1 builds upstream's self-contained Dockerfile
-      # to a local intermediate tag. Stage 2 layers our thin Codex-CLI wrapper
-      # (docker/hermes-agent/Dockerfile.codex — `npm i -g @openai/codex@<pin>`) on
-      # top as the FINAL image, carrying the load-bearing :<version>/:<sha> tags
-      # the cluster pulls. Node 22 + npm are already in the base, so the wrapper
-      # only adds the pinned CLI. A single retry loop covers both builds (either
-      # can hit a transient registry/npm hiccup). MR pipelines are build-only, so
-      # an MR can never publish a registry image.
+      # to a local intermediate tag. Stage 2 layers our thin CLI wrapper
+      # (docker/hermes-agent/Dockerfile.codex — `npm i -g` of the pinned Codex +
+      # Claude Code CLIs) on top as the FINAL image, carrying the load-bearing
+      # :<version>/:<sha> tags the cluster pulls. Node 22 + npm are already in
+      # the base, so the wrapper only adds the pinned CLIs. A single retry loop
+      # covers both builds (either can hit a transient registry/npm hiccup). MR
+      # pipelines are build-only, so an MR can never publish a registry image.
       upstream_ref="${ref}:upstream-${CI_COMMIT_SHORT_SHA}"
       attempt=1; max=3
       # shellcheck disable=SC2086  # intentional word-split of cache_args
@@ -705,6 +708,7 @@ build-hermes-agent:
             && docker build \
               --build-arg HERMES_IMAGE="$upstream_ref" \
               --build-arg HERMES_CODEX_VERSION="$HERMES_CODEX_VERSION" \
+              --build-arg HERMES_CLAUDE_VERSION="$HERMES_CLAUDE_VERSION" \
               --build-arg BUILDKIT_INLINE_CACHE=1 \
               -t "${ref}:${HERMES_VERSION}" \
               -t "${ref}:${CI_COMMIT_SHORT_SHA}" \

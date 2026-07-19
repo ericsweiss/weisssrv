@@ -104,7 +104,9 @@ both from the `onepassword-homelab` ClusterSecretStore:
   - `api-server-key` → `API_SERVER_KEY` — bearer key for the gateway's
     in-process API server (its health-probe surface, see §Observability;
     **mandatory** — the server refuses to start without it).
-  - All four fields must exist on the item or the whole Secret fails to sync.
+  - `claude-code-oauth-token` → `CLAUDE_CODE_OAUTH_TOKEN` — the Claude Code
+    delegate's Max-subscription OAuth token (see §Coding delegates).
+  - All five fields must exist on the item or the whole Secret fails to sync.
 - **`hermes-registry-pull`** ← 1Password item **Hermes Registry Pull** → a
   `kubernetes.io/dockerconfigjson` Secret for `registry.git.esweiss.com`, used
   by `imagePullSecrets`.
@@ -173,6 +175,51 @@ OAuth) — nothing in git triggers it.
 Once both steps are done, OpenAI/Codex turns route through your ChatGPT
 subscription. The login is a one-time action per token lifetime — re-run
 `codex login --device-auth` only if the token is revoked or expires.
+
+---
+
+## Coding delegates — Claude Code + Codex (subscription-billed)
+
+Hermes **orchestrates**; coding tasks are **delegated** to CLIs baked into the
+image. The key property: each delegate CLI holds and presents **its own
+subscription credential** — Hermes only reads stdout, so the delegated work
+bills the respective subscription, never an API meter, and no provider secret
+enters the model context.
+
+- **Claude Code** (`@anthropic-ai/claude-code`, pinned as
+  `hermes_claude_version` in all.yml): Hermes runs headless `claude -p "<task>"`
+  via its `terminal` tool, steered by the bundled `claude-code` skill
+  (`--output-format json` returns structured results + a `session_id` for
+  `--resume` follow-ups). Auth is the long-lived OAuth token from
+  `claude setup-token` (**Claude Max subscription**) delivered as
+  `CLAUDE_CODE_OAUTH_TOKEN` via ESO; CLI state persists in
+  `CLAUDE_CONFIG_DIR=/opt/data/.claude` on NFS. **Never set
+  `ANTHROPIC_API_KEY`** in this pod — its mere presence flips the CLI to
+  metered API billing.
+- **Codex** (already the LLM engine's CLI): registered as an MCP tool server in
+  `/opt/data/config.yaml` (`mcp_servers.codex` → `codex mcp-server`, generous
+  `timeout: 3600` for long runs), surfacing `mcp_codex_codex` /
+  `mcp_codex_codex-reply` tools with `sandbox` / `approval-policy` / `cwd`
+  parameters. Billed to the **ChatGPT subscription** via the existing
+  `CODEX_HOME` auth.json.
+- **Workspaces**: delegates work under `/opt/data/workspace/<repo>` (NFS —
+  survives pod recreation, encrypted at rest, archive-backed). Prefer scoped
+  permissions (`--allowedTools` / `sandbox: workspace-write`) over
+  bypass-everything modes: the same volume holds Hermes' own `.env` and OAuth
+  tokens.
+- **Git access**: the egress NetworkPolicy carries a single `/32` pinhole to
+  the internal Traefik VIP (`192.168.0.101:443`) so delegates can clone/push
+  `git.esweiss.com` repos over HTTPS (project access token); SSH remotes are
+  deliberately not reachable.
+- **Quota note**: delegated runs share the subscriptions' interactive rate
+  windows (Max 5-hour/weekly; Codex allowance) — heavy fan-out can starve your
+  own interactive sessions.
+
+**One-time setup**: run `claude setup-token` locally, sign in with the Max
+account, store the printed `sk-ant-oat01-…` token as `claude-code-oauth-token`
+on the 1Password **Hermes Secrets** item (before merging the manifest that
+references it), `task hermes:restart`, then verify with
+`kubectl exec -n hermes deploy/hermes -c gateway -- claude -p "reply OK"`.
 
 ---
 

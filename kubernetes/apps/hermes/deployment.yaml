@@ -125,6 +125,23 @@ spec:
             # either and Hermes finds the token.
             - name: CODEX_HOME
               value: /opt/data/.codex
+            # Claude Code CLI (baked into the image alongside Codex) — the
+            # coding-task delegate billed to the Claude Max SUBSCRIPTION.
+            # Hermes invokes headless `claude -p` runs via its terminal tool /
+            # bundled claude-code skill; the CLI itself presents this
+            # long-lived OAuth token (`claude setup-token`, ESO-sourced from
+            # the Hermes Secrets 1P item), so the credential never enters
+            # Hermes' model context and no ANTHROPIC_API_KEY exists to
+            # accidentally meter API billing. Config dir pinned to the NFS
+            # volume so CLI state (settings, session history) survives pod
+            # recreation, mirroring CODEX_HOME above.
+            - name: CLAUDE_CONFIG_DIR
+              value: /opt/data/.claude
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: claude-code-oauth-token
             # Built-in OpenAI-compatible API server (runs in-process with
             # `gateway run`) — enabled as the gateway's health surface: GET
             # /health is unauthenticated and is served by the gateway's own
@@ -215,6 +232,16 @@ spec:
             # Codex app-server runtime state on the NFS volume (see gateway).
             - name: CODEX_HOME
               value: /opt/data/.codex
+            # Claude Code delegate credential + config dir — same values as the
+            # gateway (see the comment there) so an operator `kubectl exec` in
+            # either container can run/verify `claude` with identical state.
+            - name: CLAUDE_CONFIG_DIR
+              value: /opt/data/.claude
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: claude-code-oauth-token
             # Dashboard auth provider — required because the 0.0.0.0 bind above
             # engages upstream's fail-closed gate (it refuses to start without a
             # registered provider). The bundled `basic` provider registers from
