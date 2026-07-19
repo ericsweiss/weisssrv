@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: immich_ml
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Immich machine learning (OpenVINO, Intel Arc GPU) compose stack in an LXC on the NAS
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Dependencies are handled in the playbook, not in meta, to allow isolated unit
+# testing of this role. The immich-ml playbook applies proxmox_lxc + base +
+# postfix_null_client + alloy_host + proxmox_firewall around it. The
+# apt_signed_repo helper is included directly from tasks/docker.yml.
+dependencies: []

@@ -1,0 +1,47 @@
+---
+# Immich GPU machine-learning deployment playbook.
+#
+# Provisions the immich-ml LXC container (GPU passthrough via proxmox_lxc) and
+# deploys the OpenVINO immich-machine-learning compose stack. The Immich VM
+# consumes it as its primary ML endpoint (machineLearning.urls, rendered by
+# the immich role); the in-VM CPU ML container is the failover.
+#
+# Prerequisites:
+#   - pve-nas-01's /dev/dri (Intel Arc B580, xe driver) — shared non-exclusively
+#     with the plex LXC; no host-side prep beyond the GPU already working there.
+#
+# Usage:
+#   task immich-ml:deploy           # Full deployment (LXC + stack)
+#   task immich-ml:deploy-check     # Dry-run
+
+- name: Provision Immich ML LXC container
+  hosts: immich-ml
+  gather_facts: false
+  roles:
+    - proxmox_lxc
+
+- name: Deploy Immich machine learning (OpenVINO)
+  hosts: immich-ml
+  become: true
+  gather_facts: false
+  # In check mode, the container may not exist (LXC creation is skipped).
+  # gather_facts is deferred until after the guard so a missing container
+  # ends the host cleanly instead of failing the play UNREACHABLE up front.
+  pre_tasks:
+    - name: Guard against unreachable host in check mode
+      ansible.builtin.include_tasks: tasks/_check-mode-reachable.yml
+
+    - name: Gather facts after connection is established
+      ansible.builtin.setup:
+
+  roles:
+    - base
+    - postfix_null_client
+    - immich_ml
+    # site.yml ships host-side log collection (alloy_host) to immich_ml_servers
+    # in a dedicated play; include it here so a standalone
+    # `task immich-ml:deploy` keeps log shipping in sync. node_exporter_host is
+    # NOT deployed to LXC guests by site.yml (host metrics ride the Proxmox
+    # host's exporter — same as plex), so it is intentionally omitted.
+    - alloy_host
+    - proxmox_firewall

@@ -45,6 +45,9 @@ Internet
     |   +-- gitlab        (.153) - GitLab EE
     |   +-- home-assistant (.154) - Home Assistant OS
     |   +-- windows        (.155) - Windows 11 VM (IaC shell, interactive install)
+    |   +-- nextcloud      (.156) - Nextcloud
+    |   +-- immich         (.157) - Immich photos
+    |   +-- immich-ml      (.158) - Immich GPU ML (OpenVINO LXC)
     |
     +-- K3s Cluster (9 nodes)
         +-- k3s-srv-nas-01    (.222) - Server + etcd
@@ -198,9 +201,10 @@ weisssrv/
 | gitlab | GitLab EE installation and configuration |
 | nextcloud | Nextcloud (Docker Compose: nextcloud-apache + postgres + redis + cron + exporter) on a NAS-pinned VM, host-nginx TLS, Authentik OIDC SSO (docs/35) |
 | immich | Immich photo management (docker-compose stack + host nginx) on a NAS-pinned VM |
+| immich_ml | Immich machine learning (OpenVINO on the Intel Arc GPU) in a docker LXC on the NAS — the Immich VM's primary ML endpoint (docs/36) |
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
-| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex, nextcloud) |
+| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex, nextcloud, immich, immich_ml) |
 | nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in, active-backup bond `all_slaves_active` MAC-flap guard — docs/34) |
 | prometheus_exporter | Shared install pipeline for download-based exporters (tarball/.deb); backs zfs_exporter + unbound_exporter |
 | textfile_collector | Shared textfile-collector oneshot service + timer scaffold; backs node_exporter_host (corosync/zpool/smartmon) and smtp_relay (postfix queue) |

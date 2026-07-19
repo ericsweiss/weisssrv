@@ -93,6 +93,10 @@
           - immich_config.oauth.clientSecret == 'test-immich-client-secret'
           - immich_config.oauth.scope == 'openid email profile'
           - immich_config.oauth.storageLabelClaim == 'preferred_username'
+          # ML endpoints: GPU LXC primary, in-VM CPU failover — ORDER matters
+          # (upstream tries the urls sequentially).
+          - immich_config.machineLearning.enabled == true
+          - immich_config.machineLearning.urls == ['http://192.168.0.158:3003', 'http://immich-machine-learning:3003']
           - immich_config.backup.database.enabled == false
           - immich_config.server.externalDomain == 'https://photos.ericsweiss.com'
         fail_msg: "immich-config.json is not in the expected SSO-only state"

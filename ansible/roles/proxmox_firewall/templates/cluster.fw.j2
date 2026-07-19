@@ -107,6 +107,16 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8081 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8082 -log nolog
 
+[group sg-immich-ml]
+
+# Immich machine-learning inference endpoint (immich-ml LXC, OpenVINO). The
+# ML API is AUTHLESS by upstream design — anyone who can reach :3003 can run
+# inference against it — so this rule IS the security boundary: admit ONLY the
+# Immich VM (.157), the sole legitimate consumer. No admin/LAN debug access on
+# purpose (SSH/ICMP admin comes from sg-vm-admin; probe the endpoint from the
+# VM or over SSH loopback instead).
+IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog
+
 [group sg-haos]
 
 IN ACCEPT -source +dc/admin_lan -p udp -dport 1900 -log nolog

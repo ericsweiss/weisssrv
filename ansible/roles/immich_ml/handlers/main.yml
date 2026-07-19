@@ -1,0 +1,22 @@
+---
+# daemon_reload is always safe (works in a plain systemd container), so it is
+# never gated. The service-touching handlers are gated on skip_immich_ml_deploy
+# so the molecule render scenario can notify them without Docker present.
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart docker
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: not (skip_immich_ml_deploy | default(false))
+
+# `docker compose up -d` reconciles the running stack to the rendered compose
+# (recreating only the containers whose definition changed) — the same restart
+# semantics as the immich role's unit.
+- name: Restart immich-ml
+  ansible.builtin.systemd:
+    name: immich-ml-compose.service
+    state: restarted
+  when: not (skip_immich_ml_deploy | default(false))

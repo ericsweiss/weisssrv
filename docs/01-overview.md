@@ -24,11 +24,14 @@ Internet
     |
     +-- Application LXC
     |   +-- plex          (192.168.0.152) - Plex Media Server (plex.esweiss.com)
+    |   +-- immich-ml     (192.168.0.158) - Immich GPU ML (OpenVINO, Arc B580 /dev/dri shared with plex; docs/36)
     |
     +-- Application VMs
     |   +-- gitlab        (192.168.0.153) - GitLab EE (git.esweiss.com)
     |   +-- home-assistant(192.168.0.154) - Home Assistant OS (HA-managed)
     |   +-- windows       (192.168.0.155) - Windows 11 VM (IaC-provisioned shell, interactive install; docs/39)
+    |   +-- nextcloud     (192.168.0.156) - Nextcloud (cloud.esweiss.com; docs/35)
+    |   +-- immich        (192.168.0.157) - Immich (photos.esweiss.com; docs/36)
     |
     +-- K3s Cluster VMs (9 nodes: 3 servers + 6 agents)
     |   +-- Servers (.22X range - control plane + etcd)
@@ -61,7 +64,7 @@ uplink through a **2-NIC active-backup bond** (`nic0`/`nic1`, hand-maintained in
 | 192.168.0.1-99 | Infrastructure, DHCP, workstations | Active |
 | 192.168.0.100-101 | MetalLB VIPs (public/internal) | Active |
 | 192.168.0.102-109 | Proxmox hosts | Active (.102-.107) |
-| 192.168.0.150-155 | Infrastructure services (DNS, SMTP, apps) | Active |
+| 192.168.0.150-159 | Infrastructure services (DNS, SMTP, apps) | Active (.150-.158) |
 | 192.168.0.160-169 | Additional infrastructure services | Active (.160 dns-02) |
 | 192.168.0.200-207 | K3s agent VMs (subnet: 192.168.0.200/29) | Active (.202-.207) |
 | 192.168.0.220-227 | K3s server VMs (.222/.223 in 192.168.0.220/29; .227 is outside it) | Active (.222, .223, .227) |

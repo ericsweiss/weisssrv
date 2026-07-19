@@ -45,6 +45,7 @@
         - 08-idmap-standard.json
         - 09-firewall-reconcile.json
         - 10-meta-drift.json
+        - 11-idmap-gpu-nobind.json
       register: artifacts
 
     - name: Decode artifacts
@@ -59,6 +60,7 @@
         idmap_standard: "{{ artifacts.results[7].content | b64decode | from_json }}"
         fw_reconcile: "{{ artifacts.results[8].content | b64decode | from_json }}"
         meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
+        idmap_gpu_nobind: "{{ artifacts.results[10].content | b64decode | from_json }}"
 
     - name: Compute host defaults to local-ssd
       ansible.builtin.assert:
@@ -111,6 +113,19 @@
         fail_msg: |
           Inverted-GID render must match the golden GPU idmap byte-for-byte:
           {{ idmap_gpu_inverted.conf }}
+
+    # GPU without bind mounts (the immich-ml shape): same golden idmap — the
+    # video/render GID passthrough must not depend on bind mounts — and zero
+    # bind-mount pct sets.
+    - name: GPU idmap renders without bind mounts (mount-less GPU guest)
+      ansible.builtin.assert:
+        that:
+          - idmap_gpu_nobind.conf == expected_conf_gpu
+          - idmap_gpu_nobind.mp_calls == 0
+        fail_msg: |
+          Mount-less GPU render must match the golden GPU idmap with zero
+          bind-mount sets (got {{ idmap_gpu_nobind.mp_calls }}):
+          {{ idmap_gpu_nobind.conf }}
 
     - name: Standard idmap renders the eric/media passthrough map
       ansible.builtin.assert:

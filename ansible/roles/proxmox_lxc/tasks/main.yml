@@ -423,6 +423,13 @@
     - not (lxc_gpu_passthrough | default(false))
   changed_when: true
 
+# Runs for EVERY unprivileged GPU container, bind mounts or not: the video/
+# render GID passthrough is what lets in-container processes open the 0660
+# root:video/render /dev/dri nodes (an unprivileged container's root is not
+# host root, so CAP_DAC_OVERRIDE cannot bypass the device perms — the group
+# match is the only access path). Gating this on bind mounts would leave a
+# mount-less GPU guest (immich-ml) with the Proxmox default idmap and an
+# unopenable GPU.
 - name: Configure UID/GID mapping (with GPU)
   delegate_to: "{{ proxmox_host }}"
   vars:
@@ -477,8 +484,6 @@
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
-    - lxc_bind_mounts is defined
-    - lxc_bind_mounts | length > 0
     - lxc_unprivileged | default(true)
     - lxc_gpu_passthrough | default(false)
   changed_when: true

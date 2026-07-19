@@ -17,15 +17,17 @@ Full architecture, storage, backup, SSO, and runbooks: **docs/36-immich.md**.
    `apt_signed_repo` helper), pinned in `group_vars/all.yml` and `apt-mark hold`.
    `journald` log driver so container logs ride `alloy_host` → Loki.
 3. **Compose stack** (`templates/docker-compose.yml.j2`) — `immich-server`,
-   `immich-machine-learning` (CPU, no GPU — the NAS iGPU belongs to Plex),
-   `database` (Immich's release-pinned Postgres image with the vector
-   extensions), `redis` (Valkey). App on loopback `:2283`, native Prometheus
-   metrics published on `:8081`/`:8082`. Lifecycle owned by
-   `immich-compose.service`.
+   `immich-machine-learning` (the **CPU failover** — the primary ML endpoint is
+   the GPU OpenVINO LXC `immich-ml`, see the `immich_ml` role), `database`
+   (Immich's release-pinned Postgres image with the vector extensions), `redis`
+   (Valkey). App on loopback `:2283`, native Prometheus metrics published on
+   `:8081`/`:8082`. Lifecycle owned by `immich-compose.service`.
 4. **SSO / system config** (`templates/immich-config.json.j2`) — the
    `IMMICH_CONFIG_FILE` declaring Authentik OIDC (SSO-only: password login off,
-   auto-launch on) plus `backup.database.enabled: false`. The one-time admin
-   bootstrap is `immich_bootstrap_mode` (see below).
+   auto-launch on), `machineLearning.urls` (`immich_ml_urls`: the GPU LXC
+   first, the in-VM CPU container as sequential failover) plus
+   `backup.database.enabled: false`. The one-time admin bootstrap is
+   `immich_bootstrap_mode` (see below).
 5. **Host nginx** (`templates/immich.nginx.conf.j2`) — terminates 443 with the
    `acme_certs`-distributed wildcard cert, `client_max_body_size 0`, websockets,
    long upload timeouts, reverse-proxies to `127.0.0.1:2283`. Seeds a self-signed
@@ -65,6 +67,7 @@ mocked `docker`) are rendered and asserted without a container runtime.
 
 ## Related
 
+- `immich_ml` — the GPU OpenVINO ML LXC this role's `immich_ml_urls` points at.
 - `apt_signed_repo` — the fingerprint-verified Docker apt repo.
 - `zvol_mount` — mounts the passthrough zvols.
 - `acme_certs` (on dns-01) — distributes the wildcard cert (`cert_distribution_targets`).

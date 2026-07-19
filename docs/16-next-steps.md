@@ -789,8 +789,10 @@ Decisions taken:
   pre-existing encrypted `tank/immich-data` dataset (rides the archive tier).
 - **Database**: Immich's release-pinned Postgres image (vectorchord/pgvectors)
   on a dedicated fast encrypted zvol — not NFS.
-- **ML acceleration**: CPU only (no GPU — the NAS iGPU is allocated to Plex);
-  6 vCPU / 12 GB sizes the CPU-hungry ML jobs.
+- **ML acceleration**: originally CPU-only; now GPU-primary via the `immich-ml`
+  LXC (Intel Arc B580 OpenVINO, `/dev/dri` shared non-exclusively with Plex —
+  docs/36 "GPU machine learning"). The in-VM CPU ML container stays as the
+  automatic failover, so the 6 vCPU / 12 GB sizing is kept.
 - **SSO**: Authentik OIDC, SSO-only (password login off after the one-time admin
   bootstrap), access gated by the `immich-users` Authentik group.
 

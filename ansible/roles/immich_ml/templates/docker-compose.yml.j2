@@ -1,0 +1,43 @@
+# {{ ansible_managed }}
+# Immich machine-learning (OpenVINO) — mirrors the hwaccel.ml.yml openvino
+# stanza of the pinned Immich release ({{ immich_version }}); the image tag is
+# derived from the same immich_version pin as the Immich VM's containers
+# (group_vars/all.yml), so server and ML upgrade in lockstep. Managed by the
+# immich_ml Ansible role — do not edit on the host (changes are reverted on
+# the next deploy).
+name: immich-ml
+
+services:
+  immich-machine-learning:
+    image: {{ immich_ml_image }}
+    # Upstream openvino stanza: USB device-class rule (Intel NPU/Movidius
+    # sticks); harmless with no matching device present.
+    device_cgroup_rules:
+      - 'c 189:* rmw'
+    devices:
+      - /dev/dri:/dev/dri
+    # In this unprivileged LXC the container's root is NOT host root, so
+    # CAP_DAC_OVERRIDE cannot bypass the 0660 root:video/render device perms —
+    # grant the video/render GIDs (host GIDs, passed 1:1 by the LXC idmap;
+    # discovered from the /dev/dri nodes at deploy time).
+    group_add:
+      - "{{ immich_ml_video_gid }}"
+      - "{{ immich_ml_render_gid }}"
+    environment:
+      TZ: {{ timezone }}
+      # xe VRAM-leak watch-item (openvinotoolkit/openvino#32665): if OCR
+      # batches leak device memory on the Arc card, cap the OCR batch size.
+      # Default stays upstream — uncomment to mitigate. See docs/36-immich.md.
+      # MACHINE_LEARNING_MAX_BATCH_SIZE__OCR: "3"
+    volumes:
+      # Model cache (multi-GB, downloaded on first run). Named volume in the
+      # LXC rootfs: re-downloadable cache, not state — no backup enrollment.
+      - model-cache:/cache
+    ports:
+      # AUTHLESS endpoint — published on the LAN, but sg-immich-ml admits only
+      # the Immich VM (.157). The firewall is the security boundary.
+      - "{{ immich_ml_listen_port }}:3003"
+    restart: always
+
+volumes:
+  model-cache:

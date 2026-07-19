@@ -1786,6 +1786,11 @@ molecule-tests:
       # Docker runtime.
       - ROLE: immich
         SCENARIO: default
+      # immich_ml: render/contract scenario (skip_immich_ml_deploy) — asserts
+      # the OpenVINO compose (image lockstep on immich_version, /dev/dri, port
+      # 3003) + systemd unit render without a Docker runtime or GPU.
+      - ROLE: immich_ml
+        SCENARIO: default
       # home_assistant: contract test for the two Jinja2 templates
       # (configuration.yaml.j2, secrets.yaml.j2). The role's scp/ssh
       # path against the live HAOS appliance can't be exercised in a
@@ -2583,6 +2588,46 @@ deploy-immich:
         # role; a bump must redeploy. Idempotent, safe to re-run.
         - ansible/inventories/prod/group_vars/all.yml
 
+deploy-immich-ml:
+  stage: deploy
+  extends: .deploy-base
+  resource_group: deploy-immich-ml
+  needs:
+    - job: validation-gate
+    - job: deploy-ansible-base
+      optional: true
+  variables:
+    # immich-ml.yml runs postfix_null_client (ROOT_EMAIL_ALIAS + SMTP creds)
+    # and base (SSH_PUBLIC_KEY); alloy_host's LOKI_PUSH_* come from
+    # .deploy-base. The immich_ml role itself needs no secrets (the authless
+    # ML endpoint is firewall-gated, not credentialed).
+    ROOT_EMAIL_ALIAS: "op://Homelab/Email Config/root_alias"
+    SMTP_RELAY_USER: "op://Homelab/SMTP Relay Auth/username"
+    SMTP_RELAY_PASSWORD: "op://Homelab/SMTP Relay Auth/password"
+    SSH_PUBLIC_KEY: "op://Homelab/SSH Key/public key"
+  script:
+    - cd ansible
+    - op run -- ansible-playbook -i inventories/prod playbooks/immich-ml.yml
+  environment:
+    name: production/immich-ml
+  rules:
+    - !reference [.skip-schedule-web, rules]
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes:
+        - ansible/roles/immich_ml/**/*
+        # apt_signed_repo: shared signed-repo helper the immich_ml role
+        # includes for the Docker apt repo — a helper-only change must
+        # redeploy immich-ml.
+        - ansible/roles/apt_signed_repo/**/*
+        - ansible/roles/proxmox_lxc/**/*
+        - ansible/playbooks/immich-ml.yml
+        # LXC sizing/GPU vars consumed by the immich-ml playbook (create-time
+        # for most knobs, but a redeploy is idempotent and cheap).
+        - ansible/inventories/prod/host_vars/immich-ml.yml
+        # all.yml carries the immich_version / docker_* pins consumed by the
+        # role; a bump must redeploy (server/ML version lockstep). Idempotent.
+        - ansible/inventories/prod/group_vars/all.yml
+
 deploy-home-assistant-config:
   stage: deploy
   extends: .deploy-base
@@ -2698,6 +2743,8 @@ deploy-verify:
       optional: true
     - job: deploy-nextcloud
       optional: true
+    - job: deploy-immich-ml
+      optional: true
     - job: deploy-home-assistant-config
       optional: true
     - job: deploy-gitlab-verify
@@ -2741,6 +2788,7 @@ deploy-verify:
     - !reference [deploy-plex, rules]
     - !reference [deploy-gitlab, rules]
     - !reference [deploy-nextcloud, rules]
+    - !reference [deploy-immich-ml, rules]
     - !reference [deploy-home-assistant-config, rules]
     # Flux-only changes (kubernetes/ manifests with no Ansible or all.yml edit)
     # match none of the deploy-* rules above, so the live Flux reconcile +

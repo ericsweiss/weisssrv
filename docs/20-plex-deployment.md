@@ -240,6 +240,10 @@ The Plex container has direct access to the Intel Arc B580 GPU on pve-nas-01 for
 - **Drivers**: `intel-media-va-driver-non-free` (VA-API support for Arc)
 - **User Groups**: plex user is member of `video` and `render` groups
 - **Benefits**: Significantly faster transcoding with lower CPU usage
+- **Shared card**: the same `/dev/dri` is also passed into the `immich-ml` LXC
+  (vmid 158) for Immich's OpenVINO ML inference — LXC device passthrough is
+  non-exclusive and the kernel `xe` driver arbitrates between the two guests
+  (see [docs/36-immich.md](36-immich.md), "GPU machine learning")
 
 ### Verifying GPU Access
 

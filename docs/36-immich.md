@@ -6,7 +6,8 @@ nginx that terminates the wildcard TLS. SSO-only via Authentik OIDC.
 
 - **Web**: `https://photos.esweiss.com` (internal) / `https://photos.ericsweiss.com` (external)
 - **VM**: `immich`, `192.168.0.157`, vmid 157 on `pve-nas-01`
-- **Ansible**: role `ansible/roles/immich/`, playbook `ansible/playbooks/immich.yml`, `task immich:*`
+- **GPU ML LXC**: `immich-ml`, `192.168.0.158`, vmid 158 on `pve-nas-01` (Intel Arc B580, OpenVINO)
+- **Ansible**: roles `ansible/roles/immich/` + `ansible/roles/immich_ml/`, playbooks `ansible/playbooks/{immich,immich-ml}.yml`, `task immich:*` / `task immich-ml:*`
 - **Ingress**: `kubernetes/apps/vm-ingress/{services-immich,immich}.yaml`
 
 ## Architecture
@@ -23,9 +24,15 @@ Client ──(photos.esweiss.com → AdGuard → .101)────────�
                               Immich VM .157: host nginx :443 (wildcard cert)
                                                            ▼
                               docker compose: immich-server :2283 (loopback)
-                                ├── immich-machine-learning (CPU)
+                                ├── immich-machine-learning (CPU — ML failover)
                                 ├── database  (Postgres + vectorchord/pgvectors)
                                 └── redis     (Valkey)
+                                                           │
+                              machineLearning.urls (tried in order):
+                                1▶ http://192.168.0.158:3003 ── immich-ml LXC
+                                   (Arc B580 /dev/dri, OpenVINO — PRIMARY)
+                                2▶ http://immich-machine-learning:3003
+                                   (in-VM CPU container — FAILOVER)
 ```
 
 The compose stack runs the four upstream services. `immich-server` publishes its
@@ -33,9 +40,80 @@ app port on loopback only (`127.0.0.1:2283`) — the host nginx is the sole TLS
 terminator — plus its native Prometheus metrics ports (`8081` API, `8082`
 microservices) on the LAN, firewall-gated to the k3s nodes.
 
-**No GPU**: machine learning runs on CPU (the NAS iGPU is allocated to the Plex
-LXC). The VM is sized 6 vCPU / 12 GB for the CPU-hungry ML jobs (face detection,
-smart search, duplicate detection).
+**GPU ML**: machine-learning inference (face detection, smart search, duplicate
+detection, OCR) runs primarily on the Intel Arc B580 via the `immich-ml` LXC
+(next section); the in-VM CPU ML container is kept as the automatic failover,
+which is why the VM stays sized 6 vCPU / 12 GB.
+
+## GPU machine learning (immich-ml LXC)
+
+A dedicated LXC (`immich-ml`, vmid 158, `192.168.0.158`, 4 cores / 8 GB / 64 GB
+rootfs on `local-lvm`) runs the `immich-machine-learning:<immich_version>-openvino`
+container under docker compose (`immich_ml` role, `task immich-ml:*`).
+
+### Why an LXC, not the VM
+
+The Arc B580 already serves the Plex LXC, and **VM (VFIO) passthrough is
+exclusive** — attaching the card to the Immich VM would take it away from Plex.
+**LXC `/dev/dri` sharing is non-exclusive**: the container bind-mounts the host
+device nodes and the kernel `xe` driver arbitrates between consumers, so Plex
+transcode and ML inference coexist on the one card. The `-openvino` image
+bundles its own Intel compute-runtime; the host only supplies the kernel
+driver, already proven by Plex.
+
+Mechanics (all via `proxmox_lxc`, create-time): `/dev/dri` bind +
+`c 226:* rwm` cgroup allow + the video/render GID idmap (applied for GPU
+guests **with or without** bind mounts). Inside the LXC the compose service
+carries `group_add` with the passed-through video/render GIDs — an
+unprivileged container's root is not host root, so the group match is the only
+way to open the 0660 device nodes.
+
+### Endpoint, failover, security
+
+- `immich-server` reads `machineLearning.urls` (an **array**, tried
+  sequentially) from the rendered `immich-config.json`: the GPU LXC first, the
+  in-VM CPU container second. A GPU-LXC outage degrades to CPU ML
+  automatically; nothing breaks.
+- The ML API is **authless** by upstream design, so the guest firewall is the
+  security boundary: `sg-immich-ml` admits **only** the Immich VM (.157) on
+  3003. Photo bytes transit the LAN as plain HTTP between .157 and .158 —
+  same trust level as the other intra-LAN service flows.
+- No state: the multi-GB model cache is a named docker volume in the rootfs —
+  re-downloadable, holds models only (never photos), so the unencrypted
+  `local-lvm` placement and the lack of backup enrollment are deliberate.
+  Unlike the NAS app guests (plex/gitlab/nextcloud/immich, all `onboot=0` +
+  `pve-start-encrypted-guests`), this LXC is `onboot=1`: nothing waits on the
+  ZFS unlock, so it boots unattended via plain `pve-guests`.
+
+### Version lockstep
+
+`immich_ml_image` derives from the **same `immich_version` pin**
+(`group_vars/all.yml`) as the VM's containers, so any version-bump MR
+redeploys both sides with matching tags (`deploy-immich` + `deploy-immich-ml`
+both trigger on `all.yml`). Never pin the ML LXC independently.
+
+### Expectations & watch-items
+
+- ML jobs (smart search embeddings, face detection, OCR) should complete
+  several-fold faster than on CPU; **video transcoding is unaffected** (it
+  lives in `immich-server` on the VM and stays CPU).
+- **xe VRAM-leak watch-item** ([openvinotoolkit/openvino#32665](https://github.com/openvinotoolkit/openvino/issues/32665)):
+  if OCR batches leak device memory on the Arc card, cap the batch size via
+  `MACHINE_LEARNING_MAX_BATCH_SIZE__OCR=3` — a commented-out example sits in
+  the compose template; the default stays upstream.
+- Switching endpoints does not invalidate existing embeddings — both sides run
+  the same release's models.
+
+### Deploy
+
+```bash
+task immich-ml:deploy        # provision the LXC (GPU passthrough) + stack
+task immich-ml:status        # compose ps + /dev/dri + /ping
+task immich:restart          # only if the VM should re-probe the ML urls now
+```
+
+The role health-waits on `/ping` (answers before the first-boot model download
+finishes — models load lazily on the first job).
 
 ## Storage & encryption
 
@@ -264,6 +342,9 @@ release's own `docker/docker-compose.yml`** — never bump the DB independently.
 3. Review the release notes for **breaking DB migrations**; take a `task
    immich:backup` (pg_dumpall) first.
 4. `task immich:deploy` (recreates the containers via `docker compose up -d`).
+5. `task immich-ml:deploy` — the GPU LXC's `-openvino` tag rides the same
+   `immich_version` pin (lockstep; in CI both `deploy-immich` and
+   `deploy-immich-ml` fire on the `all.yml` bump).
 
 Docker Engine itself is pinned (`docker_ce_version` etc. in `all.yml`) and held
 (`apt-mark hold`), so the maintenance apt-upgrade won't bump it. The role's
@@ -275,7 +356,8 @@ pin still needs a one-off `apt install --allow-downgrades docker-ce=<ver> …`.
 ## Observability
 
 - **Logs**: `alloy_host` ships the VM's journald (including docker container logs
-  — the daemon uses the `journald` log driver) to Loki.
+  — the daemon uses the `journald` log driver) to Loki. The `immich-ml` LXC is
+  wired the same way (same role, same journald log driver).
 - **Metrics**: `node_exporter_host` (host, `:9101`) + Immich's native Prometheus
   metrics (`IMMICH_TELEMETRY_INCLUDE=all`, `:8081`/`:8082`) scraped by the
   `immich` ServiceMonitor (`kubernetes/infrastructure/observability/service-monitors/immich.yaml`).
@@ -316,6 +398,10 @@ automatic phone-photo sync.
 - **`ImmichDown` but the web UI works**: the metrics ports (8081/8082) aren't
   reachable from the k3s nodes — check `sg-immich` and that the ports are
   published (`docker compose ps`).
+- **ML jobs slow / CPU spiking on the VM**: immich-server has failed over to the
+  in-VM CPU endpoint. Check `task immich-ml:status` (compose up? `/dev/dri`
+  present? `/ping` answering?), the `sg-immich-ml` guest firewall (only .157 is
+  admitted), and the immich-server logs for ML-endpoint connection errors.
 - **Stack won't start after a NAS reboot**: the encrypted pools must unlock first;
   verify vmid 157 is in `zfs_encryption_guest_vmids` and the pools are mounted
-  (`docs/32`).
+  (`docs/32`). (The `immich-ml` LXC is exempt — no encrypted storage, `onboot=1`.)

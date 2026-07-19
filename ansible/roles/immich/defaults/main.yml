@@ -63,6 +63,18 @@ immich_db_username: postgres
 immich_db_database_name: immich
 immich_db_password: "{{ lookup('ansible.builtin.env', 'IMMICH_DB_PASSWORD') }}"
 
+# --- Machine-learning endpoints ----------------------------------------------
+# machineLearning.urls in the rendered system config. Immich-server tries the
+# URLs IN ORDER and moves on when one is unreachable — sequential failover is
+# upstream behavior. Primary = the GPU OpenVINO LXC (immich-ml, .158 — see the
+# immich_ml role; sg-immich-ml admits only this VM to the authless endpoint);
+# fallback = the in-VM CPU container (the compose service name resolves on the
+# stack's own network). Keep the in-VM service in docker-compose.yml.j2: it IS
+# the failover.
+immich_ml_urls:
+  - "http://192.168.0.158:3003"
+  - "http://immich-machine-learning:3003"
+
 # --- Native Prometheus telemetry (immich-server) -----------------------------
 # IMMICH_TELEMETRY_INCLUDE=all exposes /metrics on the API (8081) and
 # microservices (8082) ports of the immich-server container. Both are published

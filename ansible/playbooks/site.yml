@@ -1,7 +1,7 @@
 ---
 # Base infrastructure playbook (Proxmox hosts, DNS, mail, NAS, firewall,
-# host-level observability). k3s, Plex, GitLab, Home Assistant, and Immich have
-# dedicated playbooks with separate lifecycles.
+# host-level observability). k3s, Plex, GitLab, Home Assistant, Nextcloud,
+# Immich, and Immich ML have dedicated playbooks with separate lifecycles.
 
 # smtp-relay has no dedicated playbook (dns/plex/gitlab provision via their
 # own), so codify its create path here — otherwise rebuilding the container
@@ -136,7 +136,7 @@
       tags: [node_exporter_host]
 
 - name: Deploy host-side log collection (Alloy → Loki)
-  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers:k3s_agents
+  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:immich_ml_servers:k3s_servers:k3s_agents
   become: true
   # Same first-deploy ordering as the metrics play above: skip a not-yet-provisioned
   # app VM instead of failing the base deploy (the app's own playbook ships alloy_host).

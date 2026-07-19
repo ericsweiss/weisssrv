@@ -447,3 +447,54 @@
         content: |
           {"startup_set": {{ (lxc_meta_drift.stdout | from_json).startup_set }},
            "any_onboot_set": {{ (lxc_meta_drift.stdout | from_json).any_onboot_set }}}
+
+    # =====================================================================
+    # 11 — GPU passthrough WITHOUT bind mounts (the immich-ml shape): the
+    # GPU idmap must render byte-identical to case 6 — the video/render GID
+    # passthrough is the only thing that lets a mount-less unprivileged GPU
+    # guest open /dev/dri — while zero bind-mount pct sets fire.
+    # =====================================================================
+    - name: 11 — reset stub state (container absent), pct.log, and conf
+      ansible.builtin.copy:
+        dest: "{{ item.dest }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {dest: /tmp/molecule-stub-state/ct_exists_state, content: "missing\n"}
+        - {dest: /tmp/molecule-stub-state/pct.log, content: ""}
+        - dest: /etc/pve/lxc/199.conf
+          content: |
+            arch: amd64
+            lxc.idmap: u 0 100000 65536
+            lxc.idmap: g 0 100000 65536
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: 11 — run role with GPU passthrough and NO bind mounts
+      ansible.builtin.include_role:
+        name: proxmox_lxc
+      vars:
+        lxc_gpu_passthrough: true
+
+    - name: 11 — read rendered conf
+      ansible.builtin.slurp:
+        src: /etc/pve/lxc/199.conf
+      register: conf_gpu_nobind
+
+    - name: 11 — count bind-mount pct set calls (must be zero)
+      ansible.builtin.shell: |
+        set -o pipefail
+        mp=$(grep -c '^pct set 199 --mp' /tmp/molecule-stub-state/pct.log || true)
+        echo "{\"mp_calls\": ${mp}}"
+      args:
+        executable: /bin/bash
+      register: gpu_nobind_mp_lines
+      changed_when: false
+
+    - name: 11 — capture GPU-without-bind-mounts idmap artifact
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/11-idmap-gpu-nobind.json
+        mode: "0644"
+        content: |
+          {"conf": {{ conf_gpu_nobind.content | b64decode | to_json }},
+           "mp_calls": {{ (gpu_nobind_mp_lines.stdout | from_json).mp_calls }}}

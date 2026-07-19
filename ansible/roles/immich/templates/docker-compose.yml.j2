@@ -37,6 +37,10 @@ services:
         condition: service_healthy
     restart: always
 
+  # CPU ML FAILOVER. The primary ML endpoint is the GPU OpenVINO LXC
+  # (immich-ml, .158 — immich_ml role); immich-server tries
+  # machineLearning.urls in order, so this service only serves when the GPU
+  # LXC is unreachable. Keep it: removing it turns a GPU outage into broken ML.
   immich-machine-learning:
     image: {{ immich_ml_image }}
     volumes:

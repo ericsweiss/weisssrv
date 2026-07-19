@@ -1,0 +1,49 @@
+---
+# Immich machine-learning LXC container configuration (OpenVINO, Intel Arc B580)
+# Running on pve-nas-01 (192.168.0.102)
+
+# Proxmox host for this container
+proxmox_host: pve-nas-01
+
+# Proxmox resource pool for organization
+proxmox_resource_pool: apps-private
+
+# LXC container configuration
+lxc_cores: 4
+lxc_memory: 8192
+lxc_swap: 2048
+# 64G rootfs: the OpenVINO model cache is multi-GB and lives in the rootfs
+# (named docker volume) — it is re-downloadable cache, not state.
+lxc_disk_size: 64G
+lxc_storage: local-lvm
+
+# Docker runs inside the container (compose stack). keyctl is required
+# alongside nesting for Docker in an unprivileged LXC.
+lxc_nesting: true
+lxc_keyctl: true
+
+# Container startup configuration
+# Boot order strategy: DNS (10) -> SMTP (20) -> k3s servers (30) -> k3s agents (40) -> apps (50+)
+#
+# onboot=1 — UNLIKE plex: this LXC has NO encrypted-pool bind mounts. Its
+# rootfs is on (unencrypted) local-lvm and the only bulk data is the
+# re-downloadable model cache, so nothing here waits on the ZFS unlock and
+# pve-guests starts it unattended at boot. (plex is onboot=0 and coupled to
+# pve-start-encrypted-guests because its /config bind mount lives on the
+# encrypted ssd pool — see host_vars/plex.yml and docs/32-zfs-encryption.md.)
+# Order 57 places it after the other apps (nextcloud 55, immich 56).
+proxmox_autostart_enabled: true
+proxmox_startup_order: 57
+proxmox_startup_delay: 10
+
+# NO lxc_bind_mounts: the model cache lives in the LXC rootfs via a named
+# docker volume — there is no host state to bind in. (proxmox_lxc applies the
+# GPU lxc.idmap whenever lxc_gpu_passthrough is set, bind mounts or not.)
+
+# GPU passthrough for Intel Arc B580 OpenVINO ML inference.
+# /dev/dri is SHARED with the plex LXC (vmid 152): LXC passthrough bind-mounts
+# the host device nodes non-exclusively, so the kernel (xe driver) arbitrates
+# between consumers — Plex transcode and ML inference coexist on the one card.
+lxc_gpu_passthrough: true
+lxc_gpu_devices:
+  - /dev/dri

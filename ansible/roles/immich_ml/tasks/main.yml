@@ -1,0 +1,116 @@
+---
+# Immich machine-learning (OpenVINO) compose stack on the GPU LXC. Order:
+# verify the GPU passthrough -> install Docker -> render compose -> bring the
+# stack up via a systemd unit -> health-wait on /ping.
+#
+# skip_immich_ml_deploy gates every step that needs a real GPU / Docker /
+# systemd service so the molecule scenario can render + assert the templates
+# in a plain CI container (mirrors skip_nextcloud_deploy / immich_skip_install).
+# It defaults false, so real deploys run the full flow.
+
+# =============================================================================
+# GPU device (passed through by proxmox_lxc: /dev/dri bind + video/render idmap)
+# =============================================================================
+- name: Check the GPU render/card device nodes
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /dev/dri/renderD128
+    - /dev/dri/card0
+  register: immich_ml_dri_nodes
+  when: not (skip_immich_ml_deploy | default(false))
+
+- name: Assert the GPU passthrough is present
+  ansible.builtin.assert:
+    that:
+      - immich_ml_dri_nodes.results[0].stat.exists
+      - immich_ml_dri_nodes.results[1].stat.exists
+    fail_msg: >-
+      /dev/dri/renderD128 or /dev/dri/card0 is missing inside the container.
+      The proxmox_lxc GPU passthrough (lxc_gpu_passthrough in
+      host_vars/immich-ml.yml) is create-time only — recreate the container or
+      add the /dev/dri mount + cgroup allow to /etc/pve/lxc/158.conf by hand.
+      Without it the OpenVINO ML container cannot reach the Arc B580.
+    success_msg: "/dev/dri render + card nodes present"
+  when: not (skip_immich_ml_deploy | default(false))
+
+# The idmap passes the HOST's video/render GIDs 1:1, so the authoritative GIDs
+# for compose group_add are whatever the passed-through nodes actually carry —
+# discover them rather than trusting the defaults.
+- name: Discover the GPU device GIDs for the container group_add
+  ansible.builtin.set_fact:
+    immich_ml_render_gid: "{{ immich_ml_dri_nodes.results[0].stat.gid }}"
+    immich_ml_video_gid: "{{ immich_ml_dri_nodes.results[1].stat.gid }}"
+  when: not (skip_immich_ml_deploy | default(false))
+
+# =============================================================================
+# Docker Engine
+# =============================================================================
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.include_tasks: docker.yml
+  when: not (skip_immich_ml_deploy | default(false))
+
+# =============================================================================
+# Compose project
+# =============================================================================
+- name: Create the compose project directory
+  ansible.builtin.file:
+    path: "{{ immich_ml_compose_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render the docker-compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ immich_ml_compose_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart immich-ml
+
+# =============================================================================
+# Systemd unit that owns the compose lifecycle
+# =============================================================================
+- name: Deploy the Immich ML compose systemd unit
+  ansible.builtin.template:
+    src: immich-ml-compose.service.j2
+    dest: /etc/systemd/system/immich-ml-compose.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart immich-ml
+
+- name: Enable the Immich ML compose unit
+  ansible.builtin.systemd:
+    name: immich-ml-compose.service
+    enabled: true
+    daemon_reload: true
+  when: not (skip_immich_ml_deploy | default(false))
+
+# Bring the stack up (and apply any pending compose changes) before the
+# readiness probe below.
+- name: Flush handlers so the stack is (re)started with current config
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the Immich ML stack is running
+  ansible.builtin.systemd:
+    name: immich-ml-compose.service
+    state: started
+  when: not (skip_immich_ml_deploy | default(false))
+
+# /ping answers as soon as the service is up — BEFORE the first-boot model
+# download finishes (models load lazily per request) — so 30 x 10s covers the
+# image pull + container start without waiting on the multi-GB cache.
+- name: Wait for the ML service to answer /ping
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ immich_ml_listen_port }}/ping"
+    status_code: 200
+  register: immich_ml_ping
+  until: immich_ml_ping.status == 200
+  retries: 30
+  delay: 10
+  when: not (skip_immich_ml_deploy | default(false))
