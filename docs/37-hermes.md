@@ -100,8 +100,11 @@ both from the `onepassword-homelab` ClusterSecretStore:
 - **`hermes-secrets`** ← 1Password item **Hermes Secrets**
   - `dashboard-username` / `dashboard-password` / `dashboard-session-secret` →
     `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD` / `_SECRET` — the
-    dashboard's bundled `basic` auth provider (**mandatory**, see §SSO). All
-    three fields must exist on the item or the whole Secret fails to sync.
+    dashboard's bundled `basic` auth provider (**mandatory**, see §SSO).
+  - `api-server-key` → `API_SERVER_KEY` — bearer key for the gateway's
+    in-process API server (its health-probe surface, see §Observability;
+    **mandatory** — the server refuses to start without it).
+  - All four fields must exist on the item or the whole Secret fails to sync.
 - **`hermes-registry-pull`** ← 1Password item **Hermes Registry Pull** → a
   `kubernetes.io/dockerconfigjson` Secret for `registry.git.esweiss.com`, used
   by `imagePullSecrets`.
@@ -253,15 +256,11 @@ idles as a supervisor. To add one (Telegram, Discord, Slack, …):
    Secrets** item or add a dedicated item) if you prefer manifest-managed keys —
    otherwise the UI-written `.env` is sufficient and is backed up.
 3. `task hermes:restart` so the gateway picks up the new platform config.
-4. **Add a gateway health signal (required once a platform is live).** With a
-   platform onboarded the gateway becomes the load-bearing component, but it
-   carries no liveness/readiness probe today — idle it exposes no health port
-   (see §Observability), so only a full process-exit crash-loop is caught, not a
-   hang where s6 PID1 stays up while the agent supervisor stalls. Before relying
-   on it, enable the gateway's OpenAI-compatible API server (or an equivalent
-   health endpoint) and add a TCP/HTTP `livenessProbe` against it on the
-   `gateway` container in `deployment.yaml`, so a wedged supervisor is restarted
-   rather than left silently dead.
+4. **Gateway health signal — already in place.** The gateway carries an HTTP
+   `GET /health` startup + liveness probe against its in-process API server
+   (see §Observability), so a wedged supervisor (s6 up, agent stalled) is
+   restarted automatically rather than left silently dead. Nothing further is
+   needed when onboarding a platform.
 
 All current messaging platforms use HTTPS/WSS on `:443`, which the egress
 NetworkPolicy already allows. A platform needing a non-443 port requires an
@@ -280,12 +279,25 @@ added egress rule in
   the same pattern every other web app here relies on; no per-app rule is added.
 - **Crash-loops**: covered by the standard kube-state-metrics alerts on both
   containers.
-- The gateway exposes no HTTP health port when idle (its OpenAI-compatible API
-  server is off by default), so only the dashboard carries kubelet probes. Those
-  are **TCP-connect** probes on `:9119`, not HTTP GETs: a listener-up check is
-  sufficient health for the single-process dashboard and avoids coupling pod
-  health to any specific HTTP route or status code (the UI is a redirect-heavy
-  SPA). Reachability/auth is covered by the blackbox `http_sso` probe instead.
+- **Gateway liveness**: the gateway's in-process **OpenAI-compatible API
+  server** is enabled (`API_SERVER_ENABLED=true`, bound `0.0.0.0:8642`) solely
+  as its health surface. The kubelet runs an **HTTP `GET /health`**
+  startupProbe (10s × 30, covers the slow s6/NFS first boot) and livenessProbe
+  (30s × 5 → a truly hung gateway restarts within ~2.5 min). `httpGet` rather
+  than `tcpSocket` is deliberate: `/health` is served by the gateway's own
+  asyncio loop, so a wedged supervisor (s6 PID1 up, agent stalled) fails the
+  probe, which a kernel-level TCP connect would not catch. `/health` is the
+  API server's only unauthenticated route; everything else requires the bearer
+  key (`API_SERVER_KEY`, ESO-sourced `api-server-key` on **Hermes Secrets** —
+  mandatory, the server refuses to start without it). `:8642` is on no
+  Service/IngressRoute and the namespace default-deny admits only Traefik on
+  `:9119`, so the API server is unreachable in-cluster; kubelet probes are
+  node-local and bypass NetworkPolicy.
+- The dashboard carries **TCP-connect** probes on `:9119`, not HTTP GETs: a
+  listener-up check is sufficient health for the single-process dashboard and
+  avoids coupling pod health to any specific HTTP route or status code (the UI
+  is a redirect-heavy SPA). Reachability/auth is covered by the blackbox
+  `http_sso` probe instead.
 
 No Grafana dashboard is added — there is no dedicated upstream Hermes dashboard,
 and the app has no Prometheus `/metrics` endpoint.

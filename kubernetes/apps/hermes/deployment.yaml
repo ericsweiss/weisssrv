@@ -125,11 +125,61 @@ spec:
             # either and Hermes finds the token.
             - name: CODEX_HOME
               value: /opt/data/.codex
-          # No HTTP liveness/readiness probe: with no messaging platforms and
-          # the OpenAI-compatible API server left off (its default), an idle
-          # gateway exposes no health port. It runs as a persistent supervisor
-          # (upstream ships `gateway run` under `restart: unless-stopped`);
-          # crash-loops are caught by the standard kube-state-metrics alerts.
+            # Built-in OpenAI-compatible API server (runs in-process with
+            # `gateway run`) — enabled as the gateway's health surface: GET
+            # /health is unauthenticated and is served by the gateway's own
+            # asyncio loop, so the probes below catch a hung supervisor (s6
+            # PID1 up, agent stalled) that a process-exit crash-loop check
+            # cannot see. Every functional route requires the bearer key
+            # (API_SERVER_KEY is mandatory — the server refuses to start
+            # without it, even on loopback); :8642 is NOT on any Service or
+            # IngressRoute and the namespace default-deny admits only Traefik
+            # on :9119, so nothing in-cluster can reach it. Kubelet probes are
+            # node-local and bypass NetworkPolicy — the same path the
+            # dashboard's existing probes already rely on. Env-only enablement
+            # (upstream has no CLI flag/config key), so args stay unchanged.
+            - name: API_SERVER_ENABLED
+              value: "true"
+            # Kubelet probes connect to the pod IP, not loopback — bind all
+            # interfaces (upstream's compose ships this exact binding).
+            - name: API_SERVER_HOST
+              value: "0.0.0.0"
+            - name: API_SERVER_PORT
+              value: "8642"
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: api-server-key
+          ports:
+            - name: api
+              containerPort: 8642
+              protocol: TCP
+          # startupProbe covers the slow s6 first boot on NFS (volume chown,
+          # config migrate, skills sync) + API-server bind before liveness
+          # arms — mirrors the dashboard's 10s x 30 budget.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          # httpGet, NOT tcpSocket: a bare TCP connect completes in the kernel
+          # accept path and can succeed while the app's event loop is wedged —
+          # exactly the hang this probe exists to catch. /health does no LLM
+          # work and answers in ms whenever the loop is servicing requests;
+          # 5 x 30s rides out transient loop stalls (a briefly CPU-bound tool
+          # step) while restarting a truly hung gateway within ~2.5 min.
+          # Deliberately no readinessProbe: the gateway serves no
+          # Service-routed traffic, so readiness gating has nothing to gate.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
           resources:
             requests:
               cpu: 50m
