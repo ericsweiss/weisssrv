@@ -32,8 +32,12 @@ lxc_disk_size: 8G
 lxc_bridge: vmbr0
 lxc_unprivileged: true
 
-# Template settings
-lxc_template: "debian-13-standard_13.1-2_amd64.tar.zst"
+# Template settings. Proxmox rotates appliance builds out of the pveam index
+# (13.1-2 vanished 2026-07); the tasks probe the storage cache first, so an
+# already-downloaded older build keeps working for recreation — but NEW hosts
+# need a name the index actually serves. Check `pveam available | grep
+# debian-13` when this 404s and bump.
+lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 lxc_template_storage: local
 
 # Network configuration

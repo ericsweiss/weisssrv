@@ -173,13 +173,30 @@
     - container_exists.rc != 0
     - not (proxmox_lxc_skip_create | default(false))
 
-# pveam download exits 0 when the template is already present (it re-verifies
-# the checksum), so a non-zero rc is a real failure (bad template name, dead
-# mirror, network) — fail here instead of surfacing later as a cryptic
-# `pct create ... vztmpl` error. The `pveam update` index refresh is
-# best-effort: it must not block recreation from an already-cached template
-# during a DNS/mirror outage (the exact recovery path this role bootstraps
-# public DNS for), so tolerate its failure and let `pveam download` decide.
+# The pinned template can rotate OUT of the upstream appliance index while a
+# previously-downloaded copy is still cached in {{ lxc_template_storage }} —
+# and `pveam download` validates the name against the (freshly-updated) index
+# BEFORE consulting the local cache, so it hard-fails with "no such template"
+# even though `pct create` from the cached tarball works fine (observed
+# 2026-07-19: debian-13-standard_13.1-2 rotated to 13.6-1 upstream while
+# 13.1-2 sat cached on pve-nas-01). Probe the cache first and skip the
+# download on a hit: recreation from cache keeps working offline AND across
+# index rotations. A genuine cache miss still fails loudly on a bad
+# name/dead mirror instead of surfacing later as a cryptic
+# `pct create ... vztmpl` error.
+- name: Check for cached LXC template
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command: pveam list {{ lxc_template_storage }}
+  when:
+    - not ansible_check_mode
+    - container_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
+  register: proxmox_lxc_template_cache
+  changed_when: false
+
+# The `pveam update` index refresh is best-effort: it must not block a
+# from-scratch download during a transient mirror hiccup when the previous
+# index is still serviceable; `pveam download` decides.
 - name: Download LXC template if not present
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -192,6 +209,7 @@
     - not ansible_check_mode
     - container_exists.rc != 0
     - not (proxmox_lxc_skip_create | default(false))
+    - lxc_template not in (proxmox_lxc_template_cache.stdout | default(''))
   register: lxc_template_download
   changed_when: "'downloading' in (lxc_template_download.stdout | default(''))"
 
