@@ -158,6 +158,20 @@ spec:
       websecure:
         port: 443
         # TLS is enabled by default on websecure port in Traefik v3+
+        #
+        # Traefik v3 changed the entrypoint readTimeout default from unlimited
+        # to 60s (slowloris hardening). That kills any request whose BODY takes
+        # longer than 60s to stream — observed breaking every docker push of a
+        # large hermes-agent image layer to the GitLab registry (blob PATCH
+        # reset at duration_ms≈60000; registry logs "client disconnected
+        # during blob PATCH", docker sees HTTP 499), and it would equally break
+        # big/slow Nextcloud/Immich uploads on the internal Traefik-fronted
+        # hosts. 30m bounds the exposure (still slowloris-resistant on a
+        # LAN-facing homelab ingress) while fitting multi-GB uploads on slow
+        # links. writeTimeout stays default (0/unlimited); idleTimeout default.
+        transport:
+          respondingTimeouts:
+            readTimeout: 30m
 
     # Global HTTP to HTTPS redirect
     additionalArguments:
