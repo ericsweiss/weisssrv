@@ -29,7 +29,8 @@ weisssrv/
 │   └── playbooks/              # Deployment playbooks
 ├── terraform/
 │   ├── cloudflare/             # External DNS management
-│   └── tailscale/              # Tailnet ACL policy-as-code
+│   ├── tailscale/              # Tailnet ACL policy-as-code
+│   └── authentik/              # Authentik SSO state as code (apps/providers/groups — docs/40)
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
 │   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
 │   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order (sources -> controllers -> configs, which fans out to observability and apps in parallel)

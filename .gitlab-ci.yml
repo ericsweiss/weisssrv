@@ -17,7 +17,8 @@
 # - Merge requests: Validation only (no deploy)
 # - Push to main: Validation + auto-deploy
 # - Scheduled: Version checking, secret detection, and the advisory
-#   tailscale-drift-plan (token-guarded); all other jobs excluded via when: never,
+#   tailscale-drift-plan / authentik-drift-plan (token-guarded); all other jobs
+#   excluded via when: never,
 #   EXCEPT a schedule with SCHEDULE_TYPE=full-test, which also runs the molecule
 #   image builds + molecule/integration tests as an external-dependency canary
 # - Manual (web): Lint, validate, test, security stages only (deploy/gate/maintenance excluded)
@@ -265,6 +266,9 @@ workflow:
 .paths-terraform-tailscale:
   changes:
     - terraform/tailscale/**/*
+.paths-terraform-authentik:
+  changes:
+    - terraform/authentik/**/*
 .paths-docs-links:
   changes:
     - docs/**/*
@@ -1061,7 +1065,8 @@ terraform-fmt:
     name: hashicorp/terraform:1.15
     entrypoint: [""]
   script:
-    # Cover every module under terraform/ (cloudflare + tailscale), not just one.
+    # Cover every module under terraform/ (cloudflare + tailscale + authentik),
+    # not just one.
     - terraform fmt -check -recursive terraform/
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -1179,8 +1184,9 @@ terraform-validate:
     name: hashicorp/terraform:1.15
     entrypoint: [""]
   script:
-    # Validate every module under terraform/ (cloudflare + tailscale). Each needs
-    # its own init (different providers); -backend=false skips state/creds.
+    # Validate every module under terraform/ (cloudflare + tailscale +
+    # authentik). Each needs its own init (different providers);
+    # -backend=false skips state/creds.
     - |
       set -eo pipefail
       for mod in terraform/*/; do
@@ -1293,6 +1299,62 @@ tailscale-drift-plan:
       changes: !reference [.paths-terraform-tailscale, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-tailscale, changes]
+
+# Read-only drift `terraform plan` for the authentik SSO module against the
+# live authentik objects. Never applies (every apply is a supervised manual
+# step — see terraform/authentik/README.md; there is deliberately no
+# terraform:authentik-apply task yet). A non-empty plan = an Admin-UI edit
+# drifted from the codified state; allow_failure so drift, or a plan hiccup,
+# surfaces without blocking CI. Mirrors tailscale-drift-plan (op-injected
+# creds + TF_HTTP_* backend), scoped to the authentik module + its own state
+# name. KNOWN ADVISORY DIFF: until the approved Sonarr basic-auth clear is
+# applied, this job exits 2 (yellow) with exactly that one in-place update —
+# designed signal, not a failure (README "The Sonarr exception").
+authentik-drift-plan:
+  # Shared HTTP-backend auth/lock settings come from .terraform-http-backend;
+  # only the authentik state path is overridden here.
+  extends: .terraform-http-backend
+  needs: []
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.15
+    entrypoint: [""]
+  variables:
+    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/authentik"
+    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/authentik/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/authentik/lock"
+  before_script:
+    - !reference [.install-1password-alpine, before_script]
+  script:
+    - cd terraform/authentik
+    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (committed
+    # provider hashes; a CI-side change would mask supply-chain drift).
+    - terraform init -lockfile=readonly
+    - |
+      export TF_VAR_authentik_token=$(op read "op://Homelab/Authentik Terraform Token/credential")
+      export TF_VAR_oauth2_client_secret_mealie=$(op read "op://Homelab/Mealie SSO/oidc-client-secret")
+      export TF_VAR_oauth2_client_secret_bar_assistant=$(op read "op://Homelab/Bar Assistant SSO/authentik-client-secret")
+      export TF_VAR_oauth2_client_secret_home_assistant=$(op read "op://Homelab/Home Assistant SSO/authentik-client-secret")
+      export TF_VAR_oauth2_client_secret_grafana=$(op read "op://Homelab/Grafana SSO/oidc-client-secret")
+      export TF_VAR_oauth2_client_secret_nextcloud=$(op read "op://Homelab/Nextcloud SSO/client-secret")
+      export TF_VAR_oauth2_client_secret_immich=$(op read "op://Homelab/Immich SSO/client-secret")
+      # Plan only, never apply — surfaces drift instead of silently reverting it.
+      # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
+      # diff), so allow_failure can actually render the yellow drift signal.
+      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
+  # Advisory drift signal only — never blocks CI (apply stays supervised).
+  allow_failure: true
+  rules:
+    # Periodic drift detection on the schedule (token available on the protected
+    # main branch). No changes: filter — the point is to catch out-of-band
+    # Admin-UI edits when nothing in-repo changed.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
+    # And validate an authentik-module change against live state before its
+    # supervised apply. Token-guarded like terraform-plan (fork MRs lack it).
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes: !reference [.paths-terraform-authentik, changes]
+    - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
+      changes: !reference [.paths-terraform-authentik, changes]
 
 flux-versions-sync:
   needs: []
@@ -2028,8 +2090,9 @@ validation-gate:
       optional: true
     - job: taskfile-smoke
       optional: true
-    # tailscale-drift-plan is deliberately NOT here: it is advisory
-    # (allow_failure) like pr-agent-review, so it can never block the gate.
+    # tailscale-drift-plan / authentik-drift-plan are deliberately NOT here:
+    # they are advisory (allow_failure) like pr-agent-review, so they can
+    # never block the gate.
     - job: python-tests
       optional: true
     # molecule-tests + integration-tests are fanned in via test-aggregate (see

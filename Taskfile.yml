@@ -1285,6 +1285,54 @@ tasks:
         esac
         op run -- terraform apply {{.CLI_ARGS}}
 
+  # --- Authentik SSO module (separate state name; NO apply task yet) ---
+  # Mirrors the cloudflare/tailscale terraform:* tasks but points at
+  # terraform/authentik, its own GitLab state name, and the authentik API
+  # token + per-provider OAuth2 client secrets (the same 1Password items the
+  # apps consume). There is deliberately NO terraform:authentik-apply task:
+  # every apply is a supervised manual step until the module has soaked — see
+  # terraform/authentik/README.md.
+  terraform:authentik-init:
+    desc: Initialize Terraform for the authentik SSO module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    # Anchor shared by terraform:authentik-init/plan/import — authentik API
+    # token + OAuth2 client secrets + the authentik-specific HTTP state name
+    # in one place.
+    env: &tf_authentik_env
+      TF_VAR_authentik_token: op://Homelab/Authentik Terraform Token/credential
+      TF_VAR_oauth2_client_secret_mealie: op://Homelab/Mealie SSO/oidc-client-secret
+      TF_VAR_oauth2_client_secret_bar_assistant: op://Homelab/Bar Assistant SSO/authentik-client-secret
+      TF_VAR_oauth2_client_secret_home_assistant: op://Homelab/Home Assistant SSO/authentik-client-secret
+      TF_VAR_oauth2_client_secret_grafana: op://Homelab/Grafana SSO/oidc-client-secret
+      TF_VAR_oauth2_client_secret_nextcloud: op://Homelab/Nextcloud SSO/client-secret
+      TF_VAR_oauth2_client_secret_immich: op://Homelab/Immich SSO/client-secret
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  terraform:authentik-plan:
+    desc: "Plan authentik SSO changes (read-only diff vs the live authentik objects)"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  terraform:authentik-import:
+    desc: "One-time/DR state bootstrap: terraform-import every resource in imports.tf (read-only against the API; writes only Terraform state)"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- ./import.sh
+
   terraform:validate:
     desc: Validate Terraform configuration (alias for validate-local)
     cmds:
@@ -1295,7 +1343,7 @@ tasks:
     dir: "{{.TERRAFORM_DIR}}"
     cmds:
       # Run from terraform/ so -recursive covers every module (cloudflare +
-      # tailscale), matching the CI terraform-fmt job.
+      # tailscale + authentik), matching the CI terraform-fmt job.
       - terraform fmt -recursive
 
   terraform:fmt-check:

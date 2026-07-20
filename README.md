@@ -159,7 +159,8 @@ weisssrv/
 │   └── playbooks/            # Deployment playbooks
 ├── terraform/
 │   ├── cloudflare/           # Cloudflare DNS management
-│   └── tailscale/            # Tailnet ACL policy-as-code (SSH rules, subnet-route auto-approval)
+│   ├── tailscale/            # Tailnet ACL policy-as-code (SSH rules, subnet-route auto-approval)
+│   └── authentik/            # Authentik SSO state as code (applications, providers, groups)
 ├── kubernetes/               # Flux-managed cluster state
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
 │   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
@@ -425,6 +426,7 @@ NousResearch autonomous AI agent platform with a web dashboard:
 | [37-hermes](docs/37-hermes.md) | Hermes Agent (NousResearch AI agent + dashboard): self-built image, two-container pod, layered Authentik + dashboard SSO |
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 | [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
+| [40-authentik-terraform](docs/40-authentik-terraform.md) | Authentik SSO as code (terraform/authentik day-2 ops: drift, rotation, DR) |
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it
