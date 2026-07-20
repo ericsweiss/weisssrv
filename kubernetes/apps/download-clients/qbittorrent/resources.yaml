@@ -151,6 +151,76 @@ spec:
             - name: config
               mountPath: /config
 
+        # Single sign-on: qBittorrent's WebUI sits behind Traefik + Authentik
+        # forward-auth (the shared authentik-auth middleware, ../_ingressroute),
+        # so its OWN login is a redundant second prompt. Unlike NZBGet — which
+        # speaks HTTP Basic and takes Authentik's injected credentials via the
+        # authentik-auth-basic middleware — qBittorrent's WebUI is form/cookie
+        # based, so header injection can't work. Its only bypass is
+        # WebUI\AuthSubnetWhitelist, and that lives in qBittorrent.conf on the
+        # config PVC (runtime state qBittorrent rewrites), not in git.
+        #
+        # This init-container makes the bypass declarative: on every start it
+        # ensures the whitelist contains the k3s pod CIDR (10.42.0.0/16) — the
+        # source IP qBittorrent sees for a Traefik-forwarded request (confirmed:
+        # the pre-existing 192.168/100.64 entries never matched, which is why the
+        # second prompt appeared). Only Traefik can reach :8080 (downloads is
+        # default-deny ingress — see networkpolicy.yaml) and Traefik enforces
+        # Authentik SSO, so every request that arrives is already authenticated;
+        # the pod-CIDR bypass is safe and yields single sign-on. The 192.168/
+        # 100.64 entries are kept for any direct LAN/Tailscale access.
+        #
+        # Idempotent (verified against the live conf in busybox awk): index() is
+        # a literal match, backslash-safe for the WebUI\ keys; existing keys are
+        # rewritten to the canonical value, and on a fresh install missing keys
+        # are inserted under [Preferences] (or appended via END if it is the last
+        # section). A conf that does not exist yet is a no-op — qBittorrent
+        # creates it on first boot and the whitelist applies on the next start.
+        - name: seed-webui-bypass
+          image: busybox:${busybox_version}
+          command:
+            - sh
+            - -ec
+            - |
+              conf=/config/qBittorrent/qBittorrent.conf
+              if [ ! -f "$conf" ]; then
+                echo "[seed-webui-bypass] no config yet (fresh install); applies on next start"
+                exit 0
+              fi
+              wl="10.42.0.0/16, 192.168.0.0/24, 100.64.0.0/10"
+              tmp="$conf.seed-tmp"
+              awk -v wl="$wl" '
+                BEGIN { en=0; wl_set=0; in_pref=0 }
+                /^\[Preferences\]$/ { in_pref=1; print; next }
+                /^\[.*\]$/ {
+                  if (in_pref) {
+                    if (!en)     print "WebUI\\AuthSubnetWhitelistEnabled=true"
+                    if (!wl_set) print "WebUI\\AuthSubnetWhitelist=" wl
+                    in_pref=0
+                  }
+                  print; next
+                }
+                index($0, "WebUI\\AuthSubnetWhitelistEnabled=") == 1 { print "WebUI\\AuthSubnetWhitelistEnabled=true"; en=1; next }
+                index($0, "WebUI\\AuthSubnetWhitelist=") == 1        { print "WebUI\\AuthSubnetWhitelist=" wl; wl_set=1; next }
+                { print }
+                END {
+                  if (in_pref) {
+                    if (!en)     print "WebUI\\AuthSubnetWhitelistEnabled=true"
+                    if (!wl_set) print "WebUI\\AuthSubnetWhitelist=" wl
+                  }
+                }
+              ' "$conf" > "$tmp"
+              if [ -s "$tmp" ] && ! cmp -s "$tmp" "$conf"; then
+                cat "$tmp" > "$conf"
+                echo "[seed-webui-bypass] AuthSubnetWhitelist now includes the pod CIDR"
+              else
+                echo "[seed-webui-bypass] whitelist already current; no change"
+              fi
+              rm -f "$tmp"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+
       containers:
         # Gluetun VPN-health exporter. Polls the gluetun control server on
         # loopback (shares the pod network namespace) and serves a Prometheus
