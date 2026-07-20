@@ -193,7 +193,17 @@ spec:
       # de-rotation is preserved. Conservative timing so a brief NFS blip can't
       # flap-restart. stat needs only search perm on the mount parents, so it
       # works as the grafana user (472) under NFS all_squash.
+      #
+      # httpGet MUST be explicitly nulled: helm deep-merges these values into
+      # the grafana subchart's defaults, whose livenessProbe carries httpGet —
+      # without the null the rendered probe has BOTH handlers and the apiserver
+      # rejects the Deployment ("may not specify more than 1 handler type").
+      # That exact failure blocked the 87.17.0 upgrade for 24h (4 upgrade
+      # attempts -> rollback -> HelmRelease Stalled) — kubeconform can't catch
+      # it (semantic apiserver validation, not schema), so only a live upgrade
+      # surfaces it.
       livenessProbe:
+        httpGet: null
         exec:
           command:
             - sh

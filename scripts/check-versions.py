@@ -302,6 +302,10 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/nzbget",
         "lsio_version_regex": r"^version-v(\d+\.\d+(?:\.\d+)?)$",
+        # Stable tags get buried under daily develop/nightly pushes (3 arch
+        # variants each) — filter server-side and page deeper (2026-07-19).
+        "lsio_name_filter": "version-",
+        "lsio_max_pages": 4,
     },
     {
         "name": "qBittorrent",
@@ -317,6 +321,10 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/prowlarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        # Stable tags get buried under daily develop/nightly pushes (3 arch
+        # variants each) — filter server-side and page deeper (2026-07-19).
+        "lsio_name_filter": "version-",
+        "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
     },
     {
@@ -325,6 +333,10 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/sonarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        # Stable tags get buried under daily develop/nightly pushes (3 arch
+        # variants each) — filter server-side and page deeper (2026-07-19).
+        "lsio_name_filter": "version-",
+        "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
     },
     {
@@ -333,6 +345,10 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/radarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        # Stable tags get buried under daily develop/nightly pushes (3 arch
+        # variants each) — filter server-side and page deeper (2026-07-19).
+        "lsio_name_filter": "version-",
+        "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
     },
     {
@@ -341,6 +357,10 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/lidarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+        # Stable tags get buried under daily develop/nightly pushes (3 arch
+        # variants each) — filter server-side and page deeper (2026-07-19).
+        "lsio_name_filter": "version-",
+        "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
     },
     # --- Helm charts ---
@@ -1330,6 +1350,7 @@ def _dockerhub_best_tag(
     current: str = "",
     return_full_tag: bool = False,
     name_filter: str = "",
+    max_pages: int = 1,
 ) -> Optional[str]:
     """Highest Docker Hub tag of `image` matching `regex` (group 1 = version).
 
@@ -1352,9 +1373,20 @@ def _dockerhub_best_tag(
         url += f"&name={name_filter}"
     elif version_prefix:
         url += f"&name={version_prefix}"
-    data = _make_request(url)
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Unexpected non-JSON response from {url}")
+    # Bounded pagination: high-churn repos (the *arr apps push develop/nightly
+    # tags daily, 3 arch variants each) can bury a monthly stable tag beyond the
+    # first page even with a name filter — observed 2026-07-19 when Prowlarr's
+    # stable scrolled off and the check errored. Callers with that exposure pass
+    # max_pages > 1; the default keeps every other caller at one request.
+    results = []
+    pages = 0
+    while url and pages < max_pages:
+        data = _make_request(url)
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected non-JSON response from {url}")
+        results.extend(data.get("results", []))
+        url = data.get("next")
+        pages += 1
 
     # Extract the major version from `current` when pinning (e.g. "17-trixie"
     # -> "17", "17.2-trixie" -> "17", "v1.2.3" -> "1"). Tolerate a leading "v" so
@@ -1368,7 +1400,7 @@ def _dockerhub_best_tag(
 
     best = None
     best_tuple = None
-    for result in data.get("results", []):
+    for result in results:
         tag_name = result.get("name", "")
         match = re.match(regex, tag_name)
         if not match:
@@ -1436,6 +1468,8 @@ def fetch_lsio_version(svc: dict) -> str:
         image,
         version_regex,
         version_prefix=svc.get("version_prefix", ""),
+        name_filter=svc.get("lsio_name_filter", ""),
+        max_pages=svc.get("lsio_max_pages", 1),
     )
     if best_version is None:
         raise RuntimeError(
