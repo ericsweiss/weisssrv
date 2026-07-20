@@ -39,13 +39,15 @@ spec:
 # Egress for the hermes pod:
 #   * kube-dns (name resolution)
 #   * public HTTPS (:443) for the Codex runtime's OpenAI/ChatGPT backend, the
-#     Claude Code delegate's api.anthropic.com, and messaging-platform APIs
-#     (Telegram / Discord / Slack are all 443/WSS).
-#   * the internal GitLab ingress VIP (.101:443) ONLY — so delegated coding
-#     runs (claude -p / codex) can clone/push git.esweiss.com repos and open
-#     MRs. This is a single /32 pinhole, not LAN access: the rest of RFC1918
-#     stays excluded below.
-# No other LAN/RFC1918 egress, no SMTP, and no kube-apiserver
+#     Claude Code delegate's api.anthropic.com, messaging-platform APIs
+#     (Telegram / Discord / Slack are all 443/WSS), and — deliberately — the
+#     coding delegates' git access: git.ericsweiss.com resolves to the WAN IP
+#     (a public address), so clones/pushes ride this rule via the router
+#     hairpin. An internal-VIP pinhole does NOT work here: from a pod,
+#     kube-proxy DNATs a LoadBalancer VIP (e.g. Traefik .101) to the backend
+#     POD IP before NetworkPolicy evaluation, so an ipBlock rule for the VIP
+#     /32 can never match (verified 2026-07-19 — instant connection failure).
+# No LAN/RFC1918 egress, no SMTP, and no kube-apiserver
 # (automountServiceAccountToken is false — it uses no in-cluster API). A
 # messaging platform that needs a non-443 port would require an added rule
 # here (documented in docs/37).
@@ -82,18 +84,6 @@ spec:
               - 192.168.0.0/16
               - 100.64.0.0/10
               - 169.254.0.0/16
-      ports:
-        - protocol: TCP
-          port: 443
-    # Internal GitLab pinhole for coding delegates: git.esweiss.com /
-    # registry.git.esweiss.com resolve (AdGuard rewrite) to the Traefik
-    # internal VIP .101, which the RFC1918 exclusions above deliberately
-    # block. Allow exactly that /32 on :443 so delegated claude/codex runs
-    # can clone + push over HTTPS. SSH (:22/:2222) is intentionally NOT
-    # opened — delegates use HTTPS remotes with a project token.
-    - to:
-        - ipBlock:
-            cidr: 192.168.0.101/32
       ports:
         - protocol: TCP
           port: 443

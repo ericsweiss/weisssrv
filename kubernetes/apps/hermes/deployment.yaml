@@ -142,6 +142,22 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: claude-code-oauth-token
+            # Discord messaging platform: the gateway activates an adapter when
+            # its bot token is present in the environment. Token via ESO
+            # (1P Hermes Secrets / discord-bot-token — the bot from the user's
+            # Discord Developer Portal app, Message Content + Server Members
+            # intents ON). Upstream is DENY-ALL without an allowlist:
+            # DISCORD_ALLOWED_USERS pins the bot to exactly the operator's
+            # Discord user id (a public identifier, not a secret). Discord
+            # REST + gateway WSS both ride :443, already permitted by the
+            # egress NetworkPolicy.
+            - name: DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: discord-bot-token
+            - name: DISCORD_ALLOWED_USERS
+              value: "237388029105405952"
             # Built-in OpenAI-compatible API server (runs in-process with
             # `gateway run`) — enabled as the gateway's health surface: GET
             # /health is unauthenticated and is served by the gateway's own

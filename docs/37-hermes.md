@@ -106,7 +106,9 @@ both from the `onepassword-homelab` ClusterSecretStore:
     **mandatory** — the server refuses to start without it).
   - `claude-code-oauth-token` → `CLAUDE_CODE_OAUTH_TOKEN` — the Claude Code
     delegate's Max-subscription OAuth token (see §Coding delegates).
-  - All five fields must exist on the item or the whole Secret fails to sync.
+  - `discord-bot-token` → `DISCORD_BOT_TOKEN` — the Discord adapter's bot
+    token (see §Gateway / messaging-platform onboarding).
+  - All six fields must exist on the item or the whole Secret fails to sync.
 - **`hermes-registry-pull`** ← 1Password item **Hermes Registry Pull** → a
   `kubernetes.io/dockerconfigjson` Secret for `registry.git.esweiss.com`, used
   by `imagePullSecrets`.
@@ -114,12 +116,12 @@ both from the `onepassword-homelab` ClusterSecretStore:
 There is **no LLM-provider API key** in these Secrets. The LLM engine is the
 Codex app-server runtime, authenticated by a ChatGPT subscription via a one-time
 `codex login` (OAuth) — the token lives in `CODEX_HOME` on the NFS volume, not in
-1Password (see §LLM engine). Additional Hermes provider keys or messaging-platform
-tokens (Telegram, Discord, …) are entered in the **dashboard UI** and written to
-`/opt/data/.env` on the encrypted, backed-up NFS volume, so they persist and need
-no manifest change. Rotating those is an in-dashboard edit; rotating the
-1Password-managed dashboard/registry credentials is a normal ESO rotation
-(docs/15).
+1Password (see §LLM engine). Messaging-platform bot tokens are 1P/ESO-managed
+(Discord's `discord-bot-token` above — see §Gateway onboarding for the
+pattern); ad-hoc provider keys entered in the **dashboard UI** land in
+`/opt/data/.env` on the encrypted, backed-up NFS volume and persist without a
+manifest change. Rotating the 1Password-managed credentials is a normal ESO
+rotation (docs/15).
 
 ---
 
@@ -207,10 +209,14 @@ enters the model context.
   permissions (`--allowedTools` / `sandbox: workspace-write`) over
   bypass-everything modes: the same volume holds Hermes' own `.env` and OAuth
   tokens.
-- **Git access**: the egress NetworkPolicy carries a single `/32` pinhole to
-  the internal Traefik VIP (`192.168.0.101:443`) so delegates can clone/push
-  `git.esweiss.com` repos over HTTPS (project access token); SSH remotes are
-  deliberately not reachable.
+- **Git access**: delegates use `git.ericsweiss.com` HTTPS remotes (project
+  access token) — the external hostname resolves to the WAN IP, a *public*
+  address, so clones/pushes ride the existing public-`:443` egress allowance
+  via the router hairpin. The internal hostname (`git.esweiss.com` → Traefik
+  VIP `.101`) is **not** reachable from the pod and cannot be pinholed: from a
+  pod, kube-proxy DNATs a LoadBalancer VIP to the backend *pod* IP before
+  NetworkPolicy evaluation, so a VIP `/32` ipBlock rule never matches. SSH
+  remotes are deliberately not reachable.
 - **Quota note**: delegated runs share the subscriptions' interactive rate
   windows (Max 5-hour/weekly; Codex allowance) — heavy fan-out can starve your
   own interactive sessions.
@@ -294,16 +300,25 @@ outpost).
 
 ## Gateway / messaging-platform onboarding (user follow-up)
 
-Out of the box the `gateway` container runs with **no** messaging platforms — it
-idles as a supervisor. To add one (Telegram, Discord, Slack, …):
+**Discord is onboarded, manifest-managed.** The gateway activates a platform
+adapter when its bot token is present in the environment; Discord's is wired
+via ESO (`hermes-secrets/discord-bot-token` → `DISCORD_BOT_TOKEN`) with
+`DISCORD_ALLOWED_USERS` pinned to the operator's Discord user id in
+`deployment.yaml` — upstream is **deny-all** without that allowlist, so the
+bot answers exactly one account. Bot-side (Developer Portal, one-time):
+**Message Content Intent** and **Server Members Intent** must be ON (a bot
+with Message Content off receives empty message text — the #1 Discord
+failure), OAuth scopes `bot + applications.commands`, permissions
+`274878286912`, invited to a mutual server. Rotating the token is a normal
+ESO rotation (docs/15) + `task hermes:restart`.
 
-1. Open the dashboard → configure the platform (bot token, allowed users). The
-   dashboard writes the config/token to `/opt/data/.env` + `config.yaml`.
-2. Store the bot token in 1Password for the record (extend the **Hermes
-   Secrets** item or add a dedicated item) if you prefer manifest-managed keys —
-   otherwise the UI-written `.env` is sufficient and is backed up.
-3. `task hermes:restart` so the gateway picks up the new platform config.
-4. **Gateway health signal — already in place.** The gateway carries an HTTP
+To add another platform (Telegram, Slack, …):
+
+1. Add the bot token as a new field on the **Hermes Secrets** 1P item, wire it
+   through `externalsecret.yaml` + a `<PLATFORM>_BOT_TOKEN` env in
+   `deployment.yaml` (mirror the Discord block, including its allowlist env).
+2. `task hermes:restart` so the gateway picks up the new adapter.
+3. **Gateway health signal — already in place.** The gateway carries an HTTP
    `GET /health` startup + liveness probe against its in-process API server
    (see §Observability), so a wedged supervisor (s6 up, agent stalled) is
    restarted automatically rather than left silently dead. Nothing further is
