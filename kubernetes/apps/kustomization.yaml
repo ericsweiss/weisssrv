@@ -8,6 +8,7 @@ resources:
   - authentik
   - download-clients
   - hermes
+  - hindsight
   - recipes
   - gitlab-runner
   - gitlab-runner-privileged

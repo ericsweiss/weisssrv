@@ -12,9 +12,12 @@ spec:
     - Egress
 
 ---
-# Ingress: only Traefik may reach the dashboard on :9119. Everything else
-# (cross-pod, cross-namespace) is denied by the baseline default-deny-ingress.
-# Kubelet health probes are node-local and not gated by NetworkPolicy.
+# Ingress: only Traefik may reach the dashboard on :9119 and the gateway's
+# OpenAI-compatible API server on :8642 (the agent-api.esweiss.com
+# IngressRoute — LAN/Tailscale-scoped at Traefik, bearer-keyed at the app).
+# Everything else (cross-pod, cross-namespace) is denied by the baseline
+# default-deny-ingress. Kubelet health probes are node-local and not gated by
+# NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -34,6 +37,8 @@ spec:
       ports:
         - protocol: TCP
           port: 9119
+        - protocol: TCP
+          port: 8642
 
 ---
 # Egress for the hermes pod:
@@ -47,6 +52,18 @@ spec:
 #     kube-proxy DNATs a LoadBalancer VIP (e.g. Traefik .101) to the backend
 #     POD IP before NetworkPolicy evaluation, so an ipBlock rule for the VIP
 #     /32 can never match (verified 2026-07-19 — instant connection failure).
+#   * public HTTP (:80) for the camofox browser sidecar: page loads routinely
+#     enter on a plain-http URL before the https redirect, and blocking :80
+#     would hang those navigations. Same private-range except-list as :443.
+#   * the hindsight namespace on :8888 — the gateway's hindsight memory
+#     plugin (docs/37 §Memory backend). A namespaceSelector (unlike a VIP
+#     ipBlock, see above) matches AFTER kube-proxy's Service DNAT — the
+#     evaluated destination is the hindsight POD IP, which the selector
+#     covers — so the ClusterIP path works.
+#   * the traefik namespace on :443 — HASS_URL=https://home.esweiss.com: the
+#     AdGuard rewrite answers the Traefik VIP .101, kube-proxy DNATs that to
+#     the Traefik POD IP (targetPort websecure = 443), and this post-DNAT
+#     namespaceSelector matches where a .101/32 ipBlock never could.
 # No LAN/RFC1918 egress, no SMTP, and no kube-apiserver
 # (automountServiceAccountToken is false — it uses no in-cluster API). A
 # messaging platform that needs a non-443 port would require an added rule
@@ -87,6 +104,19 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+        # Plain HTTP for the camofox browser sidecar's first hop (sites that
+        # redirect http->https); LAN/RFC1918 stays excluded above.
+        - protocol: TCP
+          port: 80
+    # Hindsight memory backend (in-cluster) — post-DNAT namespace selector,
+    # same mechanism note as the Traefik rule below.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hindsight
+      ports:
+        - protocol: TCP
+          port: 8888
     # Traefik pods on websecure — the dashboard's OIDC backend fetches
     # (discovery + JWKS) target https://auth.ericsweiss.com, which resolves
     # internally to the Traefik VIP .101 (split-horizon AdGuard rewrite; the
@@ -95,7 +125,9 @@ spec:
     # evaluation, so this rule matches by pod/namespace selector — a VIP
     # ipBlock could never match (see the removed-pinhole note above). Scope
     # note: this admits reach to any Traefik-fronted internal vhost; every
-    # such route carries its own forward-auth/OIDC gate.
+    # such route carries its own forward-auth/OIDC gate. Also the path for
+    # HASS_URL=https://home.esweiss.com (HA toolset) and any internal vhost
+    # the agent legitimately consumes.
     - to:
         - namespaceSelector:
             matchLabels:

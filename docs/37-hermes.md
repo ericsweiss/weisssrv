@@ -18,20 +18,25 @@ exposes the dashboard at **`agent.ericsweiss.com`** (external) /
 
 ## Architecture
 
-One Deployment (`replicas: 1`, `strategy: Recreate`), two containers off the
-same self-built image, sharing one NFS `/opt/data` volume — mirroring upstream's
-`docker-compose.yml`, where both the `gateway` and `dashboard` services
-bind-mount `~/.hermes` and run with `network_mode: host`:
+One Deployment (`replicas: 1`, `strategy: Recreate`), three containers sharing
+one NFS `/opt/data` volume — the first two off the same self-built image,
+mirroring upstream's `docker-compose.yml`, where both the `gateway` and
+`dashboard` services bind-mount `~/.hermes` and run with `network_mode: host`:
 
-| Container | Command | Role |
-|-----------|---------|------|
+| Container | Command / image | Role |
+|-----------|-----------------|------|
 | `gateway` | `gateway run` | Always-on agent supervisor. Messaging-platform adapters (Telegram/Discord/Slack/…) register here. Runs even with **zero** platforms configured. |
 | `dashboard` | `dashboard --host 0.0.0.0 --no-open` | The user-facing FastAPI web UI on `:9119` (9119 is the image default; upstream's compose binds `--host 127.0.0.1`). |
+| `camofox` | self-built `camofox-browser` image | Anti-detection browser server on `:9377`, driven by the gateway's camofox browser tool over pod-localhost (see §Browser tooling). |
 
-Because both containers live in one pod they share `localhost` (like the
-compose `network_mode: host`), so the dashboard reaches the gateway over
-`127.0.0.1` with no extra service. The single RWO NFS volume is why the update
-strategy is `Recreate` (never dual-mount across a rolling update).
+Because the containers live in one pod they share `localhost` (like the
+compose `network_mode: host`), so the dashboard reaches the gateway — and the
+gateway reaches the browser — over `127.0.0.1` with no extra service. The
+single RWO NFS volume is why the update strategy is `Recreate` (never
+dual-mount across a rolling update).
+
+A companion app, **Hindsight** (`kubernetes/apps/hindsight/`), provides the
+optional long-term memory backend — see §Memory backend.
 
 ### Image
 
@@ -100,7 +105,8 @@ both from the `onepassword-homelab` ClusterSecretStore:
 - **`hermes-secrets`** ← 1Password item **Hermes Secrets**
   - `dashboard-username` / `dashboard-password` / `dashboard-session-secret` →
     `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD` / `_SECRET` — the
-    dashboard's bundled `basic` auth provider (break-glass, see §SSO).
+    dashboard's retired `basic` provider — retained on the 1P item as
+    emergency-revert values only, NOT synced (see §SSO).
   - `hermes-dashboard-oidc-client-secret` →
     `HERMES_DASHBOARD_OIDC_CLIENT_SECRET` — the dashboard's Authentik OIDC
     client secret (see §SSO). `terraform/authentik` injects the **same** 1P
@@ -114,7 +120,12 @@ both from the `onepassword-homelab` ClusterSecretStore:
   - `discord-bot-token` → upserted into `/opt/data/.env` by the init
     container, **not** gateway container env (see §Gateway platform config —
     gateway config never reads `os.environ`).
-  - All seven fields must exist on the item or the whole Secret fails to sync.
+  - `hass-token` → a Home Assistant long-lived access token, upserted into
+    `/opt/data/.env` by the init container like the Discord token; its
+    presence auto-enables the homeassistant tool (see §Home Assistant).
+  - The five SYNCED fields (oidc secret, api-server-key, claude/discord
+    tokens, hass-token) must exist on the item or the whole Secret fails to
+    sync; the three retired dashboard-* fields are reserve-only.
 - **`hermes-registry-pull`** ← 1Password item **Hermes Registry Pull** → a
   `kubernetes.io/dockerconfigjson` Secret for `registry.git.esweiss.com`, used
   by `imagePullSecrets`.
@@ -243,7 +254,7 @@ references it), `task hermes:restart`, then verify with
 
 ---
 
-## SSO — layered: Authentik perimeter + dashboard OIDC (+ `basic` break-glass)
+## SSO — layered: Authentik perimeter + dashboard OIDC (OIDC-only)
 
 Access is layered: an Authentik forward-auth perimeter in front of the
 dashboard's own login, which is itself Authentik OIDC first.
@@ -271,19 +282,20 @@ dashboard's own login, which is itself Authentik OIDC first.
    flow without a prompt. An OIDC login started on the internal host
    (`agent.esweiss.com`) completes on the external host (the pinned
    `PUBLIC_URL`); `basic` works on either host.
-4. **Dashboard `basic` provider (break-glass — deliberately kept).** The
-   dashboard stores provider API keys, so upstream binds it to `127.0.0.1` by
-   default; this deployment binds `0.0.0.0` (so Traefik can reach it), which
-   engages upstream's **fail-closed** auth gate — the dashboard refuses to
-   start unless at least one `dashboard_auth` provider is registered. With
-   **two** providers registered, the auth middleware renders the `/login`
-   provider **chooser**; with a single provider it auto-launches it, and
-   auto-launch on `basic` raises `NotImplementedError` → HTTP 500 (observed
-   live). Keeping `basic` alongside OIDC therefore (a) fixes the chooser
-   structurally and (b) preserves a password break-glass independent of
-   Authentik. (When Authentik is fully down the perimeter middleware fails
-   too — break-glass is then `kubectl port-forward` to `:9119` + the `basic`
-   login.)
+4. **OIDC-only — the `basic` password provider is retired.** The dashboard
+   binds `0.0.0.0` (so Traefik can reach it), engaging upstream's
+   **fail-closed** auth gate — at least one `dashboard_auth` provider must be
+   registered; the `self_hosted` OIDC provider satisfies it alone. With
+   exactly one session provider the auth middleware **auto-launches** the
+   login flow, and for OIDC that is the intended **silent-SSO redirect**: a
+   live Authentik session means no chooser click and no visible prompt.
+   (Historical note: a chooser existed briefly while `basic` was registered
+   alongside OIDC, because auto-launch on a password-only provider raises
+   `NotImplementedError` → HTTP 500 — retiring `basic` removes the chooser
+   AND the hazard.) When Authentik is fully down the dashboard UI is
+   unreachable by design — operate via `kubectl exec … hermes` (CLI), or
+   emergency-revert by re-adding the `HERMES_DASHBOARD_BASIC_AUTH_*` env
+   trio + the three ESO entries (values retained on the 1P item).
 
 ### Authentik objects — now in Terraform (no UI clicks)
 
@@ -323,14 +335,18 @@ read real container env — see §SSO.)
 
 Two write paths into `.env`:
 
-- **Codified (Discord + Codex home).** The `init-data` initContainer
+- **Codified (Discord + Codex home + camofox + Home Assistant).** The
+  `init-data` initContainer
   ([`deployment.yaml`](../kubernetes/apps/hermes/deployment.yaml)) upserts
   `DISCORD_BOT_TOKEN` (ESO ← 1P `discord-bot-token`), `DISCORD_ALLOWED_USERS`
-  (manifest literal — an identifier, not a credential) and `CODEX_HOME` into
-  `.env` on **every pod start**, remove-then-append per key. An ESO rotation of
-  the token therefore propagates on the next start (`task hermes:restart`
-  completes a rotation), values persist on NFS between starts, and keys outside
-  the sync list are never touched.
+  (manifest literal — an identifier, not a credential), `CODEX_HOME`,
+  `CAMOFOX_URL` (manifest literal — the sidecar's pod-localhost address, see
+  §Browser tooling), `HASS_URL` (manifest literal) and `HASS_TOKEN` (ESO ← 1P
+  `hass-token`, see §Home Assistant) into `.env` on **every pod start**,
+  remove-then-append per key. An ESO rotation of a token therefore propagates
+  on the next start (`task hermes:restart` completes a rotation), values
+  persist on NFS between starts, and keys outside the sync list are never
+  touched.
 - **Dashboard UI.** Other platform settings (e.g. `DISCORD_HOME_CHANNEL` /
   `DISCORD_HOME_CHANNEL_THREAD_ID`) are written by the UI to the same `.env`
   (+ `config.yaml`) and persist there.
@@ -355,6 +371,168 @@ added egress rule in
 
 ---
 
+## Memory backend — Hindsight (runtime-enabled)
+
+[Hindsight](https://github.com/vectorize-io/hindsight) replaces Hermes'
+built-in memory with a knowledge-graph store (entity resolution, observation
+consolidation, multi-strategy recall). It runs as its own app —
+[`kubernetes/apps/hindsight/`](../kubernetes/apps/hindsight/) (see that
+README for the two-container hindsight + llama.cpp architecture, the fully
+local LLM, and the Postgres-on-NFS storage decision). Hermes talks to it via
+the bundled `hindsight` memory plugin in **`local_external`** mode.
+
+**Enablement is runtime config, deliberately NOT in git**: `memory.provider`
+lives in Hermes' config on the NFS volume (like the platform tokens), so git
+carries the infrastructure and the operator flips the switch.
+
+One-time operator steps, after the hindsight pod is `Running`:
+
+1. **Plugin config.** Write the plugin's profile-scoped config file
+   (`$HERMES_HOME/hindsight/config.json` — `/opt/data/hindsight/config.json`
+   here):
+
+   ```bash
+   kubectl exec -n hermes deploy/hermes -c gateway -- sh -c \
+     'mkdir -p /opt/data/hindsight && cat > /opt/data/hindsight/config.json' <<'EOF'
+   {
+     "mode": "local_external",
+     "api_url": "http://hindsight.hindsight.svc.cluster.local:8888",
+     "memory_mode": "hybrid"
+   }
+   EOF
+   ```
+
+   `memory_mode: hybrid` = automatic per-turn context injection **and**
+   explicit `hindsight_*` tools for the LLM. No API key — the hindsight
+   NetworkPolicy admits only this namespace.
+
+2. **Select the provider + restart.** The first enable pip-installs the
+   plugin's `hindsight-client` dependency via `uv` (rides the existing
+   public-`:443` egress):
+
+   ```bash
+   kubectl exec -n hermes deploy/hermes -c gateway -- hermes config set memory.provider hindsight
+   task hermes:restart
+   ```
+
+3. **Step-0 char-limit relief (recommended).** Hindsight's recalled
+   observations are denser than the built-in memory the defaults were sized
+   for — double the injection budgets (defaults 2200/1375):
+
+   ```bash
+   kubectl exec -n hermes deploy/hermes -c gateway -- hermes config set memory.memory_char_limit 4400
+   kubectl exec -n hermes deploy/hermes -c gateway -- hermes config set memory.user_char_limit 2750
+   task hermes:restart
+   ```
+
+**Rollback**: remove the provider key (`hermes config set memory.provider
+builtin` or delete the `memory.provider` line from the config) + `task
+hermes:restart` — the built-in memory store always runs, so this is a pure
+config flip; nothing in the cluster changes. Retained Hindsight memories stay
+in its PostgreSQL for a re-enable.
+
+**Multi-user (future)**: Hindsight partitions memory into **banks** (`bank_id`
+on every retain/recall — default bank `hermes`). The plugin's
+`bank_id_template` config (placeholders `{profile}`/`{platform}`/`{user}`/…,
+e.g. `"bank_id_template": "hermes-{user}"`) derives a bank per platform user,
+giving per-user memory segregation with no server-side change.
+
+---
+
+## Browser tooling — camofox sidecar
+
+Hermes' preferred browser tool is **camofox**
+([jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser)) — a
+Camoufox (hardened-Firefox) automation server with anti-detection
+fingerprinting, driven over HTTP. It runs as the third container of the hermes
+pod (self-built image — `build-camofox-browser` CI job,
+[`docker/camofox-browser/README.md`](../docker/camofox-browser/README.md)):
+
+- **Wiring**: the gateway reads `CAMOFOX_URL=http://127.0.0.1:9377` from
+  `/opt/data/.env` (init-container upsert — §Gateway platform config); its
+  presence makes the camofox tool available. `:9377` is on no Service and has
+  no ingress allow — only the gateway (pod-localhost) can drive the browser.
+- **Persistence**: profiles/cookies/traces under `/opt/data/.camofox/*` on the
+  NFS volume (`CAMOFOX_PROFILE_DIR`/`CAMOFOX_COOKIES_DIR`/`CAMOFOX_TRACES_DIR`)
+  — logged-in browser sessions survive pod recreation, encrypted at rest,
+  archive-backed.
+- **Guardrails**: `MAX_SESSIONS=5` (upstream default 50 — far more Firefox
+  than the pod's memory budget; 5 is plenty for one agent),
+  `CAMOFOX_CRASH_REPORT_ENABLED=false` (upstream defaults crash reporting ON —
+  this is a private deployment). Memory: 512Mi request / 2Gi limit,
+  VPA-excluded (browser memory tracks open sessions, not history — see
+  vpa.yaml).
+- **Egress**: browsing rides the public `:443` egress rule; `:80` is also
+  allowed (page loads routinely enter on a plain-http URL before the https
+  redirect). RFC1918/LAN stays blocked — the agent's browser cannot reach
+  internal services.
+- **Health**: `GET /health` startup + liveness probes — camofox reports 503
+  while the browser process is dead/recovering (it also warm-restarts the
+  browser itself), so the kubelet only restarts the container when the server
+  loop is truly gone.
+
+**Smoke test**: ask the agent (Discord or dashboard) —
+*"Using the browser, open https://example.com and tell me the page title."*
+Expect "Example Domain"; `task hermes:logs COMPONENT=camofox` shows the
+navigation.
+
+---
+
+## Home Assistant — control tool + voice assistant
+
+### Control (live): the homeassistant tool
+
+The gateway's `homeassistant` tool auto-enables when `HASS_TOKEN` is present
+in its env store: the init container upserts `HASS_URL=https://home.esweiss.com`
+and `HASS_TOKEN` (ESO ← 1P **Hermes Secrets**/`hass-token`) into
+`/opt/data/.env` (§Gateway platform config). The agent can then query and
+control HA (states, services, automations) as the HA user the token belongs
+to.
+
+- **Path**: `home.esweiss.com` → AdGuard rewrite → Traefik `.101` → HAOS
+  `.154`. From the pod, kube-proxy DNATs the VIP to the Traefik **pod** IP, so
+  the NetworkPolicy allows it with a post-DNAT traefik-**namespace** selector
+  (a `.101/32` ipBlock can never match — see networkpolicy.yaml).
+- **No SSO conflict**: the `home.esweiss.com` IngressRoute carries no
+  forward-auth middleware (hass-openid runs *inside* HA), and
+  `lan-tailscale-only` allowlists the pod CIDR — bearer API calls pass
+  straight through (verified against
+  `kubernetes/apps/vm-ingress/home-assistant.yaml`).
+- **Setup (one-time)**: create a dedicated HA user (Settings → People — give
+  it only the access the agent should have; don't lend the agent your admin
+  account), log in as it, profile → Security → **Long-lived access tokens** →
+  create; store as `hass-token` on the 1P item **before** the manifest
+  merges (a missing field fails the whole Secret sync), then
+  `task hermes:restart`.
+- **Verify**:
+  `kubectl exec -n hermes deploy/hermes -c gateway -- sh -c 'curl -fsS -H "Authorization: Bearer $(sed -n "s/^HASS_TOKEN=//p" /opt/data/.env)" https://home.esweiss.com/api/'`
+  → `{"message": "API running."}`, then ask the agent for a light/sensor
+  state.
+
+### Voice assistant (plumbing live, HA side pending)
+
+The long-term goal is Hermes as the conversation agent behind a **Home
+Assistant Voice PE** puck. The cluster side is fully plumbed and inert until
+HA is configured:
+
+- The gateway's OpenAI-compatible API server (`:8642`, bearer-keyed —
+  §Observability) is exposed **internally only** at
+  **`https://agent-api.esweiss.com/v1`** (`hermes-api` Service + IngressRoute;
+  AdGuard rewrite → `.101`; `lan-tailscale-only` + `hsts-header`, deliberately
+  **no** Authentik — forward-auth 302s would break OpenAI-protocol clients,
+  and the API server's own mandatory bearer key is the auth).
+- HA-side plan (post-merge, manual): install **Extended OpenAI Conversation**
+  (HACS), configure base URL `https://agent-api.esweiss.com/v1`, API key = the
+  `api-server-key` value from 1P **Hermes Secrets**, model **`hermes-agent`**
+  (the id the server exposes on `/v1/models` — verified live), then select it
+  as the conversation agent in a voice pipeline (Settings → Voice assistants)
+  and point the Voice PE at that pipeline.
+- Sanity check from any LAN host:
+  `curl -H "Authorization: Bearer <api-server-key>" https://agent-api.esweiss.com/v1/models`
+  → `{"data": [{"id": "hermes-agent", …}]}`.
+
+---
+
 ## Observability
 
 - **Logs**: pod stdout → the in-cluster Alloy DaemonSet → Loki (automatic).
@@ -366,8 +544,8 @@ added egress rule in
 - **Crash-loops**: covered by the standard kube-state-metrics alerts on both
   containers.
 - **Gateway liveness**: the gateway's in-process **OpenAI-compatible API
-  server** is enabled (`API_SERVER_ENABLED=true`, bound `0.0.0.0:8642`) solely
-  as its health surface. The kubelet runs an **HTTP `GET /health`**
+  server** (`API_SERVER_ENABLED=true`, bound `0.0.0.0:8642`) doubles as its
+  health surface. The kubelet runs an **HTTP `GET /health`**
   startupProbe (10s × 30, covers the slow s6/NFS first boot) and livenessProbe
   (30s × 5 → a truly hung gateway restarts within ~2.5 min). `httpGet` rather
   than `tcpSocket` is deliberate: `/health` is served by the gateway's own
@@ -375,10 +553,11 @@ added egress rule in
   probe, which a kernel-level TCP connect would not catch. `/health` is the
   API server's only unauthenticated route; everything else requires the bearer
   key (`API_SERVER_KEY`, ESO-sourced `api-server-key` on **Hermes Secrets** —
-  mandatory, the server refuses to start without it). `:8642` is on no
-  Service/IngressRoute and the namespace default-deny admits only Traefik on
-  `:9119`, so the API server is unreachable in-cluster; kubelet probes are
-  node-local and bypass NetworkPolicy.
+  mandatory, the server refuses to start without it). `:8642` is served
+  in-cluster only via the `hermes-api` Service behind the
+  `agent-api.esweiss.com` IngressRoute (LAN/Tailscale-scoped, bearer-keyed —
+  §Home Assistant), and the namespace NetworkPolicy admits only Traefik to it;
+  kubelet probes are node-local and bypass NetworkPolicy.
 - The dashboard carries **TCP-connect** probes on `:9119`, not HTTP GETs: a
   listener-up check is sufficient health for the single-process dashboard and
   avoids coupling pod health to any specific HTTP route or status code (the UI
@@ -386,7 +565,10 @@ added egress rule in
   `http_sso` probe instead.
 
 No Grafana dashboard is added — there is no dedicated upstream Hermes dashboard,
-and the app has no Prometheus `/metrics` endpoint.
+and the app has no Prometheus `/metrics` endpoint. (The **Hindsight** memory
+backend does: native `/metrics` on its API port, scraped via
+`observability/service-monitors/hindsight.yaml`, with the `HindsightDown`
+kube-state alert — see `kubernetes/apps/hindsight/README.md`.)
 
 ---
 
@@ -434,8 +616,9 @@ reports both pins.
 - **Dashboard won't start**:
   - `CreateContainerConfigError` → `hermes-secrets` has not synced. Check
     `task hermes:status` and that the **Hermes Secrets** 1Password item exists
-    with **all seven** fields (docs/15) — a missing field fails the whole
-    Secret, including a not-yet-created `hermes-dashboard-oidc-client-secret`.
+    with **all eight** fields (docs/15) — a missing field fails the whole
+    Secret, including a not-yet-created `hermes-dashboard-oidc-client-secret`
+    or `hass-token`.
   - `CrashLoopBackOff` with a start-up refusal in the logs → the dashboard's
     `0.0.0.0` bind is fail-closed and no auth provider registered. Confirm the
     three `dashboard-*` basic fields and the OIDC env are populated (an empty
@@ -454,7 +637,7 @@ reports both pins.
   `https://auth.ericsweiss.com/application/o/agent-sso/` must serve
   `.well-known/openid-configuration`, which requires the `agent-sso`
   application applied on the authentik side (docs/40 — supervised apply).
-  Break-glass meanwhile: the `basic` provider on `/login`.
+  Break-glass meanwhile: `kubectl exec` into the pod and use the hermes CLI.
 - **LLM turns fail / "not authenticated" from Codex**: the one-time Codex login
   or runtime enable is missing or the token expired. Check
   `kubectl exec -n hermes deploy/hermes -c gateway -- codex login status`; if not

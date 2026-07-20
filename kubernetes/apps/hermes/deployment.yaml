@@ -13,8 +13,12 @@
 # Both containers share /opt/data (the NFS PVC) exactly as the compose file
 # bind-mounts ~/.hermes into both services, and — being in one pod — share
 # localhost, so the dashboard reaches the gateway over 127.0.0.1 just like the
-# compose `network_mode: host` setup. strategy: Recreate because the single
-# RWO NFS volume must not be dual-mounted across a rolling update.
+# compose `network_mode: host` setup. A third container — the camofox
+# anti-detection browser server (:9377, see its section below) — rides in the
+# same pod for the same reason: the gateway drives it over 127.0.0.1
+# (CAMOFOX_URL) and it shares /opt/data for persistent profiles/cookies.
+# strategy: Recreate because the single RWO NFS volume must not be
+# dual-mounted across a rolling update.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -108,6 +112,9 @@ spec:
               upsert DISCORD_BOT_TOKEN "$DISCORD_BOT_TOKEN"
               upsert DISCORD_ALLOWED_USERS "$DISCORD_ALLOWED_USERS"
               upsert CODEX_HOME "$CODEX_HOME"
+              upsert CAMOFOX_URL "$CAMOFOX_URL"
+              upsert HASS_URL "$HASS_URL"
+              upsert HASS_TOKEN "$HASS_TOKEN"
           env:
             - name: DISCORD_BOT_TOKEN
               valueFrom:
@@ -122,6 +129,29 @@ spec:
             # the same path the CLI subprocesses use.
             - name: CODEX_HOME
               value: /opt/data/.codex
+            # Camofox browser sidecar (same pod, shared localhost — see the
+            # camofox container below). Upserted into .env, NOT set as gateway
+            # container env: gateway config only sees the profile scope /
+            # os.environ AFTER load_hermes_dotenv() re-loads .env with
+            # override, so .env is the reliable path (and the tool-availability
+            # check reads the same store).
+            - name: CAMOFOX_URL
+              value: http://127.0.0.1:9377
+            # Home Assistant tool (docs/37 §Home Assistant). HASS_TOKEN's
+            # presence auto-enables the homeassistant tool; HASS_URL rides the
+            # AdGuard rewrite home.esweiss.com -> Traefik .101 (post-DNAT
+            # traefik-namespace egress rule in networkpolicy.yaml). The
+            # home.esweiss.com IngressRoute carries no forward-auth middleware
+            # (verified: home-assistant-headers + lan-tailscale-only +
+            # hsts-header only, and the pod CIDR is in lan-tailscale-only's
+            # allowlist), so bearer-token API calls pass straight to HA.
+            - name: HASS_URL
+              value: https://home.esweiss.com
+            - name: HASS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: hass-token
           securityContext:
             runAsUser: 1000
             runAsGroup: 2000
@@ -194,18 +224,20 @@ spec:
             - name: DISCORD_ALLOWED_USERS
               value: "237388029105405952"
             # Built-in OpenAI-compatible API server (runs in-process with
-            # `gateway run`) — enabled as the gateway's health surface: GET
-            # /health is unauthenticated and is served by the gateway's own
-            # asyncio loop, so the probes below catch a hung supervisor (s6
-            # PID1 up, agent stalled) that a process-exit crash-loop check
-            # cannot see. Every functional route requires the bearer key
-            # (API_SERVER_KEY is mandatory — the server refuses to start
-            # without it, even on loopback); :8642 is NOT on any Service or
-            # IngressRoute and the namespace default-deny admits only Traefik
-            # on :9119, so nothing in-cluster can reach it. Kubelet probes are
-            # node-local and bypass NetworkPolicy — the same path the
-            # dashboard's existing probes already rely on. Env-only enablement
-            # (upstream has no CLI flag/config key), so args stay unchanged.
+            # `gateway run`) — the gateway's health surface AND a serving
+            # endpoint: GET /health is unauthenticated and is served by the
+            # gateway's own asyncio loop, so the probes below catch a hung
+            # supervisor (s6 PID1 up, agent stalled) that a process-exit
+            # crash-loop check cannot see. Every functional route requires the
+            # bearer key (API_SERVER_KEY is mandatory — the server refuses to
+            # start without it, even on loopback). :8642 is exposed via the
+            # hermes-api Service + the agent-api.esweiss.com IngressRoute
+            # (LAN/Tailscale-only; for the Home Assistant Voice pipeline —
+            # docs/37 §Voice assistant) and the NetworkPolicy admits only
+            # Traefik to it. Kubelet probes are node-local and bypass
+            # NetworkPolicy — the same path the dashboard's existing probes
+            # already rely on. Env-only enablement (upstream has no CLI
+            # flag/config key), so args stay unchanged.
             - name: API_SERVER_ENABLED
               value: "true"
             # Kubelet probes connect to the pod IP, not loopback — bind all
@@ -292,32 +324,19 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: claude-code-oauth-token
-            # Dashboard `basic` auth provider — deliberately KEPT alongside the
-            # OIDC provider below, for two reasons (docs/37 §SSO): (1) chooser
-            # semantics — with two registered providers the auth middleware
-            # renders the /login provider chooser, while a single provider
-            # auto-launches, and auto-launch on `basic` raises
-            # NotImplementedError -> HTTP 500 (observed live); (2) password
-            # break-glass if Authentik is down. All three values are 1P-sourced
-            # via ESO (never in git) — see docs/15.
-            - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: hermes-secrets
-                  key: dashboard-username
-            - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: hermes-secrets
-                  key: dashboard-password
-            # Stable session-signing key so dashboard logins survive pod
-            # restarts (without it the provider mints a random per-process
-            # secret and every restart forces a re-login).
-            - name: HERMES_DASHBOARD_BASIC_AUTH_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: hermes-secrets
-                  key: dashboard-session-secret
+            # Dashboard auth is OIDC-ONLY (user decision 2026-07-19): the
+            # `basic` password provider is deliberately NOT registered. With
+            # exactly one session provider the auth middleware AUTO-LAUNCHES
+            # the login flow — for OIDC that is the intended silent-SSO
+            # redirect through Authentik (no chooser click, no password
+            # prompt; a live Authentik session makes it invisible). The old
+            # dual-provider chooser existed only because auto-launch on a
+            # password-only provider 500s; with OIDC that hazard is gone.
+            # Break-glass if Authentik is down: the dashboard UI is
+            # unreachable (by design — Authentik-down takes out most SSO
+            # apps anyway); operate via `kubectl exec ... hermes` (CLI) or
+            # re-add the HERMES_DASHBOARD_BASIC_AUTH_* env trio (values
+            # still on the 1P item) in an emergency revert.
             # Authentik OIDC SSO — the `self_hosted` generic-OIDC dashboard
             # auth provider (docs/37 §SSO). The dashboard reads these from real
             # container env (env wins over config.yaml) — unlike the gateway,
@@ -379,6 +398,77 @@ spec:
               memory: 256Mi
             limits:
               memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+        # ── Camofox: anti-detection browser server on :9377 ──────────────
+        # jo-inc/camofox-browser — a Camoufox (hardened-Firefox) automation
+        # server that Hermes' camofox browser tool drives over HTTP. Same-pod
+        # sidecar so the gateway reaches it on 127.0.0.1 (CAMOFOX_URL, upserted
+        # into /opt/data/.env by the init container); :9377 has no Service and
+        # no ingress allow, so nothing else can drive the browser. Self-built
+        # image (upstream publishes none) — build-camofox-browser CI job,
+        # docker/camofox-browser/README.md. Runs as root (upstream image has no
+        # USER directive; Xvfb + the baked Camoufox binary live under /root) —
+        # NFS writes are all_squash'd to 1000:2000 like every other container
+        # here.
+        - name: camofox
+          image: registry.git.esweiss.com/eric/weisssrv/camofox-browser:${hermes_camofox_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: America/Los_Angeles
+            # Profiles / cookies / traces on the shared NFS volume so browser
+            # sessions survive pod recreation (defaults live under ~/.camofox
+            # = /root/.camofox, which is ephemeral).
+            - name: CAMOFOX_PROFILE_DIR
+              value: /opt/data/.camofox/profiles
+            - name: CAMOFOX_COOKIES_DIR
+              value: /opt/data/.camofox/cookies
+            - name: CAMOFOX_TRACES_DIR
+              value: /opt/data/.camofox/traces
+            # Crash reporting phones home (upstream defaults it ON —
+            # `!== 'false'`); this is a private deployment, keep it off.
+            - name: CAMOFOX_CRASH_REPORT_ENABLED
+              value: "false"
+            # Upstream defaults to 50 concurrent sessions — far more Firefox
+            # than this pod's memory budget. 5 is plenty for one agent.
+            - name: MAX_SESSIONS
+              value: "5"
+          ports:
+            - name: camofox
+              containerPort: 9377
+              protocol: TCP
+          # /health reports 503 while the browser is dead/recovering and
+          # triggers its own warm-restart logic, so an httpGet (not tcpSocket)
+          # is the honest liveness signal. startupProbe covers the first
+          # Xvfb + Camoufox launch.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: camofox
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: camofox
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          # No readinessProbe: nothing routes through a Service to :9377 (the
+          # gateway calls localhost), so readiness has nothing to gate.
+          # Firefox memory scales with open tabs/sessions, not steady-state
+          # history — request covers the idle server + one session, the 2Gi
+          # limit caps a MAX_SESSIONS burst (VPA is Off for this container,
+          # see vpa.yaml). No CPU limit (repo policy — docs/33).
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
           volumeMounts:
             - name: data
               mountPath: /opt/data

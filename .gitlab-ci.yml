@@ -222,6 +222,14 @@ workflow:
     # the :<version>/:latest tags.
     - docker/hermes-agent/**/*
     - ansible/inventories/prod/group_vars/all.yml
+.paths-build-camofox-browser:
+  changes:
+    # Same rationale as .paths-build-hermes-agent: the build clones upstream at
+    # v<hermes_camofox_version> and builds THEIR Dockerfile unmodified, so the
+    # only real inputs are the pin (all.yml) and the build notes under
+    # docker/camofox-browser/. Not gated on .gitlab-ci.yml.
+    - docker/camofox-browser/**/*
+    - ansible/inventories/prod/group_vars/all.yml
 .paths-shellcheck:
   changes:
     - scripts/**/*
@@ -738,6 +746,105 @@ build-hermes-agent:
       changes: !reference [.paths-build-hermes-agent, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes: !reference [.paths-build-hermes-agent, changes]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+
+# build-camofox-browser: jo-inc/camofox-browser (the anti-detection browser
+# server behind Hermes' camofox tool — the third container of the hermes pod)
+# publishes no container image, so we build our own into the GitLab registry.
+# Same supply-chain shape as build-hermes-agent: clone upstream at the pinned
+# tag (v<hermes_camofox_version> in all.yml), verify the tag resolves to the
+# pinned immutable commit (hermes_camofox_git_sha), then build THEIR Dockerfile
+# unmodified — no wrapper layer (the image is complete as shipped: Camoufox
+# binary + yt-dlp + plugins are baked at build time). Unlike hermes-agent's
+# Dockerfile, camofox's uses no BuildKit-only syntax, so the base's builder
+# path suffices and no buildx CLI plugin install is needed (same as the
+# molecule image builds). Build on every pipeline (proves it builds); the
+# load-bearing :<version>/:latest tags push only on main so an unmerged branch
+# can't repoint a running deployment.
+build-camofox-browser:
+  extends: .build-molecule-base
+  variables:
+    CAMOFOX_UPSTREAM_REPO: "https://github.com/jo-inc/camofox-browser.git"
+  script:
+    - |
+      # Install the Docker buildx CLI plugin (pinned + sha256). The base
+      # template exports DOCKER_BUILDKIT=1 globally, so EVERY `docker build`
+      # here requires the buildx component even for a Dockerfile with no
+      # BuildKit-only syntax — same reason build-hermes-agent installs it
+      # (learned the hard way: 3x "buildx component is missing" retries).
+      BUILDX_ARCH=$(dpkg --print-architecture)
+      BUILDX_VERSION=v0.35.0
+      case "$BUILDX_ARCH" in
+        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
+        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
+        *) echo "unsupported arch: $BUILDX_ARCH"; exit 1 ;;
+      esac
+      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" -o /tmp/docker-buildx
+      echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
+      mkdir -p "$HOME/.docker/cli-plugins"
+      install -m 0755 /tmp/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx"
+      rm /tmp/docker-buildx
+      docker buildx version
+    - |
+      # Read the pins from all.yml (same single-source pattern as
+      # build-hermes-agent; no YAML lib in this image — grep the scalars).
+      CAMOFOX_VERSION=$(grep -E '^hermes_camofox_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_camofox_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$CAMOFOX_VERSION" ]; then echo "could not read hermes_camofox_version from all.yml"; exit 1; fi
+      echo "Building camofox-browser ${CAMOFOX_VERSION}"
+      ref="${CI_REGISTRY_IMAGE}/camofox-browser"
+      rm -rf /tmp/camofox-src
+      # The pin is the bare semver (the image tag); the upstream git tag
+      # carries the leading "v".
+      git clone --depth 1 --branch "v${CAMOFOX_VERSION}" "$CAMOFOX_UPSTREAM_REPO" /tmp/camofox-src
+      CAMOFOX_SHA=$(git -C /tmp/camofox-src rev-parse HEAD)
+      # Verify the tag resolves to the immutable commit pinned alongside it in
+      # all.yml — a moved or compromised upstream tag must not let CI publish
+      # attacker-controlled steps into an image Flux deploys (this container
+      # browses the web with persistent cookies). Bump hermes_camofox_git_sha
+      # whenever hermes_camofox_version changes.
+      CAMOFOX_EXPECTED_SHA=$(grep -E '^hermes_camofox_git_sha:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_camofox_git_sha:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$CAMOFOX_EXPECTED_SHA" ]; then echo "hermes_camofox_git_sha not pinned in all.yml — refusing to build"; exit 1; fi
+      if [ "$CAMOFOX_SHA" != "$CAMOFOX_EXPECTED_SHA" ]; then
+        echo "SECURITY: tag v${CAMOFOX_VERSION} resolved to ${CAMOFOX_SHA}, but all.yml pins ${CAMOFOX_EXPECTED_SHA}."
+        echo "The upstream tag may have moved. Refusing to build. Re-verify upstream and update hermes_camofox_git_sha."
+        exit 1
+      fi
+      echo "Upstream v${CAMOFOX_VERSION} -> ${CAMOFOX_SHA} (matches pinned hermes_camofox_git_sha)"
+      cache_args=""
+      if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
+        cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
+      fi
+      # Bounded retry: the build pulls the Camoufox release zip + yt-dlp at
+      # image-build time, so a transient GitHub/registry blip re-attempts
+      # cheaply on cached layers while a real Dockerfile error still fails.
+      attempt=1; max=3
+      # shellcheck disable=SC2086  # intentional word-split of cache_args
+      until docker build $cache_args \
+              -t "${ref}:${CAMOFOX_VERSION}" \
+              -t "${ref}:${CI_COMMIT_SHORT_SHA}" \
+              /tmp/camofox-src; do
+        attempt=$((attempt+1))
+        if [ "$attempt" -gt "$max" ]; then echo "camofox build failed after ${max} attempts"; exit 1; fi
+        echo "build attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
+        sleep $(( (RANDOM % 20) + 10 ))
+      done
+      # The load-bearing tags (:<version> that the cluster pulls, :<sha> for
+      # traceability, and :latest for the layer cache) are pushed only on main.
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        docker push "${ref}:${CI_COMMIT_SHORT_SHA}"
+        docker push "${ref}:${CAMOFOX_VERSION}"
+        docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
+        docker push "${ref}:latest"
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: !reference [.paths-build-camofox-browser, changes]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: !reference [.paths-build-camofox-browser, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true

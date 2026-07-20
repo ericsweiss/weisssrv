@@ -1,5 +1,5 @@
 ---
-# ClusterIP fronting the dashboard container's :9119. Both containers share the
+# ClusterIP fronting the dashboard container's :9119. All containers share the
 # pod (and its IP), so the selector resolves to the pod and :9119 lands on the
 # dashboard listener. Consumed by the Traefik IngressRoutes.
 apiVersion: v1
@@ -17,4 +17,26 @@ spec:
     - name: http
       port: 9119
       targetPort: http
+  type: ClusterIP
+
+---
+# ClusterIP fronting the gateway's in-process OpenAI-compatible API server on
+# :8642 — consumed by the agent-api.esweiss.com IngressRoute (Home Assistant
+# Voice pipeline, docs/37 §Voice assistant). Every functional route requires
+# the API_SERVER_KEY bearer key; /health is the sole keyless route.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-api
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    app.kubernetes.io/name: hermes
+  ports:
+    - name: api
+      port: 8642
+      targetPort: api
   type: ClusterIP

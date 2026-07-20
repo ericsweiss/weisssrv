@@ -1,0 +1,94 @@
+---
+# Default-deny egress; explicit allows below. (default-deny-ingress comes from
+# the shared ../../components/netpol-baseline component.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: hindsight
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Ingress: the API port (:8888) admits exactly its two consumers —
+#   * the hermes namespace (the gateway's hindsight memory plugin; scoped to
+#     the whole namespace, whose only workload is the hermes pod), and
+#   * the Prometheus scraper in observability (/metrics rides the same port;
+#     podSelector-narrowed so other observability pods can't reach the memory
+#     API — least-privilege, mirroring wg-easy/recipes).
+# The llama sidecar (:8080) and the control-plane UI (:9999) get no ingress
+# allow at all: hindsight reaches llama over pod-localhost (not NetworkPolicy-
+# gated), and the UI is operator-only via kubectl port-forward.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-hindsight-ingress
+  namespace: hindsight
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hermes
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8888
+
+---
+# Egress for the hindsight pod:
+#   * kube-dns (name resolution)
+#   * public HTTPS (:443) — the llama sidecar's one-time HuggingFace GGUF
+#     download (cached on NFS afterwards, and re-used on image bumps unless the
+#     model pin changes). Everything else is local: the LLM is pod-localhost,
+#     embeddings/reranker are baked into the image, PostgreSQL is embedded.
+# No LAN/RFC1918 egress, no SMTP, no kube-apiserver
+# (automountServiceAccountToken is false).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-hindsight
+  namespace: hindsight
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

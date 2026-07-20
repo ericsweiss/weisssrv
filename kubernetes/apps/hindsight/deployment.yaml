@@ -1,0 +1,206 @@
+---
+# Hindsight (vectorize-io) — long-term agent memory for Hermes (docs/37
+# §Memory backend). One pod, two containers, mirroring upstream's
+# docker/docker-compose/local-llm/ example:
+#   * hindsight — the published standalone image (API :8888 + control-plane UI
+#     :9999) with its embedded pg0 PostgreSQL on the NFS volume. Memory
+#     extraction/synthesis needs an LLM; the published image DELIBERATELY
+#     omits llama-cpp-python (upstream docs: HINDSIGHT_API_LLM_PROVIDER=llamacpp
+#     fails with ModuleNotFoundError on this image), so upstream's recommended
+#     fully-local shape is…
+#   * llama — the official llama.cpp server image as an OpenAI-compatible
+#     sidecar; hindsight points its `openai` provider at it over pod-localhost.
+#     Fully local: no LLM API key, no per-turn spend (auto-retain runs every
+#     conversation turn), and both images are used unmodified.
+# strategy: Recreate — the single RWO NFS volume holds a live PostgreSQL data
+# dir and must never be dual-mounted across a rolling update.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hindsight
+  namespace: hindsight
+  labels:
+    app.kubernetes.io/name: hindsight
+    app.kubernetes.io/part-of: hindsight
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight
+        app.kubernetes.io/part-of: hindsight
+    spec:
+      # Modern-CPU only: the llama.cpp sidecar does real CPU inference (AVX2
+      # paths) and the hindsight container runs in-process torch embeddings —
+      # keep both off the Core2-era legacy nodes. NAS-avoid preferred, as for
+      # every stateless-scheduling general workload (state is on NFS). The
+      # 4Gi+ llama memory request effectively lands this on k3s-agt-prec-01
+      # (the only non-NAS modern agent with that much headroom) — that is
+      # sizing honesty, not an affinity pin: if prec-01 is down the NAS agent
+      # can still take it.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+        esweiss.com/cpu: "modern"
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          # Kept in sync with the hermes/mealie/*arr deployments: force a fresh
+          # socket for glibc's parallel A/AAAA queries so the conntrack
+          # DNAT-insert race can't cost a ~5s resolver stall (matters for the
+          # llama container's one-time HuggingFace model download).
+          - name: single-request-reopen
+      containers:
+        # ── Hindsight API (:8888) + control-plane UI (:9999) ─────────────
+        - name: hindsight
+          # Version managed in ansible/inventories/prod/group_vars/all.yml
+          # (hindsight_version — the bare-semver image tag of release
+          # v<hindsight_version>).
+          image: ghcr.io/vectorize-io/hindsight:${hindsight_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: America/Los_Angeles
+            # llama-server is OpenAI-compatible, so use the `openai` provider
+            # pointed at the sidecar over pod-localhost — upstream's documented
+            # local-llm shape (docker/docker-compose/local-llm/). The API key
+            # is unused by llama-server but the env var must be non-empty.
+            - name: HINDSIGHT_API_LLM_PROVIDER
+              value: openai
+            - name: HINDSIGHT_API_LLM_BASE_URL
+              value: http://127.0.0.1:8080/v1
+            - name: HINDSIGHT_API_LLM_API_KEY
+              value: not-needed
+            - name: HINDSIGHT_API_LLM_MODEL
+              value: gemma-4-e2b-it
+          ports:
+            - name: api
+              containerPort: 8888
+              protocol: TCP
+          # /health on the API port (verified upstream route). startupProbe
+          # covers the slow first boot: pg0 initdb + schema migrations on NFS
+          # plus loading the baked-in embedding/reranker models into RAM.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          # Memory: in-process torch + sentence-transformers embeddings +
+          # flashrank reranker + embedded PostgreSQL + the Next.js control
+          # plane. No CPU limit (repo policy — docs/33).
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              memory: 3Gi
+          # Runs as the image's unprivileged `hindsight` user (UID 1000) —
+          # matching the NFS export's all_squash anonuid=1000 mapping, so pg0's
+          # 0700 data-dir ownership check sees itself as the owner.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              subPath: pg0
+              mountPath: /home/hindsight/.pg0
+        # ── llama.cpp server: local LLM for memory extraction ────────────
+        - name: llama
+          # Official llama.cpp server image; tag pinned as server-<bNNNN build>
+          # (hindsight_llamacpp_version in all.yml, category "manual" in
+          # check-versions — see the pin's comment there).
+          image: ghcr.io/ggml-org/llama.cpp:server-${hindsight_llamacpp_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            # Bind all interfaces so the kubelet's httpGet probes (which
+            # connect to the pod IP, not loopback) can reach /health. Nothing
+            # else can: :8080 is on no Service and the namespace default-deny
+            # admits only hermes-ns -> :8888 and the Prometheus scraper.
+            - name: LLAMA_ARG_HOST
+              value: "0.0.0.0"
+            - name: LLAMA_ARG_PORT
+              value: "8080"
+            # Auto-download the default Gemma GGUF (~3.5 GB) from HuggingFace
+            # on first start — the same model Hindsight's own in-process
+            # llamacpp provider defaults to. Cached on the NFS volume (see the
+            # mount below), so later pod starts skip the download.
+            - name: LLAMA_ARG_HF_REPO
+              value: bartowski/google_gemma-4-E2B-it-GGUF
+            - name: LLAMA_ARG_HF_FILE
+              value: google_gemma-4-E2B-it-Q4_K_M.gguf
+            - name: LLAMA_ARG_CTX_SIZE
+              value: "8192"
+          # /health is llama-server's built-in readiness route (503 while the
+          # model loads). The generous startupProbe budget (30s x 60 = 30 min)
+          # covers the FIRST boot's 3.5 GB HuggingFace download; warm starts
+          # (model cached on NFS) pass in under a minute.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          # Memory request sized to the resident model (~3.5 GB mmap'd GGUF +
+          # KV cache + runtime): requesting what it actually uses keeps the
+          # scheduler honest about node headroom. No CPU limit (docs/33);
+          # inference bursts onto the node's spare cores.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 4Gi
+            limits:
+              memory: 6Gi
+          volumeMounts:
+            # llama-server stores HuggingFace downloads under
+            # ~/.cache/huggingface (the image runs as root, so /root) — mount
+            # the models subdir there to persist the GGUF across pod recreates
+            # (upstream's compose does the same with a named volume).
+            - name: data
+              subPath: models
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hindsight-data

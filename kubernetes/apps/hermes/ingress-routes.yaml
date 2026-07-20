@@ -62,3 +62,38 @@ spec:
           port: 9119
   tls:
     secretName: hermes-esweiss-tls
+
+---
+# Internal - agent-api.esweiss.com -> the gateway's OpenAI-compatible API
+# server (:8642). For machine clients on the LAN — first consumer is the Home
+# Assistant Voice pipeline (Extended OpenAI Conversation, docs/37 §Voice
+# assistant).
+#
+# Deliberately NO authentik-auth middleware: forward-auth answers an
+# unauthenticated request with a 302 to a login page, which an OpenAI-protocol
+# client can neither follow nor complete — it would break every caller. Auth
+# is instead the API server's own MANDATORY bearer key (API_SERVER_KEY — the
+# server refuses to start without one; /health is the sole keyless route),
+# with lan-tailscale-only scoping the audience to LAN/Tailscale/pod sources.
+# Internal-only: no external-dns annotation, no ericsweiss.com host.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: hermes-api
+  namespace: hermes
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`agent-api.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: hermes-api
+          port: 8642
+  tls:
+    secretName: hermes-api-esweiss-tls

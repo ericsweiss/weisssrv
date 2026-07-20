@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - flux-system.yaml
   - gitlab.yaml
+  - hindsight.yaml
   - home-assistant.yaml
   - immich.yaml
   - meilisearch.yaml

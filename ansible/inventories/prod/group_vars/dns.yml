@@ -177,6 +177,10 @@ adguard_rewrites:
   # the auth.ericsweiss.com cert on .101 (same router as the public VIP).
   - domain: "auth.ericsweiss.com"
     answer: "192.168.0.101"
+  # Hermes gateway OpenAI-compatible API (bearer-keyed; Home Assistant Voice
+  # pipeline — docs/37 §Voice assistant). Internal-only, no external record.
+  - domain: "agent-api.{{ internal_domain }}"
+    answer: "192.168.0.101"
   # Internal-only services - esweiss.com only (internal domain)
   # No external DNS in Cloudflare, no AdGuard rewrite for ericsweiss.com
   # ericsweiss.com variants won't resolve (cleaner separation of internal vs

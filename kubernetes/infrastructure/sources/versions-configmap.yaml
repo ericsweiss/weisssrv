@@ -37,9 +37,12 @@ data:
   helm_chart_versions_tailscale_operator: 1.98.9
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
+  hermes_camofox_version: 1.12.1
   hermes_claude_version: 2.1.215
   hermes_codex_version: 0.144.6
   hermes_version: v2026.7.7.2
+  hindsight_llamacpp_version: b10068
+  hindsight_version: 0.8.4
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
   immich_version: v3.0.3

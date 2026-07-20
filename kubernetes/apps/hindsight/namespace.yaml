@@ -1,0 +1,19 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hindsight
+  labels:
+    app.kubernetes.io/name: hindsight
+    app.kubernetes.io/part-of: hindsight
+    app.kubernetes.io/managed-by: flux
+    # Baseline (not restricted): the llama.cpp server sidecar image
+    # (ghcr.io/ggml-org/llama.cpp:server) ships no USER directive and runs as
+    # root with its HF model cache under /root — forcing runAsNonRoot would
+    # need untested user/home remapping of an upstream image used verbatim.
+    # The hindsight container itself runs as its image's unprivileged
+    # `hindsight` user (UID 1000). warn/audit restricted flag the root start
+    # without blocking it — same posture as the hermes namespace.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

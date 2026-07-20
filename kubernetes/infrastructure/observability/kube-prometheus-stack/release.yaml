@@ -804,6 +804,30 @@ spec:
                     WireGuard internet-exit VPN endpoint is down and no client can
                     connect. See docs/38-wireguard-vpn.md.
 
+              # Hindsight — Hermes' memory backend (kubernetes/apps/hindsight,
+              # docs/37 §Memory backend). Cluster-internal (no ingress, so no
+              # blackbox probe): keyed on kube-state deployment availability
+              # with the absent() arm, same pattern as WgEasyDown. Warning not
+              # critical — Hermes' built-in memory keeps running when the
+              # hindsight provider is unreachable, so this is degraded recall,
+              # not an outage. 15m rides out a Recreate rollout (the llama
+              # sidecar's warm model load is well inside that).
+              - alert: HindsightDown
+                expr: >-
+                  kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"} == 0
+                  or absent(kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"})
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/37-hermes.md'
+                  summary: 'Hindsight (Hermes memory backend) has no available replica'
+                  description: >-
+                    The hindsight Deployment has 0 available replicas for 15m —
+                    Hermes memory retain/recall against the Hindsight backend is
+                    failing (built-in memory still runs). See docs/37-hermes.md
+                    §Memory backend.
+
               # Loki is a single-replica RF=1 SPOF pinned to the NAS (accepted
               # homelab tradeoff); senders do not buffer, so silent ingestion
               # breakage loses logs without surfacing. This catches a sustained

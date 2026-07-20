@@ -322,6 +322,32 @@ hermes_codex_version: "0.144.6"
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
 hermes_claude_version: "2.1.215"
+# Camofox anti-detection browser server (jo-inc/camofox-browser) — the sidecar
+# behind Hermes' camofox browser tool (CAMOFOX_URL). Upstream publishes no
+# container image; the build-camofox-browser CI job clones the repo at tag
+# v<version> and builds THEIR Dockerfile unmodified into the GitLab registry as
+# camofox-browser:<version>. The pin is the bare semver (the image tag); the
+# git tag carries the leading "v". Bump = pick a newer stable tag, update
+# hermes_camofox_git_sha below to that tag's commit, sync-versions, commit.
+# https://github.com/jo-inc/camofox-browser/releases
+hermes_camofox_version: "1.12.1"
+# Immutable commit tag v${hermes_camofox_version} must resolve to.
+# build-camofox-browser refuses to build if the clone resolves elsewhere
+# (moved/compromised tag defence — same pattern as hermes_git_sha). Update in
+# lockstep with hermes_camofox_version.
+hermes_camofox_git_sha: "82b948031c83eee7b746ff984927b7b3827192db"
+
+# Hindsight agent-memory server (vectorize-io/hindsight) — Hermes' long-term
+# memory backend (kubernetes/apps/hindsight, docs/37 §Memory backend). The pin
+# is the ghcr.io/vectorize-io/hindsight image tag (bare semver; the git tag
+# carries a leading "v"). https://github.com/vectorize-io/hindsight/releases
+hindsight_version: "0.8.4"
+# llama.cpp server sidecar for Hindsight's local LLM (image tag
+# ghcr.io/ggml-org/llama.cpp:server-<pin>). Upstream tags a build (bNNNN) many
+# times per day and not every build publishes a server image — bumped
+# opportunistically (any recent build serves the pinned Gemma GGUF), category
+# "manual" in check-versions. https://github.com/ggml-org/llama.cpp/releases
+hindsight_llamacpp_version: "b10068"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.

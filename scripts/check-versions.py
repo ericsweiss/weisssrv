@@ -196,6 +196,47 @@ SERVICE_REGISTRY: list[dict] = [
         "strip_prefix": True,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
+    {
+        # Camofox anti-detection browser server, built from source by the
+        # build-camofox-browser CI job (upstream publishes no image). The pin is
+        # the bare semver used as the built image tag; upstream tags releases
+        # `vX.Y.Z`, so strip the prefix. hermes_camofox_git_sha (the tag's
+        # commit) moves in lockstep — same supply-chain pattern as
+        # hermes_version/hermes_git_sha.
+        "name": "Camofox browser (Hermes)",
+        "var_name": "hermes_camofox_version",
+        "category": "github",
+        "github_repo": "jo-inc/camofox-browser",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
+    {
+        # Hindsight agent-memory server (Hermes' memory backend). The pin is the
+        # ghcr.io/vectorize-io/hindsight image tag — bare semver, matching the
+        # GitHub release tag with the "v" stripped (verified: release vX.Y.Z
+        # publishes image tag X.Y.Z).
+        "name": "Hindsight (Hermes memory)",
+        "var_name": "hindsight_version",
+        "category": "github",
+        "github_repo": "vectorize-io/hindsight",
+        "version_prefix": "v",
+        "strip_prefix": True,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
+    {
+        # llama.cpp server sidecar for Hindsight's local LLM
+        # (ghcr.io/ggml-org/llama.cpp:server-<pin>). Upstream tags a build
+        # (bNNNN) many times per day and only some builds publish a server
+        # image, so auto-nagging on "latest release" would be pure churn —
+        # bumped opportunistically when touching the hindsight app (verify the
+        # server-bNNNN tag exists on ghcr before pinning), hence manual.
+        "name": "llama.cpp server (Hindsight)",
+        "var_name": "hindsight_llamacpp_version",
+        "category": "manual",
+        "source_url": "https://github.com/ggml-org/llama.cpp/releases",
+        "notes": "Pin bNNNN whose ghcr server-bNNNN image tag exists; any recent build serves the pinned GGUF.",
+    },
     # --- Container images ---
     {
         "name": "Gluetun",
@@ -2273,6 +2314,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "prowlarr_version", "sonarr_version", "radarr_version",
         "lidarr_version", "pulsarr_version", "wg_easy_version", "hermes_version",
         "hermes_codex_version", "hermes_claude_version",
+        "hermes_camofox_version", "hindsight_version",
+        "hindsight_llamacpp_version",
         "mealie_version", "mealie_postgresql_version",
         "bar_assistant_version", "salt_rim_version",
         "meilisearch_version", "redis_version", "busybox_version",

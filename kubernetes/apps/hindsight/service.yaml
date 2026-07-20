@@ -1,0 +1,23 @@
+---
+# ClusterIP fronting the Hindsight API on :8888 — consumed by the Hermes
+# gateway's hindsight memory plugin at
+# http://hindsight.hindsight.svc.cluster.local:8888 (docs/37 §Memory backend)
+# and scraped by Prometheus (/metrics on the same port —
+# observability/service-monitors/hindsight.yaml). The control-plane UI (:9999)
+# and the llama sidecar (:8080) are deliberately NOT exposed: no Service port,
+# and the namespace NetworkPolicy admits nothing to them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hindsight
+  namespace: hindsight
+  labels:
+    app.kubernetes.io/name: hindsight
+spec:
+  selector:
+    app.kubernetes.io/name: hindsight
+  ports:
+    - name: api
+      port: 8888
+      targetPort: api
+  type: ClusterIP

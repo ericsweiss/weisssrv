@@ -1,0 +1,15 @@
+---
+# VPA: Off (recommendations only) — stateful/fixed-footprint tier (docs/33).
+# The hindsight container fronts an embedded PostgreSQL (eviction-resizing a
+# DB pod for a few hundred Mi is a bad trade), and the llama container's
+# memory is dictated by the pinned GGUF + context size, not by usage history —
+# a percentile estimate would under-provision the resident model. Recommend
+# mode still feeds the Goldilocks-style visibility without ever evicting.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hindsight
+  namespace: hindsight
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: hindsight}
+  updatePolicy: {updateMode: "Off"}
