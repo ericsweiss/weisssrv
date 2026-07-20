@@ -533,6 +533,52 @@ HA is configured:
 
 ---
 
+## 1Password — first-party skill over the official `op` CLI
+
+Hermes can read and write secrets in a **dedicated, isolated Agent vault** via
+1Password's own service accounts. Chosen over an MCP server deliberately:
+Hermes ships **no** native 1Password *toolset*, and the only official 1Password
+MCP (the "Environments" MCP) is desktop-app + per-access-prompt bound and never
+returns secret values — a non-fit for a headless agent. The fit is Hermes'
+**first-party 1Password skill** (upstream `optional-skills/security/1password`)
+driving the **official `op` CLI**: first-party on both ends, nothing third-party
+or self-authored.
+
+**What ships here (the plumbing):**
+- The `op` CLI is **baked into the image** (`docker/hermes-agent/Dockerfile.codex`,
+  pinned `hermes_op_version`) from 1Password's signed apt repo.
+- `OP_SERVICE_ACCOUNT_TOKEN` is delivered by ESO from the **dedicated** 1P item
+  *Hermes Agent 1P Service Account* → the `hermes-secrets` Secret
+  (`op-service-account-token`) → the **gateway container env** (plus an
+  `/opt/data/.env` upsert). It is a *separate* item from **Hermes Secrets** so
+  its blast radius and rotation are isolated (docs/15).
+
+**Why gateway container env (not just `.env`):** the agent runs `op` through the
+**terminal tool**, whose backend seeds the child env from `os.environ`
+(`tools/environments/local.py` `_make_run_env`). `OP_SERVICE_ACCOUNT_TOKEN` is
+not in that backend's name-based blocklist and matches no internal-secret
+pattern, so it passes through and `op` authenticates. The **`code_execution`**
+tool, by contrast, strips any `*TOKEN*` var by substring — so the skill drives
+`op` via the terminal tool by design.
+
+**Enable it (runtime, after this deploys):** ask Hermes to enable the
+**1Password skill** (same as the Home Assistant skill). Confirm the plumbing
+from a gateway shell: `kubectl exec -n hermes deploy/hermes -c gateway -- op vault ls`
+should list only the Agent vault.
+
+**Security model:** the service account authenticates to the 1Password **cloud**
+(`*.1password.com:443`, already allowed by the egress NetworkPolicy — not the
+in-cluster Connect that backs ESO). Scope it in the 1Password service-accounts
+console to **only** the isolated Agent vault (read+write). Two consequences to
+accept: (1) the raw token sits in the gateway env / `.env`, readable by the
+agent's shell — but the agent already has broad execution (Claude Code / Codex
+delegates) and can read every other `/opt/data/.env` token, and the SA reaches
+only the low-stakes Agent vault, so this adds no new class of exposure; (2)
+secrets the agent reads/writes flow through its LLM provider — so the Agent vault
+is for **disposable, agent-scoped** secrets only, never infra credentials.
+
+---
+
 ## Observability
 
 - **Logs**: pod stdout → the in-cluster Alloy DaemonSet → Loki (automatic).

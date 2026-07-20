@@ -33,6 +33,13 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 - **`hermes_codex_version`** — the OpenAI Codex CLI version baked in by the
   wrapper (e.g. `0.144.5`; requires `>= 0.130.0` for the Hermes runtime). Bumped
   independently of the Hermes release.
+- **`hermes_claude_version`** — the Claude Code CLI version baked in alongside
+  Codex (`npm i -g @anthropic-ai/claude-code@<version>`) for the coding-delegate
+  path. Bumped independently.
+- **`hermes_op_version`** — the official 1Password CLI (`op`) DEB version baked
+  in for Hermes' 1Password skill (docs/37 §1Password); installed from 1Password's
+  signed apt repo. Full deb version string (not the bare `op --version` semver).
+  Bumped independently.
 
 ## How it works
 

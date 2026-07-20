@@ -115,6 +115,7 @@ spec:
               upsert CAMOFOX_URL "$CAMOFOX_URL"
               upsert HASS_URL "$HASS_URL"
               upsert HASS_TOKEN "$HASS_TOKEN"
+              upsert OP_SERVICE_ACCOUNT_TOKEN "$OP_SERVICE_ACCOUNT_TOKEN"
           env:
             - name: DISCORD_BOT_TOKEN
               valueFrom:
@@ -152,6 +153,15 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: hass-token
+            # 1Password service-account token, upserted into /opt/data/.env as a
+            # belt-and-braces companion to the gateway container env (see the
+            # gateway env comment). Enables `op run --env-file`/any .env-sourcing
+            # path in the 1Password skill.
+            - name: OP_SERVICE_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: op-service-account-token
           securityContext:
             runAsUser: 1000
             runAsGroup: 2000
@@ -251,6 +261,25 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: api-server-key
+            # 1Password service-account token for the first-party 1Password skill
+            # (docs/37 §1Password). This one IS a gateway CONTAINER env var — not
+            # only a .env value like the other tokens — because the baked-in `op`
+            # CLI runs as a subprocess of the gateway's TERMINAL tool, whose
+            # backend seeds the child env from os.environ (tools/environments/
+            # local.py `_make_run_env`). OP_SERVICE_ACCOUNT_TOKEN is not in that
+            # backend's name-based blocklist and matches no internal-secret
+            # pattern, so it passes through and `op` authenticates. (The
+            # code_execution tool strips any *TOKEN* var by substring, so the
+            # skill drives `op` via the terminal tool by design.) The token is
+            # scoped to the isolated Agent vault, so a delegate/subprocess that
+            # inherits it can reach only that vault — never Homelab. Also upserted
+            # into /opt/data/.env by the init container (belt-and-braces for
+            # `op run --env-file` / any .env-sourcing path).
+            - name: OP_SERVICE_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: op-service-account-token
           ports:
             - name: api
               containerPort: 8642

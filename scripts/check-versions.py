@@ -197,6 +197,18 @@ SERVICE_REGISTRY: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
+        # 1Password CLI (op), baked into the hermes-agent image so Hermes' 1Password
+        # skill can drive `op` against the isolated Agent vault. 1Password ships it
+        # via its own signed apt repo (no GitHub release feed), and the pin is the
+        # full DEB version string — hence manual: check `apt-cache madison
+        # 1password-cli` against the repo (or the CLI2 release history) and bump.
+        "name": "1Password CLI (Hermes)",
+        "var_name": "hermes_op_version",
+        "category": "manual",
+        "source_url": "https://app-updates.agilebits.com/product_history/CLI2",
+        "notes": "op CLI baked into the hermes image (docker/hermes-agent). Full DEB version pin — bump via `apt-cache madison 1password-cli` against 1Password's signed apt repo, sync-versions, commit; CI rebuilds the wrapper.",
+    },
+    {
         # Camofox anti-detection browser server, built from source by the
         # build-camofox-browser CI job (upstream publishes no image). The pin is
         # the bare semver used as the built image tag; upstream tags releases
@@ -2335,7 +2347,7 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "gluetun_version", "nzbget_version", "qbittorrent_version",
         "prowlarr_version", "sonarr_version", "radarr_version",
         "lidarr_version", "pulsarr_version", "wg_easy_version", "hermes_version",
-        "hermes_codex_version", "hermes_claude_version",
+        "hermes_codex_version", "hermes_claude_version", "hermes_op_version",
         "hermes_camofox_version", "hindsight_version",
         "hindsight_llamacpp_version",
         "mealie_version", "mealie_postgresql_version",

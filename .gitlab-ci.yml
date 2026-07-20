@@ -680,7 +680,10 @@ build-hermes-agent:
       if [ -z "$HERMES_CODEX_VERSION" ]; then echo "could not read hermes_codex_version from all.yml"; exit 1; fi
       HERMES_CLAUDE_VERSION=$(grep -E '^hermes_claude_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_claude_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
       if [ -z "$HERMES_CLAUDE_VERSION" ]; then echo "could not read hermes_claude_version from all.yml"; exit 1; fi
-      echo "Building Hermes Agent ${HERMES_VERSION} (Codex CLI ${HERMES_CODEX_VERSION}, Claude Code CLI ${HERMES_CLAUDE_VERSION})"
+      # 1Password CLI (op) version — baked in for Hermes' 1Password skill.
+      HERMES_OP_VERSION=$(grep -E '^hermes_op_version:' ansible/inventories/prod/group_vars/all.yml | head -1 | sed -E 's/^hermes_op_version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+      if [ -z "$HERMES_OP_VERSION" ]; then echo "could not read hermes_op_version from all.yml"; exit 1; fi
+      echo "Building Hermes Agent ${HERMES_VERSION} (Codex CLI ${HERMES_CODEX_VERSION}, Claude Code CLI ${HERMES_CLAUDE_VERSION}, 1Password CLI ${HERMES_OP_VERSION})"
       ref="${CI_REGISTRY_IMAGE}/hermes-agent"
       rm -rf /tmp/hermes-src
       git clone --depth 1 --branch "$HERMES_VERSION" "$HERMES_UPSTREAM_REPO" /tmp/hermes-src
@@ -721,6 +724,7 @@ build-hermes-agent:
               --build-arg HERMES_IMAGE="$upstream_ref" \
               --build-arg HERMES_CODEX_VERSION="$HERMES_CODEX_VERSION" \
               --build-arg HERMES_CLAUDE_VERSION="$HERMES_CLAUDE_VERSION" \
+              --build-arg HERMES_OP_VERSION="$HERMES_OP_VERSION" \
               --build-arg BUILDKIT_INLINE_CACHE=1 \
               -t "${ref}:${HERMES_VERSION}" \
               -t "${ref}:${CI_COMMIT_SHORT_SHA}" \

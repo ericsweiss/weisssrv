@@ -304,12 +304,12 @@ virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb
 # semver whl version (v2026.7.7.2 == release 0.18.2). Bump = pick a newer tag,
 # update hermes_git_sha below to that tag's commit, run task flux:sync-versions,
 # commit — CI verifies the tag→SHA, rebuilds, Flux rolls the pods.
-hermes_version: "v2026.7.7.2"
+hermes_version: "v2026.7.20"
 # Immutable commit the pinned tag must resolve to. build-hermes-agent refuses to
 # build if `git clone --branch hermes_version` resolves to a different HEAD,
 # defending against a moved/compromised upstream tag. Update in lockstep with
 # hermes_version (get it from the tag on GitHub or the CI build log).
-hermes_git_sha: "9de9c25f620ff7f1ce0fd5457d596052d5159596"
+hermes_git_sha: "3ef6bbd201263d354fd83ec55b3c306ded2eb72a"
 # OpenAI Codex CLI (https://github.com/openai/codex/releases, npm @openai/codex).
 # Hermes' Codex app-server runtime delegates OpenAI/Codex turns to this CLI over
 # JSON-RPC stdio, authenticated with a ChatGPT subscription (OAuth) — no API
@@ -331,6 +331,17 @@ hermes_codex_version: "0.144.6"
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
 hermes_claude_version: "2.1.215"
+# 1Password CLI (op), the official first-party binary. Baked into the hermes
+# image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
+# skill can drive `op` against the isolated Agent vault via a service-account
+# token (OP_SERVICE_ACCOUNT_TOKEN — wired in kubernetes/apps/hermes; docs/37
+# §1Password). Value is the full DEB version string (apt pin), not the bare
+# semver `op --version` reports (2.35.0). No release feed to poll — bump by
+# checking `apt-cache madison 1password-cli` against 1Password's signed repo,
+# then sync-versions + commit; CI rebuilds the wrapper. Build-time only (not
+# substituted into any manifest); rides in the versions ConfigMap as a harmless
+# superset like hermes_codex_version.
+hermes_op_version: "2.35.0-1"
 # Camofox anti-detection browser server (jo-inc/camofox-browser) — the sidecar
 # behind Hermes' camofox browser tool (CAMOFOX_URL). Upstream publishes no
 # container image; the build-camofox-browser CI job clones the repo at tag
