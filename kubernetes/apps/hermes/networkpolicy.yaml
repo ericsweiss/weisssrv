@@ -87,3 +87,19 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    # Traefik pods on websecure — the dashboard's OIDC backend fetches
+    # (discovery + JWKS) target https://auth.ericsweiss.com, which resolves
+    # internally to the Traefik VIP .101 (split-horizon AdGuard rewrite; the
+    # WAN/Cloudflare path 403s non-browser user agents). From a pod,
+    # kube-proxy DNATs the VIP to the backend POD IP before NetworkPolicy
+    # evaluation, so this rule matches by pod/namespace selector — a VIP
+    # ipBlock could never match (see the removed-pinhole note above). Scope
+    # note: this admits reach to any Traefik-fronted internal vhost; every
+    # such route carries its own forward-auth/OIDC gate.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 443

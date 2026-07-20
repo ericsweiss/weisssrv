@@ -165,9 +165,23 @@ adguard_rewrites:
   # Hermes Agent web dashboard (Authentik forward-auth)
   - domain: "agent.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # DOCUMENTED EXCEPTION to the no-ericsweiss-rewrite rule below: Authentik's
+  # EXTERNAL hostname resolves internally to the internal Traefik VIP. OIDC
+  # BACKENDS (the hermes dashboard's self_hosted provider, immich/nextcloud
+  # user_oidc, grafana) fetch discovery/JWKS from the issuer host server-side;
+  # via the WAN hairpin those fetches transit Cloudflare, whose bot protection
+  # 403s non-browser user agents (observed live 2026-07-19: Python-urllib ->
+  # 403, curl -> 200 on the same JWKS URL — UA-keyed). The issuer must stay
+  # the external name (external browsers need the authorize endpoint), so the
+  # split-horizon answer moves only the FETCH path internal. Traefik serves
+  # the auth.ericsweiss.com cert on .101 (same router as the public VIP).
+  - domain: "auth.ericsweiss.com"
+    answer: "192.168.0.101"
   # Internal-only services - esweiss.com only (internal domain)
   # No external DNS in Cloudflare, no AdGuard rewrite for ericsweiss.com
-  # ericsweiss.com variants won't resolve (cleaner separation of internal vs external domains)
+  # ericsweiss.com variants won't resolve (cleaner separation of internal vs
+  # external domains). Sole exception: auth.ericsweiss.com above (OIDC backend
+  # fetches must bypass Cloudflare's UA-keyed bot filtering).
   # Download clients
   - domain: "nzbget.{{ internal_domain }}"
     answer: "192.168.0.101"
