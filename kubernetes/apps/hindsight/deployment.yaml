@@ -35,22 +35,25 @@ spec:
         app.kubernetes.io/name: hindsight
         app.kubernetes.io/part-of: hindsight
     spec:
-      # Modern-CPU only: the llama.cpp sidecar does real CPU inference (AVX2
-      # paths) and the hindsight container runs in-process torch embeddings —
-      # keep both off the Core2-era legacy nodes. NAS-avoid preferred, as for
-      # every stateless-scheduling general workload (state is on NFS). The
-      # 4Gi+ llama memory request effectively lands this on k3s-agt-prec-01
-      # (the only non-NAS modern agent with that much headroom) — that is
-      # sizing honesty, not an affinity pin: if prec-01 is down the NAS agent
-      # can still take it.
+      # HOME: k3s-agt-prec-01 — hostname-pinned. This is a heavy, RAM-hungry
+      # local-inference workload (llama.cpp AVX2 sidecar + in-process torch
+      # embeddings); its ~5Gi request only fits where the RAM was provisioned
+      # for it (the prec agent VM was raised 12->18G in hosts.yml specifically
+      # for this). The other modern agents run at ~85% and the NAS agent is
+      # kept clear of extra compute, so a hard pin is honest — a single-replica
+      # RWO/Recreate app lives on exactly one node anyway. If prec-01 is down,
+      # Hindsight is down and Hermes degrades to its built-in memory (which
+      # always runs alongside), an acceptable failure mode for a memory
+      # backend. Rehome = edit this hostname + move/grow the RAM.
       affinity:
         nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: esweiss.com/nas
-                    operator: DoesNotExist
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k3s-agt-prec-01
       nodeSelector:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"
