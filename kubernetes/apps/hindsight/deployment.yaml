@@ -193,13 +193,18 @@ spec:
             # needed.
             - name: LLAMA_ARG_N_PARALLEL
               value: "1"
-            # Cap inference to 4 of the agent VM's 6 cores so per-turn fact
-            # extraction leaves headroom for k3s + co-scheduled pods and doesn't
-            # run the node's fan flat out (no k8s CPU limit per docs/33 — this
-            # app-level thread cap is the lever). Raise if extraction latency
-            # matters more than node quiet.
+            # Cap inference to 2 of the agent VM's 6 cores. prec-01 also hosts
+            # Hermes (co-scheduled — both are general+modern nodes and Hermes'
+            # Chromium toolchain limits it to the same small modern-CPU set), so
+            # each per-turn fact extraction stacked onto Hermes' turn processing
+            # ran the fan up (observed 2026-07-20). 2 threads roughly halves the
+            # burst; extraction is background + latency-tolerant (memory just lags
+            # the conversation a little), so the ~2x slower pass is an acceptable
+            # trade for a quiet node (no k8s CPU limit per docs/33 — this
+            # app-level thread cap is the lever). Raise toward 4 if extraction
+            # latency starts to matter more than node quiet.
             - name: LLAMA_ARG_THREADS
-              value: "4"
+              value: "2"
           # /health is llama-server's built-in readiness route (503 while the
           # model loads). The generous startupProbe budget (30s x 60 = 30 min)
           # covers the FIRST boot's 3.5 GB HuggingFace download; warm starts
