@@ -145,7 +145,10 @@
       when: reboot_required | bool
 
 - name: Update OS packages on application hosts (rolling)
-  hosts: plex_servers:gitlab_servers
+  # app_servers = plex, gitlab, nextcloud, immich, immich-ml (see hosts.yml).
+  # Previously only plex+gitlab were patched here; nextcloud/immich/immich-ml
+  # (all internet-facing Debian guests) silently received no OS updates.
+  hosts: app_servers
   become: true
   serial: 1  # One host at a time
   tasks:
@@ -203,5 +206,5 @@
           - "Updated hosts:"
           - "  - Base infrastructure (Proxmox, DNS, SMTP)"
           - "  - K3s cluster nodes (kernel reboots delegated to kured, one node at a time)"
-          - "  - Application hosts (Plex, GitLab)"
+          - "  - Application hosts (Plex, GitLab, Nextcloud, Immich, immich-ml)"
           - "Check the output above for any hosts that required reboots."

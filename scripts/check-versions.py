@@ -802,6 +802,18 @@ SERVICE_REGISTRY: list[dict] = [
         "source_url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/",
         "notes": "VirtIO driver ISO for the Windows 11 VM; no GitHub releases — check the Fedora stable-virtio dir and recompute virtio_win_checksum on bump.",
     },
+    {
+        # Debian LXC root template (pveam appliance). Proxmox silently rotates
+        # the point build out of its index (13.1-2 vanished 2026-07 and broke a
+        # cached-template recreate — proxmox_lxc role + !160). No release feed to
+        # poll; check the pveam index on a Proxmox host. Current value read from
+        # all.yml (authoritative pin; mirrored as the proxmox_lxc role default).
+        "name": "Debian LXC template (pveam)",
+        "var_name": "lxc_template",
+        "category": "manual",
+        "source_url": "http://download.proxmox.com/images/system/",
+        "notes": "Debian LXC root template; no release feed — run `pveam update && pveam available --section system | grep debian-13-standard` on a Proxmox host, then bump lxc_template in all.yml + the proxmox_lxc role default together.",
+    },
 ]
 
 
@@ -1810,6 +1822,15 @@ def read_current_versions() -> dict[str, str]:
     content = VARS_FILE.read_text()
     versions = {}
 
+    # Registered pins whose var_name does NOT follow the `*_version` convention
+    # (e.g. lxc_template, a Proxmox appliance FILENAME rather than a semver) —
+    # read those by exact top-level key match so they still resolve to a current
+    # value instead of showing "unknown". version_file pins live outside all.yml.
+    extra_keys = {
+        s["var_name"] for s in SERVICE_REGISTRY
+        if s.get("var_name") and "_version" not in s["var_name"] and not s.get("version_file")
+    }
+
     # Track if we are inside helm_chart_versions block
     in_helm = False
 
@@ -1839,7 +1860,8 @@ def read_current_versions() -> dict[str, str]:
                 in_helm = False
                 # Fall through to check this line as a regular entry
 
-        if not in_helm and ":" in stripped and "_version" in stripped.split(":")[0]:
+        _key = stripped.split(":")[0].strip()
+        if not in_helm and ":" in stripped and ("_version" in _key or _key in extra_keys):
             key, _, val = stripped.partition(":")
             key = key.strip()
             val = val.strip().strip('"').strip("'")
@@ -2380,6 +2402,14 @@ def get_deploy_command(result: ServiceVersion) -> str:
         # this is a no-op: it keeps its old drivers until destroy+re-provision
         # (docs/39).
         return "task windows:provision  # only downloads the new ISO on a fresh VM; an existing guest keeps its drivers until destroy+re-provision"
+
+    # Debian LXC root template (pveam appliance, Ansible-managed via proxmox_lxc).
+    # Bumping the pin only changes which template a NEWLY created LXC pulls (pveam
+    # downloads it on the next provisioning run); existing containers keep their
+    # rootfs until destroy + recreate, so there is no fleet deploy step. Keep the
+    # proxmox_lxc role default in sync (all.yml is authoritative).
+    if var_name == "lxc_template":
+        return "bump the proxmox_lxc role default to match; new template applies only on the next LXC create (existing containers keep their rootfs)"
 
     # Fallback when no specific deploy task mapping exists
     return "task infra:deploy"

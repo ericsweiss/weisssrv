@@ -37,6 +37,9 @@ lxc_unprivileged: true
 # already-downloaded older build keeps working for recreation — but NEW hosts
 # need a name the index actually serves. Check `pveam available | grep
 # debian-13` when this 404s and bump.
+# NOTE: the authoritative production pin lives in group_vars/all.yml (tracked by
+# check-versions.py, category "manual"); this default is the molecule/standalone
+# fallback. Keep the two in sync when bumping.
 lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 lxc_template_storage: local
 

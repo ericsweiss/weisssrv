@@ -37,7 +37,7 @@ data:
   helm_chart_versions_tailscale_operator: 1.98.9
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
-  hermes_camofox_version: 1.12.1
+  hermes_camofox_version: 1.13.0
   hermes_claude_version: 2.1.215
   hermes_codex_version: 0.144.6
   hermes_version: v2026.7.7.2

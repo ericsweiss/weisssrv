@@ -149,6 +149,15 @@ tailscale_version: "1.98.9"
 # tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.
 coredns_tailnet_version: "1.14.6"
 debian_version: "13"
+# Proxmox LXC root template (pveam appliance). Authoritative pin — mirrors the
+# proxmox_lxc role default (bump both together; the role default is the
+# molecule/standalone fallback). Not a Flux version (host-side Ansible), so it is
+# NOT added to the versions ConfigMap. Upstream silently rotates the point
+# release (13.1-2 -> 13.6-1 broke a cached-template recreate — see the
+# proxmox_lxc role, !160), so it is tracked in check-versions.py (category
+# "manual"); check for a newer build with `pveam update && pveam available
+# --section system | grep debian-13-standard`.
+lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 k3s_version: "v1.36.2+k3s1"
 # Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
 # root-run installer script before exec (host-side ansible, NOT a Flux version —
@@ -330,12 +339,12 @@ hermes_claude_version: "2.1.215"
 # git tag carries the leading "v". Bump = pick a newer stable tag, update
 # hermes_camofox_git_sha below to that tag's commit, sync-versions, commit.
 # https://github.com/jo-inc/camofox-browser/releases
-hermes_camofox_version: "1.12.1"
+hermes_camofox_version: "1.13.0"
 # Immutable commit tag v${hermes_camofox_version} must resolve to.
 # build-camofox-browser refuses to build if the clone resolves elsewhere
 # (moved/compromised tag defence — same pattern as hermes_git_sha). Update in
 # lockstep with hermes_camofox_version.
-hermes_camofox_git_sha: "82b948031c83eee7b746ff984927b7b3827192db"
+hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
 
 # Hindsight agent-memory server (vectorize-io/hindsight) — Hermes' long-term
 # memory backend (kubernetes/apps/hindsight, docs/37 §Memory backend). The pin
