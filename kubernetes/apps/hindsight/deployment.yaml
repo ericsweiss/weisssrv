@@ -93,6 +93,21 @@ spec:
               value: not-needed
             - name: HINDSIGHT_API_LLM_MODEL
               value: gemma-4-e2b-it
+            # LLM request timeouts. Default is 120s, but a single fact-extraction
+            # on the CPU-only llama sidecar takes ~80s (measured: 1081 tokens at
+            # 13 tok/s), and with N_PARALLEL=1 the server serializes inference —
+            # so a retain op that QUEUES behind another waits queue-time + ~80s,
+            # routinely exceeding 120s. That timed the client out, and every
+            # burst of turns then burned all 4 retry attempts producing nothing
+            # but heat (observed live 2026-07-20: attempt=4/4, node fan flat
+            # out). 300s comfortably covers queue-wait + a slow extraction so
+            # each op lands on the first attempt. CONSOLIDATION uses the same
+            # local model on the same serialized server, so it gets the same
+            # headroom or it would hit the identical wall during memory merges.
+            - name: HINDSIGHT_API_LLM_TIMEOUT
+              value: "300"
+            - name: HINDSIGHT_API_CONSOLIDATION_LLM_TIMEOUT
+              value: "300"
           ports:
             - name: api
               containerPort: 8888
