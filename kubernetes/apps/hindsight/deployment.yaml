@@ -167,6 +167,24 @@ spec:
               value: google_gemma-4-E2B-it-Q4_K_M.gguf
             - name: LLAMA_ARG_CTX_SIZE
               value: "8192"
+            # SINGLE slot. The server otherwise ran 4 parallel slots that SPLIT
+            # the 8192 context four ways (2048 each), but Hindsight queries the
+            # model's advertised context (8192) and sizes its fact-extraction
+            # prompts to it — so every retain 500'd with "Context size has been
+            # exceeded", retried 4x, and pinned all cores producing nothing
+            # (observed live 2026-07-20). One slot gives each request the full
+            # 8192 and serializes inference so it can't peg the node. Memory
+            # retention is background + latency-tolerant, so no concurrency is
+            # needed.
+            - name: LLAMA_ARG_N_PARALLEL
+              value: "1"
+            # Cap inference to 4 of the agent VM's 6 cores so per-turn fact
+            # extraction leaves headroom for k3s + co-scheduled pods and doesn't
+            # run the node's fan flat out (no k8s CPU limit per docs/33 — this
+            # app-level thread cap is the lever). Raise if extraction latency
+            # matters more than node quiet.
+            - name: LLAMA_ARG_THREADS
+              value: "4"
           # /health is llama-server's built-in readiness route (503 while the
           # model loads). The generous startupProbe budget (30s x 60 = 30 min)
           # covers the FIRST boot's 3.5 GB HuggingFace download; warm starts
