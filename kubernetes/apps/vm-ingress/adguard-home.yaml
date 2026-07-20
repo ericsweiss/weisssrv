@@ -1,4 +1,22 @@
 ---
+# AdGuard Home dashboards, two route flavours per instance (docs/08):
+#   * dns-01/dns-02.esweiss.com — the RAW routes (below): no SSO, AdGuard's
+#     own login. Kept untouched as the break-glass path — together with the
+#     direct IPs (.150/.160) they stay reachable when Authentik or the
+#     cluster is degraded (DNS is the one service that must never depend on
+#     the SSO stack to administer).
+#   * adguard/adguard-02.esweiss.com — the SSO routes (further below):
+#     Authentik forward-auth (dns-admins group) with basic-auth credential
+#     injection, so members land straight on the dashboard with no second
+#     login. These use the authentik-auth-basic middleware (NOT the shared
+#     authentik-auth): the provider injects the AdGuard admin credentials as
+#     an Authorization header and only the -basic variant forwards it
+#     (kubernetes/apps/authentik/middleware.yaml). Providers/apps/group in
+#     terraform/authentik (docs/40).
+# All four routes share the two existing adguard-home-0X-backend Services
+# (services-default.yaml, 443/https via the vm-tls-wildcard ServersTransport
+# — AdGuard serves its UI over TLS, adguard_https_port 443 in group_vars).
+
 # IngressRoute for dns-01.esweiss.com (AdGuard Home primary, internal-only)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -39,6 +57,60 @@ spec:
       middlewares:
         - name: lan-tailscale-only
           namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: adguard-home-02-backend
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    secretName: esweiss-com-tls
+---
+# IngressRoute for adguard.esweiss.com (AdGuard Home primary, SSO + injection)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: adguard-sso-01
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`adguard.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: authentik-auth-basic
+          namespace: authentik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: adguard-home-01-backend
+          port: 443
+          scheme: https
+          serversTransport: vm-tls-wildcard
+  tls:
+    secretName: esweiss-com-tls
+---
+# IngressRoute for adguard-02.esweiss.com (AdGuard Home secondary, SSO + injection)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: adguard-sso-02
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`adguard-02.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: authentik-auth-basic
+          namespace: authentik
         - name: hsts-header
           namespace: traefik
       services:

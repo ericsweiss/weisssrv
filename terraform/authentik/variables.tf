@@ -56,3 +56,43 @@ variable "oauth2_client_secret_immich" {
   type        = string
   sensitive   = true
 }
+
+variable "oauth2_client_secret_hermes_dashboard" {
+  description = "Hermes dashboard OIDC client secret (1Password item 'Hermes Secrets', field 'hermes-dashboard-oidc-client-secret' — the same field the hermes-secrets ExternalSecret syncs into the cluster)"
+  type        = string
+  sensitive   = true
+}
+
+# --- Basic-auth injection credentials ---------------------------------------
+# Per-app upstream credentials stored as GROUP attributes (groups.tf) and
+# injected by proxy providers with basic_auth_enabled (providers_proxy.tf):
+# the embedded outpost sends them as the Authorization header, which the
+# dedicated authentik-auth-basic Traefik middleware forwards upstream — so
+# SSO members never see the app's own login. Values come from the SAME
+# 1Password items the apps' real credentials live in, so authentik can never
+# inject a stale pair. Usernames are not secret per se, but the pairs travel
+# together and are marked sensitive as a unit.
+
+variable "basic_auth_nzbget_username" {
+  description = "NZBGet ControlUsername (1Password item 'NZBGet', field 'username' — must match nzbget.conf)"
+  type        = string
+  sensitive   = true
+}
+
+variable "basic_auth_nzbget_password" {
+  description = "NZBGet ControlPassword (1Password item 'NZBGet', field 'password' — must match nzbget.conf)"
+  type        = string
+  sensitive   = true
+}
+
+variable "basic_auth_adguard_username" {
+  description = "AdGuard Home admin username (1Password item 'AdGuard Home', field 'username')"
+  type        = string
+  sensitive   = true
+}
+
+variable "basic_auth_adguard_password" {
+  description = "AdGuard Home admin password (1Password item 'AdGuard Home', field 'password')"
+  type        = string
+  sensitive   = true
+}

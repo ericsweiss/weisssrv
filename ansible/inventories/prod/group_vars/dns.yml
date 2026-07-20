@@ -65,6 +65,13 @@ adguard_rewrites:
     answer: "192.168.0.101"
   - domain: "dns-02.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # SSO-fronted AdGuard dashboards (Authentik forward-auth + credential
+  # injection, docs/08). Same Traefik VIP; the raw dns-01/dns-02 names above
+  # stay as the no-SSO break-glass path.
+  - domain: "adguard.{{ internal_domain }}"
+    answer: "192.168.0.101"
+  - domain: "adguard-02.{{ internal_domain }}"
+    answer: "192.168.0.101"
   # Direct DNS access (for DoT/DoQ on port 853)
   - domain: "dns.{{ internal_domain }}"
     answer: "192.168.0.150"

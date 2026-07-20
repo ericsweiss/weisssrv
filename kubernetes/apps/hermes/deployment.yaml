@@ -73,20 +73,55 @@ spec:
           # DNAT-insert race can't cost a ~5s resolver stall. Kept in sync with
           # recipes/mealie.yaml and the *arr deployments.
           - name: single-request-reopen
-      # CODEX_HOME (/opt/data/.codex) does not exist on a freshly-provisioned
-      # NFS export, so `codex login` fails in either container until the dir is
-      # created (previously a manual mkdir). This initContainer self-heals that:
-      # it mkdir -p's the path on the shared NFS volume before the gateway and
-      # dashboard start, so the persisted Codex OAuth token has a home on first
-      # boot. Runs as 1000:2000 (HERMES_UID/GID) — the export's all_squash maps
-      # every write to anonuid=1000/anongid=2000 (the same ownership the app's
-      # s6 init expects); mkdir -p is idempotent, so it is a no-op on later boots.
+      # Init container: prepares the shared NFS volume before the gateway and
+      # dashboard start.
+      #  1. mkdir -p CODEX_HOME (/opt/data/.codex): the dir does not exist on a
+      #     freshly-provisioned NFS export, so `codex login` fails in either
+      #     container until it is created (previously a manual mkdir);
+      #     idempotent no-op on later boots.
+      #  2. Upserts the GATEWAY-scope vars into /opt/data/.env. Root cause: the
+      #     gateway's config loader (_getenv) prefers the active profile's
+      #     secret scope and never falls back to os.environ — container env
+      #     vars are invisible to gateway config, and /opt/data/.env is the
+      #     operative store. The remove-then-append upsert runs on every pod
+      #     start, so an ESO rotation of discord-bot-token propagates on the
+      #     next start while the NFS-backed file keeps values between them.
+      #     Keys not listed here (e.g. ones written via the dashboard UI, like
+      #     DISCORD_HOME_CHANNEL*) are left untouched. The dashboard's OIDC
+      #     vars are deliberately NOT synced — the dashboard reads real
+      #     container env (see the dashboard container below).
+      # Runs as 1000:2000 (HERMES_UID/GID) — the export's all_squash maps every
+      # write to anonuid=1000/anongid=2000 (the same ownership the app's s6
+      # init expects).
       initContainers:
-        - name: init-codex-home
+        - name: init-data
           image: busybox:${busybox_version}
-          command: ["/bin/sh", "-c"]
+          command: ["/bin/sh", "-ec"]
           args:
-            - mkdir -p /opt/data/.codex
+            - |
+              mkdir -p /opt/data/.codex
+              touch /opt/data/.env
+              upsert() {
+                sed -i "/^$1=/d" /opt/data/.env
+                printf '%s=%s\n' "$1" "$2" >> /opt/data/.env
+              }
+              upsert DISCORD_BOT_TOKEN "$DISCORD_BOT_TOKEN"
+              upsert DISCORD_ALLOWED_USERS "$DISCORD_ALLOWED_USERS"
+              upsert CODEX_HOME "$CODEX_HOME"
+          env:
+            - name: DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: discord-bot-token
+            # Discord USER id(s) allowed to talk to the bot — identifiers,
+            # not credentials (fine in git).
+            - name: DISCORD_ALLOWED_USERS
+              value: "237388029105405952"
+            # Mirrors the containers' CODEX_HOME so the gateway config sees
+            # the same path the CLI subprocesses use.
+            - name: CODEX_HOME
+              value: /opt/data/.codex
           securityContext:
             runAsUser: 1000
             runAsGroup: 2000
@@ -229,14 +264,13 @@ spec:
           # Bind 0.0.0.0 (upstream's compose defaults to 127.0.0.1) so Traefik
           # can reach the dashboard through the Service. Binding to a
           # non-loopback address engages the dashboard's fail-closed auth gate:
-          # upstream refuses to start the dashboard on 0.0.0.0 unless a dashboard
-          # auth provider is registered, so we supply the bundled `basic`
-          # provider via the HERMES_DASHBOARD_BASIC_AUTH_* env below. Access is
-          # therefore defence-in-depth: the Authentik forward-auth perimeter
-          # (group-based SSO on both IngressRoutes) in front of the dashboard's
-          # own username/password login, with the NetworkPolicy admitting only
-          # the Traefik namespace on :9119. 9119 is the image's default port, so
-          # no --port.
+          # upstream refuses to start the dashboard on 0.0.0.0 unless a
+          # dashboard auth provider is registered. TWO providers are registered
+          # via the env below — the `self_hosted` Authentik OIDC provider
+          # (primary) and the bundled `basic` provider (break-glass) — behind
+          # the Authentik forward-auth perimeter on both IngressRoutes, with
+          # the NetworkPolicy admitting only the Traefik namespace on :9119
+          # (docs/37 §SSO). 9119 is the image's default port, so no --port.
           args: ["dashboard", "--host", "0.0.0.0", "--no-open"]
           env:
             - name: HERMES_UID
@@ -258,12 +292,14 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: claude-code-oauth-token
-            # Dashboard auth provider — required because the 0.0.0.0 bind above
-            # engages upstream's fail-closed gate (it refuses to start without a
-            # registered provider). The bundled `basic` provider registers from
-            # these values; it is the inner login behind the Authentik
-            # forward-auth perimeter (docs/37 §SSO). All three are 1P-sourced via
-            # ESO (never in git) — see docs/15.
+            # Dashboard `basic` auth provider — deliberately KEPT alongside the
+            # OIDC provider below, for two reasons (docs/37 §SSO): (1) chooser
+            # semantics — with two registered providers the auth middleware
+            # renders the /login provider chooser, while a single provider
+            # auto-launches, and auto-launch on `basic` raises
+            # NotImplementedError -> HTTP 500 (observed live); (2) password
+            # break-glass if Authentik is down. All three values are 1P-sourced
+            # via ESO (never in git) — see docs/15.
             - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -282,6 +318,34 @@ spec:
                 secretKeyRef:
                   name: hermes-secrets
                   key: dashboard-session-secret
+            # Authentik OIDC SSO — the `self_hosted` generic-OIDC dashboard
+            # auth provider (docs/37 §SSO). The dashboard reads these from real
+            # container env (env wins over config.yaml) — unlike the gateway,
+            # whose config only sees /opt/data/.env (see the initContainer).
+            # PUBLIC_URL pins the reconstructed redirect_uri deterministically
+            # behind Traefik to exactly
+            # https://agent.ericsweiss.com/auth/callback — the single strict
+            # allowed redirect URI on the Terraform-managed authentik provider
+            # (terraform/authentik/providers_oauth2.tf, docs/40).
+            - name: HERMES_DASHBOARD_PUBLIC_URL
+              value: https://agent.ericsweiss.com
+            # Issuer = the agent-sso application slug on the EXTERNAL authentik
+            # host. auth.ericsweiss.com resolves public (Cloudflare), so OIDC
+            # discovery ({issuer}/.well-known/openid-configuration) and token
+            # calls ride the existing public :443 egress rule — no
+            # NetworkPolicy change needed.
+            - name: HERMES_DASHBOARD_OIDC_ISSUER
+              value: https://auth.ericsweiss.com/application/o/agent-sso/
+            - name: HERMES_DASHBOARD_OIDC_CLIENT_ID
+              value: hermes-dashboard
+            # Non-empty secret => confidential client (PKCE stays on either
+            # way). Same 1P field Terraform injects into authentik, so the two
+            # sides can never disagree.
+            - name: HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: hermes-dashboard-oidc-client-secret
           ports:
             - name: http
               containerPort: 9119

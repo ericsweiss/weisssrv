@@ -585,70 +585,90 @@ Configure *arr apps to use:
 
 ## Authentik SSO Integration
 
-All apps are protected by Authentik SSO via the `authentik-auth` ForwardAuth middleware. This provides **gateway-level authentication** - users must authenticate via Authentik before reaching any app.
+All apps are protected by Authentik forward-auth on their IngressRoutes
+(`authentik-auth` middleware; `media-admins` group binding — the providers,
+applications, and bindings are code in `terraform/authentik/`, docs/40). The
+`lan-tailscale-only` middleware scopes the routes to LAN/Tailscale, and the
+namespace NetworkPolicy admits only Traefik to the pods — the middleware
+chain is the only path in.
 
-### Understanding the Authentication Flow
+Because the *arrs/NZBGet/qBittorrent have no native OIDC/SAML (a known
+upstream limitation — see [Sonarr #2477](https://github.com/Sonarr/Sonarr/issues/2477)),
+the single-login experience is achieved per app with one of three
+passthrough mechanisms:
 
-**Current Implementation (Middleware-Only)**:
-1. User navigates to `https://tv.esweiss.com`
-2. Traefik's `authentik-auth` middleware redirects to Authentik
-3. User logs in to Authentik
-4. Authentik redirects back to the app
-5. User sees the app's native login page (if enabled)
+### 1. *arr apps — `Authentication: External` (in-app setting)
 
-This means users may need to authenticate twice: once to Authentik, once to the app itself.
+Sonarr/Radarr/Lidarr/Prowlarr: Settings > General > Security >
+**Authentication = External**. The app skips its own login entirely and
+trusts the reverse proxy. Safe because the ONLY route to the pod is Traefik
+(NetworkPolicy) and every Traefik route carries forward-auth.
 
-### Eliminating Double Login
+### 2. NZBGet — basic-auth credential injection (codified)
 
-To avoid the double-login experience, configure each *arr app to use **External Authentication**:
+NZBGet validates HTTP Basic against `ControlUsername`/`ControlPassword`
+(nzbget.conf) and has no External mode — so authentik injects the
+credentials instead:
 
-1. **Sonarr/Radarr/Lidarr/Prowlarr**:
-   - Settings > General > Security
-   - Set **Authentication** to `External`
-   - This tells the app to trust the reverse proxy's authentication
-   - The app will skip its login page entirely
+- The `NZBGet` proxy provider has `basic_auth_enabled` with the
+  `nzbget_user`/`nzbget_password` attributes, stored on the `media-admins`
+  group from the 1Password **NZBGet** item
+  (`terraform/authentik/providers_proxy.tf` + `groups.tf`).
+- The nzbget IngressRoute swaps the shared middleware for
+  `authentik-auth-basic` (`ingress-routes/nzbget`) — the variant that
+  forwards the injected `Authorization` header (the shared one strips it;
+  see `kubernetes/apps/authentik/middleware.yaml`).
+- The 1Password item's values must match nzbget.conf; rotating the pair
+  means updating BOTH nzbget.conf (or its UI) and the 1P item, then a
+  supervised terraform apply (docs/40).
 
-2. **qBittorrent**:
-   - Tools > Options > Web UI
-   - Check **Bypass authentication for clients in whitelisted IP subnets**
-   - Add `10.0.0.0/8` (pod network) to whitelist
-   - Or use **Bypass authentication for clients on localhost**
+In-cluster API clients (the *arrs → `nzbget:6789` via the Service) bypass
+Traefik and keep using their own credentials — unaffected.
 
-3. **NZBGet**:
-   - Settings > Security
-   - Set **ControlUsername** and **ControlPassword** to empty
-   - Or configure **AuthorizedIP** to include pod network
+### 3. qBittorrent — trusted-subnet bypass (supervised runbook)
 
-**Important**: When using External Authentication, the apps will trust anyone who reaches them. This is safe because:
-- Traefik's `lan-tailscale-only` middleware blocks external IPs
-- Authentik middleware ensures only authenticated users pass through
-- All traffic goes through these middleware layers
+qBittorrent's injection-equivalent is `WebUI\AuthSubnetWhitelist`: requests
+from a whitelisted subnet skip the WebUI login. Traefik's forwarded requests
+originate from its pod IP, so whitelisting the pod CIDR gives SSO users a
+direct dashboard while the API credentials keep working everywhere.
 
-### Native OIDC/SAML Support (Not Available)
+**Trust model**: whitelisting the pod CIDR (`10.42.0.0/16`) is acceptable
+because the NetworkPolicy admits ONLY the Traefik namespace to the pod and
+every Traefik route carries forward-auth — identical to the *arr
+`External` precedent. **Residual risk**: the whitelist itself cannot tell
+Traefik from any other pod, so the NetworkPolicy is load-bearing — removing
+it would let any compromised in-cluster pod reach the unauthenticated WebUI.
 
-The *arr apps do **NOT** support native OIDC or SAML authentication. They lack:
-- OAuth2/OIDC client capability
-- SAML service provider capability
-- Header-based user identification (like `Remote-User`)
+Supervised runbook (config edit while the app is stopped — qBittorrent
+rewrites its conf on shutdown, so live edits are lost):
 
-This is a known limitation. The Sonarr developers have stated they have no current plans to add native SSO support. The "External" authentication mode combined with ForwardAuth is the recommended workaround.
+```bash
+# 1. Stop qBittorrent (keep the deployment, scale to zero)
+kubectl scale deploy/qbittorrent -n downloads --replicas=0
+kubectl wait --for=delete pod -l app.kubernetes.io/name=qbittorrent -n downloads --timeout=120s
 
-See: [Sonarr Issue #2477](https://github.com/Sonarr/Sonarr/issues/2477) for ongoing discussion.
+# 2. Edit the conf on the /config volume from a throwaway pod mounting the
+#    same PVC (or via the NFS export on the NAS). In
+#    /config/qBittorrent/qBittorrent.conf, under [Preferences], set:
+#      WebUI\AuthSubnetWhitelistEnabled=true
+#      WebUI\AuthSubnetWhitelist=10.42.0.0/16
 
-### Creating Authentik Applications (Optional)
+# 3. Start it again and verify
+kubectl scale deploy/qbittorrent -n downloads --replicas=1
+# via SSO: https://qbittorrent.esweiss.com -> dashboard with NO WebUI login
+# direct (port-forward to :8080): the WebUI login must STILL be required
+```
 
-For audit logging and per-app access control, you can create individual Authentik Applications:
+Note: Flux's kustomize-controller reverts the replica count on its next
+reconcile — acceptable here (the edit happens between scale-down and the
+revert; re-check the conf took effect after the pod is back).
 
-1. Go to Authentik Admin > Applications > Create
-2. Name: `{App Name}` (e.g., "Sonarr")
-3. Slug: `{app-name}` (e.g., "sonarr")
-4. Provider: Create new "Proxy Provider"
-   - Name: `{app-name}-proxy`
-   - Authorization flow: default-provider-authorization-implicit-consent
-   - External Host: `https://tv.esweiss.com`
-   - Mode: Forward auth (single application)
+### Per-app access control
 
-This enables per-application audit logs and the ability to restrict access to specific users/groups.
+Per-app authorization is group-membership on the application's policy
+binding (`terraform/authentik/policy_bindings.tf`) — all seven downloads
+apps are gated by `media-admins`. Audit logging comes with the per-app
+applications/providers, which are all code in `terraform/authentik/`.
 
 ## Config Migration from Windows
 

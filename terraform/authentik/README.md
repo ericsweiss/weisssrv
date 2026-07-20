@@ -6,7 +6,14 @@ memberships — mirroring the `terraform/cloudflare` / `terraform/tailscale`
 pattern (GitLab HTTP state backend + 1Password-injected credentials). The live
 objects were **imported, never recreated**: the module was built field-for-field
 against the API and accepted only when `terraform plan` against the imported
-state showed zero changes (bar the one approved exception below).
+state showed zero changes (bar the one approved exception below). Objects added
+since the import — the Hermes dashboard OIDC provider + `agent-sso`
+application, the AdGuard SSO dashboard providers/applications, the role
+groups (`media-admins`, `dns-admins`, `bar-assistant-users`,
+`home-assistant-users`), and the per-application policy bindings — are
+**Terraform-authored** and created by supervised apply (no import involved).
+The embedded outpost was later **adopted** (imported) so its provider list is
+code too (`outpost.tf`).
 
 ## ⚠️ Apply is a supervised step (and there is no apply task yet)
 
@@ -27,28 +34,37 @@ drift instead of being silently reverted later.
 
 | Kind | Count | Terraform | Import ID |
 |---|---|---|---|
-| Applications | 16 | `authentik_application.app[<slug>]` | slug |
-| Proxy providers (forward_single) | 9 | `authentik_provider_proxy.<name>` | provider pk (4-10, 16, 17) |
-| OAuth2/OIDC providers | 6 | `authentik_provider_oauth2.<name>` | provider pk (1-3, 13-15) |
+| Applications | 19 | `authentik_application.app[<slug>]` + explicit `agent_sso` / `adguard_01` / `adguard_02` | slug (the three explicit ones are Terraform-created — no import) |
+| Proxy providers (forward_single) | 11 | `authentik_provider_proxy.<name>` | provider pk (4-10, 16, 17); `adguard_01`/`adguard_02` are Terraform-created |
+| OAuth2/OIDC providers | 7 | `authentik_provider_oauth2.<name>` | provider pk (1-3, 13-15); `hermes_dashboard` is Terraform-created |
 | SAML provider (GitLab) | 1 | `authentik_provider_saml.gitlab` | provider pk (12) |
-| Groups + memberships | 12 | `authentik_group.app[<name>]` + `authentik_group.authentik_admins` | group uuid |
+| Groups + memberships | 16 | `authentik_group.app[<name>]` + explicit `media_admins` / `dns_admins` / `authentik_admins` | group uuid (`media-admins`, `dns-admins`, `bar-assistant-users`, `home-assistant-users` are Terraform-created) |
+| Policy bindings (group → application) | 19 | `authentik_policy_binding.app_group[<slug>]` + explicit `agent_sso` / `adguard_01` / `adguard_02` | — (all Terraform-created) |
+| Embedded outpost (provider list) | 1 | `authentik_outpost.embedded` | outpost uuid (adopted — see `outpost.tf`) |
 
 Membership is modelled on the group's `users` list (the provider's model);
-the users themselves are `data` sources only.
+the users themselves are `data` sources only. Every application carries exactly
+one group policy binding (`policy_bindings.tf`) — per-app access is enforced by
+group membership. `media-admins` / `dns-admins` additionally carry basic-auth
+injection attributes (`groups.tf`) consumed by the providers with
+`basic_auth_enabled` (nzbget, both adguard).
 
 ## What is deliberately UNMANAGED (and why)
 
-- **Flows, stages, policies, policy bindings, property mappings** — all stock
-  authentik defaults (`default-*` / `managed`-flagged); nothing user-authored
-  exists. Providers reference the two default flows and the default mappings
-  via `data` sources.
+- **Flows, stages, policies, property mappings** — all stock authentik
+  defaults (`default-*` / `managed`-flagged); nothing user-authored exists.
+  Providers reference the two default flows and the default mappings via
+  `data` sources. (Application **group bindings** ARE managed — see
+  `policy_bindings.tf`; expression/other policies remain unmanaged because
+  none exist.)
 - **Certificate keypair** — the install-generated self-signed keypair (data
   source; rotation is an authentik-side operation).
-- **Brand, outpost, service connection, RBAC roles** — stock. The embedded
-  outpost's *provider assignment* is the one user-touched knob here: after
-  adding a proxy provider, tick it in Applications → Outposts → authentik
-  Embedded Outpost (kept manual; the provider list on the outpost object is
-  otherwise authentik-managed).
+- **Brand, service connection, RBAC roles** — stock. The embedded outpost's
+  *provider list* — its one user-touched knob — is now MANAGED
+  (`authentik_outpost.embedded`, adopted by import); its settings JSON
+  (`config`) is deliberately left unconfigured (Optional+Computed) so the
+  authentik-managed outpost configuration is never diffed or rewritten — see
+  `outpost.tf`.
 - **Users** — `akadmin` (bootstrap admin) and the outpost service account are
   authentik's own; `eric` is a human whose password/MFA must never be in
   Terraform. All three are read via `data` sources where needed.
@@ -71,6 +87,11 @@ Terraform and the app can never disagree:
 | `oauth2_client_secret_grafana` | `op://Homelab/Grafana SSO/oidc-client-secret` |
 | `oauth2_client_secret_nextcloud` | `op://Homelab/Nextcloud SSO/client-secret` |
 | `oauth2_client_secret_immich` | `op://Homelab/Immich SSO/client-secret` |
+| `oauth2_client_secret_hermes_dashboard` | `op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret` |
+| `basic_auth_nzbget_username` | `op://Homelab/NZBGet/username` |
+| `basic_auth_nzbget_password` | `op://Homelab/NZBGet/password` |
+| `basic_auth_adguard_username` | `op://Homelab/AdGuard Home/username` |
+| `basic_auth_adguard_password` | `op://Homelab/AdGuard Home/password` |
 | (state backend) | `op://Homelab/GitLab Terraform State Token/credential` |
 
 OAuth2 `client_id`s are public identifiers (they appear in every authorize
@@ -162,14 +183,22 @@ wherever else it is used.
 2. **Application** — one entry in `local.applications`
    (`applications.tf`): slug, name, `group` (`Home`/`Software`/`Downloads`),
    launch URL, dashboard icon, provider reference.
-3. **Group** (if the app gets its own access group) — one name in
-   `local.member_groups` (`groups.tf`).
-4. `task terraform:authentik-plan` → review → supervised apply. For a proxy
-   provider, then assign it to the embedded outpost (UI, see above) and add
-   the Traefik forward-auth middleware/ingress on the k8s side
-   (docs/23 + the app's own doc).
-5. New objects are **created** by Terraform (no import needed); only
+3. **Group + binding** — one name in `local.member_groups` (`groups.tf`) and
+   one entry in `local.application_group_bindings` (`policy_bindings.tf`):
+   every application gets exactly one group binding. (A group that must carry
+   basic-auth injection attributes is an explicit resource instead — mirror
+   `media_admins` / `dns_admins`.)
+4. For a **proxy** provider, append it to the embedded outpost's
+   `protocol_providers` list (`outpost.tf` — no Admin-UI step) and add the
+   Traefik forward-auth middleware/ingress on the k8s side (docs/23 + the
+   app's own doc; upstreams that expect injected credentials take the
+   `authentik-auth-basic` middleware variant).
+5. `task terraform:authentik-plan` → review → supervised apply.
+6. New objects are **created** by Terraform (no import needed); only
    pre-existing UI-created objects ever need `imports.tf` / `import.sh`
-   entries.
+   entries. The Hermes dashboard OIDC set (`hermes_dashboard` provider +
+   `agent_sso` application + role groups + bindings) is the worked example of
+   this recipe; the AdGuard SSO dashboards are the proxy-provider +
+   basic-auth-injection variant of it.
 
 Day-2 operations (drift handling, token rotation, DR): `docs/40-authentik-terraform.md`.

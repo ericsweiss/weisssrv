@@ -1,5 +1,15 @@
 ---
 # nzbget IngressRoute: thin overlay over the ../../_ingressroute component.
+# Unlike the other six, nzbget swaps the shared authentik-auth middleware
+# (skeleton index 1) for authentik-auth-basic: its proxy provider injects the
+# NZBGet ControlUsername/ControlPassword as an Authorization header
+# (terraform/authentik providers_proxy.tf), and only the -basic middleware
+# variant forwards that header — the shared one would strip it (Traefik
+# deletes every authResponseHeaders entry from the client request first; see
+# kubernetes/apps/authentik/middleware.yaml). Result: SSO users pass straight
+# through NZBGet's own basic-auth check — no double login. In-cluster API
+# clients (Sonarr/Radarr/... -> nzbget:6789 via the Service) bypass Traefik
+# entirely and keep sending their own credentials, unaffected.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: downloads
@@ -16,6 +26,11 @@ patches:
       - op: replace
         path: /spec/routes/0/match
         value: Host(`nzbget.esweiss.com`)
+      - op: replace
+        path: /spec/routes/0/middlewares/1
+        value:
+          name: authentik-auth-basic
+          namespace: authentik
       - op: replace
         path: /spec/routes/0/services/0/name
         value: nzbget

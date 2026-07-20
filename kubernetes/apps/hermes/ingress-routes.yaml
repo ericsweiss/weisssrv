@@ -4,10 +4,12 @@
 # SSO model: layered. The Authentik forward-auth (authentik-auth) middleware is
 # the perimeter gate — only members of the Authentik `hermes-users` group ever
 # reach the dashboard, and the default-deny NetworkPolicy admits only the
-# Traefik namespace on :9119, so no path bypasses this middleware. Behind it the
-# dashboard runs its own `basic` auth provider (its 0.0.0.0 bind is fail-closed:
-# it will not start without one — see deployment.yaml + docs/37 §SSO). See
-# docs/37 for provider/app setup. The internal route additionally scopes to
+# Traefik namespace on :9119, so no path bypasses this middleware. Behind it
+# the dashboard registers TWO of its own auth providers (its 0.0.0.0 bind is
+# fail-closed — it will not start without at least one): Authentik OIDC
+# (primary, silent for an existing Authentik session) and `basic` (break-glass)
+# — see deployment.yaml + docs/37 §SSO. The Authentik objects are managed in
+# terraform/authentik (docs/40). The internal route additionally scopes to
 # LAN/Tailscale sources.
 
 # External - agent.ericsweiss.com

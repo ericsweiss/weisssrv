@@ -1306,6 +1306,11 @@ tasks:
       TF_VAR_oauth2_client_secret_grafana: op://Homelab/Grafana SSO/oidc-client-secret
       TF_VAR_oauth2_client_secret_nextcloud: op://Homelab/Nextcloud SSO/client-secret
       TF_VAR_oauth2_client_secret_immich: op://Homelab/Immich SSO/client-secret
+      TF_VAR_oauth2_client_secret_hermes_dashboard: op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret
+      TF_VAR_basic_auth_nzbget_username: op://Homelab/NZBGet/username
+      TF_VAR_basic_auth_nzbget_password: op://Homelab/NZBGet/password
+      TF_VAR_basic_auth_adguard_username: op://Homelab/AdGuard Home/username
+      TF_VAR_basic_auth_adguard_password: op://Homelab/AdGuard Home/password
       TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik"
       TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik/lock"
       TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/authentik/lock"

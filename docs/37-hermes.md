@@ -100,15 +100,21 @@ both from the `onepassword-homelab` ClusterSecretStore:
 - **`hermes-secrets`** ← 1Password item **Hermes Secrets**
   - `dashboard-username` / `dashboard-password` / `dashboard-session-secret` →
     `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD` / `_SECRET` — the
-    dashboard's bundled `basic` auth provider (**mandatory**, see §SSO).
+    dashboard's bundled `basic` auth provider (break-glass, see §SSO).
+  - `hermes-dashboard-oidc-client-secret` →
+    `HERMES_DASHBOARD_OIDC_CLIENT_SECRET` — the dashboard's Authentik OIDC
+    client secret (see §SSO). `terraform/authentik` injects the **same** 1P
+    field into the authentik provider (docs/40), so authentik and the
+    dashboard can never disagree.
   - `api-server-key` → `API_SERVER_KEY` — bearer key for the gateway's
     in-process API server (its health-probe surface, see §Observability;
     **mandatory** — the server refuses to start without it).
   - `claude-code-oauth-token` → `CLAUDE_CODE_OAUTH_TOKEN` — the Claude Code
     delegate's Max-subscription OAuth token (see §Coding delegates).
-  - `discord-bot-token` → `DISCORD_BOT_TOKEN` — the Discord adapter's bot
-    token (see §Gateway / messaging-platform onboarding).
-  - All six fields must exist on the item or the whole Secret fails to sync.
+  - `discord-bot-token` → upserted into `/opt/data/.env` by the init
+    container, **not** gateway container env (see §Gateway platform config —
+    gateway config never reads `os.environ`).
+  - All seven fields must exist on the item or the whole Secret fails to sync.
 - **`hermes-registry-pull`** ← 1Password item **Hermes Registry Pull** → a
   `kubernetes.io/dockerconfigjson` Secret for `registry.git.esweiss.com`, used
   by `imagePullSecrets`.
@@ -116,12 +122,13 @@ both from the `onepassword-homelab` ClusterSecretStore:
 There is **no LLM-provider API key** in these Secrets. The LLM engine is the
 Codex app-server runtime, authenticated by a ChatGPT subscription via a one-time
 `codex login` (OAuth) — the token lives in `CODEX_HOME` on the NFS volume, not in
-1Password (see §LLM engine). Messaging-platform bot tokens are 1P/ESO-managed
-(Discord's `discord-bot-token` above — see §Gateway onboarding for the
-pattern); ad-hoc provider keys entered in the **dashboard UI** land in
-`/opt/data/.env` on the encrypted, backed-up NFS volume and persist without a
-manifest change. Rotating the 1Password-managed credentials is a normal ESO
-rotation (docs/15).
+1Password (see §LLM engine). Other Hermes provider keys or messaging-platform
+tokens (Telegram, Slack, …) can be entered in the **dashboard UI**, which writes
+them to `/opt/data/.env` on the encrypted, backed-up NFS volume — the gateway's
+canonical config store (see §Gateway platform config). Rotating a UI-entered key
+is an in-dashboard edit; rotating the 1Password-managed fields is a normal ESO
+rotation (docs/15) — for `discord-bot-token` the init container re-syncs `.env`
+on the next pod start, so `task hermes:restart` completes the rotation.
 
 ---
 
@@ -141,9 +148,16 @@ encrypted, archive-backed NFS volume and survive pod restarts. The container's
 own `$HOME` is `/opt/data` too, but we set `CODEX_HOME` explicitly so the
 persisted path is unambiguous.
 
-**Hermes' own OAuth is a separate session.** `hermes auth add openai-codex`
-writes to `~/.hermes/auth.json` — that is *not* the Codex CLI's token. Run
-`codex login` separately (below); the two are independent.
+**Two deliberately separate credential stores — both held.**
+
+| Login | Store | Serves |
+|---|---|---|
+| `hermes auth add openai-codex` | Hermes' **own** store, `~/.hermes/auth.json` | the `codex_responses` runtime mode (Hermes calls the Responses API itself) |
+| `codex login` | the **Codex CLI's** store, `CODEX_HOME/auth.json` (`/opt/data/.codex/auth.json` here) | the `codex_app_server` runtime **and** the codex MCP delegate (§Coding delegates) |
+
+Completing one login never satisfies the other — the stores are independent by
+design. Both credentials are currently in place, so either runtime mode works
+and the MCP delegate stays authenticated regardless of the mode selected.
 
 ### One-time operator setup
 
@@ -229,10 +243,10 @@ references it), `task hermes:restart`, then verify with
 
 ---
 
-## SSO — Authentik forward-auth + dashboard `basic` provider (layered)
+## SSO — layered: Authentik perimeter + dashboard OIDC (+ `basic` break-glass)
 
 Access is layered: an Authentik forward-auth perimeter in front of the
-dashboard's own login.
+dashboard's own login, which is itself Authentik OIDC first.
 
 1. **Authentik forward-auth (perimeter).** Both IngressRoutes carry the
    `authentik-auth` middleware, so only members of the Authentik `hermes-users`
@@ -241,88 +255,98 @@ dashboard's own login.
 2. **Traefik-only NetworkPolicy.** Ingress on `:9119` is default-deny except
    from the Traefik namespace, so there is no route to the dashboard that skips
    the forward-auth middleware.
-3. **Dashboard `basic` auth provider (in-app, mandatory).** The dashboard stores
-   provider API keys, so upstream binds it to `127.0.0.1` by default. This
-   deployment binds it to `0.0.0.0` (so Traefik can reach it through the
-   Service), and a non-loopback bind engages upstream's **fail-closed** auth
-   gate: the dashboard refuses to start unless a `dashboard_auth` provider is
-   registered. We satisfy that with the bundled `basic` provider, wired from
-   `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD` / `_SECRET` (1P-sourced
-   via ESO — see docs/15 and §Secrets). This is why the dashboard credentials
-   are **mandatory, not optional**: without them the container CrashLoopBackOffs.
+3. **Dashboard OIDC (primary in-app login).** The dashboard's `self_hosted`
+   generic-OIDC `dashboard_auth` provider points at Authentik: issuer
+   `https://auth.ericsweiss.com/application/o/agent-sso/`, client
+   `hermes-dashboard`, confidential (non-empty client secret) with PKCE always
+   on, standard discovery from `{issuer}/.well-known/openid-configuration`,
+   callback `GET /auth/callback`. Config is env-only in this deployment
+   (`HERMES_DASHBOARD_OIDC_*` — env wins over `config.yaml`), and
+   `HERMES_DASHBOARD_PUBLIC_URL=https://agent.ericsweiss.com` pins the
+   reconstructed redirect_uri deterministically behind Traefik to exactly
+   `https://agent.ericsweiss.com/auth/callback` — the single **strict** allowed
+   redirect URI on the authentik provider. Because the perimeter already
+   established an Authentik session, this hop is **silent same-session**:
+   picking "Authentik" on `/login` round-trips through the implicit-consent
+   flow without a prompt. An OIDC login started on the internal host
+   (`agent.esweiss.com`) completes on the external host (the pinned
+   `PUBLIC_URL`); `basic` works on either host.
+4. **Dashboard `basic` provider (break-glass — deliberately kept).** The
+   dashboard stores provider API keys, so upstream binds it to `127.0.0.1` by
+   default; this deployment binds `0.0.0.0` (so Traefik can reach it), which
+   engages upstream's **fail-closed** auth gate — the dashboard refuses to
+   start unless at least one `dashboard_auth` provider is registered. With
+   **two** providers registered, the auth middleware renders the `/login`
+   provider **chooser**; with a single provider it auto-launches it, and
+   auto-launch on `basic` raises `NotImplementedError` → HTTP 500 (observed
+   live). Keeping `basic` alongside OIDC therefore (a) fixes the chooser
+   structurally and (b) preserves a password break-glass independent of
+   Authentik. (When Authentik is fully down the perimeter middleware fails
+   too — break-glass is then `kubectl port-forward` to `:9119` + the `basic`
+   login.)
 
-The dashboard's own login sits behind the Authentik perimeter as
-defence-in-depth — and it is what makes the `0.0.0.0` bind legal.
+### Authentik objects — now in Terraform (no UI clicks)
 
-### Authentik setup (manual, one-time — done in the admin UI)
+The Authentik side lives in [`terraform/authentik`](../terraform/authentik/)
+(docs/40) — nothing is created in the admin UI anymore:
 
-Authentik providers/applications are **not** stored in this repo; create them by
-hand in the admin UI at `auth.esweiss.com`:
+- `authentik_provider_proxy.hermes` + `authentik_application.app["agent"]` —
+  the forward-auth perimeter for `agent.ericsweiss.com` (**stays** — it is the
+  outer gate).
+- `authentik_provider_oauth2.hermes_dashboard` +
+  `authentik_application.agent_sso` (slug `agent-sso`) — the dashboard's OIDC
+  client. It is a **second** application because authentik allows one provider
+  per application: `agent` keeps the perimeter proxy provider, and the
+  `agent-sso` slug is what gives the OIDC provider its issuer path
+  (`/application/o/agent-sso/`). It is a non-clickable utility app (empty
+  launch URL), not a library tile.
+- The `hermes-users` group (`groups.tf`) + policy bindings gating **both**
+  applications (`policy_bindings.tf`).
 
-The dashboard is reachable on **two** hostnames — internal `agent.esweiss.com`
-and external `agent.ericsweiss.com` — and each IngressRoute carries the
-`authentik-auth` middleware. In forward-auth **single-application** mode a proxy
-provider matches one external host, so **each host needs its own provider +
-application**. Register both — with only the internal one, the external host
-404s at the embedded outpost (the outpost has no provider for that host):
-
-1. **Group** → *Directory ▸ Groups* → create `hermes-users`; add the users who
-   should have access.
-2. **Providers** → *Applications ▸ Providers ▸ Create* → **Proxy Provider**,
-   once per host. Both are identical except for the external host:
-   - Names: `hermes-internal` and `hermes-external`
-   - Authorization flow: `default-provider-authorization-implicit-consent`
-     (or your standard explicit-consent flow)
-   - **Forward auth (single application)**
-   - External host: `https://agent.esweiss.com` (internal provider) /
-     `https://agent.ericsweiss.com` (external provider)
-   - (Token validity / cookie settings: leave defaults.)
-3. **Applications** → *Applications ▸ Applications ▸ Create*, one per provider:
-   - `Hermes Agent (internal)`, slug `hermes-internal`, provider
-     `hermes-internal`; and `Hermes Agent (external)`, slug `hermes-external`,
-     provider `hermes-external`.
-   - *Policy / Group / User Bindings* → bind the `hermes-users` group on **both**
-     so only that group is authorized.
-4. **Outpost** → *Applications ▸ Outposts* → edit the **embedded outpost** →
-   add **both** `hermes-*` applications to its list. (The `authentik-auth`
-   middleware points at the embedded outpost's
-   `/outpost.goauthentik.io/auth/traefik` endpoint — same as every other
-   forward-auth app here.) Adding the external application here is what clears
-   the `agent.ericsweiss.com` 404.
-
-No client ID/secret is needed for forward-auth. Verify **both** hosts:
-`curl -sI https://agent.esweiss.com` and
-`curl -sI https://agent.ericsweiss.com` → each `302` to Authentik when
-unauthenticated (a `404` means that host's application is not on the embedded
-outpost).
+Changes flow branch → MR → supervised `terraform apply` (docs/40). The
+embedded outpost's provider list is Terraform-managed too (`outpost.tf`), so
+there are no Admin-UI steps at all; the OAuth2 provider needs no outpost.
+Verify: `curl -sI https://agent.ericsweiss.com` → `302` to Authentik when
+unauthenticated (a `404` means the `agent` provider is missing from the
+embedded outpost's list — `terraform plan` would show that drift).
 
 ---
 
-## Gateway / messaging-platform onboarding (user follow-up)
+## Gateway platform config — `/opt/data/.env` is canonical
 
-**Discord is onboarded, manifest-managed.** The gateway activates a platform
-adapter when its bot token is present in the environment; Discord's is wired
-via ESO (`hermes-secrets/discord-bot-token` → `DISCORD_BOT_TOKEN`) with
-`DISCORD_ALLOWED_USERS` pinned to the operator's Discord user id in
-`deployment.yaml` — upstream is **deny-all** without that allowlist, so the
-bot answers exactly one account. Bot-side (Developer Portal, one-time):
-**Message Content Intent** and **Server Members Intent** must be ON (a bot
-with Message Content off receives empty message text — the #1 Discord
-failure), OAuth scopes `bot + applications.commands`, permissions
-`274878286912`, invited to a mutual server. Rotating the token is a normal
-ESO rotation (docs/15) + `task hermes:restart`.
+**Why not container env:** the gateway's config loader (`_getenv`) prefers the
+**active profile's secret scope** and never falls back to `os.environ` —
+container env vars are **invisible to gateway config**. `/opt/data/.env` (on
+the encrypted, archive-backed NFS volume) is the operative store for platform
+credentials. (The **dashboard** is different: its `HERMES_DASHBOARD_*` settings
+read real container env — see §SSO.)
 
-To add another platform (Telegram, Slack, …):
+Two write paths into `.env`:
 
-1. Add the bot token as a new field on the **Hermes Secrets** 1P item, wire it
-   through `externalsecret.yaml` + a `<PLATFORM>_BOT_TOKEN` env in
-   `deployment.yaml` (mirror the Discord block, including its allowlist env).
-2. `task hermes:restart` so the gateway picks up the new adapter.
+- **Codified (Discord + Codex home).** The `init-data` initContainer
+  ([`deployment.yaml`](../kubernetes/apps/hermes/deployment.yaml)) upserts
+  `DISCORD_BOT_TOKEN` (ESO ← 1P `discord-bot-token`), `DISCORD_ALLOWED_USERS`
+  (manifest literal — an identifier, not a credential) and `CODEX_HOME` into
+  `.env` on **every pod start**, remove-then-append per key. An ESO rotation of
+  the token therefore propagates on the next start (`task hermes:restart`
+  completes a rotation), values persist on NFS between starts, and keys outside
+  the sync list are never touched.
+- **Dashboard UI.** Other platform settings (e.g. `DISCORD_HOME_CHANNEL` /
+  `DISCORD_HOME_CHANNEL_THREAD_ID`) are written by the UI to the same `.env`
+  (+ `config.yaml`) and persist there.
+
+To onboard a **new** platform (Telegram, Slack, …):
+
+1. Configure it in the dashboard UI (writes `.env` + `config.yaml`), then
+   `task hermes:restart` so the gateway picks it up.
+2. Optionally codify its token like Discord's: add the field to the **Hermes
+   Secrets** 1P item (docs/15), an entry in
+   [`externalsecret.yaml`](../kubernetes/apps/hermes/externalsecret.yaml), and
+   an `upsert` line + env in the initContainer — then rotations are ESO-driven.
 3. **Gateway health signal — already in place.** The gateway carries an HTTP
    `GET /health` startup + liveness probe against its in-process API server
    (see §Observability), so a wedged supervisor (s6 up, agent stalled) is
-   restarted automatically rather than left silently dead. Nothing further is
-   needed when onboarding a platform.
+   restarted automatically rather than left silently dead.
 
 All current messaging platforms use HTTPS/WSS on `:443`, which the egress
 NetworkPolicy already allows. A platform needing a non-443 port requires an
@@ -410,18 +434,27 @@ reports both pins.
 - **Dashboard won't start**:
   - `CreateContainerConfigError` → `hermes-secrets` has not synced. Check
     `task hermes:status` and that the **Hermes Secrets** 1Password item exists
-    with **all** of `dashboard-username`, `dashboard-password`,
-    `dashboard-session-secret` — a missing field fails the whole Secret.
+    with **all seven** fields (docs/15) — a missing field fails the whole
+    Secret, including a not-yet-created `hermes-dashboard-oidc-client-secret`.
   - `CrashLoopBackOff` with a start-up refusal in the logs → the dashboard's
-    `0.0.0.0` bind is fail-closed and no `basic` provider registered. Confirm the
-    three `dashboard-*` fields are populated (an empty username/password won't
-    register the provider): `task hermes:logs COMPONENT=dashboard`.
-- **Can't reach a host (302 loop, or 404 at the outpost)**: the Authentik
-  `hermes-*` application/outpost entry or the `hermes-users` binding for that
-  host is missing. A `404` on `agent.ericsweiss.com` specifically means the
-  `hermes-external` provider/application was never added to the embedded
-  outpost (each host needs its own forward-auth provider) — see the SSO setup
-  above.
+    `0.0.0.0` bind is fail-closed and no auth provider registered. Confirm the
+    three `dashboard-*` basic fields and the OIDC env are populated (an empty
+    username/password won't register `basic`):
+    `task hermes:logs COMPONENT=dashboard`.
+- **Can't reach a host (302 loop, or 404 at the outpost)**: the `agent`
+  provider is missing from the **embedded outpost**'s Terraform-managed list
+  (`terraform/authentik/outpost.tf` — `terraform plan` surfaces the drift),
+  or the `hermes-users` policy binding denies the user
+  (`terraform/authentik/policy_bindings.tf`). See §SSO.
+- **OIDC login fails with a redirect_uri error**: the provider allows exactly
+  one strict URI, `https://agent.ericsweiss.com/auth/callback`. A mismatch
+  means `HERMES_DASHBOARD_PUBLIC_URL` and the Terraform provider drifted —
+  they must move together (deployment.yaml ↔ providers_oauth2.tf). Discovery
+  failures (chooser shows Authentik but launch errors) point at the issuer:
+  `https://auth.ericsweiss.com/application/o/agent-sso/` must serve
+  `.well-known/openid-configuration`, which requires the `agent-sso`
+  application applied on the authentik side (docs/40 — supervised apply).
+  Break-glass meanwhile: the `basic` provider on `/login`.
 - **LLM turns fail / "not authenticated" from Codex**: the one-time Codex login
   or runtime enable is missing or the token expired. Check
   `kubectl exec -n hermes deploy/hermes -c gateway -- codex login status`; if not

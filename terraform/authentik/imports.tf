@@ -126,3 +126,13 @@ import {
   to = authentik_group.authentik_admins
   id = "b3dbbcbb-2207-41fb-bf2b-dacd7aeec37c"
 }
+
+# --- Embedded outpost (id = outpost uuid) ------------------------------------
+# Adopted after the original 44-object import (see outpost.tf for why). The
+# import is what makes the auth-passthrough plan an in-place provider-list
+# append instead of an (impossible) create of authentik's own outpost.
+
+import {
+  to = authentik_outpost.embedded
+  id = "436f896e-05cd-4cf7-b9db-7141ad70927b"
+}

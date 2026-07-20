@@ -1338,6 +1338,11 @@ authentik-drift-plan:
       export TF_VAR_oauth2_client_secret_grafana=$(op read "op://Homelab/Grafana SSO/oidc-client-secret")
       export TF_VAR_oauth2_client_secret_nextcloud=$(op read "op://Homelab/Nextcloud SSO/client-secret")
       export TF_VAR_oauth2_client_secret_immich=$(op read "op://Homelab/Immich SSO/client-secret")
+      export TF_VAR_oauth2_client_secret_hermes_dashboard=$(op read "op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret")
+      export TF_VAR_basic_auth_nzbget_username=$(op read "op://Homelab/NZBGet/username")
+      export TF_VAR_basic_auth_nzbget_password=$(op read "op://Homelab/NZBGet/password")
+      export TF_VAR_basic_auth_adguard_username=$(op read "op://Homelab/AdGuard Home/username")
+      export TF_VAR_basic_auth_adguard_password=$(op read "op://Homelab/AdGuard Home/password")
       # Plan only, never apply — surfaces drift instead of silently reverting it.
       # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
       # diff), so allow_failure can actually render the yellow drift signal.

@@ -31,6 +31,7 @@ authentik_provider_proxy.prowlarr|9
 authentik_provider_proxy.pulsarr|10
 authentik_provider_proxy.hermes|16
 authentik_provider_proxy.wireguard_easy|17
+authentik_outpost.embedded|436f896e-05cd-4cf7-b9db-7141ad70927b
 authentik_provider_oauth2.mealie|1
 authentik_provider_oauth2.bar_assistant|2
 authentik_provider_oauth2.home_assistant|3

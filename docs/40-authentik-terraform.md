@@ -1,10 +1,13 @@
 # Authentik SSO as Code (terraform/authentik)
 
-Every user-authored authentik object — 16 applications, 9 forward-auth proxy
-providers, 6 OAuth2 providers, the GitLab SAML provider, and 12 groups with
-their memberships — is codified in [`terraform/authentik/`](../terraform/authentik/)
-and was **imported** from the live deployment with a zero-diff plan (one
-approved exception, below). The module README is the reference for what is
+Every user-authored authentik object — applications, forward-auth proxy
+providers, OAuth2 providers, the GitLab SAML provider, groups with their
+memberships, and the per-application group policy bindings — is codified in
+[`terraform/authentik/`](../terraform/authentik/) (current counts in the
+module README's "What is managed" table). The original object set was
+**imported** from the live deployment with a zero-diff plan (one approved
+exception, below); later additions are Terraform-authored and created by
+supervised apply. The module README is the reference for what is
 managed vs deliberately unmanaged, the secret-injection table, provider
 quirks, and the add-an-app recipe; this page covers day-2 operations.
 
@@ -29,9 +32,14 @@ quirks, and the add-an-app recipe; this page covers day-2 operations.
 
 For a **new application + provider** follow the module README ("Adding a new
 application"); remember a new OAuth2 provider needs its `<App> SSO` 1Password
-item (docs/15), a `TF_VAR` wired into the Taskfile env anchor AND the
-`authentik-drift-plan` job, and a proxy provider needs the manual embedded-
-outpost assignment plus the Traefik forward-auth wiring (docs/23).
+item (docs/15) and a `TF_VAR` wired into the Taskfile env anchor AND the
+`authentik-drift-plan` job, while a proxy provider needs an entry in the
+embedded outpost's Terraform-managed provider list (`outpost.tf`) plus the
+Traefik forward-auth wiring (docs/23). The Hermes dashboard OIDC set
+(`hermes_dashboard` provider, `agent-sso` application, role groups + per-app
+bindings — docs/37 §SSO) was the first Terraform-authored addition and is the
+worked example of this flow; the auth-passthrough wave (NZBGet/AdGuard
+basic-auth injection + the adopted outpost) followed the same pattern.
 
 ## Drift handling (Admin-UI edits)
 
@@ -45,8 +53,11 @@ objects differ from the code. On drift:
   besides you); inspect authentik's event log, then either codify or
   supervised-apply to revert.
 
-Objects outside the module (flows, stages, brand, outpost, mappings) are
-invisible to the plan — UI changes there never surface as drift.
+Objects outside the module (flows, stages, brand, mappings) are invisible to
+the plan — UI changes there never surface as drift. The embedded outpost is
+half-in: its **provider list** is managed (`outpost.tf`, drift surfaces), but
+its settings JSON (`config`) is deliberately unconfigured and stays
+invisible.
 
 ## Known advisory diff: the Sonarr basic-auth clear
 
@@ -91,5 +102,6 @@ If **authentik itself** is rebuilt from scratch, the module recreates every
 managed object (`terraform plan` will show all-create) — but the unmanaged
 prerequisites (flows, mappings, cert) are authentik's own defaults and the
 OAuth2 client ids/secrets are pinned, so app configs keep working. The
-embedded-outpost assignment of the nine proxy providers is the one manual
-post-step (module README).
+embedded outpost is authentik's own object: re-import it (its uuid changes on
+a rebuild — update `imports.tf`), after which the managed provider list
+reapplies; no Admin-UI steps remain.

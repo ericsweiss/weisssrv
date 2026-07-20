@@ -104,10 +104,38 @@ The codified list covers (see dns.yml for the authoritative entries):
 - All nine k3s nodes plus `k3s.esweiss.com` → .161 (API VIP)
 - `dns.esweiss.com` → .150/.160 (direct DoT access);
   `dns-01`/`dns-02.esweiss.com` → **192.168.0.101** (Traefik internal VIP,
-  for the HTTPS-fronted admin UIs — not the hosts' own IPs)
+  for the HTTPS-fronted admin UIs — not the hosts' own IPs);
+  `adguard`/`adguard-02.esweiss.com` → **192.168.0.101** (the SSO-fronted
+  dashboard hostnames — see "Admin dashboards" below)
 - `vip-public.ericsweiss.com` → .100; `vip-internal.esweiss.com` → .101
 - ~25 app/service hostnames (`auth`, `git`, `grafana`, `loki`, `connect`,
   `traefik`, `plex`, `home`, `food`, `bar`, the *arr stack, etc.) → .101
+
+### Admin dashboards — SSO hostnames + break-glass routes
+
+Each AdGuard instance has **two** Traefik-fronted hostnames
+(`kubernetes/apps/vm-ingress/adguard-home.yaml`; all four resolve to the
+internal Traefik VIP .101 and reuse the same 443/https backend Services):
+
+| Hostname | Auth | Purpose |
+|---|---|---|
+| `adguard.esweiss.com` | Authentik forward-auth (`dns-admins` group) + credential injection | Daily driver: SSO members land straight on the dns-01 dashboard, no AdGuard login |
+| `adguard-02.esweiss.com` | same | dns-02 dashboard |
+| `dns-01.esweiss.com` / `dns-02.esweiss.com` | AdGuard's own login | **Break-glass**: no SSO dependency |
+| direct IPs `.150` / `.160` | AdGuard's own login | Last-resort break-glass (no Traefik, no cluster) |
+
+The SSO routes carry the `authentik-auth-basic` middleware: the
+Terraform-managed proxy providers (`terraform/authentik/providers_proxy.tf`,
+docs/40) inject the AdGuard admin credentials — sourced from the same
+1Password **AdGuard Home** item the role deploys — as an `Authorization`
+header, which AdGuard validates like any basic-auth login. Membership of
+`dns-admins` therefore both authorizes the route and supplies the credential.
+
+The raw `dns-01`/`dns-02` routes and the direct IPs are deliberately
+untouched: DNS is the one service whose administration must never depend on
+the SSO stack (Authentik down, cluster down, or Traefik down must not lock
+you out of your resolvers). `adguardhome-sync` also keeps targeting the raw
+hostnames, so the sync hop never traverses the SSO middleware.
 
 ### External zone ownership (ericsweiss.com)
 

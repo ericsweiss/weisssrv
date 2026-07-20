@@ -366,7 +366,7 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 NousResearch autonomous AI agent platform with a web dashboard:
 
 - **URLs**: agent.esweiss.com (internal), agent.ericsweiss.com (external)
-- **Authentication**: layered SSO — an Authentik forward-auth (`hermes-users` group) perimeter plus the dashboard's own `basic` auth provider (mandatory on its 0.0.0.0 bind); a Traefik-only NetworkPolicy makes the middleware the only path to it
+- **Authentication**: layered SSO — an Authentik forward-auth (`hermes-users` group) perimeter plus the dashboard's own login: Authentik OIDC (primary) + `basic` break-glass (an auth provider is mandatory on its 0.0.0.0 bind); a Traefik-only NetworkPolicy makes the middleware the only path to it. Authentik objects in `terraform/authentik` (docs/40)
 - **Workload**: one pod, two containers (gateway supervisor + FastAPI dashboard) off a self-built image (upstream ships none — built by the `build-hermes-agent` CI job); NFS `/opt/data` state on encrypted `ssd/appdata`
 - **Documentation**: [docs/37-hermes.md](docs/37-hermes.md)
 
