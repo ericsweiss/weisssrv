@@ -330,7 +330,7 @@ hermes_codex_version: "0.144.6"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.215"
+hermes_claude_version: "2.1.216"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
