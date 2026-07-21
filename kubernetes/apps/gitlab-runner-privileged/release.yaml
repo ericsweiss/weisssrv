@@ -157,6 +157,28 @@ spec:
             # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
             node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
 
+            # Node affinity: HARD-exclude CI job pods from the NAS agent (label
+            # esweiss.com/nas=true). That node's Proxmox host (pve-nas-01) runs at
+            # ~99.8% memory commit, so a CI pod landing there forces the
+            # overcommitted host to swap OTHER guests' cold pages. The old *soft*
+            # nas=PreferNoSchedule taint let a ~15-job burst spill onto it once the
+            # rest of the fleet filled, which the 2026-07-20 forensics found the #1
+            # driver of the NAS swap ratchet (15 job pods on the NAS agent that day,
+            # peak 7 concurrent). DoesNotExist (NOT NotIn, which would require the
+            # key) keeps every node WITHOUT the label eligible and excludes only the
+            # labelled NAS agent; combined with node_selector_overwrite_allowed
+            # above, a cpu=modern job still lands on prec-01/laptop-01, never the
+            # NAS. CPU is never the fleet bottleneck (all agents <25% cpu-requested)
+            # and prec-01 (17.6Gi, the biggest agent) backfills the modern slot —
+            # see docs/06 (NAS memory management) + docs/27. A sub-table: keep it
+            # after all scalar keys and before pod_labels (TOML positionality note).
+            [runners.kubernetes.affinity.node_affinity]
+              [runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution]
+                [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms]]
+                  [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms.match_expressions]]
+                    key = "esweiss.com/nas"
+                    operator = "DoesNotExist"
+
             # Pod anti-affinity: spread infrastructure job pods across agents so
             # a ~15-job burst does not bin-pack many systemd-DinD test pods onto
             # one node. Simultaneous same-node container starts race the cgroup-v2

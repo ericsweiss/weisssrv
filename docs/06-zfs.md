@@ -591,8 +591,9 @@ sudo zpool status tank
 ### NAS memory management (ARC cap, swappiness, swap reset)
 
 pve-nas-01 runs near memory capacity (the app VMs + GitLab + ARC ≈ its 62 GB),
-so four codified levers keep it stable — the first three in
-`host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`:
+so five codified levers keep it stable — the first three in
+`host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`, the fifth in the GitLab
+runner config:
 
 1. **ARC cap `zfs_arc_max_bytes` = `4294967296` (4 GiB).** The `nas_storage` role
    renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs` handler
@@ -642,6 +643,19 @@ so four codified levers keep it stable — the first three in
    overcommitted structurally — that residual lives as *cold* swap (`si≈0`, no
    thrashing, no perf impact) and is what the nightly reset clears; only more RAM
    eliminates the overcommit outright.
+5. **CI job pods hard-excluded from the NAS agent**
+   (`kubernetes/apps/gitlab-runner-privileged/release.yaml`, the executor config's
+   `node_affinity` — `esweiss.com/nas DoesNotExist`, *required*). A forensic sweep
+   (2026-07-20) found GitLab CI molecule/DinD builds spilling onto `k3s-agt-nas-01`
+   — past the old *soft* `nas=PreferNoSchedule` taint once the fleet filled — to be
+   the **#1 driver** of the day's swap ratchet: 15 job pods on the NAS agent, peak
+   7 concurrent, ~1.5–2.5 GB each, forcing the overcommitted host to swap other
+   guests' cold pages. The hard exclusion keeps CI on the compute agents
+   (prec-01/laptop-01 for `cpu=modern` jobs via `node_selector_overwrite_allowed`,
+   opt-01/02/03 otherwise); CPU is never the fleet bottleneck (all agents <25 %
+   cpu-requested) and prec-01 (17.6 GiB, the largest agent) backfills the modern
+   slot. This removes the largest *recurring* source of NAS swap-out — the levers
+   above manage the residual, this one cuts the biggest inflow.
 
 ```bash
 # View ARC size + hit ratio
