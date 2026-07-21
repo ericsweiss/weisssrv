@@ -531,12 +531,17 @@ nic_tuning_overrides:
       - feature: gro
         value: "off"
 
-# Lower swappiness: this NAS host runs the memory-committed app VMs
-# (Nextcloud/Immich/Windows/GitLab) plus ZFS ARC and thrashed swap under
-# pressure at the kernel default (60). With the VM ballooning floors set in
-# hosts.yml, 10 makes the host reclaim page cache / balloon guest RAM before
-# swapping. Applied live + persisted via nic_tuning's sysctl.d drop-in.
-nic_tuning_vm_swappiness: 10
+# Lower swappiness aggressively: this NAS host runs the memory-committed app VMs
+# (Nextcloud/Immich/Windows/GitLab) plus ZFS ARC. At 10 the kernel still parked
+# cold anon pages to swap OPPORTUNISTICALLY even with free RAM (observed
+# 2026-07-20: swap crept 0 -> 7G+ with si~=0, i.e. accumulating, not thrashing —
+# and Linux never pages them back in on its own, so it chronically climbed toward
+# the old 17G). At 1 the kernel reclaims from ZFS ARC (instantly reclaimable)
+# instead of swapping until genuine near-OOM pressure, so steady-state swap stays
+# ~0 and only grows under a real spike (swap still available as a backstop). The
+# trade is a smaller ARC read-cache under pressure — correct for a near-capacity
+# box. Applied live + persisted via nic_tuning's sysctl.d drop-in.
+nic_tuning_vm_swappiness: 1
 
 # Host egress filtering: pve-nas-01 now inherits the cluster-wide default
 # (proxmox_firewall_egress_filtering: true in group_vars/proxmox.yml). It was
