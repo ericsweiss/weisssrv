@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily NAS swap reset
+
+[Timer]
+OnCalendar={{ nas_swap_clean_schedule | default('*-*-* 04:30:00') }}
+RandomizedDelaySec={{ nas_swap_clean_random_delay | default(1800) }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

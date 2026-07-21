@@ -588,25 +588,46 @@ sudo zpool replace tank old-disk-id new-disk-id
 sudo zpool status tank
 ```
 
-### High Memory Usage (ARC)
+### NAS memory management (ARC cap, swappiness, swap reset)
 
-ZFS ARC can use significant RAM. On pve-nas-01 the cap is **codified**: the
-`nas_storage` role renders `/etc/modprobe.d/zfs.conf` from
-`zfs_arc_max_bytes` (`6711934976` ≈ 6.25 GiB in
-`host_vars/pve-nas-01.yml` — the host is memory-over-committed by its
-guests) and notifies an `update-initramfs` handler, because the data pools
-import from the initramfs at early boot and a bare modprobe.d write would
-only apply on the next module (re)load.
+pve-nas-01 runs near memory capacity (the app VMs + GitLab + ARC ≈ its 62 GB),
+so three codified levers keep it stable — all in `host_vars/pve-nas-01.yml`:
+
+1. **ARC cap `zfs_arc_max_bytes` = `4294967296` (4 GiB).** The `nas_storage` role
+   renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs` handler
+   (the pools import from the initramfs at early boot, so a bare modprobe.d write
+   would only apply on the next module reload). 4 GiB is sized off the measured
+   working set: ARC runs a ~98% hit ratio at ~2.5 GiB (almost all metadata — the
+   pools are large-but-cold), so 4 GiB is ample at ~0 read-perf cost while leaving
+   ~2 GiB more RAM for the guests.
+2. **`vm.swappiness = 1`** (`nic_tuning_vm_swappiness`, via `nic_tuning`'s
+   sysctl.d drop-in). At the old 10 the kernel parked cold anon pages to swap
+   opportunistically even with free RAM, and since Linux never pages them back in
+   on its own, swap chronically climbed (it once reached ~17 GB). At 1 it reclaims
+   from ARC before swapping until genuine near-OOM pressure.
+3. **Daily swap reset** (`nas_swap_clean_enabled`). swappiness=1 stops the
+   *opportunistic* parking, but a full host still swaps under real peak events
+   (deploys/backups/ML) and that swap never self-clears. A `swap-clean.timer`
+   (nightly) runs `/usr/local/sbin/swap-clean.sh`, which shrinks ARC for headroom,
+   `swapoff -a`/`swapon -a`, and restores ARC — **only** when the freed RAM
+   comfortably covers the swap in use (else it aborts and retries next run, never
+   risking an OOM).
 
 ```bash
-# View ARC size
+# View ARC size + hit ratio
 awk '$1 ~ /^(c|c_max|size)$/' /proc/spl/kstat/zfs/arcstats
+sudo arc_summary | grep "Hit Rate"
 
 # Limit ARC (temporary, until reboot)
-echo 6711934976 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # ~6.25GiB
+echo 4294967296 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 4 GiB
 
-# Permanent: set zfs_arc_max_bytes in host_vars and redeploy (renders
-# /etc/modprobe.d/zfs.conf + rebuilds the initramfs)
+# One-off swap reset (what the timer does)
+sudo /usr/local/sbin/swap-clean.sh
+# Timer status
+systemctl status swap-clean.timer; journalctl -t swap-clean --since today
+
+# Permanent changes: edit host_vars (zfs_arc_max_bytes / nic_tuning_vm_swappiness
+# / nas_swap_clean_*) and redeploy
 task storage:deploy
 ```
 

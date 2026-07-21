@@ -7,7 +7,7 @@ data:
   adguard_exporter_version: v1.2.1
   adguard_home_version: 0.107.78
   adguardhome_sync_version: 0.9.2
-  alloy_host_version: 1.17.1-1
+  alloy_host_version: 1.18.0-1
   authentik_version: 2026.5.5
   bar_assistant_version: 5.15.3
   busybox_version: '1.38'

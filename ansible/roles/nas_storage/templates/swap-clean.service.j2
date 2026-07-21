@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Reset accumulated NAS swap (near-capacity host)
+After=zfs.target zfs-mount.service
+
+[Service]
+Type=oneshot
+# Low priority — memory hygiene, never urgent. Same load-shaping as media-mover.
+Nice={{ nas_swap_clean_nice | default(10) }}
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=20
+IOWeight=20
+# Namespace-free hardening only: the script writes /sys/module/zfs/parameters
+# and calls swapoff/swapon, so ProtectSystem/PrivateTmp (private mount ns) would
+# break it — same constraint as media-mover.service.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+ExecStart=/usr/local/sbin/swap-clean.sh

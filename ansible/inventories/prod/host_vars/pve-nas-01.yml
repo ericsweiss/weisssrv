@@ -203,6 +203,18 @@ zfs_scrub_schedule: "monthly"
 # an update-initramfs handler so it applies at early boot).
 zfs_arc_max_bytes: 4294967296
 
+# Daily swap reset. Paired with vm.swappiness=1 (nic_tuning) + the 4G ARC cap
+# above: those keep steady-state swap ~0, but a near-capacity host still swaps
+# under real peak events (deploys/backups/ML) and that swap never self-clears, so
+# it slowly accumulates. This timer resets it each night, guarded to abort if a
+# swapoff would risk OOM (nas_storage/templates/swap-clean.sh.j2). Only this host
+# runs it (the compute hosts have headroom + default swappiness).
+nas_swap_clean_enabled: true
+# 07:00 — deliberately AFTER the NAS's own overnight jobs (media-mover 06:00,
+# archive-backup 06:30) so it reclaims the swap THEY caused rather than running
+# before/during them. If those ever run long, push this later.
+nas_swap_clean_schedule: "*-*-* 07:00:00"
+
 # NVMe fast storage
 nvme_storage:
   data: /mnt/nvme/media

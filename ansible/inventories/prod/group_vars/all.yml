@@ -143,7 +143,7 @@ adguard_home_version: "0.107.78"
 adguardhome_sync_version: "0.9.2"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
-alloy_host_version: "1.17.1-1"
+alloy_host_version: "1.18.0-1"
 tailscale_version: "1.98.9"
 # CoreDNS image for the tailnet-dns split-horizon resolver (kubernetes/apps/
 # tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.

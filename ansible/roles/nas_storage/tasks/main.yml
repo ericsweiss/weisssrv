@@ -25,6 +25,10 @@
   ansible.builtin.include_tasks: media_mover.yml
   when: media_mover_enabled | default(false)
 
+- name: Include swap-clean tasks
+  ansible.builtin.include_tasks: swap_clean.yml
+  when: nas_swap_clean_enabled | default(false)
+
 - name: Include SMART monitoring tasks
   ansible.builtin.include_tasks: smartd.yml
   when: smartd_enabled | default(true)

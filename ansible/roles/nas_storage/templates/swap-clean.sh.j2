@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Daily NAS swap reset. pve-nas-01 runs near memory capacity, so peak events
+# (deploys, backups, ML batches, large uploads) force cold anonymous pages to
+# swap that Linux never pages back in on its own. vm.swappiness=1 minimises the
+# opportunistic parking but cannot prevent event-driven swap-out on a full box,
+# and what lands in swap then only accumulates (it never self-clears). This job
+# resets it — shrink ARC for headroom, swapoff -a / swapon -a, restore ARC — but
+# ONLY when it can be done without OOM risk (otherwise it aborts and waits for
+# the next run, by which point the swap is usually smaller). See docs/06.
+set -euo pipefail
+
+# Jinja values are assigned to shell vars first (kept out of arithmetic contexts)
+# so the *.sh.j2 shellcheck lint — which rewrites Jinja expressions to the literal
+# token JINJA before shellcheck runs — sees an assigned variable rather than a
+# bare undefined token.
+min_clear_mb="{{ nas_swap_clean_min_mb | default(512) }}"
+margin_mb="{{ nas_swap_clean_margin_mb | default(2048) }}"
+arc_shrink_bytes="{{ (nas_swap_clean_arc_shrink_mb | default(2048)) * 1048576 }}"
+
+log() { logger -t swap-clean "$*"; echo "swap-clean: $*"; }
+field_kb() { awk -v k="$1:" '$1==k {print $2}' /proc/meminfo; }
+
+swap_used_kb=$(( $(field_kb SwapTotal) - $(field_kb SwapFree) ))
+min_clear_kb=$(( min_clear_mb * 1024 ))
+if [ "$swap_used_kb" -lt "$min_clear_kb" ]; then
+  log "swap ${swap_used_kb}KB below ${min_clear_kb}KB threshold — nothing to do"
+  exit 0
+fi
+
+# Shrink ARC to free headroom for the swapoff; restore it on ANY exit (the trap
+# runs on the abort path and on a mid-swapoff failure alike).
+arc_path=/sys/module/zfs/parameters/zfs_arc_max
+arc_orig=""
+if [ -w "$arc_path" ]; then
+  arc_orig=$(cat "$arc_path")
+fi
+restore_arc() { if [ -n "$arc_orig" ]; then echo "$arc_orig" > "$arc_path" 2>/dev/null || true; fi; }
+trap restore_arc EXIT
+
+if [ -n "$arc_orig" ]; then
+  echo "$arc_shrink_bytes" > "$arc_path"
+  sleep 5
+fi
+
+# Only swapoff if the freed RAM comfortably covers the swap in use (+ margin);
+# otherwise pulling it all back could OOM the guests. Abort safely and retry next
+# run — with vm.swappiness=1 the between-run accumulation stays small, so this is
+# the exception, not the rule.
+avail_kb=$(field_kb MemAvailable)
+margin_kb=$(( margin_mb * 1024 ))
+if [ "$avail_kb" -lt "$(( swap_used_kb + margin_kb ))" ]; then
+  log "ABORT: MemAvailable ${avail_kb}KB < swap ${swap_used_kb}KB + ${margin_kb}KB margin — unsafe, skipping (retry next run)"
+  exit 0
+fi
+
+log "resetting ${swap_used_kb}KB swap (MemAvailable ${avail_kb}KB)"
+swapoff -a
+swapon -a
+log "done — swap cleared"

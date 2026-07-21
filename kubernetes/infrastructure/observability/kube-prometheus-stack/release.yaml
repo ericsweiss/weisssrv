@@ -607,6 +607,35 @@ spec:
                     on {{ $labels.instance }}
                     mount {{ $labels.mountpoint }}.
 
+              # The NAS runs near memory capacity. vm.swappiness=1 + the 4 GiB ARC
+              # cap keep steady-state swap ~0, and the nightly swap-clean.timer
+              # resets event-driven swap (nas_storage; docs/06). But if that reset
+              # keeps ABORTING — a genuine spike leaves no headroom to swapoff
+              # safely — swap builds day after day and never clears. min_over_time
+              # over 2 days catches exactly that: swap that never once dropped
+              # below 2 GiB across two nightly reset cycles. Scoped to the NAS
+              # (the only host with swap-clean; compute hosts run default
+              # swappiness and are not expected to hold swap).
+              - alert: NASSwapNotClearing
+                expr: >-
+                  min_over_time(
+                    (node_memory_SwapTotal_bytes{instance="192.168.0.102:9101"}
+                    - node_memory_SwapFree_bytes{instance="192.168.0.102:9101"})[2d:30m]
+                  ) > 2 * 1024 * 1024 * 1024
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+                  summary: 'NAS swap not clearing — above 2 GiB for 2 days on {{ $labels.instance }}'
+                  description: >-
+                    pve-nas-01 swap has stayed above 2 GiB for 2 days (min
+                    {{ $value | humanize1024 }}B) — the nightly swap-clean.timer is
+                    likely aborting for lack of headroom, so swap is accumulating
+                    instead of resetting. Check `journalctl -t swap-clean`; the box
+                    may need a guest-memory trim or more RAM (docs/06 §NAS memory
+                    management).
+
               # Per-device SMART health, fed by the smartmon textfile collector
               # (node_exporter_host role, every 5m). Complements the ZFS pool
               # alerts: those catch corruption after it reaches a pool, these

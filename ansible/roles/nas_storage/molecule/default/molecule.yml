@@ -68,6 +68,7 @@ provisioner:
         media_mover_enabled: true
         media_mover_src: /mnt/nvme/media/library
         media_mover_dst: /mnt/tank/media/library
+        nas_swap_clean_enabled: true
         samba_shares:
           - name: media
             path: /tank/media/unified
