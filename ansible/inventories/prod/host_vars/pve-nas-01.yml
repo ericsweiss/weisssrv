@@ -190,13 +190,18 @@ zfs_pools:
 zfs_scrub_enabled: true
 zfs_scrub_schedule: "monthly"
 
-# ZFS ARC cap (bytes). This host is memory-over-committed (~42.5GB pinned
-# guest RAM of 62GB), so the ARC is capped hard at ~6.25GiB. Matches the cap
-# already live on the host (hand-applied /etc/modprobe.d/zfs.conf, baked into
-# the initramfs) so a rebuild does not silently revert to the ~31GB default
-# and swap-thrash the guests. Rendered into /etc/modprobe.d/zfs.conf by
-# nas_storage (with an update-initramfs handler so it applies at early boot).
-zfs_arc_max_bytes: 6711934976
+# ZFS ARC cap (bytes) = 4 GiB. This host is memory-tight (near-capacity with the
+# app VMs + GitLab), so the ARC is capped hard to keep it from grabbing the free
+# RAM the guests need (a rebuild must not silently revert to the ~31GB default
+# and swap-thrash the guests). Sized off the measured working set: ARC runs a
+# 98% hit ratio at just ~2.5 GiB — almost entirely metadata, since the pools are
+# large-but-cold (media is streamed once, not re-cached). So 4 GiB is ample
+# headroom over the ~2.5 GiB hot set at ZERO read-perf cost (ARC self-tunes to
+# ~2 GiB under pressure regardless), while leaving ~2 GiB more RAM for the guests
+# vs the old 6.25 GiB cap — which is what keeps swap flat (paired with
+# vm.swappiness=1). Rendered into /etc/modprobe.d/zfs.conf by nas_storage (with
+# an update-initramfs handler so it applies at early boot).
+zfs_arc_max_bytes: 4294967296
 
 # NVMe fast storage
 nvme_storage:
