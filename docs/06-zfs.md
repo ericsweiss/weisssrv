@@ -591,7 +591,8 @@ sudo zpool status tank
 ### NAS memory management (ARC cap, swappiness, swap reset)
 
 pve-nas-01 runs near memory capacity (the app VMs + GitLab + ARC ≈ its 62 GB),
-so three codified levers keep it stable — all in `host_vars/pve-nas-01.yml`:
+so four codified levers keep it stable — the first three in
+`host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`:
 
 1. **ARC cap `zfs_arc_max_bytes` = `4294967296` (4 GiB).** The `nas_storage` role
    renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs` handler
@@ -610,8 +611,37 @@ so three codified levers keep it stable — all in `host_vars/pve-nas-01.yml`:
    (deploys/backups/ML) and that swap never self-clears. A `swap-clean.timer`
    (nightly) runs `/usr/local/sbin/swap-clean.sh`, which shrinks ARC for headroom,
    `swapoff -a`/`swapon -a`, and restores ARC — **only** when the freed RAM
-   comfortably covers the swap in use (else it aborts and retries next run, never
-   risking an OOM).
+   comfortably covers the swap in use.
+   **Recovery escalation** (`nas_swap_clean_stop_guests`): if the ARC-shrink
+   headroom alone can't cover the swap, rather than just aborting the reset
+   *gracefully shuts down* heavy guests from an ordered candidate list
+   (`vmid:name:timeout` — immich → GitLab → nextcloud), **only as many as needed**
+   to reach the headroom, does the swapoff, then restarts every guest it stopped.
+   A single cleanup trap fires on **any** exit (success, error, or signal) and
+   brings back every guest it touched — a crash mid-reclaim can never strand one.
+   Guests are only ever stopped **gracefully** (`qm shutdown`, never a hard kill);
+   a guest that won't stop within its timeout aborts the reclaim rather than being
+   forced, so a Postgres guest is never at risk. With lever 4 the no-downtime
+   ARC-shrink path covers the common case, so a guest stop is the rare-overflow
+   exception, not a nightly event. The service `TimeoutStartSec` (1200s) sits well
+   above the sum of the stop-guest timeouts so a legit reclaim is never cut short.
+4. **Right-sized NAS k3s VMs** (`hosts.yml`: `k3s-agt-nas-01` `vm_memory: 10240`,
+   was 12288; `k3s-srv-nas-01` `vm_memory: 5120`, was 6144). Both VMs held RAM
+   they never used — the agent runs at ~5.8 GB (of a 12 GB VM) with ~9 GB of pod
+   requests, the etcd server at ~2.3 GB (of 6 GB). Trimming hands ~3 GB back to
+   the host **at no performance cost** (the guests don't touch it), and — the key
+   effect — it lifts the swap reset's clearing capacity (`MemAvailable` after the
+   ARC shrink, minus a 2 GB OOM margin) from ~6.7 GB to ~9.7 GB, i.e. **above the
+   swap in use**. Without this the reset (lever 3) aborts on a full box; with it
+   the reset *recovers* rather than only maintaining a clean baseline. 10 GB on
+   the agent stays above its request total with slack — do not stack more
+   workloads there or drop it further while nzbget keeps its 3.5 GB reservation;
+   5 GB is the etcd server's floor (latency-sensitive). Applying a `vm_memory`
+   change needs a guest reboot (drain → `qm shutdown`/`qm start` → uncordon; one
+   k3s server at a time to preserve etcd quorum). The box remains ~5 GB
+   overcommitted structurally — that residual lives as *cold* swap (`si≈0`, no
+   thrashing, no perf impact) and is what the nightly reset clears; only more RAM
+   eliminates the overcommit outright.
 
 ```bash
 # View ARC size + hit ratio

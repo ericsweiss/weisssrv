@@ -6,56 +6,113 @@
 # swap that Linux never pages back in on its own. vm.swappiness=1 minimises the
 # opportunistic parking but cannot prevent event-driven swap-out on a full box,
 # and what lands in swap then only accumulates (it never self-clears). This job
-# resets it — shrink ARC for headroom, swapoff -a / swapon -a, restore ARC — but
-# ONLY when it can be done without OOM risk (otherwise it aborts and waits for
-# the next run, by which point the swap is usually smaller). See docs/06.
+# resets it: shrink ARC for headroom, swapoff -a / swapon -a, restore ARC.
+#
+# If the ARC-shrink headroom alone cannot safely cover the swap, it ESCALATES:
+# it gracefully shuts down heavy guests from a configured candidate list (in
+# order, only as many as needed), does the swapoff, and ALWAYS restarts every
+# guest it stopped. Guests are only ever stopped GRACEFULLY (qm shutdown, never
+# a hard kill); a guest that will not stop within its timeout aborts the reclaim
+# rather than being forced, so a Postgres guest is never at risk. A single
+# cleanup trap fires on ANY exit (success, error, or signal) and brings back
+# every guest it touched, so a crash mid-reclaim can never leave one down.
+# See docs/06.
 set -euo pipefail
 
 # Jinja values are assigned to shell vars first (kept out of arithmetic contexts)
-# so the *.sh.j2 shellcheck lint — which rewrites Jinja expressions to the literal
-# token JINJA before shellcheck runs — sees an assigned variable rather than a
+# so the *.sh.j2 shellcheck lint - which rewrites Jinja expressions to the literal
+# token JINJA before shellcheck runs - sees an assigned variable rather than a
 # bare undefined token.
 min_clear_mb="{{ nas_swap_clean_min_mb | default(512) }}"
 margin_mb="{{ nas_swap_clean_margin_mb | default(2048) }}"
 arc_shrink_bytes="{{ (nas_swap_clean_arc_shrink_mb | default(2048)) * 1048576 }}"
+# Ordered "vmid:name:timeout" candidates to gracefully stop (only as many as
+# needed) when ARC-shrink headroom alone cannot cover the swap. Empty => never
+# stops a guest (pure abort-and-retry, the pre-escalation behaviour).
+stop_guests="{{ nas_swap_clean_stop_guests | default([]) | join(' ') }}"
 
 log() { logger -t swap-clean "$*"; echo "swap-clean: $*"; }
 field_kb() { awk -v k="$1:" '$1==k {print $2}' /proc/meminfo; }
+# `qm status` failing (e.g. VM absent) must not trip set -e mid-pipe.
+vm_state() { { qm status "$1" 2>/dev/null || true; } | awk '{print $2}'; }
 
 swap_used_kb=$(( $(field_kb SwapTotal) - $(field_kb SwapFree) ))
 min_clear_kb=$(( min_clear_mb * 1024 ))
 if [ "$swap_used_kb" -lt "$min_clear_kb" ]; then
-  log "swap ${swap_used_kb}KB below ${min_clear_kb}KB threshold — nothing to do"
+  log "swap ${swap_used_kb}KB below ${min_clear_kb}KB threshold - nothing to do"
   exit 0
 fi
 
-# Shrink ARC to free headroom for the swapoff; restore it on ANY exit (the trap
-# runs on the abort path and on a mid-swapoff failure alike).
+# Single cleanup trap: ensure every guest we tried to stop ends up RUNNING again
+# (however we exit), then restore ARC. A guest is recorded in guests_to_restore
+# BEFORE it is stopped, so an abort/crash/kill mid-reclaim can never strand it.
 arc_path=/sys/module/zfs/parameters/zfs_arc_max
 arc_orig=""
+guests_to_restore=""
+cleanup() {
+  local v st
+  for v in $guests_to_restore; do
+    st=$(vm_state "$v")
+    if [ "$st" != "running" ]; then
+      log "recovery: restarting VM $v (state=${st:-unknown})"
+      qm start "$v" >/dev/null 2>&1 || log "recovery: ERROR - qm start $v FAILED, VM $v needs a manual start"
+    fi
+  done
+  if [ -n "$arc_orig" ]; then echo "$arc_orig" > "$arc_path" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+trap 'exit' INT TERM
+
+# Shrink ARC to free headroom for the swapoff.
 if [ -w "$arc_path" ]; then
   arc_orig=$(cat "$arc_path")
-fi
-restore_arc() { if [ -n "$arc_orig" ]; then echo "$arc_orig" > "$arc_path" 2>/dev/null || true; fi; }
-trap restore_arc EXIT
-
-if [ -n "$arc_orig" ]; then
   echo "$arc_shrink_bytes" > "$arc_path"
   sleep 5
 fi
 
-# Only swapoff if the freed RAM comfortably covers the swap in use (+ margin);
-# otherwise pulling it all back could OOM the guests. Abort safely and retry next
-# run — with vm.swappiness=1 the between-run accumulation stays small, so this is
-# the exception, not the rule.
 avail_kb=$(field_kb MemAvailable)
 margin_kb=$(( margin_mb * 1024 ))
-if [ "$avail_kb" -lt "$(( swap_used_kb + margin_kb ))" ]; then
-  log "ABORT: MemAvailable ${avail_kb}KB < swap ${swap_used_kb}KB + ${margin_kb}KB margin — unsafe, skipping (retry next run)"
+need_kb=$(( swap_used_kb + margin_kb ))
+
+# If ARC-shrink headroom is not enough, escalate: gracefully stop candidate
+# guests in order until MemAvailable covers the swap. cleanup() restarts them.
+if [ "$avail_kb" -lt "$need_kb" ] && [ -n "$stop_guests" ]; then
+  log "ARC-shrink headroom ${avail_kb}KB < needed ${need_kb}KB - escalating to guest stop"
+  # shellcheck disable=SC2086  # deliberate word-split of the space-joined list
+  for entry in $stop_guests; do
+    [ "$avail_kb" -ge "$need_kb" ] && break
+    vmid="${entry%%:*}"
+    gtimeout="${entry##*:}"
+    _mid="${entry#*:}"
+    gname="${_mid%:*}"
+    st=$(vm_state "$vmid")
+    if [ "$st" != "running" ]; then
+      log "recovery: VM $vmid ($gname) not running (state=${st:-unknown}) - skipping"
+      continue
+    fi
+    # Mark for restart BEFORE stopping, so any later failure still brings it back.
+    guests_to_restore="$guests_to_restore $vmid"
+    log "recovery: gracefully stopping VM $vmid ($gname), timeout ${gtimeout}s"
+    if qm shutdown "$vmid" --timeout "$gtimeout" >/dev/null 2>&1; then
+      sleep 5
+      avail_kb=$(field_kb MemAvailable)
+      log "recovery: VM $vmid stopped - MemAvailable now ${avail_kb}KB (need ${need_kb}KB)"
+    else
+      log "recovery: VM $vmid ($gname) did not shut down gracefully within ${gtimeout}s - NOT forcing; aborting reclaim (cleanup restarts it)"
+      exit 0
+    fi
+  done
+fi
+
+# Final safety gate: only swapoff if the freed RAM comfortably covers the swap;
+# otherwise pulling it all back could OOM the guests.
+if [ "$avail_kb" -lt "$need_kb" ]; then
+  log "ABORT: MemAvailable ${avail_kb}KB < swap ${swap_used_kb}KB + ${margin_kb}KB margin - unsafe, skipping (cleanup restarts any stopped guests)"
   exit 0
 fi
 
 log "resetting ${swap_used_kb}KB swap (MemAvailable ${avail_kb}KB)"
 swapoff -a
 swapon -a
-log "done — swap cleared"
+log "done - swap cleared${guests_to_restore:+; restarting stopped guests}"
+# cleanup (EXIT trap) restarts any stopped guests + restores ARC

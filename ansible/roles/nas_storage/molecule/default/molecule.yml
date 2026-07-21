@@ -69,6 +69,11 @@ provisioner:
         media_mover_src: /mnt/nvme/media/library
         media_mover_dst: /mnt/tank/media/library
         nas_swap_clean_enabled: true
+        # Exercise the guest-stop recovery render path (join of the candidate list)
+        # so a Jinja error in swap-clean.sh.j2 fails converge. The script is only
+        # deployed here, never run, so the placeholder vmids are inert.
+        nas_swap_clean_stop_guests:
+          - "999:test-guest:60"
         samba_shares:
           - name: media
             path: /tank/media/unified

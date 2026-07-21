@@ -214,6 +214,20 @@ nas_swap_clean_enabled: true
 # archive-backup 06:30) so it reclaims the swap THEY caused rather than running
 # before/during them. If those ever run long, push this later.
 nas_swap_clean_schedule: "*-*-* 07:00:00"
+# Recovery escalation: when the ARC-shrink headroom alone can't cover the swap,
+# the reset gracefully shuts these guests down (in order, only as many as needed
+# to reach the required headroom), does the swapoff, then restarts every guest it
+# stopped (guaranteed by an EXIT trap, even on failure). "vmid:name:timeout(s)".
+# immich first (~5.5G, smallest/least-critical/fastest restart) usually suffices
+# on its own, so GitLab (heaviest, slowest) is only stopped if immich isn't
+# enough. All are graceful only (qm shutdown) — a guest that won't stop in its
+# timeout aborts the reclaim rather than being force-killed (Postgres-safe). With
+# the right-sized k3s VMs (hosts.yml) the no-downtime ARC-shrink path covers the
+# common case, so a guest stop is the rare-overflow exception, not a nightly event.
+nas_swap_clean_stop_guests:
+  - "157:immich:120"
+  - "153:gitlab:300"
+  - "156:nextcloud:120"
 
 # NVMe fast storage
 nvme_storage:
