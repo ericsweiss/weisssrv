@@ -23,12 +23,16 @@
       ansible.builtin.package_facts:
         manager: apt
 
-    - name: Assert ktls-utils package present
+    - name: Assert ktls-utils + nfs-common packages present
       ansible.builtin.assert:
         that:
           - "'ktls-utils' in ansible_facts.packages"
-        fail_msg: "ktls-utils package not installed — role's apt step did not run"
-        success_msg: "ktls-utils installed (provides tlshd binary)"
+          # mount.nfs must ship with the TLS client tooling: a first-time NFS
+          # client VM otherwise fails fsconfig() with "mount program didn't
+          # pass remote address" (pipeline 803).
+          - "'nfs-common' in ansible_facts.packages"
+        fail_msg: "ktls-utils/nfs-common not installed — role's apt step incomplete"
+        success_msg: "ktls-utils (tlshd) + nfs-common (mount.nfs) installed"
 
     # ========================================================================
     # 2. /etc/tlshd.conf rendered (TLS-enabled hosts; content differs per role)

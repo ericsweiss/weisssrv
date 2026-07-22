@@ -3,7 +3,16 @@
 # by NFSv4's xprtsec=tls/mtls. Idempotent; safe to re-run.
 - name: Install ktls-utils (provides tlshd)
   ansible.builtin.apt:
-    name: ktls-utils
+    name:
+      # tlshd (the TLS handshake daemon xprtsec=tls requires)
+      - ktls-utils
+      # mount.nfs — the userspace helper that resolves the server and passes
+      # its address to the kernel mount API. Proxmox hosts and k3s agents
+      # always had it from base tooling, but a first-time NFS client VM does
+      # not: without it the kernel fsconfig() fails with "NFS: mount program
+      # didn't pass remote address" (pipeline 803: gitlab/immich/nextcloud
+      # per-app export mounts).
+      - nfs-common
     state: present
     update_cache: true
     cache_valid_time: 3600

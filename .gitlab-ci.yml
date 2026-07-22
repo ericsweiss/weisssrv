@@ -801,6 +801,14 @@ build-hermes-agent:
       if [ "$CI_COMMIT_BRANCH" = "main" ]; then
         docker push "${ref}:${CI_COMMIT_SHORT_SHA}"
         docker push "${ref}:${HERMES_VERSION}"
+        # The tag the cluster actually pulls (<version>-rN local patch
+        # revision) — without this push the deployment's tag never exists and
+        # hermes ImagePullBackOffs (observed on the v2026.7.20-r1 rollout,
+        # unblocked live by a server-side crane retag of :<sha>). The build
+        # already -t's this tag; the explicit re-tag is belt-and-braces against
+        # the build's tag list drifting.
+        docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:${HERMES_IMAGE_VERSION}"
+        docker push "${ref}:${HERMES_IMAGE_VERSION}"
         docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
         docker push "${ref}:latest"
       fi
