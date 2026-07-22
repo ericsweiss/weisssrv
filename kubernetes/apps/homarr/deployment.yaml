@@ -46,13 +46,16 @@ spec:
         esweiss.com/cpu: "modern"
       # No in-cluster API access.
       automountServiceAccountToken: false
-      # Homarr is a plain Next.js standalone image (no s6 root-drop init), so it
-      # runs fully non-root. The NFS export's all_squash anonuid=1000/anongid=2000
-      # maps every write to 1000:2000 regardless of the in-container UID.
+      # Homarr v1.x is an NGINX-FRONTED image: run.sh templates
+      # /etc/nginx/nginx.conf at boot and nginx (:7575) fronts Next.js (:3000)
+      # + the websocket (:3001). Forcing runAsUser 1000 broke that boot-time
+      # templating (permission denied on /etc/nginx) — Next.js came up but
+      # nothing listened on 7575, so the tcp probes SIGTERM-looped the pod
+      # (observed on first deploy). The image expects its own root entrypoint
+      # (namespace PSS is baseline, which admits it); the NFS export's
+      # all_squash anonuid=1000/anongid=2000 still maps every DATA write to
+      # 1000:2000 regardless of the in-container UID.
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 2000
         fsGroup: 2000
         seccompProfile:
           type: RuntimeDefault
@@ -167,8 +170,12 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-            # Next.js writes cache/tmp under the app tree, so the rootfs cannot
-            # be read-only (matches the mealie/*arr non-s6 web apps).
+              # The root entrypoint's needs, nothing more: chown data dirs,
+              # setuid/setgid so nginx workers drop to the unprivileged user.
+              add: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE"]
+            # run.sh writes /etc/nginx/nginx.conf + nginx tmp/cache dirs and
+            # Next.js writes cache/tmp under the app tree — rootfs must be
+            # writable (matches the mealie/*arr non-s6 web apps).
             readOnlyRootFilesystem: false
           volumeMounts:
             - name: data
