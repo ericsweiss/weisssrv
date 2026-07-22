@@ -648,12 +648,14 @@ class TestGetDeployCommand(unittest.TestCase):
             "containerd_version",
             "docker_buildx_plugin_version",
             "docker_compose_plugin_version",
-            # restic/rclone install from Debian apt (restic_offsite role) and the
-            # pins are deliberately empty ("" = distro version) — a non-empty
-            # value becomes an exact apt pin that upstream release strings don't
-            # match (see the all.yml comment). Nothing to track until the role
-            # moves to checksum-verified binary downloads.
+            # restic installs from Debian apt (restic_offsite role); the pin is
+            # deliberately empty ("" = distro version) — a non-empty value
+            # becomes an exact apt pin that upstream release strings don't
+            # match (see the all.yml comment).
             "restic_version",
+            # rclone is a checksum-verified rclone.org release deb (pinned in
+            # all.yml with rclone_deb_sha256); bumps are manual from
+            # downloads.rclone.org SHA256SUMS — no tracker entry yet.
             "rclone_version",
             # Local image-revision tag (<hermes_version>-rN) for the patched
             # hermes-agent build — derived from hermes_version + the local

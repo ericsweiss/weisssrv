@@ -67,6 +67,12 @@ need 'clone-conflict'
 # --- single-instance lock ---
 need 'flock -n 9'
 
+# --- hide-only key contract: restic's default rclone.args carry
+# --b2-hard-delete, which maps every delete (incl. the mid-backup lock
+# refresh) to b2_delete_file_version — refused by the restricted key. The
+# wrapper must strip it on every invocation.
+need 'rclone.args="serve restic --stdio"'
+
 # --- metric names (alert contract) ---
 for m in \
   restic_offsite_last_run_success \

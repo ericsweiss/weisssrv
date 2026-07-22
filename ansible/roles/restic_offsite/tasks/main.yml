@@ -6,17 +6,69 @@
 - name: Configure restic offsite backup
   when: restic_offsite_enabled | default(true)
   block:
-    # Debian-packaged so the molecule scenario installs without a GitHub fetch.
-    # restic_version/rclone_version are advisory: an exact Debian version pins,
-    # empty tracks the distro (see defaults/main.yml).
-    - name: Install restic + rclone
+    # restic stays Debian-packaged (0.18.x, current); restic_version is
+    # advisory: an exact Debian version pins, empty tracks the distro.
+    - name: Install restic
       ansible.builtin.apt:
         name:
           - "restic{{ ('=' + restic_version) if restic_version else '' }}"
-          - "rclone{{ ('=' + rclone_version) if rclone_version else '' }}"
         state: present
         update_cache: true
         cache_valid_time: 3600
+
+    # rclone comes from rclone.org's official .deb, NOT Debian apt: trixie
+    # ships a 2022-era 1.60.1-DEV build. (The first offsite run's lock-remove
+    # 401s were ultimately restic's default --b2-hard-delete rclone args —
+    # fixed in restic-offsitectl — not the rclone version, but a pinned,
+    # checksummed current build keeps the backup transport reproducible
+    # instead of drifting with the distro. rclone_version /
+    # rclone_deb_sha256 in group_vars.)
+    # Fail loud on a bad pin: an empty rclone_version would make the probe's
+    # version match vacuously true and SILENTLY skip the pinned install
+    # (leaving whatever rclone the host has), and the deb below is
+    # amd64-only.
+    - name: Assert the rclone pin inputs are sane
+      ansible.builtin.assert:
+        that:
+          - rclone_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - rclone_deb_sha256 is match('^[A-Fa-f0-9]{64}$')
+          - ansible_architecture == 'x86_64'
+        fail_msg: >-
+          rclone_version/rclone_deb_sha256 must be a semantic version + sha256
+          of the rclone.org linux-amd64 deb, and the host must be x86_64.
+
+    # dpkg-query, not `rclone version`: PATH could resolve a stray
+    # /usr/local/bin copy (removed below) and false-skip the package install.
+    - name: Probe the installed rclone package version
+      ansible.builtin.command: dpkg-query -W -f '${Version}' rclone
+      register: restic_offsite_rclone_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Download the pinned rclone release deb
+      ansible.builtin.get_url:
+        url: "https://downloads.rclone.org/v{{ rclone_version }}/rclone-v{{ rclone_version }}-linux-amd64.deb"
+        dest: "/var/tmp/rclone-v{{ rclone_version }}-linux-amd64.deb"
+        checksum: "sha256:{{ rclone_deb_sha256 }}"
+        mode: "0644"
+      when: >-
+        not ((restic_offsite_rclone_probe.stdout | default(''))
+             is match('^' ~ (rclone_version | regex_escape) ~ '($|-)'))
+
+    - name: Install the pinned rclone release deb
+      ansible.builtin.apt:
+        deb: "/var/tmp/rclone-v{{ rclone_version }}-linux-amd64.deb"
+      when: >-
+        not ((restic_offsite_rclone_probe.stdout | default(''))
+             is match('^' ~ (rclone_version | regex_escape) ~ '($|-)'))
+
+    # A stray /usr/local/bin/rclone shadows the packaged binary for root and
+    # the systemd units (PATH order) — the 2026-07-22 incident validation left
+    # one on the NAS; keep the pinned package the single source of truth.
+    - name: Remove any stray rclone shadowing the packaged binary
+      ansible.builtin.file:
+        path: /usr/local/bin/rclone
+        state: absent
 
     - name: Create restic-offsite config directory
       ansible.builtin.file:

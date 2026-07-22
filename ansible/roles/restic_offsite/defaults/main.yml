@@ -7,11 +7,16 @@ restic_offsite_enabled: true
 
 # restic/rclone are installed from the Debian archive (state: present) so the
 # molecule scenario stays hermetic (no GitHub-release fetch). These pins are
-# ADVISORY: set to an exact Debian package version to hard-pin, or leave empty
-# to track the distro. (all.yml carries matching advisory pins for the
-# house single-source rule; they are NOT consumed unless non-empty.)
+# restic — ADVISORY: set to an exact Debian package version to hard-pin, or
+# leave empty to track the distro.
 restic_version: ""
-rclone_version: ""
+# rclone — REQUIRED semantic version + .deb sha256: installed from
+# rclone.org's official release deb, never Debian apt (trixie ships a
+# 2022-era 1.60.1-DEV build; the pinned current build keeps the backup
+# transport reproducible — see tasks/main.yml). all.yml carries the
+# production values; these defaults keep molecule/standalone runs working.
+rclone_version: "1.74.4"
+rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b468d9fe09ddf79b7e929"
 
 # restic repository = rclone remote 'b2' -> bucket weisssrv-backup, path restic.
 # (rclone b2 backend path form is remote:bucket/path.)

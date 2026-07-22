@@ -52,6 +52,17 @@ LOCK="/run/restic-offsite.lock"
 
 log() { echo "[$(date -Is)] $*"; }
 
+# restic's rclone backend spawns rclone with BUILT-IN default args
+# 'serve restic --stdio --b2-hard-delete' (upstream wants prune to free B2
+# space immediately). That flag maps EVERY restic delete — including the
+# routine lock refresh mid-backup — to b2_delete_file_version, which the
+# hide-only restricted key refuses (401), killing the first offsite run and
+# silently defeating the whole hide design (rclone.conf's hard_delete=false
+# never applied; the command line wins). Strip the flag on every invocation:
+# with plain 'serve restic --stdio' rclone's b2 Remove HIDES, the restricted
+# key allows it, and the bucket lifecycle expires hidden versions at 30 days.
+restic() { command restic -o rclone.args="serve restic --stdio" "$@"; }
+
 # The systemd unit injects the restic/rclone env via EnvironmentFile=; MANUAL
 # invocations (the runbook's restore/verify/run paths) run outside the unit, so
 # source the same file ourselves when the repo env is absent. Root-only 0600.

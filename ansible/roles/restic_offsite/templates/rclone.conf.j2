@@ -4,6 +4,11 @@
 # bucket lifecycle (terraform/b2) expires hidden versions after 30 days. This
 # lets a capability-restricted key (no deleteFiles) still prune, since restic
 # forget/prune only ever hides.
+#
+# NOT sufficient on its own: restic's rclone backend spawns rclone with
+# built-in default args that include --b2-hard-delete, and the command line
+# beats this file. restic-offsitectl strips it via -o rclone.args on every
+# restic invocation — keep the two in sync.
 [b2]
 type = b2
 account = {{ b2_key_id }}

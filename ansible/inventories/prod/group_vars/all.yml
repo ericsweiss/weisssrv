@@ -395,14 +395,17 @@ hindsight_llamacpp_version: "b10068"
 # 1.71.0 is 404), so keep the leading "v". https://github.com/homarr-labs/homarr/releases
 homarr_version: "v1.71.0"
 
-# Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42). The role
-# installs from apt (keeps molecule hermetic); a NON-EMPTY value here becomes an
-# EXACT apt version pin (restic=<value>) and upstream release strings do NOT
-# match Debian's package versions — leave empty ("" = distro version). If strict
-# pinning is ever wanted, switch the role to a checksum-verified binary download
-# (prometheus_exporter pattern) first. Host-side only — no k8s substitution.
+# Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42).
+# restic installs from Debian apt (0.18.x, current); a NON-EMPTY restic_version
+# becomes an EXACT apt pin (restic=<value>) — leave empty ("" = distro).
+# rclone installs from rclone.org's official .deb, pinned + sha256-verified
+# (Debian ships a 2022-era 1.60.1-DEV build; the pin keeps the backup
+# transport reproducible). Bump BOTH values together from
+# https://downloads.rclone.org/vX.Y.Z/SHA256SUMS (linux-amd64.deb line).
+# Host-side only — no k8s substitution.
 restic_version: ""
-rclone_version: ""
+rclone_version: "1.74.4"
+rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b468d9fe09ddf79b7e929"
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.

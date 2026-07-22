@@ -67,7 +67,7 @@ data:
   pulsarr_version: 0.17.3
   qbittorrent_version: 5.2.3
   radarr_version: 6.3.0.10514
-  rclone_version: ''
+  rclone_version: 1.74.4
   redis_exporter_version: v1.87.0
   redis_version: 8.8.0-alpine
   registry_cache_version: 3.1.1
