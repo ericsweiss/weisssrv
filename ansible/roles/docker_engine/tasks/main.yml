@@ -79,9 +79,16 @@
     # ("held packages were changed") the day a pin in group_vars is bumped.
     # allow_change_held_packages lets the new pin reconcile through the hold in
     # place (the idiom gitlab/plex/alloy_host use); the Hold task re-applies the
-    # hold at the new version afterward. A deliberate rollback to a lower exact
-    # pin needs a manual `apt install --allow-downgrades`.
+    # hold at the new version afterward.
     allow_change_held_packages: true
+    # The pins in group_vars are authoritative in BOTH directions: a host that
+    # drifted ABOVE the pin must converge down, not fail the deploy. (Seen on
+    # the nextcloud VM: its first deploy died between this install and the
+    # Hold task, the un-held engine got bumped by the maintenance apt-upgrade,
+    # and every later deploy failed with "Packages were downgraded and -y was
+    # used without --allow-downgrades". daemon.json's live-restore keeps
+    # containers running across the engine restart either way.)
+    allow_downgrade: true
   when: not (docker_engine_skip_install | default(false))
 
 - name: Hold Docker packages at the pinned versions

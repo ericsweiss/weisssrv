@@ -291,7 +291,7 @@ immich_valkey_digest: "sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2c
 # role). dpkg-held so the maintenance apt-upgrade never bumps them under a
 # running stack. Bump workflow:
 # https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages
-docker_ce_version: "5:29.6.1-1~debian.13~trixie"
+docker_ce_version: "5:29.6.2-1~debian.13~trixie"
 containerd_version: "2.2.6-1~debian.13~trixie"
 docker_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
 docker_compose_plugin_version: "5.3.1-1~debian.13~trixie"
@@ -462,8 +462,8 @@ helm_chart_versions:
   # operator 0.92.x. COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
   prometheus_operator_crds: "30.0.1"
-  loki: "18.5.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
-  alloy: "1.10.1"
+  loki: "18.5.2"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  alloy: "1.11.0"
   prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"
   vpa: "4.12.3"

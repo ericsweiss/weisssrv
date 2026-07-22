@@ -31,35 +31,39 @@
 # hard-pinning groups['proxmox'][0]: if that one host is down, every firewall +
 # monitoring-user deploy would fail on the delegate — the exact fragility
 # playbooks/proxmox-ha.yml deliberately avoids. Probe every proxmox host once
-# (run_once, so the register propagates to all play hosts — including the
-# guest-only dns/plex/gitlab/k3s plays where no proxmox host is in
-# ansible_play_hosts), then every host derives the same delegate so the run_once
-# delegate_to and the per-host hostvars[...] done-fact reads target the same
-# reachable node. Falls back to [0] if the probe/register is unavailable.
+# (run_once), then every host derives the same delegate from the probe
+# runner's accumulated fact so the run_once delegate_to and the per-host
+# hostvars[...] done-fact reads target the same reachable node — including in
+# the guest-only dns/plex/gitlab/k3s plays where no proxmox host is in
+# ansible_play_hosts. Falls back to [0] if the probe recorded nothing.
+#
+# The probe is a looped INCLUDE of a single delegated ping (probe-delegate.yml
+# documents why a looped ping aborts the whole play when one delegate is down).
+- name: Reset the reachability probe results for this play
+  ansible.builtin.set_fact:
+    _pve_fw_reachable: []
+  run_once: true
+  when: (groups['proxmox'] | default([]) | length) > 0
+
 - name: Probe Proxmox hosts for reachability (delegate selection)
-  ansible.builtin.ping:
-  delegate_to: "{{ item }}"
+  ansible.builtin.include_tasks: probe-delegate.yml
   loop: "{{ groups['proxmox'] }}"
   loop_control:
-    label: "{{ item }}"
-  register: _pve_fw_reachability
+    loop_var: _pve_fw_probe_host
+    label: "{{ _pve_fw_probe_host }}"
   run_once: true
-  ignore_unreachable: true
-  # A module-level probe failure (reachable host, broken python) must not
-  # abort the fleet deploy either — the selection below only admits results
-  # that actually pinged, so such a host is passed over like an unreachable one.
-  failed_when: false
-  changed_when: false
   when: (groups['proxmox'] | default([]) | length) > 0
 
 - name: Resolve the first reachable Proxmox host as the cluster-task delegate
   vars:
-    # Only successful ping results carry the `ping` key: this skips both
-    # unreachable hosts AND reachable-but-broken ones (failed module run).
+    # The run_once probe accumulated its results on the first host of the
+    # CURRENT BATCH (run_once fires once per serial batch, and in a serial
+    # play each batch re-runs the probe on its own first host) — read them
+    # from there so EVERY host derives the same delegate. ansible_play_batch
+    # equals ansible_play_hosts in the non-serial plays that include this
+    # role today, but stays correct if one ever batches.
     _reachable_pve: >-
-      {{ _pve_fw_reachability.results | default([])
-         | selectattr('ping', 'defined')
-         | map(attribute='item') | list }}
+      {{ hostvars[ansible_play_batch | first]['_pve_fw_reachable'] | default([]) }}
   ansible.builtin.set_fact:
     _pve_fw_delegate: "{{ _reachable_pve[0] if (_reachable_pve | length > 0) else groups['proxmox'][0] }}"
   when: (groups['proxmox'] | default([]) | length) > 0
