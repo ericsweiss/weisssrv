@@ -1,13 +1,23 @@
 ---
-# Tailscale operator: namespace + OAuth ExternalSecret + HelmRelease.
-# No shared default-deny-ingress component here: the operator serves an
-# admission webhook to kube-API and its proxy pods bridge the tailnet to
-# in-cluster backends, so a blanket ingress deny would break them (see
-# namespace.yaml). NetworkPolicy hardening for this namespace is tracked as a
-# follow-up once the operator's exact ingress/webhook surface is pinned.
+# Tailscale operator: namespace + OAuth ExternalSecret + HelmRelease +
+# default-deny-ingress (via the shared netpol-baseline component).
+#
+# NetworkPolicy: default-deny-ingress via the shared netpol-baseline component.
+# Surface pinned (chart 1.98.9): the operator exposes no container ports, no
+# Service, no ServiceMonitor, and no admission webhook, with apiServerProxyConfig
+# mode "false"; the ingress proxy pods declare no ports and receive tailnet
+# traffic on their tailscale0 interface (off the CNI path). So a CNI ingress deny
+# cannot break the tailnet data path. Egress is intentionally left open (like the
+# observability ns): the proxies forward to dynamically-created in-cluster targets
+# and reach the tailnet control plane/DERP, both too dynamic/wide to enumerate.
+# The one condition to revisit: if apiServerProxyConfig.mode is ever flipped to
+# "true"/"noauth", the operator serves the k8s API — but via its own tailnet
+# device (off-CNI), still unaffected by this ingress deny.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: tailscale
+components:
+  - ../../../components/netpol-baseline
 resources:
   - namespace.yaml
   - externalsecret.yaml

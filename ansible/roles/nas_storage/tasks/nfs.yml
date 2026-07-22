@@ -44,11 +44,16 @@
 # tank/ssd/nvme-backed sources are ZFS datasets (same regex the fstab task
 # uses to scope its boot-ordering opts); mergerfs sources like /mnt/media are
 # not single datasets and are checked separately by mergerfs.yml.
+# bind_source_check lets an export whose bind_source is a SUBDIRECTORY of a ZFS
+# dataset (e.g. /mnt/tank/backups/apps under tank/backups) point the
+# mounted-dataset guard at the parent DATASET mountpoint — the subdir itself is
+# never a mountpoint, so guarding it directly would always fail. Defaults to
+# bind_source (the common dataset-root case is unchanged).
 - name: Verify ZFS-backed bind sources are mounted datasets
-  ansible.builtin.command: "mountpoint -q {{ item.bind_source }}"
+  ansible.builtin.command: "mountpoint -q {{ item.bind_source_check | default(item.bind_source) }}"
   loop: "{{ nfs_exports }}"
   loop_control:
-    label: "{{ item.bind_source | default('N/A') }}"
+    label: "{{ item.bind_source_check | default(item.bind_source) | default('N/A') }}"
   register: nfs_bind_source_mounted
   changed_when: false
   check_mode: false
@@ -122,6 +127,13 @@
     - nas_appdata_dirs | default([]) | length > 0
     - nas_appdata_base in (nfs_exports | selectattr('bind_source', 'defined')
         | map(attribute='bind_source') | list)
+
+# The per-app tank/backups/apps/<app> subdirs are now each their own scoped NFS
+# export (host_vars nfs_exports), so they are bind_sources — created + owned
+# (1000:2000 02775) by "Set ownership on bind source directories" above (which
+# runs AFTER the mounted-dataset guard, so a locked tank/backups can never have
+# them mkdir'd onto a bare root-fs mountpoint). No dedicated subdir-creation step
+# is needed.
 
 - name: Configure bind mounts in fstab
   ansible.posix.mount:

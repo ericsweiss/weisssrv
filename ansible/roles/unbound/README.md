@@ -1,11 +1,11 @@
 # Unbound Role
 
-Installs and configures Unbound as a recursive DNS resolver with DNS-over-TLS (DoT). Listens on localhost:5335 as the upstream resolver for AdGuard Home.
+Installs and configures Unbound as a forwarding DNS resolver with DNS-over-TLS (DoT). Every query is forwarded over DoT to public upstreams (Cloudflare/Quad9/Google) via a `forward-zone: name: "."` — it does not recurse from the root. Listens on localhost:5335 as the upstream resolver for AdGuard Home.
 
 ## What This Role Manages
 
 ### DNS Resolution
-- Recursive DNS resolver configuration
+- Forwarding DNS resolver configuration (forwards all queries via DoT; does not recurse from root)
 - DNS-over-TLS (DoT) to Cloudflare (1.1.1.1, 1.0.0.1)
 - DNS-over-TLS (DoT) to Quad9 (9.9.9.9, 149.112.112.112)
 - DNS-over-TLS (DoT) to Google (8.8.8.8, 8.8.4.4)

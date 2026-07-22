@@ -63,6 +63,12 @@ variable "oauth2_client_secret_hermes_dashboard" {
   sensitive   = true
 }
 
+variable "oauth2_client_secret_homarr" {
+  description = "Homarr OIDC client secret (1Password item 'Homarr SSO', field 'client-secret' — the same field the homarr-secrets ExternalSecret syncs into the cluster)"
+  type        = string
+  sensitive   = true
+}
+
 # --- Basic-auth injection credentials ---------------------------------------
 # Per-app upstream credentials stored as GROUP attributes (groups.tf) and
 # injected by proxy providers with basic_auth_enabled (providers_proxy.tf):

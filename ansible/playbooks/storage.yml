@@ -12,6 +12,11 @@
     # xprtsec=tls export (avoids a TLS-required export with no handshake daemon).
     - nfs_tls
     - nas_storage
+    # Nightly offsite B2 backup (restic + rclone). Runs after nas_storage so the
+    # archsync snapshots + the tank/backups/apps landing zone exist; chains
+    # OnSuccess= after archive-backup.service. No-op while restic_offsite_enabled
+    # is false.
+    - restic_offsite
     # Declarative storage.cfg + vzdump jobs (tank-proxmox target). Cluster-wide
     # config, so it runs from this single node; no-op while its lists are empty.
     - proxmox_backup

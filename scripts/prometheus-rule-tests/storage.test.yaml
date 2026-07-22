@@ -1,0 +1,35 @@
+---
+# promtool unit tests for storage-hygiene alerts (homelab.storage group).
+# rule_files resolves relative to this file's runtime location; the lint script
+# copies the tests next to the extracted rules.yaml before running them.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # LocalPathPVExists fires per-PV when any PersistentVolume is on the local-path
+  # StorageClass (the stateless VM bootdisk, excluded from backups). A PV on the
+  # empty/static class must NOT fire; the alert carries the offending PV name.
+  - interval: 1m
+    input_series:
+      - series: 'kube_persistentvolume_info{storageclass="local-path", persistentvolume="pvc-744de65c"}'
+        values: '1+0x30'
+      - series: 'kube_persistentvolume_info{storageclass="", persistentvolume="loki-data"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LocalPathPVExists
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              storageclass: local-path
+              persistentvolume: pvc-744de65c
+
+  # No local-path PVs present -> no alert.
+  - interval: 1m
+    input_series:
+      - series: 'kube_persistentvolume_info{storageclass="", persistentvolume="loki-data"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LocalPathPVExists
+        exp_alerts: []

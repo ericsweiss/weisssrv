@@ -97,14 +97,20 @@ spec:
         - name: bar-assistant
           url: https://bar.esweiss.com
           module: http_sso
-        # Hermes dashboard sits behind the Authentik forward-auth middleware, so
-        # an unauthenticated probe is answered with a 302 -> Authentik (the
-        # dashboard's own auth gate is never reached — Authentik intercepts
-        # first). http_sso accepts the 302, so the probe verifies ingress + TLS
-        # + reachability. The generic EndpointDown alert covers it (warning at
+        # Hermes dashboard: an unauthenticated probe is answered by the
+        # dashboard's own OIDC auth gate with a 302 -> /login (docs/37 §SSO).
+        # http_sso accepts the 302, so the probe verifies ingress + TLS +
+        # reachability. The generic EndpointDown alert covers it (warning at
         # probe_success==0 for 5m).
         - name: hermes
           url: https://agent.esweiss.com
+          module: http_sso
+        # Homarr dashboard (dashboard.esweiss.com): an unauthenticated probe is
+        # answered by Homarr's own OIDC login with a 302, which http_sso accepts
+        # (200/301/302/401/403) — the probe verifies ingress + TLS + reachability.
+        # The generic EndpointDown alert covers it (warning at probe_success==0).
+        - name: homarr
+          url: https://dashboard.esweiss.com
           module: http_sso
         - name: plex
           url: https://plex.esweiss.com
@@ -121,9 +127,15 @@ spec:
         - name: nextcloud
           url: https://cloud.esweiss.com
           module: http_sso
+        # Immich is Authentik OIDC SSO-only (docs/36), same as Nextcloud above,
+        # so it uses http_sso for parity: the probe verifies ingress + TLS +
+        # backend reachability without depending on following an SSO redirect to
+        # a 200. photos.esweiss.com currently answers 200 directly (the SPA loads
+        # then redirects client-side), which http_sso also accepts; switching off
+        # http_2xx keeps the probe correct if a future 302/401/403 SSO gate lands.
         - name: immich
           url: https://photos.esweiss.com
-          module: http_2xx
+          module: http_sso
         - name: pulsarr
           url: https://pulsarr.esweiss.com
           module: http_sso
@@ -152,10 +164,13 @@ spec:
         - name: k3s-api-vip
           url: 192.168.0.161:6443
           module: tcp_connect
-        # Windows 11 VM RDP reachability — armed post-install (docs/39). Feeds the
-        # WindowsRdpDown alert (kube-prometheus-stack release.yaml, homelab.monitoring);
-        # instance is "192.168.0.155:3389". The 30m `for` on the alert tolerates the
-        # VM being briefly/occasionally powered off.
+        # Windows 11 VM RDP reachability — target is live/armed (docs/39). Feeds
+        # the WindowsRdpDown alert (kube-prometheus-stack release.yaml,
+        # homelab.monitoring); instance is "192.168.0.155:3389". VM 155 is a
+        # start-on-demand desktop (onboot=0) that is off much of the time, so
+        # WindowsRdpDown is gated on the VM actually being powered on
+        # (pve_up{id="qemu/155"}) — it stays silent while the VM is intentionally
+        # stopped and only fires when RDP is dead on a running VM.
         - name: windows-rdp
           url: 192.168.0.155:3389
           module: tcp_connect

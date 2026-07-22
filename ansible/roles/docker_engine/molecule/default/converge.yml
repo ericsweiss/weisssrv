@@ -1,0 +1,19 @@
+---
+# Render-only converge: docker_engine_skip_install skips the apt repo add, the
+# pinned engine install/hold, and the service enable/start (all need the real
+# download.docker.com repo + a running daemon). What remains — the /etc/docker
+# directory and the journald daemon.json — renders in a plain container, so
+# verify can assert the daemon configuration the shared role installs.
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
+
+    - name: Install docker_engine in render-only mode
+      ansible.builtin.include_role:
+        name: docker_engine
+      vars:
+        docker_engine_skip_install: true

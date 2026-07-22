@@ -231,11 +231,19 @@ spec:
   # recommendations recorded.
   targetRef: {apiVersion: monitoring.coreos.com/v1, kind: Prometheus, name: kube-prometheus-stack-prometheus}
   updatePolicy: {updateMode: "Off"}
+  # maxAllowed.memory is 6Gi, above the pod's hand-tuned 4Gi limit
+  # (release.yaml): this VPA is recording-only (Off) so it never mutates the pod,
+  # and the 7d working-set peak already sits ~88-90% of 4Gi. Capping the
+  # RECOMMENDATION at 4Gi would clamp it exactly when Prometheus outgrows its
+  # limit (and trip VPARecommendationCapped), hiding the true need; 6Gi lets the
+  # recommendation record how much headroom a real bump would need. Actually
+  # raising the pod's request/limit is a deferred operator step — it needs
+  # confirmed host headroom on the memory-tight NAS (docs/06 §NAS memory).
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
         minAllowed: {cpu: 100m, memory: 512Mi}
-        maxAllowed: {cpu: 2, memory: 4Gi}
+        maxAllowed: {cpu: 2, memory: 6Gi}
         controlledResources: [cpu, memory]
 ---
 apiVersion: autoscaling.k8s.io/v1

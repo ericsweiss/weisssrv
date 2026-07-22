@@ -1,0 +1,20 @@
+---
+# VPA: Initial — resize CPU+memory on natural pod restarts (single
+# stateless-scheduling workload; the emptyDir cache is disposable, so an
+# eviction/restart only costs a re-warm, never data). This is the tier
+# docs/33-autoscaling.md prescribes for single-pod apps (same as homarr/the
+# runners; no HPA owns CPU). Bounded so a runaway request can't claim the node.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: registry-cache
+  namespace: registry-cache
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: registry-cache}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]

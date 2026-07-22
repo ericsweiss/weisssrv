@@ -52,11 +52,17 @@
     - nextcloud_oidc_enabled | default(true)
 
 # =============================================================================
-# Docker Engine + Compose plugin (download.docker.com apt repo)
+# Docker Engine + Compose plugin (download.docker.com apt repo, via compose_app)
 # =============================================================================
+# Pinned-engine install + dpkg hold + journald daemon.json via the shared
+# docker_engine role (also backs immich + immich_ml), included through the shared
+# compose_app role. skip_nextcloud_deploy maps onto compose_app_skip_install.
 - name: Install Docker Engine and the compose plugin
-  ansible.builtin.include_tasks: docker.yml
-  when: not (skip_nextcloud_deploy | default(false))
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: docker.yml
+  vars:
+    compose_app_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
 
 # =============================================================================
 # Persistent directories on the zvols
@@ -71,14 +77,6 @@
   loop:
     - "{{ nextcloud_app_dir }}"
     - "{{ nextcloud_compose_dir }}"
-
-- name: Create Nextcloud backup directory
-  ansible.builtin.file:
-    path: "{{ nextcloud_backup_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0700"
 
 # html + data are bind-mounted into the container and written by www-data
 # (uid/gid 33). Pre-create + chown so the container never has to chown a large
@@ -95,10 +93,34 @@
     - "{{ nextcloud_data_dir }}"
 
 # =============================================================================
-# Host nginx TLS front end
+# Host nginx TLS front end (shared compose_app task flow)
 # =============================================================================
+# Capture this role's nginx site template as an absolute path BEFORE the include
+# (role_path inside an include_role resolves to the INCLUDED role, so it must be
+# resolved eagerly here). compose_app/nginx.yml deploys it byte-unchanged.
+- name: Resolve the Nextcloud nginx site template path
+  ansible.builtin.set_fact:
+    nextcloud_nginx_site_template: "{{ role_path }}/templates/nginx-nextcloud.conf.j2"
+  when: nextcloud_nginx_enabled | default(true)
+
 - name: Configure the host nginx reverse proxy
-  ansible.builtin.include_tasks: nginx.yml
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: nginx.yml
+  vars:
+    compose_app_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
+    compose_app_nginx_cert_dir: "{{ nextcloud_nginx_cert_dir }}"
+    compose_app_nginx_cert_dir_mode: "0755"
+    compose_app_nginx_ssl_cert: "{{ nextcloud_nginx_ssl_certificate }}"
+    compose_app_nginx_ssl_key: "{{ nextcloud_nginx_ssl_certificate_key }}"
+    compose_app_nginx_site_name: nextcloud.conf
+    compose_app_nginx_site_template: "{{ nextcloud_nginx_site_template }}"
+    compose_app_nginx_self_signed_days: 365
+    compose_app_nginx_self_signed_subj: "/CN={{ nextcloud_external_host }}"
+    # Nextcloud's placeholder carries no SAN (single-host CN).
+    compose_app_nginx_self_signed_san: ""
+    # Only seed the placeholder on a real deploy (matches the former gated task).
+    compose_app_nginx_bootstrap_cert: "{{ not (skip_nextcloud_deploy | default(false)) }}"
   when: nextcloud_nginx_enabled | default(true)
 
 # =============================================================================
@@ -112,7 +134,7 @@
     group: root
     mode: "0600"
   no_log: true
-  notify: Restart nextcloud compose
+  notify: Restart compose stack
 
 - name: Deploy the Nextcloud compose file
   ansible.builtin.template:
@@ -121,31 +143,33 @@
     owner: root
     group: root
     mode: "0644"
-  notify: Restart nextcloud compose
+  notify: Restart compose stack
 
-- name: Deploy the nextcloud-compose systemd unit
-  ansible.builtin.template:
-    src: nextcloud-compose.service.j2
-    dest: /etc/systemd/system/nextcloud-compose.service
-    owner: root
-    group: root
-    mode: "0644"
-  notify:
-    - Reload systemd
-    - Restart nextcloud compose
-
-- name: Enable + start the nextcloud compose stack
-  ansible.builtin.systemd:
-    name: nextcloud-compose.service
-    enabled: true
-    state: started
-    daemon_reload: true
-  when: not (skip_nextcloud_deploy | default(false))
-
-# Bring the stack up now (flush the compose restart) so the readiness wait and
-# occ/SSO tasks below act on the freshly-applied containers.
-- name: Apply pending compose changes before configuring Nextcloud
-  ansible.builtin.meta: flush_handlers
+# =============================================================================
+# Systemd unit that owns the compose lifecycle (shared compose_app unit)
+# =============================================================================
+# compose_app main.yml deploys the shared unit, enables it, flushes handlers
+# (bringing the stack up so the readiness wait + occ/SSO tasks below act on the
+# freshly-applied containers), and starts it.
+- name: Deploy + start the Nextcloud compose stack
+  ansible.builtin.include_role:
+    name: compose_app
+  vars:
+    compose_app_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
+    compose_app_service_name: nextcloud-compose
+    compose_app_description: "Nextcloud Docker Compose stack"
+    compose_app_working_directory: "{{ nextcloud_compose_dir }}"
+    compose_app_requires_mounts_for:
+      - "{{ nextcloud_app_dir }}"
+      - "{{ nextcloud_postgres_dir }}"
+      - "{{ nextcloud_data_mount }}"
+    compose_app_requires_mounts_comment:
+      - "Path-based mount ordering (systemd escapes these to the right .mount units):"
+      - "the zvol data disks must be mounted before the stack starts."
+    compose_app_reconcile_comment:
+      - "`up -d` reconciles the running stack to the rendered compose/.env, recreating"
+      - "only the containers whose definition changed (ExecReload matches ExecStart so"
+      - "`systemctl reload` re-applies without a full down/up)."
 
 # =============================================================================
 # Wait for first-install to complete, then configure SSO + serverinfo
@@ -181,6 +205,7 @@
       php occ config:app:set serverinfo token --value={{ nextcloud_serverinfo_token | quote }}
     chdir: "{{ nextcloud_compose_dir }}"
   no_log: true
+  # Idempotent occ upsert with no change signal; ok can hide a first-set/rotate.
   changed_when: false
   when: not (skip_nextcloud_deploy | default(false))
 
@@ -203,12 +228,54 @@
     - { key: mail_domain, value: "{{ nextcloud_mail_domain }}" }
   loop_control:
     label: "{{ item.key }}"
+  # Idempotent occ config:system:set upserts with no change signal; ok can hide
+  # a real value change on first deploy or a settings edit.
   changed_when: false
   when: not (skip_nextcloud_deploy | default(false))
 
 # =============================================================================
-# Nightly PostgreSQL logical backup (rides the app zvol -> archive + vzdump)
+# Backup landing zone (offsite NFS when enabled) + nightly PostgreSQL backup
 # =============================================================================
+# nextcloud_backup_dir resolves to the NFS mountpoint when
+# nextcloud_backup_nfs_enabled (tank/backups/apps/nextcloud -> archsync -> B2),
+# otherwise the app zvol. This one task creates whichever; the mount below
+# (gated) overlays it when NFS-backed.
+- name: Create the backup landing directory
+  ansible.builtin.file:
+    path: "{{ nextcloud_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# Mounted over TLS (xprtsec=tls — the per-app export rejects plaintext); the VM
+# runs tlshd via the nfs_tls role, wired in nextcloud.yml gated on this flag.
+# nofail keeps a NAS-down boot from hanging; the backup service's
+# RequiresMountsFor pulls it on demand. Opt-in via nextcloud_backup_nfs_enabled.
+- name: Mount the offsite backup NFS export
+  ansible.posix.mount:
+    path: "{{ nextcloud_backup_mountpoint }}"
+    src: "{{ nextcloud_backup_nfs_server }}:{{ nextcloud_backup_nfs_export }}"
+    fstype: nfs4
+    opts: "{{ nextcloud_backup_nfs_options }}"
+    state: mounted
+  when:
+    - not (skip_nextcloud_deploy | default(false))
+    - nextcloud_backup_nfs_enabled | default(false)
+  tags:
+    - molecule-notest
+
+# The metric-writing logic is the shared write_prom_metrics helper (deployed by
+# compose_app); nextcloud-backup-run.sh sources it.
+- name: Deploy the shared backup-metrics helper library
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: backup_lib.yml
+  vars:
+    compose_app_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
+    compose_app_backup_lib_dest: "{{ nextcloud_backup_lib_path }}"
+    compose_app_backup_size_help_object: "dump"
+
 - name: Deploy the Nextcloud backup wrapper
   ansible.builtin.template:
     src: nextcloud-backup-run.sh.j2

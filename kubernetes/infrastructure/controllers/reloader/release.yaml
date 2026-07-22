@@ -48,6 +48,13 @@ spec:
       # credential-Secret rotation is handled by a manual restart.)
       ignoreSecrets: true
       logFormat: json
+      # Scrape Reloader's reload counters (reloader_reload_executed_total etc.)
+      # so reload activity/failures are visible in Prometheus. PodMonitor, not the
+      # deprecated serviceMonitor — it scrapes the pod directly, no extra Service.
+      # Prometheus discovers it cluster-wide (podMonitorSelectorNilUsesHelmValues:
+      # false).
+      podMonitor:
+        enabled: true
       # Chart toggle: sets the container's readOnlyRootFilesystem AND mounts the
       # paired writable /tmp emptyDir. Setting readOnlyRootFilesystem only via
       # containerSecurityContext (below) would leave Reloader with a read-only

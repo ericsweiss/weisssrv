@@ -11,6 +11,12 @@
 # Nextcloud/Immich/Windows/GitLab — plus ZFS ARC) thrashed swap under pressure at
 # the kernel default vm.swappiness=60. A host-scoped sysctl drop-in lowers it so
 # the host reclaims page cache / balloons guest RAM before swapping.
+#
+# Quaternary case: active-backup bonds (.104/.105/.106) whose two legs share an
+# unmanaged switch MAC-flap into an intermittent black-hole with
+# all_slaves_active=1. The bond guard forces all_slaves_active=0 in three layers
+# (modprobe.d bonding option, interfaces stanza, live sysfs — see the block
+# below and docs/34-bond-mac-flapping.md).
 
 - name: Install sysctl.d drop-in for ip_forward
   ansible.builtin.copy:

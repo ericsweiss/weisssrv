@@ -1,0 +1,24 @@
+---
+# Scrape the registry cache's native Prometheus metrics
+# (kubernetes/apps/registry-cache). The distribution registry serves metrics on
+# its separate debug listener (:5001, port name `metrics`) when
+# REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED=true — no auth. Lives in observability
+# per the repo convention (same shape as the hindsight / wg-easy ServiceMonitors).
+# The observability->5001 ingress is opened — Prometheus-pod-scoped — by
+# allow-registry-cache-ingress (kubernetes/apps/registry-cache/networkpolicy.yaml).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: registry-cache
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - registry-cache
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry-cache
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics

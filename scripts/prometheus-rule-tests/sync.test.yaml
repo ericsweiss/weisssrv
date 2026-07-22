@@ -1,0 +1,63 @@
+---
+# promtool unit tests for the AdGuard Home sync (dns-01 -> dns-02) alerts.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # AdGuardSyncFailed fires when the sync records failed runs (metric 0) for 15m.
+  - interval: 1m
+    input_series:
+      - series: 'adguardhome_sync_last_run_success{instance="192.168.0.150:9101"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AdGuardSyncFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.150:9101'
+
+  # A successful run (metric 1) must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'adguardhome_sync_last_run_success{instance="192.168.0.150:9101"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AdGuardSyncFailed
+        exp_alerts: []
+
+  # AdGuardSyncStale fires when the last-success timestamp is older than 30m.
+  - interval: 1m
+    input_series:
+      - series: 'adguardhome_sync_last_success_timestamp_seconds{instance="192.168.0.150:9101"}'
+        values: '-2000+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AdGuardSyncStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.150:9101'
+
+  # Fresh (timestamp tracks ~now, diff stays under 1800s) must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'adguardhome_sync_last_success_timestamp_seconds{instance="192.168.0.150:9101"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AdGuardSyncStale
+        exp_alerts: []
+
+  # absent() arm: metric missing (timer undeployed / dns-01 node_exporter down)
+  # must fire. The selector carries no label matcher, so the synthetic series has
+  # only the rule's own severity label.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AdGuardSyncStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning

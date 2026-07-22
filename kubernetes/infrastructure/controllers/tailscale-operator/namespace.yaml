@@ -6,10 +6,12 @@
 # networking capabilities (NET_ADMIN for kernel-mode tailnet networking), which
 # the baseline/restricted PSA profiles forbid. This is a trusted platform
 # component (its images/proxy config come from the pinned chart); scope the
-# elevation to this namespace only. Ingress/egress are intentionally NOT
-# NetworkPolicy-restricted here — the proxy pods bridge the tailnet to arbitrary
-# in-cluster backends and the operator serves an admission webhook to kube-API,
-# so a default-deny would break them; the operator manages its own pod security.
+# elevation to this namespace only. Ingress IS now default-deny (kustomization.yaml
+# wires the netpol-baseline component): the surface is pinned (no ports/Service/
+# webhook/metrics; apiServerProxy off; proxies receive tailnet traffic off-CNI on
+# tailscale0), so the deny cannot break the tailnet data path. Egress is left open
+# (proxies forward to dynamically-created backends + reach the tailnet control
+# plane/DERP) — see kustomization.yaml for the full rationale.
 apiVersion: v1
 kind: Namespace
 metadata:

@@ -21,6 +21,11 @@ spec:
     containerPolicies:
       - containerName: camofox
         mode: "Off"
+      # Leave the one-shot init-data initContainer alone (mode Off) — the "*"
+      # floor (128Mi) would ~5x its hand-sized 8Mi request on every restart.
+      # Same guard wg-easy uses for its sysctl initContainer.
+      - containerName: init-data
+        mode: "Off"
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 128Mi}
         maxAllowed: {cpu: 2, memory: 2Gi}

@@ -31,6 +31,12 @@
     sysctl_file: /etc/sysctl.d/99-gitlab-redis.conf
     reload: true
 
+# Picks up gitlab-backup.service/.timer unit-file changes. The enable task also
+# daemon-reloads, so this is belt-and-suspenders for a service-file-only change.
+- name: Reload systemd for gitlab-backup
+  ansible.builtin.systemd:
+    daemon_reload: true
+
 # Picks up unit-file changes for the THP unit. `state: restarted` (not started)
 # is required because RemainAfterExit makes `started` a no-op for an already-
 # active oneshot — the new ExecStart wouldn't run until next boot otherwise.

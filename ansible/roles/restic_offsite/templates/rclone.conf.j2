@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# rclone remote for the restic B2 backend. Rendered 0600 root:root with no_log.
+# hard_delete is left unset (default false) => rclone deletes by HIDING; the B2
+# bucket lifecycle (terraform/b2) expires hidden versions after 30 days. This
+# lets a capability-restricted key (no deleteFiles) still prune, since restic
+# forget/prune only ever hides.
+[b2]
+type = b2
+account = {{ b2_key_id }}
+key = {{ b2_application_key }}

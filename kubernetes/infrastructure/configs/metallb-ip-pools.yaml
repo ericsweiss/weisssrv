@@ -31,8 +31,13 @@ spec:
 # the public/internal ingress semantics stay clean; the wg-easy LoadBalancer
 # Service claims it explicitly via metallb.io/loadBalancerIPs. autoAssign:false —
 # same rationale as the others (never hand this pinned VIP to another Service).
-# NOTE: .99 sits in the documented DHCP/workstation range (.1-99); it must be
-# excluded from the router's DHCP pool (operator step, see docs/38).
+# NOTE: .99 sits in the documented DHCP/workstation range (.1-99), unlike the
+# .100/.101 Traefik VIPs and the .161 API VIP which live in reserved bands. It
+# must be excluded from the router's DHCP pool (operator step, see docs/38) — a
+# manual, uncoded, unmonitored prerequisite: if a router reset ever drops the
+# exclusion, a workstation lease could collide with this internet-facing VPN
+# endpoint. EndpointDown (vpn.esweiss.com blackbox probe) is the closest
+# after-the-fact signal of such a collision.
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:

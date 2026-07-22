@@ -1,0 +1,6 @@
+# Negative-path guard tasks this scenario DELIBERATELY drives to failure
+# (block/rescue exercises). The junit callback records the raw failure even
+# though the rescue + assertions pass; CI's sanitize-junit step downgrades
+# EXACTLY these names in the report. Job status is the arbiter.
+ansible/roles/proxmox_backup/molecule/default/expected-junit-failures.txt
+Assert create-fixed storage properties have not drifted

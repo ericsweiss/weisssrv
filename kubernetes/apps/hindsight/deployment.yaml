@@ -193,18 +193,19 @@ spec:
             # needed.
             - name: LLAMA_ARG_N_PARALLEL
               value: "1"
-            # Cap inference to 2 of the agent VM's 6 cores. prec-01 also hosts
-            # Hermes (co-scheduled — both are general+modern nodes and Hermes'
-            # Chromium toolchain limits it to the same small modern-CPU set), so
-            # each per-turn fact extraction stacked onto Hermes' turn processing
-            # ran the fan up (observed 2026-07-20). 2 threads roughly halves the
-            # burst; extraction is background + latency-tolerant (memory just lags
-            # the conversation a little), so the ~2x slower pass is an acceptable
-            # trade for a quiet node (no k8s CPU limit per docs/33 — this
-            # app-level thread cap is the lever). Raise toward 4 if extraction
-            # latency starts to matter more than node quiet.
+            # Threads for inference on the agent VM's 6 cores. History: 4
+            # parallel slots pegged the node (2026-07-20), then a 2-thread cap
+            # quieted it but overshot — measured extractions hit 234-295s
+            # (2026-07-21), starving the serialized queue (stuck retains,
+            # consolidation pinned at 0/3) and blowing even the 300s server
+            # timeout under queue-wait. 4 threads roughly halves that
+            # (~120-150s/op) while N_PARALLEL=1 still guarantees only ONE
+            # inference runs at a time, so the worst-case burst is bounded and
+            # the queue can actually drain. prec-01 co-hosts Hermes; if fan
+            # noise returns, the next lever is a faster/smaller extraction
+            # model, NOT re-lowering threads below queue-sustainable rate.
             - name: LLAMA_ARG_THREADS
-              value: "2"
+              value: "4"
           # /health is llama-server's built-in readiness route (503 while the
           # model loads). The generous startupProbe budget (30s x 60 = 30 min)
           # covers the FIRST boot's 3.5 GB HuggingFace download; warm starts

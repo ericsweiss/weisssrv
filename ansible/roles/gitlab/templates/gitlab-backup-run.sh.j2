@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
 # Runs the daily GitLab backup and emits node_exporter textfile metrics.
-# Invoked by the root cron entry installed by the gitlab role.
+# Invoked by gitlab-backup.service (gitlab-backup.timer) installed by the role.
 #
 # NOT `set -e`: the backup's exit code must be captured and the metric
 # written regardless, so GitLabBackupFailed/Stale alerts can fire on a
@@ -11,6 +11,8 @@ set -uo pipefail
 
 BACKUP_PATH="{{ gitlab_backup_path }}"
 PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+# 1 when the backup lands on the offsite NFS export (gitlab_backup_nfs_enabled).
+NFS_ENABLED="{{ '1' if (gitlab_backup_nfs_enabled | default(false)) else '0' }}"
 # Components excluded from the tarball (gitlab-backup SKIP=). Rendered here in the
 # non-raw preamble and quote-filtered, so an overridden gitlab_backup_skip with
 # whitespace/metacharacters can't be word-split or interpreted when used below.
@@ -54,6 +56,18 @@ write_prom_metrics() {
 
 mkdir -p "$PROM_DIR"
 
+# Fail closed on an unmounted offsite landing zone. When NFS-backed, BACKUP_PATH
+# is the mountpoint of the tank/backups/apps export; if the mount is missing
+# (NAS down, unmount, boot race), writing there would land the tarball on the
+# underlying OS-disk mountpoint dir — silently un-offsited AND filling the OS disk
+# (the DiskUsageCritical spiral the slimming fixed). Refuse, record success=0
+# (GitLabBackupFailed), and exit non-zero BEFORE running gitlab-backup.
+if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_PATH"; then
+  echo "gitlab-backup: BACKUP_PATH ${BACKUP_PATH} is NFS-backed but not mounted — aborting" >&2
+  write_prom_metrics 0 0 0
+  exit 1
+fi
+
 # SKIP excludes the container registry (rebuildable CI images — by far the
 # largest component, ~7.5G vs a 16K repo) and CI artifacts (ephemeral job
 # output) from the tarball, so a backup is DB + repos + config, not multi-GB.
@@ -75,8 +89,13 @@ rc=$?
 # success=0 and GitLabBackupFailed fires — an un-restorable backup must NOT
 # report healthy. This is stricter than a bare `|| true`, which would hide a
 # missing-secrets backup behind a green metric.
+# --preserve=mode,timestamps (NOT -p): when BACKUP_PATH is the all_squash NFS
+# export (prod relocates it onto tank/backups/apps/gitlab), the write is squashed
+# to 1000:2000 and a chown back to root:root is EPERM — plain `cp -p` would fail
+# to preserve ownership and demote rc to a FALSE failure. Ownership is irrelevant
+# to the backup (restore recreates these via reconfigure); mode 0600 is preserved.
 if [ "$rc" -eq 0 ]; then
-  cp -p /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb "${BACKUP_PATH}/" || rc=1
+  cp --preserve=mode,timestamps /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb "${BACKUP_PATH}/" || rc=1
 fi
 
 # Newest tarball size (best-effort). gitlab-backup names archives

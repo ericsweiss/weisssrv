@@ -10,3 +10,24 @@ resources:
   # in this directory as an apply-on-demand emergency fallback only
   # (kubectl apply -f loki/nodeport.yaml); host Alloy ships via the authenticated
   # https://loki.esweiss.com ingress by default.
+# Loki ruler rule files, delivered to the loki-sc-rules sidecar. Mirrors the
+# grafana-dashboards convention (configMapGenerator + discovery label +
+# disableNameSuffixHash). The loki_rule:"1" label matches the sidecar's LABEL
+# env; the k8s-sidecar-target-directory annotation (folderAnnotation in
+# release.yaml) makes the sidecar write the file into /rules/fake so the ruler's
+# local storage (tenant "fake" under auth_enabled:false) loads it. The parent
+# observability/kustomization.yaml sets namespace: observability, where the
+# sidecar searches.
+generatorOptions:
+  # Stable name (no content-hash suffix) so the sidecar keeps discovering it and
+  # no orphan rule ConfigMaps accumulate.
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: loki-rules-host-log-staleness
+    files:
+      - host-log-staleness.yaml
+    options:
+      labels:
+        loki_rule: "1"
+      annotations:
+        k8s-sidecar-target-directory: /rules/fake

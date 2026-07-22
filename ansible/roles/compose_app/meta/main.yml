@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: compose_app
+  namespace: weisssrv
+  author: Eric Weiss
+  description: >-
+    Shared scaffolding for single-project docker-compose app guests (immich,
+    immich_ml, nextcloud): the compose systemd-unit template, the backup-metrics
+    helper library, and the host-nginx TLS-terminator task flow
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Dependencies are handled at the caller (each app role includes this one's task
+# files), not in meta, to allow isolated unit testing. This role itself includes
+# docker_engine from tasks/docker.yml.
+dependencies: []

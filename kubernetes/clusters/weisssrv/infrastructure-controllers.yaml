@@ -4,7 +4,10 @@
 #
 # Depends on infrastructure-sources being Ready so HelmRepositories exist
 # (charts are pullable) and cluster-versions ConfigMap exists (postBuild
-# substitution below resolves).
+# substitution below resolves), AND on infrastructure-crds being Ready so the
+# monitoring.coreos.com CRDs exist before any controller (e.g. Traefik) renders a
+# ServiceMonitor — otherwise a fresh bootstrap hard-fails ("you have to deploy
+# monitoring.coreos.com/v1 first"). See docs/29 (Fresh bootstrap / DR).
 #
 # optional: false — cluster-versions lives in sources/ which must reconcile
 # first, so a missing ConfigMap here indicates a real problem and should
@@ -20,6 +23,7 @@ spec:
   timeout: 15m  # Helm install of cert-manager + ESO + CRDs can take >5m
   dependsOn:
     - name: infrastructure-sources
+    - name: infrastructure-crds
   sourceRef:
     kind: GitRepository
     name: flux-system

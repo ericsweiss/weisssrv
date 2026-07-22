@@ -21,11 +21,9 @@ nextcloud_postgres_image: "postgres:{{ nextcloud_postgres_version }}"
 nextcloud_redis_image: "redis:{{ redis_version }}"
 nextcloud_exporter_image: "ghcr.io/xperimental/nextcloud-exporter:{{ nextcloud_exporter_version }}"
 
-# Docker Engine apt pins (download.docker.com, Debian trixie). Bump all three
-# together when the repo prunes the pinned version (docs/35 upgrade runbook).
-nextcloud_docker_ce_apt_version: "{{ nextcloud_docker_version }}"
-nextcloud_containerd_apt_version: "{{ nextcloud_containerd_version }}"
-nextcloud_docker_compose_apt_version: "{{ nextcloud_docker_compose_version }}"
+# The Docker engine + plugins are installed and version-pinned by the shared
+# docker_engine role from the single group_vars/all.yml pins (docker_ce_version
+# etc.) — this role no longer carries its own Docker apt-version aliases.
 
 # --- Filesystem layout (zvol passthrough disks; NO NFS) ---------------------
 # ssd/appdata/nextcloud/app  -> /mnt/nextcloud-app       (compose + html + config + backups)
@@ -37,7 +35,10 @@ nextcloud_data_mount: /mnt/nextcloud-data
 nextcloud_compose_dir: "{{ nextcloud_app_dir }}/compose"
 nextcloud_html_dir: "{{ nextcloud_app_dir }}/html"
 nextcloud_data_dir: "{{ nextcloud_data_mount }}/data"
-nextcloud_backup_dir: "{{ nextcloud_app_dir }}/backups"
+# The nightly pg_dump lands on the offsite NFS landing zone when
+# nextcloud_backup_nfs_enabled is set (see --- Backup --- below), otherwise the
+# app zvol. Resolving the path from the toggle means group_vars flips one var.
+nextcloud_backup_dir: "{{ nextcloud_backup_mountpoint if nextcloud_backup_nfs_enabled else nextcloud_app_dir + '/backups' }}"
 
 # Nextcloud container runs as www-data (uid/gid 33). The bind-mounted html +
 # data directories must be owned by that uid so PHP can write.
@@ -166,12 +167,33 @@ nextcloud_oidc_unique_uid: 0
 # to Authentik (hides the local login form; ?direct=1 bypasses for break-glass).
 nextcloud_oidc_sso_only: true
 
-# --- Backup (nightly pg_dump -> zvol -> archive) ----------------------------
+# --- Backup (nightly pg_dump -> offsite NFS landing zone -> archive + B2) ----
 nextcloud_backup_enabled: true
-# Keep this many days of local pg_dumps under nextcloud_backup_dir (which rides
-# ssd/appdata -> archive raw-encrypted replication and the nightly vzdump).
-nextcloud_backup_keep_days: 7
+# Local retention is deliberately minimal: long-term history now lives on the
+# shared landing zone's archive replication (KEEP_RECENT 3 + KEEP_MONTHLY 6) and
+# the B2 GFS retention, so only a few days are kept on the mount itself.
+nextcloud_backup_keep_days: 3
 nextcloud_backup_oncalendar: "*-*-* 02:30:00"
+# Sourceable write_prom_metrics helper library (deployed by compose_app), sourced
+# by nextcloud-backup-run.sh so the metric-writing logic is shared with immich.
+nextcloud_backup_lib_path: /usr/local/lib/nextcloud-backup-lib.sh
+
+# --- Offsite backup landing zone (NFS mount of tank/backups/apps/nextcloud) ---
+# When enabled, the pg_dump lands on the shared, file-walkable tank/backups/apps
+# zone (rides the archsync file walk into B2 — docs/42) instead of the app zvol.
+# OFF by default (opt-in): flip nextcloud_backup_nfs_enabled in group_vars once
+# the NAS-side export (/export/backups-apps/nextcloud, all_squash 1000:2000,
+# 02775) exists — mirrors the gitlab role's NFS-backed backup landing. Mounted
+# OVER TLS (xprtsec=tls, by hostname so the *.esweiss.com cert verifies): the
+# per-app export REQUIRES TLS, and the VM runs tlshd via the nfs_tls role in
+# nextcloud.yml (gated on this flag). The dump lands on the aes-256-gcm
+# tank/backups dataset. nofail keeps a NAS-down boot from hanging;
+# nextcloud-backup.service's RequiresMountsFor pulls it on demand.
+nextcloud_backup_nfs_enabled: false
+nextcloud_backup_nfs_server: "pve-nas-01.esweiss.com"
+nextcloud_backup_nfs_export: /backups-apps/nextcloud
+nextcloud_backup_mountpoint: /mnt/backups-offsite
+nextcloud_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
 
 # Readiness wait for the first-install completion before running occ.
 nextcloud_install_wait_retries: 60

@@ -5,7 +5,7 @@ galaxy_info:
   role_name: unbound
   namespace: weisssrv
   author: Eric Weiss
-  description: Unbound recursive DNS resolver with DNS-over-TLS support
+  description: Unbound forwarding DNS resolver (DoT to public upstreams)
   license: MIT
   min_ansible_version: "2.15"
   platforms:

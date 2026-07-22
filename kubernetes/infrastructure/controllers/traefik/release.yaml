@@ -98,9 +98,14 @@ spec:
       # No NodePorts: MetalLB L2 announces the VIP directly and never uses them,
       # so the default-allocated ports were unused listeners on every node. The
       # healthCheckNodePort stays — required by externalTrafficPolicy: Local.
-      # Flipping this flag does not release already-allocated NodePorts: neither
-      # Helm nor Flux SSA owns spec.ports[*].nodePort, so a one-time kubectl
-      # patch removing those fields is needed on existing Services.
+      # Flipping this flag does not release NodePorts already allocated on a
+      # Service: neither Helm nor Flux SSA owns spec.ports[*].nodePort, so if a
+      # Service was created before this flag was set it keeps its stale nodePorts
+      # until an operator strips them once with:
+      #   kubectl -n traefik patch svc traefik --type=json \
+      #     -p '[{"op":"remove","path":"/spec/ports/0/nodePort"},
+      #          {"op":"remove","path":"/spec/ports/1/nodePort"}]'
+      #   (repeat for svc traefik-internal)
       spec:
         externalTrafficPolicy: Local
         allocateLoadBalancerNodePorts: false
@@ -132,6 +137,13 @@ spec:
         entryPoint: metrics
         serviceMonitor:
           enabled: true
+          # honorLabels so Prometheus keeps Traefik's native per-backend `service`
+          # label instead of prefixing it to `exported_service` (the scraped k8s
+          # Service is also named "traefik", which would otherwise collide). Without
+          # this the traefik-official dashboard's $service variable and every
+          # per-service panel collapse all ~36 backends into a single "traefik"
+          # series (the label_replace @-strip becomes a no-op on the bare value).
+          honorLabels: true
 
     # Providers
     providers:

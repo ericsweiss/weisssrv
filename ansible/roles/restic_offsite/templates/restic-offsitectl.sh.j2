@@ -1,0 +1,452 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Nightly offsite backup to Backblaze B2 via restic + rclone. Mirrors the
+# archive-backupctl control-script shape (subcommands, flock, node_exporter
+# textfile metrics, EXIT-trap cleanup). See the restic_offsite role README and
+# docs/42-offsite-backup.md.
+#
+# Data model: restic reads a CONSISTENT point-in-time by binding each source
+# dataset's latest archsync-* snapshot (created by archive-backupctl, which this
+# job chains OnSuccess= after). File-walkable datasets are bind-mounted from
+# their .zfs/snapshot tree; the two file-bearing data zvols (immich/nextcloud)
+# are CLONED from their latest archsync snapshot and mounted read-only so their
+# ext4 contents are file-walkable too. Every clone/bind is torn down by the EXIT
+# trap so a crashed run never strands a clone or a mount.
+
+set -Eeuo pipefail
+
+# ---- config (rendered by Ansible; keep OUT of the raw block below) ----
+BIND_MODE="{{ restic_offsite_bind_mode | default('bind') }}"        # bind (host) | direct (molecule)
+BIND_ROOT="{{ restic_offsite_bind_root }}"                          # stable path root for file-source binds
+ZVOL_MOUNT_ROOT="{{ restic_offsite_zvol_mount_root }}"             # stable path root for zvol-clone mounts
+SNAP_PREFIX="{{ restic_offsite_snap_prefix | default('archsync') }}"
+FRESH_MAX_AGE_H="{{ restic_offsite_freshness_max_age_h | default(26) }}"
+RESTORE_BASE="{{ restic_offsite_restore_base | default('/mnt/restore/restic') }}"
+EXCLUDE_FILE="{{ restic_offsite_excludes_file | default('/etc/restic-offsite/excludes.txt') }}"
+KEEP_DAILY="{{ restic_offsite_keep_daily | default(3) }}"
+KEEP_WEEKLY="{{ restic_offsite_keep_weekly | default(2) }}"
+KEEP_MONTHLY="{{ restic_offsite_keep_monthly | default(3) }}"
+KEEP_YEARLY="{{ restic_offsite_keep_yearly | default(1) }}"
+PROM_DIR="{{ restic_offsite_metrics_dir | default('/var/lib/node_exporter') }}"
+ZVOL_CLONE_SUFFIX="{{ restic_offsite_zvol_clone_suffix | default('b2walk') }}"
+ENV_FILE="{{ restic_offsite_config_dir }}/env"
+
+# File-walkable sources: "name mountpoint" (bind the latest archsync snapshot subtree).
+# Names/paths carry no spaces, so a space-split read is safe.
+FILE_SOURCES=(
+{% for s in restic_offsite_sources %}
+  "{{ s.name }} {{ s.mountpoint }}"
+{% endfor %}
+)
+# Zvol data sources: "name zvol fstype mount_opts" (clone latest archsync snapshot,
+# mount the ext4 read-only so restic can file-walk it). Empty in molecule (no ZFS).
+ZVOL_SOURCES=(
+{% for z in restic_offsite_zvol_sources | default([]) %}
+  "{{ z.name }} {{ z.zvol }} {{ z.fstype | default('ext4') }} {{ z.mount_opts | default('ro,noload') }}"
+{% endfor %}
+)
+{% raw %}
+PROM_FILE="${PROM_DIR}/restic_offsite.prom"
+VERIFY_PROM_FILE="${PROM_DIR}/restic_offsite_verify.prom"
+LOCK="/run/restic-offsite.lock"
+
+log() { echo "[$(date -Is)] $*"; }
+
+# The systemd unit injects the restic/rclone env via EnvironmentFile=; MANUAL
+# invocations (the runbook's restore/verify/run paths) run outside the unit, so
+# source the same file ourselves when the repo env is absent. Root-only 0600.
+if [[ -z "${RESTIC_REPOSITORY:-}" && -r "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run as root (e.g. sudo restic-offsitectl ...)" >&2
+    exit 1
+  fi
+}
+
+# ---- metrics -----------------------------------------------------------------
+# Run-metric globals: written on EVERY exit by the cleanup() EXIT trap, so a
+# freshness abort, a clone/mount failure, an unexpected set -e death, or a signal
+# all record a FAILED run. The success branch flips run_success to 1.
+run_success=0
+run_repo_bytes=0
+run_snap_bytes=0
+_RUN_START_TS="$(date +%s)"
+_METRICS_ACTIVE=0
+
+write_prom_metrics() {
+  local success="$1" duration="$2" repo_bytes="$3" snap_bytes="$4"
+  local ts tmp sval
+  ts="$(date +%s)"
+  tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP restic_offsite_last_run_duration_seconds Duration of the last offsite backup run"
+    echo "# TYPE restic_offsite_last_run_duration_seconds gauge"
+    echo "restic_offsite_last_run_duration_seconds ${duration}"
+    echo "# HELP restic_offsite_last_run_success Whether the last run succeeded (1=success, 0=failure/abort)"
+    echo "# TYPE restic_offsite_last_run_success gauge"
+    echo "restic_offsite_last_run_success ${success}"
+    # Preserve the last-known success timestamp on a failed/aborted run so the
+    # staleness alert measures time-since-last-success, not time-since-attempt.
+    if [ "$success" -eq 1 ]; then
+      sval="$ts"
+    else
+      sval="$(awk '/^restic_offsite_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+    fi
+    if [ -n "$sval" ]; then
+      echo "# HELP restic_offsite_last_success_timestamp_seconds Unix timestamp of the last successful offsite backup"
+      echo "# TYPE restic_offsite_last_success_timestamp_seconds gauge"
+      echo "restic_offsite_last_success_timestamp_seconds ${sval}"
+    fi
+    echo "# HELP restic_offsite_repo_size_bytes restic repository raw-data size in bytes (0 = unknown)"
+    echo "# TYPE restic_offsite_repo_size_bytes gauge"
+    echo "restic_offsite_repo_size_bytes ${repo_bytes}"
+    echo "# HELP restic_offsite_snapshot_total_bytes Size of the latest restic snapshot in bytes (0 = unknown)"
+    echo "# TYPE restic_offsite_snapshot_total_bytes gauge"
+    echo "restic_offsite_snapshot_total_bytes ${snap_bytes}"
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+write_verify_metrics() {
+  local success="$1"
+  local ts tmp sval
+  ts="$(date +%s)"
+  tmp="${VERIFY_PROM_FILE}.$$"
+  {
+    echo "# HELP restic_offsite_last_verify_success Whether the last 'restic check' succeeded (1=ok, 0=failed)"
+    echo "# TYPE restic_offsite_last_verify_success gauge"
+    echo "restic_offsite_last_verify_success ${success}"
+    if [ "$success" -eq 1 ]; then
+      sval="$ts"
+    else
+      sval="$(awk '/^restic_offsite_last_verify_timestamp_seconds/ {print $2}' "$VERIFY_PROM_FILE" 2>/dev/null || true)"
+    fi
+    if [ -n "$sval" ]; then
+      echo "# HELP restic_offsite_last_verify_timestamp_seconds Unix timestamp of the last successful verify"
+      echo "# TYPE restic_offsite_last_verify_timestamp_seconds gauge"
+      echo "restic_offsite_last_verify_timestamp_seconds ${sval}"
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$VERIFY_PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+# ---- source snapshot resolution / freshness ---------------------------------
+# Latest archsync snapshot NAME for a file source (walks the browsable .zfs
+# tree). Bash sorts glob matches ascending, so the last one is the newest; the
+# -e guard handles the no-match case (glob stays literal).
+latest_file_snap() {
+  local mp="$1" d newest=""
+  for d in "${mp}/.zfs/snapshot/${SNAP_PREFIX}-"*/; do
+    [[ -e "$d" ]] || continue
+    newest="${d%/}"
+  done
+  [[ -n "$newest" ]] && printf '%s' "${newest##*/}"
+}
+
+# Latest archsync snapshot NAME for a zvol (no browsable .zfs — list snapshots).
+latest_zvol_snap() {
+  local zvol="$1"
+  zfs list -H -t snapshot -o name -s creation "$zvol" 2>/dev/null \
+    | sed -n "s/.*@\(${SNAP_PREFIX}-.*\)$/\1/p" | tail -1 || true
+}
+
+# Age in seconds of an archsync-YYYYMMDD-HHMMSS snapshot, parsed from its NAME
+# (works in bind + direct mode, needs no zfs command). Prints a huge number when
+# the name is unparseable so the freshness guard treats it as stale.
+snap_age_seconds() {
+  local name="$1" d epoch now
+  d="${name#"${SNAP_PREFIX}-"}"
+  epoch="$(date -d "${d:0:8} ${d:9:2}:${d:11:2}:${d:13:2}" +%s 2>/dev/null || true)"
+  [[ -n "$epoch" ]] || { echo 999999999; return 0; }
+  now="$(date +%s)"
+  echo $(( now - epoch ))
+}
+
+# ---- cleanup (EXIT trap) -----------------------------------------------------
+# Torn-down in reverse: unmount every bind + zvol-clone mount, destroy every
+# clone, then write metrics. Paths/clones are recorded BEFORE the mount/clone so
+# an abort/crash mid-run can never strand them.
+_BINDS_TO_UMOUNT=()
+_ZVOL_MOUNTS_TO_UMOUNT=()
+_CLONES_TO_DESTROY=()
+cleanup() {
+  local p
+  for p in "${_ZVOL_MOUNTS_TO_UMOUNT[@]:-}"; do
+    [[ -n "$p" ]] || continue
+    umount -l "$p" >/dev/null 2>&1 || true
+  done
+  for p in "${_BINDS_TO_UMOUNT[@]:-}"; do
+    [[ -n "$p" ]] || continue
+    umount -l "$p" >/dev/null 2>&1 || true
+  done
+  for p in "${_CLONES_TO_DESTROY[@]:-}"; do
+    [[ -n "$p" ]] || continue
+    zfs destroy -r "$p" >/dev/null 2>&1 || true
+  done
+  if [[ "${_METRICS_ACTIVE}" -eq 1 ]]; then
+    local end_ts duration
+    end_ts="$(date +%s)"
+    duration=$(( end_ts - _RUN_START_TS ))
+    write_prom_metrics "$run_success" "$duration" "$run_repo_bytes" "$run_snap_bytes"
+  fi
+}
+
+# ---- restic repo helpers -----------------------------------------------------
+repo_init_if_needed() {
+  if ! restic cat config >/dev/null 2>&1; then
+    log "restic repository not initialized; running restic init"
+    restic init
+  fi
+}
+
+# ---- run ---------------------------------------------------------------------
+cmd_run() {
+  exec 9>"$LOCK"
+  if ! flock -n 9; then
+    log "restic-offsite already running; exiting"
+    exit 0
+  fi
+  _METRICS_ACTIVE=1
+  trap cleanup EXIT
+  trap 'exit' INT TERM
+
+  mkdir -p "$PROM_DIR" "$BIND_ROOT" "$ZVOL_MOUNT_ROOT"
+
+  # --- Freshness guard: never upload a stale tree. Each source must carry a
+  #     archsync-* snapshot no older than FRESH_MAX_AGE_H (B2 chains OnSuccess=
+  #     after a good archive replication, so a fresh snapshot is expected). An
+  #     absent or stale snapshot aborts with success=0 (distinct 'stale-source'
+  #     log) -> ResticOffsiteFailed. ---
+  local max_age_s=$(( FRESH_MAX_AGE_H * 3600 ))
+  local restic_paths=() name mp snap age zvol fstype mopts entry
+
+  for entry in "${FILE_SOURCES[@]}"; do
+    read -r name mp <<< "$entry"
+    snap="$(latest_file_snap "$mp")"
+    if [[ -z "$snap" ]]; then
+      log "stale-source: no ${SNAP_PREFIX}-* snapshot under ${mp}/.zfs/snapshot — aborting (not uploading a stale/absent tree)"
+      exit 1
+    fi
+    age="$(snap_age_seconds "$snap")"
+    if (( age > max_age_s )); then
+      log "stale-source: ${mp} newest snapshot ${snap} is ${age}s old (> ${max_age_s}s) — aborting"
+      exit 1
+    fi
+    if [[ "$BIND_MODE" == "bind" ]]; then
+      mkdir -p "${BIND_ROOT}/${name}"
+      _BINDS_TO_UMOUNT+=( "${BIND_ROOT}/${name}" )
+      mount --bind "${mp}/.zfs/snapshot/${snap}" "${BIND_ROOT}/${name}"
+      # A ZFS snapshot is immutable, but remount ro so nothing can ever write
+      # through the bind either.
+      mount -o remount,ro,bind "${BIND_ROOT}/${name}" 2>/dev/null || true
+      restic_paths+=( "${BIND_ROOT}/${name}" )
+    else
+      # direct (molecule): back up the snapshot dir in place (single run; no
+      # parent-snapshot dedup needed).
+      restic_paths+=( "${mp}/.zfs/snapshot/${snap}" )
+    fi
+  done
+
+  for entry in "${ZVOL_SOURCES[@]}"; do
+    [[ -n "$entry" ]] || continue
+    read -r name zvol fstype mopts <<< "$entry"
+    snap="$(latest_zvol_snap "$zvol")"
+    if [[ -z "$snap" ]]; then
+      log "stale-source: no ${SNAP_PREFIX}-* snapshot on zvol ${zvol} — aborting"
+      exit 1
+    fi
+    age="$(snap_age_seconds "$snap")"
+    if (( age > max_age_s )); then
+      log "stale-source: zvol ${zvol} newest snapshot ${snap} is ${age}s old (> ${max_age_s}s) — aborting"
+      exit 1
+    fi
+    # Clone the snapshot to a throwaway sibling zvol and mount its ext4 read-only.
+    # A stale clone from a crashed prior run is destroyed first (idempotent) —
+    # but ONLY after proving the existing dataset really is OUR clone: its
+    # `origin` must point at this zvol's snapshots. Without that check, a real
+    # dataset that merely shares the derived -${ZVOL_CLONE_SUFFIX} name would be
+    # recursively destroyed by a nightly backup job. Not ours -> abort loudly.
+    local clone="${zvol%/*}-${ZVOL_CLONE_SUFFIX}"
+    if zfs list -H -o name "$clone" >/dev/null 2>&1; then
+      local origin
+      origin="$(zfs get -H -o value origin "$clone" 2>/dev/null || true)"
+      if [[ "$origin" == "${zvol}@"* ]]; then
+        log "destroying stale clone ${clone} from a prior run (origin ${origin})"
+        zfs destroy -r "$clone" >/dev/null 2>&1 || true
+      else
+        log "clone-conflict: ${clone} exists with origin ${origin:-unknown} — not a clone of ${zvol}, refusing to destroy an unmanaged dataset; remove/rename it manually"
+        exit 1
+      fi
+    fi
+    if ! zfs clone "${zvol}@${snap}" "$clone"; then
+      log "clone-failed: zfs clone ${zvol}@${snap} -> ${clone} failed — aborting"
+      exit 1
+    fi
+    # Registered AFTER a successful create: the EXIT trap must only reap clones
+    # THIS run made, never a name it refused to touch above.
+    _CLONES_TO_DESTROY+=( "$clone" )
+    # zvol device nodes appear via udev; wait briefly for /dev/zvol/<clone>.
+    local dev="/dev/zvol/${clone}" i=0
+    udevadm settle >/dev/null 2>&1 || true
+    while [[ ! -e "$dev" ]] && (( i < 50 )); do sleep 0.2; i=$(( i + 1 )); done
+    mkdir -p "${ZVOL_MOUNT_ROOT}/${name}"
+    _ZVOL_MOUNTS_TO_UMOUNT+=( "${ZVOL_MOUNT_ROOT}/${name}" )
+    if ! mount -t "$fstype" -o "$mopts" "$dev" "${ZVOL_MOUNT_ROOT}/${name}"; then
+      log "mount-failed: ${dev} (${fstype},${mopts}) -> ${ZVOL_MOUNT_ROOT}/${name} — aborting"
+      exit 1
+    fi
+    restic_paths+=( "${ZVOL_MOUNT_ROOT}/${name}" )
+  done
+
+  repo_init_if_needed
+
+  log "restic backup of ${#restic_paths[@]} source path(s)"
+  restic backup "${restic_paths[@]}" \
+    --tag nightly \
+    --exclude-file "$EXCLUDE_FILE" \
+    --exclude-caches \
+    --one-file-system=false
+
+  log "restic forget --keep-daily ${KEEP_DAILY} --keep-weekly ${KEEP_WEEKLY} --keep-monthly ${KEEP_MONTHLY} --keep-yearly ${KEEP_YEARLY} --prune"
+  restic forget \
+    --keep-daily "$KEEP_DAILY" \
+    --keep-weekly "$KEEP_WEEKLY" \
+    --keep-monthly "$KEEP_MONTHLY" \
+    --keep-yearly "$KEEP_YEARLY" \
+    --prune
+
+  # Repo raw-data size + latest snapshot size for the metrics (best-effort).
+  run_repo_bytes="$(restic stats --mode raw-data --json 2>/dev/null \
+    | sed -n 's/.*"total_size":\([0-9]*\).*/\1/p' | head -1 || true)"
+  [[ "$run_repo_bytes" =~ ^[0-9]+$ ]] || run_repo_bytes=0
+  run_snap_bytes="$(restic stats --mode restore-size --json latest 2>/dev/null \
+    | sed -n 's/.*"total_size":\([0-9]*\).*/\1/p' | head -1 || true)"
+  [[ "$run_snap_bytes" =~ ^[0-9]+$ ]] || run_snap_bytes=0
+
+  run_success=1
+  log "offsite backup complete (repo raw-data ${run_repo_bytes} bytes, latest snapshot ${run_snap_bytes} bytes)"
+  # cleanup() (EXIT trap) unmounts binds, destroys clones, and writes metrics.
+}
+
+# ---- restore -----------------------------------------------------------------
+cmd_restore() {
+  need_lock_or_die
+  local name="${1:-}" snap="${2:-latest}" target="${3:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: restic-offsitectl restore <source-name> [snapshotID|latest] [target-dir]" >&2
+    exit 2
+  fi
+  if [[ -z "$target" ]]; then
+    target="${RESTORE_BASE}/${name}/$(date +%Y%m%d-%H%M%S)"
+  fi
+  mkdir -p "$target"
+  # Restrict the restore to the requested source's path prefix (bind or zvol root).
+  log "restic restore ${snap} --target ${target} (source: ${name})"
+  restic restore "$snap" --target "$target" \
+    --include "${BIND_ROOT}/${name}" \
+    --include "${ZVOL_MOUNT_ROOT}/${name}"
+  log "restore complete: ${target}"
+}
+
+# ---- verify ------------------------------------------------------------------
+cmd_verify() {
+  need_lock_or_die
+  local rc=0
+  if [[ "${1:-}" == "--full" ]]; then
+    log "restic check --read-data (full)"
+    restic check --read-data || rc=$?
+  elif [[ "${1:-}" == "--auto-subset" ]]; then
+    # Weekly rotating deep verify: read-verify a different twelfth of the pack
+    # data each ISO week, so the whole repo is re-read against bit-rot every
+    # ~12 weeks at ~1/12th the egress of a full check. 10# forces base-10 (%V
+    # is zero-padded). Driven by restic-offsite-verify.timer.
+    local subset="$(( 10#$(date +%V) % 12 + 1 ))/12"
+    log "restic check --read-data-subset=${subset} (weekly rotation)"
+    restic check --read-data-subset="$subset" || rc=$?
+  else
+    log "restic check (structure + subset of packs)"
+    restic check || rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    write_verify_metrics 1
+    log "verify OK"
+  else
+    write_verify_metrics 0
+    log "verify FAILED (rc=${rc})"
+  fi
+  return "$rc"
+}
+
+# ---- snapshots / prune / status ---------------------------------------------
+cmd_snapshots() { restic snapshots; }
+
+cmd_prune() {
+  need_lock_or_die
+  restic forget \
+    --keep-daily "$KEEP_DAILY" \
+    --keep-weekly "$KEEP_WEEKLY" \
+    --keep-monthly "$KEEP_MONTHLY" \
+    --keep-yearly "$KEEP_YEARLY" \
+    --prune
+}
+
+cmd_status() {
+  systemctl status restic-offsite.timer --no-pager 2>/dev/null || true
+  systemctl status restic-offsite.service --no-pager 2>/dev/null || true
+  echo "--- restic snapshots (tail) ---"
+  restic snapshots 2>/dev/null | tail -n 15 || true
+  echo "--- restic stats (raw-data) ---"
+  restic stats --mode raw-data 2>/dev/null || true
+}
+
+# Single-instance lock shared with cmd_run: a restore/verify/prune must never
+# interleave with a mid-run backup (they'd race the same repo). Fail fast.
+need_lock_or_die() {
+  exec 9>"$LOCK"
+  if ! flock -n 9; then
+    log "restic-offsite run in progress (lock held); retry after the nightly window"
+    exit 1
+  fi
+}
+
+usage() {
+  cat <<USAGE
+Usage: restic-offsitectl <command> [args]   (run as root)
+
+Commands:
+  run                          Run the nightly offsite backup now (freshness-guarded)
+  restore <name> [snap] [dir]  Restore a source (default snap=latest) into dir
+                               (default /mnt/restore/restic/<name>/<ts>)
+  verify [--full|--auto-subset]  restic check (--full reads all pack data;
+                               --auto-subset reads a rotating 1/12 — the weekly
+                               restic-offsite-verify.timer's mode)
+  snapshots                    List restic snapshots
+  prune                        restic forget --prune (GFS retention)
+  status                       Timer/service status + snapshots + repo stats
+USAGE
+}
+
+main() {
+  need_root
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    run) cmd_run ;;
+    restore) cmd_restore "$@" ;;
+    verify) cmd_verify "$@" ;;
+    snapshots) cmd_snapshots ;;
+    prune) cmd_prune ;;
+    status) cmd_status ;;
+    ""|help|-h|--help) usage ;;
+    *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
+  esac
+}
+
+main "$@"
+{% endraw %}

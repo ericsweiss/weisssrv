@@ -144,6 +144,7 @@ rewrite / blocklist edit on both UIs) so drift never opens up.
 - `templates/adguardhome-sync.yaml.j2` - Sync configuration
 - `templates/adguardhome-sync.service.j2` - Systemd service
 - `templates/adguardhome-sync.timer.j2` - Systemd timer
+- `files/adguardhome-sync-metrics.sh` - node_exporter textfile writer (ExecStopPost)
 - `handlers/main.yml` - Systemd reload handler
 
 ## Dependencies
@@ -176,6 +177,20 @@ journalctl -u adguardhome-sync.service -n 20
 # Manually trigger sync
 systemctl start adguardhome-sync.service
 ```
+
+### Failure alerting
+
+The tool's own metrics API is disabled (`api.port: 0`), so the unit emits a
+node_exporter textfile on every run instead (`ExecStopPost=+…-metrics.sh`,
+`/var/lib/node_exporter/adguardhome_sync.prom`):
+
+- `adguardhome_sync_last_run_success` — `1` on a clean run, `0` on failure.
+- `adguardhome_sync_last_success_timestamp_seconds` — preserved across failures,
+  so a staleness alert measures time-since-last-success.
+
+An AdGuardSyncFailed/Stale Prometheus alert consumes these, so a silently broken
+sync (revoked password, dns-02 unreachable, schema change) is caught rather than
+leaving dns-02 serving stale rewrites/blocklists indefinitely.
 
 ### Sync Frequency
 

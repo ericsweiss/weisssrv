@@ -153,7 +153,7 @@ Plex will auto-update via apt.
 Enabled via LXC GPU passthrough:
 
 ```yaml
-# In hosts.yml
+# In host_vars/plex.yml
 plex:
   lxc_gpu_passthrough: true
 ```

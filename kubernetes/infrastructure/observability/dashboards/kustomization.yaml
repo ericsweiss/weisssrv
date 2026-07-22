@@ -35,6 +35,14 @@ configMapGenerator:
         grafana_dashboard: "1"
       annotations:
         grafana_folder: "Infrastructure"
+  - name: grafana-dashboard-backup-nightly
+    files:
+      - backup-nightly-jobs.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Infrastructure"
   - name: grafana-dashboard-blackbox
     files:
       - blackbox.json
@@ -83,9 +91,25 @@ configMapGenerator:
         grafana_dashboard: "1"
       annotations:
         grafana_folder: "Applications"
+  - name: grafana-dashboard-hindsight
+    files:
+      - hindsight.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
   - name: grafana-dashboard-home-assistant
     files:
       - home-assistant.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-immich
+    files:
+      - immich.json
     options:
       labels:
         grafana_dashboard: "1"
@@ -110,6 +134,14 @@ configMapGenerator:
   - name: grafana-dashboard-media-stack
     files:
       - media-stack.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"
+  - name: grafana-dashboard-nextcloud
+    files:
+      - nextcloud.json
     options:
       labels:
         grafana_dashboard: "1"
@@ -171,3 +203,11 @@ configMapGenerator:
         grafana_dashboard: "1"
       annotations:
         grafana_folder: "Networking"
+  - name: grafana-dashboard-wg-easy
+    files:
+      - wg-easy.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Applications"

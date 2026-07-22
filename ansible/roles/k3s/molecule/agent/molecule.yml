@@ -40,6 +40,10 @@ provisioner:
       callbacks_enabled: profile_tasks, timer
       stdout_callback: ansible.builtin.default
       result_format: yaml
+    # Self-contained scenario (no -c base.yml): mirror the base's [connection]
+    # pipelining — one docker exec per task instead of put-file + exec.
+    connection:
+      pipelining: true
   playbooks:
     prepare: prepare.yml
     converge: converge.yml

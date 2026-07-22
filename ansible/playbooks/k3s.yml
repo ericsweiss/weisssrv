@@ -38,6 +38,11 @@
 - name: Deploy k3s agents
   hosts: k3s_agents
   become: true
+  # One agent at a time: an agent config / kubelet-arg change fires the
+  # Restart k3s-agent handler, and Traefik ingress + the MetalLB L2 speaker run
+  # on the agents, so a simultaneous cluster-wide kubelet bounce can blip the
+  # .100/.101 VIPs. Matches the server play above and maintenance/update-k3s-nodes.yml.
+  serial: 1
   roles:
     - k3s
 

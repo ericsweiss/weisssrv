@@ -151,3 +151,68 @@ spec:
     requests:
       storage: 10Gi
   volumeName: recipes-appdata-bar-assistant
+
+---
+# =============================================================================
+# Mealie pg_dump backup target
+# =============================================================================
+# NFS-backed target for the mealie-pg-dump CronJob's logical backups. The mealie
+# postgres zvol above is only a crash-consistent snapshot; these dumps add a
+# restorable logical backup. Landing zone is tank/backups/apps/mealie (the
+# encrypted, FILE-WALKABLE consolidated dump dataset): tank/backups rides the
+# nightly archive raw-ZFS replication AND, being file-walkable, is picked up by
+# the restic offsite B2 walk — so the dump lands offsite where a zvol never
+# could (docs/06, docs/41 B2 plan).
+#
+# DEPLOY-ORDER DEPENDENCY: the nas_storage role (ansible) creates + owns the
+# tank/backups/apps/mealie subdir (1000:2000, 02775) as the bind_source of its
+# own per-app export /export/backups-apps/mealie (TLS required, scoped to the
+# k3s client CIDRs only) — one nfs_exports entry per app in
+# host_vars/pve-nas-01.yml. Run the ansible storage deploy before this PV
+# reconciles so the export + subdir exist when the CronJob first mounts.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mealie-pg-dump
+  annotations:
+    # Lets Flux delete+recreate this PV when an immutable field (server,
+    # mountOptions) changes, instead of stalling the Kustomization. Retain
+    # reclaim policy keeps the NFS data — data safe.
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
+  labels:
+    type: nfs
+    app: mealie
+spec:
+  claimRef:
+    namespace: recipes
+    name: mealie-pg-dump
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    # Hostname, not IP: xprtsec=tls verifies the server cert (SAN *.esweiss.com).
+    server: pve-nas-01.esweiss.com
+    path: /backups-apps/mealie
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - noatime
+    - xprtsec=tls
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mealie-pg-dump
+  namespace: recipes
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: mealie-pg-dump

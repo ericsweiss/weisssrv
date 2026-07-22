@@ -8,12 +8,14 @@ resources:
   - authentik
   - download-clients
   - hermes
+  - homarr
   - hindsight
   - recipes
   - gitlab-runner
   - gitlab-runner-privileged
   - gitlab-runner-reaper
   - gitlab-agent
+  - registry-cache
   - tailnet-dns
   - vm-ingress
   - wg-easy

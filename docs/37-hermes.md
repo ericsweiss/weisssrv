@@ -254,35 +254,31 @@ references it), `task hermes:restart`, then verify with
 
 ---
 
-## SSO — layered: Authentik perimeter + dashboard OIDC (OIDC-only)
+## SSO — dashboard Authentik OIDC (OIDC-only)
 
-Access is layered: an Authentik forward-auth perimeter in front of the
-dashboard's own login, which is itself Authentik OIDC first.
+Access is the dashboard's own Authentik OIDC login — one Authentik prompt,
+both hostnames. (A forward-auth perimeter used to sit in front of it; that
+layer was removed as redundant once the dashboard's login became Authentik
+OIDC itself.)
 
-1. **Authentik forward-auth (perimeter).** Both IngressRoutes carry the
-   `authentik-auth` middleware, so only members of the Authentik `hermes-users`
-   group ever reach the dashboard. This is the login users normally see
-   (transparent after the first app in the SSO session).
-2. **Traefik-only NetworkPolicy.** Ingress on `:9119` is default-deny except
-   from the Traefik namespace, so there is no route to the dashboard that skips
-   the forward-auth middleware.
-3. **Dashboard OIDC (primary in-app login).** The dashboard's `self_hosted`
+1. **Dashboard OIDC (the auth layer).** The dashboard's `self_hosted`
    generic-OIDC `dashboard_auth` provider points at Authentik: issuer
-   `https://auth.ericsweiss.com/application/o/agent-sso/`, client
+   `https://auth.ericsweiss.com/application/o/agent/`, client
    `hermes-dashboard`, confidential (non-empty client secret) with PKCE always
    on, standard discovery from `{issuer}/.well-known/openid-configuration`,
    callback `GET /auth/callback`. Config is env-only in this deployment
-   (`HERMES_DASHBOARD_OIDC_*` — env wins over `config.yaml`), and
-   `HERMES_DASHBOARD_PUBLIC_URL=https://agent.ericsweiss.com` pins the
-   reconstructed redirect_uri deterministically behind Traefik to exactly
-   `https://agent.ericsweiss.com/auth/callback` — the single **strict** allowed
-   redirect URI on the authentik provider. Because the perimeter already
-   established an Authentik session, this hop is **silent same-session**:
-   picking "Authentik" on `/login` round-trips through the implicit-consent
-   flow without a prompt. An OIDC login started on the internal host
-   (`agent.esweiss.com`) completes on the external host (the pinned
-   `PUBLIC_URL`); `basic` works on either host.
-4. **OIDC-only — the `basic` password provider is retired.** The dashboard
+   (`HERMES_DASHBOARD_OIDC_*` — env wins over `config.yaml`). No
+   `PUBLIC_URL` pin: the redirect_uri is reconstructed per-request from
+   Traefik's `X-Forwarded-Host`/`-Proto` (`FORWARDED_ALLOW_IPS` makes uvicorn
+   trust them — safe because the NetworkPolicy admits only Traefik, which
+   overwrites those headers), so each hostname round-trips to its own
+   `/auth/callback` — both are **strict** allowed redirect URIs on the
+   authentik provider, the same dual-host pattern as immich/nextcloud.
+   Authorization requires membership of the `hermes-users` group (the
+   `agent` application's policy binding).
+2. **Traefik-only NetworkPolicy.** Ingress on `:9119` is default-deny except
+   from the Traefik namespace, so the OIDC-gated dashboard is the only path.
+3. **OIDC-only — the `basic` password provider is retired.** The dashboard
    binds `0.0.0.0` (so Traefik can reach it), engaging upstream's
    **fail-closed** auth gate — at least one `dashboard_auth` provider must be
    registered; the `self_hosted` OIDC provider satisfies it alone. With
@@ -302,25 +298,17 @@ dashboard's own login, which is itself Authentik OIDC first.
 The Authentik side lives in [`terraform/authentik`](../terraform/authentik/)
 (docs/40) — nothing is created in the admin UI anymore:
 
-- `authentik_provider_proxy.hermes` + `authentik_application.app["agent"]` —
-  the forward-auth perimeter for `agent.ericsweiss.com` (**stays** — it is the
-  outer gate).
 - `authentik_provider_oauth2.hermes_dashboard` +
-  `authentik_application.agent_sso` (slug `agent-sso`) — the dashboard's OIDC
-  client. It is a **second** application because authentik allows one provider
-  per application: `agent` keeps the perimeter proxy provider, and the
-  `agent-sso` slug is what gives the OIDC provider its issuer path
-  (`/application/o/agent-sso/`). It is a non-clickable utility app (empty
-  launch URL), not a library tile.
-- The `hermes-users` group (`groups.tf`) + policy bindings gating **both**
-  applications (`policy_bindings.tf`).
+  `authentik_application.app["agent"]` — the dashboard's OIDC client on the
+  `agent` library tile (slug `agent` → issuer path `/application/o/agent/`),
+  with both hostnames' `/auth/callback` as strict redirect URIs.
+- The `hermes-users` group (`groups.tf`) + the `agent` policy binding
+  (`policy_bindings.tf`).
 
-Changes flow branch → MR → supervised `terraform apply` (docs/40). The
-embedded outpost's provider list is Terraform-managed too (`outpost.tf`), so
-there are no Admin-UI steps at all; the OAuth2 provider needs no outpost.
-Verify: `curl -sI https://agent.ericsweiss.com` → `302` to Authentik when
-unauthenticated (a `404` means the `agent` provider is missing from the
-embedded outpost's list — `terraform plan` would show that drift).
+Changes flow branch → MR → supervised `terraform apply` (docs/40). The OAuth2
+provider needs no outpost assignment. Verify:
+`curl -sI https://agent.ericsweiss.com` → `302` into the dashboard's login
+flow when unauthenticated (both hostnames behave identically).
 
 ---
 
@@ -667,22 +655,22 @@ reports both pins.
     or `hass-token`.
   - `CrashLoopBackOff` with a start-up refusal in the logs → the dashboard's
     `0.0.0.0` bind is fail-closed and no auth provider registered. Confirm the
-    three `dashboard-*` basic fields and the OIDC env are populated (an empty
-    username/password won't register `basic`):
-    `task hermes:logs COMPONENT=dashboard`.
-- **Can't reach a host (302 loop, or 404 at the outpost)**: the `agent`
-  provider is missing from the **embedded outpost**'s Terraform-managed list
-  (`terraform/authentik/outpost.tf` — `terraform plan` surfaces the drift),
-  or the `hermes-users` policy binding denies the user
-  (`terraform/authentik/policy_bindings.tf`). See §SSO.
+    `HERMES_DASHBOARD_OIDC_*` env (issuer, client id, client secret) is
+    populated: `task hermes:logs COMPONENT=dashboard`.
+- **Can't reach a host / access denied after login**: the `hermes-users`
+  policy binding denies the user (`terraform/authentik/policy_bindings.tf`),
+  or the `agent` application drifted on the authentik side (`terraform plan`
+  surfaces it). See §SSO.
 - **OIDC login fails with a redirect_uri error**: the provider allows exactly
-  one strict URI, `https://agent.ericsweiss.com/auth/callback`. A mismatch
-  means `HERMES_DASHBOARD_PUBLIC_URL` and the Terraform provider drifted —
-  they must move together (deployment.yaml ↔ providers_oauth2.tf). Discovery
-  failures (chooser shows Authentik but launch errors) point at the issuer:
-  `https://auth.ericsweiss.com/application/o/agent-sso/` must serve
-  `.well-known/openid-configuration`, which requires the `agent-sso`
-  application applied on the authentik side (docs/40 — supervised apply).
+  two strict URIs — `https://agent.ericsweiss.com/auth/callback` and
+  `https://agent.esweiss.com/auth/callback`. The dashboard reconstructs the
+  redirect_uri per-request from `X-Forwarded-Host`/`-Proto`, which uvicorn
+  only trusts because of `FORWARDED_ALLOW_IPS` (deployment.yaml) — if that
+  env is missing the callback degrades to the pod-local URL and mismatches.
+  Discovery failures point at the issuer:
+  `https://auth.ericsweiss.com/application/o/agent/` must serve
+  `.well-known/openid-configuration`, which requires the `agent` application
+  applied on the authentik side (docs/40 — supervised apply).
   Break-glass meanwhile: `kubectl exec` into the pod and use the hermes CLI.
 - **LLM turns fail / "not authenticated" from Codex**: the one-time Codex login
   or runtime enable is missing or the token expired. Check

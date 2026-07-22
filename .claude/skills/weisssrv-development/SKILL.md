@@ -59,7 +59,7 @@ roles table and docs index; `task --list` owns the command set.
 | Kubernetes app (dir under `kubernetes/apps/`) | `references/add-k8s-app.md` | `docs/29-flux-operations.md` (Adding a New App), `docs/33-autoscaling.md` |
 | New Proxmox VM / LXC app | `references/add-vm-app.md` | `docs/27-gitlab-deployment.md` (GitLab example), `docs/06-zfs.md`, `docs/11-firewall.md`, `docs/17-disaster-recovery.md`, `docs/18-bootstrap-new-systems.md` |
 | Ansible role / base infra | `CLAUDE.md` § Ansible Roles + Code Conventions | `docs/18-bootstrap-new-systems.md`, the role's README |
-| Terraform (Cloudflare DNS / Tailscale ACL) | `terraform/<module>/` + neighbours | `docs/08-dns.md`, `docs/05-tailscale.md` |
+| Terraform (Cloudflare DNS / Tailscale ACL / Authentik SSO) | `terraform/<module>/` + neighbours | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md` (Authentik apply is a supervised manual `op run -- terraform apply` — no task) |
 | Version bump / upgrade / maintenance | `references/maintenance-upgrades.md` | `docs/12-runbooks.md`, `docs/16-next-steps.md` |
 | Debug / incident response | `references/debugging.md` | `docs/29-flux-operations.md`, `docs/12-runbooks.md`, `docs/32-zfs-encryption.md`, `docs/34-bond-mac-flapping.md` |
 | Cluster access / secrets / kubeconfig | `references/cluster-access.md` | `docs/15-credential-rotation.md`, `docs/29-flux-operations.md` |
@@ -83,7 +83,7 @@ out the per-change-type checklist.
   A new role also needs a `deploy-*` CI job + molecule-matrix entry; `task lint`
   runs the coverage-check scripts that enforce this.
 - Versions touched → `task flux:sync-versions`, commit both files (else
-  `flux-versions-sync` reds the pipeline).
+  the versions-sync check in `repo-sync-checks` reds the pipeline).
 - `hosts.yml` touched → `task hosts:sync`, commit `scripts/hosts.env`.
 - `kubernetes/` touched → `task flux:lint` (kustomize build + envsubst with zero
   unsubstituted `${...}` + kubeconform + helm-template). Optionally preview with

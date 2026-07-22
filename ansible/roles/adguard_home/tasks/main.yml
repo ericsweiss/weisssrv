@@ -2,9 +2,13 @@
 # AdGuard Home installation and configuration
 # Runs as unprivileged user with CAP_NET_BIND_SERVICE
 
-- name: Install python3-passlib for password verification
+- name: Install python3-passlib for password verification and dnsutils for the DNS probe
   ansible.builtin.apt:
-    name: python3-passlib
+    name:
+      - python3-passlib
+      # dig backs the DNS-resolution verify below; install it here so the role
+      # is self-contained rather than relying on the base role having run first.
+      - dnsutils
     state: present
     update_cache: true
     cache_valid_time: 3600

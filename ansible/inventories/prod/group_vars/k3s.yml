@@ -2,7 +2,6 @@
 # K3s cluster configuration
 
 # Cluster configuration
-k3s_cluster_name: esweiss-k3s
 k3s_api_vip: 192.168.0.161
 k3s_api_port: 6443
 
@@ -18,10 +17,10 @@ k3s_token: "{{ lookup('ansible.builtin.env', 'K3S_TOKEN') or undef(hint='K3S_TOK
 # rollout — see docs/19-k3s-deployment.md.
 k3s_agent_token: "{{ lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN') or k3s_token }}"
 
-# Network configuration
+# Network configuration. k3s derives the cluster DNS ClusterIP (.10) from the
+# service CIDR itself, so there is no cluster-dns knob to set here.
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
-k3s_cluster_dns: "10.43.0.10"
 
 # DNS resolver search-suffix list. Empty for k3s VMs because kubelet copies
 # the host's /etc/resolv.conf search domains into every pod, and ndots:5

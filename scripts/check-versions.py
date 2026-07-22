@@ -26,6 +26,7 @@ Environment:
 
 import functools
 import gzip
+import http.client
 import json
 import os
 import re
@@ -141,6 +142,17 @@ SERVICE_REGISTRY: list[dict] = [
         "github_repo": "wg-easy/wg-easy",
         "version_prefix": "v",
         "strip_prefix": True,
+        "tag_filter": r"^v\d+\.\d+\.\d+$",
+    },
+    {
+        # Docker tag is v-prefixed (ghcr.io/homarr-labs/homarr:v1.71.0), so the
+        # pin keeps the "v" (strip_prefix False, like immich).
+        "name": "Homarr",
+        "var_name": "homarr_version",
+        "category": "github",
+        "github_repo": "homarr-labs/homarr",
+        "version_prefix": "v",
+        "strip_prefix": False,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
@@ -260,16 +272,12 @@ SERVICE_REGISTRY: list[dict] = [
         "tag_filter": r"^v\d+\.\d+\.\d+$",
     },
     {
-        # Authentik is deployed via the goauthentik Helm chart, so the
-        # version we pin in `authentik_version` is read as a chart tag
-        # (e.g. `version: "{{ authentik_version }}"` in the HelmRelease).
-        # The Helm chart publishes a few days after the GitHub release tag
-        # — see incident 2026-06-10 where the checker reported 2026.5.3
-        # from `goauthentik/authentik` GitHub releases, MR #76 picked it
-        # up, Flux failed with "no 'authentik' chart with version matching
-        # '2026.5.3' found", and MR #78 reverted to 2026.5.2 (the latest
-        # actually present in the helm repo). Query the chart repo
-        # directly to avoid the lag.
+        # Authentik is deployed via the goauthentik Helm chart, so the version
+        # pinned in `authentik_version` is read as a chart tag (e.g.
+        # `version: "{{ authentik_version }}"` in the HelmRelease). The chart
+        # publishes a few days after the matching GitHub release tag, so query
+        # the chart repo directly — pinning a GitHub tag Flux can't yet resolve
+        # fails reconciliation with "no 'authentik' chart with version ... found".
         "name": "Authentik",
         "var_name": "authentik_version",
         "category": "helm",
@@ -349,14 +357,15 @@ SERVICE_REGISTRY: list[dict] = [
     #   version-X.Y.Z.BUILD (*arr apps - stable branch)
     # lsio_version_regex is authoritative: it both selects the tag and captures
     # the bare version (group 1) that gets pinned in all.yml.
+    # Stable tags get buried under daily develop/nightly pushes (3 arch variants
+    # each), so the *arr/NZBGet entries below set lsio_name_filter="version-"
+    # (server-side filter) + lsio_max_pages to page deeper than the default.
     {
         "name": "NZBGet",
         "var_name": "nzbget_version",
         "category": "lsio",
         "docker_image": "linuxserver/nzbget",
         "lsio_version_regex": r"^version-v(\d+\.\d+(?:\.\d+)?)$",
-        # Stable tags get buried under daily develop/nightly pushes (3 arch
-        # variants each) — filter server-side and page deeper (2026-07-19).
         "lsio_name_filter": "version-",
         "lsio_max_pages": 4,
     },
@@ -374,8 +383,6 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/prowlarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        # Stable tags get buried under daily develop/nightly pushes (3 arch
-        # variants each) — filter server-side and page deeper (2026-07-19).
         "lsio_name_filter": "version-",
         "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
@@ -386,8 +393,6 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/sonarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        # Stable tags get buried under daily develop/nightly pushes (3 arch
-        # variants each) — filter server-side and page deeper (2026-07-19).
         "lsio_name_filter": "version-",
         "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
@@ -398,8 +403,6 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/radarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        # Stable tags get buried under daily develop/nightly pushes (3 arch
-        # variants each) — filter server-side and page deeper (2026-07-19).
         "lsio_name_filter": "version-",
         "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
@@ -410,8 +413,6 @@ SERVICE_REGISTRY: list[dict] = [
         "category": "lsio",
         "docker_image": "linuxserver/lidarr",
         "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        # Stable tags get buried under daily develop/nightly pushes (3 arch
-        # variants each) — filter server-side and page deeper (2026-07-19).
         "lsio_name_filter": "version-",
         "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
@@ -523,6 +524,20 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_chart": "gitlab-agent",
         "source_url": "https://gitlab.com/gitlab-org/charts/gitlab-agent/tags",
     },
+    {
+        # In-cluster pull-through registry cache for CI (kubernetes/apps/
+        # registry-cache, docs/27). The CNCF distribution image, Docker Hub
+        # `library/registry`. Bare X.Y.Z tags only — the regex excludes the
+        # floating majors/minors (3, 3.1) and pre-releases (3.0.0-rc.4) that
+        # share the repo. Flux-managed image (registry_cache_version pin ->
+        # cluster-versions ConfigMap), so it routes through flux:sync-versions.
+        "name": "Registry Cache (distribution)",
+        "var_name": "registry_cache_version",
+        "category": "dockerhub",
+        "docker_image": "library/registry",
+        "tag_regex": r"^(\d+\.\d+\.\d+)$",
+        "source_url": "https://hub.docker.com/_/registry/tags",
+    },
     # --- Observability ---
     {
         "name": "kube-prometheus-stack",
@@ -531,6 +546,23 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_repo": "https://prometheus-community.github.io/helm-charts",
         "helm_chart": "kube-prometheus-stack",
         "source_url": "https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack",
+    },
+    {
+        "name": "prometheus-operator-crds",
+        "var_name": "helm_chart_versions.prometheus_operator_crds",
+        "category": "helm",
+        "helm_repo": "https://prometheus-community.github.io/helm-charts",
+        "helm_chart": "prometheus-operator-crds",
+        "source_url": "https://artifacthub.io/packages/helm/prometheus-community/prometheus-operator-crds",
+        "notes": (
+            "CRD stage ahead of the controllers (kubernetes/infrastructure/"
+            "crds/). Bump so its appVersion stays in lockstep with the "
+            "prometheus-operator appVersion of the pinned kube-prometheus-stack "
+            "(kps carries the same CRDs but is configured NOT to manage them — "
+            "the Flux HelmRelease sets crds: Skip on install+upgrade AND "
+            "crds.enabled: false in values, so this stage is their sole owner) "
+            "— check both charts' appVersion before bumping either."
+        ),
     },
     {
         "name": "Loki",
@@ -715,31 +747,6 @@ SERVICE_REGISTRY: list[dict] = [
         "tag_filter": r"^\d+\.\d+\.\d+$",
         "source_url": "https://github.com/xperimental/nextcloud-exporter/releases",
     },
-    # Docker Engine apt pins (download.docker.com, Debian trixie). Version
-    # strings are apt-repo-specific (e.g. 5:29.6.1-1~debian.13~trixie) with no
-    # dockerhub/github tag to compare against — bumped manually from the repo's
-    # Packages index (docs/35 upgrade runbook), so category "manual".
-    {
-        "name": "Docker Engine (Nextcloud VM)",
-        "var_name": "nextcloud_docker_version",
-        "category": "manual",
-        "source_url": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages",
-        "notes": "apt pin for docker-ce/docker-ce-cli; bump with containerd + compose plugin together.",
-    },
-    {
-        "name": "containerd.io (Nextcloud VM)",
-        "var_name": "nextcloud_containerd_version",
-        "category": "manual",
-        "source_url": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages",
-        "notes": "apt pin; bump with docker-ce.",
-    },
-    {
-        "name": "docker-compose-plugin (Nextcloud VM)",
-        "var_name": "nextcloud_docker_compose_version",
-        "category": "manual",
-        "source_url": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages",
-        "notes": "apt pin; bump with docker-ce.",
-    },
     # --- CI tooling images (pinned in .gitlab-ci.yml, not all.yml) ---
     {
         # The pr-agent AI reviewer image, pinned by tag+digest in the
@@ -858,6 +865,11 @@ def _urlopen_with_retry_full(req, timeout: int = REQUEST_TIMEOUT) -> tuple[str, 
                 raise
             last_exc = e
         except (urllib.error.URLError, socket.timeout) as e:
+            last_exc = e
+        except http.client.IncompleteRead as e:
+            # Mid-body truncation (GitHub intermittently cuts large release
+            # payloads — observed as IncompleteRead on the ~25MB Codex asset
+            # list). Transient: the next attempt re-reads the full body.
             last_exc = e
         if attempt < RETRY_ATTEMPTS:
             time.sleep(RETRY_BACKOFF * attempt)
@@ -2346,7 +2358,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
     flux_managed = (
         "gluetun_version", "nzbget_version", "qbittorrent_version",
         "prowlarr_version", "sonarr_version", "radarr_version",
-        "lidarr_version", "pulsarr_version", "wg_easy_version", "hermes_version",
+        "lidarr_version", "pulsarr_version", "wg_easy_version", "homarr_version",
+        "hermes_version",
         "hermes_codex_version", "hermes_claude_version", "hermes_op_version",
         "hermes_camofox_version", "hindsight_version",
         "hindsight_llamacpp_version",
@@ -2355,6 +2368,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "meilisearch_version", "redis_version", "busybox_version",
         "authentik_version", "postgresql_version",
         "gitlab_runner_helm_version", "gitlab_agent_helm_version",
+        # In-cluster CI registry pull-through cache (kubernetes/apps/registry-cache)
+        "registry_cache_version",
         # Observability exporter container images
         "exportarr_version", "proxmox_exporter_version",
         "zfs_exporter_version", "adguard_exporter_version",

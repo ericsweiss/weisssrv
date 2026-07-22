@@ -1,0 +1,40 @@
+---
+# promtool unit test for VPARecommendationCapped: the VPA's uncapped
+# recommendation exceeding its capped target means maxAllowed is clamping it.
+# Both series must carry matching labels for the elementwise `>` to pair them.
+# 6h interval keeps the 24h `for` to 4 samples.
+rule_files:
+  - rules.yaml
+evaluation_interval: 6h
+tests:
+  # uncapped (3000) > capped target (2000) held for 24h fires, carrying the
+  # recommendation's identifying labels.
+  - interval: 6h
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte"}'
+        values: '3000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte"}'
+        values: '2000+0x8'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              exported_namespace: observability
+              verticalpodautoscaler: prometheus
+              container: prometheus
+              resource: memory
+              unit: byte
+
+  # Recommendation not clamped (uncapped == target): no alert.
+  - interval: 6h
+    input_series:
+      - series: 'vpa_recommendation_uncappedtarget{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte"}'
+        values: '2000+0x8'
+      - series: 'vpa_recommendation_target{exported_namespace="observability", verticalpodautoscaler="prometheus", container="prometheus", resource="memory", unit="byte"}'
+        values: '2000+0x8'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: VPARecommendationCapped
+        exp_alerts: []

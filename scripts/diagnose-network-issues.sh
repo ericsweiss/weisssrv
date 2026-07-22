@@ -37,6 +37,23 @@ ssh_cmd() {
     timeout_cmd 10 ssh "${SSH_OPTS[@]}" "$@"
 }
 
+# Pick a reachable Proxmox entry point for the single-host cluster-wide queries
+# (pvecm / ha-manager / pvesr / corosync). Hardcoding .102 (pve-nas-01) meant
+# those sections went blank precisely when that host was the one down or
+# partitioned — the scenario this diagnostic exists for. Probe the roster and
+# use the first host that answers; fall back to the first PVE IP so the queries
+# still emit their own "unavailable" diagnostics if none respond.
+CLUSTER_ENTRY=""
+for _h in $PVE_HOSTS; do
+    if ssh_cmd "eric@$_h" true >/dev/null 2>&1; then
+        CLUSTER_ENTRY="$_h"
+        break
+    fi
+done
+CLUSTER_ENTRY="${CLUSTER_ENTRY:-${PVE_HOSTS%% *}}"
+echo "Cluster entry point for cluster-wide queries: $CLUSTER_ENTRY"
+echo ""
+
 # Helper function for cross-platform ping with timeout
 # On Linux: -W is timeout in seconds
 # On macOS/BSD: -W is timeout in milliseconds, -t is TTL (not timeout)
@@ -56,19 +73,19 @@ ping_check() {
 echo "========================================"
 echo "1. PROXMOX CLUSTER STATE"
 echo "========================================"
-ssh_cmd eric@192.168.0.102 "sudo pvecm status 2>/dev/null || echo 'Cluster status unavailable'" || echo "Host unreachable"
+ssh_cmd eric@"$CLUSTER_ENTRY" "sudo pvecm status 2>/dev/null || echo 'Cluster status unavailable'" || echo "Host unreachable"
 echo ""
 
 echo "========================================"
 echo "2. HA MANAGER STATE"
 echo "========================================"
-ssh_cmd eric@192.168.0.102 "sudo ha-manager status 2>/dev/null || echo 'HA status unavailable'" || echo "Host unreachable"
+ssh_cmd eric@"$CLUSTER_ENTRY" "sudo ha-manager status 2>/dev/null || echo 'HA status unavailable'" || echo "Host unreachable"
 echo ""
 
 echo "========================================"
 echo "3. ZFS REPLICATION STATUS"
 echo "========================================"
-ssh_cmd eric@192.168.0.102 "sudo pvesr status 2>/dev/null || echo 'Replication status unavailable'" || echo "Host unreachable"
+ssh_cmd eric@"$CLUSTER_ENTRY" "sudo pvesr status 2>/dev/null || echo 'Replication status unavailable'" || echo "Host unreachable"
 echo ""
 
 echo "========================================"
@@ -92,7 +109,7 @@ done
 echo "========================================"
 echo "6. COROSYNC RING STATUS"
 echo "========================================"
-ssh_cmd eric@192.168.0.102 "sudo corosync-cfgtool -s 2>/dev/null || echo 'Corosync status unavailable'" || echo "Host unreachable"
+ssh_cmd eric@"$CLUSTER_ENTRY" "sudo corosync-cfgtool -s 2>/dev/null || echo 'Corosync status unavailable'" || echo "Host unreachable"
 echo ""
 
 echo "========================================"

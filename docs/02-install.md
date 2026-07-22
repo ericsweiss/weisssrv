@@ -237,9 +237,6 @@ Type: Login
 Fields:
   - username: eric
   - password: [your-adguard-password]
-  - password_hash: [any bcrypt hash; the field must exist for `op run` to resolve
-    the Taskfile reference — the role regenerates the live hash from `password`
-    at deploy time]
 ```
 
 **Tailscale Auth Key**:

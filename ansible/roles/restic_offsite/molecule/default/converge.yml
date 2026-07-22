@@ -1,0 +1,8 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  tasks:
+    - name: Apply the restic_offsite role
+      ansible.builtin.include_role:
+        name: restic_offsite

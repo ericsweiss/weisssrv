@@ -39,7 +39,7 @@ are manual, one-time, human steps documented below.
 | Firewall group | `ansible/roles/proxmox_firewall/templates/cluster.fw.j2` (`[group sg-windows]`) |
 | Internal DNS + PTR | `ansible/inventories/prod/group_vars/dns.yml` |
 | Tasks | `task windows:{provision,provision-check,status,verify}` |
-| RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (commented target) + `WindowsRdpDown` alert |
+| RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (`windows-rdp` target) + `WindowsRdpDown` alert (fires only while the VM is powered on — the as-needed VM being off is normal) |
 
 There is **no** Kubernetes/Traefik object for this VM: RDP is not HTTP, so
 access is a direct L3 connection to `192.168.0.155:3389`, gated purely at the
@@ -93,9 +93,9 @@ the official ISO from Microsoft and place it on the NAS ISO store:
 # On pve-nas-01 (or copy it there): the tank-proxmox ISO dir is
 #   /mnt/pve/tank-proxmox/template/iso/
 # Name the file to match vm_install_iso in hosts.yml (default:
-#   Win11_24H2_English_x64.iso). Either rename the download to match, or
+#   Win11_25H2_English_x64_v2.iso). Either rename the download to match, or
 # update vm_install_iso to the actual filename.
-ls -lh /mnt/pve/tank-proxmox/template/iso/Win11_24H2_English_x64.iso
+ls -lh /mnt/pve/tank-proxmox/template/iso/Win11_25H2_English_x64_v2.iso
 ```
 
 The VirtIO driver ISO is fetched + checksum-verified automatically by the role

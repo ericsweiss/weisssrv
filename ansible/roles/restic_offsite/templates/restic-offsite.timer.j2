@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Fallback trigger for the nightly offsite B2 backup
+# PRIMARY trigger is OnSuccess=restic-offsite.service on archive-backup.service;
+# this timer is belt-and-suspenders for the (rare) path where that OnSuccess is
+# skipped. The in-script freshness guard refuses to upload a stale tree either way.
+
+[Timer]
+OnCalendar={{ restic_offsite_timer_calendar }}
+Persistent=true
+RandomizedDelaySec={{ restic_offsite_timer_randomized_delay }}
+
+[Install]
+WantedBy=timers.target

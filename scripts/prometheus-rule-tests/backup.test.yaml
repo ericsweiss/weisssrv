@@ -72,3 +72,279 @@ tests:
           - exp_labels:
               severity: warning
               instance: '192.168.0.102:9101'
+
+  # AuthentikBackupStale: the nightly pg-dump CronJob's last-success timestamp is
+  # older than 26h (kube_cronjob_status_last_successful_time). A fresh timestamp
+  # does not fire; the absent() arm (below) fires if the CronJob has never
+  # succeeded / kube-state is down.
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"}'
+        values: '-93700+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: AuthentikBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              cronjob: authentik-pg-dump
+
+  # Fresh (timestamp tracks ~now) must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: AuthentikBackupStale
+        exp_alerts: []
+
+  # absent() arm: CronJob missing / never succeeded => fire, with the labels
+  # synthesized from the selector's equality matchers.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: AuthentikBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              cronjob: authentik-pg-dump
+
+  # MealieBackupStale: same shape in the recipes namespace.
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"}'
+        values: '-93700+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: MealieBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: recipes
+              cronjob: mealie-pg-dump
+
+  # Fresh (timestamp tracks ~now) must NOT fire (parity with AuthentikBackupStale).
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: MealieBackupStale
+        exp_alerts: []
+
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: MealieBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: recipes
+              cronjob: mealie-pg-dump
+
+  # ResticOffsiteFailed fires only on a failed run (metric 0); a success (1) does not.
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_run_success'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_run_success'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteFailed
+        exp_alerts: []
+
+  # ResticOffsiteStale: last success older than 50h fires; a fresh timestamp does
+  # not; the absent() arm fires if the collector never emitted (role undeployed).
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_success_timestamp_seconds'
+        values: '-200000+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_success_timestamp_seconds'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteStale
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # BackupArtifactStale — freshness arm: with all six static app series present,
+  # only the app whose mtime is older than 50h fires (labelled by app); the five
+  # fresh apps do not, and no per-app absent arm fires (all present).
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="mealie"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="gitlab"}'
+        values: '-200000+0x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="immich"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="nextcloud"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="home-assistant"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              app: gitlab
+
+  # Per-app absent arm: one app's landing dir went missing (its series absent)
+  # while the other five are fresh — the immich arm fires, labelled app=immich,
+  # even though every other app is healthy (the whole point of enumerating absent
+  # per app instead of a single family-level absent()).
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_last_mtime_seconds{app="authentik"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="mealie"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="gitlab"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="nextcloud"}'
+        values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="home-assistant"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              app: immich
+
+  # Nothing emitted at all (base dir gone / collector never populated the family):
+  # every per-app absent arm fires — one alert per static app.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              app: authentik
+          - exp_labels:
+              severity: warning
+              app: mealie
+          - exp_labels:
+              severity: warning
+              app: gitlab
+          - exp_labels:
+              severity: warning
+              app: immich
+          - exp_labels:
+              severity: warning
+              app: nextcloud
+          - exp_labels:
+              severity: warning
+              app: home-assistant
+
+  # ResticOffsiteVerifyStale: last successful `restic check` older than 8d fires;
+  # a fresh verify does not; a failed verify (success==0) fires. NO absent() arm,
+  # so an empty series set (verify never run) must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_verify_timestamp_seconds'
+        values: '-800000+0x70'
+      - series: 'restic_offsite_last_verify_success'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteVerifyStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_verify_timestamp_seconds'
+        values: '0+60x70'
+      - series: 'restic_offsite_last_verify_success'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteVerifyStale
+        exp_alerts: []
+  # Failed verify (success==0) fires even with a recent timestamp.
+  - interval: 1m
+    input_series:
+      - series: 'restic_offsite_last_verify_timestamp_seconds'
+        values: '0+60x70'
+      - series: 'restic_offsite_last_verify_success'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteVerifyStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+  # No verify metrics at all (never run) — no absent() arm, so nothing fires.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ResticOffsiteVerifyStale
+        exp_alerts: []
+
+  # BackupArtifactCollectorStale: the collector sentinel older than 2h fires; a
+  # fresh sentinel does not; the absent() arm fires if the collector never emitted.
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '-10000+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.102:9101'
+  - interval: 1m
+    input_series:
+      - series: 'backup_artifact_collector_last_success_seconds{instance="192.168.0.102:9101"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCollectorStale
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactCollectorStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning

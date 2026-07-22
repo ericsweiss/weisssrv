@@ -11,3 +11,9 @@
 
 # Nextcloud state rides ZFS zvol passthrough disks only (no NFS); the VM is
 # pinned to pve-nas-01. See hosts.yml (vm_additional_disks) and docs/35.
+
+# Offsite-eligible backup landing (mirrors gitlab_servers.yml): pg_dump artifacts
+# relocate onto the per-app tank/backups/apps NFS export so they ride the
+# archsync file walk into restic B2 (docs/42). Mounted over TLS (xprtsec=tls;
+# tlshd via the nfs_tls role, gated on this flag); the dataset is aes-256-gcm.
+nextcloud_backup_nfs_enabled: true

@@ -12,10 +12,11 @@ Full architecture, storage, backup, SSO, and runbooks: **docs/36-immich.md**.
 
 1. **Persistent storage** — mounts the three passthrough zvols via `zvol_mount`
    (app / postgres / photo-library — see `hosts.yml`).
-2. **Docker Engine** (`tasks/docker.yml`) — installs docker-ce + the compose
-   plugin from the official apt repo (signing key + repo via the shared
-   `apt_signed_repo` helper), pinned in `group_vars/all.yml` and `apt-mark hold`.
-   `journald` log driver so container logs ride `alloy_host` → Loki.
+2. **Docker Engine** (shared `docker_engine` role, via the shared `compose_app`
+   role) — installs docker-ce + the compose plugin from the official apt repo
+   (signing key + repo via the shared `apt_signed_repo` helper), pinned in
+   `group_vars/all.yml` and dpkg-held. `journald` log driver so container logs
+   ride `alloy_host` → Loki.
 3. **Compose stack** (`templates/docker-compose.yml.j2`) — `immich-server`,
    `immich-machine-learning` (the **CPU failover** — the primary ML endpoint is
    the GPU OpenVINO LXC `immich-ml`, see the `immich_ml` role), `database`
@@ -28,13 +29,18 @@ Full architecture, storage, backup, SSO, and runbooks: **docs/36-immich.md**.
    first, the in-VM CPU container as sequential failover) plus
    `backup.database.enabled: false`. The one-time admin bootstrap is
    `immich_bootstrap_mode` (see below).
-5. **Host nginx** (`templates/immich.nginx.conf.j2`) — terminates 443 with the
-   `acme_certs`-distributed wildcard cert, `client_max_body_size 0`, websockets,
-   long upload timeouts, reverse-proxies to `127.0.0.1:2283`. Seeds a self-signed
-   placeholder so a fresh VM starts before the first cert push.
+5. **Host nginx** (`templates/immich.nginx.conf.j2`, deployed via the shared
+   `compose_app` nginx task flow) — terminates 443 with the `acme_certs`-
+   distributed wildcard cert (**TLS 1.3 only**), `client_max_body_size 0`,
+   websockets, long upload timeouts, reverse-proxies to `127.0.0.1:2283`. Seeds a
+   self-signed placeholder so a fresh VM starts before the first cert push.
 6. **Backups** (`templates/immich-backup-run.sh.j2` + timer) — nightly
-   `pg_dumpall` onto the app zvol (rides `ssd/appdata` → archive raw-encrypted)
-   with node_exporter textfile metrics (`immich_backup_*`).
+   `pg_dumpall`; metric-writing is the shared `compose_app` `write_prom_metrics`
+   helper (node_exporter textfile metrics `immich_backup_*`). Setting
+   `immich_backup_nfs_enabled` (opt-in, in group_vars) relocates the dump onto
+   the **offsite NFS landing zone** (`tank/backups/apps/immich`, plaintext NFSv4
+   over the host-internal bridge, like the gitlab role) so the compact dump rides
+   the archsync file walk into B2; otherwise it lands on the app zvol.
 
 ## SSO bootstrap (one-time)
 
@@ -68,7 +74,10 @@ mocked `docker`) are rendered and asserted without a container runtime.
 ## Related
 
 - `immich_ml` — the GPU OpenVINO ML LXC this role's `immich_ml_urls` points at.
-- `apt_signed_repo` — the fingerprint-verified Docker apt repo.
+- `compose_app` — the shared compose scaffolding (Docker install, compose systemd
+  unit, nginx task flow, `write_prom_metrics` backup helper) this role delegates to.
+- `docker_engine` — the shared pinned Docker Engine install (repo + held engine + daemon.json).
+- `apt_signed_repo` — the fingerprint-verified Docker apt repo (via `docker_engine`).
 - `zvol_mount` — mounts the passthrough zvols.
 - `acme_certs` (on dns-01) — distributes the wildcard cert (`cert_distribution_targets`).
 - `node_exporter_host` / `alloy_host` — metrics textfile + log shipping.

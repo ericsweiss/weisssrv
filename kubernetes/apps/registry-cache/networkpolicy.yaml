@@ -1,0 +1,108 @@
+---
+# Default-deny egress; explicit allows below. (default-deny-ingress comes from
+# the shared ../../components/netpol-baseline component.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: registry-cache
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Ingress to the registry-cache pod:
+#   - :5000 (registry API) ONLY from the gitlab-runner-privileged namespace —
+#     the DinD job pods that pull the molecule-test image through the cache all
+#     run there. The namespaceSelector matches the DinD pod's SOURCE IP (a pull
+#     of the ClusterIP is DNAT'd to this pod, but the source is unchanged), so a
+#     whole-namespace selector is the right grain. No other namespace may reach
+#     the cache.
+#   - :5001 (debug/metrics) from the observability namespace, SCOPED to the
+#     Prometheus pod only (least-privilege, mirroring hindsight/wg-easy): the
+#     debug listener also serves /debug endpoints, so admitting the whole
+#     observability namespace would over-share. Kubelet health probes are
+#     node-local and not gated by NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-registry-cache-ingress
+  namespace: registry-cache
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: registry-cache
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gitlab-runner-privileged
+      ports:
+        - protocol: TCP
+          port: 5000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 5001
+
+---
+# Egress for the registry-cache pod:
+#   1. kube-dns — name resolution. (The upstream registry hostname itself is
+#      pinned via hostAliases -> .101 in deployment.yaml, so it resolves from
+#      /etc/hosts, but keep kube-dns for parity/robustness.)
+#   2. traefik namespace on :443 — the upstream fetch. registry.git.ericsweiss.com
+#      is pinned to the internal Traefik VIP .101 (deployment.yaml hostAliases),
+#      which kube-proxy DNATs to the Traefik POD IP; this post-DNAT
+#      namespaceSelector matches where a .101/32 ipBlock never could (same
+#      mechanism as homarr's OIDC-backend egress rule and hermes). Traefik routes
+#      Host registry.git.ericsweiss.com -> the gitlab-registry VM backend.
+#
+# No LAN/RFC1918 egress, no public internet, no smtp, no kube-apiserver
+# (automountServiceAccountToken is false).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-registry-cache
+  namespace: registry-cache
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: registry-cache
+  policyTypes:
+    - Egress
+  egress:
+    # 1. kube-dns
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. traefik namespace on :443 (upstream registry via the internal VIP .101)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        # Belt-and-braces: the namespaceSelector matches post-DNAT (proven on
+        # this CNI by the deployed hermes/homarr rules); the VIP ipBlock also
+        # admits the pre-DNAT form so a CNI change can't silently break this.
+        - ipBlock:
+            cidr: 192.168.0.101/32
+      ports:
+        - protocol: TCP
+          port: 443

@@ -42,7 +42,11 @@ provisioner:
         # Nextcloud's Redis reuses the shared redis_version pin (all.yml).
         redis_version: "8.8.0-alpine"
         nextcloud_exporter_version: "0.9.1"
-        nextcloud_docker_version: "5:29.6.1-1~debian.13~trixie"
-        nextcloud_containerd_version: "2.2.6-1~debian.13~trixie"
-        nextcloud_docker_compose_version: "5.3.1-1~debian.13~trixie"
+        # Shared Docker engine pins (all.yml) — consumed by the docker_engine
+        # role, which is skipped here (skip_nextcloud_deploy), so these are
+        # representative only.
+        docker_ce_version: "5:29.6.1-1~debian.13~trixie"
+        containerd_version: "2.2.6-1~debian.13~trixie"
+        docker_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
+        docker_compose_plugin_version: "5.3.1-1~debian.13~trixie"
         skip_nextcloud_deploy: true

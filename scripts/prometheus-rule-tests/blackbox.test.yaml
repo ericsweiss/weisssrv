@@ -1,0 +1,132 @@
+---
+# promtool unit tests for the blackbox/endpoint alerts. Pins the load-bearing
+# firing boundaries: the WindowsRdpDown power-state gate, the EndpointDown
+# 10m warning hold, the edge-cert expiry scope, and the DNS-probe absent() guard.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # WindowsRdpDown fires only when the VM is powered on (max(pve_up qemu/155)==1)
+  # AND RDP is down. Two pve_up series (distinct targets, as live) confirm the
+  # max() aggregation dedups them — a bare vector would error duplicate-series.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.155:3389"}'
+        values: '0+0x40'
+      - series: 'pve_up{id="qemu/155", target="192.168.0.102"}'
+        values: '1+0x40'
+      - series: 'pve_up{id="qemu/155", target="192.168.0.107"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: WindowsRdpDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.155:3389'
+
+  # VM intentionally powered off (both pve_up == 0): RDP down is EXPECTED, so the
+  # gate self-silences — no alert.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.155:3389"}'
+        values: '0+0x40'
+      - series: 'pve_up{id="qemu/155", target="192.168.0.102"}'
+        values: '0+0x40'
+      - series: 'pve_up{id="qemu/155", target="192.168.0.107"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: WindowsRdpDown
+        exp_alerts: []
+
+  # VM up and RDP answering (probe_success==1): no alert.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.155:3389"}'
+        values: '1+0x40'
+      - series: 'pve_up{id="qemu/155", target="192.168.0.102"}'
+        values: '1+0x40'
+      - series: 'pve_up{id="qemu/155", target="192.168.0.107"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: WindowsRdpDown
+        exp_alerts: []
+
+  # EndpointDown holds for 10m (not 5m): a down endpoint is still pending at 7m
+  # and only fires at 12m. Pins the widened warning-tier hold.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://plex.esweiss.com"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: EndpointDown
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: EndpointDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 'https://plex.esweiss.com'
+
+  # The Windows RDP instance is excluded from EndpointDown (routed to
+  # WindowsRdpDown), so a down 3389 probe must NOT fire the catch-all.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.155:3389"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EndpointDown
+        exp_alerts: []
+
+  # BlackboxCertExpiringSoon fires for an edge target (git/home.ericsweiss.com)
+  # whose cert is under 14 days out; a healthy (30d) cert does not, and a
+  # non-scoped instance (grafana.esweiss.com) is excluded even when expiring.
+  - interval: 1m
+    input_series:
+      # 10 days to expiry, constant epoch value -> stays < 14d as time advances.
+      - series: 'probe_ssl_earliest_cert_expiry{instance="https://home.ericsweiss.com"}'
+        values: '864000+0x70'
+      # 30 days -> healthy, must not fire.
+      - series: 'probe_ssl_earliest_cert_expiry{instance="https://git.ericsweiss.com"}'
+        values: '2592000+0x70'
+      # In-scope regex only matches *.ericsweiss.com home|git; an esweiss.com
+      # target (cert-manager-covered) must be excluded even at 5 days.
+      - series: 'probe_ssl_earliest_cert_expiry{instance="https://grafana.esweiss.com"}'
+        values: '432000+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BlackboxCertExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 'https://home.ericsweiss.com'
+
+  # DNSResolverProbeMissing fires when EITHER resolver's probe series is absent.
+  # .150 present, .160 removed -> fire, labelled with the missing instance.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.150:53"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DNSResolverProbeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: '192.168.0.160:53'
+
+  # Both resolver probes present -> no drift, no alert.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="192.168.0.150:53"}'
+        values: '1+0x30'
+      - series: 'probe_success{instance="192.168.0.160:53"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DNSResolverProbeMissing
+        exp_alerts: []

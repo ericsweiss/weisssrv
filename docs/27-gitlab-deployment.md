@@ -207,6 +207,15 @@ This adds internal DNS rewrites for `git.esweiss.com`, `registry.git.esweiss.com
 
 ### Step 4: Configure Authentik SSO (SAML)
 
+> **Authentik objects are Terraform-managed.** The GitLab SAML provider, the
+> `git` application, and the `gitlab-admins`/`gitlab-users` groups are codified
+> in `terraform/authentik/` (`providers_saml.tf`, `applications.tf`, `groups.tf`)
+> and changed via a supervised `terraform apply` — **not the Authentik UI**
+> ([docs/40-authentik-terraform.md](40-authentik-terraform.md)). The UI walkthrough
+> below is retained only as a reference for capturing the ACS URL / Issuer /
+> certificate fingerprint; make the actual provider/app/group changes in the
+> `.tf` files.
+
 1. Log into Authentik at https://auth.ericsweiss.com
 2. Navigate to **Applications → Providers**
 3. Click **Create** and select **SAML Provider**
@@ -369,6 +378,90 @@ tokens, bumping chart versions, troubleshooting stuck releases).
 > get pods` is Running, the runner shows online in GitLab, and nothing privileged
 > remains in the old namespace (`kubectl get deploy,sa,secret -n gitlab-runner |
 > grep privileged` returns nothing).
+
+## Registry pull-through cache (CI)
+
+Every molecule CI job starts a **fresh DinD daemon** with an empty image store,
+whose first act is a cold pull of
+`registry.git.ericsweiss.com/eric/weisssrv/molecule-test` (~30s/job; a pipeline
+runs ~30 molecule jobs). `kubernetes/apps/registry-cache/` runs the CNCF
+[distribution](https://distribution.github.io/distribution/) `registry` image in
+**pull-through (proxy) mode** so the first job warms a cluster-local cache and
+the rest are served over the LAN.
+
+**Shape** (full rationale in `kubernetes/apps/registry-cache/README.md`):
+
+- A single Deployment (`registry-cache` namespace) with
+  `REGISTRY_PROXY_REMOTEURL=https://registry.git.ericsweiss.com` and a
+  read_registry deploy token (below). Registry API on `:5000`, Prometheus debug
+  listener on `:5001`.
+- Cache storage is a node-local `emptyDir` (10Gi cap) — disposable, re-warms on
+  the next pull; no NFS/zvol, nothing to back up.
+- **Upstream path**: the pod pins `registry.git.ericsweiss.com` → the internal
+  Traefik VIP `192.168.0.101` via `hostAliases` (the pod-scope twin of the
+  node-level `k3s_registry_host_pins`), so the upstream fetch stays on the
+  internal Traefik path instead of hairpinning the flaky external/Cloudflare DNS.
+  Egress is default-deny + DNS + `:443` to the `traefik` namespace only.
+- **Consumers**: only the `gitlab-runner-privileged` namespace (the DinD job
+  pods) may reach `:5000`; the metrics port is scraped by Prometheus
+  (`observability/service-monitors/registry-cache.yaml`) and paged on by the
+  `RegistryCacheDown` alert (a `warning`, not `critical`: a cache outage only
+  makes CI cold-pull direct — slower, not broken).
+- Version pinned as `registry_cache_version` in `all.yml`
+  (`${registry_cache_version}` placeholder, Flux `cluster-versions` ConfigMap).
+
+### Deploy-token mint runbook
+
+The cache authenticates to the upstream registry with a GitLab **deploy token**
+(a repo/registry credential, distinct from runner/personal tokens), scoped
+`read_registry` — the least privilege needed to pull private-project blobs.
+
+1. In the **`eric/weisssrv` project**: **Settings → Repository → Deploy tokens**.
+2. Create a token: name `registry-cache`, expiration blank (or a rotation
+   cadence), scope **`read_registry` only** (leave `read_repository`,
+   `write_registry`, etc. unchecked). GitLab shows the username +
+   token **once**.
+3. Store them in the **GitLab Registry Cache Deploy Token** 1Password item
+   (fields `username`, `token`) — see the item entry in
+   `docs/15-credential-rotation.md`. ESO's `registry-cache-secrets`
+   ExternalSecret syncs them into the cache pod.
+4. Ship the app (it is Flux-managed like every other `kubernetes/apps/*` dir).
+   Verify: `kubectl -n registry-cache get pods` Running, then from a runner-side
+   shell `curl -fsS http://registry-cache.registry-cache.svc.cluster.local:5000/v2/`
+   returns `{}` (API up).
+
+Rotation: mint a replacement deploy token, update both 1Password fields, then
+`task flux:rotate-secret -- registry-cache`.
+
+### CI wiring (owned by `.gitlab-ci.yml`)
+
+The client/DinD side lives in `.gitlab-ci.yml` and the molecule scaffolding
+(outside this app's scope). The intended shape:
+
+- The DinD **service** runs with the cache added as an insecure registry
+  (plaintext, cluster-internal):
+  `--insecure-registry=registry-cache.registry-cache.svc.cluster.local:5000`.
+- The molecule `before_script` pulls **cache-first with a direct-registry
+  fallback**, so a cache outage (or cold cache) never breaks CI — it only makes
+  that job cold-pull direct:
+
+  ```yaml
+  # Pull the molecule-test image via the in-cluster pull-through cache, falling
+  # back to the real registry if the cache is unreachable. MOLECULE_IMAGE keeps
+  # the canonical (direct) ref so the tests are unchanged.
+  variables:
+    REGISTRY_CACHE: "registry-cache.registry-cache.svc.cluster.local:5000"
+    MOLECULE_IMAGE: "registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest"
+  before_script:
+    - |
+      CACHED="$REGISTRY_CACHE/eric/weisssrv/molecule-test:latest"
+      if docker pull "$CACHED"; then
+        docker tag "$CACHED" "$MOLECULE_IMAGE"   # present tests the canonical ref
+      else
+        echo "registry cache miss/unreachable — pulling direct"
+        docker pull "$MOLECULE_IMAGE"
+      fi
+  ```
 
 ## Task Commands
 

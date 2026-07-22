@@ -139,6 +139,16 @@ spec:
       # reboots forever).
       blockingPodSelector:
         - esweiss.com/runner-class=infrastructure
+    # Scrape kured's reboot-orchestration metrics (kured_reboot_required,
+    # kured_reboot_blocked_reboot_locked, the lock-held gauges) so a stuck/aborted
+    # reboot cycle is alertable directly (KuredRebootStuck), not just via the
+    # indirect node-condition alerts. service.create exposes the metrics port;
+    # metrics.create is the paired ServiceMonitor (Prometheus discovers it
+    # cluster-wide — serviceMonitorSelectorNilUsesHelmValues: false).
+    service:
+      create: true
+    metrics:
+      create: true
     # kured is a per-node agent: it MUST run on EVERY node (servers + agents +
     # taint-bearing compute), so tolerate all taints.
     tolerations:

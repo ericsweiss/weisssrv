@@ -9,7 +9,9 @@ Type=oneshot
 # take minutes) before the swapoff. A systemd timeout still lands safely — the
 # script traps TERM and its EXIT trap restarts every guest it stopped — but keep
 # it well above the sum of the stop-guest timeouts so a legit reclaim is never cut
-# short. Default 1200s covers immich(120) + gitlab(300) + swapoff + restarts.
+# short. Default 1200s covers the worst-case sequential graceful shutdown of the
+# whole stop-guest list — immich(120) + gitlab(300) + nextcloud(120) = 540s —
+# plus swapoff + restarts.
 TimeoutStartSec={{ nas_swap_clean_service_timeout | default(1200) }}
 # Low priority — memory hygiene, never urgent. Same load-shaping as media-mover.
 Nice={{ nas_swap_clean_nice | default(10) }}

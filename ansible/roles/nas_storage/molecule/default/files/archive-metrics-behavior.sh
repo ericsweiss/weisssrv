@@ -7,8 +7,10 @@ set -euo pipefail
 
 ARCHIVE="${1:-/usr/local/sbin/archive-backupctl}"
 MOVER="${2:-/usr/local/sbin/media-mover.sh}"
+SWAPCLEAN="${3:-/usr/local/sbin/swap-clean.sh}"
 [ -f "$ARCHIVE" ] || { echo >&2 "archive-backupctl not rendered at $ARCHIVE"; exit 1; }
 [ -f "$MOVER" ] || { echo >&2 "media-mover.sh not rendered at $MOVER"; exit 1; }
+[ -f "$SWAPCLEAN" ] || { echo >&2 "swap-clean.sh not rendered at $SWAPCLEAN"; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -80,4 +82,59 @@ env -i bash -c '
   grep -qx "media_mover_last_success_timestamp_seconds 1650000000" "$PROM_FILE"
 ' || fail "media-mover failure run did not preserve the last-success timestamp"
 
-echo "archive/media-mover metric behavior OK"
+# --- swap-clean: write_prom_metrics arms + cleanup restart-failure demotion ---
+# swap-clean.sh runs its logic in main() and ends with `main "$@"`, so neutralize
+# the entrypoint (as the sibling archive/restic behavior tests do) and source the
+# rest to get the functions + globals WITHOUT running any swapoff/swapon.
+sed 's/^main "\$@"$/# main disabled for behavior test/' "$SWAPCLEAN" > "$WORK/swap-clean-lib.sh"
+grep -q 'main disabled for behavior test' "$WORK/swap-clean-lib.sh" \
+  || fail "could not disable swap-clean entrypoint"
+
+# Arm 1: write_prom_metrics success emits the full series incl. the always-present
+# restart-failures gauge (0 here). Each arm runs in its own env -i subshell so the
+# sourced `set -euo pipefail` + globals never leak into this harness.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/swap-clean-lib.sh" || true
+  set +e
+  PROM_FILE="'"$WORK"'/swap_clean.prom"
+  write_prom_metrics 1 1024 0 0
+  grep -qx "swap_clean_last_run_success 1" "$PROM_FILE" || exit 21
+  grep -qx "swap_clean_swap_cleared_bytes 1024" "$PROM_FILE" || exit 22
+  grep -qx "swap_clean_guest_restart_failures 0" "$PROM_FILE" || exit 23
+  grep -q "^swap_clean_last_success_timestamp_seconds " "$PROM_FILE" || exit 24
+' || fail "swap-clean write_prom_metrics success arm"
+
+# Arm 2: a failed run records success=0 and PRESERVES the prior success timestamp.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/swap-clean-lib.sh" || true
+  set +e
+  PROM_FILE="'"$WORK"'/swap_clean.prom"
+  printf "swap_clean_last_success_timestamp_seconds 1650000000\n" > "$PROM_FILE"
+  write_prom_metrics 0 0 0 0
+  grep -qx "swap_clean_last_run_success 0" "$PROM_FILE" || exit 25
+  grep -qx "swap_clean_last_success_timestamp_seconds 1650000000" "$PROM_FILE" || exit 26
+  grep -qx "swap_clean_guest_restart_failures 0" "$PROM_FILE" || exit 27
+' || fail "swap-clean failure arm did not preserve the last-success timestamp"
+
+# Arm 3: cleanup() with a stubbed FAILING qm — a guest we "stopped" cannot be
+# restarted, so cleanup must demote run_success to 0 AND emit restart-failures 1.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/swap-clean-lib.sh" || true
+  set +e
+  PROM_FILE="'"$WORK"'/swap_clean.prom"
+  # qm status -> no output (not running); qm start -> non-zero (restart fails).
+  qm() { return 1; }
+  run_success=1          # start from a would-be healthy run
+  swap_cleared_bytes=2048
+  arc_orig=""            # no ARC to restore
+  guests_to_restore="999"
+  cleanup
+  grep -qx "swap_clean_last_run_success 0" "$PROM_FILE" || exit 28
+  awk "/^swap_clean_guest_restart_failures /{print \$2}" "$PROM_FILE" | grep -qx "1" || exit 29
+  grep -qx "swap_clean_guests_stopped_count 1" "$PROM_FILE" || exit 30
+' || fail "swap-clean cleanup did not demote run + emit restart-failures on a failed restart"
+
+echo "archive/media-mover/swap-clean metric behavior OK"

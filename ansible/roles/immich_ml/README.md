@@ -39,14 +39,15 @@ Full architecture, design rationale, and runbooks: **docs/36-immich.md**
 1. **GPU guard** — asserts `/dev/dri/renderD128` + `card0` exist in the guest
    and discovers their GIDs for the container's `group_add` (in an unprivileged
    LXC the group match is the only way to open the 0660 device nodes).
-2. **Docker Engine** (`tasks/docker.yml`) — same fingerprint-verified apt repo
-   (`apt_signed_repo`) and the same shared `docker_ce_version` etc. pins +
-   holds the immich role uses. `journald` log driver so container logs ride
-   `alloy_host` → Loki.
+2. **Docker Engine** (shared `docker_engine` role, via the shared `compose_app`
+   role) — the same fingerprint-verified apt repo (`apt_signed_repo`) and the
+   same shared `docker_ce_version` etc. pins + holds the immich role uses.
+   `journald` log driver so container logs ride `alloy_host` → Loki.
 3. **Compose stack** (`templates/docker-compose.yml.j2`) — mirrors upstream's
    `hwaccel.ml.yml` openvino stanza (`/dev/dri` device, `c 189:*` cgroup rule,
    `model-cache` volume, port 3003). Lifecycle owned by
-   `immich-ml-compose.service`.
+   `immich-ml-compose.service` (the shared `compose_app` compose systemd unit;
+   no `RequiresMountsFor` since this LXC has no zvols).
 4. **Health wait** — polls `http://127.0.0.1:3003/ping` (answers before the
    first-boot model download finishes; models load lazily).
 
@@ -74,7 +75,10 @@ container runtime or GPU.
 - `proxmox_lxc` — creates the container with the `/dev/dri` passthrough and
   the video/render GID idmap (applied for GPU guests with or without bind
   mounts).
-- `apt_signed_repo` — the fingerprint-verified Docker apt repo.
+- `compose_app` — the shared compose scaffolding (Docker install + compose
+  systemd unit) this role delegates to.
+- `docker_engine` — the shared pinned Docker Engine install (repo + held engine + daemon.json).
+- `apt_signed_repo` — the fingerprint-verified Docker apt repo (via `docker_engine`).
 - `immich` — renders `machineLearning.urls` (this endpoint first, CPU
   failover second) into the Immich system config.
 - `alloy_host` — journald → Loki log shipping.

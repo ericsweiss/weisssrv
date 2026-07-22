@@ -69,30 +69,32 @@ created by either path.
 ## Accepted Risk: NAS-Concentrated State
 
 All zvol-backed application state (Authentik + Mealie PostgreSQL,
-Prometheus, Loki, GitLab repos) deliberately lives on pve-nas-01's `ssd`
-pool — a NAS or pool failure takes those services down together. This is
+Prometheus, Loki, GitLab repos, Nextcloud + Immich Postgres/app data)
+deliberately lives on pve-nas-01's `ssd` pool — a NAS or pool failure takes
+those services down together. This is
 an explicit single-box tradeoff, mitigated by raidz1 + ZFS snapshots +
 the archive replication job (`archive-backupctl`) + GitLab's nightly
 backups, not by replication-grade HA. Recovery is restore-from-backup
 with the RTO that implies. Revisit if a second storage-capable node ever
 joins.
 
-A second accepted gap: **every backup copy is on-site — 3-2-1 is not met.**
-There are 3 copies for VM images/appdata, but the "2 media" are four ZFS pools
-(`tank/proxmox` vzdump target, the `archive` replication pool, plus `ssd`/`nvme`)
-all inside the **single pve-nas-01 chassis** (one failure domain: chassis / PSU /
-HBA / host-OS / `rm -rf` / ransomware), and there is **no** offsite copy. Even the
-"off-node" etcd snapshot copy lands on `ssd/k3s-etcd` on pve-nas-01, so a NAS/site
-loss takes it too. A fire/theft/site loss takes the originals and every backup
-together; git-managed state (this repo, plus the GitHub mirror) and 1Password are
-the only data that survives, so unique data such as app-database content (and
-future Immich photos) would be lost.
+The single-chassis concentration is now mitigated by an **offsite tier**: the
+nightly restic → Backblaze B2 run ([docs/42-offsite-backup.md](42-offsite-backup.md))
+pushes client-side-encrypted copies of the file-walkable estate, the relocated
+logical dumps on `tank/backups/apps` (Authentik / Mealie / GitLab / Immich /
+Nextcloud / Home Assistant), the Immich and Nextcloud data zvols (via snapshot
+clones), and the `ssd/k3s-etcd` off-node etcd copies — so a chassis / site loss
+no longer takes the only copies. **3-2-1 is met for everything except the
+intentional exclusions**: `tank/media` (replaceable bulk media),
+Prometheus/Loki history (config is in git; history accepted-loss), vzdump VM
+images (IaC-rebuildable; local + archive copies only), and the Windows VM
+(excluded entirely by design). GFS retention on B2: 3 daily / 2 weekly /
+3 monthly / 1 yearly. Restore paths in docs/42 §Restore.
 
-The archive's raw-encrypted streams and `plug`/`unplug` workflow are purpose-built
-for offsite rotation (the pool can be detached and carried offsite), but no
-rotation is performed today. **Adding an offsite / off-host backup tier is a
-tracked roadmap item that needs a user decision** — see
-[docs/16-next-steps.md](16-next-steps.md) ("Offsite / 3-2-1 backup tier").
+The archive's raw-encrypted streams and `plug`/`unplug` workflow remain
+purpose-built for physical offsite rotation (the pool can be detached and
+carried offsite) — an unused option now that B2 covers offsite, retained as a
+documented fallback.
 
 ## Accepted Risk: Network Fabric SPOF
 
@@ -114,15 +116,18 @@ corosync ring").
 ## Backup Dedup: vzdump Exclusion of App-Data Zvols
 
 The app-data zvols (Authentik/Mealie PostgreSQL, Prometheus, Loki, GitLab
-repos) plus the Plex `/config` LXC directory bind mount (not a zvol — `mp0` →
+repos, and Nextcloud/Immich Postgres + app) plus the Plex `/config` LXC directory
+bind mount (not a zvol — `mp0` →
 `/mnt/ssd/appdata/plex`) are backed up by `archive-backupctl` (`ssd/appdata` →
 `archive`, raw ZFS). They are attached to their host VM/CT as passthrough
 disks (or, for Plex, a bind mount), so they were *also* captured by the nightly
 vzdump into `tank/proxmox`
 — double-storing ~2 TB. They now carry `backup=0` (`vzdump_backup: false` in
 `hosts.yml`; `backup=0` in the Plex LXC mount options), so vzdump skips them
-and **`archive-backupctl` is their sole backup path.** OS disks stay in vzdump
-— only the app-data passthroughs are excluded.
+and **`archive-backupctl` is their sole backup path.** The Nextcloud/Immich bulk
+media zvols (`tank/{nextcloud,immich}-data`) likewise carry `backup=0` and are
+backed up via their own `tank/…-data → archive` replication. OS disks stay in
+vzdump — only the app-data passthroughs are excluded.
 
 **Cutover prerequisite — order matters.** Apply `backup=0` only *after* the
 `ssd/appdata` raw re-seed is deployed and verified green; setting it while that
@@ -189,9 +194,12 @@ sudo zfs get -H -o value -r keystatus <pool>/<target>-restore-<timestamp> \
 # zvol children are held open by a running guest — it fails "dataset is busy", or
 # corrupts the live volume if forced through. QUIESCE EVERY WRITER FIRST:
 #   1. Stop the guest(s) holding the dataset. For ssd/appdata that is the
-#      k3s-agt-nas-01 VM (vmid 202: authentik/mealie postgres, prometheus, loki)
-#      AND the GitLab VM (gitlab/repos) — `qm stop <vmid>` releases the passthrough
-#      zvol; scaling the k8s pod to 0 does NOT (the VM, not the pod, holds it).
+#      k3s-agt-nas-01 VM (vmid 202: authentik/mealie postgres, prometheus, loki),
+#      the GitLab VM (vmid 153: gitlab/repos), the Nextcloud VM (vmid 156:
+#      nextcloud app/postgres), AND the Immich VM (vmid 157: immich app/postgres)
+#      — a recursive restore over ssd/appdata touches ALL of them. `qm stop <vmid>`
+#      releases the passthrough zvol; scaling the k8s pod to 0 does NOT (the VM,
+#      not the pod, holds it).
 #      For tank/{share,proxmox}: stop/unexport the NFS consumers.
 #   2. Confirm nothing holds the zvol nodes (zfs holds lists snapshot holds, not
 #      open devices): sudo fuser -v /dev/zvol/ssd/appdata/*/*   # expect no holders
@@ -210,7 +218,7 @@ deploy afterwards to re-assert the full `host_vars` property set.
 Never `zfs load-key` + mount an `archive/<dataset>` in place — it dirties the raw
 incremental chain and forces a full re-seed (docs/32). Always restore to a clone.
 
-### App-data zvols (Postgres, Prometheus, Loki, GitLab repos)
+### App-data zvols (Postgres, Prometheus, Loki, GitLab repos, Nextcloud/Immich)
 
 These live on `ssd/appdata` and — since the vzdump dedup (`backup=0`) — are **no
 longer in the VM/CT vzdumps**; `archive/appdata` is now their sole backup. Restore
@@ -228,8 +236,9 @@ sudo fuser -v /dev/zvol/ssd/appdata/prometheus/data     # confirm free (host sid
 sudo zfs send ssd/appdata-restore-<ts>/prometheus/data@<snap> \
   | sudo zfs receive -F ssd/appdata/prometheus/data
 sudo qm start 202                                       # bring the node back, verify
-# (`restore-force appdata` does the same `receive -F` recursively over EVERY zvol
-#  held by vmid 202 — identical stop-202-first requirement.)
+# (`restore-force appdata` does the same `receive -F` recursively over the WHOLE
+#  ssd/appdata tree — every zvol held by vmids 202, 153, 156, AND 157 — so stop
+#  ALL of them first, not just 202, per the destructive-restore quiesce steps above.)
 ```
 
 The zvol re-attaches to its VM via the `proxmox_vm` role's `vm_additional_disks`
@@ -264,11 +273,49 @@ sudo pct restore <ctid> /mnt/restore/proxmox/<ts>/dump/vzdump-lxc-<ctid>-<bts>.t
 App-data zvols recovered this way are the **stale pre-dedup copies** — prefer the
 `archive/appdata` path above for current app data.
 
+### From B2 (restic offsite)
+
+The **offsite** copy of the file-walkable, high-value estate lives in Backblaze
+B2 as restic client-side ciphertext (`restic_offsite` role, docs/42). Use it when
+BOTH the live NAS and the archive pool are lost, or to pull a single file/dataset
+back from offsite. Repo password = the `rclone_crypt_password` field of the
+`B2 Archive Backup` 1Password item — **without it the repo is unrecoverable**
+(keep an offline copy). On a rebuilt pve-nas-01 the role renders
+`/etc/restic-offsite/{env,rclone.conf}`; to restore from another host, install
+`restic` + `rclone`, drop those two files, then:
+
+```bash
+# Source the repo env (RESTIC_REPOSITORY/RESTIC_PASSWORD/RCLONE_CONFIG/...)
+set -a; . /etc/restic-offsite/env; set +a
+
+restic snapshots                      # find the snapshot to restore
+restic-offsitectl verify              # (optional) restic check integrity first
+
+# Whole-source restore (default target /mnt/restore/restic/<name>/<ts>):
+#   names: backups | share | appdata | databases | k3s-etcd | immich-data | nextcloud-data
+sudo restic-offsitectl restore appdata
+
+# Ad-hoc single-path restore:
+restic restore latest --target /tmp/rtest --include /mnt/restic-src/appdata/sonarr/config.xml
+
+# Immich photos / Nextcloud user files (zvol-clone sources — restored as plain
+# files, then copied back into the live app's data mount):
+restic restore latest --target /mnt/restore/immich --include /run/restic-offsite/immich-data
+```
+
+restic restores are **already decrypted** (restic holds the repo key) — unlike
+the archive `zfs send -w` path, no `zfs load-key` is needed. Logical DB dumps
+land under `.../backups/apps/<app>` in the restored `backups` tree; replay them
+with the app's normal restore (`pg_restore`, `gitlab-backup restore`, etc.).
+
 ### Other backup types
 
-- **GitLab** — app-consistent nightly tarball (`/var/opt/gitlab/backups`, on the
-  VM OS disk → vzdump). Restore with `gitlab-backup restore`
-  (`docs/27-gitlab-deployment.md`).
+- **GitLab** — app-consistent nightly tarball + `gitlab-secrets.json` + `gitlab.rb`.
+  The landing was **relocated** off the VM OS disk onto the NFS mount
+  `/mnt/backups-offsite` (= `tank/backups/apps/gitlab`), so it now rides the
+  archsync file walk into B2 (docs/42) instead of only the whole-VM vzdump image.
+  Restore with `gitlab-backup restore` (`docs/27-gitlab-deployment.md`); the
+  whole-VM vzdump image remains the bare-metal DR path.
 - **Grafana** — the SQLite DB (`grafana.db`) lives on the NFS export
   `/appdata/grafana`, a bind of `ssd/appdata`, so it rides the `ssd/appdata →
   archive/appdata` replication (it is a *file*, not a zvol — the send-back above
@@ -280,7 +327,29 @@ App-data zvols recovered this way are the **stale pre-dedup copies** — prefer 
   (dashboards via ConfigMap, datasources via config); only service accounts and
   user prefs are unique (`docs/31-observability.md`).
 - **k3s etcd** — see "etcd Snapshots" below + "k3s cluster recovery".
-- **Home Assistant** — HAOS built-in backups (`docs/24-home-assistant-deployment.md`).
+- **Authentik / Mealie (in-cluster Postgres)** — nightly `pg_dump` CronJobs
+  (`kubernetes/apps/{authentik,recipes}/pg-dump.yaml`, 7-dump rotation) write to
+  the pg-dump PVs mounted at `…:/backups-apps/{authentik,mealie}` (the
+  `/export/backups-apps` NFS export = `tank/backups/apps/<app>`), so each dump
+  rides `tank/backups → archive` **and** the restic B2 offsite walk (docs/42);
+  staleness alerts `AuthentikBackupStale` / `MealieBackupStale`. The Postgres
+  zvols themselves ride `ssd/appdata → archive` (crash-consistent); prefer the
+  logical dump for restores.
+- **Nextcloud** — the nightly `pg_dump` lands under `tank/backups/apps/nextcloud`
+  (rides `tank/backups → archive` + restic B2); the app/postgres zvols ride
+  `ssd/appdata → archive`, and the bulk library on `tank/nextcloud-data` has its
+  own `archive` replication. Restore per `docs/35-nextcloud.md`.
+- **Immich** — the nightly `pg_dump` lands under `tank/backups/apps/immich`
+  (rides `tank/backups → archive` + restic B2); the app/postgres zvols ride
+  `ssd/appdata → archive`, and the photo library on `tank/immich-data` has its
+  own `archive` replication. Restore per `docs/36-immich.md`.
+- **wg-easy / Hermes / Hindsight** — NFS-backed state on `ssd/appdata` rides
+  `ssd/appdata → archive`; restore file-wise like Grafana above (see
+  `docs/38-wireguard-vpn.md`, `docs/37-hermes.md`).
+- **Home Assistant** — full-VM recovery rides the monitored nightly vzdump of the
+  HAOS VM (.154) via `VzdumpBackupStale`; HAOS built-in backups
+  (`docs/24-home-assistant-deployment.md`) are an unmonitored best-effort
+  convenience for granular config restore.
 
 ## etcd Snapshots
 
@@ -1013,4 +1082,4 @@ If you need help during disaster recovery:
 
 ---
 
-**Last Updated**: 2026-07-07
+**Last Updated**: 2026-07-21

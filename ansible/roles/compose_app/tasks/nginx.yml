@@ -1,0 +1,89 @@
+---
+# Shared host-nginx TLS-terminator task flow for the compose app guests (immich +
+# nextcloud; immich_ml has no nginx). Installs nginx, seeds a self-signed
+# placeholder cert until acme_certs distributes the real *.esweiss.com wildcard,
+# deploys the caller's site template (kept per-app for its security-sensitive
+# proxy/real-IP/TLS directives — passed by absolute path), disables the packaged
+# default vhost, validates with `nginx -t`, and reloads. Every value that
+# diverges between apps is a compose_app_nginx_* parameter; the deployed .conf is
+# byte-identical to the caller's own template render.
+
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when: not (compose_app_skip_install | default(false))
+
+- name: Ensure the nginx TLS material directory exists
+  ansible.builtin.file:
+    path: "{{ compose_app_nginx_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ compose_app_nginx_cert_dir_mode }}"
+
+# acme_certs (on dns-01) distributes the real *.esweiss.com wildcard cert here
+# after every renewal (cert_distribution_targets) and reloads nginx. On a fresh
+# guest that push hasn't fired, so seed a self-signed placeholder so nginx starts
+# and the guest is reachable for the first cert push. acme_certs overwrites both
+# files unconditionally; the `creates` guard makes this a one-shot that never
+# clobbers a distributed cert.
+- name: Seed a self-signed TLS placeholder until acme_certs distributes the real cert
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey rsa:2048 -nodes
+      -keyout {{ compose_app_nginx_ssl_key }}
+      -out {{ compose_app_nginx_ssl_cert }}
+      -days {{ compose_app_nginx_self_signed_days }} -subj "{{ compose_app_nginx_self_signed_subj }}"
+      {% if compose_app_nginx_self_signed_san %}-addext "subjectAltName={{ compose_app_nginx_self_signed_san }}"{% endif %}
+    creates: "{{ compose_app_nginx_ssl_cert }}"
+  when: compose_app_nginx_bootstrap_cert | default(true)
+
+- name: Secure the nginx private key
+  ansible.builtin.file:
+    path: "{{ compose_app_nginx_ssl_key }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: compose_app_nginx_bootstrap_cert | default(true)
+
+- name: Deploy the nginx site
+  ansible.builtin.template:
+    src: "{{ compose_app_nginx_site_template }}"
+    dest: "/etc/nginx/sites-available/{{ compose_app_nginx_site_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx (compose_app)
+
+- name: Enable the nginx site
+  ansible.builtin.file:
+    src: "/etc/nginx/sites-available/{{ compose_app_nginx_site_name }}"
+    dest: "/etc/nginx/sites-enabled/{{ compose_app_nginx_site_name }}"
+    state: link
+  notify: Reload nginx (compose_app)
+
+# This is the only site on the guest; the packaged default vhost would otherwise
+# shadow it as the default_server on :80.
+- name: Remove the default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx (compose_app)
+
+# Validate the rendered config against the running nginx before the reload
+# handler fires, so a broken template fails the play instead of the reload.
+- name: Validate the nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  when: not (compose_app_skip_install | default(false))
+
+- name: Ensure nginx is enabled + started
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+  when: not (compose_app_skip_install | default(false))

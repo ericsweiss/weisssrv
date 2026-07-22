@@ -1,7 +1,10 @@
 ---
 # Immich compose stack on a NAS-pinned Debian VM. Order: mount the persistent
 # zvols -> install Docker + nginx -> render config/compose/nginx -> bring the
-# stack up via a systemd unit -> install the pg_dump backup timer.
+# stack up via a systemd unit -> install the pg_dump backup timer. The shared
+# compose scaffolding (Docker install, compose systemd unit, nginx task flow,
+# backup-metrics helper) lives in the compose_app role, included below with
+# immich-specific vars.
 
 # =============================================================================
 # Persistent storage (ZFS zvols attached as SCSI devices by proxmox_vm)
@@ -40,14 +43,19 @@
   no_log: true
 
 # =============================================================================
-# Docker Engine
+# Docker Engine (shared docker_engine via compose_app)
 # =============================================================================
-# immich_skip_install gates the install/service-management steps so the molecule
-# scenario can render + assert every template without Docker/systemd services in
-# the CI container. It defaults false, so real deploys run the full flow.
+# immich_skip_install gates the install/service-management steps (mapped onto
+# compose_app_skip_install) so the molecule scenario can render + assert every
+# template without Docker/systemd services in the CI container. It defaults
+# false, so real deploys run the full flow. The pinned-engine install + dpkg
+# hold + journald daemon.json is the shared docker_engine role.
 - name: Install Docker Engine + compose plugin
-  ansible.builtin.include_tasks: docker.yml
-  when: not (immich_skip_install | default(false))
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: docker.yml
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install | default(false) }}"
 
 # =============================================================================
 # Compose project directories (on the encrypted zvols)
@@ -63,7 +71,6 @@
     - "{{ immich_compose_dir }}"
     - "{{ immich_config_dir }}"
     - "{{ immich_model_cache_dir }}"
-    - "{{ immich_backup_dir }}"
 
 # The immich-server container runs as root (upstream default) and writes the
 # library tree here; the mount root gets a dedicated library subdir so the tank
@@ -77,71 +84,32 @@
     mode: "0750"
 
 # =============================================================================
-# Host nginx (TLS terminator in front of the compose stack)
+# Host nginx (TLS terminator in front of the compose stack) — shared task flow
 # =============================================================================
-- name: Install nginx
-  ansible.builtin.apt:
-    name: nginx
-    state: present
-  environment:
-    DEBIAN_FRONTEND: noninteractive
-  when: not (immich_skip_install | default(false))
+# Capture this role's nginx site template as an absolute path BEFORE the include
+# (role_path inside an include_role resolves to the INCLUDED role, so it must be
+# resolved eagerly here). compose_app/nginx.yml deploys it byte-unchanged.
+- name: Resolve the Immich nginx site template path
+  ansible.builtin.set_fact:
+    immich_nginx_site_template: "{{ role_path }}/templates/immich.nginx.conf.j2"
 
-- name: Ensure the nginx TLS material directory exists
-  ansible.builtin.file:
-    path: "{{ immich_nginx_ssl_cert | dirname }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0750"
-
-# acme_certs (running on dns-01) distributes the real *.esweiss.com wildcard
-# cert to this directory after every Let's Encrypt renewal (cert_distribution_
-# targets in host_vars/dns-01.yml) and reloads nginx. On a brand-new VM that
-# push hasn't fired yet, so seed a self-signed *.esweiss.com placeholder — nginx
-# starts and the VM is reachable for the first cert push instead of the role
-# hard-failing. acme_certs overwrites both files unconditionally; the `creates`
-# guard makes this a one-shot that never clobbers a distributed cert.
-- name: Seed a self-signed TLS placeholder until acme_certs distributes the real cert
-  ansible.builtin.command:
-    cmd: >-
-      openssl req -x509 -newkey rsa:2048 -nodes
-      -keyout {{ immich_nginx_ssl_key }}
-      -out {{ immich_nginx_ssl_cert }}
-      -days 3650 -subj "/CN=vm.esweiss.com"
-      -addext "subjectAltName=DNS:*.esweiss.com"
-    creates: "{{ immich_nginx_ssl_cert }}"
-
-- name: Secure the nginx private key
-  ansible.builtin.file:
-    path: "{{ immich_nginx_ssl_key }}"
-    owner: root
-    group: root
-    mode: "0600"
-
-- name: Deploy the Immich nginx site
-  ansible.builtin.template:
-    src: immich.nginx.conf.j2
-    dest: /etc/nginx/sites-available/immich.conf
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload nginx
-
-- name: Enable the Immich nginx site
-  ansible.builtin.file:
-    src: /etc/nginx/sites-available/immich.conf
-    dest: /etc/nginx/sites-enabled/immich.conf
-    state: link
-  notify: Reload nginx
-
-# Immich is the only site on this host; the packaged default vhost would
-# otherwise shadow it as the default_server on 80.
-- name: Remove the default nginx site
-  ansible.builtin.file:
-    path: /etc/nginx/sites-enabled/default
-    state: absent
-  notify: Reload nginx
+- name: Configure the host nginx reverse proxy
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: nginx.yml
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install | default(false) }}"
+    compose_app_nginx_cert_dir: "{{ immich_nginx_ssl_cert | dirname }}"
+    compose_app_nginx_cert_dir_mode: "0750"
+    compose_app_nginx_ssl_cert: "{{ immich_nginx_ssl_cert }}"
+    compose_app_nginx_ssl_key: "{{ immich_nginx_ssl_key }}"
+    compose_app_nginx_site_name: immich.conf
+    compose_app_nginx_site_template: "{{ immich_nginx_site_template }}"
+    compose_app_nginx_self_signed_days: 3650
+    compose_app_nginx_self_signed_subj: "/CN=vm.esweiss.com"
+    compose_app_nginx_self_signed_san: "DNS:*.esweiss.com"
+    # Immich seeds the placeholder unconditionally (its molecule asserts it).
+    compose_app_nginx_bootstrap_cert: true
 
 # =============================================================================
 # Rendered config: the SSO/telemetry config file, the compose .env, the stack
@@ -155,7 +123,7 @@
     group: root
     mode: "0640"
   no_log: true
-  notify: Restart immich
+  notify: Restart compose stack
 
 # Compose .env carries DB_PASSWORD — no_log.
 - name: Render the compose environment file
@@ -166,7 +134,7 @@
     group: root
     mode: "0640"
   no_log: true
-  notify: Restart immich
+  notify: Restart compose stack
 
 - name: Render the docker-compose file
   ansible.builtin.template:
@@ -175,43 +143,62 @@
     owner: root
     group: root
     mode: "0640"
-  notify: Restart immich
+  notify: Restart compose stack
 
 # =============================================================================
-# Systemd unit that owns the compose lifecycle
+# Systemd unit that owns the compose lifecycle (shared compose_app unit)
 # =============================================================================
-- name: Deploy the Immich compose systemd unit
-  ansible.builtin.template:
-    src: immich-compose.service.j2
-    dest: /etc/systemd/system/immich-compose.service
+- name: Deploy + start the Immich compose stack
+  ansible.builtin.include_role:
+    name: compose_app
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install | default(false) }}"
+    compose_app_service_name: immich-compose
+    compose_app_description: "Immich (docker compose stack)"
+    compose_app_working_directory: "{{ immich_compose_dir }}"
+    compose_app_requires_mounts_for:
+      - "{{ immich_app_dir }}"
+      - "{{ immich_db_data_location }}"
+      - "{{ immich_data_dir }}"
+    compose_app_requires_mounts_comment:
+      - "Never start the stack before its encrypted zvols are mounted — otherwise"
+      - "compose would write into the (unmounted) root filesystem. These map to the"
+      - "fstab-generated mount units for the app/postgres/library zvols."
+    compose_app_reconcile_comment:
+      - "`up -d` reconciles the running stack to the rendered compose/.env/config,"
+      - "recreating only the containers whose definition changed."
+
+# =============================================================================
+# Backup landing zone (offsite NFS when enabled) + nightly pg_dump timer
+# =============================================================================
+# immich_backup_dir resolves to the NFS mountpoint when immich_backup_nfs_enabled
+# (tank/backups/apps/immich -> archsync -> B2), otherwise the app zvol. This one
+# task creates whichever; the mount below (gated) overlays it when NFS-backed.
+- name: Create the backup landing directory
+  ansible.builtin.file:
+    path: "{{ immich_backup_dir }}"
+    state: directory
     owner: root
     group: root
-    mode: "0644"
-  notify:
-    - Reload systemd
-    - Restart immich
+    mode: "0750"
 
-- name: Enable the Immich compose unit
-  ansible.builtin.systemd:
-    name: immich-compose.service
-    enabled: true
-    daemon_reload: true
-  when: not (immich_skip_install | default(false))
+# Mounted over TLS (xprtsec=tls — the per-app export rejects plaintext); the VM
+# runs tlshd via the nfs_tls role, wired in immich.yml gated on this flag.
+# nofail keeps a NAS-down boot from hanging; the backup service's
+# RequiresMountsFor pulls it on demand. Opt-in via immich_backup_nfs_enabled.
+- name: Mount the offsite backup NFS export
+  ansible.posix.mount:
+    path: "{{ immich_backup_mountpoint }}"
+    src: "{{ immich_backup_nfs_server }}:{{ immich_backup_nfs_export }}"
+    fstype: nfs4
+    opts: "{{ immich_backup_nfs_options }}"
+    state: mounted
+  when:
+    - not (immich_skip_install | default(false))
+    - immich_backup_nfs_enabled | default(false)
+  tags:
+    - molecule-notest
 
-# Bring the stack up (and apply any pending config/compose changes) before the
-# backup + verify steps run.
-- name: Flush handlers so the stack is (re)started with current config
-  ansible.builtin.meta: flush_handlers
-
-- name: Ensure the Immich stack is running
-  ansible.builtin.systemd:
-    name: immich-compose.service
-    state: started
-  when: not (immich_skip_install | default(false))
-
-# =============================================================================
-# Nightly pg_dump backup (textfile metric + timer)
-# =============================================================================
 - name: Ensure the node_exporter textfile collector directory exists
   ansible.builtin.file:
     path: "{{ immich_backup_metrics_dir }}"
@@ -219,6 +206,17 @@
     owner: root
     group: root
     mode: "0755"
+
+# The metric-writing logic is the shared write_prom_metrics helper (deployed by
+# compose_app); immich-backup-run.sh sources it.
+- name: Deploy the shared backup-metrics helper library
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: backup_lib.yml
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install | default(false) }}"
+    compose_app_backup_lib_dest: "{{ immich_backup_lib_path }}"
+    compose_app_backup_size_help_object: "database dump"
 
 - name: Deploy the Immich backup wrapper (pg_dump + freshness metric)
   ansible.builtin.template:

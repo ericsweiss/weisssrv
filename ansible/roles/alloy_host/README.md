@@ -11,7 +11,7 @@ not reconciled by Flux (an always-on unauthenticated push path is a security
 hole). To use it when Traefik is down: `kubectl apply -f` the nodeport manifest,
 override `alloy_host_loki_url` per-host, then delete it once ingress recovers.
 
-## Why a host-side Alloy DaemonSet
+## Why a host-side Alloy
 
 Container logs inside k3s are already collected by the in-cluster Alloy
 DaemonSet. The host-side Alloy covers what the cluster cannot see:

@@ -1,7 +1,7 @@
 ---
 # Cluster entrypoint — the flux-system Kustomization (from `flux bootstrap`)
-# reconciles this path. It applies the flux-system controllers plus the four
-# infrastructure Flux Kustomizations (sources → controllers → configs →
+# reconciles this path. It applies the flux-system controllers plus the five
+# infrastructure Flux Kustomizations (sources → crds → controllers → configs →
 # observability), the apps top-level Kustomization (dependsOn
 # infrastructure-configs, parallel to observability), and pulls in the
 # tenants folder (empty at bootstrap; populated as external repos onboard).
@@ -10,6 +10,7 @@ kind: Kustomization
 resources:
   - flux-system
   - infrastructure-sources.yaml
+  - infrastructure-crds.yaml
   - infrastructure-controllers.yaml
   - infrastructure-configs.yaml
   - infrastructure-observability.yaml

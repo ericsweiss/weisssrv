@@ -81,7 +81,13 @@ gotchas that bite. Copy an existing app rather than inventing a shape.
 ## SSO
 
 - OIDC issuer host is **always** `auth.ericsweiss.com` (external).
-- Authentik providers/apps are created **manually in the UI** (no blueprints in
-  the repo). Write the exact clicks — provider type, redirect URIs, scopes,
-  groups, bindings — into the app's docs page and the MR deploy plan. See
-  `docs/23-recipes-sso-setup.md` for a worked example.
+- Authentik applications/providers/group-bindings are **codified in
+  `terraform/authentik/`** (`applications.tf`, `providers_oauth2.tf`,
+  `providers_proxy.tf`, `providers_saml.tf`, `groups.tf`,
+  `policy_bindings.tf`). Edit the `.tf` files, review the plan line-by-line,
+  then run a supervised `op run -- terraform apply` — **never the UI** (UI-created
+  objects drift out of state). Its add-an-app recipe and day-2 ops are in
+  `terraform/authentik/README.md` + `docs/40-authentik-terraform.md`. Record the
+  provider type, redirect URIs, scopes, and group bindings in the app's docs page
+  and the MR deploy plan. (`docs/23-recipes-sso-setup.md` is a legacy manual
+  walkthrough superseded by the terraform module.)

@@ -45,10 +45,8 @@
     fstype: fuse.mergerfs
     opts: >-
       {{ item.options | join(',') }},fsname={{ item.name }}{%- if item.systemd_requires is defined -%}
-      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service
-      {%- for req in item.systemd_requires -%}
-      ,x-systemd.requires-mounts-for={{ req }}
-      {%- endfor -%}
+      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service{%- for req in item.systemd_requires -%}
+      ,x-systemd.requires-mounts-for={{ req }}{%- endfor -%}
       {% endif -%}
     state: mounted
   loop: "{{ mergerfs_mounts }}"

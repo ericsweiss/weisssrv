@@ -46,3 +46,66 @@ spec:
     requests:
       storage: 10Gi
   volumeName: authentik-postgres-data
+
+---
+# NFS-backed target for the authentik-pg-dump CronJob's logical pg_dump backups.
+# The postgres PV above is a crash-consistent zvol snapshot only; these dumps
+# add a restorable logical backup. Landing zone is tank/backups/apps/authentik
+# (the encrypted, FILE-WALKABLE consolidated dump dataset): tank/backups rides
+# the nightly archive raw-ZFS replication AND, being file-walkable, is picked up
+# by the restic offsite B2 walk — so the dump lands offsite where a zvol never
+# could (docs/06, docs/41 B2 plan).
+#
+# DEPLOY-ORDER DEPENDENCY: the nas_storage role (ansible) creates + owns the
+# tank/backups/apps/authentik subdir (1000:2000, 02775) as the bind_source of its
+# own per-app export /export/backups-apps/authentik (TLS required, scoped to the
+# k3s client CIDRs only) — one nfs_exports entry per app in
+# host_vars/pve-nas-01.yml. Run the ansible storage deploy before this PV
+# reconciles so the export + subdir exist when the CronJob first mounts.
+#
+# Hostname (not IP) server + xprtsec=tls: the *.esweiss.com cert has no IP SAN,
+# so an IP mount fails the TLS handshake (docs/07). server is immutable — the
+# force annotation lets Flux delete+recreate on a server/mountOptions change
+# (Retain -> data safe).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: authentik-pg-dump
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: "Enabled"
+  labels:
+    type: nfs
+    app: authentik
+spec:
+  claimRef:
+    namespace: authentik
+    name: authentik-pg-dump
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: pve-nas-01.esweiss.com
+    path: /backups-apps/authentik
+  mountOptions:
+    - nfsvers=4.2
+    - hard
+    - noatime
+    - xprtsec=tls
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: authentik-pg-dump
+  namespace: authentik
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: authentik-pg-dump

@@ -113,7 +113,8 @@ spec:
           port: 7700
 
 ---
-# Mealie Postgres: only mealie pod can connect on 5432.
+# Mealie Postgres: the mealie pod and the mealie-pg-dump CronJob can connect
+# on 5432.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -130,6 +131,45 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: mealie
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mealie-pg-dump
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# Egress for the mealie-pg-dump CronJob: kube-dns (resolve the postgres Service)
+# + intra-ns mealie-postgres on 5432. NFS is mounted by the kubelet (node), not
+# the pod, so it is not policed here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-mealie-pg-dump
+  namespace: recipes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mealie-pg-dump
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mealie-postgres
       ports:
         - protocol: TCP
           port: 5432

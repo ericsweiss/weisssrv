@@ -51,7 +51,7 @@
 - name: Build list of codified domain-answer pairs
   ansible.builtin.set_fact:
     codified_pairs: >-
-      {{ adguard_rewrites | map('combine', {}) |
+      {{ adguard_rewrites |
          map('dict2items') |
          map('selectattr', 'key', 'in', ['domain', 'answer']) |
          map('items2dict') |

@@ -75,6 +75,19 @@
     - Reload postfix
   when: postfix_virtual_aliases is defined
 
+# main.cf.j2 drops virtual_alias_maps under the same guard, so when the var is
+# removed the table is no longer referenced — clean up the orphaned files rather
+# than leaving unmanaged state a future re-add could silently reuse.
+- name: Remove orphaned virtual alias table when no aliases are configured
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/postfix/virtual
+    - /etc/postfix/virtual.db
+  when: postfix_virtual_aliases is not defined
+  notify: Reload postfix
+
 - name: Configure mail aliases
   ansible.builtin.template:
     src: aliases.j2

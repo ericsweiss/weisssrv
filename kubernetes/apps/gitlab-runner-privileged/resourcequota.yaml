@@ -1,15 +1,17 @@
 ---
 # Aggregate resource bounds for the privileged-runner namespace, sized to admit
-# concurrent:15 (see release.yaml) plus a transition buffer.
+# concurrent:9 (see release.yaml) plus a transition buffer.
 #
 # Measured per-job usage during a full molecule matrix: ~0.55Gi memory (build
 # ~250-400Mi ansible control, dind ~120Mi, helper ~18Mi) and ~1.5 cpu (build
 # 900m + dind 500m + helper 100m). Declared per-job sizing is ~1Gi requests /
-# ~3.25Gi limits, from which requests.memory 28Gi and limits.memory 80Gi admit
-# the full burst with headroom. requests.cpu 32 admits concurrent:15 (22.5 cpu)
-# plus a ~6-pod transition buffer — Terminating pods still count against the
-# quota, so a thin buffer 403s under churn ("exceeded quota" ->
-# runner_system_failure).
+# ~3.25Gi limits. Buffers keep the c=15 tuning's exact ratios: pods 22 =
+# concurrent:9 + the same 13-pod churn allowance (Terminating pods still count
+# against the quota, so a thin buffer 403s under churn — "exceeded quota" ->
+# runner_system_failure); requests.memory 22Gi = pods x ~1Gi so the pods
+# dimension, not memory, is what caps churn; limits.memory 64Gi keeps the
+# prior ~2.9Gi-per-admitted-pod ratio; requests.cpu 24 admits concurrent:9
+# (13.5 cpu) plus the same ~6-pod cpu transition buffer.
 #
 # requests.* are the scheduler's reservation (placement gate) and match real
 # usage, so the scheduler — not this quota — caps effective parallelism at what
@@ -30,10 +32,10 @@ metadata:
   namespace: gitlab-runner-privileged
 spec:
   hard:
-    requests.cpu: "32"
-    requests.memory: 28Gi
-    limits.memory: 80Gi
-    pods: "28"
+    requests.cpu: "24"
+    requests.memory: 22Gi
+    limits.memory: 64Gi
+    pods: "22"
 ---
 # Default requests/limits so any pod created in this namespace without explicit
 # resources still counts against the quota above. Only memory carries a default

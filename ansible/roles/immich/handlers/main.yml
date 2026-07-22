@@ -1,29 +1,11 @@
 ---
+# The compose stack restart + nginx reload handlers now live in the shared
+# compose_app role ("Restart compose stack" / "Reload nginx (compose_app)"),
+# notified by the config/.env/compose renders and the nginx task flow. This role
+# keeps only its own "Reload systemd" handler for the backup service/timer units.
+#
 # daemon_reload is always safe (works in a plain systemd container), so it is
-# never gated. The service-touching handlers are gated on immich_skip_install so
-# the molecule render scenario can notify them without Docker/nginx present.
+# never gated.
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
-
-- name: Restart docker
-  ansible.builtin.systemd:
-    name: docker
-    state: restarted
-  when: not (immich_skip_install | default(false))
-
-# `docker compose up -d` reconciles the running stack to the rendered compose +
-# .env + config (recreating only the containers whose definition changed).
-# Env-var / config-file changes need a container recreate, not a plain restart —
-# `up -d` does exactly that.
-- name: Restart immich
-  ansible.builtin.systemd:
-    name: immich-compose.service
-    state: restarted
-  when: not (immich_skip_install | default(false))
-
-- name: Reload nginx
-  ansible.builtin.systemd:
-    name: nginx
-    state: reloaded
-  when: not (immich_skip_install | default(false))

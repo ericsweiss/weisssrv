@@ -60,10 +60,14 @@ when an item is added or its fields change.
 - **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
 - **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
 - **GitLab Agent Token** - credential (agent token for GitLab Kubernetes Agent, registered via Operate > Kubernetes clusters)
+- **GitLab Registry Cache Deploy Token** - username + token. A GitLab **deploy token** (NOT a personal/runner token) scoped `read_registry` on the `eric/weisssrv` project, minted at deploy time (Project > Settings > Repository > Deploy tokens; or Admin). Consumed in-cluster by the `registry-cache-secrets` ExternalSecret → `REGISTRY_PROXY_USERNAME`/`REGISTRY_PROXY_PASSWORD` of the CI pull-through registry cache (`kubernetes/apps/registry-cache`, docs/27 § Registry pull-through cache). `read_registry` is least privilege — the cache only pulls upstream blobs. Rotate = create a new deploy token, update both fields here, then `task flux:rotate-secret -- registry-cache`
 - **Nextcloud Secrets** - admin-password (break-glass local admin, reachable at `/login?direct=1`), postgres-password (nextcloud DB role), serverinfo-token (random ≥32 chars; the token the nextcloud-exporter authenticates to Nextcloud's serverinfo API with — the role sets it via `occ config:app:set serverinfo token`)
 - **Nextcloud SSO** - client-id, client-secret (Authentik OIDC via the `user_oidc` app, REQUIRED — SSO-only, local login form hidden)
 - **Immich Secrets** - postgres-password (compose DB_PASSWORD); admin-bootstrap-password (operator-only — the password you set on the one-time Immich admin-registration page during SSO bootstrap; NOT injected by Ansible)
 - **Immich SSO** - client-id, client-secret (Authentik OIDC, REQUIRED - password login disabled after bootstrap)
+- **Homarr SSO** - client-id (literal `homarr`), client-secret, secret-encryption-key, admin-username, admin-password. `client-secret` is read by BOTH ESO (the `homarr-secrets` ExternalSecret → `oidc-client-secret`) AND terraform/authentik (`TF_VAR_oauth2_client_secret_homarr`, docs/40) so they can never disagree. `secret-encryption-key` (`openssl rand -hex 32`) is ESO-synced too and encrypts the SQLite-stored integration credentials — **do not lose it** (losing it makes stored integration creds unreadable). `admin-username`/`admin-password` are the break-glass LOCAL admin created at first-run onboarding (operator-set, NOT injected — like Immich `admin-bootstrap-password`); the local admin is the fallback path when Authentik is down. See docs/41
+- **Homarr Proxmox Token** - token-id (e.g. `homarr@pve!homarr`), token-secret (a read-only `PVEAuditor` Proxmox API token minted via `pveum`, docs/41). Entered into Homarr's Proxmox integration via the UI (NOT ESO-consumed). Rotate = mint a new token in Proxmox + update here + re-enter in the Homarr UI
+- **Homarr Integrations** - DR-convenience record (NOT ESO-consumed) of the per-integration credentials entered in the Homarr UI so they survive a rebuild: sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key, immich-api-key, nextcloud-app-password. (The AdGuard/NZBGet/qBittorrent/Plex/Home-Assistant integrations reuse their existing items above)
 - **GitHub Token** - credential (personal access token for version checker API rate limits)
 - **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
@@ -81,6 +85,7 @@ when an item is added or its fields change.
 - **ZFS Pool tank Passphrase** - passphrase (random ≥32 chars; consumed by zfs-load-key@tank.service on pve-nas-01)
 - **ZFS Pool ssd Passphrase** - passphrase (zfs-load-key@ssd.service on pve-nas-01)
 - **Plex Custom Certificate** - password (PFX bundle passphrase used by `/usr/local/sbin/plex-cert-reload.sh` when converting the renewed PEM cert into the PKCS#12 form Plex requires; matching value must be configured under Plex Settings -> Network -> "Custom certificate encryption key")
+- **B2 Archive Backup** - TWO key pairs (capability split, docs/42 Step 0) + the repo password: `b2_key_id`/`b2_application_key` = the FULL master key, consumed ONLY by the `terraform/b2` module (bucket versioning/lifecycle/SSE writes need bucket-management capabilities); `restic_key_id`/`restic_application_key` = the RESTRICTED key (`listBuckets,listFiles,readFiles,writeFiles,readBucketEncryption` — no `deleteFiles`; rclone deletes-by-hiding and the B2 lifecycle expires hidden versions), consumed by the `restic_offsite` Ansible role on pve-nas-01 (nightly offsite restic-to-B2 backup, docs/12/42) via the storage deploy job + Taskfile; `rclone_crypt_password` = the restic repo password (`RESTIC_PASSWORD`) — **losing it means losing the entire restic repo** (the offsite copy becomes undecryptable), so keep an OFFLINE copy outside this vault. Rotate: master = mint in the Backblaze console, update `b2_key_id`/`b2_application_key`; restricted = `b2 key create --bucket weisssrv-backup ...` (docs/42), update `restic_*` fields, re-run `deploy-ansible-storage` (restic keeps working — no real delete is ever issued); `rclone_crypt_password` must NEVER change once the repo exists
 
 ## Kubernetes workloads (External Secrets Operator)
 
@@ -297,7 +302,7 @@ task dns:deploy
 ansible-playbook ansible/playbooks/postflight.yml --limit dns-01,dns-02
 
 # 4. Test login with new password
-open https://192.168.0.150:3000
+open http://192.168.0.150:3000
 # Login with username: eric, new password from step 1
 ```
 
@@ -454,7 +459,7 @@ ansible all -m shell -a "wc -l ~/.ssh/authorized_keys"
 
 ```bash
 # Test login
-curl -k https://192.168.0.150:3000
+curl http://192.168.0.150:3000
 
 # Check sync status (if password changed)
 ssh eric@192.168.0.150 "sudo systemctl status adguardhome-sync"

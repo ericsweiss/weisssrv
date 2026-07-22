@@ -1,0 +1,12 @@
+---
+# Home for the CRD-only HelmRelease (prometheus-operator-crds) and its Helm
+# storage Secret. Created in this stage so it exists before the controllers
+# stage, which depends on the monitoring.coreos.com CRDs this release installs.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prometheus-operator-crds
+  labels:
+    app.kubernetes.io/name: prometheus-operator-crds
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/managed-by: flux

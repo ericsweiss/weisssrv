@@ -38,6 +38,14 @@ provisioner:
       callbacks_enabled: profile_tasks, timer
       stdout_callback: ansible.builtin.default
       result_format: yaml
+    # Molecule renders its own ansible.cfg, so the repo ansible.cfg does NOT
+    # apply here — and its [ssh_connection] pipelining wouldn't cover the
+    # docker connection anyway. The general [connection] setting pipes each
+    # module straight into one `docker exec` instead of a put-file + exec
+    # round-trip per task, which is the dominant per-task overhead on the
+    # exec-heavy docker transport.
+    connection:
+      pipelining: true
   playbooks:
     # Shared prepare for every default scenario. Roles that need extra prep ship
     # their own molecule/default/prepare.yml AND re-point playbooks.prepare at it

@@ -108,6 +108,16 @@ secrets:
   immich_postgres_password: "op://Homelab/Immich Secrets/postgres-password"
   immich_oauth_client_id: "op://Homelab/Immich SSO/client-id"
   immich_oauth_client_secret: "op://Homelab/Immich SSO/client-secret"
+  # B2 offsite backup (docs/42 Step 0 capability split). The restic_offsite
+  # role consumes the RESTRICTED hide-only key (restic_* fields); terraform/b2
+  # keeps the FULL master key on the b2_* fields (bucket lifecycle/SSE writes).
+  # rclone_crypt_password doubles as the restic repo password (RESTIC_PASSWORD)
+  # — losing it loses the repo.
+  b2_master_key_id: "op://Homelab/B2 Archive Backup/b2_key_id"
+  b2_master_application_key: "op://Homelab/B2 Archive Backup/b2_application_key"
+  restic_key_id: "op://Homelab/B2 Archive Backup/restic_key_id"
+  restic_application_key: "op://Homelab/B2 Archive Backup/restic_application_key"
+  rclone_crypt_password: "op://Homelab/B2 Archive Backup/rclone_crypt_password"
 
 # Timezone
 timezone: America/Los_Angeles
@@ -154,19 +164,18 @@ debian_version: "13"
 # molecule/standalone fallback). Not a Flux version (host-side Ansible), so it is
 # NOT added to the versions ConfigMap. Upstream silently rotates the point
 # release (13.1-2 -> 13.6-1 broke a cached-template recreate — see the
-# proxmox_lxc role, !160), so it is tracked in check-versions.py (category
+# proxmox_lxc role), so it is tracked in check-versions.py (category
 # "manual"); check for a newer build with `pveam update && pveam available
 # --section system | grep debian-13-standard`.
 lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 k3s_version: "v1.36.2+k3s1"
-# Optional: pin the sha256 of install.sh for the k3s_version tag to verify the
-# root-run installer script before exec (host-side ansible, NOT a Flux version —
-# do not add to the versions ConfigMap). Compute on bump:
+# Pin the sha256 of install.sh for the k3s_version tag so get_url verifies the
+# root-run installer script before exec (fail-closed against a force-pushed tag /
+# compromised CDN / MITM — install.sh's own check covers the k3s binary, not the
+# script itself). Host-side ansible, NOT a Flux version — do not add to the
+# versions ConfigMap. Recompute + update in lockstep with every k3s_version bump:
 #   curl -sfL https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version>/install.sh | sha256sum
-# then set e.g.  k3s_install_script_checksum: "sha256:<hex>"
-# Left empty here so get_url omits the checksum (install.sh still verifies the
-# k3s binary's own sha256 against the GitHub release).
-k3s_install_script_checksum: ""
+k3s_install_script_checksum: "sha256:46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
 kube_vip_version: "v1.2.1"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
@@ -240,6 +249,13 @@ gitlab_runner_helm_version: "0.91.0"
 # https://gitlab.com/gitlab-org/charts/gitlab-agent/tags
 gitlab_agent_helm_version: "2.29.0"
 
+# In-cluster pull-through Docker registry cache for CI (kubernetes/apps/
+# registry-cache, docs/27 § Registry pull-through cache) — the CNCF distribution
+# `registry` image (Docker Hub library/registry), run in proxy mode in front of
+# registry.git.ericsweiss.com so molecule CI jobs warm-hit the molecule-test
+# image on the LAN. Bare X.Y.Z tag. https://hub.docker.com/_/registry/tags
+registry_cache_version: "3.1.1"
+
 # Nextcloud (Docker Compose stack on the NAS-pinned VM, 192.168.0.156)
 # Consumed by Ansible (the nextcloud role) directly from all.yml — the VM
 # containers are NOT Flux-managed, but the pins live here per the
@@ -254,12 +270,9 @@ nextcloud_postgres_version: "18.4-trixie"
 # pin above — same image/tag, tracked once by the "Redis" version-check entry.
 # Nextcloud exporter: https://github.com/xperimental/nextcloud-exporter/releases
 nextcloud_exporter_version: "0.9.1"
-# Docker Engine apt pins (download.docker.com, Debian trixie). Bump all three
-# together (docs/35 upgrade runbook) when download.docker.com prunes a version.
-# Version strings: apt-cache policy docker-ce on the VM, or the repo Packages index.
-nextcloud_docker_version: "5:29.6.1-1~debian.13~trixie"
-nextcloud_containerd_version: "2.2.6-1~debian.13~trixie"
-nextcloud_docker_compose_version: "5.3.1-1~debian.13~trixie"
+# The Nextcloud VM's Docker engine is pinned by the shared docker_ce_version /
+# containerd_version / docker_compose_plugin_version pins below (consumed by the
+# shared docker_engine role) — one source of truth across immich/immich_ml/nextcloud.
 
 # Immich (photo-management VM, docker-compose stack — consumed by the immich
 # Ansible role; the VM-only pins ride the versions-configmap as a harmless
@@ -273,9 +286,10 @@ immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8
 immich_valkey_version: "9"
 immich_valkey_digest: "sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9"
 
-# Docker Engine — pinned apt versions for the Debian 13/trixie VM compose stacks
-# (immich; shared with the sibling Nextcloud VM). Held via apt-mark hold so the
-# maintenance apt-upgrade never bumps them under a running stack. Bump workflow:
+# Docker Engine — the single pinned apt versions for the Debian 13/trixie VM
+# compose stacks (immich, immich_ml, nextcloud via the shared docker_engine
+# role). dpkg-held so the maintenance apt-upgrade never bumps them under a
+# running stack. Bump workflow:
 # https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages
 docker_ce_version: "5:29.6.1-1~debian.13~trixie"
 containerd_version: "2.2.6-1~debian.13~trixie"
@@ -310,6 +324,13 @@ hermes_version: "v2026.7.20"
 # defending against a moved/compromised upstream tag. Update in lockstep with
 # hermes_version (get it from the tag on GitHub or the CI build log).
 hermes_git_sha: "3ef6bbd201263d354fd83ec55b3c306ded2eb72a"
+# PUBLISHED image tag = <hermes_version>-r<N>. The -rN local revision exists
+# because the image is upstream + our reviewed patches (docker/hermes-agent/
+# patches/): a patch change without an upstream bump must produce a NEW tag or
+# the nodes' IfNotPresent cache would keep serving the unpatched image. Bump
+# -rN when patches change; reset to -r1 on a hermes_version bump. CI asserts
+# the prefix matches hermes_version so the two can never drift.
+hermes_image_version: "v2026.7.20-r1"
 # OpenAI Codex CLI (https://github.com/openai/codex/releases, npm @openai/codex).
 # Hermes' Codex app-server runtime delegates OpenAI/Codex turns to this CLI over
 # JSON-RPC stdio, authenticated with a ChatGPT subscription (OAuth) — no API
@@ -319,7 +340,7 @@ hermes_git_sha: "3ef6bbd201263d354fd83ec55b3c306ded2eb72a"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. NOT substituted into any manifest (build-time
 # only); it rides in the versions ConfigMap as a harmless superset.
-hermes_codex_version: "0.144.6"
+hermes_codex_version: "0.145.0"
 # Claude Code CLI (https://github.com/anthropics/claude-code, npm
 # @anthropic-ai/claude-code). Baked into the hermes-agent image alongside the
 # Codex CLI so Hermes can DELEGATE coding tasks to Claude Code headlessly
@@ -330,7 +351,7 @@ hermes_codex_version: "0.144.6"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.216"
+hermes_claude_version: "2.1.217"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
@@ -368,6 +389,20 @@ hindsight_version: "0.8.4"
 # opportunistically (any recent build serves the pinned Gemma GGUF), category
 # "manual" in check-versions. https://github.com/ggml-org/llama.cpp/releases
 hindsight_llamacpp_version: "b10068"
+
+# Homarr dashboard (kubernetes/apps/homarr, docs/41) — the ghcr.io/homarr-labs/
+# homarr image tag. The Docker tag is v-PREFIXED (v1.71.0 returns 200; a bare
+# 1.71.0 is 404), so keep the leading "v". https://github.com/homarr-labs/homarr/releases
+homarr_version: "v1.71.0"
+
+# Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42). The role
+# installs from apt (keeps molecule hermetic); a NON-EMPTY value here becomes an
+# EXACT apt version pin (restic=<value>) and upstream release strings do NOT
+# match Debian's package versions — leave empty ("" = distro version). If strict
+# pinning is ever wanted, switch the role to a checksum-verified binary download
+# (prometheus_exporter pattern) first. Host-side only — no k8s substitution.
+restic_version: ""
+rclone_version: ""
 
 # Observability stack versions
 # kube-prometheus-stack, Loki, Alloy chart versions are in helm_chart_versions below.
@@ -419,7 +454,14 @@ helm_chart_versions:
   cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.8.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.17.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "87.19.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  # prometheus-community/prometheus-operator-crds chart. Owns the
+  # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
+  # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
+  # (docs/29). 30.0.1 = appVersion v0.92.1, matching kube_prometheus_stack's
+  # operator 0.92.x. COUPLING: bump in lockstep with kube_prometheus_stack so the
+  # CRD set stays version-matched to the operator kps deploys (docs/12).
+  prometheus_operator_crds: "30.0.1"
   loki: "18.5.1"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.10.1"
   prometheus_blackbox_exporter: "11.15.1"

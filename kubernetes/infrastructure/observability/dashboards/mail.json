@@ -31,7 +31,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 1 },
       "id": 1,
       "options": {
         "colorMode": "background",
@@ -45,14 +45,53 @@
         },
         "textMode": "auto"
       },
-      "title": "SMTP Relay (LXC)",
+      "title": "Postfix Daemon",
       "type": "stat",
-      "description": "smtp-relay LXC (192.168.0.151). No blackbox SMTP probe configured yet - shows data from Proxmox exporter.",
+      "description": "postfix_up from the Postfix exporter on smtp-relay (192.168.0.151:9101) — reflects actual daemon health, not just LXC power state.",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(pve_up{id=\"lxc/151\"})",
-          "legendFormat": "smtp-relay",
+          "expr": "max(postfix_up)",
+          "legendFormat": "postfix",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 5, "x": 5, "y": 1 },
+      "id": 6,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "Mail Queue Depth",
+      "type": "stat",
+      "description": "postfix_queue_depth — deferred/queued messages. A rising queue is the classic 'mail is stuck' signal.",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(postfix_queue_depth)",
+          "legendFormat": "queue",
           "refId": "A"
         }
       ]
@@ -83,7 +122,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 1 },
+      "gridPos": { "h": 6, "w": 7, "x": 10, "y": 1 },
       "id": 2,
       "options": {
         "legend": {
@@ -130,7 +169,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 1 },
+      "gridPos": { "h": 6, "w": 7, "x": 17, "y": 1 },
       "id": 3,
       "options": {
         "legend": {

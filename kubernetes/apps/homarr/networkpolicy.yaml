@@ -1,0 +1,168 @@
+---
+# Default-deny egress; explicit allows below. (default-deny-ingress comes from
+# the shared ../../components/netpol-baseline component.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: homarr
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Ingress: only Traefik may reach the dashboard on :7575. Everything else
+# (cross-pod, cross-namespace) is denied by the baseline default-deny-ingress.
+# Kubelet health probes are node-local and not gated by NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-homarr-ingress
+  namespace: homarr
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: homarr
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 7575
+
+---
+# Egress for the homarr pod. Homarr's integration widgets poll each service's
+# raw API on a DIRECT in-cluster/LAN URL — bypassing the Authentik forward-auth
+# perimeter (which would 302 an API client to a login page). Each `to:` block
+# is the tight allowlist for one class of target (docs/41):
+#
+#   1. kube-dns — name resolution (in-cluster, LAN and external names).
+#   2. downloads namespace on the *arr/qbit/nzbget UI ports — the supported
+#      Sonarr/Radarr/Lidarr/Prowlarr/qBittorrent/NZBGet integrations. A
+#      namespaceSelector (unlike a Service-ClusterIP ipBlock) matches AFTER
+#      kube-proxy's DNAT — the evaluated destination is the backend POD IP,
+#      which the selector covers — so the ClusterIP path works (same mechanism
+#      note as hermes' hindsight/traefik egress rules).
+#   3. traefik namespace on :443 — OIDC discovery/JWKS/token fetch to
+#      auth.ericsweiss.com AND the Nextcloud integration to cloud.esweiss.com
+#      both resolve internally to the Traefik VIP .101 (split-horizon), which
+#      kube-proxy DNATs to the Traefik POD IP; this post-DNAT namespaceSelector
+#      matches where a .101/32 ipBlock never could.
+#   4. public HTTPS (:443) to the internet (RFC1918/CGNAT/link-local excluded)
+#      — icon CDN, homarr version checks, any external integration.
+#   5. the explicit LAN integration allowlist (/32 per host, by shared port) —
+#      the deliberate inverse of the public rule above (RFC1918 is INCLUDED
+#      here, only for these exact hosts/ports).
+#
+# No kube-apiserver reach (automountServiceAccountToken is false).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-homarr
+  namespace: homarr
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: homarr
+  policyTypes:
+    - Egress
+  egress:
+    # 1. kube-dns
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. downloads namespace: *arr / qbittorrent / nzbget integration APIs
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: downloads
+      ports:
+        - protocol: TCP
+          port: 8989   # sonarr
+        - protocol: TCP
+          port: 7878   # radarr
+        - protocol: TCP
+          port: 8686   # lidarr
+        - protocol: TCP
+          port: 9696   # prowlarr
+        - protocol: TCP
+          port: 8080   # qbittorrent
+        - protocol: TCP
+          port: 6789   # nzbget
+    # 3. traefik namespace on :443 (auth.ericsweiss.com OIDC backend +
+    #    cloud.esweiss.com Nextcloud integration — both land on Traefik .101)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        # Belt-and-braces: the namespaceSelector matches post-DNAT (proven on
+        # this CNI by the deployed hermes/homarr rules); the VIP ipBlock also
+        # admits the pre-DNAT form so a CNI change can't silently break this.
+        - ipBlock:
+            cidr: 192.168.0.101/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # 4. public HTTPS (icon CDN, version checks, external integrations)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # 5a. AdGuard Home admin API (both DNS instances)
+    - to:
+        - ipBlock: { cidr: 192.168.0.150/32 }
+        - ipBlock: { cidr: 192.168.0.160/32 }
+      ports:
+        - protocol: TCP
+          port: 3000
+    # 5b. Proxmox API (any node; six /32 entries for headroom)
+    - to:
+        - ipBlock: { cidr: 192.168.0.102/32 }
+        - ipBlock: { cidr: 192.168.0.103/32 }
+        - ipBlock: { cidr: 192.168.0.104/32 }
+        - ipBlock: { cidr: 192.168.0.105/32 }
+        - ipBlock: { cidr: 192.168.0.106/32 }
+        - ipBlock: { cidr: 192.168.0.107/32 }
+      ports:
+        - protocol: TCP
+          port: 8006
+    # 5c. Plex media server
+    - to:
+        - ipBlock: { cidr: 192.168.0.152/32 }
+      ports:
+        - protocol: TCP
+          port: 32400
+    # 5d. Home Assistant
+    - to:
+        - ipBlock: { cidr: 192.168.0.154/32 }
+      ports:
+        - protocol: TCP
+          port: 8123
+    # 5e. Immich
+    - to:
+        - ipBlock: { cidr: 192.168.0.157/32 }
+      ports:
+        - protocol: TCP
+          port: 2283

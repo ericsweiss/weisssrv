@@ -48,13 +48,6 @@ resource "authentik_policy_binding" "app_group" {
 # Applications outside the local.applications map (see applications.tf) get
 # explicit bindings.
 
-# agent-sso: same gate as the `agent` perimeter — hermes-users.
-resource "authentik_policy_binding" "agent_sso" {
-  target = authentik_application.agent_sso.uuid
-  group  = authentik_group.app["hermes-users"].id
-  order  = 0
-}
-
 # The two AdGuard SSO dashboards: dns-admins (which also carries the injected
 # AdGuard credentials — groups.tf).
 resource "authentik_policy_binding" "adguard_01" {
@@ -67,4 +60,20 @@ resource "authentik_policy_binding" "adguard_02" {
   target = authentik_application.adguard_02.uuid
   group  = authentik_group.dns_admins.id
   order  = 0
+}
+
+# Homarr dashboard: two access tiers. homarr-admins is also the group name
+# Homarr matches from the OIDC `groups` claim to grant board-admin; homarr-users
+# members pass the Authentik gate but land as regular (non-admin) Homarr users.
+# policy_engine_mode "any" on the app means EITHER binding grants access.
+resource "authentik_policy_binding" "homarr" {
+  target = authentik_application.homarr.uuid
+  group  = authentik_group.app["homarr-admins"].id
+  order  = 0
+}
+
+resource "authentik_policy_binding" "homarr_users" {
+  target = authentik_application.homarr.uuid
+  group  = authentik_group.app["homarr-users"].id
+  order  = 1
 }

@@ -149,19 +149,24 @@ spec:
               containerPort: 51821
               protocol: TCP
           securityContext:
-            # Root + NET_ADMIN ONLY: drop the container runtime's default
-            # capability set (CHOWN, DAC_OVERRIDE, NET_RAW, SETUID, MKNOD, …) and
-            # add back only NET_ADMIN — the single capability WireGuard needs to
-            # drive wg0 + the iptables/nftables NAT rules. Without `drop: [ALL]`
-            # the pod would silently keep the full default set on top of
-            # NET_ADMIN, contradicting the documented "NET_ADMIN only" posture and
-            # widening blast radius if the UI/container is compromised.
+            # Root + NET_ADMIN/NET_RAW: drop the container runtime's default
+            # capability set (CHOWN, DAC_OVERRIDE, SETUID, MKNOD, …) and add back
+            # only the two capabilities wg-quick needs — NET_ADMIN to drive wg0
+            # and NET_RAW for the PostUp iptables NAT hooks (see below). Without
+            # `drop: [ALL]` the pod would silently keep the full default set on
+            # top of these, contradicting the documented least-privilege posture
+            # and widening blast radius if the UI/container is compromised.
             #   - NOT SYS_MODULE: the wireguard kernel module is already loaded on
             #     every k3s node (flannel wireguard-native backend,
             #     group_vars/k3s.yml), so wg-easy attaches to it rather than
             #     insmod-ing — verified `lsmod | grep wireguard` on the agents.
-            #   - NOT NET_RAW: WireGuard uses ordinary UDP sockets and drives the
-            #     interface/NAT via netlink (covered by NET_ADMIN); no raw sockets.
+            #   - NET_RAW is required: wg-quick's PostUp hooks in the v15 image
+            #     run iptables v1.8.11 in LEGACY mode, which opens a raw socket to
+            #     initialize the `nat` table. Without NET_RAW that call fails
+            #     ("can't initialize iptables table 'nat': Permission denied") and
+            #     wg-quick tears wg0 back down, so the interface never comes up
+            #     (WireGuard's own UDP/netlink path needs only NET_ADMIN, but the
+            #     image's iptables-legacy NAT setup does not).
             #   - NOT DAC_OVERRIDE: root's NFS writes to /etc/wireguard still work
             #     without it — the appdata export is all_squash,anonuid=1000,
             #     anongid=2000 (host_vars/pve-nas-01.yml: "Maps ALL clients
@@ -177,6 +182,7 @@ spec:
                 - ALL
               add:
                 - NET_ADMIN
+                - NET_RAW
           readinessProbe:
             tcpSocket:
               port: ui

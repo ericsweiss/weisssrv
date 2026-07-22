@@ -24,7 +24,10 @@ immich_app_dir: /mnt/immich-app
 immich_compose_dir: "{{ immich_app_dir }}/compose"
 immich_config_dir: "{{ immich_app_dir }}/config"
 immich_model_cache_dir: "{{ immich_app_dir }}/model-cache"
-immich_backup_dir: "{{ immich_app_dir }}/backups"
+# The nightly pg_dump lands on the offsite NFS landing zone when
+# immich_backup_nfs_enabled is set (see --- Backups --- below), otherwise the app
+# zvol. Resolving the path from the toggle means group_vars only flips one var.
+immich_backup_dir: "{{ immich_backup_mountpoint if immich_backup_nfs_enabled else immich_app_dir + '/backups' }}"
 immich_db_data_location: /mnt/immich-postgres
 # The tank zvol is mounted at /mnt/immich-data; Immich's UPLOAD_LOCATION maps to
 # the container's /data. Keep the library under a dedicated subdir so the mount
@@ -151,10 +154,37 @@ immich_nginx_real_ip_from:
   - 192.168.0.227
 
 # --- Backups -----------------------------------------------------------------
-# Nightly pg_dump into the app zvol (rides ssd/appdata -> archive raw-encrypted,
-# and the app zvol is itself covered). node_exporter_host exposes the freshness
-# textfile metric that ImmichBackupFailed/Stale read.
+# Nightly pg_dumpall onto the offsite NFS landing zone (tank/backups/apps/immich)
+# instead of the app zvol, so the compact logical dump rides the archsync file
+# walk into B2 (a file walk cannot see the zvol-backed data). node_exporter_host
+# exposes the freshness textfile metric that ImmichBackupFailed/Stale read.
 immich_backup_hour: "02"
 immich_backup_minute: "30"
-immich_backup_keep_days: 7
-immich_backup_metrics_dir: /var/lib/node_exporter
+# Local retention is deliberately minimal: long-term history now lives on the
+# shared landing zone's archive replication (KEEP_RECENT 3 + KEEP_MONTHLY 6) and
+# the B2 GFS retention, so only a few days are kept on the mount itself.
+immich_backup_keep_days: 3
+# Track the shared node_exporter textfile-collector dir (like the gitlab +
+# nextcloud backup wrappers) so a central change to it doesn't strand the
+# freshness metric in the old path.
+immich_backup_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+# Sourceable write_prom_metrics helper library (deployed by compose_app), sourced
+# by immich-backup-run.sh so the metric-writing logic is shared with nextcloud.
+immich_backup_lib_path: /usr/local/lib/immich-backup-lib.sh
+
+# --- Offsite backup landing zone (NFS mount of tank/backups/apps/immich) ------
+# When enabled, the pg_dump lands on the shared, file-walkable tank/backups/apps
+# zone (rides the archsync file walk into B2 — docs/42) instead of the app zvol.
+# OFF by default (opt-in): flip immich_backup_nfs_enabled in group_vars once the
+# NAS-side export (/export/backups-apps/immich, all_squash 1000:2000, 02775)
+# exists — mirrors the gitlab role's NFS-backed backup landing. Mounted OVER TLS
+# (xprtsec=tls, by hostname so the *.esweiss.com cert verifies): the per-app
+# export REQUIRES TLS, and the VM runs tlshd via the nfs_tls role in immich.yml
+# (gated on this flag). The dump lands on the aes-256-gcm tank/backups dataset.
+# nofail keeps a NAS-down boot from hanging; immich-backup.service's
+# RequiresMountsFor pulls it on demand.
+immich_backup_nfs_enabled: false
+immich_backup_nfs_server: "pve-nas-01.esweiss.com"
+immich_backup_nfs_export: /backups-apps/immich
+immich_backup_mountpoint: /mnt/backups-offsite
+immich_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"

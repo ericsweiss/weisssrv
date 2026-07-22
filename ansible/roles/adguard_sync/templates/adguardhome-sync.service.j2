@@ -11,6 +11,12 @@ Type=oneshot
 # the tool derives the config format from it.
 LoadCredential=config.yaml:/etc/adguardhome-sync.yaml
 ExecStart=/usr/local/bin/adguardhome-sync run --config ${CREDENTIALS_DIRECTORY}/config.yaml
+# Write node_exporter textfile metrics on every run (success or failure). The
+# '+' prefix runs it as root OUTSIDE this unit's DynamicUser + ProtectSystem
+# sandbox so it can write /var/lib/node_exporter (owned by node_exporter_host).
+# $SERVICE_RESULT is "success" on a clean run; feeds an AdGuardSyncFailed/Stale
+# alert so primary->secondary DNS config drift no longer fails silently.
+ExecStopPost=+/usr/local/bin/adguardhome-sync-metrics.sh $SERVICE_RESULT
 Environment=HOME=%S/adguardhome-sync
 StateDirectory=adguardhome-sync
 # Unprivileged + sandboxed: only needs HTTPS to dns-01/dns-02, the

@@ -122,21 +122,107 @@
           - "'proxy_set_header X-Forwarded-For $remote_addr;' in (nginx_raw.content | b64decode)"
           # Regression guard: the append-the-whole-chain form must not return.
           - "'$proxy_add_x_forwarded_for' not in (nginx_raw.content | b64decode)"
+          # TLS 1.3 floor: 1.2 dropped.
+          - "'ssl_protocols TLSv1.3;' in (nginx_raw.content | b64decode)"
+          - "'TLSv1.2' not in (nginx_raw.content | b64decode)"
 
     - name: Read the backup wrapper
       ansible.builtin.slurp:
         src: /usr/local/sbin/nextcloud-backup-run.sh
       register: backup_raw
 
-    - name: Assert the backup wrapper emits the expected metric series
+    - name: Assert the backup wrapper keeps its per-app dump logic + sources the shared lib
       ansible.builtin.assert:
         that:
-          - "'nextcloud_backup_last_run_success' in (backup_raw.content | b64decode)"
-          - "'nextcloud_backup_last_success_timestamp_seconds' in (backup_raw.content | b64decode)"
           - "'pg_dump' in (backup_raw.content | b64decode)"
           # Both pipeline stages (pg_dump AND gzip) must gate promotion, so a
           # gzip/disk-full failure cannot ship a truncated dump as a success.
           - "'pipe_status[1]' in (backup_raw.content | b64decode)"
+          # Metric-writing is now the sourced shared lib, called with the
+          # nextcloud_backup prefix (proves the metric-name series is unchanged).
+          - "'source /usr/local/lib/nextcloud-backup-lib.sh' in (backup_raw.content | b64decode)"
+          - "'write_prom_metrics nextcloud_backup' in (backup_raw.content | b64decode)"
+          # Fail-closed NFS guard: when the landing zone is the offsite export,
+          # a missing mount must abort with success=0, never dump to the
+          # OS-disk mountpoint dir (mirrors gitlab-backup-run.sh.j2).
+          - "'mountpoint -q' in (backup_raw.content | b64decode)"
+          - "'NFS-backed but not mounted' in (backup_raw.content | b64decode)"
+
+    # The metric-name series lives in the sourced helper library (runtime-prefixed).
+    - name: Read the shared backup-metrics helper library
+      ansible.builtin.slurp:
+        src: /usr/local/lib/nextcloud-backup-lib.sh
+      register: nextcloud_backup_lib
+
+    - name: Assert the helper library defines the prefixed metric series + nextcloud size noun
+      ansible.builtin.assert:
+        that:
+          - (nextcloud_backup_lib.content | b64decode) is search('write_prom_metrics\(\)')
+          - (nextcloud_backup_lib.content | b64decode) is search('\$\{prefix\}_last_run_success')
+          - (nextcloud_backup_lib.content | b64decode) is search('\$\{prefix\}_last_success_timestamp_seconds')
+          # nextcloud's size-gauge HELP noun is "dump" (immich's is "database dump").
+          - (nextcloud_backup_lib.content | b64decode) is search('Size of the most recent dump in bytes')
+
+    # Run the wrapper end-to-end (mocked docker) and assert the EMITTED .prom, so
+    # the nextcloud_backup_* metric names (NextcloudBackupStale keys on them) are
+    # proven unchanged by the lib extraction.
+    - name: Run the backup wrapper (success path)
+      ansible.builtin.command: /usr/local/sbin/nextcloud-backup-run.sh
+      changed_when: false
+
+    - name: Read nextcloud_backup.prom after success
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/nextcloud_backup.prom
+      register: nextcloud_prom_ok
+
+    - name: Assert all metrics present on success
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud_backup_last_run_success 1' in (nextcloud_prom_ok.content | b64decode)"
+          - "'nextcloud_backup_last_run_duration_seconds ' in (nextcloud_prom_ok.content | b64decode)"
+          - "'nextcloud_backup_last_success_timestamp_seconds ' in (nextcloud_prom_ok.content | b64decode)"
+          - "'nextcloud_backup_last_size_bytes ' in (nextcloud_prom_ok.content | b64decode)"
+        fail_msg: "nextcloud_backup.prom missing expected metrics on success"
+        success_msg: "nextcloud_backup.prom emits all metrics on success"
+
+    - name: Capture the success timestamp (to assert preservation on failure)
+      ansible.builtin.shell: >-
+        awk '/^nextcloud_backup_last_success_timestamp_seconds/ {print $2}'
+        /var/lib/node_exporter/nextcloud_backup.prom
+      register: nextcloud_ts_ok
+      changed_when: false
+
+    - name: Arm the backup failure
+      ansible.builtin.file:
+        path: /tmp/nextcloud-backup-fail
+        state: touch
+        mode: "0644"
+
+    - name: Run the backup wrapper (failure path)
+      ansible.builtin.command: /usr/local/sbin/nextcloud-backup-run.sh
+      register: nextcloud_backup_fail
+      changed_when: false
+      failed_when: nextcloud_backup_fail.rc == 0
+
+    - name: Read nextcloud_backup.prom after failure
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/nextcloud_backup.prom
+      register: nextcloud_prom_fail
+
+    - name: Assert failure records success=0 and preserves the prior timestamp
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud_backup_last_run_success 0' in (nextcloud_prom_fail.content | b64decode)"
+          - >-
+            'nextcloud_backup_last_success_timestamp_seconds ' ~ nextcloud_ts_ok.stdout
+            in (nextcloud_prom_fail.content | b64decode)
+        fail_msg: "failure path did not record success=0 or lost the prior success timestamp"
+        success_msg: "failure path records success=0 and preserves the last success timestamp"
+
+    - name: Disarm the backup failure
+      ansible.builtin.file:
+        path: /tmp/nextcloud-backup-fail
+        state: absent
 
     - name: Assert the backup timer + service exist
       ansible.builtin.stat:
@@ -144,14 +230,14 @@
       loop:
         - nextcloud-backup.service
         - nextcloud-backup.timer
-      register: backup_units
-      failed_when: not backup_units.stat.exists
+      register: nextcloud_backup_units
+      failed_when: not nextcloud_backup_units.stat.exists
 
     # Only when a real Docker CLI is available (it isn't in the CI molecule
     # image) validate the compose file semantically.
     - name: Detect the docker CLI
       ansible.builtin.command: which docker
-      register: docker_cli
+      register: nextcloud_docker_cli
       changed_when: false
       failed_when: false
 
@@ -160,4 +246,4 @@
         cmd: docker compose config -q
         chdir: /mnt/nextcloud-app/compose
       changed_when: false
-      when: docker_cli.rc == 0
+      when: nextcloud_docker_cli.rc == 0

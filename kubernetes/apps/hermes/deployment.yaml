@@ -178,7 +178,7 @@ spec:
           # Version managed in ansible/inventories/prod/group_vars/all.yml
           # (hermes_version); built by the build-hermes-agent CI job. Pulled
           # from the internal registry host (AdGuard rewrite -> Traefik .101).
-          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}
+          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}
           imagePullPolicy: IfNotPresent
           args: ["gateway", "run"]
           env:
@@ -320,17 +320,16 @@ spec:
               mountPath: /opt/data
         # ── Dashboard: user-facing FastAPI web UI on :9119 ───────────────
         - name: dashboard
-          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}
+          image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}
           imagePullPolicy: IfNotPresent
           # Bind 0.0.0.0 (upstream's compose defaults to 127.0.0.1) so Traefik
           # can reach the dashboard through the Service. Binding to a
           # non-loopback address engages the dashboard's fail-closed auth gate:
           # upstream refuses to start the dashboard on 0.0.0.0 unless a
-          # dashboard auth provider is registered. TWO providers are registered
-          # via the env below — the `self_hosted` Authentik OIDC provider
-          # (primary) and the bundled `basic` provider (break-glass) — behind
-          # the Authentik forward-auth perimeter on both IngressRoutes, with
-          # the NetworkPolicy admitting only the Traefik namespace on :9119
+          # dashboard auth provider is registered. The `self_hosted` Authentik
+          # OIDC provider (env below) is the sole registered provider and the
+          # only auth layer — no forward-auth middleware on the IngressRoutes;
+          # the NetworkPolicy admits only the Traefik namespace on :9119
           # (docs/37 §SSO). 9119 is the image's default port, so no --port.
           args: ["dashboard", "--host", "0.0.0.0", "--no-open"]
           env:
@@ -370,20 +369,26 @@ spec:
             # auth provider (docs/37 §SSO). The dashboard reads these from real
             # container env (env wins over config.yaml) — unlike the gateway,
             # whose config only sees /opt/data/.env (see the initContainer).
-            # PUBLIC_URL pins the reconstructed redirect_uri deterministically
-            # behind Traefik to exactly
-            # https://agent.ericsweiss.com/auth/callback — the single strict
-            # allowed redirect URI on the Terraform-managed authentik provider
-            # (terraform/authentik/providers_oauth2.tf, docs/40).
-            - name: HERMES_DASHBOARD_PUBLIC_URL
-              value: https://agent.ericsweiss.com
-            # Issuer = the agent-sso application slug on the EXTERNAL authentik
-            # host. auth.ericsweiss.com resolves public (Cloudflare), so OIDC
-            # discovery ({issuer}/.well-known/openid-configuration) and token
-            # calls ride the existing public :443 egress rule — no
-            # NetworkPolicy change needed.
+            # No PUBLIC_URL pin: the dashboard reconstructs its redirect_uri
+            # per-request from X-Forwarded-Host/-Proto (uvicorn proxy_headers),
+            # so each hostname round-trips to its own /auth/callback — both are
+            # strict allowed URIs on the Terraform-managed authentik provider
+            # (terraform/authentik/providers_oauth2.tf, docs/40). uvicorn only
+            # trusts forwarded headers from FORWARDED_ALLOW_IPS; "*" is safe
+            # here because the NetworkPolicy admits only Traefik to :9119 and
+            # Traefik overwrites those headers itself.
+            - name: FORWARDED_ALLOW_IPS
+              value: "*"
+            # Issuer = the `agent` application slug on the authentik host. From a
+            # pod, auth.ericsweiss.com resolves INTERNALLY to the Traefik VIP .101
+            # (AdGuard split-horizon rewrite; the WAN/Cloudflare path 403s
+            # non-browser user agents), and kube-proxy DNATs that VIP to a Traefik
+            # pod before NetworkPolicy evaluation — so OIDC discovery
+            # ({issuer}/.well-known/openid-configuration) + token/JWKS calls ride
+            # the traefik-namespace :443 egress rule (allow-egress-hermes,
+            # networkpolicy.yaml), NOT a public-internet egress rule.
             - name: HERMES_DASHBOARD_OIDC_ISSUER
-              value: https://auth.ericsweiss.com/application/o/agent-sso/
+              value: https://auth.ericsweiss.com/application/o/agent/
             - name: HERMES_DASHBOARD_OIDC_CLIENT_ID
               value: hermes-dashboard
             # Non-empty secret => confidential client (PKCE stays on either
@@ -498,6 +503,20 @@ spec:
               memory: 512Mi
             limits:
               memory: 2Gi
+          # Hardening for the highest-risk container in the pod (it loads
+          # arbitrary attacker-influenced web content). Drop the runtime's
+          # default capability set — Xvfb + the Camoufox/Firefox namespace
+          # sandbox need no Linux capabilities beyond ordinary root file ops.
+          # Unlike gateway/dashboard this is NOT an s6 image, so a cap drop does
+          # not fight a privilege-drop init. allowPrivilegeEscalation /
+          # readOnlyRootFilesystem are deliberately left unset: the browser
+          # writes its runtime tree (/root, Xvfb sockets, /tmp) and may use the
+          # Firefox sandbox helper, so a read-only rootfs / no-setuid would risk
+          # breaking launch. If a specific cap turns out to be required, add back
+          # only that one (mirroring wg-easy's NET_ADMIN pattern).
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: data
               mountPath: /opt/data

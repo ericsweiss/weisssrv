@@ -490,18 +490,19 @@ HA-managed and ZFS-replicated across nodes (Proxmox HA), so they survive a host
 loss. For off-site durability, download full backups from the UI (Step 2) or use
 HA's built-in remote-backup integrations.
 
-> **Note — NAS-backed HAOS backups via the `appdata` export do NOT work.** The
-> `/export/appdata` export is bound to `/mnt/ssd/appdata` and is exported **only**
-> to the k3s CIDRs (`192.168.0.200/29`, `192.168.0.220/29`) with `all_squash`
-> (anonuid/anongid 1000/2000) and `xprtsec=tls` **required** — HAOS (.154) is not
-> in that export, and the locked HAOS image ships no `tlshd` so it can never
-> request `xprtsec` (same constraint as the read-only media mount above). With
-> `fsid=0` on `/export`, the NFSv4 path would also be `/appdata/...`, not the
-> absolute `/mnt/ssd/appdata/...`. To back HAOS up to the NAS you would have to
-> add a **dedicated plaintext `.154` backup export** in
-> `host_vars/pve-nas-01.yml` (a separate path, exported to `192.168.0.154/32`
-> without `xprtsec`), then mount it by hostname with the fsid-relative path. Until
-> such an export exists, rely on HA-native backups + off-site download.
+> **NAS-backed HAOS backups are now supported (and offsite-eligible).** The
+> `/export/backups-apps` export (`host_vars/pve-nas-01.yml`, bound to
+> `/mnt/tank/backups/apps`) carries a **plaintext `192.168.0.154/32` client line**
+> (`all_squash` → 1000:2000, no `xprtsec` — HAOS ships no `tlshd`), and
+> `nas_storage` creates the `home-assistant` subdir. Point HAOS's native
+> scheduled backup at NFS `192.168.0.102:/backups-apps/home-assistant` (the
+> fsid-relative path under the `fsid=0` root) via **Settings → System → Storage →
+> Add network storage** (see the step-by-step in `docs/42-offsite-backup.md`).
+> Because it lands on `tank/backups/apps`, it then rides the archsync file walk
+> into the restic B2 copy, and its freshness is covered by the NAS-side
+> `BackupArtifactStale{app="home-assistant"}` alert. The whole-VM vzdump image
+> remains the bare-metal DR path; the `/export/appdata` export (k3s-only,
+> `xprtsec=tls`) is still NOT usable by HAOS.
 
 **Step 2: Configure Automatic Backups**
 
@@ -658,6 +659,15 @@ task home-assistant:vm-restart
 ```
 
 ### Step 3: Configure Authentik
+
+> **Authentik objects are Terraform-managed.** The Home Assistant OAuth2 provider
+> (slug `home`), application, and the `home-assistant-users` group binding are
+> codified in `terraform/authentik/` (`providers_oauth2.tf`, `applications.tf`,
+> `policy_bindings.tf`, `groups.tf`) and changed via a supervised `terraform apply`
+> — **not the Authentik UI** ([docs/40-authentik-terraform.md](40-authentik-terraform.md)).
+> The UI walkthrough below is retained only as a reference for the redirect URIs
+> and `configure_url`; make the actual provider/app/binding changes in the `.tf`
+> files.
 
 #### Create OAuth2 Provider
 

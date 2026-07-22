@@ -32,13 +32,18 @@ bn="$(printf '%s\n' "$src_list" | sed 's#.*/##')"
 # also satisfy).
 printf '%s\n' "$src_list" | grep -qx 'tank/immich-data' || { echo >&2 "tank/immich-data missing from SRC_LIST"; exit 1; }
 
+# ssd/k3s-etcd (off-node etcd snapshot copies) must also be in SRC_LIST — the k3s
+# DR chain depends on its raw-encrypted replication to archive (docs/17). Exact
+# full-path membership (a wrong pool like tank/k3s-etcd would not satisfy this).
+printf '%s\n' "$src_list" | grep -qx 'ssd/k3s-etcd' || { echo >&2 "ssd/k3s-etcd missing from SRC_LIST"; exit 1; }
+
 # Enforce the SRC_LIST-root-is-a-filesystem invariant (documented at the SRC_LIST
 # definition): the -R initial/incremental/resume receives apply RECV_SAFE_OPTS'
 # -o mountpoint=none/canmount=off to each root unconditionally, which ZFS rejects
 # on a zvol. The container has no ZFS, so type can't be probed — instead pin the
 # roots to a known-filesystem allow-list. Adding a SRC_LIST root then fails here
 # until a human confirms it is a filesystem (NOT a zvol) and adds it below.
-expected_roots="tank/share tank/backups tank/nextcloud-data tank/proxmox tank/immich-data ssd/appdata ssd/databases"
+expected_roots="tank/share tank/backups tank/nextcloud-data tank/proxmox tank/immich-data ssd/appdata ssd/databases ssd/k3s-etcd"
 while IFS= read -r root; do
   [ -n "$root" ] || continue
   case " $expected_roots " in

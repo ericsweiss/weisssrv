@@ -80,8 +80,19 @@
     state: present
     update_cache: true
     allow_downgrade: true
+    allow_change_held_packages: true
   when:
     - ansible_facts['os_family'] == "Debian"
+
+# Hold the package so a manual `apt upgrade` can't move Tailscale past the pin
+# (pkgs.tailscale.com continuously serves newer builds). Mirrors the alloy/plex
+# host-side pins; the install above sets allow_change_held_packages so a pinned
+# re-install still proceeds through the hold.
+- name: Hold Tailscale package to prevent unintended upgrades
+  ansible.builtin.dpkg_selections:
+    name: tailscale
+    selection: hold
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Enable Tailscale service
   ansible.builtin.service:
@@ -102,6 +113,13 @@
     reload: true
   when: tailscale_advertise_routes | length > 0
 
+# Removing the drop-in stops ip_forward being re-asserted at boot, but does NOT
+# reset the live net.ipv4.ip_forward (a demoted subnet router keeps forwarding
+# until reboot). Deliberately not forced to 0 here: nic_tuning independently owns
+# ip_forward on the same Proxmox hosts (its own 99-nic-tuning-ip-forward.conf), so
+# forcing 0 would fight that role. A reboot — or the owning role — re-establishes
+# the correct value. This teardown path is dead code today (every host advertises
+# 192.168.0.0/24).
 - name: Remove ip_forward sysctl drop-in when subnet routing disabled
   ansible.builtin.file:
     path: /etc/sysctl.d/99-tailscale-ip-forward.conf

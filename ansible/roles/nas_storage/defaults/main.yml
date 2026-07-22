@@ -60,3 +60,39 @@ nas_appdata_dirs:
   - wg-easy
   - hermes
   - hindsight
+  - homarr
+  # CONSTRAINT: no db-backup dirs belong here. The authentik/mealie pg-dump PVs
+  # land on the tank/backups/apps offsite-eligible landing zone (the per-app
+  # /export/backups-apps/<app> exports), NOT ssd/appdata — keep it that way so
+  # the dumps ride the archsync file walk into restic B2.
+
+# ---------------------------------------------------------------------------
+# Offsite-eligible logical-dump landing zone (tank/backups/apps -> B2)
+# ---------------------------------------------------------------------------
+# Every zvol-backed app lands a compact logical dump under tank/backups/apps/<app>
+# so it rides the archsync file walk into the restic B2 copy (a file walk can't
+# see the live zvol). tank/backups is aes-256-gcm encrypted -> no extra crypto.
+# Each app's subdir is now its OWN per-app NFS export (host_vars nfs_exports),
+# scoped to just that app's writer for cross-app isolation — so each subdir is a
+# bind_source that nas_storage creates + owns (1000:2000 02775) through the
+# generic bind-source handling in nfs.yml; no dedicated subdir list lives here.
+# This base path is what the NAS-side backup-artifact collector walks for
+# freshness (nas_backup_artifact_apps below).
+nas_backup_apps_base: /mnt/tank/backups/apps
+
+# ---------------------------------------------------------------------------
+# Backup-artifact mtime collector (independent NAS-side freshness signal)
+# ---------------------------------------------------------------------------
+# The VM/k8s wrappers emit their own <app>_backup_last_* metrics, but those go
+# green even if the dump never REACHED tank/backups (broken mount / wrong path).
+# This NAS-side collector stats the newest file under each backups-apps/<app>
+# and emits backup_artifact_last_mtime_seconds{app=...} — the "the dump landed
+# offsite-eligible" signal (alert BackupArtifactStale, kube-prometheus-stack).
+nas_backup_artifact_metrics_enabled: true
+nas_backup_artifact_apps:
+  - authentik
+  - mealie
+  - gitlab
+  - immich
+  - nextcloud
+  - home-assistant

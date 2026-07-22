@@ -477,7 +477,10 @@ Guest firewalls are automatically deployed when:
 
 Guest firewall configs are stored in `/etc/pve/firewall/` which is **cluster-shared storage**. This means:
 - Firewall rules are accessible from ANY Proxmox node in the cluster
-- Ansible delegates firewall deployment to `groups['proxmox'][0]` (first Proxmox host)
+- Cluster-wide firewall (`cluster.fw`) and `pveum` tasks delegate to the first
+  **reachable** Proxmox host (resilient to a down first node); host firewalls
+  (`host.fw`) run on each node itself. Per-guest rules (`<vmid>.fw`) delegate to
+  `groups['proxmox'][0]` unless `firewall_deploy_host` is set
 - No need to track which host is running each container
 - Works with Proxmox HA and live migration
 

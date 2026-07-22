@@ -153,6 +153,9 @@
     owner: root
     group: root
     mode: "0640"
+  # The rendered override can embed Environment="PLEX_CLAIM=..." (a credential),
+  # so keep the content out of --diff/-v output.
+  no_log: true
   notify:
     - Reload systemd
     - Restart plex

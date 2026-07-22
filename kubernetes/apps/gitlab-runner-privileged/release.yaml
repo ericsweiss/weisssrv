@@ -34,15 +34,21 @@ spec:
     # 2.5min -> 18min, storage-stack 3min -> 17min; measured across pipelines
     # 550/551 @c=10 vs 553 @c=18). Fix: request the real ~1.5 cpu/job (below), so
     # per-node packing is correct and the scheduler self-limits effective
-    # parallelism to what the ~25 (shared) agent cores can actually run, queuing
-    # the rest as Pending. Effective concurrency realistically lands ~11-13, not
-    # the full 15: co-tenant app/DaemonSet pods largely under-declare CPU, so a
-    # small 3-core agent fits ~1 CI pod. That is still a real gain over the old
-    # c=10 without the local oversubscription, and the Pending overflow is
-    # tolerated by poll_timeout (below), not failed. concurrent stays at/below
-    # what the ResourceQuota's requests.cpu admits so the runner never submits a
-    # pod the quota rejects (403). Move in lockstep with the quota.
-    concurrent: 15
+    # parallelism to what the agent cores can actually run.
+    #
+    # concurrent is sized to the schedulable pool, NOT above it. The CI-eligible
+    # pool is 19 cores (opt-01/02/03 3 + laptop-01 4 + prec-01 6) since the NAS
+    # agent's hard CI exclusion; after co-tenant requests (~5 cpu) that is ~14
+    # cpu of headroom = ~9 jobs at 1.5 cpu/job. Oversubscribing here (the old
+    # c=15, sized against the pre-exclusion 25-core pool) parks the overflow as
+    # Unschedulable PODS — and pod-Pending time burns the JOB's timeout clock
+    # (pipeline 773: two molecule jobs sat Pending ~18.5 min and were killed by
+    # the 20m job timeout without ever converging). At/below pool capacity the
+    # overflow waits in GitLab's job queue instead, where the timeout clock does
+    # not run. concurrent stays at/below what the ResourceQuota's requests.cpu
+    # admits so the runner never submits a pod the quota rejects (403). Move in
+    # lockstep with the quota.
+    concurrent: 9
 
     # Kubernetes executor configuration
     runners:
@@ -85,11 +91,10 @@ spec:
         # TOML sections are POSITIONAL: every key after a [section] header
         # belongs to that section until the next header. All scalar
         # [runners.kubernetes] keys must therefore come BEFORE any
-        # sub-table. The !81 revision inserted [runners.kubernetes.
-        # pod_labels] mid-section, which swallowed every key after it —
-        # pull_policy (a list) then failed pod_labels' string-map decode
-        # and the runner crash-looped on first render (the HelmRelease
-        # had been stalled behind the observability block until !83).
+        # sub-table. A past mid-section [runners.kubernetes.pod_labels]
+        # sub-table swallowed every key after it — pull_policy (a list)
+        # then failed pod_labels' string-map decode and the runner
+        # crash-looped on first render.
         [[runners]]
           # Keep clones on the LAN path too (see gitlabUrl above). A [[runners]]
           # scalar — must precede the [runners.kubernetes] sub-table.
@@ -97,14 +102,14 @@ spec:
 
           [runners.kubernetes]
             namespace = "gitlab-runner-privileged"
-            # A ~15-job start burst requests ~22.5 cpu; the scheduler places what
-            # the ~25 shared agent cores fit (~11-13) and queues the rest Pending
-            # until running jobs free slots. The default poll_timeout (180s) is
-            # shorter than a molecule converge, so a queued pod would fail
-            # spuriously as runner_system_failure before a slot opens; 1200s lets
-            # it wait for a real slot (the .gitlab-ci.yml retries are the backstop,
-            # not the primary mechanism). A scalar key — must stay above the first
-            # [runners.kubernetes.*] sub-table (see the positional note above).
+            # A ~9-job start burst requests ~13.5 cpu, which the 19-core CI pool
+            # fits — pods should schedule promptly, and overflow now queues in
+            # GitLab (see the concurrent: note) rather than as Pending pods. The
+            # default poll_timeout (180s) would still fail a transiently-Pending
+            # pod spuriously as runner_system_failure (co-tenant bursts can delay
+            # placement); 1200s keeps that backstop tolerant. A scalar key — must
+            # stay above the first [runners.kubernetes.*] sub-table (see the
+            # positional note above).
             poll_timeout = 1200
             # Default CI job image, digest-pinned for reproducibility (the
             # tag is retained for readability; the digest is authoritative).

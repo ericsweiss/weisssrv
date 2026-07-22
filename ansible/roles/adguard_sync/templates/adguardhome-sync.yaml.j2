@@ -1,15 +1,19 @@
 # {{ ansible_managed }}
 # AdGuard Home Sync configuration
 
+{# to_json emits a safe double-quoted JSON string (valid YAML), so a rotated
+   password/username/url containing YAML-significant characters (leading
+   {/[/#/&/*/!, a ": " sequence, a trailing colon) can't mis-parse or truncate
+   the credential. No wrapping quotes here — to_json supplies its own. #}
 origin:
-  url: "{{ adguardhome_sync_origin }}"
-  username: "{{ adguard_admin_user }}"
-  password: "{{ adguard_admin_password }}"
+  url: {{ adguardhome_sync_origin | to_json }}
+  username: {{ adguard_admin_user | to_json }}
+  password: {{ adguard_admin_password | to_json }}
 
 replica:
-  url: "{{ adguardhome_sync_replica }}"
-  username: "{{ adguard_admin_user }}"
-  password: "{{ adguard_admin_password }}"
+  url: {{ adguardhome_sync_replica | to_json }}
+  username: {{ adguard_admin_user | to_json }}
+  password: {{ adguard_admin_password | to_json }}
 
 features:
 {% for feature, config in adguardhome_sync_features.items() %}

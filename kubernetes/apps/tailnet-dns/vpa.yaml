@@ -1,0 +1,23 @@
+---
+# VPA: Initial for the tailnet-dns CoreDNS Deployment — right-size cpu+memory
+# on natural pod restarts (no proactive eviction of a live resolver). CoreDNS is
+# lightweight; small caps keep a runaway estimate from over-requesting. Matches
+# the per-app apps/<app>/vpa.yaml convention (docs/33).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: tailnet-dns
+  namespace: tailnet-dns
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tailnet-dns
+  updatePolicy:
+    updateMode: Initial
+  resourcePolicy:
+    containerPolicies:
+      - containerName: coredns
+        minAllowed: {cpu: 25m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 128Mi}
+        controlledResources: [cpu, memory]

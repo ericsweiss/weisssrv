@@ -202,13 +202,16 @@
       changed_when: false
       failed_when: false
 
-    - name: Assert Tailscale package installed
+    # The role dpkg-holds tailscale (version pin), which flips dpkg -l's
+    # desired-state column from i to h — an installed+held package lists as
+    # "hi  tailscale", not "ii  tailscale".
+    - name: Assert Tailscale package installed (held)
       ansible.builtin.assert:
         that:
           - tailscale_pkg.rc == 0
-          - "'ii  tailscale' in tailscale_pkg.stdout"
-        fail_msg: "Tailscale package not installed"
-        success_msg: "Tailscale package installed"
+          - tailscale_pkg.stdout is search('^[hi]i\s+tailscale', multiline=True)
+        fail_msg: "Tailscale package not installed (dpkg -l shows no ii/hi tailscale line)"
+        success_msg: "Tailscale package installed (dpkg-held)"
 
     - name: Check Tailscale daemon service
       ansible.builtin.systemd:

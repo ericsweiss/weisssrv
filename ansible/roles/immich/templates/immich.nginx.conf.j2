@@ -17,7 +17,7 @@ server {
 
     ssl_certificate     {{ immich_nginx_ssl_cert }};
     ssl_certificate_key {{ immich_nginx_ssl_key }};
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.3;
     ssl_prefer_server_ciphers off;
 
     # Mobile/web uploads (and single-PUT WebDAV) can be large — no body cap.

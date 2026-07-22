@@ -1,6 +1,6 @@
 # NAS Storage Role
 
-Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory, media-mover and archive-backup automation, and SMART monitoring on pve-nas-01. Does **not** create or destroy ZFS pools.
+Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory, media-mover and archive-backup automation, a nightly swap reset, and SMART monitoring on pve-nas-01. Does **not** create or destroy ZFS pools.
 
 ## What This Role Manages
 
@@ -52,6 +52,23 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
   `media_mover_io_weight` (both 20, below the 100 default) deprioritize it
   only under contention. `media_mover_bwlimit` is an optional hard rsync
   throughput cap (empty = unlimited).
+
+### Swap Reset (swap-clean)
+- Nightly systemd timer (`nas_swap_clean_enabled`; production runs at 07:00 via
+  `nas_swap_clean_schedule` in host_vars, AFTER the overnight backup window so it
+  reclaims the swap those jobs caused). The memory-tight NAS swaps under peak
+  events and that swap never self-clears, so `swap-clean.sh` resets it: shrink
+  ARC for headroom, `swapoff -a`/`swapon -a`, restore ARC.
+- If ARC-shrink headroom alone can't safely cover the swap, it **escalates**:
+  gracefully stops heavy guests from an ordered candidate list
+  (`nas_swap_clean_stop_guests`, only as many as needed), does the swapoff, and
+  **always** restarts every guest it stopped (a single EXIT trap). Guests are
+  only ever stopped gracefully (`qm shutdown`, never a hard kill); a guest that
+  won't stop within its timeout **aborts** the reclaim rather than being forced.
+- Emits `/var/lib/node_exporter/swap_clean.prom` on every exit path
+  (`swap_clean_last_run_success`, `..._last_success_timestamp_seconds`,
+  `..._swap_cleared_bytes`, `..._guests_stopped_count`), so an unsafe-abort night
+  or a guest-stop escalation is directly alertable. See docs/06.
 
 ### SMART Monitoring
 - Smartmontools configuration
@@ -141,8 +158,8 @@ samba_shares:
     create_mask: "0664"
     directory_mask: "2775"
 
-# ZFS ARC cap (defaults/main.yml; pinned per host — pve-nas-01 sets
-# 6711934976 ≈ 6.25 GiB in host_vars, compute hosts leave it empty)
+# ZFS ARC cap (defaults/main.yml; pinned per host in host_vars — the
+# memory-tight pve-nas-01 caps it, compute hosts leave it empty)
 zfs_arc_max_bytes: ""
 
 # Media-mover load-shaping (defaults/main.yml; see Media Mover above)
@@ -160,8 +177,7 @@ nas_appdata_base: /mnt/ssd/appdata
 nas_appdata_owner: 1000
 nas_appdata_group: 2000
 nas_appdata_mode: "0775"
-nas_appdata_dirs: [grafana, sonarr, radarr, lidarr, prowlarr, qbittorrent,
-                   nzbget, pulsarr, mealie, bar-assistant]
+# nas_appdata_dirs: the per-app list lives in defaults/main.yml (authoritative).
 ```
 
 Mergerfs unifies `/mnt/nvme/media` (hot) + `/mnt/tank/media` (cold) at
@@ -194,6 +210,7 @@ pve-nas-01
 ├─ Samba: Shares to LAN
 ├─ Media Mover: nvme → tank (06:00 daily, load-shaped)
 ├─ Archive backup: archive-backupctl → archive pool (06:30 nightly)
+├─ Swap reset: swap-clean → ARC-shrink + optional graceful guest-stop (07:00 daily)
 └─ SMART: Monitoring + alerts
 ```
 
@@ -206,6 +223,7 @@ pve-nas-01
 - `tasks/mergerfs.yml` - Unified media directory
 - `tasks/media_mover.yml` - Automated file mover
 - `tasks/archive_backup.yml` - Nightly ZFS replication to the archive pool
+- `tasks/swap_clean.yml` - Nightly swap reset timer (`swap-clean.{sh,service,timer}.j2`)
 - `tasks/smartd.yml` - SMART monitoring
 - `templates/*` - Configuration templates
 

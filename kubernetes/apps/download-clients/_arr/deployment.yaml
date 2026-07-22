@@ -53,9 +53,14 @@ spec:
           # sync with recipes/mealie.yaml (same ClusterFirst+ndots:1 setup).
           - name: single-request-reopen
       containers:
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
+        # Sentinel image tag, NOT a deployable value: every overlay (../sonarr,
+        # ../radarr, ../lidarr) MUST `- op: replace` this with its pinned
+        # lscr.io/linuxserver/<app>:version-${..._version} image. The tag is a
+        # fail-fast placeholder (not `:latest`) so a future overlay that forgets
+        # the image patch ImagePullBackOffs loudly instead of silently pulling a
+        # mutable floating tag — the repo pins every image centrally.
         - name: arr
-          image: lscr.io/linuxserver/arr:latest
+          image: lscr.io/linuxserver/arr:OVERLAY-MUST-PIN
           imagePullPolicy: IfNotPresent
           env:
             - name: PUID

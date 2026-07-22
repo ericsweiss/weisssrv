@@ -8,9 +8,13 @@
 # REQUIRES a one-time UI step: wg-easy only serves metrics after Prometheus is
 # enabled in Admin Panel > General, where the Bearer password must be set to the
 # same value as `wg-easy-metrics-token` (1Password "WireGuard VPN" > metrics-token,
-# synced into observability-exporter-secrets). Until then the scrape returns 401
-# (up=0) — no alert keys off this; WgEasyDown watches Deployment availability.
-# The observability->51821 ingress is opened by allow-wg-easy-ingress
+# synced into observability-exporter-secrets — same Bearer/authorization wiring as
+# the meilisearch / home-assistant ServiceMonitors). Until that step is done the
+# endpoint returns 200 with the Nuxt SPA HTML (NOT 401), so the scrape fails with
+# "unsupported Content-Type text/html" and up=0. That DOES trip the built-in
+# kube-prometheus-stack TargetDown rule for job=wg-easy-ui (a permanently-down
+# target until metrics are enabled); WgEasyDown separately watches Deployment
+# availability. The observability->51821 ingress is opened by allow-wg-easy-ingress
 # (kubernetes/apps/wg-easy/networkpolicy.yaml).
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

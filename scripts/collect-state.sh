@@ -18,7 +18,8 @@ set -euo pipefail
 #     auxiliary hosts, and a sparse artifact must not overwrite
 #     CLUSTER_STATUS.txt);
 #   - regular OK requires ALL collected hosts reachable (DNS/mail/k3s
-#     VMs/GitLab — HAOS is probed separately and not in the counters)
+#     VMs/GitLab/Nextcloud/Immich/Immich-ML — HAOS is probed separately
+#     and not in the counters)
 #     while --json healthy only counts the 6 Proxmox hosts — regular is
 #     strictly stricter, never the reverse.
 # When adding a signal to one mode, mirror it in the other. The verdict
@@ -313,6 +314,9 @@ read -ra DNS_HOSTS <<< "$DNS_IPS"   # dns-01, dns-02
 read -ra MAIL_HOSTS <<< "$MAIL_IPS"  # smtp-relay
 GITLAB_HOST="$GITLAB_IP"  # gitlab VM on pve-nas-01
 PLEX_HOST="$PLEX_IP"  # plex LXC (addressed by IP; short name hits the Traefik VIP)
+NEXTCLOUD_HOST="$NEXTCLOUD_IP"  # nextcloud VM (NAS-pinned, docker-compose)
+IMMICH_HOST="$IMMICH_IP"  # immich VM (NAS-pinned, docker-compose)
+IMMICH_ML_HOST="$IMMICH_ML_IP"  # immich-ml GPU LXC (NAS-pinned, docker-compose)
 # 9-node k3s cluster (3 servers + 6 agents), servers first then agents.
 read -ra K3S_HOSTS <<< "$K3S_SERVERS $K3S_AGENTS"
 HOME_ASSISTANT_HOST="$HOME_ASSISTANT_IP"  # home (HAOS VM)
@@ -367,6 +371,12 @@ echo ""
 echo "--- Failed Units ---"
 systemctl --failed --no-legend --no-pager 2>/dev/null | head -20 || echo "none"
 echo ""
+echo "--- Timers ---"
+# All scheduled units, not just the few named ones the per-host collectors
+# report — surfaces a disabled/failed/drifted timer (e.g. the daily 07:00
+# swap-clean on the NAS) that would otherwise be invisible in the snapshot.
+systemctl list-timers --all --no-pager 2>/dev/null | head -30 || echo "none"
+echo ""
 echo "--- Recent Error Sources (journalctl -p err, last 1 day; counts only) ---"
 # Identifier + count ONLY — never message bodies: raw journal errors can carry
 # tokens/URLs/PII the generic redaction doesn't key on (same policy as the
@@ -415,7 +425,10 @@ collect_proxmox() {
     local host=$1
     echo "=== Proxmox-specific: $host ==="
 
-    ssh "${SSH_OPTS[@]}" "eric@${host}" bash << 'EOF' 2>/dev/null || echo "Failed (rc=$?)"
+    # Inject the pure firewall-enumeration helper (collect-state-lib.sh, unit-
+    # tested) ahead of the remote body via `declare -f`, then stream the quoted
+    # body (remote vars intact) so the host runs the same tested code.
+    { declare -f firewall_guest_fw_list; cat << 'EOF'
 echo "--- Proxmox Version ---"
 pveversion 2>/dev/null || echo "Not a Proxmox host"
 echo ""
@@ -429,13 +442,16 @@ echo "--- Firewall IP Sets ---"
 sudo cat /etc/pve/firewall/cluster.fw 2>/dev/null | grep --no-group-separator -A 20 '\[IPSET' | head -100 || echo "No firewall config"
 echo ""
 echo "--- Firewall Guest Rules ---"
-# All VMIDs: DNS (150,160), SMTP (151), Plex (152), HA (154), k3s servers (222,223,227), k3s agents (202-207)
-for vmid in 150 151 152 153 154 160 202 203 204 205 206 207 222 223 227; do
-    if [ -f "/etc/pve/firewall/${vmid}.fw" ]; then
-        echo "Guest ${vmid}:"
-        sudo cat "/etc/pve/firewall/${vmid}.fw" 2>/dev/null || echo "  Cannot read"
-    fi
-done
+# Enumerate every per-guest firewall config present on this host rather than a
+# hand-maintained VMID list (which silently dropped new guests like nextcloud/
+# immich/windows). cluster.fw is dumped above; sudo find because the
+# /etc/pve/firewall/*.fw files are root:www-data 0640.
+while IFS= read -r fw; do
+    [ -n "$fw" ] || continue
+    vmid=$(basename "$fw" .fw)
+    echo "Guest ${vmid}:"
+    sudo cat "$fw" 2>/dev/null || echo "  Cannot read"
+done < <(sudo find /etc/pve/firewall -maxdepth 1 -name '*.fw' 2>/dev/null | firewall_guest_fw_list)
 echo ""
 echo "--- Bond Interfaces ---"
 # active-backup bond MAC-flap guard: all_slaves_active must stay 0
@@ -675,6 +691,7 @@ else
 fi
 echo ""
 EOF
+    } | ssh "${SSH_OPTS[@]}" "eric@${host}" bash 2>/dev/null || echo "Failed (rc=$?)"
 }
 
 collect_dns() {
@@ -1010,7 +1027,7 @@ collect_alloy_status() {
     echo "=== Alloy host log shippers ==="
     # plex by IP: the short name resolves through the AdGuard rewrite to the
     # Traefik VIP, not the LXC (same trap as DNS_HOSTS).
-    for host in "${PVE_HOSTS[@]}" "${DNS_HOSTS[@]}" "${MAIL_HOSTS[@]}" "$GITLAB_HOST" "$PLEX_HOST" "${K3S_HOSTS[@]}"; do
+    for host in "${PVE_HOSTS[@]}" "${DNS_HOSTS[@]}" "${MAIL_HOSTS[@]}" "$GITLAB_HOST" "$NEXTCLOUD_HOST" "$IMMICH_HOST" "$IMMICH_ML_HOST" "$PLEX_HOST" "${K3S_HOSTS[@]}"; do
         local status
         status=$(ssh "${SSH_OPTS_PROBE[@]}" "eric@${host}" 'systemctl is-active alloy 2>/dev/null' 2>/dev/null) || true
         echo "  $host: ${status:-unreachable}"
@@ -1177,6 +1194,76 @@ echo ""
 EOF
 }
 
+# NAS-pinned single-VM docker-compose apps (Nextcloud .156, Immich .157,
+# Immich-ML .158). collect_host (in the main loop) captures base host stats;
+# this adds the app block — compose project status, host-nginx TLS cert expiry,
+# and pg_dump/backup freshness — mirroring collect_gitlab. Values pass as env
+# over ssh (simple paths, no quoting hazard); "-" skips a section an app lacks
+# (Immich-ML has no nginx front end and no backup timer, but does have a health
+# endpoint).
+#   $1 host  $2 label  $3 compose_dir  $4 nginx_cert  $5 backup_glob
+#   $6 backup_timer  $7 backup_prom  $8 health_url        (- to skip a section)
+collect_compose_app() {
+    local host=$1 label=$2 compose_dir=$3 nginx_cert=$4 backup_glob=$5
+    local backup_timer=$6 backup_prom=$7 health_url=$8
+    echo "=== ${label}-specific: $host ==="
+
+    # Which optional sections render is decided here (compose_active_sections,
+    # collect-state-lib.sh, unit-tested) from the "-" sentinels, and passed to
+    # the remote body as a comma-joined membership list.
+    local compose_sections
+    compose_sections=$(compose_active_sections "$health_url" "$nginx_cert" "$backup_timer" "$backup_prom")
+
+    ssh "${SSH_OPTS[@]}" "eric@${host}" \
+        "APP_LABEL=$label" "COMPOSE_DIR=$compose_dir" "NGINX_CERT=$nginx_cert" \
+        "BACKUP_GLOB=$backup_glob" "BACKUP_TIMER=$backup_timer" \
+        "BACKUP_PROM=$backup_prom" "HEALTH_URL=$health_url" \
+        "COMPOSE_SECTIONS=$compose_sections" \
+        bash << 'EOF' 2>/dev/null || echo "Failed (rc=$?)"
+echo "--- ${APP_LABEL} Compose Project Status ---"
+if [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
+    sudo sh -c "cd '${COMPOSE_DIR}' && docker compose ps" 2>/dev/null || echo "  docker compose ps failed"
+else
+    echo "  Compose project not found at ${COMPOSE_DIR}"
+fi
+echo ""
+if [[ ",${COMPOSE_SECTIONS}," == *,health,* ]]; then
+    echo "--- ${APP_LABEL} Health Check ---"
+    if command -v curl >/dev/null 2>&1; then
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${HEALTH_URL}" 2>/dev/null)
+        echo "Health endpoint (${HEALTH_URL}): HTTP ${code:-unreachable}"
+    else
+        echo "curl not available"
+    fi
+    echo ""
+fi
+if [[ ",${COMPOSE_SECTIONS}," == *,nginx,* ]]; then
+    echo "--- ${APP_LABEL} Host nginx TLS ---"
+    systemctl is-active nginx 2>/dev/null || echo "nginx not active"
+    sudo openssl x509 -enddate -noout -in "${NGINX_CERT}" 2>/dev/null || echo "Cannot read cert notAfter (${NGINX_CERT})"
+    echo ""
+fi
+if [[ ",${COMPOSE_SECTIONS}," == *,backup,* ]]; then
+    echo "--- ${APP_LABEL} Backup Freshness ---"
+    systemctl list-timers "${BACKUP_TIMER}" --all --no-pager 2>/dev/null | head -3 || echo "  No ${BACKUP_TIMER}"
+    # Dump dir is root-owned; the glob + ls must run under root (an unprivileged
+    # glob passes the literal pattern through). Capture-and-test because a
+    # `|| echo` after a head pipeline never fires (same pattern as collect_gitlab).
+    backup_list=$(sudo sh -c "ls -lt ${BACKUP_GLOB} 2>/dev/null" | head -3)
+    if [ -n "$backup_list" ]; then
+        echo "$backup_list"
+    else
+        echo "  No backup files found (${BACKUP_GLOB})"
+    fi
+    if [[ ",${COMPOSE_SECTIONS}," == *,metrics,* ]]; then
+        echo "Backup metrics ($(basename "${BACKUP_PROM}")):"
+        cat "${BACKUP_PROM}" 2>/dev/null || echo "  No backup metrics"
+    fi
+    echo ""
+fi
+EOF
+}
+
 echo "Collecting cluster state..."
 echo "Output will be saved to: $OUTPUT_FILE"
 echo ""
@@ -1270,6 +1357,28 @@ GITLAB_HTTP_REG=$(probe_gitlab_http)
     # GitLab
     collect_host "$GITLAB_HOST"
     collect_gitlab "$GITLAB_HOST"
+    echo ""
+
+    # Nextcloud (.156) — docker-compose app on a NAS-pinned VM
+    collect_host "$NEXTCLOUD_HOST"
+    collect_compose_app "$NEXTCLOUD_HOST" nextcloud \
+        /mnt/nextcloud-app/compose /etc/ssl/nextcloud/fullchain.pem \
+        '/mnt/nextcloud-app/backups/nextcloud-db-*.sql.gz' nextcloud-backup.timer \
+        /var/lib/node_exporter/nextcloud_backup.prom -
+    echo ""
+
+    # Immich (.157) — docker-compose app on a NAS-pinned VM
+    collect_host "$IMMICH_HOST"
+    collect_compose_app "$IMMICH_HOST" immich \
+        /mnt/immich-app/compose /etc/nginx/ssl/fullchain.pem \
+        '/mnt/immich-app/backups/immich-*.sql.gz' immich-backup.timer \
+        /var/lib/node_exporter/immich_backup.prom -
+    echo ""
+
+    # Immich-ML (.158) — GPU LXC; internal ML service only (no nginx / no backup)
+    collect_host "$IMMICH_ML_HOST"
+    collect_compose_app "$IMMICH_ML_HOST" immich-ml \
+        /opt/immich-ml/compose - - - - http://127.0.0.1:3003/ping
     echo ""
 
 } > "$TEMP_DIR/raw.txt"

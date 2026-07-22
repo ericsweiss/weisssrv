@@ -160,10 +160,13 @@ Applied by `ansible/playbooks/k3s.yml` (not meta dependencies):
 
 ## 1Password Secrets
 
-```yaml
-secrets:
-  k3s_token: "op://Homelab/K3s Cluster Token/credential"        # K3S_TOKEN
-  k3s_agent_token: "op://Homelab/K3s Agent Token/credential"    # K3S_AGENT_TOKEN
+Both join tokens are injected as **environment variables** by `op run` from the
+Taskfile / `.gitlab-ci.yml` env blocks (NOT the `secrets:` dict in
+`group_vars/all.yml` — only `k3s_token` has an `op://` reference there):
+
+```
+K3S_TOKEN        op://Homelab/K3s Cluster Token/credential   # server/cluster join token
+K3S_AGENT_TOKEN  op://Homelab/K3s Agent Token/credential     # dedicated agent join token
 ```
 
 `K3S_AGENT_TOKEN` is the dedicated lower-privilege agent join token (falls

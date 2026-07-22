@@ -40,6 +40,11 @@ zfs_encryption_connect_token: ""
 # Empty list = deploy the script + unit template only (no token, no
 # per-pool services enabled) — used for hosts whose pools are not yet
 # encrypted, or that are intentionally plaintext (compute).
+# Accepted at-rest residuals (physical-theft model, docs/32): the compute
+# local-ssd pool (k3s VM roots incl. 2 etcd members + the secrets-encryption key)
+# and host swap (pve-swap LVM, not a crypt device — paged secrets can land there)
+# are unencrypted by design; the drive-wipe SOP (docs/15) is the compensating
+# control.
 zfs_encryption_pools: []
 
 # Proxmox guests (on THIS host) whose disks live on an encrypted pool and

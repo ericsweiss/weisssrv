@@ -37,6 +37,9 @@
       --group-provisioning={{ nextcloud_oidc_group_provisioning }}
     chdir: "{{ nextcloud_compose_dir }}"
   no_log: true
+  # occ user_oidc:provider gives no change signal, so report ok even on a real
+  # write (the command is an idempotent upsert; a first deploy / re-key mutates
+  # state but shows unchanged).
   changed_when: false
 
 # SSO-only: make user_oidc the default backend and auto-redirect to Authentik
@@ -47,4 +50,6 @@
       docker compose exec -T -u www-data nextcloud php occ config:app:set
       user_oidc allow_multiple_user_backends --value={{ 0 if (nextcloud_oidc_sso_only | default(true)) else 1 }}
     chdir: "{{ nextcloud_compose_dir }}"
+  # Idempotent config:app:set upsert; occ reports no change status, so ok can
+  # hide a real value change.
   changed_when: false

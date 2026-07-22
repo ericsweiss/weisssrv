@@ -1,0 +1,118 @@
+---
+# Nightly logical backup of the bundled Authentik PostgreSQL. The postgres PV
+# is only a crash-consistent zvol snapshot; this pg_dump adds a restorable
+# logical dump (gzipped plain SQL, DROP-if-exists) to NFS on the encrypted
+# ssd/appdata dataset, captured by the nightly ssd/appdata -> archive
+# replication. Restore: `gunzip -c <file> | psql -h authentik-postgresql -U
+# authentik authentik`.
+#
+# 02:30: after smartd's 02:00 short tests, well before the 03:30-~05:45 vzdump
+# window, the 06:00 media-mover, and the 06:30 archive replication — so the
+# fresh dump lands in that night's archive snapshot without contending for NAS
+# I/O (docs/06). Staggered 15 min ahead of recipes/mealie's 02:45 dump.
+#
+# Credentials are reused from the app's own authentik-secrets Secret (no new 1P
+# item). The postgres client image is pinned to the same ${postgresql_version}
+# as the server so pg_dump major matches. NFS is mounted by the kubelet on the
+# node, not the pod, so it is not governed by this namespace's egress
+# NetworkPolicy — only kube-dns + Postgres :5432 need allowing (networkpolicy.yaml).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: authentik-pg-dump
+  namespace: authentik
+  labels:
+    app.kubernetes.io/name: authentik-pg-dump
+    app.kubernetes.io/component: backup
+spec:
+  schedule: "30 2 * * *"
+  # Local time so 02:30 lines up with the NAS's local-time overnight jobs
+  # (vzdump/media-mover/archive) rather than the controller's default UTC.
+  timeZone: America/Los_Angeles
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: authentik-pg-dump
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 2000
+            fsGroup: 2000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-dump
+              image: postgres:${postgresql_version}
+              imagePullPolicy: IfNotPresent
+              # bash, not sh: dash has no pipefail, and without it a failed
+              # pg_dump would still gzip to exit 0 — a truncated dump would be
+              # rotated in as "successful" and the staleness alert never fires.
+              command: ["/bin/bash", "-ec"]
+              # Brace-free shell vars ($var, not ${var}): the ${var} form is
+              # reserved for Flux postBuild substitution (cluster-versions) and
+              # the flux:lint scanner rejects any ${x} not in that ConfigMap.
+              args:
+                - |
+                  set -o pipefail
+                  ts="$(date +%Y%m%d-%H%M%S)"
+                  out="/backups/authentik-$ts.sql.gz"
+                  echo "pg_dump $PGDATABASE -> $out"
+                  pg_dump --clean --if-exists | gzip -c > "$out.tmp"
+                  mv "$out.tmp" "$out"
+                  # Retain the newest $RETENTION dumps; delete older ones.
+                  ls -1t /backups/authentik-*.sql.gz 2>/dev/null \
+                    | tail -n +$((RETENTION + 1)) \
+                    | while IFS= read -r f; do rm -f "$f"; done
+                  echo "done; kept:"; ls -1t /backups/authentik-*.sql.gz
+              env:
+                - name: PGHOST
+                  value: authentik-postgresql.authentik.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: authentik
+                - name: PGDATABASE
+                  value: authentik
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: authentik-secrets
+                      key: postgresql-password
+                - name: RETENTION
+                  value: "7"
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: authentik-pg-dump
+            - name: tmp
+              emptyDir: {}

@@ -27,23 +27,26 @@ data:
   helm_chart_versions_cert_manager: v1.21.0
   helm_chart_versions_external_dns: 1.21.1
   helm_chart_versions_external_secrets: 2.8.0
-  helm_chart_versions_kube_prometheus_stack: 87.17.0
+  helm_chart_versions_kube_prometheus_stack: 87.19.0
   helm_chart_versions_kured: 6.1.0
   helm_chart_versions_loki: 18.5.1
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.15.1
+  helm_chart_versions_prometheus_operator_crds: 30.0.1
   helm_chart_versions_reloader: 2.2.14
   helm_chart_versions_tailscale_operator: 1.98.9
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.216
-  hermes_codex_version: 0.144.6
+  hermes_claude_version: 2.1.217
+  hermes_codex_version: 0.145.0
+  hermes_image_version: v2026.7.20-r1
   hermes_op_version: 2.35.0-1
   hermes_version: v2026.7.20
   hindsight_llamacpp_version: b10068
   hindsight_version: 0.8.4
+  homarr_version: v1.71.0
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
   immich_version: v3.0.3
@@ -53,9 +56,6 @@ data:
   mealie_postgresql_version: 18.4-alpine
   mealie_version: v3.20.1
   meilisearch_version: v1.15.2
-  nextcloud_containerd_version: 2.2.6-1~debian.13~trixie
-  nextcloud_docker_compose_version: 5.3.1-1~debian.13~trixie
-  nextcloud_docker_version: 5:29.6.1-1~debian.13~trixie
   nextcloud_exporter_version: 0.9.1
   nextcloud_postgres_version: 18.4-trixie
   nextcloud_version: 34.0.1
@@ -67,8 +67,11 @@ data:
   pulsarr_version: 0.17.3
   qbittorrent_version: 5.2.3
   radarr_version: 6.3.0.10514
+  rclone_version: ''
   redis_exporter_version: v1.87.0
   redis_version: 8.8.0-alpine
+  registry_cache_version: 3.1.1
+  restic_version: ''
   salt_rim_version: 4.15.0
   sonarr_version: 4.0.19.2979
   tailscale_version: 1.98.9

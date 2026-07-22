@@ -1,6 +1,6 @@
 {
   "annotations": { "list": [] },
-  "description": "GitLab service health, availability, and host logs. NOTE: Prometheus panels show 'No data' until GitLab VM metrics are enabled (prometheus_monitoring in gitlab.rb + the gitlab ServiceMonitor); the Loki host-log panels are always live.",
+  "description": "GitLab external availability (blackbox probe), TLS expiry, response-time breakdown, and host journald logs. GitLab application/VM metrics are not scraped; add prometheus_monitoring in gitlab.rb + a ServiceMonitor to expand this with Sidekiq/registry/CI-runner panels.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

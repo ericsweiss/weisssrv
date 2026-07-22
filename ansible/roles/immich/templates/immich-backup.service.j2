@@ -3,7 +3,8 @@
 Description=Immich nightly database backup (pg_dumpall)
 Requires=docker.service
 After=docker.service immich-compose.service
-# The dump is written under the app zvol; require it mounted.
+# Require the backup landing dir mounted before the dump runs — the app zvol by
+# default, or the offsite NFS export (nofail, pulled on demand) when enabled.
 RequiresMountsFor={{ immich_backup_dir }}
 
 [Service]

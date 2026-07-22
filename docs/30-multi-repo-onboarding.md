@@ -61,7 +61,16 @@ operator-authored):
 - **Use the tenant ServiceAccount pattern.** Every tenant Kustomization must
   set `serviceAccountName` (see the wiring templates below) — without it,
   kustomize-controller applies tenant manifests with its own cluster-admin
-  credentials.
+  credentials. Bind the SA to **both** the built-in `admin` ClusterRole **and**
+  the shared `tenant-crd-editor` ClusterRole
+  (`kubernetes/clusters/weisssrv/tenants/tenant-crd-editor.yaml`): `admin` does
+  not cover the `traefik.io`, `monitoring.coreos.com`, or `autoscaling.k8s.io`
+  CRD groups, so a tenant's IngressRoute / ServiceMonitor / PrometheusRule / VPA
+  would otherwise fail to apply with Forbidden.
+- **Label the tenant Namespace for Pod Security Admission.** The wiring
+  templates below carry `pod-security.kubernetes.io/enforce: baseline` (+ `warn`
+  / `audit: restricted`) so the platform actually enforces the non-root /
+  read-only-rootfs posture the tenant template ships.
 
 ---
 
@@ -139,7 +148,8 @@ This is the **recommended default** for this homelab. The trust model is single-
 **Setup**: Add items to the existing `Homelab` vault with a tenant prefix. Create a Connect token scoped to the `Homelab` vault for the tenant (or reuse the existing token). The tenant's `ClusterSecretStore` points at the shared Connect server.
 
 ```bash
-# Create a scoped Connect token for the tenant (optional — can reuse existing token)
+# Find the Connect server ID with `op connect server list`, then create a
+# scoped token for the tenant (optional — you can reuse the existing token):
 op connect token create weisssrv-<repo-slug>-eso --server <EXISTING_SERVER_ID> --vaults Homelab
 
 # Bootstrap in tenant namespace (token only — no op-credentials needed,
@@ -170,7 +180,8 @@ In 1Password, create items in the `Homelab` vault using the naming convention `<
 
 ### 2. Create a Connect Token (Optional)
 
-You can reuse the existing Connect token or create a new one scoped to the `Homelab` vault:
+You can reuse the existing Connect token or create a new one scoped to the
+`Homelab` vault (find the server ID with `op connect server list`):
 
 ```bash
 op connect token create weisssrv-<repo-slug>-eso --server <EXISTING_SERVER_ID> --vaults Homelab
@@ -202,6 +213,12 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: flux
     fluxcd.io/tenant: <repo-slug>
+    # Pod Security Admission — baseline enforced, restricted advised. The tenant
+    # template ships non-root / read-only-rootfs pods that satisfy baseline;
+    # these labels make the platform actually enforce it.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: external-secrets.io/v1
 kind: ClusterSecretStore
@@ -259,6 +276,27 @@ roleRef:
   name: admin
   apiGroup: rbac.authorization.k8s.io
 ---
+# `admin` (bound above) does NOT aggregate the platform CRD groups a tenant
+# uses — traefik.io (IngressRoute), monitoring.coreos.com
+# (ServiceMonitor/PrometheusRule) and autoscaling.k8s.io (VerticalPodAutoscaler).
+# Bind the shared `tenant-crd-editor` ClusterRole (defined once in
+# tenants/tenant-crd-editor.yaml) alongside admin so those CRs apply; otherwise
+# the tenant Kustomization goes NotReady on the first IngressRoute/
+# ServiceMonitor/PrometheusRule/VPA it tries to create.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: <repo-slug>-flux-crd-editor
+  namespace: <repo-slug>
+subjects:
+  - kind: ServiceAccount
+    name: <repo-slug>-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: tenant-crd-editor
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -268,6 +306,12 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  # Wait for the platform CRD chain (sources -> controllers -> configs) so a
+  # fresh bootstrap doesn't apply this tenant's ExternalSecret/IngressRoute/etc.
+  # before the ESO/cert-manager/Traefik CRDs exist. Mirrors the platform's own
+  # apps.yaml.
+  dependsOn:
+    - name: infrastructure-configs
   serviceAccountName: <repo-slug>-flux
   sourceRef:
     kind: GitRepository
@@ -285,7 +329,8 @@ Then register the file in the tenants Kustomize aggregate
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - <repo-slug>.yaml   # <-- add this line
+  - tenant-crd-editor.yaml   # shared ClusterRole (already present)
+  - <repo-slug>.yaml         # <-- add this line
 ```
 
 Commit + push both files. Flux picks up the new tenant on the next
@@ -372,6 +417,9 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: flux
     fluxcd.io/tenant: <repo-slug>
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: external-secrets.io/v1
 kind: ClusterSecretStore
@@ -401,9 +449,10 @@ spec:
   ref:
     branch: main
 ---
-# ServiceAccount + RoleBinding: identical pattern to Path A step 4 —
-# the Kustomization must NOT reconcile with kustomize-controller's
-# cluster-admin credentials.
+# ServiceAccount + both RoleBindings + Kustomization: identical pattern to
+# Path A step 4 — the Kustomization must NOT reconcile with
+# kustomize-controller's cluster-admin credentials, and `admin` alone does not
+# cover the tenant CRD groups (bind tenant-crd-editor too).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -424,6 +473,22 @@ roleRef:
   name: admin
   apiGroup: rbac.authorization.k8s.io
 ---
+# See Path A — `admin` does not aggregate traefik.io / monitoring.coreos.com /
+# autoscaling.k8s.io; bind the shared tenant-crd-editor ClusterRole too.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: <repo-slug>-flux-crd-editor
+  namespace: <repo-slug>
+subjects:
+  - kind: ServiceAccount
+    name: <repo-slug>-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: tenant-crd-editor
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -433,6 +498,8 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  dependsOn:
+    - name: infrastructure-configs
   serviceAccountName: <repo-slug>-flux
   sourceRef:
     kind: GitRepository
@@ -491,7 +558,7 @@ Tenants **must not** create or modify resources in:
 
 Why: Flux's server-side apply with `prune: true` will fight any resources that appear in a namespace that isn't part of the tenant's Kustomization. The result is reconcile loops and random deletions.
 
-**Enforcement**: the Flux apply path is RBAC-scoped — each tenant Kustomization sets `serviceAccountName`, and the SA's RoleBinding grants `admin` only in the tenant's namespace, so a tenant manifest targeting another namespace fails to apply. What remains cooperative is everything outside that path (e.g. which ClusterSecretStore a namespace references, cross-namespace Traefik refs — see the Pre-Onboarding Checklist). A future admission controller (Kyverno or OPA Gatekeeper) could close those. Tracked in `docs/16-next-steps.md`.
+**Enforcement**: the Flux apply path is RBAC-scoped — each tenant Kustomization sets `serviceAccountName`, and the SA's RoleBindings grant `admin` **and** `tenant-crd-editor` only in the tenant's namespace, so a tenant manifest targeting another namespace fails to apply. (`tenant-crd-editor` is a shared ClusterRole covering the CRD groups `admin` misses — traefik.io / monitoring.coreos.com / autoscaling.k8s.io — but each RoleBinding is namespace-scoped, so it grants nothing cluster-wide.) What remains cooperative is everything outside that path (e.g. which ClusterSecretStore a namespace references, cross-namespace Traefik refs — see the Pre-Onboarding Checklist). A future admission controller (Kyverno or OPA Gatekeeper) could close those. Tracked in `docs/16-next-steps.md`.
 
 If a tenant needs to consume a platform service (Traefik ingress, cert-manager certificate, Authentik OIDC), they do so via CRs in *their own* namespace — an IngressRoute in the tenant namespace, a Certificate in the tenant namespace, etc. The platform controllers act on those CRs without the tenant needing to touch platform namespaces.
 
@@ -574,11 +641,13 @@ The tenant-side scaffold lives in its own repo:
 `https://git.ericsweiss.com/eric/weisssrv-project-template`. New tenant repos fork
 it. It is pre-wired with:
 
-- `.gitlab-ci.yml` with lint/validate/Flux-deploy stubs (tag-less so jobs land on
-  the shared runner).
-- `kubernetes/flux/` skeleton with a namespace-scoped example.
+- `.gitlab-ci.yml` with lint + kubeconform + secret-scan CI (tag-less so jobs
+  land on the shared runner). It does **not** deploy — deploys happen
+  cluster-side via Flux, not CI.
+- `kubernetes/flux/` skeleton with a full example manifest set (Deployment,
+  Service, IngressRoute, Certificate, ExternalSecret, NetworkPolicy,
+  ServiceMonitor, PrometheusRule, VPA, PodDisruptionBudget — plus opt-in HPA).
 - `README.md` walking through onboarding from the tenant side.
-- Pre-configured kubeconform + yamllint CI jobs.
 
 Onboarding is therefore:
 
@@ -607,7 +676,8 @@ End-to-end walkthrough using concrete values. Replace `example-app` with your re
 In 1P, add items to the existing `Homelab` vault using the tenant prefix:
 
 1. Create item `example-app: App Secrets` with fields `api-key` and `db-password`.
-2. Create a Connect token: `op connect token create weisssrv-example-app-eso --server <EXISTING_SERVER_ID> --vaults Homelab`
+2. Create a Connect token (find the server ID with `op connect server list`):
+   `op connect token create weisssrv-example-app-eso --server <EXISTING_SERVER_ID> --vaults Homelab`
 
 ### Step 2 — Bootstrap Secret
 
@@ -634,6 +704,9 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: flux
     fluxcd.io/tenant: example-app
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: external-secrets.io/v1
 kind: ClusterSecretStore
@@ -685,6 +758,22 @@ roleRef:
   name: admin
   apiGroup: rbac.authorization.k8s.io
 ---
+# `admin` does not cover traefik.io / monitoring.coreos.com / autoscaling.k8s.io
+# — bind the shared tenant-crd-editor ClusterRole too (see Path A step 4).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: example-app-flux-crd-editor
+  namespace: example-app
+subjects:
+  - kind: ServiceAccount
+    name: example-app-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: tenant-crd-editor
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -694,6 +783,8 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  dependsOn:
+    - name: infrastructure-configs
   serviceAccountName: example-app-flux
   sourceRef:
     kind: GitRepository
@@ -711,6 +802,7 @@ Register the file in the tenants Kustomization aggregate:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  - tenant-crd-editor.yaml   # shared ClusterRole (already present)
   - example-app.yaml
 ```
 

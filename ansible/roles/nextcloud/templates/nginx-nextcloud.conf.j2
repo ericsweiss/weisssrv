@@ -18,7 +18,7 @@ server {
 
     ssl_certificate     {{ nextcloud_nginx_ssl_certificate }};
     ssl_certificate_key {{ nextcloud_nginx_ssl_certificate_key }};
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.3;
     ssl_prefer_server_ciphers on;
 
     # --- Real client IP resolution -----------------------------------------

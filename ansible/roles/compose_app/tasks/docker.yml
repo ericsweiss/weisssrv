@@ -1,0 +1,10 @@
+---
+# Install Docker Engine + the compose plugin via the shared docker_engine role
+# (pinned engine + plugins, dpkg hold, journald daemon.json). Gated on the
+# caller's skip flag so the render-only molecule scenarios stay container-
+# runtime-free. Including this from compose_app keeps the app roles a single
+# include deep on the compose scaffolding (compose_app -> docker_engine).
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.include_role:
+    name: docker_engine
+  when: not (compose_app_skip_install | default(false))

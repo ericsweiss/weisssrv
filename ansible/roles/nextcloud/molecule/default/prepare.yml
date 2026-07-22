@@ -29,3 +29,29 @@
         path: /var/lib/node_exporter
         state: directory
         mode: "0755"
+
+    # Mock `docker` so the backup wrapper's pg_dump pipe can be exercised end to
+    # end (success + failure metric paths), mirroring immich's mock backup.
+    # /tmp/nextcloud-backup-fail arms the failure path.
+    - name: Install mock docker for the backup-wrapper test
+      ansible.builtin.copy:
+        dest: /usr/local/bin/docker
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "compose" ]; then
+            for a in "$@"; do
+              if [ "$a" = "pg_dump" ]; then
+                if [ -f /tmp/nextcloud-backup-fail ]; then
+                  echo "mock pg_dump FAILED" >&2
+                  exit 1
+                fi
+                # Emit incompressible data so the gzipped dump is non-empty and
+                # passes the wrapper's `[ -s ]` guard (repetitive text gzips away).
+                head -c 8192 /dev/urandom | base64
+                exit 0
+              fi
+            done
+            exit 0
+          fi
+          exit 0

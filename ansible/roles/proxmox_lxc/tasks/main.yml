@@ -304,7 +304,7 @@
       --cores {{ lxc_cores }} \
       --memory {{ lxc_memory }} \
       --swap {{ lxc_swap }} \
-      --rootfs {{ _effective_lxc_storage }}:{{ lxc_disk_size | regex_replace('G$', '') }} \
+      --rootfs {{ _effective_lxc_storage }}:{{ lxc_disk_size | regex_replace('[Gg]$', '') }} \
       --net0 name=eth0,bridge={{ lxc_bridge }},firewall=1,ip={{ proxmox_lxc_target_ip }}/24,gw={{ lxc_gateway }} \
       --nameserver "{{ lxc_nameserver }}" \
       --searchdomain "{{ lxc_searchdomain }}" \

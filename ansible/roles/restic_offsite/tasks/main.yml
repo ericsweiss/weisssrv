@@ -1,0 +1,153 @@
+---
+# restic_offsite — install restic/rclone, render the secret-bearing config +
+# control script, and wire the systemd oneshot + fallback timer. Everything is
+# gated on restic_offsite_enabled so the role is an inert no-op when disabled.
+
+- name: Configure restic offsite backup
+  when: restic_offsite_enabled | default(true)
+  block:
+    # Debian-packaged so the molecule scenario installs without a GitHub fetch.
+    # restic_version/rclone_version are advisory: an exact Debian version pins,
+    # empty tracks the distro (see defaults/main.yml).
+    - name: Install restic + rclone
+      ansible.builtin.apt:
+        name:
+          - "restic{{ ('=' + restic_version) if restic_version else '' }}"
+          - "rclone{{ ('=' + rclone_version) if rclone_version else '' }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create restic-offsite config directory
+      ansible.builtin.file:
+        path: "{{ restic_offsite_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create restic-offsite working directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ restic_offsite_bind_root }}"
+        - "{{ restic_offsite_zvol_mount_root }}"
+        - "{{ restic_offsite_cache_dir }}"
+
+    # NOT in the 0700 loop above: the metrics dir is the shared node_exporter
+    # textfile dir — 0700 root:root would stop node_exporter (its own user)
+    # from traversing it, silently killing every textfile metric on the host.
+    # 0755 matches node_exporter_host's own directory task.
+    - name: Ensure the metrics textfile directory is traversable by node_exporter
+      ansible.builtin.file:
+        path: "{{ restic_offsite_metrics_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # The env file single-quotes every value so whitespace/#/$ can't break its
+    # two parsers (systemd EnvironmentFile + shell source). Single quotes and
+    # backslashes are the two characters those parsers unescape DIFFERENTLY —
+    # a value containing them would silently produce a different password in
+    # systemd runs vs manual shell runs, so refuse them outright.
+    # no_log: the assert must never render the secret into output.
+    - name: Refuse secret values the env-file parsers would disagree on
+      ansible.builtin.assert:
+        that:
+          - not (rclone_crypt_password is search("'"))
+          - not (rclone_crypt_password is search('\\\\'))
+          - not (restic_offsite_repo is search("'"))
+          - not (restic_offsite_repo is search('\\\\'))
+        fail_msg: >-
+          rclone_crypt_password / restic_offsite_repo must not contain single
+          quotes or backslashes (systemd EnvironmentFile and shell `source`
+          parse them differently — rotate the 1Password value instead).
+      no_log: true
+
+    # no_log: the env file renders RESTIC_PASSWORD (repo password) — the
+    # template-writes-a-secret pattern ansible-lint does not catch.
+    - name: Render restic-offsite EnvironmentFile (secret)
+      ansible.builtin.template:
+        src: restic-offsite.env.j2
+        dest: "{{ restic_offsite_config_dir }}/env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    # no_log: rclone.conf carries the B2 application key.
+    - name: Render rclone.conf (secret)
+      ansible.builtin.template:
+        src: rclone.conf.j2
+        dest: "{{ restic_offsite_config_dir }}/rclone.conf"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Render restic exclude file
+      ansible.builtin.template:
+        src: restic-offsite-excludes.txt.j2
+        dest: "{{ restic_offsite_excludes_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Deploy restic-offsitectl control script
+      ansible.builtin.template:
+        src: restic-offsitectl.sh.j2
+        dest: /usr/local/sbin/restic-offsitectl
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Deploy restic-offsite systemd service
+      ansible.builtin.template:
+        src: restic-offsite.service.j2
+        dest: /etc/systemd/system/restic-offsite.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd for restic-offsite
+
+    - name: Deploy restic-offsite systemd timer
+      ansible.builtin.template:
+        src: restic-offsite.timer.j2
+        dest: /etc/systemd/system/restic-offsite.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd for restic-offsite
+
+    - name: Enable restic-offsite fallback timer
+      ansible.builtin.systemd:
+        name: restic-offsite.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: not ansible_check_mode
+
+    - name: Deploy restic-offsite-verify systemd units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - restic-offsite-verify.service
+        - restic-offsite-verify.timer
+      notify: Reload systemd for restic-offsite
+
+    - name: Enable restic-offsite-verify weekly timer
+      ansible.builtin.systemd:
+        name: restic-offsite-verify.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: not ansible_check_mode

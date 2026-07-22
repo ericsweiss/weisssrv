@@ -16,7 +16,12 @@ policy_out: ACCEPT
 
 [IPSET admin_lan]
 
-# Admin LAN network
+# Admin LAN network — the whole /24. Accepted risk: the LAN is one flat,
+# unsegmented L2 (VLANs for IoT/guest/management are planned — docs/01), so this
+# set also covers IoT/guest devices, which can therefore reach the management
+# plane (8006/22/6443). Compensated by key-only SSH + fail2ban + Proxmox/k3s auth
+# — every exposed endpoint is authenticated, no unauthenticated bypass. Narrow to
+# a dedicated management subnet once vmbr0 VLAN-tagging lands (docs/16).
 192.168.0.0/24
 
 [IPSET admin_ts]

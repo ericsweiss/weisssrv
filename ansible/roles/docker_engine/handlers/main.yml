@@ -1,0 +1,8 @@
+---
+# Gated on docker_engine_skip_install so the render-only molecule scenario can
+# notify the daemon.json change without a running Docker service present.
+- name: Restart docker
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: not (docker_engine_skip_install | default(false))

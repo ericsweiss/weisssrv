@@ -79,16 +79,11 @@ genuinely broken Dockerfile fails fast.
 | Job | Triggers | Description |
 |-----|----------|-------------|
 | `version-check` | All MRs/pushes (soft-fail), schedule, web manual | Check for available updates |
-| `flux-versions-sync` | `ansible/inventories/prod/group_vars/all.yml`, `kubernetes/infrastructure/sources/versions-configmap.yaml`, `scripts/generate-versions-configmap.py` | Regenerates ConfigMap from all.yml; fails if committed file drifts |
-| `hosts-env-sync` | inventory, `scripts/generate-hosts-env.py`, `scripts/hosts.env` | Regenerates `scripts/hosts.env` from the inventory; fails if the committed file drifts |
-| `deploy-coverage-check` | All MRs/pushes | Runs `scripts/check-deploy-coverage.sh`; asserts every Ansible role maps to a deploy job or is in the intentionally-unmapped list |
-| `molecule-matrix-coverage-check` | All MRs/pushes | Runs `scripts/check-molecule-matrix-coverage.sh`; asserts every molecule scenario is in the CI matrix |
-| `flux-version-pin-check` | `.gitlab-ci.yml`, versions-configmap | Asserts the `FLUX_VERSION` pin in deploy-verify matches `flux_version` in the versions ConfigMap, so an incomplete flux bump fails before merge |
-| `kubectl-version-pin-check` | `.gitlab-ci.yml`, versions-configmap | Asserts the CI `kubectl` pin stays within kubectl's supported ±1 minor skew of `k3s_version`, so the pin can't silently rot |
+| `repo-sync-checks` | union of both checks' inputs (hosts.yml, `scripts/hosts.env` + generator, all.yml, versions-configmap + generator) | Generated-file freshness, two checks in one job: `scripts/hosts.env` regenerated from the inventory and the versions ConfigMap regenerated from all.yml must match their committed copies. Runs BOTH checks before failing |
+| `repo-policy-checks` | union of the five checks' inputs (roles/playbooks/inventories, integration-tests, scripts/**, `.gitlab-ci.yml`, versions-configmap, Taskfile.yml) | Repo-invariant asserts, five checks in one job: deploy coverage (`check-deploy-coverage.sh`), molecule-matrix coverage (`check-molecule-matrix-coverage.sh`), `FLUX_VERSION` pin vs versions-configmap, kubectl pin ±1 minor of `k3s_version`, and Taskfile smoke (pinned go-task `task --list` + `check-taskfile.sh`). Runs ALL checks before failing |
 | `prometheus-config-lint` | Prometheus/Alertmanager config paths, `scripts/prometheus-rule-tests/**` | Extracts rendered rules + alertmanager config, validates with pinned `promtool` / `amtool`, and runs the `promtool test rules` unit tests in `scripts/prometheus-rule-tests/` (`scripts/extract-prometheus-config.py`, `scripts/lint-prometheus-config.sh`) |
-| `docs-link-check` | docs/**, README.md, CLAUDE.md | Runs `scripts/check-doc-links.py`; fails on any relative `.md` cross-link whose target file is missing |
-| `taskfile-smoke` | Taskfile.yml, scripts/** | Pinned go-task runs `task --list` (schema check) + `scripts/check-taskfile.sh` asserts every script the Taskfile references exists |
-| `shellcheck` | scripts/**, ansible/roles/**/*.sh | Shell script linting |
+| `docs-link-check` | docs/**, README.md, CLAUDE.md, ansible/TESTING.md | Runs `scripts/check-doc-links.py`; fails on any relative `.md` cross-link whose target file is missing. Stays standalone (docs-only trigger scope) while the micro-checks above are consolidated |
+| `shellcheck` | scripts/**, ansible/*.sh, ansible/roles/**/*.sh | Shell script linting (includes the ansible-root helpers, e.g. `test-all-roles.sh`) |
 | `yaml-lint` | ansible/**, kubernetes/**, .gitlab-ci.yml | YAML syntax validation |
 | `ansible-lint` | ansible/** | Ansible best practices |
 | `terraform-fmt` | terraform/** | Terraform formatting |
@@ -120,9 +115,26 @@ pinned inputs, so identical dependencies are not re-downloaded every run
 #### Test Stage
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `molecule-tests` | ansible/roles/**, scripts/molecule-retry.sh | Role unit tests (requires Docker-in-Docker) |
-| `integration-tests` | ansible/integration-tests/**, ansible/roles/**, ansible/inventories/**, scripts/molecule-retry.sh | Multi-role tests (requires Docker-in-Docker) |
-| `python-tests` | scripts/**, ansible/inventories/prod/group_vars/all.yml | pytest on check-versions.py and generate-versions-configmap.py |
+| `molecule-tests` | main / web / scheduled full-test only (roles, ansible/molecule, playbooks/maintenance, test images, requirements, retry script) | FULL role-scenario matrix (requires Docker-in-Docker). Prod group_vars are deliberately NOT a trigger — no molecule scenario reads them (scenarios pin their own inventory), so a pure version bump no longer fires the matrix |
+| `integration-tests` | main / web / scheduled full-test only (integration-tests, roles, ansible/molecule, group_vars/all.yml, test images, requirements, retry script) | FULL multi-stack matrix. all.yml IS a trigger here (the converges `vars_files` it), and `ansible/molecule/**` is too (the converges import its shared prep) |
+| `molecule-plan` | MRs only, union of both suites' trigger sets | Runs `scripts/generate-molecule-pipeline.py` against the MR diff: maps changed files to affected role scenarios (transitively through role dependencies) + integration stacks, and emits the child-pipeline YAML artifact. Unknown role dirs fail loudly; over-selects when in doubt |
+| `molecule-trigger` | MRs only, same paths | Triggers the generated child pipeline (`strategy: depend` — a red child reds the MR pipeline). The child `include:`s `.gitlab/ci/molecule-jobs.gitlab-ci.yml` and extends the SAME job templates as the static matrices |
+| `python-tests` | scripts/**, ansible/inventories/prod/group_vars/all.yml | pytest on the scripts/ suite (check-versions, configmap/hosts-env generators, doc/taskfile checks, molecule-pipeline generator, ...) |
+
+**Targeted MR matrix.** MR pipelines no longer run the full 41-scenario + 5-stack
+matrix; `molecule-plan`/`molecule-trigger` generate and run only the scenarios
+affected by the diff (a typical 1-role MR runs 1-4 jobs instead of 46). Full
+coverage still runs on every merge to `main` (before any deploy, via
+`validation-gate`) and on the scheduled `full-test` canary, so a cross-role
+regression a targeted run missed is caught before it can deploy. The shared job
+templates live in `.gitlab/ci/molecule-jobs.gitlab-ci.yml` so the child and the
+static matrices cannot drift apart.
+
+**Registry pull-through cache.** Each molecule job's fresh DinD daemon pulls the
+molecule-test image through the in-cluster cache
+(`registry-cache.registry-cache.svc:5000`, `kubernetes/apps/registry-cache`,
+docs/27) with a timeout-bounded fallback to the direct registry — a cache outage
+only loses the warm hit, never breaks CI.
 
 > **Note:** The molecule/integration retry policy (bounded re-run with jitter on
 > transient DinD flakes) lives in `scripts/molecule-retry.sh`, shared by both jobs.
@@ -158,7 +170,7 @@ dependencies:
 Ansible/Terraform deploy jobs depend on `validation-gate` as a required `needs`.
 **Kubernetes workloads are not gated by CI** — Flux reconciles from git regardless of
 pipeline state. CI's job for k8s is to validate (`flux-lint`, `kubeconform`,
-`flux-versions-sync`). Flux reconciliation itself is push-triggered via the GitLab
+the versions-configmap sync check in `repo-sync-checks`). Flux reconciliation itself is push-triggered via the GitLab
 agent's Flux integration (poll is the fallback — see docs/29-flux-operations.md).
 
 #### Deploy Stage - Terraform
@@ -169,18 +181,18 @@ agent's Flux integration (poll is the fallback — see docs/29-flux-operations.m
 #### Deploy Stage - Ansible Infrastructure
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `deploy-ansible-base` | ansible/roles/base/**, ansible/playbooks/base.yml | Deploy base packages, SSH, users |
-| `deploy-ansible-proxmox` | ansible/roles/qol/**, ansible/roles/tailscale/**, ansible/roles/postfix_null_client/** | Deploy Proxmox host config (qol, tailscale, mail) |
-| `deploy-ansible-firewall` | ansible/roles/proxmox_firewall/** | Deploy Proxmox firewall rules |
-| `deploy-ansible-dns` | ansible/roles/unbound/**, ansible/roles/adguard_home/**, ansible/roles/adguard_sync/**, ansible/roles/postfix_null_client/**, ansible/playbooks/dns.yml | Deploy DNS stack (includes postfix) |
-| `deploy-ansible-storage` | ansible/roles/nas_storage/**, ansible/playbooks/storage.yml | Deploy storage services |
-| `deploy-ansible-mail` | ansible/roles/smtp_relay/**, ansible/roles/postfix_null_client/** | Deploy SMTP relay |
-| `deploy-ansible-certs` | ansible/roles/acme_certs/** | Deploy certificate distribution |
+| `deploy-ansible-base` | ansible/roles/base/** (+ nic_tuning, resolv_conf, node_exporter_host, alloy_host, apt_signed_repo, textfile_collector, encrypted_swap), ansible/playbooks/base.yml, all.yml | Deploy base packages, SSH, users. all.yml is a trigger so host-side pins consumed here (e.g. `alloy_host_version`) auto-deploy on a version bump |
+| `deploy-ansible-proxmox` | ansible/roles/qol/**, ansible/roles/tailscale/**, ansible/roles/postfix_null_client/**, group_vars/proxmox.yml, hosts.yml | Deploy Proxmox host config (qol, tailscale, mail). Deliberately NOT all.yml — its tailscale/plex pins apply via the manual maintenance jobs |
+| `deploy-ansible-firewall` | ansible/roles/proxmox_firewall/**, ansible/inventories/prod/** | Deploy Proxmox firewall rules. The ipset render reads the ENTIRE inventory (every host's IP + memberships), so any inventory change re-deploys |
+| `deploy-ansible-dns` | ansible/roles/unbound/**, ansible/roles/adguard_home/**, ansible/roles/adguard_sync/**, ansible/roles/postfix_null_client/**, unbound_exporter + prometheus_exporter, ansible/playbooks/dns.yml, all.yml, group_vars/dns.yml, host_vars/dns-0{1,2}.yml, hosts.yml | Deploy DNS stack (includes postfix). all.yml is a trigger so pins like `unbound_exporter_version` auto-deploy; dns.yml group/host vars carry the rewrites + upstreams |
+| `deploy-ansible-storage` | ansible/roles/nas_storage/** (+ zfs_exporter, prometheus_exporter, nfs_tls, proxmox_backup, restic_offsite), ansible/playbooks/storage.yml, all.yml | Deploy storage services. all.yml is a trigger so pins like `restic_version`/`rclone_version`/`zfs_exporter_version` auto-deploy |
+| `deploy-ansible-mail` | ansible/roles/smtp_relay/**, ansible/roles/postfix_null_client/**, group_vars/mail.yml, host_vars/smtp-relay.yml, hosts.yml | Deploy SMTP relay |
+| `deploy-ansible-certs` | ansible/roles/acme_certs/**, host_vars/dns-01.yml, hosts.yml | Deploy certificate distribution (dns-01.yml carries the pinned target host keys) |
 
 #### Deploy Stage - Ansible Applications
 | Job | Triggers | Description |
 |-----|----------|-------------|
-| `deploy-plex` | ansible/roles/plex/**, ansible/roles/proxmox_lxc/**, ansible/playbooks/plex.yml | Deploy Plex LXC container |
+| `deploy-plex` | ansible/roles/plex/**, ansible/roles/proxmox_lxc/**, ansible/playbooks/plex.yml, group_vars/plex_servers.yml, host_vars/plex.yml, hosts.yml | Deploy Plex LXC container |
 | `deploy-gitlab` | ansible/roles/gitlab/**, ansible/roles/apt_signed_repo/**, ansible/roles/zvol_mount/**, ansible/playbooks/gitlab.yml, ansible/inventories/prod/group_vars/gitlab_servers.yml, ansible/inventories/prod/group_vars/all.yml | Deploy GitLab VM and application |
 | `deploy-home-assistant-config` | ansible/roles/home_assistant/**, ansible/playbooks/home-assistant.yml | Deploy Home Assistant configuration |
 
@@ -192,7 +204,7 @@ Authentik) and every application (downloads, recipes, gitlab-runner,
 gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, vm-ingress) is
 reconciled by Flux from
 `kubernetes/` on every `git push` to `main`. CI only validates (`flux-lint`,
-`kubeconform`, `flux-versions-sync`).
+`kubeconform`, `repo-sync-checks`).
 
 The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 `deploy-k3s-platform`, `deploy-k3s-coredns`, `deploy-k3s-authentik`,
@@ -239,7 +251,7 @@ The following CI deploy jobs were **removed** (replaced by Flux reconciliation):
 When a merge request is merged to `main`:
 
 1. **Validation stages run first** (lint, validate, test, security)
-2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` as a **required** (non-optional) dependency, and all path-filtered lint, validate, and test jobs (including `kubectl-version-pin-check`, `docs-link-check`, and `taskfile-smoke`) as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked. `tailscale-drift-plan` is deliberately excluded (advisory-only, like `pr-agent-review`).
+2. **Validation gate blocks Ansible/Terraform deploys** -- the `validation-gate` job in the `gate` stage must pass before any Ansible/Terraform deploy job can start. The gate depends on `secret_detection` and the two `test-aggregate-*` fan-ins as **required** (non-optional) dependencies, and all path-filtered lint and validate jobs (including `repo-sync-checks`, `repo-policy-checks`, and `docs-link-check`) as `optional: true` dependencies. Path-filtered jobs that were not created are skipped, but `secret_detection` and any path-filtered job that *was* created must succeed or all Ansible/Terraform deployments are blocked. `tailscale-drift-plan` is deliberately excluded (advisory-only, like `pr-agent-review`).
 3. **Only changed components deploy** (path-based triggers on Ansible/Terraform jobs)
 4. **Kubernetes workloads reconcile via Flux** — independent of CI. Reconciliation
    is push-triggered via the GitLab agent's Flux integration (seconds after a push);
@@ -284,7 +296,7 @@ Ansible/Terraform deploy jobs depend on `validation-gate` (required, non-optiona
   (Connect provider). CI does not inject any secrets into k8s.
 - Version substitutions flow from the `cluster-versions` ConfigMap
   (`kubernetes/infrastructure/sources/versions-configmap.yaml`, generated from
-  `all.yml`). The `flux-versions-sync` lint job fails the pipeline if the
+  `all.yml`). The versions-sync check in `repo-sync-checks` fails the pipeline if the
   committed ConfigMap has drifted from `all.yml`.
 
 **Terraform deployments**:

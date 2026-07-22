@@ -7,6 +7,9 @@
     name:
       - unbound
       - dns-root-data
+      # dig is used by the readiness probe below; install it here so the role is
+      # self-contained rather than relying on the base role having run first.
+      - dnsutils
     state: present
   when: ansible_facts['os_family'] == "Debian"
 

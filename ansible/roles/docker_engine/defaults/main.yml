@@ -1,0 +1,43 @@
+---
+# Shared Docker Engine install role. Engine + plugin versions are the single
+# shared pins in group_vars/all.yml; everything else has a sensible default a
+# caller can override via include_role vars.
+
+# Render-only escape hatch: skip every step that needs the real apt repo, the
+# Docker binary, or a running daemon (used by this role's molecule scenario and
+# by any caller that wants a template-only render). Callers gate the whole
+# include on their own skip flag, so this is primarily for the scenario.
+docker_engine_skip_install: false
+
+# download.docker.com signing key + repo.
+docker_engine_key_url: https://download.docker.com/linux/debian/gpg
+docker_engine_key_fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+docker_engine_repo_url: https://download.docker.com/linux/debian
+docker_engine_keyring_path: /etc/apt/keyrings/docker.gpg
+
+# Pinned engine + plugins. Versions are single-sourced in group_vars/all.yml
+# (docker_ce_version / containerd_version / docker_buildx_plugin_version /
+# docker_compose_plugin_version) so a bump tracks alongside every other
+# component pin.
+docker_engine_packages:
+  - "docker-ce={{ docker_ce_version }}"
+  - "docker-ce-cli={{ docker_ce_version }}"
+  - "containerd.io={{ containerd_version }}"
+  - "docker-buildx-plugin={{ docker_buildx_plugin_version }}"
+  - "docker-compose-plugin={{ docker_compose_plugin_version }}"
+
+# Packages dpkg-held at the pinned versions so `apt upgrade` never bumps the
+# engine out from under a running compose stack.
+docker_engine_hold_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# journald log driver so container stdout/stderr lands in the systemd journal
+# (alloy_host ships it to Loki); live-restore keeps containers running across a
+# daemon restart.
+docker_engine_daemon_config:
+  log-driver: journald
+  live-restore: true

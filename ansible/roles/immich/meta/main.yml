@@ -13,6 +13,7 @@ galaxy_info:
 
 # Dependencies are handled in the playbook, not in meta, to allow isolated unit
 # testing of this role. The immich playbook applies base + postfix_null_client +
-# node_exporter_host + alloy_host + proxmox_firewall around it. The apt_signed_repo
-# helper is included directly from tasks/docker.yml.
+# node_exporter_host + alloy_host + proxmox_firewall around it. The shared
+# compose_app role (which itself includes docker_engine) is included from
+# tasks/main.yml for the Docker install, compose unit, nginx flow, and backup lib.
 dependencies: []

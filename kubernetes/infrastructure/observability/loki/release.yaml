@@ -62,16 +62,57 @@ spec:
         retention_enabled: true
         delete_request_store: filesystem
         working_directory: /var/loki/compactor
+      # Ruler: evaluate LogQL alerting rules in-process (ruler.replicas stays 0,
+      # so this runs under the monolithic -target=all, not a separate ruler
+      # StatefulSet) and push firing alerts to the in-cluster Alertmanager. The
+      # rule files themselves are delivered by the k8s-sidecar (already running as
+      # loki-sc-rules) into /rules/fake — the auth_enabled:false single tenant is
+      # "fake", and the ruler's local storage scans <directory>/<tenant>/, so the
+      # rules must land in /rules/fake (see sidecar.rules.folderAnnotation below
+      # + the loki-rules-* ConfigMap annotation in kustomization.yaml).
+      rulerConfig:
+        wal:
+          dir: /var/loki/ruler-wal
+        storage:
+          type: local
+          local:
+            directory: /rules
+        rule_path: /var/loki/ruler-rule-tmp
+        alertmanager_url: http://kube-prometheus-stack-alertmanager.observability.svc:9093
+        enable_alertmanager_v2: true
+        enable_api: true
+        evaluation_interval: 1m
+        poll_interval: 1m
+
+    # Route each loki_rule ConfigMap into the "fake" (auth-disabled) tenant subdir
+    # so the ruler's local storage (directory: /rules) finds them under
+    # /rules/fake/. The sidecar reads the k8s-sidecar-target-directory annotation
+    # on each rule ConfigMap (set in kustomization.yaml). singleBinary.sidecar and
+    # sidecar.rules.enabled stay at their true chart defaults (do not touch).
+    sidecar:
+      rules:
+        folderAnnotation: k8s-sidecar-target-directory
 
     singleBinary:
       replicas: 1
       persistence:
         enabled: true
         size: 75Gi
-        # "-" is the chart's sentinel for a literal `storageClassName: ""`
-        # (a plain "" is dropped from the rendered volumeClaimTemplate, which
-        # lets the PVC fall through to the local-path default class instead of
-        # statically binding to the pre-provisioned loki-data zvol PV).
+        # storageClass "-" is LOAD-BEARING and must NOT be removed or changed to
+        # a plain "". The chart (_workload.tpl) renders the volumeClaimTemplate
+        # storageClassName via `{{- with $storageClass }}`: the "-" sentinel emits
+        # a literal `storageClassName: ""` (statically bind ONLY the pre-provisioned
+        # loki-data zvol PV, hostPath /mnt/loki-data), whereas a plain "" is falsy
+        # to `with` and DROPS the field entirely -> the cluster-default local-path
+        # class captures the claim onto the k3s-agt-nas-01 VM bootdisk (excluded
+        # from backups). Drift incident: storage-loki-0 was observed bound to a
+        # dynamically-provisioned local-path PV while the intended loki-data PV sat
+        # Released (a past PVC recreation predating this guard; StatefulSet
+        # volumeClaimTemplates are immutable, so the live PVC keeps its old class
+        # until an operator rebinds it). The LocalPathPVExists alert
+        # (kube-prometheus-stack release.yaml) now catches any recurrence. The
+        # live rebind/rsync is a deploy-time runbook step (docs/29) — this manifest
+        # is the git-side guard only.
         storageClass: "-"
       nodeSelector:
         esweiss.com/nas: "true"

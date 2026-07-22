@@ -9,4 +9,5 @@ resources:
   - immich.yaml
   - meilisearch.yaml
   - nextcloud.yaml
+  - registry-cache.yaml
   - wg-easy.yaml

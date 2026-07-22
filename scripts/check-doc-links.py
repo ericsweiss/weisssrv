@@ -37,12 +37,12 @@ _SKIP_PREFIXES = ("http://", "https://", "mailto:", "//", "#", "tel:")
 
 def doc_files(root: Path) -> list[Path]:
     """The Markdown files to scan: everything under docs/, plus the top-level
-    README.md and CLAUDE.md when present."""
+    README.md / CLAUDE.md and ansible/TESTING.md when present."""
     files: list[Path] = []
     docs = root / "docs"
     if docs.is_dir():
         files.extend(sorted(docs.rglob("*.md")))
-    for name in ("README.md", "CLAUDE.md"):
+    for name in ("README.md", "CLAUDE.md", "ansible/TESTING.md"):
         p = root / name
         if p.is_file():
             files.append(p)

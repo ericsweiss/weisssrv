@@ -1,0 +1,178 @@
+---
+# Pull-through Docker registry cache (CNCF distribution/registry) for CI.
+#
+# Every molecule CI job spins up a fresh DinD daemon whose first act is a COLD
+# pull of registry.git.ericsweiss.com/eric/weisssrv/molecule-test (~30s/job,
+# ~30 jobs/pipeline). This Deployment runs the distribution registry in
+# proxy/pull-through mode: DinD pulls
+# registry-cache.registry-cache.svc.cluster.local:5000/eric/weisssrv/molecule-test
+# and the cache serves warm blobs off a node-local emptyDir, fetching from the
+# real GitLab registry only on a miss. See docs/27 § Registry pull-through cache.
+#
+# strategy Recreate + replicas 1: the cache is a single-instance node-local
+# store (emptyDir). A second replica would just be a second cold cache; there is
+# nothing to make HA. The cache re-warms on the next pull after a restart — no
+# NFS/zvol dependency, so nothing to dual-mount.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-cache
+  namespace: registry-cache
+  labels:
+    app.kubernetes.io/name: registry-cache
+    app.kubernetes.io/part-of: registry-cache
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry-cache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry-cache
+        app.kubernetes.io/part-of: registry-cache
+    spec:
+      # NAS-avoid: stateless-scheduling workload (the cache is a throwaway
+      # node-local emptyDir, not a zvol/NFS store), so steer it OFF the NAS node
+      # (soft preference reinforced by the NAS node's PreferNoSchedule taint,
+      # which this pod does NOT tolerate). No cpu class pin — the registry is a
+      # static Go binary that runs fine on the legacy nodes too. Mirrors homarr.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+      # No in-cluster API access.
+      automountServiceAccountToken: false
+      # Pin the upstream registry's EXTERNAL hostname to the internal Traefik VIP
+      # at POD scope — the same rationale as the node-level k3s_registry_host_pins
+      # (ansible/roles/k3s/defaults/main.yml): registry.git.ericsweiss.com has no
+      # AdGuard rewrite (dns.yml intentionally leaves ericsweiss.com internal
+      # names unresolved, sole exception auth.ericsweiss.com), so a POD would
+      # otherwise resolve it via the Cloudflare/public path and hairpin over the
+      # WAN (flaky "Try again" DNS — the exact failure the node pin was created
+      # to dodge). The node's /etc/hosts pin does NOT reach pods (they resolve via
+      # CoreDNS), so the pin is repeated here. .101 is the internal Traefik VIP,
+      # which fronts the gitlab-registry IngressRoute (Host registry.git.eric...
+      # -> gitlab-registry VM :5050). TLS is unaffected: SNI/validation still use
+      # the hostname, and Traefik serves its cert on .101 (same router as the
+      # public VIP — same mechanism as auth.ericsweiss.com, docs/08).
+      hostAliases:
+        - ip: "192.168.0.101"
+          hostnames:
+            - registry.git.ericsweiss.com
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # emptyDir is group-owned by fsGroup so the non-root registry process can
+        # write the blob store at /var/lib/registry.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registry
+          # Public image (no imagePullSecret). Version managed in
+          # ansible/inventories/prod/group_vars/all.yml (registry_cache_version)
+          # and resolved at reconcile by Flux postBuild.substituteFrom
+          # (cluster-versions ConfigMap).
+          image: registry:${registry_cache_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            # --- Pull-through / proxy mode ---
+            # Upstream = the real GitLab container registry. Credentials are a
+            # read_registry-scoped GitLab DEPLOY TOKEN (externalsecret.yaml);
+            # pull-through mode requires auth to fetch private repo blobs.
+            - name: REGISTRY_PROXY_REMOTEURL
+              value: https://registry.git.ericsweiss.com
+            - name: REGISTRY_PROXY_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: registry-cache-secrets
+                  key: proxy-username
+            - name: REGISTRY_PROXY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-cache-secrets
+                  key: proxy-password
+            # --- Serving + storage ---
+            - name: REGISTRY_HTTP_ADDR
+              value: ":5000"
+            # Blob store lives on the node-local emptyDir mounted below. Explicit
+            # so the readOnlyRootFilesystem below leaves exactly one writable path.
+            - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+              value: /var/lib/registry
+            # --- Metrics (debug endpoint) ---
+            # The registry serves Prometheus metrics on a SEPARATE debug listener
+            # (:5001), scraped by observability/service-monitors/registry-cache.yaml.
+            - name: REGISTRY_HTTP_DEBUG_ADDR
+              value: ":5001"
+            - name: REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED
+              value: "true"
+            - name: REGISTRY_HTTP_DEBUG_PROMETHEUS_PATH
+              value: /metrics
+            - name: REGISTRY_LOG_LEVEL
+              value: info
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+            - name: metrics
+              containerPort: 5001
+              protocol: TCP
+          # /v2/ is the registry API version endpoint — 200 once the server is up
+          # (the cache runs no auth of its own; auth is only toward the upstream).
+          # startupProbe covers the first boot; readiness/liveness on the same path.
+          startupProbe:
+            httpGet:
+              path: /v2/
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /v2/
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              # No CPU limit (repo policy — docs/33); memory capped. Blob proxying
+              # is I/O-bound, not memory-hungry.
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # The registry only writes to the emptyDir blob store below; the rest
+            # of the rootfs can be read-only.
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/registry
+      volumes:
+        # Node-local scratch cache with a hard cap. On exceeding sizeLimit the
+        # kubelet evicts the pod (it reschedules + re-warms) — bounded, since CI
+        # only ever pulls the single molecule-test image through it. No NFS/zvol:
+        # the cache is disposable by design.
+        - name: cache
+          emptyDir:
+            sizeLimit: 10Gi

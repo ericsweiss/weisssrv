@@ -9,13 +9,19 @@ top-level `Kustomization`. One file per tenant keeps ownership clear and
 makes removal trivial (delete the file, remove the entry from
 `kustomization.yaml`, push — Flux prunes the resources it created).
 
-For the tenant-side repo scaffold (CI/lint/AI-review/flux-deploy stubs), fork
-the `weisssrv-project-template` GitLab project
-(`git.ericsweiss.com/eric/weisssrv-project-template`) — see
+For the tenant-side repo scaffold (lint + kubeconform + secret-scan CI; deploys
+happen cluster-side via Flux, not CI), fork the `weisssrv-project-template`
+GitLab project (`git.ericsweiss.com/eric/weisssrv-project-template`) — see
 `docs/16-next-steps.md`. Tenants can instead hand-author their `kubernetes/`
 tree following the patterns in this repo.
 
 See `docs/30-multi-repo-onboarding.md` for the full onboarding procedure.
+
+`tenant-crd-editor.yaml` in this folder is a shared `ClusterRole` (always
+applied, harmless while unbound) that every tenant wiring file binds alongside
+the built-in `admin` ClusterRole — `admin` does not cover the `traefik.io`,
+`monitoring.coreos.com`, or `autoscaling.k8s.io` CRD groups a tenant app uses.
+See the RBAC comment in the example below.
 
 ## File naming
 
@@ -29,6 +35,7 @@ directory so Flux picks it up (Kustomize does not auto-discover files):
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  - tenant-crd-editor.yaml  # shared ClusterRole (always present)
   - example-app.yaml        # <-- add this line alongside your new tenant file
   - friend-project.yaml
 ```
@@ -53,13 +60,20 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: flux
     fluxcd.io/tenant: example-app
+    # Pod Security Admission — baseline enforced, restricted advised. The
+    # tenant template ships non-root / read-only-rootfs pods that satisfy
+    # baseline; these labels make the platform actually enforce it.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 # One-time bootstrap (NOT managed by Flux):
 #   kubectl -n example-app create secret generic onepassword-connect-token \
 #     --from-literal=token=<CONNECT_TOKEN>
 #
 # The token should be scoped to the Homelab vault. Create one per tenant
-# so revoking access is independent:
+# so revoking access is independent (find the server ID with
+# `op connect server list`):
 #   op connect token create weisssrv-example-app-eso \
 #     --server <EXISTING_SERVER_ID> --vaults Homelab
 #
@@ -123,6 +137,26 @@ roleRef:
   name: admin
   apiGroup: rbac.authorization.k8s.io
 ---
+# `admin` (bound above) does NOT aggregate the platform CRD groups a tenant
+# uses — traefik.io (IngressRoute), monitoring.coreos.com
+# (ServiceMonitor/PrometheusRule) and autoscaling.k8s.io (VerticalPodAutoscaler).
+# Bind the shared `tenant-crd-editor` ClusterRole (tenant-crd-editor.yaml)
+# alongside admin so those CRs apply; without it the tenant Kustomization goes
+# NotReady on the first IngressRoute/ServiceMonitor/PrometheusRule/VPA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: example-app-flux-crd-editor
+  namespace: example-app
+subjects:
+  - kind: ServiceAccount
+    name: example-app-flux
+    namespace: flux-system
+roleRef:
+  kind: ClusterRole
+  name: tenant-crd-editor
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -132,6 +166,12 @@ spec:
   interval: 10m
   retryInterval: 1m
   timeout: 10m
+  # Wait for the platform CRD chain (sources -> controllers -> configs) so a
+  # fresh bootstrap doesn't apply this tenant's ExternalSecret/IngressRoute/etc.
+  # before the ESO/cert-manager/Traefik CRDs exist. Mirrors the platform's own
+  # apps.yaml (docs/29).
+  dependsOn:
+    - name: infrastructure-configs
   serviceAccountName: example-app-flux
   sourceRef:
     kind: GitRepository
@@ -157,6 +197,9 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: flux
     fluxcd.io/tenant: friend-project
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 # One-time bootstrap: the friend creates a Personal Access Token in GitLab
 # with read_api scope, then:
@@ -180,8 +223,11 @@ spec:
             key: token
       environment: "*"
 ---
-# GitRepository + Kustomization blocks same as the 1P example above, with
-# secretStoreRef pointing at gitlab-friend-project.
+# GitRepository, both RoleBindings (admin + tenant-crd-editor), and the
+# Kustomization (with its dependsOn) are identical to the 1P example above —
+# the tenant's ExternalSecrets just point secretStoreRef at
+# gitlab-friend-project. For a friend's own GitLab namespace, set the
+# GitRepository url to https://git.ericsweiss.com/<group>/friend-project.
 ```
 
 ## Security considerations
@@ -229,6 +275,10 @@ then commit. Flux prunes:
 - The tenant's `GitRepository` source
 - The tenant's `ClusterSecretStore` (now has no consumers)
 - The tenant namespace
+
+Both of the tenant's RoleBindings live in the tenant namespace, so they are
+pruned with it; the shared `tenant-crd-editor` ClusterRole is not per-tenant and
+stays in place for the remaining tenants.
 
 The `onepassword-connect-token` bootstrap secret is not Flux-managed; it is
 deleted when the namespace is pruned. Revoke the Connect token in 1Password

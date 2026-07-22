@@ -1,0 +1,98 @@
+---
+# Shared Docker Engine (CE) install pipeline: the pinned engine + compose/buildx
+# plugins from the official download.docker.com apt repo, dpkg-held so the
+# maintenance apt-upgrade never bumps them out from under a running compose
+# stack, plus the journald daemon.json (rationale at the deploy task below).
+# Consumed via include_role by immich, immich_ml, and nextcloud; the engine/plugin
+# versions are the single shared pins in group_vars/all.yml (docker_ce_version etc.).
+#
+# docker_engine_skip_install gates every step that needs the real apt repo, the
+# Docker binary, or a running daemon, so the role's own molecule scenario can
+# render + assert the daemon.json without a container runtime. It defaults false,
+# so real deploys run the full flow; callers additionally gate the whole include
+# on their own skip flag.
+
+- name: Install Docker apt prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+  when: not (docker_engine_skip_install | default(false))
+
+# Docker's repo line pins arch to the dpkg architecture (amd64), not the kernel
+# name (x86_64), so resolve it rather than hardcoding.
+- name: Resolve the dpkg architecture for the Docker repo line
+  ansible.builtin.command: dpkg --print-architecture
+  register: docker_engine_dpkg_arch
+  changed_when: false
+  when: not (docker_engine_skip_install | default(false))
+
+- name: Add the Docker apt repository (fingerprint-verified)
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: "{{ docker_engine_key_url }}"
+    # Docker's apt signing key primary fingerprint (docs.docker.com/engine/install/debian).
+    apt_signed_repo_fingerprint: "{{ docker_engine_key_fingerprint }}"
+    apt_signed_repo_keyring_path: "{{ docker_engine_keyring_path }}"
+    apt_signed_repo_repo_line: >-
+      deb [arch={{ docker_engine_dpkg_arch.stdout }}
+      signed-by={{ docker_engine_keyring_path }}]
+      {{ docker_engine_repo_url }}
+      {{ ansible_distribution_release }} stable
+    apt_signed_repo_filename: docker
+    apt_signed_repo_keyring_mode: "0644"
+  when: not (docker_engine_skip_install | default(false))
+
+- name: Install Docker Engine + plugins (pinned)
+  ansible.builtin.apt:
+    name: "{{ docker_engine_packages }}"
+    state: present
+    update_cache: true
+    # The packages are held below so `apt upgrade` never bumps the engine out
+    # from under a running stack — but that same hold would make THIS task fail
+    # ("held packages were changed") the day a pin in group_vars is bumped.
+    # allow_change_held_packages lets the new pin reconcile through the hold in
+    # place (the idiom gitlab/plex/alloy_host use); the Hold task re-applies the
+    # hold at the new version afterward. A deliberate rollback to a lower exact
+    # pin needs a manual `apt install --allow-downgrades`.
+    allow_change_held_packages: true
+  when: not (docker_engine_skip_install | default(false))
+
+- name: Hold Docker packages at the pinned versions
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ docker_engine_hold_packages }}"
+  when: not (docker_engine_skip_install | default(false))
+
+# /etc/docker exists once the engine is installed; create it explicitly so the
+# daemon.json write below also works in the render-only (skip_install) scenario.
+- name: Ensure the Docker config directory exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy Docker daemon configuration (journald log driver)
+  ansible.builtin.copy:
+    # journald so container stdout/stderr lands in the systemd journal, which
+    # alloy_host already ships to Loki (no docker-specific log pipeline needed).
+    content: "{{ docker_engine_daemon_config | to_nice_json }}\n"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  when: not (docker_engine_skip_install | default(false))

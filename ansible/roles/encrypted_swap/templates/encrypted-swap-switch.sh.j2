@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Live-switch memory-safety decision for encrypted_swap, extracted into a
+# sourceable function so it is unit-testable (the role's molecule scenario sources
+# it and drives every arm with synthetic /proc inputs).
+#
+# A running host cannot cryptsetup-open an ACTIVE swap device, so a live switch
+# needs a swapoff first — only safe when MemAvailable covers the in-use swap +
+# margin. Otherwise DEFER to reboot WITHOUT a swapoff (the plaintext swap stays
+# up; encrypted_swap keeps the plaintext fstab line alongside the higher-priority
+# mapper line so `swapon -a` is never zero, and a boot finalize unit drops the
+# plaintext device after the activation reboot).
+set -uo pipefail
+
+# Decide + (only on the memory-safe path) perform the live switch. Prints exactly
+# one of:  already-active | defer-reboot: <reason> | switched-live
+# Reads /proc/meminfo + /proc/swaps (override via MEMINFO / SWAPS env for tests).
+# swapoff is NEVER called on the already-active or defer arms.
+encrypted_swap_switch() {
+  local mapper_name="$1" margin_mb="$2"
+  local mapper="/dev/mapper/${mapper_name}"
+  local meminfo="${MEMINFO:-/proc/meminfo}" swaps="${SWAPS:-/proc/swaps}"
+  local margin_kb swap_used_kb mem_avail_kb need_kb
+  margin_kb=$(( margin_mb * 1024 ))
+  if grep -q "^${mapper} " "$swaps" 2>/dev/null; then
+    echo "already-active"
+    return 0
+  fi
+  swap_used_kb=$(awk '/^SwapTotal:/{t=$2}/^SwapFree:/{f=$2}END{print t-f}' "$meminfo")
+  mem_avail_kb=$(awk '/^MemAvailable:/{print $2}' "$meminfo")
+  need_kb=$(( swap_used_kb + margin_kb ))
+  if [ "$mem_avail_kb" -lt "$need_kb" ]; then
+    echo "defer-reboot: MemAvailable ${mem_avail_kb}KB < swap ${swap_used_kb}KB + margin ${margin_kb}KB — encrypted swap will activate on next reboot"
+    return 0
+  fi
+  # Memory-safe: swapoff the active plaintext swap, open the mapper, swap it on.
+  # Every step is guarded: `switched-live` is the token the caller trusts before
+  # DELETING the plaintext fstab fallback, so it must only be emitted when the
+  # mapper is verifiably active — a failure here returns non-zero with a distinct
+  # token and leaves the plaintext line in place.
+  #
+  # restore_plaintext_swap: once the mapper is OPEN it holds the plaintext
+  # backing LV, so a bare `swapon -a` on a post-open failure arm would EBUSY
+  # against the fstab plaintext line and leave the host swapless. Stop the
+  # cryptsetup unit FIRST (releases the LV; a no-op if it never started), then
+  # re-activate the fstab swaps.
+  restore_plaintext_swap() {
+    # If the mapper IS active as swap (pathological verification-failure arm),
+    # the unit stop would EBUSY — release it as swap first (no-op otherwise).
+    swapoff "$mapper" >/dev/null 2>&1 || true
+    systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
+    swapon -a || true
+  }
+  if ! swapoff -a; then
+    echo "switch-failed: swapoff"
+    return 1
+  fi
+  if ! systemctl start "systemd-cryptsetup@${mapper_name}.service"; then
+    restore_plaintext_swap  # mapper never opened; stop is a no-op, swapon -a restores
+    echo "switch-failed: cryptsetup-open"
+    return 1
+  fi
+  if ! swapon "$mapper"; then
+    restore_plaintext_swap
+    echo "switch-failed: swapon-mapper"
+    return 1
+  fi
+  if ! grep -q "^${mapper} " "$swaps" 2>/dev/null && ! grep -q "^${mapper} " /proc/swaps 2>/dev/null; then
+    restore_plaintext_swap
+    echo "switch-failed: mapper-not-in-swaps"
+    return 1
+  fi
+  echo "switched-live"
+}
+
+# Executed directly (not sourced): run the switch with the passed args.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  encrypted_swap_switch "$@"
+fi

@@ -1,0 +1,35 @@
+---
+# encrypted_swap — dm-crypt PLAIN-mode swap with a RANDOM ephemeral key (fresh
+# each boot, discarded at shutdown, so on-disk swap is unrecoverable after a
+# reboot). Managed via /etc/crypttab (systemd-cryptsetup opens + mkswaps the
+# mapper at boot) + /etc/fstab. Runs on the six bare-metal Proxmox hosts.
+
+encrypted_swap_enabled: true
+
+# Backing swap device. All six Proxmox hosts use the standard install layout
+# (/dev/pve/swap LVM LV) — override per host if a box differs.
+encrypted_swap_source_device: /dev/pve/swap
+encrypted_swap_mapper_name: cryptswap
+
+# aes-xts-plain64, size=512 => AES-256-XTS (two 256-bit keys), matching the
+# estate's aes-256 at-rest posture. Random key from /dev/urandom (ephemeral).
+encrypted_swap_cipher: aes-xts-plain64
+encrypted_swap_key_size: 512
+encrypted_swap_sector_size: 4096
+
+# Live-switch safety gate: a running host cannot convert an ACTIVE swap device to
+# encrypted (cryptsetup can't open a device in use), so the switchover needs a
+# swapoff first. The role only performs the live swapoff -> open -> swapon when
+# MemAvailable comfortably covers the in-use swap (used + this margin); otherwise
+# it writes the crypttab/fstab config and DEFERS activation to the next reboot
+# (the memory-tight NAS with GBs of swap in use takes the deferred path — reboot
+# to activate). See README + docs/42.
+encrypted_swap_live_switch_margin_mb: 2048
+
+# Priority for the encrypted mapper's fstab swap line. Set ABOVE the plaintext
+# backing swap so that during the deferred-activation window (both lines present,
+# see README) the kernel prefers the encrypted mapper for new swap-outs the
+# moment it comes up at reboot — before the boot finalize unit drops the plaintext
+# device. `nofail` on the mapper line lets `swapon -a` silently skip the mapper
+# while it is still absent (pre-reboot defer window) instead of erroring.
+encrypted_swap_mapper_swap_priority: 100

@@ -76,9 +76,12 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 384Mi
+              # Floor raised (384Mi->512Mi req, 768Mi->1Gi limit): pulsarr's
+              # working set outgrew the old limit, so on a VPA-admission-down
+              # cold start the manifest limit must not sit below the real need.
+              memory: 512Mi
             limits:
-              memory: 768Mi
+              memory: 1Gi
           livenessProbe:
             httpGet:
               # Pulsarr's `/` is a 302 redirect to /login; Fastify's /health

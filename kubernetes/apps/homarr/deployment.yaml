@@ -1,0 +1,179 @@
+---
+# Homarr dashboard (homarr-labs) — a single-container Next.js standalone app
+# serving the homelab launcher/dashboard on :7575. All runtime state is env +
+# the SQLite DB on the NFS volume (populated through the UI); there is no
+# HelmRelease because a chart adds nothing over these raw manifests (docs/41).
+#
+# strategy: Recreate + replicas: 1 — the single RWO NFS volume backing the
+# SQLite DB must never be dual-mounted across a rolling update (SQLite is a
+# single-writer store; see storage.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homarr
+  namespace: homarr
+  labels:
+    app.kubernetes.io/name: homarr
+    app.kubernetes.io/part-of: homarr
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: homarr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: homarr
+        app.kubernetes.io/part-of: homarr
+    spec:
+      # NAS-avoid: this is a stateless-scheduling general workload (its state
+      # lives on NFS, not a node-local zvol), so steer it OFF the NAS node
+      # (soft preference reinforced by the NAS node's PreferNoSchedule taint,
+      # which this pod does NOT tolerate). modern CPU: keep the Node/Next.js
+      # image off the Core2-era legacy nodes. Mirrors hermes.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: esweiss.com/nas
+                    operator: DoesNotExist
+      nodeSelector:
+        esweiss.com/general: "true"
+        esweiss.com/cpu: "modern"
+      # No in-cluster API access.
+      automountServiceAccountToken: false
+      # Homarr is a plain Next.js standalone image (no s6 root-drop init), so it
+      # runs fully non-root. The NFS export's all_squash anonuid=1000/anongid=2000
+      # maps every write to 1000:2000 regardless of the in-container UID.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 2000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          # ClusterFirst pods resolve via the DNAT'd kube-dns ClusterIP; force a
+          # fresh socket for glibc's parallel A/AAAA queries so the conntrack
+          # DNAT-insert race can't cost a ~5s resolver stall. The pod does
+          # in-cluster + LAN + external DNS. Kept in sync with hermes/mealie.
+          - name: single-request-reopen
+      containers:
+        - name: homarr
+          # Public image (no imagePullSecret). Version managed in
+          # ansible/inventories/prod/group_vars/all.yml (homarr_version, a
+          # v-prefixed docker tag e.g. v1.71.0) and resolved at reconcile by
+          # Flux postBuild.substituteFrom (cluster-versions ConfigMap).
+          image: ghcr.io/homarr-labs/homarr:${homarr_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: America/Los_Angeles
+            # Encrypts the integration credentials Homarr stores in the SQLite
+            # DB (openssl rand -hex 32). REQUIRED — see externalsecret.yaml.
+            - name: SECRET_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: homarr-secrets
+                  key: secret-encryption-key
+            # Auth providers: OIDC (Authentik) as the primary login PLUS a local
+            # credentials provider. The credentials provider is the break-glass
+            # path — it seeds a local admin at first-run onboarding (usable when
+            # Authentik is down) and sidesteps homarr's OIDC-only admin-assignment
+            # sharp edge (homarr-labs#2108). docs/41 §SSO.
+            - name: AUTH_PROVIDERS
+              value: "oidc,credentials"
+            - name: AUTH_OIDC_CLIENT_ID
+              value: homarr
+            - name: AUTH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: homarr-secrets
+                  key: oidc-client-secret
+            # Issuer = the `dashboard` application slug on the EXTERNAL authentik
+            # host, WITH the trailing slash Authentik's OIDC discovery requires.
+            # auth.ericsweiss.com resolves internally to Traefik VIP .101
+            # (split-horizon); the server-side discovery/JWKS/token fetch rides
+            # the traefik-namespace :443 egress rule (networkpolicy.yaml).
+            - name: AUTH_OIDC_ISSUER
+              value: https://auth.ericsweiss.com/application/o/dashboard/
+            # Authorize endpoint, set for parity with the goauthentik integration
+            # docs; harmless if v1 ignores it (discovery covers authorize/token/jwks).
+            - name: AUTH_OIDC_URI
+              value: https://auth.ericsweiss.com/application/o/authorize/
+            # Login-button label.
+            - name: AUTH_OIDC_CLIENT_NAME
+              value: Authentik
+            # Do NOT append `groups`: Authentik has no scope named `groups`; the
+            # groups claim rides inside the default `profile` scope mapping
+            # (same as Grafana's role mapping — kube-prometheus-stack).
+            - name: AUTH_OIDC_SCOPE_OVERWRITE
+              value: "openid email profile"
+            # Reads the `groups` claim -> same-named Homarr groups. The
+            # `homarr-admins` group (Authentik) maps to the Homarr admin group of
+            # the same name (created at onboarding — docs/41 checklist).
+            - name: AUTH_OIDC_GROUPS_ATTRIBUTE
+              value: groups
+            # Keep the break-glass credentials form reachable (no silent auto-SSO).
+            - name: AUTH_OIDC_AUTO_LOGIN
+              value: "false"
+            # NextAuth (Auth.js v5) must trust Traefik's forwarded Host to build
+            # the correct per-hostname callback for the dual external/internal
+            # hostnames. Traefik overwrites the forwarded headers itself and the
+            # NetworkPolicy admits only Traefik to :7575, so this is safe.
+            - name: AUTH_TRUST_HOST
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 7575
+              protocol: TCP
+          # tcpSocket, not httpGet: Homarr is a redirect-heavy SPA (an
+          # unauthenticated GET 302s to the OIDC login), so a listener-up check
+          # is the honest health signal without coupling pod health to any
+          # specific route/status. startupProbe covers the first Next.js boot +
+          # SQLite migration on the NFS volume.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              # No CPU limit (repo policy — docs/33); memory capped.
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Next.js writes cache/tmp under the app tree, so the rootfs cannot
+            # be read-only (matches the mealie/*arr non-s6 web apps).
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: data
+              mountPath: /appdata
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: homarr-data

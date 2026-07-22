@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily GitLab backup
+
+[Timer]
+# 02:00 — finishes well before the NAS 06:30 archive window (the backup lands on
+# the offsite-eligible tank/backups/apps export when NFS-backed).
+OnCalendar={{ gitlab_backup_oncalendar | default('*-*-* 02:00:00') }}
+RandomizedDelaySec={{ gitlab_backup_timer_random_delay | default('0') }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

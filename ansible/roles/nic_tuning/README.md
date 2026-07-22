@@ -38,7 +38,8 @@ This role codifies all four.
   per host/group to write `/etc/sysctl.d/99-nic-tuning-swappiness.conf` with
   `vm.swappiness=<n>` and apply it via a scoped `ansible.posix.sysctl` reload
   of just `vm.swappiness` (same isolation rationale as `ip_forward`). Leave
-  `null` to leave swappiness unmanaged. pve-nas-01 sets `10`.
+  `null` to leave swappiness unmanaged. pve-nas-01 sets `1` (paired with the
+  4 GiB ARC cap + daily swap-reset to keep swap flat).
 - `nic_tuning_overrides` (default `[]`) — list of per-interface dicts:
   ```yaml
   nic_tuning_overrides:

@@ -71,6 +71,17 @@ nas_encrypted_bind_sources:
   - /mnt/tank/share
   - /mnt/tank/proxmox
   - /mnt/ssd/k3s-etcd  # off-node k3s etcd snapshot copies (encrypted, ssd pool)
+  # Offsite-eligible logical-dump landing zone, now split into per-app exports
+  # (see nfs_exports below). Each is a SUBDIR of tank/backups (aes-256-gcm): the
+  # exports set bind_source_check: /mnt/tank/backups so the mounted-dataset guard
+  # checks the parent dataset, and these entries anchor each bind on the late
+  # zfs-mount-encrypted.service.
+  - /mnt/tank/backups/apps/authentik
+  - /mnt/tank/backups/apps/mealie
+  - /mnt/tank/backups/apps/gitlab
+  - /mnt/tank/backups/apps/immich
+  - /mnt/tank/backups/apps/nextcloud
+  - /mnt/tank/backups/apps/home-assistant
 
 # ZFS pool configuration
 zfs_pools:
@@ -261,10 +272,13 @@ mergerfs_mounts:
       - /mnt/tank/media
 
 # NFSv4-over-TLS server: install + start tlshd so the kernel can answer
-# the server-side TLS handshake for the k3s client lines that require
-# xprtsec=tls (see /export/{appdata,share,media} below). tlshd is live on
-# this server and all six k3s agents. The always-plaintext lines (HAOS .154,
-# the fsid=0 root, tank-proxmox) carry no xprtsec and are unaffected.
+# the server-side TLS handshake for the client lines that require xprtsec=tls —
+# the k3s exports (/export/{appdata,share,media}) AND the app-VM backup exports
+# (/export/backups-apps/{gitlab,immich,nextcloud} .153/.157/.156, whose VMs now
+# run tlshd via the nfs_tls role in their deploy plays). tlshd is live on this
+# server, all six k3s agents, and those three app VMs. The always-plaintext lines
+# (HAOS .154 backups-apps + media, the fsid=0 root, tank-proxmox) carry no
+# xprtsec and are unaffected.
 nfs_tls_enabled: true
 # This host is the NFS server, so tlshd needs the [authenticate.server]
 # block (cert + private key) to answer the server-side TLS handshake. The
@@ -302,6 +316,18 @@ nfs_exports:
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.154/32"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
+      # App VMs (.153 gitlab, .156 nextcloud, .157 immich) traverse the fsid=0
+      # pseudo-root into their OWN /export/backups-apps/<app> export (each scoped
+      # to just that VM); .154 (HAOS, above) traverses into backups-apps/
+      # home-assistant. /export/backups-apps itself is a plain dir on this root fs,
+      # so pseudo-root traversal reaches each per-app export without exporting the
+      # parent (which is what isolates the apps from each other).
+      - spec: "192.168.0.153/32"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.156/32"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
+      - spec: "192.168.0.157/32"
+        options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       - spec: "192.168.0.200/29"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
       # k3s servers (.222/.223/.227) as explicit /32s. 192.168.0.220/29 masks to
@@ -320,11 +346,14 @@ nfs_exports:
   # all_squash + anonuid/anongid: Maps ALL clients (including root) to uid 1000/gid 2000
   # This allows LinuxServer.io containers to run chmod/chown during init
   #
-  # Two CIDR blocks for k3s nodes:
+  # k3s node client blocks:
   #   192.168.0.200/29 (.200-.207) = k3s agents
-  #   192.168.0.220/29 = k3s servers .222/.223 (masks to .216-.223, NOT .227).
-  #     Servers do not mount these RW exports; the off-node etcd export (the one
-  #     servers DO use) and the fsid=0 pseudo-root list the three servers as /32s.
+  #   192.168.0.220/29 = k3s servers .222/.223 (masks to .216-.223, NOT .227)
+  #   192.168.0.227/32 = k3s-srv-prec-01, which sits outside both /29 blocks.
+  #     Every k3s RW export lists all three. The server taints keep normal pods
+  #     off the servers today, but pod-mounted PVs (e.g. the pg-dump CronJobs)
+  #     must not silently lose their mount if a pod ever lands there — backup
+  #     reliability cannot hinge on taint config.
   # xprtsec=tls: REQUIRE — these k3s client lines reject plaintext mounts.
   # The k3s PVs mount with xprtsec=tls by hostname (pve-nas-01.esweiss.com,
   # so the *.esweiss.com cert verifies; an IP mount fails the handshake).
@@ -341,6 +370,8 @@ nfs_exports:
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
+      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
   - path: /export/share
     bind_source: /mnt/tank/share
@@ -352,6 +383,8 @@ nfs_exports:
       - spec: "192.168.0.200/29"
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
       - spec: "192.168.0.220/29"
+        options: "rw,sync,no_subtree_check,root_squash,fsid=12"
+      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
         options: "rw,sync,no_subtree_check,root_squash,fsid=12"
 
   # Unified media export (mergerfs mount - exposes only downloads/ and library/)
@@ -376,6 +409,9 @@ nfs_exports:
       - spec: "192.168.0.220/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
         xprtsec: "tls"
+      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
+        xprtsec: "tls"
       - spec: "192.168.0.154/32"  # HAOS — plaintext (no xprtsec; see comment above)
         options: "ro,sync,no_subtree_check,root_squash,fsid=20"
 
@@ -398,6 +434,102 @@ nfs_exports:
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
       - spec: "192.168.0.227/32"
         options: "rw,sync,no_subtree_check,no_root_squash,fsid=15"
+
+  # Offsite-eligible logical-dump landing zone (tank/backups/apps -> B2), split
+  # into PER-APP exports each scoped to ONLY its writer (was one shared export
+  # every backup client could read — a cross-app exposure). Each subdir binds
+  # under /export/backups-apps/<app>; bind_source_check points the mounted-dataset
+  # guard at the parent tank/backups dataset (the subdir is never a mountpoint).
+  # all_squash,anonuid=1000,anongid=2000 so each client write lands 1000:2000
+  # (matching the 02775 subdirs) regardless of in-guest UID (git 998, postgres,
+  # HAOS root, etc.). Every flow now runs OVER TLS except HAOS (.154), the one
+  # appliance that cannot speak xprtsec=tls (documented exception, docs/24) — it
+  # is also the only NON-co-resident backup client (HAOS is a separate VM). The
+  # restic offsite walk reads tank/backups LOCALLY, so it needs no export here.
+  # fsids are unique per export (11/12/14/15/20 are taken by other exports).
+  #
+  # authentik + mealie: the k3s pg-dump PVs (agents .200/29 + servers .220/29),
+  # require TLS (mount path=/backups-apps/<app> by hostname with xprtsec=tls).
+  - path: /export/backups-apps/authentik
+    bind_source: /mnt/tank/backups/apps/authentik
+    bind_source_check: /mnt/tank/backups
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    xprtsec: "tls"
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
+      - spec: "192.168.0.220/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
+      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=16"
+
+  - path: /export/backups-apps/mealie
+    bind_source: /mnt/tank/backups/apps/mealie
+    bind_source_check: /mnt/tank/backups
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    xprtsec: "tls"
+    clients:
+      - spec: "192.168.0.200/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
+      - spec: "192.168.0.220/29"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
+      - spec: "192.168.0.227/32"  # k3s-srv-prec-01 — outside both /29 blocks
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=17"
+
+  # gitlab (.153) — now REQUIRES TLS on the wire (VM runs tlshd via the nfs_tls
+  # role; mounts /backups-apps/gitlab by hostname with xprtsec=tls).
+  - path: /export/backups-apps/gitlab
+    bind_source: /mnt/tank/backups/apps/gitlab
+    bind_source_check: /mnt/tank/backups
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    xprtsec: "tls"
+    clients:
+      - spec: "192.168.0.153/32"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=18"
+
+  # immich (.157) — TLS on the wire (VM runs tlshd via nfs_tls).
+  - path: /export/backups-apps/immich
+    bind_source: /mnt/tank/backups/apps/immich
+    bind_source_check: /mnt/tank/backups
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    xprtsec: "tls"
+    clients:
+      - spec: "192.168.0.157/32"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=19"
+
+  # nextcloud (.156) — TLS on the wire (VM runs tlshd via nfs_tls).
+  - path: /export/backups-apps/nextcloud
+    bind_source: /mnt/tank/backups/apps/nextcloud
+    bind_source_check: /mnt/tank/backups
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    xprtsec: "tls"
+    clients:
+      - spec: "192.168.0.156/32"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=21"
+
+  # home-assistant (.154) — PLAINTEXT. HAOS Supervisor hardcodes its NFS mount and
+  # ships no tlshd, so it can never request xprtsec=tls; it is the one plaintext
+  # -on-wire backup flow (and the only non-co-resident one). Native scheduled
+  # backup target — one-time HA UI step (docs/24).
+  - path: /export/backups-apps/home-assistant
+    bind_source: /mnt/tank/backups/apps/home-assistant
+    bind_source_check: /mnt/tank/backups
+    owner: 1000  # eric
+    group: 2000  # media
+    mode: "02775"  # rwxrwsr-x (setgid for group inheritance)
+    clients:
+      - spec: "192.168.0.154/32"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=22"
 
   # Proxmox backup target (requires no_root_squash)
   - path: /export/tank-proxmox
@@ -499,28 +631,45 @@ pve_vzdump_jobs:
     mode: snapshot
     compress: zstd
     all: true
+    # EXCLUDE the 9 k3s VMs from vzdump — the biggest lever, zero restore-value
+    # lost. They are IaC-rebuildable CATTLE (reprovisioned by `task k3s:deploy`);
+    # ALL persistent data lives on zvols already carrying backup=0 (authentik/
+    # mealie pg, prometheus, loki) and is covered by archive replication + the
+    # pg-dumps + restic B2. Beyond wasting ~200G/night of dump I/O, keeping the
+    # OS-disk images is a STALE-MEMBER-RESTORE HAZARD: restoring a weeks-old k3s
+    # server image would rejoin etcd with a stale member and can corrupt quorum —
+    # the supported recovery is reprovision + etcd-snapshot restore, never an
+    # image roll-back. So excluding them removes a footgun as well as the I/O.
+    # (proxmox_backup clears a removed exclude via --delete; `all` stays true.)
+    exclude: [202, 203, 204, 205, 206, 207, 222, 223, 227]
     # bwlimit caps per-node backup I/O (KiB/s). Because this is a cluster-wide
     # `all` job it fires on EVERY node at 03:30 and they all write their guests
     # to THIS host's tank-proxmox NFS target at once. Unthrottled, that combined
     # write saturated the (spinning) tank pool and froze pve-nas-01 on 2026-07-13
     # (I/O-pressure PSI 0.59, load 26, KVM guest page-fault hang, ~12h outage).
-    # 30720 KiB/s = 30 MiB/s per node keeps the aggregate (<=6 nodes -> ~180 MB/s)
-    # comfortably under saturation; each host's backup just runs proportionally
-    # longer — the fleet window is now 03:30-~05:45 (measured 2026-07-14), which
-    # is why media-mover runs at 06:00 and the archive-backup timer at 06:30.
-    # Raise only if the ProxmoxHost I/O-pressure alerts stay quiet through a
-    # full backup window, and keep those two downstream schedules in mind.
     #
-    # NEW pve-nas-01 local guest to weigh here: VM 155 (windows, 250 GiB on
-    # ssd/pve — docs/39). It backs up as part of THIS host's slice of the `all`
-    # job, so once Windows is installed its image (~15-25 min at the bwlimit for
-    # a typical footprint, growing with the guest/pagefile) lengthens the
-    # pve-nas-01 portion and eats into the ~15-min headroom between the 05:45
-    # window end and the 06:00 media-mover. After the guest is installed,
-    # re-verify pve-nas-01's backup still finishes before 06:00 (I/O-pressure
-    # quiet through a full window). If it slips, add `exclude: [155]` here or
-    # move VM 155 to a separate, lower-frequency job.
-    bwlimit: 30720
+    # RAISED 30720 -> 61440 (30 -> 60 MiB/s): the 07-20 window measured every
+    # progress line read-pinned at ~29.9 MiB/s, proving 30 was the BINDING
+    # constraint, not pool capability; and the incident's real drivers (CI DinD
+    # on the NAS k3s agent, since moved off; memory/swap thrash, since fixed by the
+    # 4G ARC cap + swappiness=1 + right-sized k3s VMs) are resolved, so 30 is now
+    # over-conservative. 60 is a deliberate 2x step (80+ explicitly REJECTED for
+    # now — honoring the I/O-incident history): with the k3s VMs excluded above
+    # removing the concurrent writers, aggregate write to the 6x ST22000 RAIDZ
+    # (sequential >> 360 MB/s) stays well under saturation, windows 155 drops 38G
+    # 2h23m -> ~11m, and the pve-nas-01 slice clears ~03:30->~04:45 — comfortably
+    # before media-mover (06:00) and the archive-backup timer (06:30), so
+    # tank/proxmox is no longer deferred by archive-backupctl's vzdump-quiesce
+    # guard. Reversible; guarded by ProxmoxHostIOPressure.
+    #
+    # RE-MEASURE CHECKLIST after deploy (do ONE full 03:30 window):
+    #   1. pve-nas-01 slice completes by ~04:45 with ProxmoxHostIOPressure quiet.
+    #   2. archive_backup_dataset_deferred_runs{dataset="tank/proxmox"} back to 0
+    #      (ArchiveBackupChronicallyDeferred clears).
+    #   3. Only THEN consider a further raise (>60); keep media-mover/archive
+    #      schedules in mind. VM 155 (windows, 250G on ssd/pve) is start-on-demand
+    #      but still dumps when running — re-check the slice still ends before 06:00.
+    bwlimit: 61440
     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=6"
     notification_mode: notification-system
     enabled: true
@@ -580,3 +729,16 @@ nic_tuning_vm_swappiness: 1
 # quorum held, NFS server (16 nfsd threads / 22 exports / 15 k3s PVs bound)
 # unaffected, Tailscale + SSH-jump access preserved (with opt-01/opt-02 as
 # fallback jumps), and zero legitimate OUT-DROP log entries.
+
+# --- restic_offsite secrets (B2 offsite backup, docs/42) --------------------
+# Env -> var mapping for the secrets the storage deploy job (and the Taskfile
+# storage tasks) inject via `op run` from the "B2 Archive Backup" item — the
+# smtp-relay.yml pattern. The role templates consume the snake_case vars;
+# without this mapping a production render fails on undefined variables.
+# no_log protects the render tasks in the role (they already carry it).
+# NOTE: these are the RESTRICTED (hide-only, no deleteFiles) key fields —
+# terraform/b2 keeps the full-capability master key on separate item fields
+# (capability split rationale: docs/42 Step 0).
+b2_key_id: "{{ lookup('ansible.builtin.env', 'B2_KEY_ID') or undef(hint='B2_KEY_ID env var must be set (run via op run)') }}"
+b2_application_key: "{{ lookup('ansible.builtin.env', 'B2_APPLICATION_KEY') or undef(hint='B2_APPLICATION_KEY env var must be set (run via op run)') }}"
+rclone_crypt_password: "{{ lookup('ansible.builtin.env', 'RCLONE_CRYPT_PASSWORD') or undef(hint='RCLONE_CRYPT_PASSWORD env var must be set (run via op run)') }}"

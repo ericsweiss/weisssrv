@@ -32,16 +32,17 @@ weisssrv/
 │   ├── tailscale/              # Tailnet ACL policy-as-code
 │   └── authentik/              # Authentik SSO state as code (apps/providers/groups — docs/40)
 ├── kubernetes/                 # Flux-managed k8s state (GitOps source of truth)
-│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,controllers,configs,observability}.yaml, apps.yaml, tenants/)
-│   ├── infrastructure/         # Platform — four sibling stages reconciled in dependsOn order (sources -> controllers -> configs, which fans out to observability and apps in parallel)
+│   ├── clusters/weisssrv/      # Flux entrypoint (flux-system, infrastructure-{sources,crds,controllers,configs,observability}.yaml, apps.yaml, tenants/)
+│   ├── infrastructure/         # Platform — five sibling stages reconciled in dependsOn order (sources -> crds -> controllers -> configs, which fans out to observability and apps in parallel)
 │   │   ├── sources/            # HelmRepository CRs + versions-configmap.yaml (runs first, no deps)
-│   │   ├── controllers/        # platform HelmReleases (dependsOn sources) — see the dir for the current set
+│   │   ├── crds/               # prometheus-operator CRDs ahead of the controllers that reference them (dependsOn sources) — fixes the fresh-bootstrap ordering
+│   │   ├── controllers/        # platform HelmReleases (dependsOn crds) — see the dir for the current set
 │   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
 │   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-configs — parallel to observability) — see the dir for the current set
 ├── docs/                       # Documentation
 ├── scripts/                    # Utility scripts
-├── docker/                     # Molecule test/CI container images
+├── docker/                     # Molecule test/CI images + app build images (hermes-agent, camofox-browser)
 ├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
 └── .github/workflows/          # Single inert stub (ci-disabled.yml) — CI runs on GitLab
 ```
@@ -94,7 +95,8 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-tr
 - wg-easy WireGuard VPN (endpoint vpn.ericsweiss.com:51820/udp via MetalLB VIP .99; admin UI vpn.esweiss.com internal-only behind Authentik, docs/38): internet-exit VPN for the user + friends/family with a two-layer egress no-LAN fence (client full-tunnel + public DNS, CNI egress NetworkPolicy killswitch that also blocks internal DNS via pod dnsPolicy:None) plus a separate `-dest`-scoped WAN firewall rule that scopes the inbound endpoint; NFS-backed state, IPv4-only
 - Nextcloud (cloud.esweiss.com / cloud.ericsweiss.com, docs/35): Docker Compose stack (nextcloud-apache + PostgreSQL + Redis + cron + exporter) on a NAS-pinned VM (.156), all state on ZFS zvol passthrough disks (no NFS), host-nginx TLS, Authentik OIDC SSO-only
 - Immich (photos.esweiss.com / photos.ericsweiss.com, docs/36): photo management on a NAS-pinned Debian VM (.157) running a docker-compose stack (immich-server + CPU ML + release-pinned Postgres/vectorchord + Valkey), host nginx TLS, encrypted zvols (photo library on tank/immich-data), Authentik OIDC SSO-only, nightly pg_dump; external record is a DNS-only Cloudflare CNAME (proxy bypass for large uploads)
-- Hermes Agent (agent.esweiss.com / agent.ericsweiss.com, docs/37): NousResearch AI agent + web dashboard, `hermes` namespace; self-built image (build-hermes-agent CI job — upstream ships none), one pod / two containers (gateway + dashboard), NFS `/opt/data` on encrypted ssd/appdata, layered SSO (Authentik forward-auth perimeter + dashboard Authentik-OIDC login with `basic` break-glass — an auth provider is mandatory on its 0.0.0.0 bind; Traefik-only NetworkPolicy; Authentik objects in terraform/authentik, docs/40)
+- Hermes Agent (agent.esweiss.com / agent.ericsweiss.com, docs/37): NousResearch AI agent + web dashboard, `hermes` namespace; self-built image (build-hermes-agent CI job — upstream ships none), one pod / three containers (gateway + dashboard + camofox browser), NFS `/opt/data` on encrypted ssd/appdata, SSO via the dashboard's Authentik-OIDC login on both hostnames (`hermes-users` gate; an auth provider is mandatory on its 0.0.0.0 bind; Traefik-only NetworkPolicy; Authentik objects in terraform/authentik, docs/40); its long-term memory is a cluster-internal Hindsight deployment (`hindsight` namespace, no ingress; docs/37 §Memory backend)
+- Homarr (dashboard.esweiss.com / dashboard.ericsweiss.com, docs/41): homelab dashboard/launcher, `homarr` namespace, raw manifests; Authentik OIDC SSO (`homarr-admins` gate + credentials break-glass), NFS-backed SQLite on encrypted ssd/appdata, direct-URL integrations to the *arr/qbit/nzbget/AdGuard/Proxmox/Plex/HA/Nextcloud/Immich services (bypassing the SSO perimeter by design)
 
 **Planned** (not yet created) — roadmap source of truth is `docs/16-next-steps.md`:
 - Apps: none currently queued (all Priority 6 apps shipped — see `docs/16-next-steps.md`)
@@ -357,6 +359,11 @@ in `docs/12-runbooks.md` (update workflow).
 
 Full pool topology, creation commands, and design rationale (storage-tier
 selection, lz4-vs-zstd) live in `docs/06-zfs.md`. Quick reference:
+
+**Backup chain**: local aes-256-gcm datasets → nightly raw-encrypted `archive`
+replication → nightly restic → Backblaze B2 (client-side ciphertext, GFS
+retention; docs/42). Logical dumps land on `tank/backups/apps`; DR paths in
+docs/17.
 
 **Automated Storage Selection**: `proxmox_vm` / `proxmox_lxc` pick storage
 from the host's `proxmox_role` — `nas` → `ssd`, `compute`/`general` →

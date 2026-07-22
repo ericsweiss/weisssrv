@@ -428,13 +428,30 @@
   no_log: true
   notify: Reconfigure gitlab
 
-- name: Create backup directory
+# Backup landing. Prod relocates it onto the offsite-eligible tank/backups/apps
+# NFS export so the tarball + gitlab-secrets.json + gitlab.rb ride the archsync
+# file walk into restic B2. When NFS-backed, the NAS owns the (all_squashed,
+# 1000:2000, 02775) export dir — the role only mounts it and must NOT chown it;
+# the git-user tarball + the root-run secrets copy both squash to 1000:2000.
+- name: Mount the offsite backup NFS export
+  ansible.posix.mount:
+    path: "{{ gitlab_backup_mountpoint }}"
+    src: "{{ gitlab_backup_nfs_server }}:{{ gitlab_backup_nfs_export }}"
+    fstype: nfs4
+    opts: "{{ gitlab_backup_nfs_options }}"
+    state: mounted
+  when: gitlab_backup_nfs_enabled | default(false)
+  tags:
+    - molecule-notest
+
+- name: Create backup directory (local, non-NFS)
   ansible.builtin.file:
     path: "{{ gitlab_backup_path }}"
     state: directory
     owner: git
     group: git
     mode: '0700'
+  when: not (gitlab_backup_nfs_enabled | default(false))
 
 # The wrapper runs the backup, copies gitlab-secrets.json + gitlab.rb on
 # success (a restore needs them to decrypt CI variables, 2FA, runner
@@ -449,15 +466,40 @@
     group: root
     mode: "0755"
 
-# The cron module keys on `name`, so changing `job` rewrites the existing
-# line in place — no duplicate or stale entry from the prior inline command.
-- name: Configure GitLab backup cron job
+# The backup runs from a systemd timer (not root cron): the service carries
+# RequiresMountsFor on the NFS landing zone (so it never runs against an unmounted
+# export) + a bounded TimeoutStartSec, and a failed run surfaces via the unit's
+# own status alongside the textfile metric.
+- name: Remove the legacy GitLab backup root cron job
   ansible.builtin.cron:
     name: "GitLab backup"
-    minute: "0"
-    hour: "2"
-    job: "/usr/local/sbin/gitlab-backup-run.sh"
+    state: absent
     user: root
+
+- name: Deploy GitLab backup systemd service
+  ansible.builtin.template:
+    src: gitlab-backup.service.j2
+    dest: /etc/systemd/system/gitlab-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for gitlab-backup
+
+- name: Deploy GitLab backup systemd timer
+  ansible.builtin.template:
+    src: gitlab-backup.timer.j2
+    dest: /etc/systemd/system/gitlab-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for gitlab-backup
+
+- name: Enable GitLab backup timer
+  ansible.builtin.systemd:
+    name: gitlab-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
 
 - name: Check if GitLab is installed (for check mode safety)
   ansible.builtin.stat:

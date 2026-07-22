@@ -215,6 +215,8 @@ weisssrv/
 | alloy_host | Grafana Alloy on non-k8s hosts and k3s VMs for journald → Loki |
 | zfs_encryption | Boot-time ZFS pool key fetch from 1Password Connect |
 | nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |
+| restic_offsite | Nightly offsite backup to Backblaze B2 (restic via rclone, client-side encrypted) on the NAS; chained after archive-backup, reads archsync snapshots + clones the immich/nextcloud data zvols (docs/42) |
+| encrypted_swap | dm-crypt plain-mode random-key encrypted swap (AES-256-XTS, crypttab + fstab) on the six Proxmox hosts; live-switch when memory-safe, else defer to reboot (docs/42) |
 
 ## Secrets Management
 
@@ -338,6 +340,24 @@ Self-hosted Git repository and CI/CD platform:
   - Git SSH access on port 2222 (external)
 - **Documentation**: [docs/27-gitlab-deployment.md](docs/27-gitlab-deployment.md)
 
+### Nextcloud
+
+Self-hosted file sync and collaboration on a NAS-pinned VM:
+
+- **URLs**: cloud.esweiss.com (internal), cloud.ericsweiss.com (external)
+- **Stack**: Docker Compose (nextcloud-apache + PostgreSQL + Redis + cron + exporter) on VM .156, all state on ZFS zvol passthrough disks (no NFS), host-nginx TLS
+- **Authentication**: Authentik OIDC SSO-only
+- **Documentation**: [docs/35-nextcloud.md](docs/35-nextcloud.md)
+
+### Immich
+
+Self-hosted photo and video management on a NAS-pinned VM:
+
+- **URLs**: photos.esweiss.com (internal), photos.ericsweiss.com (external)
+- **Stack**: docker-compose (immich-server + CPU ML + release-pinned Postgres/vectorchord + Valkey) on VM .157, encrypted zvols (photo library on `tank/immich-data`), host-nginx TLS, nightly pg_dump
+- **Authentication**: Authentik OIDC SSO-only
+- **Documentation**: [docs/36-immich.md](docs/36-immich.md)
+
 ### WireGuard VPN (wg-easy)
 
 Internet-exit VPN for the user + friends/family (`wg-easy` v15):
@@ -366,9 +386,27 @@ Metrics, logs, dashboards, and alerting for the whole platform:
 NousResearch autonomous AI agent platform with a web dashboard:
 
 - **URLs**: agent.esweiss.com (internal), agent.ericsweiss.com (external)
-- **Authentication**: layered SSO — an Authentik forward-auth (`hermes-users` group) perimeter plus the dashboard's own login: Authentik OIDC (primary) + `basic` break-glass (an auth provider is mandatory on its 0.0.0.0 bind); a Traefik-only NetworkPolicy makes the middleware the only path to it. Authentik objects in `terraform/authentik` (docs/40)
-- **Workload**: one pod, two containers (gateway supervisor + FastAPI dashboard) off a self-built image (upstream ships none — built by the `build-hermes-agent` CI job); NFS `/opt/data` state on encrypted `ssd/appdata`
+- **Authentication**: the dashboard's own Authentik-OIDC login on both hostnames (`hermes-users` group gate; an auth provider is mandatory on its 0.0.0.0 bind), with a Traefik-only NetworkPolicy restricting ingress. Authentik objects in `terraform/authentik` (docs/40)
+- **Workload**: one pod, three containers (gateway supervisor + FastAPI dashboard + camofox anti-detection browser sidecar) off a self-built image (upstream ships none — built by the `build-hermes-agent` CI job); NFS `/opt/data` state on encrypted `ssd/appdata`
+- **Memory backend**: a cluster-internal Hindsight deployment (no ingress) serves Hermes' long-term memory — see [docs/37-hermes.md](docs/37-hermes.md) (§Memory backend)
 - **Documentation**: [docs/37-hermes.md](docs/37-hermes.md)
+
+### Windows 11 VM
+
+On-demand Windows 11 desktop (OVMF/TPM/q35 shell provisioned via `proxmox_vm`):
+
+- **Access**: RDP to VM .155 (NAS-pinned; kept powered off by default and started on demand)
+- **Documentation**: [docs/39-windows-vm.md](docs/39-windows-vm.md)
+
+### Homarr
+
+Homelab dashboard/launcher for every service in the cluster:
+
+- **URLs**: dashboard.esweiss.com (internal), dashboard.ericsweiss.com (external)
+- **Authentication**: Authentik OIDC (`homarr-admins` group gate, admin via the OIDC `groups` claim) + a break-glass local admin; Authentik objects in `terraform/authentik` (docs/40)
+- **Workload**: raw k3s manifests (`kubernetes/apps/homarr/`), NFS-backed SQLite state on encrypted `ssd/appdata`
+- **Integrations**: direct in-cluster/LAN URLs (bypassing the SSO perimeter) to the *arr stack, qBittorrent/NZBGet, AdGuard, Proxmox, Plex, Home Assistant, Nextcloud, and Immich
+- **Documentation**: [docs/41-homarr.md](docs/41-homarr.md)
 
 ## Documentation
 
@@ -423,10 +461,12 @@ NousResearch autonomous AI agent platform with a web dashboard:
 | [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
 | [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
 | [36-immich](docs/36-immich.md) | Immich photo management (NAS-pinned VM, docker-compose, encrypted zvols, Authentik OIDC, backups) |
-| [37-hermes](docs/37-hermes.md) | Hermes Agent (NousResearch AI agent + dashboard): self-built image, two-container pod, layered Authentik + dashboard SSO |
+| [37-hermes](docs/37-hermes.md) | Hermes Agent (NousResearch AI agent + dashboard): self-built image, three-container pod, dashboard Authentik-OIDC SSO |
 | [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
 | [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
 | [40-authentik-terraform](docs/40-authentik-terraform.md) | Authentik SSO as code (terraform/authentik day-2 ops: drift, rotation, DR) |
+| [41-homarr](docs/41-homarr.md) | Homarr dashboard (raw manifests, Authentik OIDC, NFS SQLite, direct-URL integrations) |
+| [42-offsite-backup](docs/42-offsite-backup.md) | Offsite backup (restic → Backblaze B2, client-side encrypted) + encrypted swap |
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it

@@ -1,16 +1,15 @@
 ---
 # Hermes Agent dashboard — external + internal IngressRoutes.
 #
-# SSO model: layered. The Authentik forward-auth (authentik-auth) middleware is
-# the perimeter gate — only members of the Authentik `hermes-users` group ever
-# reach the dashboard, and the default-deny NetworkPolicy admits only the
-# Traefik namespace on :9119, so no path bypasses this middleware. Behind it
-# the dashboard registers TWO of its own auth providers (its 0.0.0.0 bind is
-# fail-closed — it will not start without at least one): Authentik OIDC
-# (primary, silent for an existing Authentik session) and `basic` (break-glass)
-# — see deployment.yaml + docs/37 §SSO. The Authentik objects are managed in
-# terraform/authentik (docs/40). The internal route additionally scopes to
-# LAN/Tailscale sources.
+# SSO model: the dashboard's own Authentik OIDC login (docs/37 §SSO). The
+# 0.0.0.0 bind engages upstream's fail-closed auth gate, the `self_hosted`
+# OIDC provider (issuer slug `agent`, gated by the Authentik `hermes-users`
+# group) is the sole registered provider, and the default-deny NetworkPolicy
+# admits only the Traefik namespace on :9119. No forward-auth middleware:
+# Traefik passes straight to the dashboard, which 302s unauthenticated
+# browsers into the Authentik flow — one login, both hostnames. The Authentik
+# objects are managed in terraform/authentik (docs/40). The internal route
+# additionally scopes to LAN/Tailscale sources.
 
 # External - agent.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -27,8 +26,6 @@ spec:
     - match: Host(`agent.ericsweiss.com`)
       kind: Rule
       middlewares:
-        - name: authentik-auth
-          namespace: authentik
         - name: hsts-header
           namespace: traefik
       services:
@@ -53,8 +50,6 @@ spec:
       middlewares:
         - name: lan-tailscale-only
           namespace: traefik
-        - name: authentik-auth
-          namespace: authentik
         - name: hsts-header
           namespace: traefik
       services:

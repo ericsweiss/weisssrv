@@ -7,8 +7,9 @@ pattern (GitLab HTTP state backend + 1Password-injected credentials). The live
 objects were **imported, never recreated**: the module was built field-for-field
 against the API and accepted only when `terraform plan` against the imported
 state showed zero changes (bar the one approved exception below). Objects added
-since the import — the Hermes dashboard OIDC provider + `agent-sso`
-application, the AdGuard SSO dashboard providers/applications, the role
+since the import — the Hermes dashboard OIDC provider, the Homarr dashboard
+OIDC provider/application (+ its `homarr-admins` group and binding), the AdGuard
+SSO dashboard providers/applications, the role
 groups (`media-admins`, `dns-admins`, `bar-assistant-users`,
 `home-assistant-users`), and the per-application policy bindings — are
 **Terraform-authored** and created by supervised apply (no import involved).
@@ -34,12 +35,12 @@ drift instead of being silently reverted later.
 
 | Kind | Count | Terraform | Import ID |
 |---|---|---|---|
-| Applications | 19 | `authentik_application.app[<slug>]` + explicit `agent_sso` / `adguard_01` / `adguard_02` | slug (the three explicit ones are Terraform-created — no import) |
-| Proxy providers (forward_single) | 11 | `authentik_provider_proxy.<name>` | provider pk (4-10, 16, 17); `adguard_01`/`adguard_02` are Terraform-created |
-| OAuth2/OIDC providers | 7 | `authentik_provider_oauth2.<name>` | provider pk (1-3, 13-15); `hermes_dashboard` is Terraform-created |
+| Applications | 19 | `authentik_application.app[<slug>]` + explicit `adguard_01` / `adguard_02` / `homarr` | slug (the three explicit ones are Terraform-created — no import) |
+| Proxy providers (forward_single) | 10 | `authentik_provider_proxy.<name>` | provider pk (4-10, 17); `adguard_01`/`adguard_02` are Terraform-created |
+| OAuth2/OIDC providers | 8 | `authentik_provider_oauth2.<name>` | provider pk (1-3, 13-15); `hermes_dashboard` / `homarr` are Terraform-created |
 | SAML provider (GitLab) | 1 | `authentik_provider_saml.gitlab` | provider pk (12) |
-| Groups + memberships | 16 | `authentik_group.app[<name>]` + explicit `media_admins` / `dns_admins` / `authentik_admins` | group uuid (`media-admins`, `dns-admins`, `bar-assistant-users`, `home-assistant-users` are Terraform-created) |
-| Policy bindings (group → application) | 19 | `authentik_policy_binding.app_group[<slug>]` + explicit `agent_sso` / `adguard_01` / `adguard_02` | — (all Terraform-created) |
+| Groups + memberships | 18 | `authentik_group.app[<name>]` + explicit `media_admins` / `dns_admins` / `authentik_admins` | group uuid (`media-admins`, `dns-admins`, `bar-assistant-users`, `home-assistant-users`, `homarr-admins`, `homarr-users` are Terraform-created) |
+| Policy bindings (group → application) | 20 | `authentik_policy_binding.app_group[<slug>]` + explicit `adguard_01` / `adguard_02` / `homarr` / `homarr_users` | — (all Terraform-created) |
 | Embedded outpost (provider list) | 1 | `authentik_outpost.embedded` | outpost uuid (adopted — see `outpost.tf`) |
 
 Membership is modelled on the group's `users` list (the provider's model);
@@ -196,9 +197,9 @@ wherever else it is used.
 5. `task terraform:authentik-plan` → review → supervised apply.
 6. New objects are **created** by Terraform (no import needed); only
    pre-existing UI-created objects ever need `imports.tf` / `import.sh`
-   entries. The Hermes dashboard OIDC set (`hermes_dashboard` provider +
-   `agent_sso` application + role groups + bindings) is the worked example of
-   this recipe; the AdGuard SSO dashboards are the proxy-provider +
-   basic-auth-injection variant of it.
+   entries. The Hermes dashboard OIDC set (the `hermes_dashboard` provider +
+   role groups + bindings, attached to the pre-existing imported `agent`
+   application) is the worked example of this recipe; the AdGuard SSO
+   dashboards are the proxy-provider + basic-auth-injection variant of it.
 
 Day-2 operations (drift handling, token rotation, DR): `docs/40-authentik-terraform.md`.

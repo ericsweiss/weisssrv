@@ -55,6 +55,34 @@ spec:
         - { protocol: TCP, port: 3003 }   # pulsarr
 
 ---
+# 2b. Allow the Homarr dashboard (homarr namespace) to reach the download-stack
+#     UIs/APIs for its integration widgets (read-only status). Mirrors
+#     allow-traefik-ingress but scoped to the homarr namespace. Note:
+#     qbittorrent/nzbget pods carry the Gluetun sidecar and NetworkPolicy is
+#     per-pod, so this ingress governs those shared pod networks too — correct
+#     for them as well (the widget reaches the UI port on the pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-homarr-ingress
+  namespace: downloads
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: homarr
+      ports:
+        - { protocol: TCP, port: 8080 }   # qbittorrent
+        - { protocol: TCP, port: 6789 }   # nzbget
+        - { protocol: TCP, port: 8989 }   # sonarr
+        - { protocol: TCP, port: 7878 }   # radarr
+        - { protocol: TCP, port: 8686 }   # lidarr
+        - { protocol: TCP, port: 9696 }   # prowlarr
+
+---
 # 3. Allow observability (exportarr sidecars in the `observability` namespace)
 #    to scrape the *arr REST APIs. None of the downloads pods expose a native
 #    /metrics endpoint — exportarr calls each app's HTTP API and re-exports the
@@ -109,10 +137,15 @@ spec:
       app.kubernetes.io/name: qbittorrent
   policyTypes: [Ingress]
   ingress:
+    # Scope the observability peer to the Prometheus pod (least-privilege,
+    # matching rule #3 above and the recipes meilisearch/redis-exporter rules).
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
       ports:
         - { protocol: TCP, port: 8002 }
 

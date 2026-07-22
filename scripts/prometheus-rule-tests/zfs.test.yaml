@@ -1,0 +1,47 @@
+---
+# promtool unit tests for ZFSPoolScrubStale, which has two firing arms: the
+# never-scrubbed sentinel (last_scrub_seconds == 0) and the >35-day staleness
+# branch (guarded by last_scrub_seconds > 0 so the sentinel doesn't double-count).
+# 6h interval keeps the 35-day branch's sample count tractable.
+rule_files:
+  - rules.yaml
+evaluation_interval: 6h
+tests:
+  # Sentinel arm: a pool that has never completed a scrub (metric == 0) fires.
+  - interval: 6h
+    input_series:
+      - series: 'zfs_pool_status_last_scrub_seconds{pool="archive", instance="192.168.0.102:9101"}'
+        values: '0+0x8'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: ZFSPoolScrubStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              pool: archive
+              instance: '192.168.0.102:9101'
+
+  # Staleness arm: a real past scrub timestamp (>0) older than 35 days fires.
+  # value 1 (>0) with time() advancing past 35d*86400 = 3024000s.
+  - interval: 6h
+    input_series:
+      - series: 'zfs_pool_status_last_scrub_seconds{pool="tank", instance="192.168.0.102:9101"}'
+        values: '1+0x150'
+    alert_rule_test:
+      - eval_time: 858h
+        alertname: ZFSPoolScrubStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              pool: tank
+              instance: '192.168.0.102:9101'
+
+  # A recent scrub (>0, well under 35 days old) fires neither arm.
+  - interval: 6h
+    input_series:
+      - series: 'zfs_pool_status_last_scrub_seconds{pool="ssd", instance="192.168.0.102:9101"}'
+        values: '43200+0x8'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: ZFSPoolScrubStale
+        exp_alerts: []

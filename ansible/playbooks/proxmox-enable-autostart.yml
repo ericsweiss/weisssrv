@@ -66,8 +66,12 @@
           ', delay=' + (proxmox_startup_delay | default(0) | string) + 's'
           if container_pve_host is defined else 'not found on any Proxmox host' }}
 
-- name: Configure autostart and boot order for VMs (k3s + gitlab)
-  hosts: k3s:gitlab_servers
+# All node-pinned app VMs (gitlab/nextcloud/immich/windows) carry
+# proxmox_autostart_enabled + proxmox_startup_order in hosts.yml, so this
+# reconcile path covers them too — the task no-ops when the config already
+# matches. (HAOS .154 stays out: it is Proxmox-HA-managed, so onboot is moot.)
+- name: Configure autostart and boot order for VMs (k3s + app VMs)
+  hosts: k3s:gitlab_servers:nextcloud_servers:immich_servers:windows_vms
   gather_facts: false
   vars:
     desired_onboot: "onboot: {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}"

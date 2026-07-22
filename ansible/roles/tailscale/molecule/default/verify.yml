@@ -52,6 +52,14 @@
         fail_msg: "Installed version {{ installed_version.stdout }} does not match pinned {{ tailscale_version }}"
         success_msg: "Version pinning verified: {{ installed_version.stdout }}"
 
+    # The role dpkg-holds tailscale so a manual `apt upgrade` can't move it past
+    # the pin (pkgs.tailscale.com continuously serves newer builds).
+    - name: Verify the Tailscale package is dpkg-held
+      ansible.builtin.command: dpkg --get-selections tailscale
+      register: tailscale_hold
+      changed_when: false
+      failed_when: "'hold' not in tailscale_hold.stdout"
+
     - name: Check if tailscaled service exists
       ansible.builtin.stat:
         path: /lib/systemd/system/tailscaled.service

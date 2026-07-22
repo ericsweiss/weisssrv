@@ -1,0 +1,53 @@
+---
+# prometheus-operator-crds — the monitoring.coreos.com CRDs (Alertmanager,
+# Prometheus, ServiceMonitor, PodMonitor, PrometheusRule, Probe, ScrapeConfig,
+# ThanosRuler, PrometheusAgent, AlertmanagerConfig), installed in their OWN Flux
+# stage (infrastructure-crds) BEFORE the controllers stage.
+#
+# Why a dedicated CRD stage: on a fresh cluster the Traefik HelmRelease (in
+# infrastructure-controllers) renders a ServiceMonitor and hard-fails ("you have
+# to deploy monitoring.coreos.com/v1 first") because those CRDs otherwise only
+# arrive two stages later with kube-prometheus-stack. This stage installs them
+# first so any controller can render monitoring CRs. kube-prometheus-stack no
+# longer ships its own copies (crds.enabled:false + install/upgrade.crds:Skip in
+# observability/kube-prometheus-stack/release.yaml).
+#
+# Ownership: this chart ships the CRDs as Helm-owned templates (charts/crds/
+# templates/crd-*.yaml, each gated on .Values.<crd>.enabled), unlike kps which
+# ships them via a crds/ directory (install-only, no Helm ownership). The pinned
+# version 30.0.1 = appVersion v0.92.1, byte-matching the operator kps 87.17.0
+# deploys, so steady-state reconciles are a no-op. A one-time metadata adoption
+# (label/annotate the existing unowned CRDs into this release) is required on the
+# live cluster during the migration deploy window — see docs/29 (Fresh bootstrap
+# / disaster recovery). On a truly fresh cluster nothing manual is needed.
+#
+# Keep the prometheus_operator_crds pin in all.yml in lockstep with
+# kube_prometheus_stack so the CRD set stays version-matched to the operator.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus-operator-crds
+  namespace: prometheus-operator-crds
+spec:
+  interval: 30m
+  releaseName: prometheus-operator-crds
+  timeout: 10m
+  chart:
+    spec:
+      chart: prometheus-operator-crds
+      version: "${helm_chart_versions_prometheus_operator_crds}"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  # Values left at chart defaults: all 10 CRDs enabled, matching kps's set. The
+  # chart ships CRDs as templates (not a crds/ dir), so no install.crds field is
+  # needed here.

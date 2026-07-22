@@ -442,13 +442,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(node_network_receive_bytes_total{device=\"eth0\"}[5m]) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "rate(node_network_receive_bytes_total{job=\"node-exporter\", device=\"eth0\"}[5m]) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }} rx",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "-rate(node_network_transmit_bytes_total{device=\"eth0\"}[5m]) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
+          "expr": "-rate(node_network_transmit_bytes_total{job=\"node-exporter\", device=\"eth0\"}[5m]) * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info)",
           "legendFormat": "{{ nodename }} tx",
           "refId": "B"
         }

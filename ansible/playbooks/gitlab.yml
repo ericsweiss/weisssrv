@@ -49,5 +49,14 @@
     # dedicated play; include it here so a standalone `task gitlab:deploy` keeps
     # log shipping in sync.
     - alloy_host
+    # NFSv4-over-TLS client daemon (tlshd) for the offsite backup mount, which now
+    # requires xprtsec=tls. Ordered before gitlab so tlshd is up before the role
+    # mounts /backups-apps/gitlab by hostname. Gated on the NFS-backed backup being
+    # enabled (mirrors how the k3s agents get nfs_tls); tasks self-guard on
+    # nfs_tls_enabled. Client-only (nfs_tls_is_server defaults false) — needs only
+    # the CA truststore, no cert/key.
+    - role: nfs_tls
+      vars:
+        nfs_tls_enabled: "{{ gitlab_backup_nfs_enabled | default(false) }}"
     - gitlab
     - proxmox_firewall

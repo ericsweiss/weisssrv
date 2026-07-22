@@ -1,0 +1,18 @@
+---
+# VPA: Initial for the homarr Deployment — resize CPU+memory on natural pod
+# restarts (single stateless-scheduling workload; no HPA owns CPU — mirrors
+# hermes). Bounded so a runaway request can't claim the whole node.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: homarr
+  namespace: homarr
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: homarr}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 128Mi}
+        maxAllowed: {cpu: 1, memory: 1Gi}
+        controlledResources: [cpu, memory]

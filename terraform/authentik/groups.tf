@@ -19,9 +19,14 @@ locals {
   #                                    gitlab-users also binds the `git` app
   #   grafana-admins / grafana-users — Grafana OIDC role mapping (docs/31);
   #                                    grafana-users also binds the `grafana` app
-  #   hermes-users                   — Hermes forward-auth perimeter (docs/37)
-  #                                    + the `agent` / `agent-sso` app bindings
+  #   hermes-users                   — Hermes dashboard OIDC (docs/37)
+  #                                    + the `agent` app binding
   #   home-assistant-users           — `home` application binding
+  #   homarr-admins / homarr-users   — two-tier `dashboard` app gate (either
+  #                                    binding grants access); homarr-admins is
+  #                                    also the Homarr admin group synced from
+  #                                    the OIDC `groups` claim, homarr-users
+  #                                    land as regular users (docs/41)
   #   immich-users                   — Immich OIDC (docs/36) + `photos` binding
   #   mealie-admins / mealie-users   — Mealie OIDC (docs/22-23);
   #                                    mealie-users also binds the `food` app
@@ -36,6 +41,8 @@ locals {
     "grafana-users",
     "hermes-users",
     "home-assistant-users",
+    "homarr-admins",
+    "homarr-users",
     "immich-users",
     "mealie-admins",
     "mealie-users",

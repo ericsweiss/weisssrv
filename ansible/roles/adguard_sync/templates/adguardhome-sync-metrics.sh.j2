@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# node_exporter textfile metrics for the adguardhome-sync oneshot timer.
+# Invoked as an ExecStopPost (prefixed '+' in the unit, so it runs as root
+# OUTSIDE the unit's DynamicUser + ProtectSystem sandbox and can write the
+# textfile dir). $1 is systemd's $SERVICE_RESULT ("success" on a clean run).
+# Closes the silent-failure gap: without this, a broken primary->secondary DNS
+# sync (revoked password, dns-02 unreachable, schema change) leaves the replica
+# serving stale rewrites/blocklists indefinitely with nothing to page on.
+set -u
+
+# Textfile collector dir — templated from node_exporter_host_textfile_dir so it
+# tracks the host's exporter config instead of hardcoding the default path.
+PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+PROM_FILE="${PROM_DIR}/adguardhome_sync.prom"
+
+# node_exporter_host owns the textfile dir; if the host hasn't deployed it yet,
+# emit nothing rather than failing the unit.
+[ -d "$PROM_DIR" ] || exit 0
+
+if [ "${1:-}" = "success" ]; then
+  success=1
+else
+  success=0
+fi
+
+ts="$(date +%s)"
+tmp="${PROM_FILE}.$$"
+{
+  echo "# HELP adguardhome_sync_last_run_success Whether the last adguardhome-sync run succeeded (1=success, 0=failure)"
+  echo "# TYPE adguardhome_sync_last_run_success gauge"
+  echo "adguardhome_sync_last_run_success ${success}"
+  # Preserve the last-known success timestamp on failure so a staleness alert
+  # measures time-since-last-success, not time-since-last-attempt.
+  if [ "$success" -eq 1 ]; then
+    sval="$ts"
+  else
+    sval="$(awk '/^adguardhome_sync_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+  fi
+  if [ -n "${sval:-}" ]; then
+    echo "# HELP adguardhome_sync_last_success_timestamp_seconds Unix timestamp of last successful sync"
+    echo "# TYPE adguardhome_sync_last_success_timestamp_seconds gauge"
+    echo "adguardhome_sync_last_success_timestamp_seconds ${sval}"
+  fi
+} > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 0; }
+mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"

@@ -30,7 +30,9 @@ The `build-camofox-browser` CI job (`.gitlab-ci.yml`) does the build.
 
 - **Build**: `build-camofox-browser` (DinD, infrastructure runner) clones
   upstream at `v<hermes_camofox_version>`, verifies the SHA, and runs
-  `docker build` on the clone (their Dockerfile, their context). No build args.
+  `docker build` on the clone (their Dockerfile, their context). The only
+  build arg is the inline-cache metadata (`BUILDKIT_INLINE_CACHE=1`); their
+  Dockerfile consumes no `ARG`s.
 - **Push**: tagged
   `registry.git.ericsweiss.com/eric/weisssrv/camofox-browser:<version>`. MR
   pipelines build-only; the load-bearing `:<version>` and `:latest` tags are

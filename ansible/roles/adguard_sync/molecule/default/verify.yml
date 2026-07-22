@@ -85,8 +85,81 @@
           - "'DynamicUser=yes' in (service_content.content | b64decode)"
           - "'ProtectSystem=strict' in (service_content.content | b64decode)"
           - "'StateDirectory=adguardhome-sync' in (service_content.content | b64decode)"
+          # Metrics ExecStopPost: '+' prefix so it runs as root outside the
+          # sandbox and can write the node_exporter textfile dir.
+          - "'ExecStopPost=+/usr/local/bin/adguardhome-sync-metrics.sh $SERVICE_RESULT' in (service_content.content | b64decode)"
         fail_msg: "Service file missing expected configuration"
-        success_msg: "Service file has correct configuration (sandboxed DynamicUser)"
+        success_msg: "Service file has correct configuration (sandboxed DynamicUser + metrics ExecStopPost)"
+
+    # Failure-signal metrics writer (closes the silent-sync-failure gap).
+    - name: Check the adguardhome-sync metrics writer is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/adguardhome-sync-metrics.sh
+      register: sync_metrics_script
+      failed_when: >-
+        not sync_metrics_script.stat.exists
+        or not sync_metrics_script.stat.executable
+        or sync_metrics_script.stat.mode != '0755'
+
+    # The textfile dir is templated from node_exporter_host_textfile_dir (set to
+    # a custom path in molecule.yml), so the rendered PROM_DIR must track it.
+    - name: Verify the metrics writer templates PROM_DIR from the host var
+      ansible.builtin.command: >-
+        grep -qF 'PROM_DIR="/tmp/adg-textfile"' /usr/local/bin/adguardhome-sync-metrics.sh
+      register: sync_metrics_grep
+      changed_when: false
+      failed_when: sync_metrics_grep.rc != 0
+
+    # Execute the writer (the ExecStopPost passes $SERVICE_RESULT): success and
+    # failure arms, asserting the failure arm preserves the last-success timestamp.
+    - name: Create the templated textfile dir (no node_exporter_host in this scenario)
+      ansible.builtin.file:
+        path: /tmp/adg-textfile
+        state: directory
+        mode: "0755"
+
+    - name: Run the metrics writer (success arm)
+      ansible.builtin.command: /usr/local/bin/adguardhome-sync-metrics.sh success
+      changed_when: false
+
+    - name: Read adguardhome_sync.prom after success
+      ansible.builtin.slurp:
+        src: /tmp/adg-textfile/adguardhome_sync.prom
+      register: adg_prom_ok
+
+    - name: Assert the success arm records success=1 with a fresh timestamp
+      ansible.builtin.assert:
+        that:
+          - "'adguardhome_sync_last_run_success 1' in (adg_prom_ok.content | b64decode)"
+          - "'adguardhome_sync_last_success_timestamp_seconds ' in (adg_prom_ok.content | b64decode)"
+        fail_msg: "success arm did not emit success=1 + a timestamp"
+        success_msg: "success arm emits success=1 + a fresh timestamp"
+
+    - name: Capture the success timestamp (to assert preservation on failure)
+      ansible.builtin.shell: >-
+        awk '/^adguardhome_sync_last_success_timestamp_seconds/ {print $2}'
+        /tmp/adg-textfile/adguardhome_sync.prom
+      register: adg_ts_ok
+      changed_when: false
+
+    - name: Run the metrics writer (failure arm — $SERVICE_RESULT != success)
+      ansible.builtin.command: /usr/local/bin/adguardhome-sync-metrics.sh failed
+      changed_when: false
+
+    - name: Read adguardhome_sync.prom after failure
+      ansible.builtin.slurp:
+        src: /tmp/adg-textfile/adguardhome_sync.prom
+      register: adg_prom_fail
+
+    - name: Assert the failure arm records success=0 and preserves the timestamp
+      ansible.builtin.assert:
+        that:
+          - "'adguardhome_sync_last_run_success 0' in (adg_prom_fail.content | b64decode)"
+          - >-
+            'adguardhome_sync_last_success_timestamp_seconds ' ~ adg_ts_ok.stdout
+            in (adg_prom_fail.content | b64decode)
+        fail_msg: "failure arm did not record success=0 or lost the prior timestamp"
+        success_msg: "failure arm records success=0 and preserves the last-success timestamp"
 
     # Verify systemd timer
     - name: Check if systemd timer file exists

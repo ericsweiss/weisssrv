@@ -1,0 +1,15 @@
+# Build-context filter for the one repo-root-context image build
+# (build-molecule-ci: `docker build -f docker/molecule-ci/Dockerfile .`).
+# That Dockerfile COPYs only the two requirements files, so exclude
+# everything else — the context upload stays a few KB instead of the whole
+# repo. docker/ stays included so the Dockerfile itself remains in-context
+# for non-BuildKit builders. Subdir-context builds (docker/<img>/) are
+# unaffected by a root .dockerignore.
+# NOTE: re-including a NESTED path (!ansible/requirements.yml) after `*`
+# requires BuildKit (docker >= 23 default; CI's dind qualifies) — the classic
+# builder prunes excluded parent dirs and would drop the file. Verified by
+# building this context with a COPY of both files.
+*
+!requirements.txt
+!ansible/requirements.yml
+!docker/

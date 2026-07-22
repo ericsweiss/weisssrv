@@ -70,11 +70,11 @@ spec:
           environment = ["HOME=/home/gitlab-runner", "GIT_CONFIG_GLOBAL=/home/gitlab-runner/.gitconfig"]
 
           # TOML sections are POSITIONAL — scalar keys must precede any
-          # sub-table or they silently land inside it. The !81 layout had
-          # cpu/memory limits parsing as pod_labels (chart defaults
-          # silently applied instead) and pull_policy +
-          # node_selector_overwrite_allowed swallowed by the empty_dir
-          # volume table. Scalars first, sub-tables last.
+          # sub-table or they silently land inside it (a past layout had
+          # cpu/memory limits misparsed as pod_labels with chart defaults
+          # silently applied, and pull_policy + node_selector_overwrite_allowed
+          # swallowed by the empty_dir volume table). Scalars first,
+          # sub-tables last.
           [runners.kubernetes]
             namespace = "gitlab-runner"
             # Default CI job image, digest-pinned for reproducibility (the

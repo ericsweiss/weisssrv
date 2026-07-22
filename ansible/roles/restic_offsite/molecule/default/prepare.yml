@@ -1,0 +1,29 @@
+---
+# Prepare: shared systemd/apt prep + seed fake .zfs/snapshot trees so the
+# freshness guard + direct-mode file walk have a fresh archsync snapshot to read
+# (no real ZFS in the container).
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-apt-disable.yml
+
+    # Seed a FRESH archsync-<now> snapshot dir (with content) under each molecule
+    # source's .zfs/snapshot tree. archsync-YYYYMMDD-HHMMSS names carry the
+    # timestamp the freshness guard parses, so a "now" name passes the guard.
+    - name: Seed fresh fake archsync snapshot trees
+      ansible.builtin.shell: |
+        set -e
+        ts="$(date -u +%Y%m%d-%H%M%S)"
+        for src in backups appdata; do
+          d="/tmp/molsrc/${src}/.zfs/snapshot/archsync-${ts}"
+          mkdir -p "$d"
+          echo "molecule ${src} payload" > "${d}/payload.txt"
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false

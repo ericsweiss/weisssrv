@@ -5,7 +5,9 @@
 # on the next natural restart, never proactive eviction): Traefik (ingress for
 # every service — an Auto eviction blip 502'd the registry and hung
 # git.esweiss.com under CI-burst load, even with a PDB), cert-manager-webhook
-# (single-replica admission), and external-dns (single-replica, no PDB). Lives in
+# (single-replica admission), external-dns (single-replica, no PDB),
+# metallb-speaker (L2/ARP VIP announcer — eviction triggers a stale-ARP VIP
+# failover), and tailscale-operator (single-replica admission webhook). Lives in
 # configs/ because the VPA CRD is installed by controllers/vpa.
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -36,8 +38,16 @@ spec:
     apiVersion: apps/v1
     kind: DaemonSet
     name: metallb-speaker
+  # Initial (not Auto): the speaker is the L2/ARP announcer for every MetalLB
+  # LoadBalancer VIP (.99/.100/.101), including the ones Traefik sits behind. An
+  # Auto updater eviction of the pod currently announcing a VIP forces a leader
+  # re-election + gratuitous-ARP failover — the stale-ARP blip that has surfaced
+  # as an apparent ingress/GitLab outage during maintenance. Same data-path
+  # rationale as Traefik/cert-manager-webhook above: apply memory recommendations
+  # on the next natural restart, never by proactive eviction. metallb-controller
+  # stays Auto — it does not announce VIPs.
   updatePolicy:
-    updateMode: Auto
+    updateMode: Initial
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
@@ -315,4 +325,50 @@ spec:
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 32Mi}
         maxAllowed: {cpu: 500m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: reloader
+  namespace: reloader
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: reloader-reloader
+  # Auto: reloader is a single-replica, off-data-path ConfigMap watcher — a brief
+  # gap during an eviction only delays (never drops) a reload, so it tolerates the
+  # updater right-sizing its hand-set 64Mi/128Mi request/limit.
+  updatePolicy:
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 256Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: tailscale-operator
+  namespace: tailscale
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: operator
+  # Initial (not Auto): the operator is a single replica that serves a tailnet
+  # admission webhook (and reconciles the proxy StatefulSets), so an updater
+  # eviction would briefly fail-closed admitting its CRs — the cert-manager-webhook
+  # rationale. Static requests are set in the HelmRelease (was BestEffort); this
+  # right-sizes them on the next natural restart, never by eviction.
+  updatePolicy:
+    updateMode: Initial
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 384Mi}
         controlledResources: [cpu, memory]

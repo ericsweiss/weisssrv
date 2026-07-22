@@ -25,15 +25,24 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    crds: CreateReplace
+    # crds: Skip — the monitoring.coreos.com CRDs are now owned by the dedicated
+    # infrastructure-crds stage (prometheus-operator-crds HelmRelease), which runs
+    # before controllers so a fresh bootstrap has them when Traefik renders a
+    # ServiceMonitor. crds.enabled:false below stops this chart shipping its own
+    # crds/-dir copies. Safe: crds/-dir CRDs are never pruned by Helm on
+    # template/values changes (unlike the MetalLB templated-CRD incident).
+    crds: Skip
     remediation:
       retries: 3
   upgrade:
-    crds: CreateReplace
+    crds: Skip
     remediation:
       retries: 3
       remediateLastFailure: true
   values:
+    # CRDs owned by the infrastructure-crds stage (see install.crds above).
+    crds:
+      enabled: false
     # -------------------------------------------------------------------------
     # Prometheus
     # -------------------------------------------------------------------------
@@ -220,7 +229,7 @@ spec:
       # carries rollingUpdate defaults from its RollingUpdate days, and
       # a patch that only sets type=Recreate leaves them in place — the
       # API rejects the combination ("rollingUpdate: Forbidden ... when
-      # strategy type is 'Recreate'", v106 upgrade failure post-!81).
+      # strategy type is 'Recreate'").
       deploymentStrategy:
         type: Recreate
         rollingUpdate: null
@@ -243,6 +252,13 @@ spec:
       # Tolerate ALL taints so node-exporter runs on every node in the cluster
       tolerations:
         - operator: Exists
+      # Enable the processes collector (off by default) so node_processes_*
+      # (state/pids/max_processes/threads/max_threads) are exported — process,
+      # thread, and PID-limit visibility is genuinely useful on the NAS given the
+      # swap/RAM pressure history, and it populates the node-exporter-full
+      # dashboard's "System Processes" panels (previously permanently empty).
+      extraArgs:
+        - --collector.processes
       resources:
         requests:
           cpu: 50m
@@ -569,6 +585,33 @@ spec:
                   summary: 'PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} above 90%'
                   description: 'PVC usage is {{ $value | printf "%.1f" }}%.'
 
+              # No workload in this cluster may use the local-path StorageClass:
+              # local-path PVs land on the k3s VM bootdisk, which is stateless
+              # (reprovisioned by task k3s:deploy) and NOT captured by any backup
+              # (archive replication + vzdump cover only zvols and OS disks). Every
+              # stateful PV is a statically-provisioned zvol/NFS PV with
+              # storageClassName "". A local-path PV therefore means a claim
+              # silently fell through to the cluster-default class — data at risk.
+              # Root incident: the loki StatefulSet's storage-loki-0 PVC drifted
+              # onto a dynamically-provisioned local-path PV (loki chart
+              # volumeClaimTemplate storageClass guard; see loki/release.yaml).
+              - alert: LocalPathPVExists
+                expr: kube_persistentvolume_info{storageclass="local-path"} > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'PersistentVolume {{ $labels.persistentvolume }} is on the local-path StorageClass'
+                  description: >-
+                    PV {{ $labels.persistentvolume }} uses the local-path
+                    StorageClass. Nothing in this cluster may use local-path: it
+                    lands on the stateless k3s VM bootdisk and is excluded from all
+                    backups. A claim fell through to the cluster-default class —
+                    pin its storageClassName to "" and rebind to the intended
+                    static zvol/NFS PV (see the loki drift incident in
+                    loki/release.yaml + docs/29).
+
               # Inode exhaustion: byte-usage rules above miss a filesystem that
               # fills its inode table (many tiny files) while still having free
               # bytes. The chart's default NodeFilesystemAlmostOutOfFiles only
@@ -635,6 +678,106 @@ spec:
                     instead of resetting. Check `journalctl -t swap-clean`; the box
                     may need a guest-memory trim or more RAM (docs/06 §NAS memory
                     management).
+
+              # The inverse failure: the NAS with NO swap at all. Swap-loss has no
+              # usage to accumulate, so NASSwapNotClearing can never see it, and a
+              # swapless run of this memory-overcommitted box OOMs under pressure.
+              # Reachable only through encrypted-swap activation failures (guarded
+              # in-script and at the fstab edit, so this is the last-resort net).
+              - alert: NASSwapGone
+                expr: node_memory_SwapTotal_bytes{instance="192.168.0.102:9101"} == 0
+                for: 30m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/42-offsite-backup.md'
+                  summary: 'NAS has zero swap configured on {{ $labels.instance }}'
+                  description: >-
+                    pve-nas-01 reports SwapTotal == 0 — the structurally
+                    overcommitted NAS is running with no swap safety margin,
+                    typically a failed encrypted-swap switch or a swapon that
+                    never restored a device. Check `swapon --show`,
+                    `systemctl status systemd-cryptsetup@cryptswap` and
+                    /etc/fstab on pve-nas-01 (docs/42 §Encrypted swap).
+
+              # swap-clean.timer (pve-nas-01) writes these textfile metrics on
+              # every exit path (cleanup() EXIT trap). last_run_success flips to 0
+              # on any non-clean outcome: a genuine script error (set -e death /
+              # signal), an unsafe abort (ARC-shrink headroom insufficient, or an
+              # escalation guest that would not stop gracefully within its timeout,
+              # so the reclaim aborts rather than force-kill), or a failed guest
+              # restart in cleanup(). The HELP text is authoritative
+              # ("0=failed or aborted-unsafe"). A single unsafe-abort night is
+              # therefore directly alertable here; NASSwapNotClearing above is the
+              # complementary multi-day accumulation signal (swap that never once
+              # dropped below 2 GiB across two nightly reset cycles). Daily timer,
+              # so a failure persists until the next run — for:1h matches the other
+              # *_last_run_success alerts.
+              - alert: SwapCleanFailed
+                expr: swap_clean_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+                  summary: 'NAS swap-clean job failed or aborted-unsafe on {{ $labels.instance }}'
+                  description: >-
+                    The daily swap-clean run on pve-nas-01 recorded a non-clean
+                    outcome (swap_clean_last_run_success == 0) — a script error, an
+                    unsafe headroom abort (ARC-shrink or a guest that would not stop
+                    gracefully), or a failed guest restart. Swap may not be
+                    resetting; if it keeps building day after day that also surfaces
+                    as NASSwapNotClearing. Check `journalctl -t swap-clean` (docs/06
+                    §NAS memory management).
+
+              # A guest the swap-clean escalation gracefully stopped failed to come
+              # back on `qm start` in cleanup() (swap_clean_guest_restart_failures
+              # counts those failures; it is always emitted, 0 on a good run — so no
+              # absent() arm is needed). This is more acute than SwapCleanStoppedGuests
+              # (which is a mere heads-up that a stop happened): a PRODUCTION guest is
+              # currently DOWN and needs a manual `qm start <vmid>` on pve-nas-01.
+              # Check the app immediately.
+              - alert: SwapCleanGuestRestartFailed
+                expr: swap_clean_guest_restart_failures > 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+                  summary: 'NAS swap-clean failed to restart a stopped guest on {{ $labels.instance }}'
+                  description: >-
+                    swap-clean on pve-nas-01 gracefully stopped a production guest
+                    to reclaim swap but could not restart it afterward
+                    ({{ $value | printf "%.0f" }} failed restart(s)) — a guest is
+                    likely DOWN. Run `qm start <vmid>` on pve-nas-01 and check the
+                    app immediately; see `journalctl -t swap-clean` (docs/06 §NAS
+                    memory management). ONE-SHOT notice: the gauge is per-run, so
+                    the next nightly run rewrites it to 0 and this alert
+                    self-resolves even if the guest is still down — the guest's
+                    own app-down/blackbox alerts are the persistent signal.
+
+              # Awareness notice: the swap-clean escalation gracefully STOPPED one
+              # or more production guests to free RAM for the swapoff (it always
+              # restarts them on exit). That worked as designed, but stopping prod
+              # guests warrants an operator heads-up — a repeated need means the box
+              # is chronically over-committed. max_over_time[1d] catches any run in
+              # the last day. warning-tier (not info): a standalone info alert is
+              # swallowed by the InfoInhibitor inhibit rule, so warning is what
+              # reaches discord-default for a genuine notice.
+              - alert: SwapCleanStoppedGuests
+                expr: max_over_time(swap_clean_guests_stopped_count[1d]) > 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/06-zfs.md'
+                  summary: 'NAS swap-clean stopped production guests to reclaim swap'
+                  description: >-
+                    swap-clean on pve-nas-01 had to gracefully stop
+                    {{ $value | printf "%.0f" }} guest(s) in the last day to free
+                    RAM for the swapoff (they were restarted afterward). ARC-shrink
+                    headroom alone no longer covers the swap — the box is running
+                    short on RAM (docs/06 §NAS memory management).
 
               # Per-device SMART health, fed by the smartmon textfile collector
               # (node_exporter_host role, every 5m). Complements the ZFS pool
@@ -856,6 +999,32 @@ spec:
                     Hermes memory retain/recall against the Hindsight backend is
                     failing (built-in memory still runs). See docs/37-hermes.md
                     §Memory backend.
+
+              # Registry pull-through cache (kubernetes/apps/registry-cache,
+              # docs/27). Cluster-internal (no ingress, so no blackbox probe):
+              # keyed on kube-state deployment availability with the absent()
+              # arm, same pattern as HindsightDown/WgEasyDown. Warning not
+              # critical — a cache outage only makes CI molecule jobs cold-pull
+              # the molecule-test image direct from the GitLab registry (the CI
+              # before_script falls back to a direct pull), so it is slower CI,
+              # not broken CI. 15m rides out a Recreate rollout (+ emptyDir
+              # re-warm on the next pull).
+              - alert: RegistryCacheDown
+                expr: >-
+                  kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"} == 0
+                  or absent(kube_deployment_status_replicas_available{namespace="registry-cache", deployment="registry-cache"})
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/27-gitlab-deployment.md'
+                  summary: 'CI registry pull-through cache has no available replica'
+                  description: >-
+                    The registry-cache Deployment has 0 available replicas for
+                    15m — CI molecule jobs cold-pull the molecule-test image
+                    direct from the GitLab registry (slower pipelines, not
+                    broken). See docs/27-gitlab-deployment.md § Registry
+                    pull-through cache.
 
               # Loki is a single-replica RF=1 SPOF pinned to the NAS (accepted
               # homelab tradeoff); senders do not buffer, so silent ingestion
@@ -1166,6 +1335,35 @@ spec:
                     start its VMs after, for pve-nas-01); the alert clears on the
                     next run once the host no longer needs a reboot.
 
+              # Direct kured reboot-orchestration signal — kured metrics are now
+              # scraped via the ServiceMonitor enabled in
+              # controllers/kured/release.yaml. kured_reboot_required==1 means a
+              # k3s node holds the reboot sentinel and is waiting for kured to
+              # reboot it. A healthy reboot clears within one drain+reboot cycle,
+              # and even a full 9-node serial (concurrency:1) kernel rollout clears
+              # each node well inside ~2h; a node still flagged after 3h means the
+              # cycle is STUCK and NO node is being serviced — the cluster-wide lock
+              # is held by a dead kured pod, a blockingPodSelector CI job never
+              # ended, or a PDB is blocking the drain. NodeStuckCordoned (30m) only
+              # catches a node left cordoned; this catches a never-serviced reboot
+              # that leaves the node still schedulable.
+              - alert: KuredRebootStuck
+                expr: kured_reboot_required == 1
+                for: 3h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'kured reboot for {{ $labels.node }} pending over 3h (stuck cycle)'
+                  description: >-
+                    Node {{ $labels.node }} has held the kured reboot sentinel for
+                    more than 3 hours without being rebooted. The reboot cycle is
+                    stuck — check the cluster-wide lock (`kubectl -n kube-system
+                    get ds kured -o jsonpath='{.metadata.annotations}'`), any
+                    infrastructure CI job pinning the node, and PDBs blocking the
+                    drain. Clear a dead lock with `kubectl -n kube-system annotate
+                    ds/kured weave.works/kured-node-lock-`.
+
               # corosync CPU wedge — incident 2026-05-09: corosync PID stuck at
               # ~99% CPU on pve-nas-01, process alive (so ProxmoxHostDown stayed
               # green and the systemd unit stayed "active") but pmxcfs frozen.
@@ -1447,15 +1645,19 @@ spec:
                 # The Windows VM RDP target (192.168.0.155:3389) is excluded and
                 # routed to the purpose-built WindowsRdpDown (30m) below: it's an
                 # on-demand desktop that is legitimately powered off much of the
-                # time, so a 5m catch-all warning would be noise.
+                # time, so a catch-all warning would be noise.
+                # for: 10m (not 5m): the warning tier absorbs brief intermittent
+                # probe dips (an SSO-fronted *arr that momentarily 5xx's) that a
+                # 5m hold re-fires on. The load-bearing three still page fast —
+                # EndpointDownCritical below stays at 5m.
                 expr: max by (instance) (probe_success{instance!="192.168.0.155:3389"}) == 0
-                for: 5m
+                for: 10m
                 labels:
                   severity: warning
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
                   summary: 'Endpoint {{ $labels.instance }} is down'
-                  description: 'Blackbox probe for {{ $labels.instance }} has failed for 5 minutes.'
+                  description: 'Blackbox probe for {{ $labels.instance }} has failed for 10 minutes.'
 
               # Immich native-metrics liveness (immich-server 8081/8082). Both
               # ports live on the one monolithic server, so a full outage takes
@@ -1477,26 +1679,33 @@ spec:
                     (immich-server 8081/8082) for 5 minutes — the compose stack on
                     the Immich VM (192.168.0.157) is down or unreachable, or the
                     scrape target is missing. Photo access is offline.
-              # Purpose-built RDP-down alert for the Windows 11 desktop VM. INERT
-              # until the windows-rdp blackbox target is uncommented post-install
-              # (no probe_success series -> nothing to evaluate). The 30m `for`
-              # tolerates the VM being briefly/occasionally powered off; the
+              # Purpose-built RDP-down alert for the Windows 11 desktop VM. The
               # windows target is excluded from EndpointDown above so only this
-              # fires. Uncomment the target in exporters/blackbox-exporter.yaml
-              # to arm it. See docs/39-windows-vm.md.
+              # fires. VM 155 is a start-on-demand desktop (onboot=0) that is
+              # deliberately off much of the time, so a bare probe_success==0 was
+              # a standing false positive whenever the VM was stopped. Gate on the
+              # VM actually being powered on: pve_up{id="qemu/155"}==1 means the VM
+              # is running, so the alert fires only when RDP is dead on a RUNNING
+              # VM and self-silences while it is intentionally off. pve_up{qemu/155}
+              # is exported by TWO proxmox-exporter PVE targets, so it must be
+              # aggregated (max()) — a bare vector on the right of `and on()` would
+              # error with duplicate series. See docs/39-windows-vm.md.
               - alert: WindowsRdpDown
-                expr: probe_success{instance="192.168.0.155:3389"} == 0
+                expr: >-
+                  probe_success{instance="192.168.0.155:3389"} == 0
+                  and on() (max(pve_up{id="qemu/155"}) == 1)
                 for: 30m
                 labels:
                   severity: warning
                 annotations:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/39-windows-vm.md'
-                  summary: 'Windows VM RDP (192.168.0.155:3389) unreachable'
+                  summary: 'Windows VM RDP (192.168.0.155:3389) unreachable while VM is running'
                   description: >-
-                    The Windows 11 VM has not answered an RDP (3389) blackbox
-                    probe for 30 minutes. If it is intentionally powered off this
-                    is expected; otherwise check `task windows:status` and the
-                    Proxmox console. See docs/39-windows-vm.md.
+                    The Windows 11 VM is powered on (pve_up qemu/155 == 1) but has
+                    not answered an RDP (3389) blackbox probe for 30 minutes. Check
+                    `task windows:status` and the Proxmox console. (The alert is
+                    gated on VM power state, so it stays silent when the VM is
+                    intentionally off.) See docs/39-windows-vm.md.
 
               # Uniform warning severity is wrong for the load-bearing three:
               # Authentik is the OIDC front door for every SSO app, GitLab is
@@ -1602,6 +1811,29 @@ spec:
                   summary: 'Blackbox exporter is down'
                   description: 'All endpoint monitoring is blind — blackbox exporter has been down for 5 minutes.'
 
+              # TLS-expiry advance warning for the WAN/edge-terminated public
+              # endpoints that cert-manager (CertExpiring*) and the acme.sh wildcard
+              # (CertExpiringSoon*) do NOT cover: home.ericsweiss.com and
+              # git.ericsweiss.com present Cloudflare edge certs, probed via http_2xx
+              # over the WAN. blackbox exports probe_ssl_earliest_cert_expiry for
+              # every https target; 14d mirrors the cert-manager warning window.
+              # Cloudflare auto-renews these, so this is a low-priority backstop that
+              # surfaces a silently-lapsed edge cert BEFORE it fully breaks (which
+              # would otherwise only show as EndpointDown at expiry).
+              - alert: BlackboxCertExpiringSoon
+                expr: probe_ssl_earliest_cert_expiry{instance=~"https://(home|git)\\.ericsweiss\\.com"} - time() < 86400 * 14
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#certificate-renewal-issues'
+                  summary: 'Edge TLS cert for {{ $labels.instance }} expires in under 14 days'
+                  description: >-
+                    The TLS certificate presented by {{ $labels.instance }}
+                    (Cloudflare edge — not cert-manager/acme.sh managed) expires in
+                    {{ $value | humanizeDuration }}. Cloudflare normally auto-renews;
+                    investigate if this does not clear.
+
               - alert: NodeMemoryPressure
                 expr: kube_node_status_condition{condition="MemoryPressure", status="true"} == 1
                 for: 5m
@@ -1701,6 +1933,46 @@ spec:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Media mover has not run in over 2 days'
                   description: 'No successful media mover run has been recorded for more than 48 hours, or the metric is missing.'
+
+              # adguardhome-sync runs on dns-01 as a systemd timer every 5 minutes
+              # (adguard_sync role, OnCalendar=*:0/5), replicating dns-01's AdGuard
+              # config to dns-02 so a dns-01 loss doesn't leave the secondary
+              # without rewrites/filters. The oneshot writes
+              # adguardhome_sync_last_run_success + _last_success_timestamp_seconds
+              # to dns-01's node_exporter textfile dir. Failed flips 0 on a bad run
+              # and back to 1 on the next success 5m later, so for:15m only fires on
+              # 3 consecutive failures (no single-tick noise).
+              - alert: AdGuardSyncFailed
+                expr: adguardhome_sync_last_run_success == 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+                  summary: 'AdGuard Home sync (dns-01 -> dns-02) is failing'
+                  description: >-
+                    adguardhome-sync on dns-01 has recorded failed runs for 15
+                    minutes (3 consecutive 5-minute cycles). dns-02's AdGuard config
+                    will drift from dns-01 — check `journalctl -u adguardhome-sync`
+                    on dns-01.
+
+              # 30m stale threshold = 6 missed 5-minute cycles: past any transient
+              # blip, prompt enough to catch dns-02 drift before it matters. The
+              # absent() arm makes an undeployed/removed collector loud, mirroring
+              # the backup staleness alerts.
+              - alert: AdGuardSyncStale
+                expr: (time() - adguardhome_sync_last_success_timestamp_seconds > 1800) or absent(adguardhome_sync_last_success_timestamp_seconds)
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#network-connectivity-issues'
+                  summary: 'AdGuard Home sync has not succeeded in over 30 minutes'
+                  description: >-
+                    No successful adguardhome-sync run (dns-01 -> dns-02) in over 30
+                    minutes (6 missed 5-minute cycles), or the metric is absent
+                    (timer not run, or node_exporter on dns-01 unreachable). dns-02's
+                    AdGuard config is drifting from dns-01.
 
               - alert: CertRenewalFailed
                 expr: cert_renewal_last_run_success == 0
@@ -1856,6 +2128,50 @@ spec:
                     inventory). The photo library and DB live on encrypted zvols;
                     the pg_dumpall is the point-in-time DB recovery path.
 
+              # Authentik nightly Postgres dump — an in-cluster CronJob
+              # (authentik-pg-dump, authentik namespace) whose success feeds
+              # kube_cronjob_status_last_successful_time via kube-state-metrics.
+              # 26h staleness = one nightly cycle + grace, like Vzdump/EtcdSnapshot;
+              # the absent() arm fires if the CronJob is missing or has never
+              # succeeded (kube-state emits last_successful_time only after the
+              # first success). Authentik is the OIDC front door — its Postgres
+              # (on a dedicated zvol) is the SSO recovery path.
+              - alert: AuthentikBackupStale
+                expr: >-
+                  (time() - kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"} > 93600)
+                  or absent(kube_cronjob_status_last_successful_time{namespace="authentik", cronjob="authentik-pg-dump"})
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Authentik database backup has not succeeded in over 26 hours'
+                  description: >-
+                    The nightly authentik-pg-dump CronJob has had no successful
+                    completion for more than 26 hours (one nightly cycle + grace),
+                    or the metric is absent (CronJob missing / never succeeded /
+                    kube-state-metrics down). Authentik's Postgres lives on a zvol;
+                    losing it loses every SSO app's identity provider.
+
+              # Mealie nightly Postgres dump — same shape (mealie-pg-dump CronJob in
+              # the recipes namespace, 26h window, absent() arm). Mealie's Postgres
+              # lives on a dedicated zvol.
+              - alert: MealieBackupStale
+                expr: >-
+                  (time() - kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"} > 93600)
+                  or absent(kube_cronjob_status_last_successful_time{namespace="recipes", cronjob="mealie-pg-dump"})
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Mealie database backup has not succeeded in over 26 hours'
+                  description: >-
+                    The nightly mealie-pg-dump CronJob (recipes namespace) has had
+                    no successful completion for more than 26 hours, or the metric
+                    is absent (CronJob missing / never succeeded / kube-state-metrics
+                    down). Mealie's Postgres lives on a dedicated zvol.
+
               # Off-node etcd snapshot copy (k3s servers -> pve-nas-01,
               # docs/17). The copy timer on each server node writes
               # etcd_snapshot_last_copy_timestamp_seconds after each transfer;
@@ -1916,6 +2232,151 @@ spec:
                     covered by the node-down alerts, not this one. Guest VM/LXC
                     images on tank-proxmox are the DR path for the compute-node
                     guests.
+
+              # Nightly offsite B2 backup (restic + rclone/B2), restic_offsite
+              # role on pve-nas-01, chained OnSuccess of archive-backup.service.
+              # The control script writes restic_offsite_last_run_success +
+              # _last_success_timestamp_seconds to the node_exporter textfile dir,
+              # mirroring the archive/gitlab backup collectors. (These metrics
+              # appear once the role is deployed — the absent() arm below stays
+              # quiet until then only if the collector has never emitted; see the
+              # ResticOffsiteStale absent() note.)
+              - alert: ResticOffsiteFailed
+                expr: restic_offsite_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Offsite B2 backup (restic) failed'
+                  description: >-
+                    The nightly restic-offsite run to B2 exited unsuccessfully
+                    (upload error, or the freshness guard aborted on a stale
+                    archsync snapshot). Offsite durability is at risk — check
+                    `restic-offsitectl status` / `journalctl -u restic-offsite`
+                    on pve-nas-01.
+
+              # 50h staleness (180000s) deliberately tolerates one skipped night:
+              # B2 chains off archive-backup, which can defer, so a 26h window
+              # would flap on a single deferred-archive night. absent() fires if
+              # the collector is gone (role removed / node_exporter on pve-nas-01
+              # unreachable) — loud, matching the other backup staleness alerts.
+              - alert: ResticOffsiteStale
+                expr: (time() - restic_offsite_last_success_timestamp_seconds > 180000) or absent(restic_offsite_last_success_timestamp_seconds)
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Offsite B2 backup has not succeeded in over 50 hours'
+                  description: >-
+                    No successful restic-offsite run to B2 in more than 50 hours
+                    (one skipped night + grace), or the metric is absent (role not
+                    deployed, or node_exporter on pve-nas-01 unreachable). B2 is
+                    the only offsite copy of the curated logical dumps + legacy
+                    machine backups.
+
+              # Integrity of the offsite repo itself, distinct from freshness of the
+              # last upload above. `restic-offsitectl verify` (a `restic check`) is an
+              # on-demand operator command — the role wires NO verify timer — with an
+              # intended ~weekly cadence; it writes restic_offsite_last_verify_success
+              # + _last_verify_timestamp_seconds (timestamp preserved on failure, like
+              # the run metric). This fires if the last verify FAILED (a failed
+              # `restic check` means the B2 repo is corrupt / unrestorable — the whole
+              # point of the offsite tier is defeated) OR the newest successful verify
+              # is older than 8 days (the weekly restic-offsite-verify.timer's rotating
+              # read-data-subset cadence + grace). Deliberately
+              # NO absent() arm: the verify metric only appears once verify has been
+              # run at least once, so absent() would fire forever on a fresh deploy;
+              # this instead stays quiet until the first verify, then nudges if verify
+              # lapses past a week or fails.
+              - alert: ResticOffsiteVerifyStale
+                expr: >-
+                  (time() - restic_offsite_last_verify_timestamp_seconds > 691200)
+                  or restic_offsite_last_verify_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Offsite B2 repo verify is stale (>8d) or failing'
+                  description: >-
+                    The offsite restic (B2) repository has not passed a `restic check`
+                    in over 8 days, or the last verify failed. A stale or failing
+                    verify means the offsite copy may be corrupt / unrestorable — run
+                    `restic-offsitectl verify` on pve-nas-01 and investigate any
+                    reported errors before relying on it for recovery (docs/42).
+
+              # NAS-side independent freshness for the relocated dumps: the VM
+              # wrappers (gitlab/immich/nextcloud) write their own _last_* metrics
+              # from INSIDE the VM, which go green even if the file never reached
+              # tank/backups (broken mount / wrong path). A pve-nas-01 textfile
+              # collector stats the newest dump under tank/backups/apps/<app>/ and
+              # emits backup_artifact_last_mtime_seconds{app=...}. This is the "the
+              # dump landed offsite-eligible" signal; the VM-side _last_* metrics
+              # stay the "the dump ran" signal. 50h to match ResticOffsiteStale.
+              #
+              # The collector loops over the app SUBDIRS that actually exist, so an
+              # app whose dir is present but empty emits {app=X} 0 (caught by the
+              # >50h arm) while an app whose dir went MISSING emits no series at all.
+              # A single family-level absent(backup_artifact_last_mtime_seconds)
+              # would only fire when EVERY app's series vanished, hiding one missing
+              # app dir behind the others — so the absent arm is enumerated per app
+              # over the six static per-app landing dirs (nas_backup_artifact_apps) to make a
+              # single missing/undeployed dir loud. The whole-collector-down case
+              # (the base dir or the timer itself gone) is covered by
+              # BackupArtifactCollectorStale below.
+              - alert: BackupArtifactStale
+                expr: >-
+                  (time() - backup_artifact_last_mtime_seconds > 180000)
+                  or absent(backup_artifact_last_mtime_seconds{app="authentik"})
+                  or absent(backup_artifact_last_mtime_seconds{app="mealie"})
+                  or absent(backup_artifact_last_mtime_seconds{app="gitlab"})
+                  or absent(backup_artifact_last_mtime_seconds{app="immich"})
+                  or absent(backup_artifact_last_mtime_seconds{app="nextcloud"})
+                  or absent(backup_artifact_last_mtime_seconds{app="home-assistant"})
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Backup artifact for {{ $labels.app }} has not landed on tank/backups in over 50 hours'
+                  description: >-
+                    The newest dump under tank/backups/apps/{{ $labels.app }} is
+                    more than 50 hours old, or its per-app series is absent (the
+                    app's landing dir is missing / never created). The dump is not
+                    reaching the file-walkable dataset that rides archsync into B2 —
+                    check the VM's NFS mount + backup wrapper landing path, and that
+                    the tank/backups/apps/{{ $labels.app }} subdir exists.
+
+              # Collector meta-failure for the backup-artifact mtime collector: the
+              # oneshot ran but is stuck, or the timer was never deployed / removed —
+              # in which case every backup_artifact_last_mtime_seconds series goes
+              # stale and BackupArtifactStale's freshness arm would be serving old
+              # inputs. Mirrors SMARTCollectorStale (the same
+              # `(time()-x > N) or absent(x)` shape). The collector timer runs every
+              # 10m (nas_storage textfile_collector, OnUnitInactiveSec=10min); 2h is
+              # a deliberately generous ~12-cycle window so the nightly 06:00–07:15
+              # archive/restic IO chain (which can delay a Type=oneshot on this
+              # memory/IO-pressured NAS) cannot flap it, while a genuinely dead
+              # collector still surfaces within the hour.
+              - alert: BackupArtifactCollectorStale
+                expr: >-
+                  (time() - backup_artifact_collector_last_success_seconds > 7200)
+                  or absent(backup_artifact_collector_last_success_seconds)
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'backup-artifact mtime collector is degraded or missing on {{ $labels.instance }}'
+                  description: >-
+                    backup_artifact_collector_last_success_seconds is stale (>2h) or
+                    entirely absent — the per-app backup-artifact freshness alerts
+                    are serving stale or no inputs. Check
+                    `journalctl -u backup-artifact-mtime-collector.service` and
+                    `systemctl status backup-artifact-mtime-collector.timer` on
+                    pve-nas-01.
 
       # The former homelab-backup group's ZFSPoolDegraded (zfs_exporter,
       # zfs_pool_health, NAS-only) was removed: it double-fired with the

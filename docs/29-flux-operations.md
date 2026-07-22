@@ -41,38 +41,82 @@ Flux runs in the `flux-system` namespace. Four controllers:
 Top-level Kustomizations that Flux owns (all in `flux-system` namespace), reconciled in `dependsOn` order. Each stage's `kustomization.yaml` is the authoritative membership list; the summaries below are indicative:
 
 1. `infrastructure-sources` → `kubernetes/infrastructure/sources/` (HelmRepository CRs + `cluster-versions` ConfigMap). No dependencies. No postBuild substitution (no placeholders).
-2. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader). `dependsOn: infrastructure-sources`. Substitutes chart versions from `cluster-versions`.
-3. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
-4. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions`.
-5. `apps` → `kubernetes/apps/` (Authentik, download-clients, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, vm-ingress). `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from `cluster-versions`.
+2. `infrastructure-crds` → `kubernetes/infrastructure/crds/` (the `prometheus-operator-crds` HelmRelease — the `monitoring.coreos.com` CRDs). `dependsOn: infrastructure-sources`. `wait: true` so controllers do not start until the CRDs are Established. Substitutes the chart version from `cluster-versions`.
+3. `infrastructure-controllers` → `kubernetes/infrastructure/controllers/` (HelmReleases for ESO, 1Password Connect, MetalLB, cert-manager, Traefik, external-dns, VPA, kured, reloader, tailscale-operator). `dependsOn: infrastructure-sources` **and** `infrastructure-crds` (so a controller ServiceMonitor renders against existing CRDs). Substitutes chart versions from `cluster-versions`.
+4. `infrastructure-configs` → `kubernetes/infrastructure/configs/` (ClusterSecretStore, ClusterIssuer, MetalLB IP pools, wildcard certs, CoreDNS override, DDNS CronJob, shared Cloudflare secrets, Traefik middlewares + TLS options, VPA policies, 1Password Connect certificate + ingress, default-namespace config). `dependsOn: infrastructure-controllers` (CRDs must exist). Substitutes from `cluster-versions`.
+5. `infrastructure-observability` → `kubernetes/infrastructure/observability/` (kube-prometheus-stack, Loki, Alloy, exporters, service monitors, dashboards, ingress). `dependsOn: infrastructure-configs`. Substitutes from `cluster-versions`. kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip` — the monitoring CRDs are owned by the `infrastructure-crds` stage, not this chart.
+6. `apps` → `kubernetes/apps/` (Authentik, download-clients, hermes, homarr, hindsight, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-runner-reaper, gitlab-agent, tailnet-dns, vm-ingress, wg-easy). `dependsOn: infrastructure-configs` — deliberately parallel to observability, so a failed observability upgrade cannot freeze app reconciliation. Substitutes image/chart versions from `cluster-versions`.
 
-The four-way infrastructure split ensures CRDs are installed before CRD-dependent configs. Apps branch off `infrastructure-configs` in parallel with observability: on a truly-fresh bootstrap the few monitoring CRs under `apps/` retry until observability installs the monitoring CRDs (bounded in practice by the one-time CRD pre-apply below), and in steady state observability failures no longer block apps.
+The five-way infrastructure split ensures the monitoring CRDs (`infrastructure-crds`) exist before any controller renders a ServiceMonitor, and CRD-dependent configs run after the controllers that install their CRDs. Apps branch off `infrastructure-configs` in parallel with observability: with the monitoring CRDs now installed up-front by `infrastructure-crds`, the monitoring CRs under `apps/` and observability render cleanly on a fresh bootstrap, and in steady state observability failures no longer block apps.
 
 Tenant Kustomizations (external repos) live in `kubernetes/clusters/weisssrv/tenants/<repo>.yaml` and are reconciled by the root cluster Kustomization. See `docs/30-multi-repo-onboarding.md`.
 
 ### Fresh bootstrap / disaster recovery
 
-On a running cluster the prometheus-operator CRDs (`servicemonitors`,
-`podmonitors`, `prometheusrules` in `monitoring.coreos.com`) already exist, so
-the chain reconciles cleanly. On a **fresh** cluster (or full DR rebuild) there
-is one ordering caveat: several controller HelmReleases in
-`infrastructure-controllers` set `serviceMonitor.enabled: true`. cert-manager
-guards that with a `.Capabilities` check and skips silently when the CRD is
-absent, but **Traefik does not** — it always emits a `ServiceMonitor` whose apply
-fails until the CRD exists. The CRDs are installed two stages later
-(`infrastructure-observability`), so a first-boot controllers stage would block.
+The `monitoring.coreos.com` CRDs (`servicemonitors`, `podmonitors`,
+`prometheusrules`, …) are installed by the dedicated **`infrastructure-crds`**
+stage — the `prometheus-operator-crds` HelmRelease (`kubernetes/infrastructure/crds/`),
+pinned via `helm_chart_versions_prometheus_operator_crds` in `all.yml`. That stage
+`dependsOn: infrastructure-sources` with `wait: true`, and `infrastructure-controllers`
+now `dependsOn: infrastructure-crds`, so on a **fresh** cluster (or full DR rebuild)
+the CRDs are Established before any controller renders a ServiceMonitor. This
+removes the previous ordering caveat where Traefik (which always emits a
+`ServiceMonitor`, unlike cert-manager's `.Capabilities` guard) blocked the
+first-boot controllers stage until the CRDs arrived two stages later.
+kube-prometheus-stack runs with `crds.enabled: false` + `install/upgrade.crds: Skip`,
+so it no longer ships its own copies (which would tug ownership with the CRD stage).
 
-Pre-apply the CRDs once, before the first reconcile, then let Flux take over:
+**On a truly fresh cluster nothing manual is needed** — the CRD stage installs
+the CRDs cleanly before controllers.
+
+**One-time live-cluster migration (deploy window).** The pre-existing live CRDs
+were installed by kube-prometheus-stack's `crds/` directory and carry **no** Helm
+ownership metadata, so the first reconcile of the `prometheus-operator-crds`
+HelmRelease (whose chart ships the CRDs as Helm-owned *templates*) would hit
+Helm's "invalid ownership metadata … cannot be imported" guard. Resolve with a
+one-time, **metadata-only** adoption (labels/annotations only — the CRD *spec* is
+untouched, so zero impact on existing Prometheus/ServiceMonitor/PrometheusRule/…
+CRs) BEFORE (or immediately after) the stage first reconciles, then reconcile:
 
 ```bash
-helm pull prometheus-community/kube-prometheus-stack --version <pinned> --untar
-kubectl apply --server-side -f kube-prometheus-stack/charts/crds/crds/
+for crd in alertmanagerconfigs alertmanagers podmonitors probes prometheusagents \
+           prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers; do
+  kubectl label  crd ${crd}.monitoring.coreos.com app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl annotate crd ${crd}.monitoring.coreos.com \
+    meta.helm.sh/release-name=prometheus-operator-crds \
+    meta.helm.sh/release-namespace=prometheus-operator-crds --overwrite
+done
+task flux:reconcile
 ```
 
-The durable fix — a CRDs-only resource in `infrastructure-sources` plus
-`kube-prometheus-stack` `crds.enabled: false` — is tracked in `docs/16` and
-deliberately deferred: migrating CRD Helm-ownership on a live cluster risks the
-observability stack, so it should be done as its own change, not in-band.
+After adoption, helm-controller applies the identical `v0.92.1` CRD content — a
+steady-state no-op (no CRD spec churn, no Prometheus/Alertmanager restart).
+Verify: `flux get kustomizations infrastructure-crds` Ready; `flux get hr -n
+prometheus-operator-crds prometheus-operator-crds` Ready; `kubectl get crd | grep
+monitoring.coreos.com` shows all 10 with annotation `operator.prometheus.io/version:
+0.92.1`; `flux get hr -n observability kube-prometheus-stack` still Ready with zero
+object churn.
+
+**Keep the CRD pin in lockstep with kube-prometheus-stack** (`prometheus_operator_crds`
+↔ `kube_prometheus_stack` in `all.yml`) so the CRD set stays version-matched to the
+operator kps deploys.
+
+### Loki PV storageClass guard (local-path drift)
+
+Every stateful PV in this cluster is a statically-provisioned zvol/NFS PV with
+`storageClassName: ""`; nothing may use the cluster-default `local-path` class
+(it lands on the stateless k3s VM bootdisk, excluded from all backups). The Loki
+StatefulSet enforces this via `singleBinary.persistence.storageClass: "-"` (the
+chart sentinel that renders a literal `storageClassName: ""`; a plain `""` is
+falsy to the chart's `with` guard and drops the field, letting local-path capture
+the claim — see the comment in `loki/release.yaml`). The **`LocalPathPVExists`**
+alert (kube-prometheus-stack) fires if any PV lands on `local-path`. If the live
+`storage-loki-0` PVC ever drifts onto a local-path PV (StatefulSet
+volumeClaimTemplates are immutable, so a git-side fix does not rebind an existing
+PVC), the runbook is: scale loki to 0, `rsync` the data from the drifted local-path
+PV to the intended `loki-data` zvol PV, delete the drifted PVC/PV, recreate the PVC
+bound to `loki-data` (`volumeName`), scale back up. Do this in a maintenance window
+before the manifest reconciles the corrected template.
 
 ### Reconciliation Cadence
 
@@ -325,12 +369,16 @@ The canonical app pattern is `kubernetes/apps/authentik/` — copy its structure
    resources:
      - authentik
      - download-clients
+     - hermes
+     - hindsight
      - recipes
      - gitlab-runner
      - gitlab-runner-privileged
      - gitlab-runner-reaper
      - gitlab-agent
+     - tailnet-dns
      - vm-ingress
+     - wg-easy
      - <name>   # <-- add this line
    ```
 

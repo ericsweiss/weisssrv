@@ -560,6 +560,29 @@ class TestGetDeployCommand(unittest.TestCase):
             self.assertIn("flux:sync-versions", cmd,
                           f"{var_name} should route to Flux sync")
 
+    def test_registry_cache_in_registry_and_routes_to_flux(self):
+        """The CI registry pull-through cache (kubernetes/apps/registry-cache) is
+        a Flux-managed Docker Hub image: it must be a `library/registry`
+        dockerhub entry AND route through flux:sync-versions (not the
+        infra:deploy fallback)."""
+        entry = next(
+            (s for s in check_versions.SERVICE_REGISTRY
+             if s.get("var_name") == "registry_cache_version"),
+            None,
+        )
+        self.assertIsNotNone(entry, "registry_cache_version must be in SERVICE_REGISTRY")
+        self.assertEqual(entry["category"], "dockerhub")
+        self.assertEqual(entry["docker_image"], "library/registry")
+        # Bare X.Y.Z only — never the floating 3/3.1 or a 3.0.0-rc.N pre-release.
+        self.assertRegex("3.1.1", entry["tag_regex"])
+        self.assertNotRegex("3.1", entry["tag_regex"])
+        self.assertNotRegex("3.0.0-rc.4", entry["tag_regex"])
+        cmd = check_versions.get_deploy_command(
+            self._mk("registry_cache_version", category="dockerhub")
+        )
+        self.assertIn("flux:sync-versions", cmd)
+        self.assertNotIn("infra:deploy", cmd)
+
     def test_every_registry_service_has_specific_deploy_command(self):
         """Every SERVICE_REGISTRY entry should route to a specific deploy
         command, not the generic 'infra:deploy' fallback."""
@@ -625,6 +648,17 @@ class TestGetDeployCommand(unittest.TestCase):
             "containerd_version",
             "docker_buildx_plugin_version",
             "docker_compose_plugin_version",
+            # restic/rclone install from Debian apt (restic_offsite role) and the
+            # pins are deliberately empty ("" = distro version) — a non-empty
+            # value becomes an exact apt pin that upstream release strings don't
+            # match (see the all.yml comment). Nothing to track until the role
+            # moves to checksum-verified binary downloads.
+            "restic_version",
+            "rclone_version",
+            # Local image-revision tag (<hermes_version>-rN) for the patched
+            # hermes-agent build — derived from hermes_version + the local
+            # patch set, no independent upstream to track.
+            "hermes_image_version",
         }
         current = check_versions.read_current_versions()
         registry_vars = {s["var_name"] for s in check_versions.SERVICE_REGISTRY}
@@ -1033,6 +1067,25 @@ class TestMakeRequestRetry(unittest.TestCase):
 
         assert result == {"tag_name": "v1.2.3"}
         assert calls[0] == 3, "should have retried twice before succeeding"
+
+    def test_retries_on_incomplete_read_then_succeeds(self):
+        """http.client.IncompleteRead (mid-body truncation — GitHub cutting a
+        large release payload) is transient and is retried."""
+        import http.client
+        calls = [0]
+
+        def side_effect(req, timeout=None):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise http.client.IncompleteRead(b"partial", expected=1000)
+            return self._ok_response(b'{"tag_name": "v9.9.9"}')
+
+        with patch("urllib.request.urlopen", side_effect=side_effect), \
+             patch.object(check_versions.time, "sleep"):
+            result = check_versions._make_request("https://example.com/api")
+
+        assert result == {"tag_name": "v9.9.9"}
+        assert calls[0] == 2
 
     def test_retries_on_socket_timeout_then_succeeds(self):
         """socket.timeout is transient and is retried."""

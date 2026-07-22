@@ -1,26 +1,8 @@
 ---
+# The compose stack restart + nginx reload handlers now live in the shared
+# compose_app role ("Restart compose stack" / "Reload nginx (compose_app)"),
+# notified by the .env/compose renders and the nginx task flow. This role keeps
+# only its own "Reload systemd" handler for the backup service/timer units.
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
-
-- name: Restart docker
-  ansible.builtin.systemd:
-    name: docker
-    state: restarted
-  when: not (skip_nextcloud_deploy | default(false))
-
-# Re-applies the compose stack when the compose file, .env, or unit changes.
-# `docker compose up -d` recreates only the containers whose config changed, so
-# this is safe to run on every notify.
-- name: Restart nextcloud compose
-  ansible.builtin.systemd:
-    name: nextcloud-compose.service
-    state: restarted
-    daemon_reload: true
-  when: not (skip_nextcloud_deploy | default(false))
-
-- name: Reload nginx
-  ansible.builtin.systemd:
-    name: nginx
-    state: reloaded
-  when: not (skip_nextcloud_deploy | default(false))

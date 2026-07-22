@@ -9,6 +9,16 @@ This guide configures:
 2. **Bar Assistant** - Authentik-native SSO integration
 3. **Mealie** - OpenAI integration for recipe parsing and image-to-recipe features
 
+> **Authentik objects are Terraform-managed.** The Mealie and Bar Assistant
+> OAuth2 providers, applications, and the `mealie-users`/`mealie-admins` groups
+> are codified in `terraform/authentik/` (`providers_oauth2.tf`,
+> `applications.tf`, `groups.tf`) and changed via a supervised `terraform apply`
+> — **not the Authentik UI** ([docs/40-authentik-terraform.md](40-authentik-terraform.md)).
+> Creating these objects by hand in the UI produces drift Terraform will revert
+> on the next apply. The UI walkthroughs below are retained only as a reference
+> for the exact values (redirect URIs, scopes, client credentials, env vars);
+> make the actual provider/app/group changes in the `.tf` files.
+
 ## Prerequisites
 
 - Authentik running at `auth.ericsweiss.com`

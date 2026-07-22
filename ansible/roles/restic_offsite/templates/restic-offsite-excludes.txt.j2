@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# restic --exclude-file. Paths are anchored to the bind roots (restic_offsite_
+# bind_root). See restic_offsite_excludes in defaults/main.yml + docs/42.
+{% for pattern in restic_offsite_excludes %}
+{{ pattern }}
+{% endfor %}

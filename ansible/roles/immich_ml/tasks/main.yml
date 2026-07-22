@@ -44,11 +44,17 @@
   when: not (skip_immich_ml_deploy | default(false))
 
 # =============================================================================
-# Docker Engine
+# Docker Engine (shared docker_engine via compose_app)
 # =============================================================================
+# Pinned-engine install + dpkg hold + journald daemon.json via the shared
+# docker_engine role (also backs immich + nextcloud), included through the shared
+# compose_app role. skip_immich_ml_deploy maps onto compose_app_skip_install.
 - name: Install Docker Engine + compose plugin
-  ansible.builtin.include_tasks: docker.yml
-  when: not (skip_immich_ml_deploy | default(false))
+  ansible.builtin.include_role:
+    name: compose_app
+    tasks_from: docker.yml
+  vars:
+    compose_app_skip_install: "{{ skip_immich_ml_deploy | default(false) }}"
 
 # =============================================================================
 # Compose project
@@ -68,39 +74,26 @@
     owner: root
     group: root
     mode: "0640"
-  notify: Restart immich-ml
+  notify: Restart compose stack
 
 # =============================================================================
-# Systemd unit that owns the compose lifecycle
+# Systemd unit that owns the compose lifecycle (shared compose_app unit)
 # =============================================================================
-- name: Deploy the Immich ML compose systemd unit
-  ansible.builtin.template:
-    src: immich-ml-compose.service.j2
-    dest: /etc/systemd/system/immich-ml-compose.service
-    owner: root
-    group: root
-    mode: "0644"
-  notify:
-    - Reload systemd
-    - Restart immich-ml
-
-- name: Enable the Immich ML compose unit
-  ansible.builtin.systemd:
-    name: immich-ml-compose.service
-    enabled: true
-    daemon_reload: true
-  when: not (skip_immich_ml_deploy | default(false))
-
-# Bring the stack up (and apply any pending compose changes) before the
-# readiness probe below.
-- name: Flush handlers so the stack is (re)started with current config
-  ansible.builtin.meta: flush_handlers
-
-- name: Ensure the Immich ML stack is running
-  ansible.builtin.systemd:
-    name: immich-ml-compose.service
-    state: started
-  when: not (skip_immich_ml_deploy | default(false))
+# No zvols on this LXC, so compose_app_requires_mounts_for is empty — the shared
+# unit then omits RequiresMountsFor entirely (matching the former per-role unit).
+- name: Deploy + start the Immich ML compose stack
+  ansible.builtin.include_role:
+    name: compose_app
+  vars:
+    compose_app_skip_install: "{{ skip_immich_ml_deploy | default(false) }}"
+    compose_app_service_name: immich-ml-compose
+    compose_app_description: "Immich machine learning (docker compose stack)"
+    compose_app_working_directory: "{{ immich_ml_compose_dir }}"
+    compose_app_requires_mounts_for: []
+    compose_app_requires_mounts_comment: []
+    compose_app_reconcile_comment:
+      - "`up -d` reconciles the running stack to the rendered compose, recreating"
+      - "only the containers whose definition changed."
 
 # /ping answers as soon as the service is up — BEFORE the first-boot model
 # download finishes (models load lazily per request) — so 30 x 10s covers the

@@ -1,0 +1,4 @@
+---
+- name: Reload systemd for restic-offsite
+  ansible.builtin.systemd:
+    daemon_reload: true

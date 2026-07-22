@@ -36,7 +36,7 @@ item (docs/15) and a `TF_VAR` wired into the Taskfile env anchor AND the
 `authentik-drift-plan` job, while a proxy provider needs an entry in the
 embedded outpost's Terraform-managed provider list (`outpost.tf`) plus the
 Traefik forward-auth wiring (docs/23). The Hermes dashboard OIDC set
-(`hermes_dashboard` provider, `agent-sso` application, role groups + per-app
+(`hermes_dashboard` provider on the `agent` application, role groups + per-app
 bindings — docs/37 §SSO) was the first Terraform-authored addition and is the
 worked example of this flow; the auth-passthrough wave (NZBGet/AdGuard
 basic-auth injection + the adopted outpost) followed the same pattern.
@@ -90,7 +90,7 @@ state is only a mapping:
 
 ```bash
 task terraform:authentik-init      # fresh backend init
-task terraform:authentik-import    # import.sh: re-imports all 44 objects (idempotent)
+task terraform:authentik-import    # import.sh: re-imports all managed objects (idempotent)
 task terraform:authentik-plan      # must be clean again
 ```
 

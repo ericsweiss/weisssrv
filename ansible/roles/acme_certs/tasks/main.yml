@@ -365,8 +365,11 @@
 
 - name: Install certificates to local directory (if acme.sh has certs but local dir is empty)
   ansible.builtin.command:
+    # --ecc: the cert is issued ec-256 and stored under <domain>_ecc/; without it
+    # acme.sh looks in the non-existent RSA <domain>/ dir and the install fails.
+    # Matches the _ecc stat-check above and the ec-256 issuance instructions below.
     cmd: >
-      /root/.acme.sh/acme.sh --install-cert -d "{{ internal_domain }}"
+      /root/.acme.sh/acme.sh --install-cert -d "{{ internal_domain }}" --ecc
       --cert-file {{ local_cert_dir }}/cert.pem
       --key-file {{ local_cert_dir }}/privkey.pem
       --fullchain-file {{ local_cert_dir }}/fullchain.pem
@@ -404,8 +407,11 @@
          export CF_Account_ID=$(op read "{{ secrets.cloudflare_account_id }}")
 
       2. Issue wildcard certificate (LE is the default CA per acme.sh
-         install pin, but pass --server explicitly to be safe):
+         install pin, but pass --server explicitly to be safe). --keylength
+         ec-256 issues ECC, stored under {{ internal_domain }}_ecc/ — the dir the
+         stat-check and --install-cert (--ecc) expect:
          /root/.acme.sh/acme.sh --issue --dns dns_cf --server letsencrypt \
+           --keylength ec-256 \
            -d "{{ internal_domain }}" \
            -d "*.{{ internal_domain }}"
 

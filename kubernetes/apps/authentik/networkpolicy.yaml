@@ -43,7 +43,7 @@ spec:
 
 ---
 # Authentik bundled PostgreSQL: only authentik server + worker pods (intra-ns)
-# can connect on 5432.
+# and the authentik-pg-dump CronJob can connect on 5432.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -61,6 +61,46 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: authentik
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: authentik-pg-dump
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# Egress for the authentik-pg-dump CronJob: kube-dns (resolve the postgres
+# Service) + intra-ns Postgres on 5432. NFS is mounted by the kubelet (node),
+# not the pod, so it is not policed here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-pg-dump
+  namespace: authentik
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: authentik-pg-dump
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: authentik
+              app.kubernetes.io/name: postgresql
       ports:
         - protocol: TCP
           port: 5432

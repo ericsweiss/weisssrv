@@ -60,3 +60,30 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+
+---
+# Ingress: Prometheus scrapes the CoreDNS metrics endpoint (:9153) via the
+# tailnet-dns PodMonitor. Scope the observability peer to the Prometheus pod
+# (least-privilege, matching the recipes meilisearch/redis-exporter rules).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observability-scrape
+  namespace: tailnet-dns
+spec:
+  podSelector:
+    matchLabels:
+      app: tailnet-dns
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9153

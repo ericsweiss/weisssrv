@@ -57,6 +57,18 @@
         mode: "0600"
       no_log: true
 
+    # Failure signal: the unit's api.port is 0 (metrics disabled), so a silent
+    # sync break would otherwise go unnoticed. The unit's ExecStopPost writes
+    # this .prom on every run for a *Failed/Stale alert (matches the repo's
+    # timer-metric pattern).
+    - name: Install adguardhome-sync metrics writer
+      ansible.builtin.template:
+        src: adguardhome-sync-metrics.sh.j2
+        dest: /usr/local/bin/adguardhome-sync-metrics.sh
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Deploy adguardhome-sync systemd service
       ansible.builtin.template:
         src: adguardhome-sync.service.j2

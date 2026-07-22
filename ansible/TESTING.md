@@ -515,9 +515,32 @@ task flux:lint
 ```
 
 The CI `flux-lint` job (`.gitlab-ci.yml`) mirrors `task flux:lint` and runs on
-every MR against `kubernetes/**` or `all.yml` changes. `flux-versions-sync`
-additionally verifies that `cluster-versions` ConfigMap is in sync with
-`ansible/inventories/prod/group_vars/all.yml`.
+every MR against `kubernetes/**` or `all.yml` changes. The versions-sync check
+in `repo-sync-checks` additionally verifies that the `cluster-versions`
+ConfigMap is in sync with `ansible/inventories/prod/group_vars/all.yml`.
+
+
+## Expected negative-path failures and the junit report
+
+Several scenarios **deliberately drive guard tasks to failure** inside
+`block`/`rescue` (storage-pool validation, k3s required-vars asserts, the Home
+Assistant validate→rollback path, signing-key fingerprint mismatches) to prove
+the guard fires. The ansible junit callback records the RAW task failure even
+though the rescue handles it — which used to leave red entries in a green
+pipeline's test report. Two mechanisms keep the report truthful now:
+
+1. **Declared downgrades** — each such scenario lists its expected failing
+   task names in `molecule/<scenario>/expected-junit-failures.txt`; CI's last
+   script step (`scripts/sanitize-junit-expected-failures.py`, runs only when
+   molecule SUCCEEDED) replaces exactly those failure entries with a
+   system-out note. **Undeclared failures stay red**, and a failed job keeps
+   its raw report. Add the task name to the scenario's declaration file when
+   you add a new negative-path exercise.
+2. **Retry hygiene** — `scripts/molecule-retry.sh` clears the junit dir
+   between attempts, so a transient attempt-1 failure no longer uploads its
+   red testcases alongside the passing retry's.
+
+Job status remains the arbiter in all cases; the report now agrees with it.
 
 ## Production Verification
 

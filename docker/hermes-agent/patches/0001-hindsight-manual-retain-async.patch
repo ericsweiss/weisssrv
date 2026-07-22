@@ -1,0 +1,32 @@
+# Fix the MANUAL hindsight_retain tool path to honor the configured
+# retain_async (default True) exactly as the automatic conversation-retention
+# path does. Upstream pops retain_async from the item ("takes bank_id/
+# retain_async as call args") but never passes the call arg, so manual retains
+# run SYNCHRONOUSLY: with CPU-only local extraction taking minutes, every
+# manual retain blew Hermes's 120s tool timeout while the server kept
+# processing. Async retains return in ~10ms (queued server-side).
+# Applies to NousResearch/hermes-agent @ v2026.7.20
+# (3ef6bbd201263d354fd83ec55b3c306ded2eb72a). Re-verify on every version bump —
+# the build fails loudly if this no longer applies.
+diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
+index 9f5974b..ecdd24f 100644
+--- a/plugins/memory/hindsight/__init__.py
++++ b/plugins/memory/hindsight/__init__.py
+@@ -1718,9 +1718,15 @@ class HindsightMemoryProvider(MemoryProvider):
+                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
+                              self._bank_id, len(content), context)
+                 self._run_hindsight_operation(
+-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
++                    lambda client: client.aretain_batch(
++                        bank_id=self._bank_id,
++                        items=[item],
++                        retain_async=self._retain_async,
++                    )
+                 )
+-                logger.debug("Tool hindsight_retain: success")
++                logger.debug("Tool hindsight_retain: success (async=%s)", self._retain_async)
++                if self._retain_async:
++                    return json.dumps({"result": "Memory queued for storage."})
+                 return json.dumps({"result": "Memory stored successfully."})
+             except Exception as e:
+                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)

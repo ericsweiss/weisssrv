@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly trigger for the rotating offsite restic deep verify
+
+[Timer]
+# Midday Sunday — far from the 02:00-07:30 nightly backup window, so the verify
+# never competes with dumps/vzdump/archive/restic-run for NAS I/O.
+OnCalendar={{ restic_offsite_verify_timer_calendar }}
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

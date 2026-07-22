@@ -7,8 +7,11 @@
 # This is a Kustomize aggregator (apiVersion kustomize.config.k8s.io/v1beta1),
 # not a Flux Kustomization. The parent root cluster Kustomization pulls this
 # tree in via resources: [ tenants ], and Flux reconciles through the result.
-# Empty resources list is intentional during bootstrap (no tenants yet); add
-# tenant filenames here as they onboard.
+# `tenant-crd-editor.yaml` is the one always-present resource (a shared
+# ClusterRole; harmless while unbound). Add tenant filenames below as they
+# onboard.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources: []
+resources:
+  - tenant-crd-editor.yaml
+  # - <repo-slug>.yaml   # <-- add each tenant wiring file here as it onboards

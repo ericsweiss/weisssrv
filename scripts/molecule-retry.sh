@@ -39,6 +39,13 @@ until molecule $MOL_BASE test $MOL_SCEN; do
         exit "$rc"
     fi
     echo "molecule attempt $((attempt - 1)) failed (rc=$rc); destroying + retrying ($attempt/$MOL_MAX)"
+    # Clear the failed attempt's junit XMLs: the callback appends one file per
+    # playbook run, so without this a transient attempt-1 failure uploads its
+    # red testcases ALONGSIDE the passing retry's — the pipeline test report
+    # must reflect only the attempt that determined job status.
+    if [ -n "${JUNIT_OUTPUT_DIR:-}" ] && [ -d "$JUNIT_OUTPUT_DIR" ]; then
+        rm -f "$JUNIT_OUTPUT_DIR"/*.xml
+    fi
     # shellcheck disable=SC2086  # intentional word-split of MOL_BASE/MOL_SCEN
     molecule $MOL_BASE destroy $MOL_SCEN || true
     # $RANDOM is per-shell and runner-pod start times differ, so 20-65s of

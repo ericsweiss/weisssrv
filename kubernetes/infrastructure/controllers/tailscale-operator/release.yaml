@@ -40,6 +40,17 @@ spec:
     # Secret (ESO). operatorConfig.hostname names the operator's own device.
     operatorConfig:
       hostname: tailscale-operator
+      # The chart ships resources: {} (BestEffort) — an unbounded-memory pod on
+      # the tight hosts. Give it a floor + memory ceiling; the tailscale-operator
+      # VPA (configs/vpa/platform.yaml, updateMode Initial) right-sizes the
+      # request on natural restarts. Memory limit only — CPU is compressible
+      # (docs/33-autoscaling.md).
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
     # Default tag applied to every proxy device the operator registers.
     # (This is also the chart default; pinned explicitly for clarity + review.)
     proxyConfig:

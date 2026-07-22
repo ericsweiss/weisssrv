@@ -786,4 +786,4 @@ kubectl get pods -n kube-system | grep etcd
 - `docs/31-observability.md` - Observability stack (Prometheus, Grafana, Loki, Alloy)
 - `kubernetes/README.md` - Top-level k8s layout guide (Flux-aware)
 - `kubernetes/infrastructure/` - Platform components (sources, controllers, configs, observability)
-- `kubernetes/apps/` - Applications (authentik, download-clients, recipes, gitlab-*, vm-ingress)
+- `kubernetes/apps/` - Applications (authentik, download-clients, hermes, hindsight, recipes, gitlab-*, tailnet-dns, vm-ingress, wg-easy)

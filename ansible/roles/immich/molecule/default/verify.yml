@@ -1,5 +1,10 @@
 ---
 # Verify the rendered Immich stack (render/contract scenario).
+#
+# NOTE: the image-tag/digest literals below (immich-server/-machine-learning
+# tags, the postgres + valkey digests) are an intentional contract test — they
+# MUST be bumped in lockstep with the matching pins in group_vars/all.yml (and
+# this scenario's molecule.yml inventory), or CI fails on the next version bump.
 - name: Verify
   hosts: all
   become: true
@@ -139,7 +144,10 @@
           - (immich_nginx.content | b64decode) is search('ssl_certificate\s+/etc/nginx/ssl/fullchain.pem')
           - (immich_nginx.content | b64decode) is search('proxy_set_header Upgrade')
           - (immich_nginx.content | b64decode) is search('X-Forwarded-Proto')
-        fail_msg: "nginx site missing proxy_pass / body-size / TLS / websocket / forwarded headers"
+          # TLS 1.3 floor: 1.2 dropped.
+          - (immich_nginx.content | b64decode) is search('ssl_protocols TLSv1.3;')
+          - (immich_nginx.content | b64decode) is not search('TLSv1.2')
+        fail_msg: "nginx site missing proxy_pass / body-size / TLS1.3 / websocket / forwarded headers"
         success_msg: "nginx site terminates TLS and proxies to Immich with uploads + websockets"
 
     - name: Verify the default nginx site was removed
@@ -182,6 +190,21 @@
           - immich_backup_wrapper.stat.mode == '0755'
         fail_msg: "immich-backup-run.sh missing or wrong perms"
         success_msg: "immich-backup-run.sh present (0755)"
+
+    # Fail-closed NFS guard contract (render-level: the scenario runs with
+    # immich_backup_nfs_enabled=false, so the guard is present but inert).
+    - name: Read the backup wrapper render
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/immich-backup-run.sh
+      register: immich_backup_raw
+
+    - name: Assert the wrapper carries the fail-closed NFS mountpoint guard
+      ansible.builtin.assert:
+        that:
+          - "'mountpoint -q' in (immich_backup_raw.content | b64decode)"
+          - "'NFS-backed but not mounted' in (immich_backup_raw.content | b64decode)"
+        fail_msg: "immich-backup-run.sh missing the fail-closed NFS mountpoint guard"
+        success_msg: "immich-backup-run.sh carries the fail-closed NFS guard"
 
     - name: Run the backup wrapper (success path)
       ansible.builtin.command: /usr/local/sbin/immich-backup-run.sh

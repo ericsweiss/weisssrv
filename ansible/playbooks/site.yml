@@ -35,6 +35,11 @@
       tags: [qol]
     - role: postfix_null_client
       tags: [postfix_null_client]
+    # dm-crypt plain-mode random-key encrypted swap on the six bare-metal hosts.
+    # Config-only + memory-safe live switchover (defers to reboot on the tight
+    # NAS); self-gates on encrypted_swap_enabled.
+    - role: encrypted_swap
+      tags: [encrypted_swap]
     - role: tailscale
       tags: [tailscale]
       when: tailscale_enabled | bool
@@ -95,6 +100,11 @@
       tags: [nfs_tls]
     - role: nas_storage
       tags: [nas_storage]
+    # Nightly offsite B2 backup (restic + rclone). Runs after nas_storage (needs
+    # the archsync snapshots + tank/backups/apps landing zone); chains OnSuccess=
+    # after archive-backup.service. No-op while restic_offsite_enabled is false.
+    - role: restic_offsite
+      tags: [restic_offsite]
     # Declarative storage.cfg + vzdump jobs (tank-proxmox target). Cluster-wide
     # config, so it runs from this single node; no-op while its lists are empty.
     - role: proxmox_backup

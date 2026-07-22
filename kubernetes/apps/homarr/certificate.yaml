@@ -1,0 +1,37 @@
+---
+# TLS certificates for the Homarr namespace. Per-host (not wildcard) and in the
+# same namespace as the IngressRoutes that reference them (Traefik reads TLS
+# Secrets only from the route's own namespace).
+
+# External - dashboard.ericsweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: homarr-tls
+  namespace: homarr
+spec:
+  secretName: homarr-ericsweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "dashboard.ericsweiss.com"
+  dnsNames:
+    - "dashboard.ericsweiss.com"
+  renewBefore: 720h
+
+---
+# Internal - dashboard.esweiss.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: homarr-tls-internal
+  namespace: homarr
+spec:
+  secretName: homarr-esweiss-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "dashboard.esweiss.com"
+  dnsNames:
+    - "dashboard.esweiss.com"
+  renewBefore: 720h

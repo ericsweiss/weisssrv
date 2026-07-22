@@ -3,10 +3,11 @@
 # Nightly Nextcloud PostgreSQL logical backup + node_exporter textfile metrics.
 # Invoked by nextcloud-backup.service (nextcloud-backup.timer).
 #
-# The bulk file data lives on tank/nextcloud-data/disk and is captured by the
-# ssd/appdata->archive raw-encrypted replication and the nightly vzdump; this
-# wrapper adds a transactionally-consistent DB dump for logical restore. The
-# dump lands under the app zvol so it rides those same two backup tiers.
+# The dump lands on the offsite NFS landing zone (tank/backups/apps/nextcloud)
+# so the compact logical dump rides the archsync file walk into B2 (the bulk
+# file data on tank/nextcloud-data/disk is protected locally by archive
+# replication + vzdump). The metric-writing logic is the shared
+# write_prom_metrics helper (compose_app), sourced below.
 #
 # NOT `set -e`: the dump's exit code must be captured and the metric written
 # regardless, so NextcloudBackupFailed/Stale can fire. The prior success
@@ -19,42 +20,32 @@ KEEP_DAYS="{{ nextcloud_backup_keep_days }}"
 DB_NAME="{{ nextcloud_db_name }}"
 DB_USER="{{ nextcloud_db_user }}"
 PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+# 1 when the backup lands on the offsite NFS export (nextcloud_backup_nfs_enabled).
+NFS_ENABLED="{{ '1' if (nextcloud_backup_nfs_enabled | default(false)) else '0' }}"
+
+# Hard gate (no set -e here): without the lib, write_prom_metrics is
+# undefined and the run would proceed metric-less — refuse instead.
+# shellcheck source=/dev/null
+if ! source {{ nextcloud_backup_lib_path }}; then
+  echo "nextcloud-backup: missing backup metrics library {{ nextcloud_backup_lib_path }}" >&2
+  exit 1
+fi
 {% raw %}
 PROM_FILE="${PROM_DIR}/nextcloud_backup.prom"
 START_TS="$(date +%s)"
 
-write_prom_metrics() {
-  local success="$1" duration="$2" size="$3"
-  local ts tmp prev
-  ts="$(date +%s)"
-  tmp="${PROM_FILE}.$$"
-  {
-    echo "# HELP nextcloud_backup_last_run_duration_seconds Duration of last backup run"
-    echo "# TYPE nextcloud_backup_last_run_duration_seconds gauge"
-    echo "nextcloud_backup_last_run_duration_seconds ${duration}"
-    echo "# HELP nextcloud_backup_last_run_success Whether the last run succeeded (1=success, 0=failure)"
-    echo "# TYPE nextcloud_backup_last_run_success gauge"
-    echo "nextcloud_backup_last_run_success ${success}"
-    echo "# HELP nextcloud_backup_last_size_bytes Size of the most recent dump in bytes (0 = unknown)"
-    echo "# TYPE nextcloud_backup_last_size_bytes gauge"
-    echo "nextcloud_backup_last_size_bytes ${size}"
-    if [ "$success" -eq 1 ]; then
-      echo "# HELP nextcloud_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
-      echo "# TYPE nextcloud_backup_last_success_timestamp_seconds gauge"
-      echo "nextcloud_backup_last_success_timestamp_seconds ${ts}"
-    else
-      prev="$(awk '/^nextcloud_backup_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
-      if [ -n "$prev" ]; then
-        echo "# HELP nextcloud_backup_last_success_timestamp_seconds Unix timestamp of last successful backup"
-        echo "# TYPE nextcloud_backup_last_success_timestamp_seconds gauge"
-        echo "nextcloud_backup_last_success_timestamp_seconds ${prev}"
-      fi
-    fi
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
-}
+mkdir -p "$PROM_DIR"
 
-mkdir -p "$PROM_DIR" "$BACKUP_DIR"
+# Fail closed on an unmounted offsite landing zone (mirrors
+# gitlab-backup-run.sh.j2): when NFS-backed, BACKUP_DIR is the mountpoint of
+# the per-app export; a missing mount would land the dump on the OS-disk
+# mountpoint dir — silently un-offsited. Refuse + record success=0.
+if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_DIR"; then
+  echo "nextcloud-backup: BACKUP_DIR ${BACKUP_DIR} is NFS-backed but not mounted — aborting" >&2
+  write_prom_metrics nextcloud_backup 0 0 0 "$PROM_FILE"
+  exit 1
+fi
+mkdir -p "$BACKUP_DIR"
 cd "$COMPOSE_DIR" || exit 1
 
 OUT="${BACKUP_DIR}/nextcloud-db-$(date +%Y%m%d-%H%M%S).sql.gz"
@@ -84,9 +75,9 @@ fi
 end_ts="$(date +%s)"
 duration=$(( end_ts - START_TS ))
 if [ "$rc" -eq 0 ]; then
-  write_prom_metrics 1 "$duration" "$size"
+  write_prom_metrics nextcloud_backup 1 "$duration" "$size" "$PROM_FILE"
 else
-  write_prom_metrics 0 "$duration" "$size"
+  write_prom_metrics nextcloud_backup 0 "$duration" "$size" "$PROM_FILE"
 fi
 
 exit "$rc"

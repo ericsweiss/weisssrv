@@ -1,0 +1,185 @@
+---
+# Verify: the control script + secret files + timer render correctly, an actual
+# run against the LOCAL restic file repo produces a snapshot + success metric,
+# the freshness guard aborts (success=0) on a stale source, and the static
+# subcommand/metric/zvol-clone contract holds.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stat the control script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/restic-offsitectl
+      register: ctl
+      failed_when: >-
+        not ctl.stat.exists or ctl.stat.mode != '0755'
+        or ctl.stat.pw_name != 'root' or ctl.stat.gr_name != 'root'
+
+    - name: Stat the secret files (env + rclone.conf must be 0600)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: secret_files
+      loop:
+        - /etc/restic-offsite/env
+        - /etc/restic-offsite/rclone.conf
+      failed_when: >-
+        not secret_files.stat.exists or secret_files.stat.mode != '0600'
+        or secret_files.stat.pw_name != 'root'
+
+    - name: Stat the exclude file
+      ansible.builtin.stat:
+        path: /etc/restic-offsite/excludes.txt
+      register: excl
+      failed_when: not excl.stat.exists
+
+    - name: Check the fallback timer is enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled restic-offsite.timer
+      register: timer_enabled
+      changed_when: false
+      failed_when: timer_enabled.stdout | trim != 'enabled'
+
+    - name: Check the weekly verify timer is enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled restic-offsite-verify.timer
+      register: restic_offsite_verify_timer_enabled
+      changed_when: false
+      failed_when: restic_offsite_verify_timer_enabled.stdout | trim != 'enabled'
+
+    - name: Assert the verify service runs the rotating subset mode
+      ansible.builtin.command: grep -q 'verify --auto-subset' /etc/systemd/system/restic-offsite-verify.service
+      changed_when: false
+
+    # End-to-end SUCCESS path: source the EnvironmentFile (as the systemd unit
+    # would) and run against the local file repo. The seeded fresh archsync tree
+    # passes the freshness guard; restic inits + backs up + prunes.
+    - name: Run restic-offsitectl run (success path)
+      ansible.builtin.shell: |
+        set -a
+        . /etc/restic-offsite/env
+        set +a
+        restic-offsitectl run
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: List restic snapshots
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic snapshots
+      args:
+        executable: /bin/bash
+      register: snaps
+      changed_when: false
+
+    - name: Assert a snapshot was created
+      ansible.builtin.assert:
+        that:
+          - snaps.stdout is search('nightly')
+        fail_msg: "restic produced no nightly snapshot after run"
+        success_msg: "restic run created a nightly snapshot"
+
+    - name: Read restic_offsite.prom after success
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/restic_offsite.prom
+      register: prom_ok
+
+    - name: Assert success metrics present
+      ansible.builtin.assert:
+        that:
+          - "'restic_offsite_last_run_success 1' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_last_run_duration_seconds ' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_last_success_timestamp_seconds ' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_repo_size_bytes ' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_snapshot_total_bytes ' in (prom_ok.content | b64decode)"
+        fail_msg: "restic_offsite.prom missing expected metrics on success"
+        success_msg: "restic_offsite.prom emits all run metrics on success"
+
+    # RESTORE round-trip: restore the appdata source (bind mode backs it up at
+    # BIND_ROOT/appdata, which cmd_restore's --include prefix matches) into a temp
+    # target and assert the seeded payload comes back byte-for-byte.
+    - name: Run restic-offsitectl restore (appdata -> temp target)
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl restore appdata latest /tmp/restic-molecule-restore-test
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Read the restored payload
+      ansible.builtin.slurp:
+        src: /tmp/restic-molecule-restore-test/tmp/restic-molecule-bind/appdata/payload.txt
+      register: restored_payload
+
+    - name: Assert the restored file round-trips the seeded content
+      ansible.builtin.assert:
+        that:
+          - "'molecule appdata payload' in (restored_payload.content | b64decode)"
+        fail_msg: "restic-offsitectl restore did not round-trip the seeded appdata payload"
+        success_msg: "restic-offsitectl restore round-trips the seeded appdata payload"
+
+    # VERIFY: run `restic-offsitectl verify` (restic check) and assert the verify
+    # metric records success=1 in its own .prom.
+    - name: Run restic-offsitectl verify (restic check)
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl verify
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Read the verify metric file
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/restic_offsite_verify.prom
+      register: prom_verify
+
+    - name: Assert the verify metric records success
+      ansible.builtin.assert:
+        that:
+          - "'restic_offsite_last_verify_success 1' in (prom_verify.content | b64decode)"
+          - "'restic_offsite_last_verify_timestamp_seconds ' in (prom_verify.content | b64decode)"
+        fail_msg: "restic-offsitectl verify did not record restic_offsite_last_verify_success 1"
+        success_msg: "restic-offsitectl verify records success=1 in its .prom"
+
+    # FRESHNESS-GUARD abort: age the appdata source's snapshot into the past so
+    # its parsed timestamp exceeds the max age; a run must abort with success=0
+    # BEFORE touching the repo.
+    - name: Age one source's snapshot to make it stale
+      ansible.builtin.shell: |
+        set -eo pipefail
+        cur="$(ls -1 /tmp/molsrc/appdata/.zfs/snapshot/ | grep '^archsync-' | tail -1)"
+        mv "/tmp/molsrc/appdata/.zfs/snapshot/${cur}" \
+           "/tmp/molsrc/appdata/.zfs/snapshot/archsync-20200101-000000"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Run restic-offsitectl run (stale-source abort path)
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl run
+      args:
+        executable: /bin/bash
+      register: stale_run
+      changed_when: false
+      failed_when: stale_run.rc == 0
+
+    - name: Read restic_offsite.prom after the stale abort
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/restic_offsite.prom
+      register: prom_stale
+
+    - name: Assert the stale abort records success=0
+      ansible.builtin.assert:
+        that:
+          - "'restic_offsite_last_run_success 0' in (prom_stale.content | b64decode)"
+          - stale_run.stdout is search('stale-source')
+        fail_msg: "Freshness guard did not abort with success=0 on a stale source"
+        success_msg: "Freshness guard aborts + records success=0 on a stale source"
+
+    - name: Assert the restic-offsitectl contract (subcommands, flags, metrics, zvol logic)
+      ansible.builtin.script: files/restic-offsite-contract-assert.sh
+      changed_when: false
+
+    - name: Assert restic-offsite metric-preservation behavior (executed, not grepped)
+      ansible.builtin.script: files/restic-offsite-metrics-behavior.sh
+      changed_when: false

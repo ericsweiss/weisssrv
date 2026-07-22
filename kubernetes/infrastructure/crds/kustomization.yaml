@@ -1,0 +1,10 @@
+---
+# infrastructure-crds stage: the monitoring.coreos.com CRDs, installed before the
+# controllers stage (which renders ServiceMonitors that need those CRDs). See
+# release.yaml for the full rationale and the one-time live-cluster adoption note.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: prometheus-operator-crds
+resources:
+  - namespace.yaml
+  - release.yaml

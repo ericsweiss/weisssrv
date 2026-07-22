@@ -14,20 +14,13 @@ vars:
   # GitLab project ID for Terraform state backend
   # Find at: git.ericsweiss.com/eric/weisssrv (shown on project overview page)
   GITLAB_PROJECT_ID: "1"
-  # GitLab VM IP (ssh + smoke tests)
-  GITLAB_VM_IP: "192.168.0.153"
-  # Nextcloud VM IP (ssh + smoke tests)
-  NEXTCLOUD_VM_IP: "192.168.0.156"
-  # Home Assistant VM configuration
+  # VM/LXC IPs come from scripts/hosts.env (dotenv) as {{.GITLAB_IP}},
+  # {{.NEXTCLOUD_IP}}, {{.HOME_ASSISTANT_IP}}, {{.IMMICH_IP}}, {{.IMMICH_ML_IP}}
+  # and {{.WINDOWS_IP}} — single source of truth (hosts.yml, guarded by the
+  # hosts-env sync check in the repo-sync-checks CI job). Only the Proxmox VM IDs, which hosts.env does not
+  # carry, are kept here.
   HA_VM_ID: "154"
-  HA_VM_IP: "192.168.0.154"
-  # Immich VM IP (ssh + smoke tests)
-  IMMICH_VM_IP: "192.168.0.157"
-  # Immich ML LXC IP (ssh + smoke tests)
-  IMMICH_ML_LXC_IP: "192.168.0.158"
-  # Windows 11 VM (RDP + qm status)
   WINDOWS_VM_ID: "155"
-  WINDOWS_VM_IP: "192.168.0.155"
 
 tasks:
   default:
@@ -228,6 +221,11 @@ tasks:
       # storage.yml now runs alloy_host on pve-nas-01, which asserts the Loki push creds.
       LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
       LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+      # restic_offsite secrets (docs/42): the RESTRICTED hide-only key fields —
+      # terraform/b2 keeps the master key on b2_key_id/b2_application_key.
+      B2_KEY_ID: op://Homelab/B2 Archive Backup/restic_key_id
+      B2_APPLICATION_KEY: op://Homelab/B2 Archive Backup/restic_application_key
+      RCLONE_CRYPT_PASSWORD: op://Homelab/B2 Archive Backup/rclone_crypt_password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/storage.yml {{.CLI_ARGS}}
 
@@ -1307,6 +1305,7 @@ tasks:
       TF_VAR_oauth2_client_secret_nextcloud: op://Homelab/Nextcloud SSO/client-secret
       TF_VAR_oauth2_client_secret_immich: op://Homelab/Immich SSO/client-secret
       TF_VAR_oauth2_client_secret_hermes_dashboard: op://Homelab/Hermes Secrets/hermes-dashboard-oidc-client-secret
+      TF_VAR_oauth2_client_secret_homarr: op://Homelab/Homarr SSO/client-secret
       TF_VAR_basic_auth_nzbget_username: op://Homelab/NZBGet/username
       TF_VAR_basic_auth_nzbget_password: op://Homelab/NZBGet/password
       TF_VAR_basic_auth_adguard_username: op://Homelab/AdGuard Home/username
@@ -1338,6 +1337,66 @@ tasks:
     cmds:
       - op run -- ./import.sh
 
+  # --- Backblaze B2 offsite-backup bucket module (separate state name; SUPERVISED apply) ---
+  # Mirrors the cloudflare/tailscale/authentik terraform:* tasks but points at
+  # terraform/b2, its own GitLab state name (does not collide), and the B2
+  # application key from the "B2 Archive Backup" 1Password item (the same item
+  # the restic_offsite role consumes). apply is a supervised operator step — a
+  # bad lifecycle rule could start expiring backup data. See terraform/b2/README.md.
+  terraform:b2-init:
+    desc: Initialize Terraform for the B2 backup-bucket module (GitLab state backend)
+    dir: "{{.TERRAFORM_DIR}}/b2"
+    # Anchor shared by terraform:b2-init/plan/apply/import — B2 app-key vars +
+    # the b2-specific HTTP state name in one place.
+    env: &tf_b2_env
+      TF_VAR_b2_application_key_id: op://Homelab/B2 Archive Backup/b2_key_id
+      TF_VAR_b2_application_key: op://Homelab/B2 Archive Backup/b2_application_key
+      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/b2"
+      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/b2/lock"
+      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/b2/lock"
+      TF_HTTP_USERNAME: "terraform"
+      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
+      TF_HTTP_LOCK_METHOD: "POST"
+      TF_HTTP_UNLOCK_METHOD: "DELETE"
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform init {{.CLI_ARGS}}
+
+  terraform:b2-plan:
+    desc: "Plan B2 backup-bucket changes (read-only diff vs the live bucket)"
+    dir: "{{.TERRAFORM_DIR}}/b2"
+    env: *tf_b2_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform plan {{.CLI_ARGS}}
+
+  terraform:b2-apply:
+    desc: "SUPERVISED: apply the B2 bucket settings — a bad lifecycle rule can expire backup data; review the plan and type 'yes'. Do NOT pass -auto-approve."
+    dir: "{{.TERRAFORM_DIR}}/b2"
+    env: *tf_b2_env
+    preconditions: *tf_preconditions
+    cmds:
+      # Hard guard: a bad lifecycle rule could start expiring the only offsite
+      # copy of the backups, so the apply MUST be supervised (review the plan,
+      # type `yes`). Refuse -auto-approve so the plan review cannot be bypassed
+      # by an errant flag / copy-paste (same guard as tailscale-apply).
+      - |
+        case " {{.CLI_ARGS}} " in
+          *-auto-approve*)
+            echo "Refusing -auto-approve: the B2 bucket apply is supervised. Review the plan and type 'yes'." >&2
+            exit 1
+            ;;
+        esac
+        op run -- terraform apply {{.CLI_ARGS}}
+
+  terraform:b2-import:
+    desc: "One-time/DR state bootstrap: terraform-import the existing B2 bucket (read-only against the API; writes only Terraform state)"
+    dir: "{{.TERRAFORM_DIR}}/b2"
+    env: *tf_b2_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- ./import.sh
+
   terraform:validate:
     desc: Validate Terraform configuration (alias for validate-local)
     cmds:
@@ -1348,7 +1407,7 @@ tasks:
     dir: "{{.TERRAFORM_DIR}}"
     cmds:
       # Run from terraform/ so -recursive covers every module (cloudflare +
-      # tailscale + authentik), matching the CI terraform-fmt job.
+      # tailscale + authentik + b2), matching the CI terraform-fmt job.
       - terraform fmt -recursive
 
   terraform:fmt-check:
@@ -1396,6 +1455,9 @@ tasks:
       - task: lint:yamllint
       - task: lint:coverage-checks
       - task: lint:flux-version-pin
+      - task: lint:kubectl-version-pin
+      - task: lint:doc-links
+      - task: lint:taskfile-smoke
 
   lint:shellcheck:
     desc: ShellCheck scripts/, role *.sh, and neutralized *.sh.j2 templates (mirrors CI shellcheck job)
@@ -1449,6 +1511,7 @@ tasks:
       - yamllint -d relaxed ansible/
       - yamllint -d relaxed kubernetes/
       - yamllint -d relaxed .gitlab-ci.yml
+      - yamllint -d relaxed .gitlab/ci/
       - yamllint -d relaxed Taskfile.yml
 
   lint:coverage-checks:
@@ -1461,7 +1524,7 @@ tasks:
       - bash scripts/check-molecule-matrix-coverage.sh
 
   lint:flux-version-pin:
-    desc: Check the deploy-verify FLUX_VERSION pin against versions-configmap (mirrors CI flux-version-pin-check)
+    desc: Check the deploy-verify FLUX_VERSION pin against versions-configmap (mirrors the flux-version-pin check in CI repo-policy-checks)
     cmds:
       - |
         set -eu
@@ -1471,6 +1534,27 @@ tasks:
         [ -n "$PIN" ] || { echo "Could not extract FLUX_VERSION pin from .gitlab-ci.yml"; exit 1; }
         [ -n "$CM" ] || { echo "Could not extract flux_version from versions-configmap.yaml"; exit 1; }
         [ "$PIN" = "$CM" ] || { echo "FLUX_VERSION pin (${PIN}) drifted from versions-configmap flux_version (${CM}) — bump the deploy-verify version + sha256 pair in .gitlab-ci.yml"; exit 1; }
+
+  lint:kubectl-version-pin:
+    desc: Check the CI kubectl pin stays within +/-1 minor of k3s_version (mirrors the kubectl-version-pin check in CI repo-policy-checks)
+    cmds:
+      - python3 scripts/check-kubectl-version-pin.py
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+
+  lint:doc-links:
+    desc: Resolve relative Markdown cross-links in docs/ + top-level READMEs (mirrors CI docs-link-check)
+    cmds:
+      - python3 scripts/check-doc-links.py
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+
+  lint:taskfile-smoke:
+    desc: Assert every Taskfile-referenced script + the hosts.env dotenv target exists (mirrors the taskfile check in CI repo-policy-checks)
+    cmds:
+      - bash scripts/check-taskfile.sh
 
   lint:prometheus-config:
     desc: Validate kube-prometheus alert rules + Alertmanager config (promtool/amtool; mirrors CI prometheus-config-lint)
@@ -1499,7 +1583,7 @@ tasks:
       - op account get
 
   secrets:show:
-    desc: Display secret references (not values) - scans Taskfile and playbooks
+    desc: Display secret references (not values) - scans Taskfile, playbooks, and group_vars/host_vars
     cmds:
       - |
         echo "Secret references in use (from Taskfile.yml):"
@@ -1512,6 +1596,11 @@ tasks:
         echo "Secret references in playbooks (if any):"
         # Also check ansible playbooks for 1Password references
         find ansible/playbooks -name "*.yml" -type f -exec grep -hoE "op://Homelab/[^\"'\`\)\(]+" {} \; 2>/dev/null | sed 's/[[:space:]]*$//' | grep -E "^op://Homelab/[^/]+/[^/]+$" | sort -u | sed 's/^/  - /' || echo "  (none found)"
+        echo ""
+        echo "Secret references in group_vars/host_vars (the canonical home - CLAUDE.md):"
+        # all.yml's secrets: dict is the canonical source of op:// references;
+        # docs/15-credential-rotation.md is the authoritative item inventory.
+        find ansible/inventories/prod/group_vars ansible/inventories/prod/host_vars -name "*.yml" -type f -exec grep -hoE "op://Homelab/[^\"'\`\)\(]+" {} \; 2>/dev/null | sed 's/[[:space:]]*$//' | grep -E "^op://Homelab/[^/]+/[^/]+$" | sort -u | sed 's/^/  - /' || echo "  (none found)"
         echo ""
         echo "To verify all secrets exist in 1Password:"
         echo "  op whoami && op item list --vault Homelab"
@@ -2092,8 +2181,8 @@ tasks:
       - echo ""
       - echo "=== Network Connectivity ==="
       - |
-        if curl -s --connect-timeout 2 http://{{.HA_VM_IP}}:8123 >/dev/null 2>&1; then
-          echo "Home Assistant HTTP: OK ({{.HA_VM_IP}}:8123)"
+        if curl -s --connect-timeout 2 http://{{.HOME_ASSISTANT_IP}}:8123 >/dev/null 2>&1; then
+          echo "Home Assistant HTTP: OK ({{.HOME_ASSISTANT_IP}}:8123)"
         else
           echo "Home Assistant HTTP: UNREACHABLE"
         fi
@@ -2114,13 +2203,18 @@ tasks:
     desc: Start the Home Assistant VM
     cmds:
       - |
+        set -eo pipefail
         CURRENT_NODE=$(scripts/find-pve-host-for-vm.sh {{.HA_VM_ID}} {{.PVE_HOSTS}})
+        if [ -z "$CURRENT_NODE" ]; then
+          echo "ERROR: Cannot find VM {{.HA_VM_ID}} on any reachable Proxmox host"
+          exit 1
+        fi
         echo "Starting VM {{.HA_VM_ID}} on $CURRENT_NODE..."
         ssh "$CURRENT_NODE" "sudo qm start {{.HA_VM_ID}}"
       - echo "Waiting for Home Assistant to be reachable..."
       - |
         for i in $(seq 1 30); do
-          if curl -s --connect-timeout 2 http://{{.HA_VM_IP}}:8123 >/dev/null 2>&1; then
+          if curl -s --connect-timeout 2 http://{{.HOME_ASSISTANT_IP}}:8123 >/dev/null 2>&1; then
             echo "Home Assistant is up!"
             exit 0
           fi
@@ -2190,7 +2284,7 @@ tasks:
       - |
         echo "Connecting to Home Assistant..."
         echo "Note: Requires SSH add-on to be installed in Home Assistant"
-        ssh root@{{.HA_VM_IP}} -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
+        ssh root@{{.HOME_ASSISTANT_IP}} -p 22222 || echo "SSH connection failed. Is the SSH add-on installed and configured?"
 
   home-assistant:logs:
     desc: View Home Assistant core logs via API (reads token from HA_TOKEN env var)
@@ -2322,7 +2416,7 @@ tasks:
     desc: Show GitLab status
     cmds:
       - echo "=== GitLab VM Status ==="
-      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl status" || echo "GitLab VM not reachable or not installed"
+      - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl status" || echo "GitLab VM not reachable or not installed"
       - echo ""
       - echo "=== GitLab IngressRoutes ==="
       - kubectl get ingressroute -n gitlab 2>/dev/null || echo "No IngressRoutes found"
@@ -2346,7 +2440,7 @@ tasks:
     desc: Run GitLab smoke tests (web UI, registry, pages, SSH)
     # Task's built-in interpreter (mvdan/sh) supports the 'local' keyword used
     # in the helper functions below; there is no per-task shell setting.
-    # GITLAB_VM_IP comes from top-level vars (shared with the gitlab:* ssh tasks).
+    # GITLAB_IP comes from the scripts/hosts.env dotenv (shared with the gitlab:* ssh tasks).
     cmds:
       - |
         echo "=== GitLab Smoke Tests ==="
@@ -2409,8 +2503,8 @@ tasks:
         fi
 
         # Test 5: SSH port 22 (internal, from LAN)
-        echo -n "Git SSH port 22 ({{.GITLAB_VM_IP}})... "
-        if nc -z -w 5 {{.GITLAB_VM_IP}} 22 2>/dev/null; then
+        echo -n "Git SSH port 22 ({{.GITLAB_IP}})... "
+        if nc -z -w 5 {{.GITLAB_IP}} 22 2>/dev/null; then
           echo "PASS"
           PASS=$((PASS + 1))
         else
@@ -2419,8 +2513,8 @@ tasks:
         fi
 
         # Test 6: SSH port 2222 (external)
-        echo -n "Git SSH port 2222 ({{.GITLAB_VM_IP}})... "
-        if nc -z -w 5 {{.GITLAB_VM_IP}} 2222 2>/dev/null; then
+        echo -n "Git SSH port 2222 ({{.GITLAB_IP}})... "
+        if nc -z -w 5 {{.GITLAB_IP}} 2222 2>/dev/null; then
           echo "PASS"
           PASS=$((PASS + 1))
         else
@@ -2471,25 +2565,25 @@ tasks:
       # create` — applies the slim-backup SKIP list, copies gitlab-secrets.json
       # + gitlab.rb alongside, and writes the gitlab_backup.prom freshness
       # metric the backup-staleness alert reads.
-      - ssh eric@{{.GITLAB_VM_IP}} "sudo /usr/local/sbin/gitlab-backup-run.sh"
+      - ssh eric@{{.GITLAB_IP}} "sudo /usr/local/sbin/gitlab-backup-run.sh"
       - echo ""
       - 'echo "Backup complete. List backups with:"'
-      - echo "  ssh eric@{{.GITLAB_VM_IP}} 'sudo ls -la /var/opt/gitlab/backups/'"
+      - echo "  ssh eric@{{.GITLAB_IP}} 'sudo ls -la /var/opt/gitlab/backups/'"
 
   gitlab:console:
     desc: SSH to GitLab VM
     cmds:
-      - ssh eric@{{.GITLAB_VM_IP}}
+      - ssh eric@{{.GITLAB_IP}}
 
   gitlab:logs:
     desc: View GitLab logs
     cmds:
-      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl tail"
+      - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl tail"
 
   gitlab:reconfigure:
     desc: Reconfigure GitLab after changes
     cmds:
-      - ssh eric@{{.GITLAB_VM_IP}} "sudo gitlab-ctl reconfigure"
+      - ssh eric@{{.GITLAB_IP}} "sudo gitlab-ctl reconfigure"
 
   # =============================================================================
   # Nextcloud Deployment Tasks
@@ -2532,7 +2626,7 @@ tasks:
     desc: Show Nextcloud status
     cmds:
       - echo "=== Nextcloud compose stack ==="
-      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml ps" || echo "Nextcloud VM not reachable or not installed"
+      - ssh eric@{{.NEXTCLOUD_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml ps" || echo "Nextcloud VM not reachable or not installed"
       - echo ""
       - echo "=== Nextcloud IngressRoutes ==="
       - kubectl get ingressroute -n default nextcloud nextcloud-internal 2>/dev/null || echo "No IngressRoutes found"
@@ -2575,7 +2669,7 @@ tasks:
 
         # Test 3: occ reports the instance installed
         echo -n "Nextcloud occ status (installed)... "
-        if ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml exec -T -u www-data nextcloud php occ status --output=json" 2>/dev/null | grep -q '"installed":true'; then
+        if ssh eric@{{.NEXTCLOUD_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml exec -T -u www-data nextcloud php occ status --output=json" 2>/dev/null | grep -q '"installed":true'; then
           echo "PASS"; PASS=$((PASS + 1))
         else
           echo "FAIL"; FAIL=$((FAIL + 1))
@@ -2585,8 +2679,8 @@ tasks:
         # k3s_nodes (the in-cluster Prometheus scrape source), so the deploy host
         # is firewall-blocked by design — check via the VM's loopback instead,
         # the same way the occ test reaches the VM.
-        echo -n "Nextcloud exporter (:9205 on {{.NEXTCLOUD_VM_IP}})... "
-        if ssh eric@{{.NEXTCLOUD_VM_IP}} "curl -s --max-time 10 http://localhost:9205/metrics" 2>/dev/null | grep -q '^nextcloud_up'; then
+        echo -n "Nextcloud exporter (:9205 on {{.NEXTCLOUD_IP}})... "
+        if ssh eric@{{.NEXTCLOUD_IP}} "curl -s --max-time 10 http://localhost:9205/metrics" 2>/dev/null | grep -q '^nextcloud_up'; then
           echo "PASS"; PASS=$((PASS + 1))
         else
           echo "FAIL"; FAIL=$((FAIL + 1))
@@ -2602,25 +2696,25 @@ tasks:
     desc: Run the Nextcloud PostgreSQL backup now (also seeds the freshness metric)
     cmds:
       - echo "Running Nextcloud database backup..."
-      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo /usr/local/sbin/nextcloud-backup-run.sh"
+      - ssh eric@{{.NEXTCLOUD_IP}} "sudo /usr/local/sbin/nextcloud-backup-run.sh"
       - echo ""
       - 'echo "Backup complete. List dumps with:"'
-      - echo "  ssh eric@{{.NEXTCLOUD_VM_IP}} 'sudo ls -la /mnt/nextcloud-app/backups/'"
+      - echo "  ssh eric@{{.NEXTCLOUD_IP}} 'sudo ls -la /mnt/nextcloud-app/backups/'"
 
   nextcloud:console:
     desc: SSH to the Nextcloud VM
     cmds:
-      - ssh eric@{{.NEXTCLOUD_VM_IP}}
+      - ssh eric@{{.NEXTCLOUD_IP}}
 
   nextcloud:logs:
     desc: Tail the Nextcloud compose logs
     cmds:
-      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml logs -f --tail=100"
+      - ssh eric@{{.NEXTCLOUD_IP}} "sudo docker compose -f /mnt/nextcloud-app/compose/docker-compose.yml logs -f --tail=100"
 
   nextcloud:restart:
     desc: Restart the Nextcloud compose stack
     cmds:
-      - ssh eric@{{.NEXTCLOUD_VM_IP}} "sudo systemctl restart nextcloud-compose.service"
+      - ssh eric@{{.NEXTCLOUD_IP}} "sudo systemctl restart nextcloud-compose.service"
 
   # =============================================================================
   # Immich Deployment Tasks
@@ -2662,7 +2756,7 @@ tasks:
     desc: Show Immich status (compose stack + IngressRoutes)
     cmds:
       - echo "=== Immich compose stack ==="
-      - ssh eric@{{.IMMICH_VM_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose ps" || echo "Immich VM not reachable or stack not up"
+      - ssh eric@{{.IMMICH_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose ps" || echo "Immich VM not reachable or stack not up"
       - echo ""
       - echo "=== Immich IngressRoutes ==="
       - kubectl get ingressroute -n default 2>/dev/null | grep -i immich || echo "No Immich IngressRoutes found"
@@ -2673,7 +2767,7 @@ tasks:
   immich:verify:
     desc: Run Immich smoke tests (web UI both hosts, health, metrics, DB, mounts)
     # Task's built-in interpreter (mvdan/sh) supports the 'local' keyword used
-    # in the helpers below. IMMICH_VM_IP comes from top-level vars.
+    # in the helpers below. IMMICH_IP comes from the scripts/hosts.env dotenv.
     cmds:
       - |
         echo "=== Immich Smoke Tests ==="
@@ -2721,7 +2815,7 @@ tasks:
         # source is firewall-dropped by design. The in-cluster ServiceMonitor +
         # ImmichDown alert cover scrape reachability from the k3s nodes.
         echo -n "Immich API metrics (127.0.0.1:8081 on the VM)... "
-        if ssh eric@{{.IMMICH_VM_IP}} "curl -s --max-time 10 http://127.0.0.1:8081/metrics" 2>/dev/null | grep -q '.'; then
+        if ssh eric@{{.IMMICH_IP}} "curl -s --max-time 10 http://127.0.0.1:8081/metrics" 2>/dev/null | grep -q '.'; then
           echo "PASS"; PASS=$((PASS + 1))
         else
           echo "FAIL"; FAIL=$((FAIL + 1))
@@ -2729,7 +2823,7 @@ tasks:
 
         # Test 5: Database container healthy
         echo -n "Postgres container healthy... "
-        if ssh eric@{{.IMMICH_VM_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose exec -T database pg_isready -U postgres -d immich" 2>/dev/null | grep -q 'accepting connections'; then
+        if ssh eric@{{.IMMICH_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose exec -T database pg_isready -U postgres -d immich" 2>/dev/null | grep -q 'accepting connections'; then
           echo "PASS"; PASS=$((PASS + 1))
         else
           echo "FAIL"; FAIL=$((FAIL + 1))
@@ -2737,7 +2831,7 @@ tasks:
 
         # Test 6: The three zvol mounts are present
         echo -n "zvol mounts (app/postgres/data)... "
-        if ssh eric@{{.IMMICH_VM_IP}} "mountpoint -q /mnt/immich-app && mountpoint -q /mnt/immich-postgres && mountpoint -q /mnt/immich-data" 2>/dev/null; then
+        if ssh eric@{{.IMMICH_IP}} "mountpoint -q /mnt/immich-app && mountpoint -q /mnt/immich-postgres && mountpoint -q /mnt/immich-data" 2>/dev/null; then
           echo "PASS"; PASS=$((PASS + 1))
         else
           echo "FAIL"; FAIL=$((FAIL + 1))
@@ -2753,25 +2847,25 @@ tasks:
     desc: Run the Immich database backup (pg_dumpall + freshness metric)
     cmds:
       - echo "Creating Immich database backup..."
-      - ssh eric@{{.IMMICH_VM_IP}} "sudo /usr/local/sbin/immich-backup-run.sh"
+      - ssh eric@{{.IMMICH_IP}} "sudo /usr/local/sbin/immich-backup-run.sh"
       - echo ""
       - 'echo "Backup complete. List backups with:"'
-      - echo "  ssh eric@{{.IMMICH_VM_IP}} 'sudo ls -la /mnt/immich-app/backups/'"
+      - echo "  ssh eric@{{.IMMICH_IP}} 'sudo ls -la /mnt/immich-app/backups/'"
 
   immich:console:
     desc: SSH to the Immich VM
     cmds:
-      - ssh eric@{{.IMMICH_VM_IP}}
+      - ssh eric@{{.IMMICH_IP}}
 
   immich:logs:
     desc: Tail the Immich compose logs
     cmds:
-      - ssh eric@{{.IMMICH_VM_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose logs -f --tail=200"
+      - ssh eric@{{.IMMICH_IP}} "sudo docker compose --project-directory /mnt/immich-app/compose logs -f --tail=200"
 
   immich:restart:
     desc: Restart the Immich compose stack
     cmds:
-      - ssh eric@{{.IMMICH_VM_IP}} "sudo systemctl restart immich-compose.service"
+      - ssh eric@{{.IMMICH_IP}} "sudo systemctl restart immich-compose.service"
 
   # =============================================================================
   # Immich ML (GPU LXC) Deployment Tasks
@@ -2810,31 +2904,31 @@ tasks:
     desc: Show the Immich ML stack status (compose ps + GPU device + /ping)
     cmds:
       - echo "=== Immich ML compose stack ==="
-      - ssh eric@{{.IMMICH_ML_LXC_IP}} "sudo docker compose --project-directory /opt/immich-ml/compose ps" || echo "Immich ML LXC not reachable or stack not up"
+      - ssh eric@{{.IMMICH_ML_IP}} "sudo docker compose --project-directory /opt/immich-ml/compose ps" || echo "Immich ML LXC not reachable or stack not up"
       - echo ""
       - echo "=== GPU device (/dev/dri) ==="
-      - ssh eric@{{.IMMICH_ML_LXC_IP}} "ls -la /dev/dri" || echo "/dev/dri not present in the container"
+      - ssh eric@{{.IMMICH_ML_IP}} "ls -la /dev/dri" || echo "/dev/dri not present in the container"
       - echo ""
       # Probed over SSH on the LXC loopback — sg-immich-ml admits :3003 from
       # the Immich VM only (the endpoint is authless; least privilege), so a
       # direct probe from the operator's LAN source is firewall-dropped by design.
       - echo "=== ML /ping (127.0.0.1:3003 in the LXC) ==="
-      - ssh eric@{{.IMMICH_ML_LXC_IP}} "curl -s --max-time 10 http://127.0.0.1:3003/ping" || echo "ML service not responding"
+      - ssh eric@{{.IMMICH_ML_IP}} "curl -s --max-time 10 http://127.0.0.1:3003/ping" || echo "ML service not responding"
 
   immich-ml:console:
     desc: SSH to the Immich ML LXC
     cmds:
-      - ssh eric@{{.IMMICH_ML_LXC_IP}}
+      - ssh eric@{{.IMMICH_ML_IP}}
 
   immich-ml:logs:
     desc: Tail the Immich ML compose logs
     cmds:
-      - ssh eric@{{.IMMICH_ML_LXC_IP}} "sudo docker compose --project-directory /opt/immich-ml/compose logs -f --tail=200"
+      - ssh eric@{{.IMMICH_ML_IP}} "sudo docker compose --project-directory /opt/immich-ml/compose logs -f --tail=200"
 
   immich-ml:restart:
     desc: Restart the Immich ML compose stack
     cmds:
-      - ssh eric@{{.IMMICH_ML_LXC_IP}} "sudo systemctl restart immich-ml-compose.service"
+      - ssh eric@{{.IMMICH_ML_IP}} "sudo systemctl restart immich-ml-compose.service"
 
 
   # === Windows 11 VM Tasks ===
@@ -2869,18 +2963,18 @@ tasks:
     desc: Show the Windows VM status (qm status + config) on pve-nas-01
     cmds:
       - echo "=== Windows VM ({{.WINDOWS_VM_ID}}) status ==="
-      - ssh eric@192.168.0.102 "sudo qm status {{.WINDOWS_VM_ID}}" || echo "VM not found — run 'task windows:provision'"
+      - ssh eric@pve-nas-01 "sudo qm status {{.WINDOWS_VM_ID}}" || echo "VM not found — run 'task windows:provision'"
       - echo ""
       - echo "=== Windows VM config ==="
-      - ssh eric@192.168.0.102 "sudo qm config {{.WINDOWS_VM_ID}}" || true
+      - ssh eric@pve-nas-01 "sudo qm config {{.WINDOWS_VM_ID}}" || true
 
   windows:verify:
     desc: Verify Windows RDP reachability (fails until Windows is installed + running)
     cmds:
       - |
         echo "=== Windows VM Smoke Test ==="
-        echo -n "RDP 3389 ({{.WINDOWS_VM_IP}})... "
-        if nc -z -w 5 {{.WINDOWS_VM_IP}} 3389 2>/dev/null; then
+        echo -n "RDP 3389 ({{.WINDOWS_IP}})... "
+        if nc -z -w 5 {{.WINDOWS_IP}} 3389 2>/dev/null; then
           echo "PASS (RDP reachable — Windows is installed + running)"
         else
           # Non-zero on purpose: this is a post-install smoke test, so an

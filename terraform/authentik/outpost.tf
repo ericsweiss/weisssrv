@@ -16,11 +16,11 @@
 #   UNMANAGED").
 # - service_connection: the live embedded outpost has none (null).
 #
-# protocol_providers is an ORDERED list; the first nine entries reproduce the
-# live API order verbatim (insertion order of the original UI assignments:
-# pks 5,7,10,4,16,17,8,9,6) so the plan diff on adoption is exactly the
-# append of the new AdGuard providers, nothing else. New providers are
-# appended at the end — the API preserves insertion order.
+# protocol_providers is an ORDERED list preserving live API insertion order
+# (original UI assignments pks 5,7,10,4,17,8,9,6 — the Hermes proxy provider,
+# pk 16, was removed when the dashboard went OIDC-only — then the AdGuard
+# providers). New providers are appended at the end — the API preserves
+# insertion order.
 resource "authentik_outpost" "embedded" {
   name = "authentik Embedded Outpost"
   type = "proxy"
@@ -30,7 +30,6 @@ resource "authentik_outpost" "embedded" {
     authentik_provider_proxy.qbittorrent.id,
     authentik_provider_proxy.pulsarr.id,
     authentik_provider_proxy.sonarr.id,
-    authentik_provider_proxy.hermes.id,
     authentik_provider_proxy.wireguard_easy.id,
     authentik_provider_proxy.nzbget.id,
     authentik_provider_proxy.prowlarr.id,

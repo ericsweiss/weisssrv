@@ -111,7 +111,14 @@ fi
 # directories older than MIN_AGE so a freshly-created, still-empty download
 # target dir (a client may mkdir the destination before the file lands) is
 # never deleted out from under an in-progress download on the hot tier.
-find "$SRC" -mindepth 1 -type d -empty -mmin +"$AGE_MINUTES" -print -delete
+# A dir that passed -empty can be repopulated by a downloads client before rmdir
+# (TOCTOU), making find exit non-zero. That is a benign cleanup race AFTER every
+# file has already moved, so it must NOT trip set -e and flip
+# media_mover_last_run_success to 0 (a false failure that trips MediaMoverFailed
+# until the next clean run) — only the rsync result determines success. Swallow
+# it (the next run reclaims the dir) and log for visibility.
+find "$SRC" -mindepth 1 -type d -empty -mmin +"$AGE_MINUTES" -print -delete \
+  || echo "media-mover: empty-dir cleanup hit a benign delete race (dir repopulated mid-scan); leaving for next run"
 
 # Write Prometheus textfile metrics on success
 _MM_END_TS="$(date +%s)"

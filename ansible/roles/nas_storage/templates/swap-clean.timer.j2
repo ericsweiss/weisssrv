@@ -3,7 +3,11 @@
 Description=Daily NAS swap reset
 
 [Timer]
-OnCalendar={{ nas_swap_clean_schedule | default('*-*-* 04:30:00') }}
+# Default 07:00 so an un-overridden enable runs AFTER the NAS overnight jobs
+# (vzdump from 03:30, pve-nas-01 slice clearing ~04:45 at the 60 MiB/s bwlimit;
+# media-mover 06:00; archive-backup 06:30) and reclaims the swap they caused —
+# never inside the backup window. pve-nas-01 also pins this in host_vars.
+OnCalendar={{ nas_swap_clean_schedule | default('*-*-* 07:00:00') }}
 RandomizedDelaySec={{ nas_swap_clean_random_delay | default(1800) }}
 Persistent=true
 

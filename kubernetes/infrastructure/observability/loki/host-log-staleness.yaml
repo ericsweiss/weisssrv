@@ -1,0 +1,162 @@
+# Host journald-shipping staleness alerts. One alert per alloy_host host
+# (ansible/playbooks/site.yml: base_managed + plex/gitlab/nextcloud/immich/
+# immich-ml + k3s servers/agents = 23 hosts). Fires when NO journald line has
+# reached Loki from a host in 45m — i.e. its host-side Alloy (alloy_host) stopped
+# shipping (Alloy dead, host down, or the Loki-push path is broken past the WAL
+# buffer). alloy_host labels its stream {job="journal", host="<inventory_hostname>"}
+# (config.alloy.j2); job="journal" distinguishes host-side alloy_host (journald)
+# from the in-cluster Alloy DaemonSet (container logs).
+#
+# severity: warning -> Alertmanager routes to the discord-default receiver.
+# instance:<host> groups the alert per-host under the existing route
+# group_by:[alertname,namespace,instance]. for:15m on top of the [45m] window is
+# ~1h of silence before paging (deliberately conservative: alloy_host WAL
+# backfills brief Loki outages, so a real "shipping stopped" is sustained). A
+# fully-down host also raises KubeNodeNotReady/node-down alerts; this Discord-only
+# warning is corroborating, not the primary page.
+#
+# Keep this host list in sync with the alloy_host play in
+# ansible/playbooks/site.yml (home/HAOS and windows are excluded — they cannot
+# run Ansible/alloy_host).
+groups:
+  - name: host-log-staleness
+    interval: 1m
+    rules:
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="pve-nas-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: pve-nas-01, instance: pve-nas-01 }
+        annotations:
+          summary: "No journald logs from pve-nas-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="pve-laptop-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: pve-laptop-01, instance: pve-laptop-01 }
+        annotations:
+          summary: "No journald logs from pve-laptop-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="pve-opt-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: pve-opt-01, instance: pve-opt-01 }
+        annotations:
+          summary: "No journald logs from pve-opt-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="pve-opt-02"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: pve-opt-02, instance: pve-opt-02 }
+        annotations:
+          summary: "No journald logs from pve-opt-02 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="pve-opt-03"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: pve-opt-03, instance: pve-opt-03 }
+        annotations:
+          summary: "No journald logs from pve-opt-03 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="pve-prec-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: pve-prec-01, instance: pve-prec-01 }
+        annotations:
+          summary: "No journald logs from pve-prec-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="dns-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: dns-01, instance: dns-01 }
+        annotations:
+          summary: "No journald logs from dns-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="dns-02"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: dns-02, instance: dns-02 }
+        annotations:
+          summary: "No journald logs from dns-02 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="smtp-relay"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: smtp-relay, instance: smtp-relay }
+        annotations:
+          summary: "No journald logs from smtp-relay in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="plex"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: plex, instance: plex }
+        annotations:
+          summary: "No journald logs from plex in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="gitlab"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: gitlab, instance: gitlab }
+        annotations:
+          summary: "No journald logs from gitlab in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="nextcloud"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: nextcloud, instance: nextcloud }
+        annotations:
+          summary: "No journald logs from nextcloud in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="immich"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: immich, instance: immich }
+        annotations:
+          summary: "No journald logs from immich in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="immich-ml"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: immich-ml, instance: immich-ml }
+        annotations:
+          summary: "No journald logs from immich-ml in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-srv-nas-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-srv-nas-01, instance: k3s-srv-nas-01 }
+        annotations:
+          summary: "No journald logs from k3s-srv-nas-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-srv-laptop-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-srv-laptop-01, instance: k3s-srv-laptop-01 }
+        annotations:
+          summary: "No journald logs from k3s-srv-laptop-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-srv-prec-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-srv-prec-01, instance: k3s-srv-prec-01 }
+        annotations:
+          summary: "No journald logs from k3s-srv-prec-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-agt-nas-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-agt-nas-01, instance: k3s-agt-nas-01 }
+        annotations:
+          summary: "No journald logs from k3s-agt-nas-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-agt-laptop-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-agt-laptop-01, instance: k3s-agt-laptop-01 }
+        annotations:
+          summary: "No journald logs from k3s-agt-laptop-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-agt-opt-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-agt-opt-01, instance: k3s-agt-opt-01 }
+        annotations:
+          summary: "No journald logs from k3s-agt-opt-01 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-agt-opt-02"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-agt-opt-02, instance: k3s-agt-opt-02 }
+        annotations:
+          summary: "No journald logs from k3s-agt-opt-02 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-agt-opt-03"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-agt-opt-03, instance: k3s-agt-opt-03 }
+        annotations:
+          summary: "No journald logs from k3s-agt-opt-03 in 45m (alloy_host shipping stopped)"
+      - alert: HostLogShippingStale
+        expr: absent_over_time({job="journal", host="k3s-agt-prec-01"}[45m])
+        for: 15m
+        labels: { severity: warning, component: logging, host: k3s-agt-prec-01, instance: k3s-agt-prec-01 }
+        annotations:
+          summary: "No journald logs from k3s-agt-prec-01 in 45m (alloy_host shipping stopped)"

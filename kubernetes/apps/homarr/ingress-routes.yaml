@@ -1,0 +1,59 @@
+---
+# Homarr dashboard — external + internal IngressRoutes.
+#
+# SSO model: Homarr runs its OWN Authentik OIDC gate (AUTH_PROVIDERS=oidc,...,
+# deployment.yaml), so — like hermes — there is NO forward-auth middleware here.
+# Traefik passes straight to Homarr, which 302s unauthenticated browsers into
+# the Authentik flow (one login, both hostnames; AUTH_TRUST_HOST builds the
+# per-hostname callback). The default-deny NetworkPolicy admits only the Traefik
+# namespace on :7575. The Authentik objects live in terraform/authentik (docs/40).
+# The internal route additionally scopes to LAN/Tailscale sources.
+
+# External - dashboard.ericsweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: homarr
+  namespace: homarr
+  annotations:
+    # external-dns auto-creates the Cloudflare record — no terraform/cloudflare
+    # edit (same as hermes).
+    external-dns.alpha.kubernetes.io/target: ericsweiss.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`dashboard.ericsweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: homarr
+          port: 7575
+  tls:
+    secretName: homarr-ericsweiss-tls
+
+---
+# Internal - dashboard.esweiss.com
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: homarr-internal
+  namespace: homarr
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`dashboard.esweiss.com`)
+      kind: Rule
+      middlewares:
+        - name: lan-tailscale-only
+          namespace: traefik
+        - name: hsts-header
+          namespace: traefik
+      services:
+        - name: homarr
+          port: 7575
+  tls:
+    secretName: homarr-esweiss-tls

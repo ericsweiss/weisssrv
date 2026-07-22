@@ -32,12 +32,14 @@ VZDUMP_TARGET="tank/proxmox"
 VZDUMP_QUIESCE_MIN=10
 VZDUMP_MAX_WAIT_MIN=30
 
-# Datasets to replicate (recursive: includes children). tank/immich-data is the
-# (currently empty) store for the planned Immich; it is encrypted at source.
+# Datasets to replicate (recursive: includes children). tank/immich-data holds
+# the live Immich photo library (VM .157); it is encrypted at source.
 # ssd/pve (the GitLab VM disks) is intentionally NOT here — those disks are
 # already captured by the nightly vzdump of every VM into tank/proxmox, which
 # this script also replicates, so a direct ssd/pve copy would just double-store
-# them.
+# them. ssd/k3s-etcd (the off-node etcd snapshot copies, docs/17) IS here so the
+# archive + offsite copies close the etcd DR chain (per-server local snapshots +
+# NAS off-node + archive + B2); it is small and its own encryption root.
 # INVARIANT: each SRC_LIST ROOT must be a filesystem (zvols are fine as CHILDREN,
 # where -R never targets them with -o mountpoint/canmount). A top-level zvol here
 # would be rejected by the RECV_SAFE_OPTS receive in the -R/resume paths, not just
@@ -50,6 +52,7 @@ SRC_LIST=(
   "tank/immich-data"
   "ssd/appdata"
   "ssd/databases"
+  "ssd/k3s-etcd"
 )
 
 # MAP/RMAP are derived, never hand-maintained: every backup lands at

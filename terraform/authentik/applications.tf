@@ -45,7 +45,7 @@ locals {
     agent = {
       name        = "Hermes"
       group       = "Software"
-      provider_id = authentik_provider_proxy.hermes.id
+      provider_id = authentik_provider_oauth2.hermes_dashboard.id
       launch_url  = "https://agent.ericsweiss.com"
       meta_icon   = "https://cdn.jsdelivr.net/gh/selfhst/icons/png/hermes-agent.png"
     }
@@ -149,35 +149,9 @@ resource "authentik_application" "app" {
   policy_engine_mode = "any"
 }
 
-# Hermes Dashboard SSO — the one application outside the for_each map, and
-# (with its provider) the first authored in Terraform rather than imported.
-# It is a SECOND application for Hermes because authentik allows one provider
-# per application: app["agent"] keeps the forward-auth proxy provider (the
-# perimeter — authentik_provider_proxy.hermes), while this app carries the
-# dashboard's OAuth2 provider and exists to give it its issuer slug
-# (/application/o/agent-sso/). meta_launch_url is empty on purpose: this is a
-# non-clickable utility app, not a library tile — the real entry point is the
-# `agent` tile. Kept out of local.applications so the for_each import blocks
-# in imports.tf never try to import a live object that predates Terraform.
-resource "authentik_application" "agent_sso" {
-  name              = "Hermes Dashboard SSO"
-  slug              = "agent-sso"
-  group             = "Software"
-  protocol_provider = authentik_provider_oauth2.hermes_dashboard.id
-
-  meta_launch_url  = ""
-  meta_icon        = ""
-  meta_description = ""
-  meta_publisher   = ""
-  meta_hide        = false
-
-  open_in_new_tab    = true
-  policy_engine_mode = "any"
-}
-
 # AdGuard Home SSO dashboards — one application per forward-auth provider
 # (forward_single = one external host each; docs/08). Terraform-authored, so
-# — like agent_sso — they live OUTSIDE local.applications to keep imports.tf's
+# they live OUTSIDE local.applications to keep imports.tf's
 # for_each import blocks away from objects that never existed in the Admin UI.
 # Library group "Software": these are operator dashboards, the same bucket as
 # Grafana / GitLab / the wg-easy admin UI (no dedicated "Infrastructure" group
@@ -207,6 +181,28 @@ resource "authentik_application" "adguard_02" {
 
   meta_launch_url  = "https://adguard-02.esweiss.com"
   meta_icon        = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/adguard-home.svg"
+  meta_description = ""
+  meta_publisher   = ""
+  meta_hide        = false
+
+  open_in_new_tab    = true
+  policy_engine_mode = "any"
+}
+
+# Homarr dashboard — Terraform-AUTHORED (like the AdGuard dashboards and the
+# hermes_dashboard provider), so it lives OUTSIDE local.applications to keep
+# imports.tf's for_each import block away from an object that never existed in
+# the Admin UI. Slug `dashboard` -> issuer path /application/o/dashboard/
+# (matches homarr AUTH_OIDC_ISSUER). Library group "Software" — the operator
+# launcher, same bucket as Grafana / GitLab / the wg-easy admin UI.
+resource "authentik_application" "homarr" {
+  name              = "Homarr"
+  slug              = "dashboard"
+  group             = "Software"
+  protocol_provider = authentik_provider_oauth2.homarr.id
+
+  meta_launch_url  = "https://dashboard.ericsweiss.com"
+  meta_icon        = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/homarr.svg"
   meta_description = ""
   meta_publisher   = ""
   meta_hide        = false

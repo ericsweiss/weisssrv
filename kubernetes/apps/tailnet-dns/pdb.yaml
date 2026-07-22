@@ -1,0 +1,18 @@
+---
+# PodDisruptionBudget: keep at least one CoreDNS replica serving during a
+# voluntary disruption. The Deployment runs 2 replicas but its
+# topologySpreadConstraints use whenUnsatisfiable: ScheduleAnyway, so both can
+# co-locate on one node; without this PDB a single node drain (kured rolls all
+# 9 nodes for coordinated reboots) could evict both at once and take tailnet
+# split-horizon DNS offline until reschedule. Mirrors the salt-rim / authentik
+# minAvailable:1 PDBs.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tailnet-dns
+  namespace: tailnet-dns
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tailnet-dns

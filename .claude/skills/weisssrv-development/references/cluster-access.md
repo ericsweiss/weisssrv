@@ -13,7 +13,7 @@
 ## SSH host naming
 
 - Guests resolve by name (`ssh pve-nas-01`, `ssh dns-01`, `ssh dns-02`,
-  `ssh smtp-relay`, `ssh k3s-srv-01`, `ssh k3s-agt-nas-01`, …). The authoritative
+  `ssh smtp-relay`, `ssh k3s-srv-nas-01`, `ssh k3s-agt-nas-01`, …). The authoritative
   IP ↔ host ↔ Proxmox-placement table is `docs/01-overview.md`; the inventory of
   record is `ansible/inventories/prod/hosts.yml`.
 - Everything uses user `eric` with passwordless sudo (`docs/03-ssh-users.md`).

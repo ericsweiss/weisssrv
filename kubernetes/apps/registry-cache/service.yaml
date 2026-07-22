@@ -1,0 +1,24 @@
+---
+# ClusterIP fronting the registry cache. :5000 is the registry API consumed by
+# the DinD daemons in the gitlab-runner-privileged namespace
+# (registry-cache.registry-cache.svc.cluster.local:5000); :5001 is the debug
+# listener scraped by Prometheus (service-monitors/registry-cache.yaml). No
+# LoadBalancer / ingress — the cache is cluster-internal, CI-only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-cache
+  namespace: registry-cache
+  labels:
+    app.kubernetes.io/name: registry-cache
+spec:
+  selector:
+    app.kubernetes.io/name: registry-cache
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+    - name: metrics
+      port: 5001
+      targetPort: metrics
+  type: ClusterIP

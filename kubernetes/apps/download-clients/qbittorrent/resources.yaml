@@ -264,12 +264,12 @@ spec:
             # Auth / docs/21; docs/15 lists the field).
             #
             # optional: mirrors the optional gluetun-auth volume in
-            # _vpn-sidecar/vpn-sidecar.yaml. If the MR merges before the 1P
-            # gluetun-control-apikey field exists, ESO can't render the Secret;
-            # a required ref would wedge qbittorrent in CreateContainerConfigError
-            # (VPN-on client DOWN). With optional, the env is simply unset → the
-            # exporter sends no X-API-Key → the (also-unauthenticated) control
-            # server still answers, so the scrape succeeds and the pod stays up.
+            # _vpn-sidecar/vpn-sidecar.yaml. A missing gluetun-control-apikey
+            # field must not wedge qbittorrent in CreateContainerConfigError
+            # (VPN-on client DOWN) — a required ref would fail the whole Secret
+            # sync. With optional, the env is simply unset → the exporter sends
+            # no X-API-Key → the (also-unauthenticated) control server still
+            # answers, so the scrape succeeds and the pod stays up.
             - name: GLUETUN_APIKEY
               valueFrom:
                 secretKeyRef:

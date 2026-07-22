@@ -1,0 +1,25 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the rendered Docker daemon.json
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: docker_engine_daemon_json
+
+    - name: Parse the rendered daemon.json
+      ansible.builtin.set_fact:
+        docker_engine_daemon: "{{ docker_engine_daemon_json.content | b64decode | from_json }}"
+
+    - name: Assert daemon.json selects the journald log driver + live-restore
+      ansible.builtin.assert:
+        that:
+          - docker_engine_daemon['log-driver'] == 'journald'
+          - docker_engine_daemon['live-restore'] | bool
+        fail_msg: >-
+          /etc/docker/daemon.json is missing the journald log-driver /
+          live-restore configuration the shared role installs; got
+          {{ docker_engine_daemon }}.
+        success_msg: "daemon.json renders the journald log driver + live-restore"

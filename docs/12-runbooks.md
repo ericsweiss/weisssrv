@@ -564,6 +564,33 @@ additionally guards ~2-day staleness.
   move `archive-backup.timer.j2` later / revisit the vzdump `bwlimit` in
   host_vars.
 
+#### ResticOffsiteFailed / ResticOffsiteStale / BackupArtifactStale
+
+Nightly offsite backup to Backblaze B2 via `restic-offsitectl run`
+(`restic_offsite` role), chained `OnSuccess=` after `archive-backup.service`
+(07:15 fallback timer). Full architecture + restore paths: **docs/42**. Operator
+commands (source the env first: `set -a; . /etc/restic-offsite/env; set +a`):
+`restic-offsitectl status|snapshots|verify|restore <name>|prune`.
+
+- **ResticOffsiteFailed** — the last run exited non-zero. This ALSO fires on a
+  **freshness-guard abort** (a source's newest `archsync-*` snapshot older than
+  26h — the guard refuses to upload a stale tree; look for `stale-source` in the
+  log). Inspect `journalctl -u restic-offsite.service` on pve-nas-01. If the
+  archive run itself is deferring `tank/proxmox`, fix that first (the
+  ArchiveBackup runbook above); B2 rides a good archive run. Re-run:
+  `sudo restic-offsitectl run`.
+- **ResticOffsiteStale** — no successful offsite run within ~50h (tolerates one
+  deferred-archive night). Confirm the timer + the OnSuccess chain, then run once.
+- **BackupArtifactStale** (`{app=...}`) — the NAS-side mtime collector sees no
+  fresh file under `tank/backups/apps/<app>`, i.e. a relocated dump did not LAND
+  (broken NFS mount / wrong path) even if the app's own wrapper metric is green.
+  Check the app's backup mount + dump job. This is the independent
+  "landed-offsite-eligible" signal; the per-app `*BackupStale` (VM/k8s wrapper)
+  is the "the dump ran" signal.
+
+First-run supervision, the restricted-B2-key swap, and the B2 spend check are the
+post-merge checklist in docs/42.
+
 #### GitLabBackupFailed / GitLabBackupStale / GitLabBackupStaleCritical
 
 Nightly GitLab backup via `/usr/local/sbin/gitlab-backup-run.sh` (`gitlab` role,

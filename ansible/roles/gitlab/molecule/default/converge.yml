@@ -69,3 +69,16 @@
         mode: "0755"
       vars:
         gitlab_backup_skip: "registry, artifacts"
+
+    # NFS-backed render (fail-closed guard). BACKUP_PATH points at a non-mountpoint
+    # and PROM_DIR at a temp dir so verify can run it and assert it aborts with
+    # success=0 without clobbering the main /var/lib/node_exporter metric.
+    - name: Render backup wrapper with NFS-backed landing (fail-closed guard)  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab-backup-run.sh.j2"
+        dest: /tmp/gitlab-backup-run-nfs.sh
+        mode: "0755"
+      vars:
+        gitlab_backup_nfs_enabled: true
+        gitlab_backup_path: /tmp/gitlab-nfs-not-a-mount
+        node_exporter_host_textfile_dir: /tmp/gitlab-nfs-guard

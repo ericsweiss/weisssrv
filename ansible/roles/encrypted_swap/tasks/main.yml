@@ -1,0 +1,146 @@
+---
+# encrypted_swap — configure dm-crypt plain-mode, random-key swap via
+# /etc/crypttab + /etc/fstab, then activate live only when it is memory-safe to
+# swapoff (else defer to the next reboot). The deferred path NEVER leaves a state
+# where `swapon -a` yields zero swap: the plaintext backing line stays in fstab
+# alongside a higher-priority `nofail` mapper line, and a boot finalize unit drops
+# the plaintext device only once the encrypted mapper has come up. See README +
+# docs/42.
+
+- name: Configure encrypted swap
+  when: encrypted_swap_enabled | default(true)
+  block:
+    - name: Install cryptsetup
+      ansible.builtin.apt:
+        name: cryptsetup
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # crypttab: systemd-cryptsetup opens <source> with a RANDOM key from
+    # /dev/urandom (plain mode — no `luks` option) and mkswaps the mapper (the
+    # `swap` option) at every boot, so the on-disk swap is unrecoverable after a
+    # reboot. Managed as a single keyed line so a future crypttab entry is
+    # untouched.
+    - name: Ensure /etc/crypttab exists
+      ansible.builtin.file:
+        path: /etc/crypttab
+        state: touch
+        owner: root
+        group: root
+        mode: "0600"
+        modification_time: preserve
+        access_time: preserve
+
+    - name: Manage the encrypted-swap crypttab entry
+      ansible.builtin.lineinfile:
+        path: /etc/crypttab
+        regexp: '^{{ encrypted_swap_mapper_name | regex_escape }}\s+'
+        line: >-
+          {{ encrypted_swap_mapper_name }} {{ encrypted_swap_source_device }}
+          /dev/urandom swap,cipher={{ encrypted_swap_cipher }},size={{ encrypted_swap_key_size }},sector-size={{ encrypted_swap_sector_size }}
+        owner: root
+        group: root
+        mode: "0600"
+
+    # fstab: the encrypted MAPPER line, higher-priority + nofail. It coexists with
+    # the plaintext backing line until either the live switch flips it (below) or
+    # the boot finalize unit drops the plaintext device after the activation
+    # reboot. `nofail` lets `swapon -a` silently skip the mapper while it is still
+    # absent (the pre-reboot defer window) — so swap is never zero in any state;
+    # `pri=` makes the kernel prefer the encrypted mapper the moment it comes up.
+    - name: Ensure the encrypted-swap fstab line (mapper, higher priority, nofail)
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^/dev/mapper/{{ encrypted_swap_mapper_name | regex_escape }}\s+'
+        line: "/dev/mapper/{{ encrypted_swap_mapper_name }} none swap sw,pri={{ encrypted_swap_mapper_swap_priority }},nofail 0 0"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Sourceable live-switch decision (extracted for unit testing). Deployed
+    # always so the molecule scenario can source + exercise every decision arm.
+    - name: Deploy the encrypted-swap live-switch decision script
+      ansible.builtin.template:
+        src: encrypted-swap-switch.sh.j2
+        dest: /usr/local/sbin/encrypted-swap-switch.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Boot finalize: after the activation reboot, drop the plaintext backing swap
+    # and comment its fstab line exactly once (guarded on the mapper existing).
+    - name: Deploy the encrypted-swap boot finalize script
+      ansible.builtin.template:
+        src: encrypted-swap-finalize.sh.j2
+        dest: /usr/local/sbin/encrypted-swap-finalize.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Deploy the encrypted-swap boot finalize unit
+      ansible.builtin.template:
+        src: encrypted-swap-finalize.service.j2
+        dest: /etc/systemd/system/encrypted-swap-finalize.service
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable the encrypted-swap boot finalize unit
+      ansible.builtin.systemd:
+        name: encrypted-swap-finalize.service
+        enabled: true
+        daemon_reload: true
+
+    - name: Reload systemd so the crypttab generator materializes the unit
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: not ansible_check_mode
+
+    # Live switchover only when memory-safe (decision extracted into
+    # encrypted-swap-switch.sh). A running host cannot cryptsetup-open an ACTIVE
+    # swap device, so the switch needs a swapoff first; the script performs it
+    # only when MemAvailable covers the in-use swap + margin (compute hosts, ~idle
+    # swap) and otherwise DEFERS (the memory-tight NAS reboots to activate).
+    # Idempotent: a no-op once the mapper swap is active. molecule-notest — needs
+    # real devices/systemd-cryptsetup (the DECISION is unit-tested in molecule).
+    - name: Activate encrypted swap live when memory-safe (else defer to reboot)
+      ansible.builtin.command: >-
+        /usr/local/sbin/encrypted-swap-switch.sh
+        {{ encrypted_swap_mapper_name }} {{ encrypted_swap_live_switch_margin_mb }}
+      register: encrypted_swap_activation
+      changed_when: "'switched-live' in encrypted_swap_activation.stdout"
+      when: not ansible_check_mode
+      tags:
+        - molecule-notest
+
+    # LIVE path only: the switch already moved swap onto the encrypted mapper, so
+    # flip fstab to encrypted-only immediately (remove the plaintext backing line).
+    # On the DEFER path the plaintext line is deliberately KEPT (never zero swap);
+    # the boot finalize unit removes it after the activation reboot instead.
+    # Belt-and-braces: re-verify the mapper is genuinely swapping in /proc/swaps
+    # before deleting the plaintext fallback — the fstab edit is the one
+    # destructive step, so it never trusts the switch script's token alone.
+    - name: Verify the encrypted mapper is active before touching fstab
+      ansible.builtin.command: >-
+        grep -q "^/dev/mapper/{{ encrypted_swap_mapper_name }} " /proc/swaps
+      changed_when: false
+      when:
+        - encrypted_swap_activation is defined
+        - "'switched-live' in (encrypted_swap_activation.stdout | default(''))"
+      tags:
+        - molecule-notest
+
+    - name: Remove the plaintext backing swap line after a live switch
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^{{ encrypted_swap_source_device | regex_escape }}\s+.*\s+swap\s+'
+        state: absent
+      when:
+        - encrypted_swap_activation is defined
+        - "'switched-live' in (encrypted_swap_activation.stdout | default(''))"
+
+    - name: Report encrypted-swap activation state
+      ansible.builtin.debug:
+        msg: "encrypted_swap: {{ encrypted_swap_activation.stdout | default('(check mode / skipped — deferred config written)') }}"
+      when: encrypted_swap_activation is defined

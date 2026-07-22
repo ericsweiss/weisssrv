@@ -3,6 +3,9 @@
 Description=Nextcloud PostgreSQL logical backup
 After=nextcloud-compose.service
 Requires=nextcloud-compose.service
+# Require the backup landing dir mounted before the dump runs — the app zvol by
+# default, or the offsite NFS export (nofail, pulled on demand) when enabled.
+RequiresMountsFor={{ nextcloud_backup_dir }}
 
 [Service]
 Type=oneshot

@@ -38,8 +38,8 @@ Installs and configures Tailscale VPN on managed hosts. Handles apt repository s
 # Enable Tailscale
 tailscale_enabled: true
 
-# Version pinning (from group_vars/all.yml — see it for the current value)
-tailscale_version: "1.98.8"
+# Version pinning — group_vars/all.yml is the source of truth for the value
+tailscale_version: "…"   # see group_vars/all.yml
 
 # Route acceptance (CRITICAL: false prevents routing loops)
 tailscale_accept_routes: false
@@ -227,7 +227,7 @@ None - runs independently.
 Update version in `group_vars/all.yml`:
 
 ```yaml
-tailscale_version: "1.98.8"   # current pin — see group_vars/all.yml
+tailscale_version: "…"   # current pin lives in group_vars/all.yml
 ```
 
 Then run:

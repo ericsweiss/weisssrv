@@ -1,0 +1,30 @@
+---
+# promtool unit test for KuredRebootStuck: a node holding the kured reboot
+# sentinel for over 3h means the reboot cycle is stuck (dead lock / blocking CI
+# job / PDB). 30m interval keeps the 3h `for` to 6 samples.
+rule_files:
+  - rules.yaml
+evaluation_interval: 30m
+tests:
+  # kured_reboot_required stuck at 1 past the 3h hold fires, labelled by node.
+  - interval: 30m
+    input_series:
+      - series: 'kured_reboot_required{node="k3s-agt-opt-01"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 210m
+        alertname: KuredRebootStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: k3s-agt-opt-01
+
+  # No reboot pending (0) must not fire.
+  - interval: 30m
+    input_series:
+      - series: 'kured_reboot_required{node="k3s-agt-opt-01"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 210m
+        alertname: KuredRebootStuck
+        exp_alerts: []

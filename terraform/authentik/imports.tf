@@ -54,11 +54,6 @@ import {
 }
 
 import {
-  to = authentik_provider_proxy.hermes
-  id = "16"
-}
-
-import {
   to = authentik_provider_proxy.wireguard_easy
   id = "17"
 }

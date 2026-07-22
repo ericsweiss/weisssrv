@@ -142,3 +142,40 @@ classify_json() {
         echo "catastrophic"
     fi
 }
+
+# --- collect_compose_app section dispatch ------------------------------------
+# collect-state.sh's NAS-pinned docker-compose app block (Nextcloud/Immich/
+# Immich-ML) renders optional sections only for the apps that have them; a "-"
+# argument means "this app lacks that section". Pulling the sentinel→sections
+# decision out here lets it be unit-tested without an ssh and keeps the rule in
+# one place — collect_compose_app calls this locally and passes the result to the
+# remote body as a comma-joined membership list.
+#
+# compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
+# Echoes the comma-joined optional sections that render, in output order:
+#   health,nginx,backup,metrics
+# `metrics` is nested under `backup` (it renders only when the backup section
+# does). Any "-" arg drops its section; all "-" prints an empty string.
+compose_active_sections() {
+    local health_url=$1 nginx_cert=$2 backup_timer=$3 backup_prom=$4
+    local out=""
+    [ "$health_url" != "-" ] && out="${out:+$out,}health"
+    [ "$nginx_cert" != "-" ] && out="${out:+$out,}nginx"
+    if [ "$backup_timer" != "-" ]; then
+        out="${out:+$out,}backup"
+        [ "$backup_prom" != "-" ] && out="${out:+$out,}metrics"
+    fi
+    echo "$out"
+}
+
+# --- firewall guest .fw enumeration ------------------------------------------
+# The Proxmox host report enumerates every per-guest firewall config
+# (/etc/pve/firewall/<vmid>.fw) rather than a hand-maintained VMID list that
+# silently dropped new guests. This is the pure filter behind it: read candidate
+# *.fw paths on stdin (from `find … -name '*.fw'`), drop the cluster-wide
+# cluster.fw (dumped separately as IP sets), and emit the per-guest paths sorted.
+# collect-state.sh injects it into the remote host body via `declare -f` so the
+# same tested code runs on the Proxmox host.
+firewall_guest_fw_list() {
+    grep -v -E '(^|/)cluster\.fw$' | sort
+}

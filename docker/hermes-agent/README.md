@@ -51,9 +51,8 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
   `hermes dump` / the banner report the exact upstream commit.
 - **Push**: the final image is tagged
   `registry.git.ericsweiss.com/eric/weisssrv/hermes-agent:<hermes_version>`. MR
-  pipelines build-only (and push a throwaway `:<commit-sha>` tag to prove the
-  build); the load-bearing `:<hermes_version>` and `:latest` tags are pushed only
-  on `main`.
+  pipelines build-only (nothing is pushed); the `:<hermes_version>`, `:latest`,
+  and `:<commit-sha>` tags are all pushed only on `main`.
 - **Pull**: the in-cluster Deployment
   (`kubernetes/apps/hermes/deployment.yaml`) references
   `registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_version}` — the
@@ -78,3 +77,15 @@ The `build-hermes-agent` CI job (`.gitlab-ci.yml`) does both stages.
 
 See `docs/37-hermes.md` for the full architecture, the Codex runtime setup, SSO,
 and runbooks.
+
+## Local patches (`patches/*.patch`)
+
+Applied by `build-hermes-agent` to the SHA-verified upstream tree before the
+build (`git apply -p1`, loud failure on drift). Each patch documents the
+upstream version it targets; **re-verify every patch on a hermes version
+bump** and drop any that upstreamed.
+
+- `0001-hindsight-manual-retain-async.patch` — the manual `hindsight_retain`
+  tool path omitted `retain_async`, running synchronously against minutes-long
+  CPU extraction and blowing Hermes's 120s tool timeout; the patch honors the
+  configured flag (default async) like the automatic retention path.

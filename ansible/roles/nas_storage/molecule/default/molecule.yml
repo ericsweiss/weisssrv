@@ -63,8 +63,49 @@ provisioner:
             clients:
               - spec: 192.168.0.200/29
                 options: rw,sync,no_subtree_check,fsid=94
+          # backups-apps: PER-APP exports, each bind_source a SUBDIR of an
+          # (encrypted) dataset — bind_source_check points the mounted-dataset
+          # guard at the parent and the fstab anchor uses the late
+          # zfs-mount-encrypted.service. Exercises the isolation split: a k3s
+          # require-TLS export, a VM require-TLS export (gitlab, now on the wire),
+          # and the HAOS plaintext export — each scoped to a single writer. The
+          # subdirs are created + owned as bind sources (no dedicated subdir task).
+          - path: /export/backups-apps/authentik
+            bind_source: /mnt/tank/backups/apps/authentik
+            bind_source_check: /mnt/tank/backups
+            owner: 1000
+            group: 2000
+            mode: "02775"
+            xprtsec: tls
+            clients:
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=96
+          - path: /export/backups-apps/gitlab
+            bind_source: /mnt/tank/backups/apps/gitlab
+            bind_source_check: /mnt/tank/backups
+            owner: 1000
+            group: 2000
+            mode: "02775"
+            xprtsec: tls
+            clients:
+              - spec: 192.168.0.153/32
+                options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=97
+          - path: /export/backups-apps/home-assistant
+            bind_source: /mnt/tank/backups/apps/home-assistant
+            bind_source_check: /mnt/tank/backups
+            owner: 1000
+            group: 2000
+            mode: "02775"
+            clients:
+              - spec: 192.168.0.154/32
+                options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98
         nas_encrypted_bind_sources:
           - /mnt/ssd/appdata
+          - /mnt/tank/backups/apps/authentik
+          - /mnt/tank/backups/apps/gitlab
+          - /mnt/tank/backups/apps/home-assistant
+        nas_backup_apps_base: /mnt/tank/backups/apps
+        nas_backup_artifact_metrics_enabled: true
         media_mover_enabled: true
         media_mover_src: /mnt/nvme/media/library
         media_mover_dst: /mnt/tank/media/library

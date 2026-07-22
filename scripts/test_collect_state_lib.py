@@ -169,6 +169,13 @@ class TestClassifyRegular:
     def test_coverage_below_floor_is_failed(self):
         assert _regular(6, "true", 9, 9, 9, 19, 47, 50, 0, 0, 1) == "FAILED"
 
+    def test_app_vms_down_degrades_not_failed(self):
+        # The Nextcloud/Immich/Immich-ML app VMs are now collected hosts (they
+        # count toward HOSTS_TOTAL). All 3 unreachable out of 22 collected hosts
+        # keeps coverage at 86% (above the floor) with core infra up, so the
+        # verdict is PARTIAL — never FAILED, never a false OK.
+        assert _regular(6, "true", 9, 9, 19, 22, 86, 50, 0, 0, 1) == "PARTIAL"
+
     def test_probe_failure_defaults_never_promote(self):
         # gitlab probe failure (000 -> gitlab_ok=0) with everything else green
         # yields PARTIAL, never OK.
@@ -238,6 +245,90 @@ class TestClassifierParity:
             f"pve={pve} api={api} ready={ready}/{total} flux={flux} "
             f"zfs={zfs} gitlab={gitlab}"
         )
+
+
+# --- compose_active_sections: sentinel section-dispatch ----------------------
+# compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
+# echoes the comma-joined optional sections that render ("-" drops a section;
+# `metrics` is nested under `backup`).
+
+def _sections(health_url, nginx_cert, backup_timer, backup_prom) -> str:
+    res = _run(
+        f"compose_active_sections '{health_url}' '{nginx_cert}' "
+        f"'{backup_timer}' '{backup_prom}'"
+    )
+    assert res.returncode == 0, res.stderr
+    return res.stdout.strip()
+
+
+class TestComposeActiveSections:
+    def test_full_app_renders_every_section(self):
+        # A fully-featured compose app (Nextcloud/Immich call sites): all set.
+        assert _sections(
+            "http://x/health", "/etc/ssl/x/fullchain.pem", "x-backup.timer",
+            "/var/lib/node_exporter/x.prom",
+        ) == "health,nginx,backup,metrics"
+
+    def test_all_skip_renders_no_optional_sections(self):
+        # Every optional section sentinel "-" → only the always-on compose block
+        # (empty optional set).
+        assert _sections("-", "-", "-", "-") == ""
+
+    def test_immich_ml_only_health(self):
+        # The Immich-ML call site: compose_dir + a health endpoint, nothing else.
+        assert _sections("http://127.0.0.1:3003/ping", "-", "-", "-") == "health"
+
+    def test_backup_without_metrics(self):
+        assert _sections("-", "-", "x-backup.timer", "-") == "backup"
+
+    def test_metrics_is_nested_under_backup(self):
+        # backup_prom set but backup_timer "-": metrics must NOT render on its own
+        # (in the body it lives inside the backup section).
+        assert _sections("-", "-", "-", "/var/lib/node_exporter/x.prom") == ""
+
+    def test_section_order_is_stable(self):
+        # nginx present, health absent — order stays health<nginx<backup<metrics.
+        assert _sections("-", "/etc/ssl/x.pem", "x.timer", "/v/x.prom") == (
+            "nginx,backup,metrics"
+        )
+
+
+# --- firewall_guest_fw_list: per-guest .fw enumeration -----------------------
+# Reads candidate *.fw paths on stdin, drops cluster.fw, emits the rest sorted.
+
+def _fw_list(stdin: str) -> list[str]:
+    res = _run("firewall_guest_fw_list", stdin=stdin)
+    return res.stdout.splitlines()
+
+
+class TestFirewallGuestFwList:
+    def test_excludes_cluster_fw(self):
+        out = _fw_list(
+            "/etc/pve/firewall/cluster.fw\n"
+            "/etc/pve/firewall/100.fw\n"
+            "/etc/pve/firewall/156.fw\n"
+        )
+        assert "/etc/pve/firewall/cluster.fw" not in out
+        assert out == ["/etc/pve/firewall/100.fw", "/etc/pve/firewall/156.fw"]
+
+    def test_output_is_sorted(self):
+        out = _fw_list(
+            "/etc/pve/firewall/222.fw\n"
+            "/etc/pve/firewall/100.fw\n"
+            "/etc/pve/firewall/156.fw\n"
+        )
+        assert out == sorted(out)
+        assert out == [
+            "/etc/pve/firewall/100.fw",
+            "/etc/pve/firewall/156.fw",
+            "/etc/pve/firewall/222.fw",
+        ]
+
+    def test_only_cluster_fw_yields_nothing(self):
+        assert _fw_list("/etc/pve/firewall/cluster.fw\n") == []
+
+    def test_empty_input_yields_nothing(self):
+        assert _fw_list("") == []
 
 
 if __name__ == "__main__":

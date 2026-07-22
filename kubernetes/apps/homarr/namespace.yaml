@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: homarr
+  labels:
+    app.kubernetes.io/name: homarr
+    app.kubernetes.io/part-of: homarr
+    app.kubernetes.io/managed-by: flux
+    # enforce baseline / warn+audit restricted (matches hermes/recipes). The
+    # pod + container securityContext below already applies restricted-style
+    # hardening (runAsNonRoot, drop-ALL, seccomp RuntimeDefault), but the
+    # upstream Node/Next.js image is not guaranteed to start under a strict
+    # restricted ENFORCE, so baseline is the safe enforce level while
+    # warn/audit surface any restricted drift.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

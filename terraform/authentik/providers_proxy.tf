@@ -200,29 +200,6 @@ resource "authentik_provider_proxy" "pulsarr" {
   refresh_token_validity = "days=30"
 }
 
-resource "authentik_provider_proxy" "hermes" {
-  name          = "Hermes"
-  external_host = "https://agent.ericsweiss.com"
-
-  mode                  = "forward_single"
-  intercept_header_auth = true
-
-  authorization_flow = data.authentik_flow.provider_authorization.id
-  invalidation_flow  = data.authentik_flow.provider_invalidation.id
-
-  internal_host                = ""
-  internal_host_ssl_validation = true
-  skip_path_regex              = ""
-  cookie_domain                = ""
-
-  basic_auth_enabled            = false
-  basic_auth_username_attribute = ""
-  basic_auth_password_attribute = ""
-
-  access_token_validity  = "hours=24"
-  refresh_token_validity = "days=30"
-}
-
 resource "authentik_provider_proxy" "wireguard_easy" {
   name          = "WireGuard Easy"
   external_host = "https://vpn.esweiss.com"

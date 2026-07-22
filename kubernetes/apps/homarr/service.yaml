@@ -1,0 +1,19 @@
+---
+# ClusterIP fronting the Homarr container's :7575. Consumed by the Traefik
+# IngressRoutes (external + internal).
+apiVersion: v1
+kind: Service
+metadata:
+  name: homarr
+  namespace: homarr
+  labels:
+    app.kubernetes.io/name: homarr
+    app.kubernetes.io/component: dashboard
+spec:
+  selector:
+    app.kubernetes.io/name: homarr
+  ports:
+    - name: http
+      port: 7575
+      targetPort: http
+  type: ClusterIP

@@ -49,5 +49,14 @@
     # container logs on the same path). site.yml deploys it to nextcloud_servers;
     # include it here so a standalone deploy keeps log shipping in sync.
     - alloy_host
+    # NFSv4-over-TLS client daemon (tlshd) for the offsite backup mount, which
+    # requires xprtsec=tls. Ordered before nextcloud so tlshd is up before the role
+    # mounts /backups-apps/nextcloud by hostname. Gated on the NFS-backed backup
+    # being enabled (mirrors how the k3s agents get nfs_tls); tasks self-guard on
+    # nfs_tls_enabled. Client-only (nfs_tls_is_server defaults false) — needs only
+    # the CA truststore, no cert/key.
+    - role: nfs_tls
+      vars:
+        nfs_tls_enabled: "{{ nextcloud_backup_nfs_enabled | default(false) }}"
     - nextcloud
     - proxmox_firewall

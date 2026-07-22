@@ -1,0 +1,44 @@
+---
+# Prepare: shared systemd/apt prep + one-time nginx fixture seeding. The seeds
+# live here (not converge.yml) so the idempotence re-run doesn't ping-pong with
+# the role: the flow removes the seeded default vhost, tightens the key mode,
+# and owns the ssl-dir mode — re-seeding those every converge would report
+# changed forever.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-apt-disable.yml
+
+    # nginx isn't installed under skip_install, so its sites-*/ssl dirs are
+    # created here. Seed a SENTINEL cert + key so the openssl placeholder task's
+    # `creates:` guard leaves them untouched, and a packaged default vhost so
+    # verify can assert the flow removes it.
+    - name: Pre-create the nginx sites + ssl layout (nginx not installed under skip)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/nginx/sites-available
+        - /etc/nginx/sites-enabled
+        - /etc/nginx/ssl
+
+    - name: Seed a packaged default vhost (to assert the flow removes it)
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-enabled/default
+        content: "# packaged default vhost\n"
+        mode: "0644"
+
+    - name: Seed sentinel cert + key so the creates guard leaves them untouched
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: "SENTINEL-PRESEEDED-{{ item | basename }}\n"
+        mode: "0644"
+      loop:
+        - /etc/nginx/ssl/fullchain.pem
+        - /etc/nginx/ssl/privkey.pem

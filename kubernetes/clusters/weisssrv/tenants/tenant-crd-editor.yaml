@@ -1,0 +1,62 @@
+---
+# Shared RBAC for tenant Flux reconciliation.
+#
+# Each tenant Kustomization reconciles under a namespace-scoped ServiceAccount
+# (`<slug>-flux`) bound to the built-in `admin` ClusterRole in the tenant
+# namespace. `admin` aggregates the core + edit rules AND external-secrets.io
+# and cert-manager.io (via the external-secrets-edit / cert-manager-edit
+# aggregated roles), so ExternalSecret and Certificate apply fine — but that
+# aggregation depends on how those controllers were installed, so both groups
+# are ALSO granted explicitly below (belt-and-suspenders; harmless overlap).
+# `admin` does NOT aggregate three CRD groups a default tenant app uses:
+#   * traefik.io            — IngressRoute / Middleware (routes)
+#   * monitoring.coreos.com — ServiceMonitor / PrometheusRule (observability)
+#   * autoscaling.k8s.io    — VerticalPodAutoscaler (right-sizing; this is NOT
+#                             the `autoscaling` group admin has, which is HPA)
+# Without these, a tenant's IngressRoute / ServiceMonitor / PrometheusRule / VPA
+# fail to apply with Forbidden and (with `wait: true`) the whole tenant
+# Kustomization goes NotReady. This ClusterRole fills exactly that gap; each
+# tenant wiring file binds it in the tenant namespace alongside `admin` (see
+# README.md — a second `<slug>-flux-crd-editor` RoleBinding).
+#
+# It is applied by the root (cluster-admin) flux-system Kustomization that pulls
+# in this tenants/ aggregate, so it exists even before any tenant is onboarded
+# (harmless while unbound). The namespaced RoleBindings scope it per tenant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tenant-crd-editor
+  labels:
+    app.kubernetes.io/managed-by: flux
+rules:
+  - apiGroups: ["traefik.io"]
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - traefikservices
+      - serverstransports
+      - tlsoptions
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - servicemonitors
+      - podmonitors
+      - prometheusrules
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: ["autoscaling.k8s.io"]
+    resources:
+      - verticalpodautoscalers
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  # Normally covered by admin's aggregation (see header) — explicit so the
+  # tenant story survives an install without the aggregated edit roles.
+  - apiGroups: ["external-secrets.io"]
+    resources:
+      - externalsecrets
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: ["cert-manager.io"]
+    resources:
+      - certificates
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]

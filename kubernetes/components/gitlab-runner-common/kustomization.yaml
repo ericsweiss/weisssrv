@@ -60,7 +60,7 @@ patches:
           # job parallelism. Pinning to 1 so an out-of-band `kubectl scale
           # --replicas=0` (used during maintenance to drain CI for k3s upgrades)
           # is reconciled back to 1 on the next Flux pass instead of leaving the
-          # deployment silently at 0 like it did on 2026-06-08.
+          # deployment silently at 0.
           replicas: 1
 
           # Check interval (seconds)

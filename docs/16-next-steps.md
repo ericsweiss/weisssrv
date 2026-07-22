@@ -50,15 +50,20 @@ This document tracks remaining work and planned improvements for the weisssrv ho
 - [x] Hermes Agent deployed (NousResearch autonomous AI agent + web dashboard):
   - `hermes` namespace, gateway + dashboard containers, self-built image via the
     `build-hermes-agent` CI job (upstream ships no image)
-  - Dashboard at agent.ericsweiss.com / agent.esweiss.com behind layered SSO
-    (Authentik forward-auth `hermes-users` group + the dashboard's own `basic`
-    auth provider); Traefik-only NetworkPolicy
+  - Dashboard at agent.ericsweiss.com / agent.esweiss.com behind the
+    dashboard's own Authentik OIDC login (`hermes-users` group); Traefik-only
+    NetworkPolicy
   - NFS `/appdata/hermes` on encrypted `ssd/appdata` (archive-backed)
   - LLM engine is the bundled Codex app-server runtime (ChatGPT-subscription
     OAuth via a one-time `codex login`, token persisted in `CODEX_HOME` on NFS —
     subscription billing, no API key)
   - See docs/37-hermes.md (Codex login + messaging-platform onboarding are user
     follow-ups)
+- [x] Homarr dashboard deployed (dashboard.esweiss.com / dashboard.ericsweiss.com):
+  homelab launcher with Authentik OIDC (`homarr-admins`) + break-glass local
+  admin, NFS-backed SQLite on encrypted `ssd/appdata`, direct-URL integrations
+  to the running services — see docs/41-homarr.md (integration wiring is a
+  post-deploy UI checklist there)
 
 ---
 
@@ -88,10 +93,15 @@ This document tracks remaining work and planned improvements for the weisssrv ho
 
 | Service | Type | Primary Host | Failover Targets | Status |
 |---------|------|--------------|------------------|--------|
-| dns-01 | LXC | pve-laptop-01 | pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
+| dns-01 | LXC | pve-opt-01 [†] | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
 | dns-02 | LXC | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 | HA Active |
 | smtp-relay | LXC | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
 | home-assistant | VM | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 | HA Active |
+
+[†] dns-01 is **temporarily** homed on pve-opt-01: pve-laptop-01 has confirmed bad
+RAM (masked via `GRUB_BADRAM`, DIMM replacement pending) and is fallback-only until
+the swap. Restore pve-laptop-01 as the primary once the DIMM is replaced.
+Authoritative placement is `ha_rules` (`affinity-dns-01`) in `group_vars/all.yml`.
 
 - [x] **Proxmox HA configured** via `proxmox_ha` role
   - Node-affinity rules control placement
@@ -253,7 +263,7 @@ Renovate could supplement `check-versions` by creating MRs automatically instead
 requiring a manual `task maintenance:check-versions` run. If added, it must:
 - Edit `all.yml` (not individual manifests) to keep a single source of truth
 - Run `scripts/generate-versions-configmap.py` as part of each MR so the ConfigMap
-  stays in sync (already enforced by the `flux-versions-sync` CI job)
+  stays in sync (already enforced by the versions-sync check in the `repo-sync-checks` CI job)
 
 Decision: defer until operational overhead justifies it. `task maintenance:check-versions`
 runs on a weekly schedule and surfaces updates without noise.
@@ -332,22 +342,19 @@ that needs an explicit call. Each is a real, documented gap, not a regression.
 - **Decision needed**: buy/configure a VLAN-capable switch and re-IP into
   segments, or take the interim IPSet tightening now.
 
-#### Offsite / 3-2-1 backup tier
+#### Offsite / 3-2-1 backup tier (SHIPPED)
 
-- **Current state**: 3-2-1 is not met. Every backup class lives inside the
-  single pve-nas-01 chassis — vzdump → `tank/proxmox`, `archive-backupctl` →
-  `archive` pool, the GitLab tarball (via vzdump), and even the "off-node" etcd
-  snapshot copy (→ `ssd/k3s-etcd`, still on pve-nas-01). No offsite copy exists.
-  See [docs/17-disaster-recovery.md](17-disaster-recovery.md) (on-site backups).
-- **Proposed change**: add an offsite/off-host tier — rotate the `archive`
-  pool's raw-encrypted snapshots to an external USB HDD stored offsite (the
-  existing `plug`/`unplug` + `zfs send -w` chain already supports this), and/or
-  push the small critical datasets (GitLab tarball, postgres, etcd snapshots —
-  each << a few GB) to a cheap encrypted offsite target (Backblaze B2 /
-  rsync.net). Re-point or duplicate the etcd off-node copy to a destination that
-  is not pve-nas-01.
-- **Decision needed**: which mechanism (physical rotation vs. encrypted cloud),
-  plus budget and retention.
+- **Shipped**: nightly restic → Backblaze B2 (`restic_offsite` role, docs/42) —
+  client-side encrypted, GFS retention (3d/2w/3mo/1y), chained after the archive
+  replication; covers the file-walkable estate, the relocated logical dumps on
+  `tank/backups/apps` (Authentik/Mealie/GitLab/Immich/Nextcloud/HA), the
+  immich/nextcloud data zvols via snapshot clones, and the `ssd/k3s-etcd`
+  off-node etcd copies. 3-2-1 is met for everything except the intentional
+  exclusions (tank/media, prometheus/loki history, vzdump images, Windows VM).
+  Alerts: `ResticOffsiteFailed`/`ResticOffsiteStale` + per-app
+  `BackupArtifactStale`.
+- **Remaining option (not planned)**: physical `archive`-pool rotation via the
+  existing `plug`/`unplug` chain — superseded by B2 for now.
 
 #### Network-fabric SPOF: second switch + corosync ring
 
@@ -429,7 +436,7 @@ supervised live steps that deserve their own change):
   **enabled on all six Proxmox hosts** (`proxmox_firewall_egress_filtering:
   true`, docs/11) and the smtp-relay guest enforces default-deny egress
   (`guest_firewall_policy_out: DROP`).
-- **ARCH-4 — split `.gitlab-ci.yml` into `include:` files.** The 2,706-line
+- **ARCH-4 — split `.gitlab-ci.yml` into `include:` files.** The ~3,200-line
   pipeline is anchor-free (extends/!reference only), so a split is safe in
   principle, but `local:` includes can only be validated by pushing and
   iterating on the live pipeline, and the template/job sections are interleaved.
@@ -442,9 +449,17 @@ supervised live steps that deserve their own change):
   Both deferral blockers resolved: the datreeio CRD catalog now carries the
   v1 schema (so `flux:lint` validates it) and the live CRD confirms
   `external-secrets.io/v1`.
-- **k8s-infra-06 — install monitoring CRDs in an early Kustomization** so a fresh
-  bootstrap/DR doesn't need a manual ServiceMonitor pre-apply (requires pinning
-  upstream prometheus-operator CRDs).
+- ~~**k8s-infra-06 — install monitoring CRDs in an early Kustomization**~~ —
+  RESOLVED (repo-wide review, 2026-07): added the dedicated `infrastructure-crds`
+  Flux stage (`kubernetes/infrastructure/crds/` — `prometheus-operator-crds`
+  HelmRelease pinned via `helm_chart_versions_prometheus_operator_crds`, chart
+  `30.0.1` = operator `v0.92.1`, version-matched to `kube_prometheus_stack`),
+  wired `sources → crds → controllers` with `wait: true`, and set
+  kube-prometheus-stack `crds.enabled: false` + `install/upgrade.crds: Skip`. A
+  fresh bootstrap now installs the monitoring CRDs before any controller renders a
+  ServiceMonitor — no manual pre-apply. The one-time live-cluster CRD metadata
+  adoption (metadata-only, zero CR impact) is documented in `docs/29` (Fresh
+  bootstrap / disaster recovery).
 - **k8s-apps-10 — image pinning, remaining scope.** The default runner
   executor images are now digest-pinned (`debian:trixie` in
   `gitlab-runner/release.yaml`, `python:3.11` in
@@ -805,8 +820,9 @@ Reachable at `cloud.ericsweiss.com` (external + internal) and `cloud.esweiss.com
 `nextcloud-admins` / `nextcloud-users`). Storage rides ZFS zvol passthrough
 disks (no NFS): app + postgres on encrypted `ssd/appdata/nextcloud/*`, bulk data
 on a 2T sparse child of the encrypted `tank/nextcloud-data`. Backups: root disk
-via vzdump, app/postgres zvols + a nightly `pg_dump` via `ssd/appdata` -> archive
-(raw-encrypted), bulk data via `tank/nextcloud-data` -> archive. Full
+via vzdump, app/postgres zvols via `ssd/appdata` -> archive (raw-encrypted), a
+nightly `pg_dump` to `tank/backups/apps/nextcloud` (rides `tank/backups` ->
+archive + restic B2), bulk data via `tank/nextcloud-data` -> archive. Full
 observability (node_exporter, alloy journald->Loki, nextcloud-exporter
 ServiceMonitor, blackbox probe, `NextcloudDown` / `NextcloudBackup*` alerts).
 
@@ -879,7 +895,7 @@ Follow-ups (not blockers):
 
 ### Storage Enhancements
 
-- [ ] ZFS auto-scrub notifications (systemd timer + email)
+- [ ] ZFS scrub-completion ZED email (per-scrub success/error notification only — scrub *staleness* detection already ships via the `ZFSPoolScrubStale` alert → Alertmanager)
 - [ ] Backup verification testing (quarterly restore drills)
 - [ ] Consider ZFS special devices for metadata acceleration
 

@@ -165,6 +165,10 @@ adguard_rewrites:
   # Hermes Agent web dashboard (Authentik forward-auth)
   - domain: "agent.{{ internal_domain }}"
     answer: "192.168.0.101"
+  # Homarr dashboard (Authentik OIDC; Traefik-internal). External name
+  # dashboard.ericsweiss.com is Cloudflare-only (created by external-dns).
+  - domain: "dashboard.{{ internal_domain }}"
+    answer: "192.168.0.101"
   # DOCUMENTED EXCEPTION to the no-ericsweiss-rewrite rule below: Authentik's
   # EXTERNAL hostname resolves internally to the internal Traefik VIP. OIDC
   # BACKENDS (the hermes dashboard's self_hosted provider, immich/nextcloud

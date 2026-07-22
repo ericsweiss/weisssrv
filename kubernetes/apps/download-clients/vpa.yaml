@@ -132,7 +132,10 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # maxAllowed.memory raised to 1.5Gi: pulsarr's padded historical-peak
+      # recommendation crept past the old 1Gi ceiling (VPARecommendationCapped),
+      # so the request stayed clamped below the working set.
       - containerName: "*"
         minAllowed: {cpu: 25m, memory: 64Mi}
-        maxAllowed: {cpu: 1, memory: 1Gi}
+        maxAllowed: {cpu: 1, memory: 1536Mi}
         controlledResources: [cpu, memory]
