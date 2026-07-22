@@ -174,6 +174,19 @@
 # immich_backup_dir resolves to the NFS mountpoint when immich_backup_nfs_enabled
 # (tank/backups/apps/immich -> archsync -> B2), otherwise the app zvol. This one
 # task creates whichever; the mount below (gated) overlays it when NFS-backed.
+#
+# The root:root/0750 attrs belong to the local UNDERLAY dir only — once the
+# export is mounted, re-running the file task would chown the NFS root, which
+# the export's all_squash maps to the anon uid and the server rejects with
+# EPERM ('chown failed: Operation not permitted', deploy-immich on the first
+# rerun after a successful mount). Skip it when something is already mounted
+# there; the export dir's ownership is managed NAS-side (nas_storage).
+- name: Check whether the backup landing directory is already a mountpoint
+  ansible.builtin.command: mountpoint -q {{ immich_backup_dir | quote }}
+  register: immich_backup_dir_mountpoint
+  changed_when: false
+  failed_when: false
+
 - name: Create the backup landing directory
   ansible.builtin.file:
     path: "{{ immich_backup_dir }}"
@@ -181,6 +194,7 @@
     owner: root
     group: root
     mode: "0750"
+  when: immich_backup_dir_mountpoint.rc != 0
 
 # Mounted over TLS (xprtsec=tls — the per-app export rejects plaintext); the VM
 # runs tlshd via the nfs_tls role, wired in immich.yml gated on this flag.
