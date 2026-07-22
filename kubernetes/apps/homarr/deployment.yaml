@@ -170,9 +170,14 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-              # The root entrypoint's needs, nothing more: chown data dirs,
-              # setuid/setgid so nginx workers drop to the unprivileged user.
-              add: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE"]
+              # The root entrypoint's needs, nothing more — each cap verified
+              # against the live pod: chown data dirs, setuid/setgid so nginx
+              # workers drop to the unprivileged user, and DAC_OVERRIDE for
+              # nginx's /var/lib/nginx logs/tmp dirs (without it nginx dies at
+              # boot with EACCES and nothing listens on :7575). FOWNER proved
+              # unnecessary (clean start + health without it); KILL likewise
+              # (pod terminates gracefully in ~1s without it).
+              add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"]
             # run.sh writes /etc/nginx/nginx.conf + nginx tmp/cache dirs and
             # Next.js writes cache/tmp under the app tree — rootfs must be
             # writable (matches the mealie/*arr non-s6 web apps).

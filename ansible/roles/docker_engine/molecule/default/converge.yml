@@ -12,6 +12,41 @@
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule/tasks/container-warmup.yml
 
+    # Regression fixture for the legacy-keyring cleanup: seed the
+    # pre-standardization repo line + keyring a real drifted host carries, so
+    # verify can assert the role removes both (the cleanup tasks run even in
+    # render-only mode — pure local file ops). Seeded HERE, after the warm-up
+    # (a broken docker source wedges the warm-up's own apt update — the very
+    # failure mode the cleanup exists for), and marker-guarded so the
+    # idempotence re-run doesn't re-seed and ping-pong with the role.
+    - name: Check whether the legacy-repo fixture was already seeded
+      ansible.builtin.stat:
+        path: /var/tmp/molecule-docker-legacy-fixture-seeded
+      register: docker_engine_fixture_marker
+
+    - name: Seed a pre-standardization Docker repo line
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/docker.list
+        content: >
+          deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg]
+          https://download.docker.com/linux/debian trixie stable
+        mode: "0644"
+      when: not docker_engine_fixture_marker.stat.exists
+
+    - name: Seed a pre-standardization Docker keyring
+      ansible.builtin.copy:
+        dest: /usr/share/keyrings/docker.gpg
+        content: "legacy-keyring-fixture"
+        mode: "0644"
+      when: not docker_engine_fixture_marker.stat.exists
+
+    - name: Mark the legacy-repo fixture as seeded
+      ansible.builtin.file:
+        path: /var/tmp/molecule-docker-legacy-fixture-seeded
+        state: touch
+        mode: "0644"
+      when: not docker_engine_fixture_marker.stat.exists
+
     - name: Install docker_engine in render-only mode
       ansible.builtin.include_role:
         name: docker_engine

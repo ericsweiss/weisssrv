@@ -23,3 +23,28 @@
           live-restore configuration the shared role installs; got
           {{ docker_engine_daemon }}.
         success_msg: "daemon.json renders the journald log driver + live-restore"
+
+    # The converge seeded the pre-standardization repo line + keyring; the
+    # role's legacy cleanup must have removed both (a leftover line wedges apt
+    # with "Conflicting values set for option Signed-By" once the current-path
+    # line is added alongside it).
+    - name: Read docker.list after the legacy cleanup
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/docker.list
+      register: docker_engine_repo_list
+
+    - name: Stat the legacy Docker keyring path
+      ansible.builtin.stat:
+        path: /usr/share/keyrings/docker.gpg
+      register: docker_engine_legacy_keyring
+
+    - name: Assert the seeded legacy repo line + keyring were removed
+      ansible.builtin.assert:
+        that:
+          - "'/usr/share/keyrings/docker.gpg' not in (docker_engine_repo_list.content | b64decode)"
+          - not docker_engine_legacy_keyring.stat.exists
+        fail_msg: >-
+          The pre-standardization Docker repo line or keyring survived the
+          role's legacy cleanup; a host carrying both repo lines fails every
+          apt operation ("Conflicting values set for option Signed-By").
+        success_msg: "legacy Docker repo line + keyring are cleaned up"
