@@ -190,6 +190,26 @@
     and (nextcloud_status.stdout | from_json).installed | default(false)
   when: not (skip_nextcloud_deploy | default(false))
 
+# Nextcloud's SSRF guard refuses server-side fetches to RFC1918 addresses
+# unless this is set — and split-horizon DNS resolves auth.ericsweiss.com to
+# the INTERNAL Traefik VIP, so the user_oidc discovery fetch is exactly such a
+# "local" request. Without it every SSO login dies with "Could not reach the
+# OpenID Connect provider" / "violates local access rules" (2026-07-22: broke
+# on the image upgrade that hardened the check). Deliberate + safe here: the
+# only URLs Nextcloud fetches server-side are our own codified endpoints.
+- name: Allow server-side requests to local addresses (split-horizon OIDC)
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T -u www-data nextcloud
+      php occ config:system:set allow_local_remote_servers
+      --value=true --type=boolean
+    chdir: "{{ nextcloud_compose_dir }}"
+  # Idempotent occ upsert with no change signal.
+  changed_when: false
+  when:
+    - not (skip_nextcloud_deploy | default(false))
+    - nextcloud_oidc_enabled | default(true)
+
 - name: Configure Authentik OIDC SSO
   ansible.builtin.include_tasks: sso.yml
   when:
