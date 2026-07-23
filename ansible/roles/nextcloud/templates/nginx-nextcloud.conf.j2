@@ -43,6 +43,16 @@ server {
     proxy_request_buffering off;
     proxy_buffering off;
 
+    # DAV service discovery. Answered HERE with relative redirects instead of
+    # proxying: the container Apache's .htaccess rewrite builds an ABSOLUTE
+    # Location from its plain-http side of the proxy ("http://cloud...."), and
+    # HTTP clients drop the Authorization header across a scheme change — DAV
+    # clients (Homarr's Nextcloud integration, iOS/macOS accounts) then fail
+    # principal discovery with anonymous 401s / "cannot find principalUrl". A
+    # relative Location preserves scheme + host.
+    location = /.well-known/carddav { return 301 /remote.php/dav/; }
+    location = /.well-known/caldav  { return 301 /remote.php/dav/; }
+
     location / {
         proxy_pass http://{{ nextcloud_http_bind_address }}:{{ nextcloud_http_bind_port }};
         proxy_http_version 1.1;
