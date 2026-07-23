@@ -79,6 +79,11 @@ spec:
           env:
             - name: TZ
               value: America/Los_Angeles
+            # Trust the PVE cluster CA for the Proxmox integration's
+            # https://<node>:8006 calls (see pve-ca-configmap.yaml).
+            # NODE_EXTRA_CA_CERTS extends the default store, never replaces it.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/ssl/pve/pve-root-ca.pem
             # Encrypts the integration credentials Homarr stores in the SQLite
             # DB (openssl rand -hex 32). REQUIRED — see externalsecret.yaml.
             - name: SECRET_ENCRYPTION_KEY
@@ -185,7 +190,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /appdata
+            - name: pve-root-ca
+              mountPath: /etc/ssl/pve
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: homarr-data
+        - name: pve-root-ca
+          configMap:
+            name: pve-root-ca

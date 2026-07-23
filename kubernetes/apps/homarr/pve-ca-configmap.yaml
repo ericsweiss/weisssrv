@@ -1,0 +1,49 @@
+---
+# The PVE Cluster Manager root CA (PUBLIC certificate, valid to 2035). The
+# Proxmox integration talks to https://<node>:8006, whose cert is signed by
+# this cluster-internal CA — Node.js rejects it (UNABLE_TO_VERIFY_LEAF_
+# SIGNATURE) without the extra trust anchor. Mounted into the pod and wired
+# via NODE_EXTRA_CA_CERTS (EXTENDS the default Mozilla store, so every other
+# integration's public TLS keeps verifying as before). Rotate by re-copying
+# /etc/pve/pve-root-ca.pem if the cluster CA is ever regenerated.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pve-root-ca
+  namespace: homarr
+data:
+  pve-root-ca.pem: |
+    -----BEGIN CERTIFICATE-----
+    MIIFzTCCA7WgAwIBAgIUJg8YdmZZtrEvtuu/05nnF1jlVfAwDQYJKoZIhvcNAQEL
+    BQAwdjEkMCIGA1UEAwwbUHJveG1veCBWaXJ0dWFsIEVudmlyb25tZW50MS0wKwYD
+    VQQLDCRkMDVkNzcwZC1mNWIyLTRiNTAtYjcwNC0zOTA5ZDI3N2Y2ZGIxHzAdBgNV
+    BAoMFlBWRSBDbHVzdGVyIE1hbmFnZXIgQ0EwHhcNMjUxMjI3MTUxMjA1WhcNMzUx
+    MjI1MTUxMjA1WjB2MSQwIgYDVQQDDBtQcm94bW94IFZpcnR1YWwgRW52aXJvbm1l
+    bnQxLTArBgNVBAsMJGQwNWQ3NzBkLWY1YjItNGI1MC1iNzA0LTM5MDlkMjc3ZjZk
+    YjEfMB0GA1UECgwWUFZFIENsdXN0ZXIgTWFuYWdlciBDQTCCAiIwDQYJKoZIhvcN
+    AQEBBQADggIPADCCAgoCggIBALMZXqkDcAN4EBlt3VEEUQxFcdIDV2y6AT4rm2eo
+    ETwbBva4UjXYEdwfRovByKVSyA7un1BzxtJFqpWrU5u3TYGpcVxzmDPTBadZZyKT
+    4HQbwHD057r7F+A64j039LHbMjSPAJtoOR6D8oMB3tVwZiJwsgMJDnwara1ElypY
+    fWlrxig3lWhaxAjXrOvPH8uH/BLcq2WwNbvF+10h4mrhEUHLdBj2XYAdgCXsd0lF
+    dqUZn7PznlYaQR9JDFQ/pDU3XIlgN/52+FcYXFzAVh0Jmi9PRWRcZ3jhcj+8czx2
+    h/DfQFzjrjK0zIJeQGCYVXvTWtLfeoE/Q2czIAriDHsqu3k7HWDB231yhE9CKm30
+    dHqpYGjfqHG+MOKRYFOp8Fizmu+cqyB8yyyvAjqpLXkyRAbTzjAhxZZEdJ45c2Gb
+    An5pbivKmOsFQhlhp33+dhsWaWHr2OjMORF4mlsXjYvCMyo8HbLaNak7Wku+FUFF
+    8Le4OPi8Q50K48LaaCnRbI6cBr/fE/VqfgaCLSl0G8o5R/Xstxh6lqv05ke6MRSw
+    qpI/oaTVD8Cxh2o5Hr/wIIsVs+/VNUgPUlrpb/ji8L0AFPwrk/XBKNDA4wn7ZTc4
+    QDUlkKZCPCTo14WEfV8H0cacIDP8wgVqkiMU0bqMUNcgMUkA4ZK7c+Pz/ltlGYU8
+    OU/NAgMBAAGjUzBRMB0GA1UdDgQWBBRSytRPWRmfG7xDIEMayRV7x9H7VDAfBgNV
+    HSMEGDAWgBRSytRPWRmfG7xDIEMayRV7x9H7VDAPBgNVHRMBAf8EBTADAQH/MA0G
+    CSqGSIb3DQEBCwUAA4ICAQArIvLz3TGqRFk/CB/FgDKNM4vhhBgb89JGs9hhH7Ze
+    NPwgWkQU+l0a5ogWbu8r+JdAVQU+wKufD9uj9+tm+/0pSALVo1HHmczGx0B5rSTT
+    wC5qd5AUa6ZwnSQKTTmLSvvCN/YF7OwgIYULJuNAREnLPbrD6VcIlysVvOsi8Ai4
+    HRZEPC5GrBMs7cMoA4Uu90h70n2VwTx+tIXPPnUMJIZgw2lV+jxoTeDJ8twpppnS
+    Y8geUvRYhgA4/JfcELLO2duVC6n6rsVYTUHNYD+YXnVOf4qQtPy4YjjpBxsvNDHx
+    vkcoZ/Xo46WgkXWMCjGpr7qoAHH0oTN8tYw+ozRcA/49XLjeO0g1THiuFcvvU51T
+    y+tNYWJn+35/KvCh2Bk0DoocuJgcUuby6oD2rRe2J2w4G/IpPXoIANN1S8EmFFyM
+    7yVG5ryULxiax+1eFIZ+q/tFZJxoLh5w3aLgtC0MUeKoDjG7rf0WXlw1ISbS1tLY
+    xOIOfWIk0P4XfDeKrllCdtHrR9YEcHcqCIwCKmgl2zCDh9xVHsg5ouqC9qKC2Pzl
+    95WLOPoEHu/eFJ3fB7nxwi4ldMArukn+vyeVotr0/hafdkGp2dw67H/9EozAHEG+
+    Bc67nfe4FqSorNs1em6TLns6hnMNI0fZa9CPo1AwLtfGEY5nrbuPkWvMBNHuhOWt
+    lQ==
+    -----END CERTIFICATE-----

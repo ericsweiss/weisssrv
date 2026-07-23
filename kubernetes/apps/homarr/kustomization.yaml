@@ -8,6 +8,7 @@ resources:
   - externalsecret.yaml
   - storage.yaml
   - deployment.yaml
+  - pve-ca-configmap.yaml
   - service.yaml
   - ingress-routes.yaml
   - certificate.yaml
