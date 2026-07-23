@@ -307,9 +307,10 @@ workflow:
 .paths-terraform-authentik:
   changes:
     - terraform/authentik/**/*
-.paths-terraform-b2:
+.paths-b2-drift:
   changes:
-    - terraform/b2/**/*
+    - scripts/b2-bucket-drift.py
+    - scripts/test_b2_bucket_drift.py
 .paths-docs-links:
   changes:
     - docs/**/*
@@ -1555,40 +1556,25 @@ authentik-drift-plan:
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-terraform-authentik, changes]
 
-# Read-only drift `terraform plan` for the B2 backup-bucket module against the
-# live bucket. Never applies (every apply is a supervised manual step — see
-# terraform/b2/README.md; the apply task refuses -auto-approve). A non-empty
-# plan = an out-of-band Backblaze-console edit drifted from the codified state;
-# allow_failure so drift, or a plan hiccup, surfaces without blocking CI.
-# Mirrors authentik-drift-plan (op-injected creds + TF_HTTP_* backend), scoped
-# to the b2 module + its own state name.
+# Read-only drift check for the B2 backup-bucket settings against the live
+# bucket via the raw B2 API (scripts/b2-bucket-drift.py — the codified config;
+# it replaced the terraform/b2 module after the Backblaze provider's READ path
+# started returning empty attributes against B2's current API, which made
+# terraform plan report a permanent phantom diff). Never applies: reconciling
+# is the supervised `task b2:apply`. A DRIFT result = an out-of-band
+# Backblaze-console edit; allow_failure so drift, or an API hiccup, surfaces
+# without blocking CI.
 b2-drift-plan:
-  # Shared HTTP-backend auth/lock settings come from .terraform-http-backend;
-  # only the b2 state path is overridden here.
-  extends: .terraform-http-backend
   needs: []
   stage: validate
-  image:
-    name: hashicorp/terraform:1.15
-    entrypoint: [""]
-  variables:
-    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/b2"
-    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/b2/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/b2/lock"
+  image: python:3.11-slim
   before_script:
-    - !reference [.install-1password-alpine, before_script]
+    - !reference [.install-1password, before_script]
   script:
-    - cd terraform/b2
-    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (committed
-    # provider hashes; a CI-side change would mask supply-chain drift).
-    - terraform init -lockfile=readonly
     - |
-      export TF_VAR_b2_application_key_id=$(op read "op://Homelab/B2 Archive Backup/b2_key_id")
-      export TF_VAR_b2_application_key=$(op read "op://Homelab/B2 Archive Backup/b2_application_key")
-      # Plan only, never apply — surfaces drift instead of silently reverting it.
-      # -detailed-exitcode: drift exits 2 (plain plan exits 0 on a non-empty
-      # diff), so allow_failure can actually render the yellow drift signal.
-      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
+      export B2_APPLICATION_KEY_ID=$(op read "op://Homelab/B2 Archive Backup/b2_key_id")
+      export B2_APPLICATION_KEY=$(op read "op://Homelab/B2 Archive Backup/b2_application_key")
+      python3 scripts/b2-bucket-drift.py
   # Advisory drift signal only — never blocks CI (apply stays supervised).
   allow_failure: true
   rules:
@@ -1596,12 +1582,12 @@ b2-drift-plan:
     # main branch). No changes: filter — the point is to catch out-of-band
     # Backblaze-console edits when nothing in-repo changed.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $OP_SERVICE_ACCOUNT_TOKEN'
-    # And validate a b2-module change against live state before its supervised
-    # apply. Token-guarded like terraform-plan (fork MRs lack it).
+    # And validate a drift-script change against the live bucket before merge.
+    # Token-guarded like terraform-plan (fork MRs lack it).
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-b2, changes]
+      changes: !reference [.paths-b2-drift, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
-      changes: !reference [.paths-terraform-b2, changes]
+      changes: !reference [.paths-b2-drift, changes]
 
 python-tests:
   # Runs pytest against scripts/. test_*.py live next to the scripts they
@@ -2560,9 +2546,10 @@ deploy-ansible-storage:
     # The role reads these from env via the secrets: dict / lookup('ansible.builtin.env');
     # rclone_crypt_password doubles as the restic repo password.
     # restic_* fields = the RESTRICTED hide-only key (no deleteFiles). The
-    # b2_key_id/b2_application_key fields on the same item stay the FULL master
-    # key for terraform/b2 (lifecycle/SSE writes need bucket caps the restricted
-    # key lacks) — capability split per docs/42 Step 0.
+    # b2_key_id/b2_application_key fields on the same item stay the FULL
+    # bucket-settings key for scripts/b2-bucket-drift.py (lifecycle/SSE +
+    # retention reads/writes the restricted key lacks) — capability split per
+    # docs/42 Step 0.
     B2_KEY_ID: "op://Homelab/B2 Archive Backup/restic_key_id"
     B2_APPLICATION_KEY: "op://Homelab/B2 Archive Backup/restic_application_key"
     RCLONE_CRYPT_PASSWORD: "op://Homelab/B2 Archive Backup/rclone_crypt_password"

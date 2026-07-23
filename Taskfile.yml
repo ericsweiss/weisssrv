@@ -222,7 +222,7 @@ tasks:
       LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
       LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
       # restic_offsite secrets (docs/42): the RESTRICTED hide-only key fields —
-      # terraform/b2 keeps the master key on b2_key_id/b2_application_key.
+      # scripts/b2-bucket-drift.py keeps the bucket-settings key on b2_key_id/b2_application_key.
       B2_KEY_ID: op://Homelab/B2 Archive Backup/restic_key_id
       B2_APPLICATION_KEY: op://Homelab/B2 Archive Backup/restic_application_key
       RCLONE_CRYPT_PASSWORD: op://Homelab/B2 Archive Backup/rclone_crypt_password
@@ -1337,65 +1337,33 @@ tasks:
     cmds:
       - op run -- ./import.sh
 
-  # --- Backblaze B2 offsite-backup bucket module (separate state name; SUPERVISED apply) ---
-  # Mirrors the cloudflare/tailscale/authentik terraform:* tasks but points at
-  # terraform/b2, its own GitLab state name (does not collide), and the B2
-  # application key from the "B2 Archive Backup" 1Password item (the same item
-  # the restic_offsite role consumes). apply is a supervised operator step — a
-  # bad lifecycle rule could start expiring backup data. See terraform/b2/README.md.
-  terraform:b2-init:
-    desc: Initialize Terraform for the B2 backup-bucket module (GitLab state backend)
-    dir: "{{.TERRAFORM_DIR}}/b2"
-    # Anchor shared by terraform:b2-init/plan/apply/import — B2 app-key vars +
-    # the b2-specific HTTP state name in one place.
-    env: &tf_b2_env
-      TF_VAR_b2_application_key_id: op://Homelab/B2 Archive Backup/b2_key_id
-      TF_VAR_b2_application_key: op://Homelab/B2 Archive Backup/b2_application_key
-      TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/b2"
-      TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/b2/lock"
-      TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/{{.GITLAB_PROJECT_ID}}/terraform/state/b2/lock"
-      TF_HTTP_USERNAME: "terraform"
-      TF_HTTP_PASSWORD: "op://Homelab/GitLab Terraform State Token/credential"
-      TF_HTTP_LOCK_METHOD: "POST"
-      TF_HTTP_UNLOCK_METHOD: "DELETE"
-    preconditions: *tf_preconditions
+  # --- Backblaze B2 offsite-backup bucket settings (raw API; SUPERVISED apply) ---
+  # scripts/b2-bucket-drift.py is the codified bucket config (it replaced the
+  # terraform/b2 module after the Backblaze provider's READ path went blind
+  # against B2's current API and terraform plan reported a permanent phantom
+  # diff). Same 1Password item the restic_offsite role consumes; apply is a
+  # supervised operator step — a bad lifecycle rule could start expiring
+  # backup data.
+  b2:drift:
+    desc: "Drift-check the B2 backup bucket settings against scripts/b2-bucket-drift.py (read-only)"
+    # Anchor shared by b2:drift/apply — the bucket-settings app key.
+    env: &b2_env
+      B2_APPLICATION_KEY_ID: op://Homelab/B2 Archive Backup/b2_key_id
+      B2_APPLICATION_KEY: op://Homelab/B2 Archive Backup/b2_application_key
+    preconditions: &b2_preconditions
+      - sh: command -v op
+        msg: "1Password CLI is not installed"
+      - sh: op whoami 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
-      - op run -- terraform init {{.CLI_ARGS}}
+      - op run -- python3 scripts/b2-bucket-drift.py
 
-  terraform:b2-plan:
-    desc: "Plan B2 backup-bucket changes (read-only diff vs the live bucket)"
-    dir: "{{.TERRAFORM_DIR}}/b2"
-    env: *tf_b2_env
-    preconditions: *tf_preconditions
+  b2:apply:
+    desc: "SUPERVISED: reconcile the B2 bucket to the codified settings — review the drift output first; a bad lifecycle rule can expire backup data"
+    env: *b2_env
+    preconditions: *b2_preconditions
     cmds:
-      - op run -- terraform plan {{.CLI_ARGS}}
-
-  terraform:b2-apply:
-    desc: "SUPERVISED: apply the B2 bucket settings — a bad lifecycle rule can expire backup data; review the plan and type 'yes'. Do NOT pass -auto-approve."
-    dir: "{{.TERRAFORM_DIR}}/b2"
-    env: *tf_b2_env
-    preconditions: *tf_preconditions
-    cmds:
-      # Hard guard: a bad lifecycle rule could start expiring the only offsite
-      # copy of the backups, so the apply MUST be supervised (review the plan,
-      # type `yes`). Refuse -auto-approve so the plan review cannot be bypassed
-      # by an errant flag / copy-paste (same guard as tailscale-apply).
-      - |
-        case " {{.CLI_ARGS}} " in
-          *-auto-approve*)
-            echo "Refusing -auto-approve: the B2 bucket apply is supervised. Review the plan and type 'yes'." >&2
-            exit 1
-            ;;
-        esac
-        op run -- terraform apply {{.CLI_ARGS}}
-
-  terraform:b2-import:
-    desc: "One-time/DR state bootstrap: terraform-import the existing B2 bucket (read-only against the API; writes only Terraform state)"
-    dir: "{{.TERRAFORM_DIR}}/b2"
-    env: *tf_b2_env
-    preconditions: *tf_preconditions
-    cmds:
-      - op run -- ./import.sh
+      - op run -- python3 scripts/b2-bucket-drift.py --apply
 
   terraform:validate:
     desc: Validate Terraform configuration (alias for validate-local)
@@ -1407,7 +1375,7 @@ tasks:
     dir: "{{.TERRAFORM_DIR}}"
     cmds:
       # Run from terraform/ so -recursive covers every module (cloudflare +
-      # tailscale + authentik + b2), matching the CI terraform-fmt job.
+      # tailscale + authentik), matching the CI terraform-fmt job.
       - terraform fmt -recursive
 
   terraform:fmt-check:

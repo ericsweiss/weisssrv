@@ -107,7 +107,7 @@ at all).
    -w`) — encrypted-at-rest blobs, no key loaded.
 3. **Offsite:** B2 holds **restic client-side ciphertext** (repo password =
    the `rclone_crypt_password` field). SSE-B2 is a redundant extra. rclone
-   deletes by **hiding**; the B2 lifecycle (terraform/b2) expires hidden versions
+   deletes by **hiding**; the B2 lifecycle (scripts/b2-bucket-drift.py) expires hidden versions
    at 30 days, so a capability-restricted key (no `deleteFiles`) still prunes.
 
 ## Operations — `restic-offsitectl`
@@ -232,17 +232,21 @@ Hermes OIDC cutover, so all three sets of prerequisites are gathered here.)
    The two consumers deliberately use different keys (capability split):
    - **restic/rclone** (storage deploy + `restic-offsitectl`) consume the
      `restic_*` fields — hide-only, no `deleteFiles`, tamper-resistant.
-   - **terraform/b2** (drift-plan CI + supervised applies) keeps the master
-     key on `b2_key_id`/`b2_application_key` — reconciling bucket lifecycle
-     and SSE needs bucket-management capabilities (`writeBuckets` et al.)
-     that the restricted key deliberately lacks.
-   restic/rclone keep working — they only ever hide (terraform/b2/README).
+   - **scripts/b2-bucket-drift.py** (the `b2-drift-plan` CI job + the
+     supervised `task b2:apply`) keeps the bucket-settings key on
+     `b2_key_id`/`b2_application_key` — reconciling bucket lifecycle / SSE /
+     retention needs bucket-management capabilities (`writeBuckets`,
+     `readBucketRetentions` et al.) that the restricted key deliberately
+     lacks. (This script replaced the terraform/b2 module: the Backblaze
+     terraform provider's read path returns empty attributes against B2's
+     current API, so terraform plan reported a permanent phantom diff.)
+   restic/rclone keep working — they only ever hide.
 3. **Supervised terraform applies** (each a plan-reviewed manual apply, no
    `-auto-approve`):
-   - **`terraform/b2`** — adopt (import) the `weisssrv-backup` bucket and
-     reconcile versioning / lifecycle / SSE. The 30-day hidden-version lifecycle
-     rule is what lets the restricted key's hide-only prune reclaim space
-     (terraform/b2/README).
+   - **`task b2:apply`** — reconcile the `weisssrv-backup` bucket settings
+     (allPrivate / SSE-B2 / lifecycle) after reviewing `task b2:drift`. The
+     30-day hidden-version lifecycle rule is what lets the restricted key's
+     hide-only prune reclaim space (scripts/b2-bucket-drift.py).
    - **`terraform/authentik`** — the Hermes dashboard OIDC cutover **and** the
      Homarr OIDC objects (provider / application / `homarr-admins` group /
      binding), docs/40.
@@ -310,12 +314,16 @@ vzdump already captures the whole HAOS VM image (local + archive DR). For a
 NFS target this MR provisions:
 
 1. Home Assistant → **Settings → System → Storage → Add network storage**:
-   - Name: `nas-backup`, Usage: **Backup**
+   - Name: `nas_backup` (the field allows only alphanumerics and underscores), Usage: **Backup**
    - Server: `192.168.0.102` (pve-nas-01), Protocol: **NFS**, NFS version **4**
    - Remote share path: `/backups-apps/home-assistant`
    (HAOS mounts NFS plaintext — the documented .154 exception, docs/24.)
 2. **Settings → System → Backups → Automatic backups**: schedule a backup and set
-   its **location** to the `nas-backup` network storage.
+   its **location** to the `nas_backup` network storage.
+3. **Save the backup encryption key offsite**: automatic backups are
+   `protected: true` (encrypted); download the emergency kit (Backups → ⋮) and
+   store the key as `backup_encryption_key` on the **Home Assistant API Token**
+   1Password item — without it the offsite tars are undecryptable in DR.
 
 Its freshness is then covered by the NAS-side `BackupArtifactStale`
 (`app="home-assistant"`) mtime alert. If deferred, HA offsite coverage remains
