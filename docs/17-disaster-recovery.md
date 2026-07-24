@@ -278,7 +278,7 @@ App-data zvols recovered this way are the **stale pre-dedup copies** — prefer 
 The **offsite** copy of the file-walkable, high-value estate lives in Backblaze
 B2 as restic client-side ciphertext (`restic_offsite` role, docs/42). Use it when
 BOTH the live NAS and the archive pool are lost, or to pull a single file/dataset
-back from offsite. Repo password = the `rclone_crypt_password` field of the
+back from offsite. Repo password = the `restic_repo_password` field of the
 `B2 Archive Backup` 1Password item — **without it the repo is unrecoverable**
 (keep an offline copy). On a rebuilt pve-nas-01 the role renders
 `/etc/restic-offsite/{env,rclone.conf}`; to restore from another host, install

@@ -59,13 +59,13 @@ instance `flock`; run/restore/verify/prune share the lock.
 1. Local dataset encryption (dumps land on `tank/backups`, `aes-256-gcm`).
 2. Archive replication (raw `zfs send -w` — encrypted-at-rest blobs, no key).
 3. Offsite: B2 holds **restic client-side ciphertext** (repo password =
-   `rclone_crypt_password`); SSE-B2 is a redundant extra. rclone deletes by
+   `restic_repo_password`); SSE-B2 is a redundant extra. rclone deletes by
    *hiding*, and the B2 lifecycle (terraform/b2) expires hidden versions, so a
    capability-restricted key (no `deleteFiles`) still prunes.
 
 ## Secrets
 
-`b2_key_id`, `b2_application_key`, `rclone_crypt_password` come from the
+`b2_key_id`, `b2_application_key`, `restic_repo_password` come from the
 `secrets:` dict (1Password item **B2 Archive Backup**). The env file
 (`RESTIC_PASSWORD`) and `rclone.conf` (B2 key) render `0600` with `no_log`.
 

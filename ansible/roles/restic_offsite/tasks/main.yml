@@ -111,12 +111,12 @@
     - name: Refuse secret values the env-file parsers would disagree on
       ansible.builtin.assert:
         that:
-          - not (rclone_crypt_password is search("'"))
-          - not (rclone_crypt_password is search('\\\\'))
+          - not (restic_repo_password is search("'"))
+          - not (restic_repo_password is search('\\\\'))
           - not (restic_offsite_repo is search("'"))
           - not (restic_offsite_repo is search('\\\\'))
         fail_msg: >-
-          rclone_crypt_password / restic_offsite_repo must not contain single
+          restic_repo_password / restic_offsite_repo must not contain single
           quotes or backslashes (systemd EnvironmentFile and shell `source`
           parse them differently — rotate the 1Password value instead).
       no_log: true

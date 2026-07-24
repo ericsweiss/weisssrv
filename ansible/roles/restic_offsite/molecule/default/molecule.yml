@@ -53,4 +53,4 @@ provisioner:
         # local file repo).
         b2_key_id: molecule-b2-key-id
         b2_application_key: molecule-b2-app-key
-        rclone_crypt_password: molecule-test-password
+        restic_repo_password: molecule-test-password

@@ -111,13 +111,13 @@ secrets:
   # B2 offsite backup (docs/42 Step 0 capability split). The restic_offsite
   # role consumes the RESTRICTED hide-only key (restic_* fields); terraform/b2
   # keeps the FULL master key on the b2_* fields (bucket lifecycle/SSE writes).
-  # rclone_crypt_password doubles as the restic repo password (RESTIC_PASSWORD)
+  # restic_repo_password doubles as the restic repo password (RESTIC_PASSWORD)
   # — losing it loses the repo.
   b2_master_key_id: "op://Homelab/B2 Archive Backup/b2_key_id"
   b2_master_application_key: "op://Homelab/B2 Archive Backup/b2_application_key"
   restic_key_id: "op://Homelab/B2 Archive Backup/restic_key_id"
   restic_application_key: "op://Homelab/B2 Archive Backup/restic_application_key"
-  rclone_crypt_password: "op://Homelab/B2 Archive Backup/rclone_crypt_password"
+  restic_repo_password: "op://Homelab/B2 Archive Backup/restic_repo_password"
 
 # Timezone
 timezone: America/Los_Angeles

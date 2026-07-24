@@ -741,4 +741,4 @@ nic_tuning_vm_swappiness: 1
 # (capability split rationale: docs/42 Step 0).
 b2_key_id: "{{ lookup('ansible.builtin.env', 'B2_KEY_ID') or undef(hint='B2_KEY_ID env var must be set (run via op run)') }}"
 b2_application_key: "{{ lookup('ansible.builtin.env', 'B2_APPLICATION_KEY') or undef(hint='B2_APPLICATION_KEY env var must be set (run via op run)') }}"
-rclone_crypt_password: "{{ lookup('ansible.builtin.env', 'RCLONE_CRYPT_PASSWORD') or undef(hint='RCLONE_CRYPT_PASSWORD env var must be set (run via op run)') }}"
+restic_repo_password: "{{ lookup('ansible.builtin.env', 'RESTIC_REPO_PASSWORD') or undef(hint='RESTIC_REPO_PASSWORD env var must be set (run via op run)') }}"

@@ -106,7 +106,7 @@ at all).
 2. **Archive:** `archive-backupctl` sends **raw encrypted streams** (`zfs send
    -w`) — encrypted-at-rest blobs, no key loaded.
 3. **Offsite:** B2 holds **restic client-side ciphertext** (repo password =
-   the `rclone_crypt_password` field). SSE-B2 is a redundant extra. rclone
+   the `restic_repo_password` field). SSE-B2 is a redundant extra. rclone
    deletes by **hiding**; the B2 lifecycle (scripts/b2-bucket-drift.py) expires hidden versions
    at 30 days, so a capability-restricted key (no `deleteFiles`) still prunes.
 
@@ -215,7 +215,7 @@ Hermes OIDC cutover, so all three sets of prerequisites are gathered here.)
 1. **1Password items present** (`docs/15-credential-rotation.md`) — both already
    exist; confirm before applying:
    - **B2 Archive Backup** — `b2_key_id`, `b2_application_key`,
-     `rclone_crypt_password` (the restic repo password — **keep an OFFLINE copy;
+     `restic_repo_password` (the restic repo password — **keep an OFFLINE copy;
      losing it makes the entire offsite repo undecryptable**).
    - **Homarr SSO** — the Homarr OIDC credentials (docs/41), consumed by **both**
      ESO (`homarr-secrets`) and `terraform/authentik` so they can never disagree.

@@ -691,6 +691,12 @@ build-hermes-agent:
   extends: .build-molecule-base
   variables:
     HERMES_UPSTREAM_REPO: "https://github.com/NousResearch/hermes-agent.git"
+    # The image build EXECUTES the CLIs it installs (`codex --version` /
+    # `claude --version` verification steps), and the Claude CLI's native
+    # binary SIGILLs on the legacy OptiPlex Core 2 Quads ("Illegal
+    # instruction", pipeline 854) — pin the build to modern-CPU nodes, same
+    # invariant as secret_detection's gitleaks pin above.
+    KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
   script:
     - |
       # Install the Docker buildx CLI plugin (pinned + sha256, matching the
@@ -2544,7 +2550,7 @@ deploy-ansible-storage:
     SAMBA_NAS_PASSWORD: "op://Homelab/Samba NAS User/password"
     # B2 offsite backup (restic_offsite role, runs on pve-nas-01 via storage.yml).
     # The role reads these from env via the secrets: dict / lookup('ansible.builtin.env');
-    # rclone_crypt_password doubles as the restic repo password.
+    # restic_repo_password doubles as the restic repo password.
     # restic_* fields = the RESTRICTED hide-only key (no deleteFiles). The
     # b2_key_id/b2_application_key fields on the same item stay the FULL
     # bucket-settings key for scripts/b2-bucket-drift.py (lifecycle/SSE +
@@ -2552,7 +2558,7 @@ deploy-ansible-storage:
     # docs/42 Step 0.
     B2_KEY_ID: "op://Homelab/B2 Archive Backup/restic_key_id"
     B2_APPLICATION_KEY: "op://Homelab/B2 Archive Backup/restic_application_key"
-    RCLONE_CRYPT_PASSWORD: "op://Homelab/B2 Archive Backup/rclone_crypt_password"
+    RESTIC_REPO_PASSWORD: "op://Homelab/B2 Archive Backup/restic_repo_password"
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/storage.yml
