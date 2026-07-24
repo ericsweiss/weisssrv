@@ -51,7 +51,7 @@ locals {
     }
     cloud = {
       name        = "Nextcloud"
-      group       = "Software"
+      group       = "Home"
       provider_id = authentik_provider_oauth2.nextcloud.id
       launch_url  = "https://cloud.ericsweiss.com"
       meta_icon   = "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/nextcloud.svg"
@@ -193,12 +193,12 @@ resource "authentik_application" "adguard_02" {
 # hermes_dashboard provider), so it lives OUTSIDE local.applications to keep
 # imports.tf's for_each import block away from an object that never existed in
 # the Admin UI. Slug `dashboard` -> issuer path /application/o/dashboard/
-# (matches homarr AUTH_OIDC_ISSUER). Library group "Software" — the operator
+# (matches homarr AUTH_OIDC_ISSUER). Library group "Home" — the operator
 # launcher, same bucket as Grafana / GitLab / the wg-easy admin UI.
 resource "authentik_application" "homarr" {
   name              = "Homarr"
   slug              = "dashboard"
-  group             = "Software"
+  group             = "Home"
   protocol_provider = authentik_provider_oauth2.homarr.id
 
   meta_launch_url  = "https://dashboard.ericsweiss.com"

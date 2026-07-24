@@ -94,10 +94,12 @@ spec:
             # Auth providers: OIDC (Authentik) as the primary login PLUS a local
             # credentials provider. The credentials provider is the break-glass
             # path — it seeds a local admin at first-run onboarding (usable when
-            # Authentik is down) and sidesteps homarr's OIDC-only admin-assignment
-            # sharp edge (homarr-labs#2108). docs/41 §SSO.
+            # SSO-only: the onboarding-era credentials break-glass is retired —
+            # admin rides the homarr-admins OIDC group claim (verified synced
+            # before this flip); a total Authentik outage is recovered by
+            # re-adding "credentials" here via dev-apply. docs/41 §SSO.
             - name: AUTH_PROVIDERS
-              value: "oidc,credentials"
+              value: "oidc"
             - name: AUTH_OIDC_CLIENT_ID
               value: homarr
             - name: AUTH_OIDC_CLIENT_SECRET
@@ -129,7 +131,8 @@ spec:
             # the same name (created at onboarding — docs/41 checklist).
             - name: AUTH_OIDC_GROUPS_ATTRIBUTE
               value: groups
-            # Keep the break-glass credentials form reachable (no silent auto-SSO).
+            # No silent auto-redirect to Authentik (login page still shows the
+            # explicit SSO button; harmless with credentials retired).
             - name: AUTH_OIDC_AUTO_LOGIN
               value: "false"
             # NextAuth (Auth.js v5) must trust Traefik's forwarded Host to build
