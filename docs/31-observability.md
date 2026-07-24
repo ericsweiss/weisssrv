@@ -25,6 +25,7 @@ The observability stack runs entirely in the `observability` namespace and is re
 | **Exportarr** | `ghcr.io/onedr0p/exportarr` | *arr application metrics (Sonarr, Radarr, Lidarr, Prowlarr) |
 | **Plex Exporter** | `jsclayton/prometheus-plex-exporter` | Plex Media Server metrics |
 | **Redis Exporter** | `oliver006/redis_exporter` | Redis cache metrics (Bar Assistant) |
+| **DCGM Exporter (GPU)** | `nvcr.io/nvidia/k8s/dcgm-exporter` | NVIDIA GPU telemetry (util, VRAM, temp, power) on the pve-prec-01 1660 Ti — DaemonSet on the GPU node ([docs/43](43-gpu-passthrough.md)) |
 | **Node Exporter (host)** | `prometheus-node-exporter` (on Proxmox hosts) | Bare-metal hardware metrics (thermals, SMART, disk I/O) on port 9101 |
 | **Alloy (host)** | `alloy` (Grafana APT) | Journald log collector on non-k8s hosts + 9 k3s VMs → Loki via HTTPS ingress (`loki.esweiss.com`) |
 
@@ -636,6 +637,7 @@ series to have existed) and the `Backup — Nightly Jobs` dashboard panels rende
 #### Other Groups
 
 - **`homelab.temperature`** — SATA/NVMe drive, CPU, GPU, and NIC temperature warning/critical pairs (drivetemp + hwmon via node_exporter_host).
+- **`homelab.gpu`** — GpuExporterDown, GpuTempWarning/Critical, HindsightGpuOffloadIdle, GpuTelemetryMissing (DCGM exporter on the pve-prec-01 1660 Ti; GpuTelemetryMissing catches "exporter up but zero GPU series"). See [docs/43](43-gpu-passthrough.md).
 - **`homelab.mail`** — PostfixQueueBacklog, PostfixDown, PostfixQueueCollectorStale (smtp-relay queue textfile collector).
 - **`homelab.kubernetes-resources`** — the tuned KubeCPUOvercommit replacement (see Built-in Alerts below).
 
@@ -854,3 +856,4 @@ task observability:silence   # Create Alertmanager silence (ALERT=alertname, DUR
 - `docs/12-runbooks.md` -- Observability-specific runbook entries
 - `docs/29-flux-operations.md` -- Flux day-2 operations (reconcile, suspend/resume)
 - `docs/19-k3s-deployment.md` -- K3s cluster deployment (zvol provisioning)
+- `docs/43-gpu-passthrough.md` -- GPU passthrough, the DCGM exporter, and the `homelab.gpu` alerts

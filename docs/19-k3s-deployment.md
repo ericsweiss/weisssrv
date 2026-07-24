@@ -302,6 +302,12 @@ kubectl get nodes --show-labels
 kubectl describe node k3s-agt-nas-01 | grep -A 5 Taints
 ```
 
+> **GPU node:** `k3s-agt-prec-01` is additionally a GPU node — `k3s_gpu_node:
+> true` in `hosts.yml` applies the `esweiss.com/gpu=nvidia` label + compute taint
+> and `tasks/gpu.yml` installs the NVIDIA driver + container toolkit. The GPU
+> passthrough + driver window is a separate supervised procedure — see
+> [docs/43-gpu-passthrough.md](43-gpu-passthrough.md).
+
 ## Phase 3: Flux Bootstrap + Platform Reconciliation
 
 Once the k3s cluster is up and `kubectl get nodes` shows all 9 nodes Ready, bootstrap
@@ -784,6 +790,7 @@ kubectl get pods -n kube-system | grep etcd
 - `docs/29-flux-operations.md` - Flux operator guide: bootstrap, adopt, rotate secrets, add an app, suspend, rollback
 - `docs/30-multi-repo-onboarding.md` - Adding external repos that deploy into this cluster
 - `docs/31-observability.md` - Observability stack (Prometheus, Grafana, Loki, Alloy)
+- `docs/43-gpu-passthrough.md` - GPU node (pve-prec-01): VFIO passthrough, NVIDIA driver/toolkit, DCGM
 - `kubernetes/README.md` - Top-level k8s layout guide (Flux-aware)
 - `kubernetes/infrastructure/` - Platform components (sources, controllers, configs, observability)
 - `kubernetes/apps/` - Applications (authentik, download-clients, hermes, hindsight, recipes, gitlab-*, tailnet-dns, vm-ingress, wg-easy)

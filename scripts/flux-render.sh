@@ -32,10 +32,16 @@ cmd_export_versions() {
     local cm="${1:-}"
     [ -n "$cm" ] && [ -f "$cm" ] || die "versions ConfigMap not found: ${cm:-<empty>}"
     python3 - "$cm" <<'PY'
+import re
 import shlex
 import sys
 
 import yaml
+
+# Callers `eval` the emitted `export <key>=...`, so every key must be a valid
+# POSIX shell variable name — otherwise eval breaks syntax (or worse). The keys
+# are repo-controlled, but validate before emitting so a stray key fails loudly.
+_VALID_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 cm = sys.argv[1]
 with open(cm) as f:
@@ -45,6 +51,8 @@ if not data:
     sys.exit(f"flux-render: ERROR: no version keys found in {cm}")
 names = []
 for key, value in data.items():
+    if not _VALID_KEY.match(key):
+        sys.exit(f"flux-render: ERROR: invalid shell variable name in {cm}: {key}")
     print(f"export {key}={shlex.quote(str(value))}")
     names.append(key)
 allowlist = "".join(f"${{{key}}} " for key in names)

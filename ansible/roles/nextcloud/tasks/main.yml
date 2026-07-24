@@ -195,8 +195,20 @@
 # the INTERNAL Traefik VIP, so the user_oidc discovery fetch is exactly such a
 # "local" request. Without it every SSO login dies with "Could not reach the
 # OpenID Connect provider" / "violates local access rules" (2026-07-22: broke
-# on the image upgrade that hardened the check). Deliberate + safe here: the
-# only URLs Nextcloud fetches server-side are our own codified endpoints.
+# on the image upgrade that hardened the check). Deliberate here: the URLs we
+# INTEND Nextcloud to fetch server-side are our own codified endpoints, but the
+# toggle is global (see the accepted-risk note below).
+#
+# Accepted-risk detail (docs/35 "SSRF toggle — accepted risk"): this is a
+# GLOBAL toggle. Nextcloud has no per-URL allowlist and no per-host user_oidc
+# discovery override that bypasses the global LocalAddressChecker, so enabling
+# it widens ALL server-side fetch surfaces, not just OIDC discovery. The
+# live-affected surfaces are federation "add remote share" and the `text` app's
+# reference/link previews. It is bounded to LOW today by SSO-only,
+# single-operator provisioning (no self-registration) AND `files_external`
+# being DISABLED (the top SSRF vector). It escalates to MEDIUM if
+# untrusted/family accounts are added — the mitigation then is a default-deny
+# egress firewall on the nextcloud VM (future/supervised work; NOT done here).
 - name: Allow server-side requests to local addresses (split-horizon OIDC)
   ansible.builtin.command:
     cmd: >-

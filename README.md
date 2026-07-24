@@ -217,6 +217,8 @@ weisssrv/
 | nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |
 | restic_offsite | Nightly offsite backup to Backblaze B2 (restic via rclone, client-side encrypted) on the NAS; chained after archive-backup, reads archsync snapshots + clones the immich/nextcloud data zvols (docs/42) |
 | encrypted_swap | dm-crypt plain-mode random-key encrypted swap (AES-256-XTS, crypttab + fstab) on the six Proxmox hosts; live-switch when memory-safe, else defer to reboot (docs/42) |
+| zfs_arc_cap | Cap the ZFS ARC on the compute Proxmox hosts (modprobe.d + initramfs + live sysfs); protects the VFIO GPU host's pinned guest RAM from an uncapped ARC (docs/43). NAS ARC stays owned by nas_storage |
+| vfio_passthrough | Host-side GPU VFIO codification on pve-prec-01 (IOMMU cmdline, nouveau blacklist, vfio-pci bind); stages config, prints reboot-required, never auto-reboots (docs/43) |
 
 ## Secrets Management
 
@@ -403,7 +405,7 @@ On-demand Windows 11 desktop (OVMF/TPM/q35 shell provisioned via `proxmox_vm`):
 Homelab dashboard/launcher for every service in the cluster:
 
 - **URLs**: dashboard.esweiss.com (internal), dashboard.ericsweiss.com (external)
-- **Authentication**: Authentik OIDC (`homarr-admins` group gate, admin via the OIDC `groups` claim) + a break-glass local admin; Authentik objects in `terraform/authentik` (docs/40)
+- **Authentication**: Authentik OIDC, SSO-only (`homarr-admins` group gate, admin via the OIDC `groups` claim; no standing local admin — DR via docs/41 §SSO); Authentik objects in `terraform/authentik` (docs/40)
 - **Workload**: raw k3s manifests (`kubernetes/apps/homarr/`), NFS-backed SQLite state on encrypted `ssd/appdata`
 - **Integrations**: direct in-cluster/LAN URLs (bypassing the SSO perimeter) to the *arr stack, qBittorrent/NZBGet, AdGuard, Proxmox, Plex, Home Assistant, Nextcloud, and Immich
 - **Documentation**: [docs/41-homarr.md](docs/41-homarr.md)
@@ -467,6 +469,7 @@ Homelab dashboard/launcher for every service in the cluster:
 | [40-authentik-terraform](docs/40-authentik-terraform.md) | Authentik SSO as code (terraform/authentik day-2 ops: drift, rotation, DR) |
 | [41-homarr](docs/41-homarr.md) | Homarr dashboard (raw manifests, Authentik OIDC, NFS SQLite, direct-URL integrations) |
 | [42-offsite-backup](docs/42-offsite-backup.md) | Offsite backup (restic → Backblaze B2, client-side encrypted) + encrypted swap |
+| [43-gpu-passthrough](docs/43-gpu-passthrough.md) | GPU passthrough (pve-prec-01 1660 Ti → Hindsight): VFIO host prep, driver/toolkit, device plugin, DCGM, RAM right-sizing, operator runbook |
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it

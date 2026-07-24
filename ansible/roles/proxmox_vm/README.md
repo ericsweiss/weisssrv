@@ -93,6 +93,26 @@ driver + service on Windows). **Do not set it on k3s nodes** — the kubelet acc
 for the full node RAM and schedules pods to it, so reclaiming underneath causes pod
 OOMs. Leave `vm_balloon` unset (the default) for a fixed allocation.
 
+## PCI passthrough (`vm_hostpci`)
+
+Optional list of Proxmox `hostpci` device specs; each entry becomes
+`--hostpci<index> <entry>` on a **create-time** `qm set` (Linux guests only).
+Used to pass a GPU (or other PCI device) into a VM via VFIO. Because attaching a
+PCI device requires the guest stopped, this is applied only when the VM is first
+provisioned — an already-existing guest that gains `vm_hostpci` is attached by
+the operator with a manual `qm set <id> --hostpci0 …` in a stop/start
+maintenance window (the same apply gap as `vm_memory`; see `docs/43-gpu-passthrough.md`).
+
+```yaml
+# hosts.yml — pass the whole multifunction GPU on i440fx (no pcie=1)
+vm_hostpci:
+  - "0000:01:00"
+```
+
+The entry is passed verbatim, so it carries any Proxmox options (`0000:01:00,pcie=1`
+for PCIe passthrough on q35). A passthrough guest cannot live-migrate and its RAM
+is host-pinned/mlock'd, so pin it (`vm_cpu_type: host`) and leave it non-ballooned.
+
 ## Deployment
 
 ```bash

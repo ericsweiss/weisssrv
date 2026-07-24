@@ -26,6 +26,20 @@ vm_disk_size: 32G
 vm_bridge: vmbr0
 vm_ostype: l26
 vm_agent_enabled: true
+
+# PCI passthrough (VFIO). A list of Proxmox `hostpci` device specs — each entry
+# becomes `--hostpci<index> <entry>` on the create-time `qm set` (Linux guests
+# only). Empty by default (no passthrough). CREATE-TIME ONLY: PCI attach needs
+# the guest stopped, so this is realized when the VM is first provisioned; an
+# already-existing guest is attached by hand in a maintenance window (see the
+# task comment + docs/43). The entry is passed verbatim, so it may include
+# Proxmox options, e.g.:
+#   vm_hostpci:
+#     - "0000:01:00"            # whole multifunction device on i440fx (no pcie=1)
+#     - "0000:01:00,pcie=1"     # PCIe passthrough on q35
+# A passthrough guest cannot live-migrate and its RAM is host-pinned/mlock'd, so
+# it must also be pinned (vm_cpu_type: host) and non-ballooned.
+vm_hostpci: []
 vm_cpu_type: Penryn  # Baseline CPU for live migration across heterogeneous cluster
 # Override to 'host' for VMs pinned to a specific node (all k3s and gitlab
 # VMs do this) — exposes the full host CPU, e.g. AVX/AVX2 on modern nodes.

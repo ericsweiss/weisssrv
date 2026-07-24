@@ -2385,6 +2385,107 @@ spec:
       # still no snapshot-staleness alert — the zfs_exporter exposes no
       # snapshot-level timestamp metric.
 
+      homelab-gpu:
+        groups:
+          - name: homelab.gpu
+            rules:
+              # DCGM exporter (kubernetes/infrastructure/observability/exporters/
+              # dcgm-exporter.yaml) scrape target down => GPU telemetry is blind
+              # (temp/util/power/VRAM). absent() arm catches the never-scraped
+              # case. Warning: monitoring loss, not a workload outage.
+              - alert: GpuExporterDown
+                expr: >-
+                  up{job="dcgm-exporter"} == 0
+                  or absent(up{job="dcgm-exporter"})
+                for: 15m
+                labels:
+                  severity: warning
+                  component: gpu
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+                  summary: 'DCGM GPU exporter is down — no GPU telemetry'
+                  description: >-
+                    The dcgm-exporter target has been down for 15m; GPU
+                    temperature/util/power/VRAM are unmonitored on the prec-01
+                    GPU node. See docs/43-gpu-passthrough.md.
+
+              # Turing (TU116) throttles ~83C. Warn early (80C) so the fan/airflow
+              # can be checked before the card starts clock-limiting inference.
+              - alert: GpuTempWarning
+                expr: max(DCGM_FI_DEV_GPU_TEMP{job="dcgm-exporter"}) >= 80
+                for: 10m
+                labels:
+                  severity: warning
+                  component: gpu
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+                  summary: 'GPU at {{ $value | printf "%.0f" }}C (warn 80C)'
+                  description: >-
+                    The 1660 Ti has been at {{ $value | printf "%.0f" }}C for
+                    10m (throttles ~83C). Check case airflow / fan.
+
+              - alert: GpuTempCritical
+                expr: max(DCGM_FI_DEV_GPU_TEMP{job="dcgm-exporter"}) >= 85
+                for: 5m
+                labels:
+                  severity: critical
+                  component: gpu
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+                  summary: 'GPU at {{ $value | printf "%.0f" }}C (critical 85C)'
+                  description: >-
+                    The 1660 Ti is at {{ $value | printf "%.0f" }}C — above its
+                    throttle point. Sustained over-temp shortens card life;
+                    check cooling immediately. See docs/43-gpu-passthrough.md.
+
+              # Sanity: Hindsight is up but the GPU holds almost no VRAM (< 500
+              # MiB) for 30m — the Gemma model is not resident on the GPU, so the
+              # llama CUDA offload likely is not working (falling back / failing).
+              # 30m rides out the one-time GGUF download + model load.
+              - alert: HindsightGpuOffloadIdle
+                expr: >-
+                  (max(DCGM_FI_DEV_FB_USED{job="dcgm-exporter"}) < 500)
+                  and (max(kube_deployment_status_replicas_available{namespace="hindsight", deployment="hindsight"}) > 0)
+                for: 30m
+                labels:
+                  severity: warning
+                  component: gpu
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+                  summary: 'Hindsight up but GPU VRAM ~empty — offload may be broken'
+                  description: >-
+                    Hindsight is available but the GPU is holding < 500 MiB VRAM
+                    for 30m — the Gemma model does not appear resident on the
+                    GPU. Verify the llama sidecar loaded the model onto the card
+                    (nvidia-smi / logs). See docs/43-gpu-passthrough.md.
+
+              # DCGM exporter target is UP (scraped OK) but exports NO GPU series.
+              # This is the "up==1 but zero DCGM_FI_DEV_*" state that GpuExporter
+              # (up==0) can't catch and that the temp/offload alerts can't fire on
+              # (their series are absent). Root cause is usually the container
+              # toolkit's accept-nvidia-visible-devices-envvar-when-unprivileged
+              # flag being unset (docs/43 DCGM caveat) — the k3s role now sets it,
+              # so this backstops a regression / a fresh node before the flag lands.
+              # up{}==1 guard scopes it to "target exists and is being scraped".
+              - alert: GpuTelemetryMissing
+                expr: >-
+                  absent(DCGM_FI_DEV_GPU_TEMP{job="dcgm-exporter"})
+                  and on() (max(up{job="dcgm-exporter"}) == 1)
+                for: 15m
+                labels:
+                  severity: warning
+                  component: gpu
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/43-gpu-passthrough.md'
+                  summary: 'DCGM exporter up but exporting no GPU metrics'
+                  description: >-
+                    The dcgm-exporter target is up and scraped, but no
+                    DCGM_FI_DEV_* series have been present for 15m — the exporter
+                    is not seeing the GPU. Usually the container toolkit's
+                    accept-nvidia-visible-devices-envvar-when-unprivileged flag is
+                    unset; verify it and restart the DaemonSet. See
+                    docs/43-gpu-passthrough.md (DCGM device visibility caveat).
+
       homelab-temperature:
         groups:
           - name: homelab.temperature

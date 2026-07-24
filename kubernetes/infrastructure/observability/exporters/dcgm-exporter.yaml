@@ -1,0 +1,117 @@
+---
+# NVIDIA DCGM exporter — GPU telemetry (utilisation, memory, temperature, power,
+# SM clocks, ECC) for the pve-prec-01 1660 Ti. The k8s device plugin advertises
+# the GPU but exports NO metrics; DCGM does. Runs as a DaemonSet pinned to the
+# GPU node. It does NOT request nvidia.com/gpu (that would consume the node's
+# single GPU allocation, which the Hindsight llama container needs) — instead it
+# monitors via NVML with NVIDIA_VISIBLE_DEVICES=all under the nvidia runtime.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dcgm-exporter
+    spec:
+      # Only the GPU node runs it (single-GPU cluster).
+      nodeSelector:
+        esweiss.com/gpu: nvidia
+      tolerations:
+        - key: esweiss.com/compute
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
+      # Use the nvidia containerd runtime so the driver + all GPUs are injected
+      # (RuntimeClass in infrastructure/controllers/nvidia-device-plugin).
+      runtimeClassName: nvidia
+      automountServiceAccountToken: false
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:${dcgm_exporter_version}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DCGM_EXPORTER_LISTEN
+              value: ":9400"
+            # Add the Kubernetes pod/namespace labels to each metric so a GPU
+            # consumer (the llama container) can be correlated in Grafana.
+            - name: DCGM_EXPORTER_KUBERNETES
+              value: "true"
+            # Monitor every GPU on the node WITHOUT consuming a device-plugin
+            # allocation. NOTE (docs/43): on a single-GPU node with the device
+            # plugin active, the container toolkit may need
+            # accept-nvidia-visible-devices-envvar-when-unprivileged=true for this
+            # to inject the GPU — verify metrics flow in the maintenance window.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: all
+          ports:
+            - name: metrics
+              containerPort: 9400
+              protocol: TCP
+          securityContext:
+            # DCGM needs SYS_ADMIN to read some GPU counters; the observability
+            # namespace is privileged-PSS (see namespace.yaml). Not fully
+            # privileged — just the one capability.
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["SYS_ADMIN"]
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          # Memory limit only — no CPU limit (repo-wide policy, docs/33).
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          # DCGM_EXPORTER_KUBERNETES needs the kubelet pod-resources socket to
+          # map each GPU metric back to the consuming pod/namespace (the labels
+          # the ServiceMonitor + dashboards expect); without it the k8s mapping
+          # silently produces metrics with no pod labels.
+          volumeMounts:
+            - name: pod-resources
+              mountPath: /var/lib/kubelet/pod-resources
+              readOnly: true
+      volumes:
+        - name: pod-resources
+          hostPath:
+            path: /var/lib/kubelet/pod-resources
+            type: Directory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: dcgm-exporter
+  ports:
+    - name: metrics
+      port: 9400
+      targetPort: metrics

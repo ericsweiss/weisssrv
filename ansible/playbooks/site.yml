@@ -40,6 +40,20 @@
     # NAS); self-gates on encrypted_swap_enabled.
     - role: encrypted_swap
       tags: [encrypted_swap]
+    # ZFS ARC cap on the COMPUTE hosts only (proxmox_role != 'nas'):
+    # pve-nas-01's ARC is owned by nas_storage on the storage playbook lifecycle.
+    # Self-gates on zfs_arc_cap_max_bytes (group_vars/proxmox.yml). Protects the
+    # VFIO-passthrough host (pinned guest RAM) from an uncapped ARC — docs/43.
+    - role: zfs_arc_cap
+      tags: [zfs_arc_cap]
+      when: proxmox_role != 'nas'
+    # Host-side GPU VFIO codification (IOMMU cmdline + vfio-pci bind + nouveau
+    # blacklist). Self-gates on vfio_passthrough_enabled (set only on
+    # pve-prec-01 in hosts.yml); STAGES config + prints reboot-required, never
+    # reboots — the operator applies it in a maintenance window (docs/43).
+    - role: vfio_passthrough
+      tags: [vfio_passthrough]
+      when: vfio_passthrough_enabled | default(false)
     - role: tailscale
       tags: [tailscale]
       when: tailscale_enabled | bool

@@ -259,7 +259,38 @@ SERVICE_REGISTRY: list[dict] = [
         "var_name": "hindsight_llamacpp_version",
         "category": "manual",
         "source_url": "https://github.com/ggml-org/llama.cpp/releases",
-        "notes": "Pin bNNNN whose ghcr server-bNNNN image tag exists; any recent build serves the pinned GGUF.",
+        "notes": "Pin bNNNN whose ghcr server-cuda-bNNNN (CUDA) image tag exists; any recent build serves the pinned GGUF.",
+    },
+    {
+        # nvidia-open from NVIDIA's CUDA apt repo (debian13), exact apt version
+        # installed on the GPU k3s agent (k3s role tasks/gpu.yml). Manual: the apt
+        # version string (X.Y.Z-N) tracks the CUDA repo package — bump when it
+        # moves. See docs/43 for why >=570 (CUDA 12.8) is required on GeForce.
+        "name": "NVIDIA driver (nvidia-open, CUDA repo)",
+        "var_name": "nvidia_driver_version",
+        "category": "manual",
+        "source_url": "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/",
+        "notes": "Exact nvidia-open apt version (X.Y.Z-N) from the NVIDIA CUDA debian13 repo; >=570 required for the CUDA-12.8 llama image on GeForce (docs/43).",
+    },
+    {
+        # nvidia-container-toolkit apt pin (NVIDIA libnvidia-container repo).
+        # Manual: the apt version carries a -N Debian revision the GitHub release
+        # tag lacks, so auto-diffing would churn.
+        "name": "NVIDIA container toolkit",
+        "var_name": "nvidia_container_toolkit_version",
+        "category": "manual",
+        "source_url": "https://github.com/NVIDIA/nvidia-container-toolkit/releases",
+        "notes": "Apt version X.Y.Z-N from nvidia.github.io/libnvidia-container/stable/deb.",
+    },
+    {
+        # DCGM exporter image tag (nvcr.io/nvidia/k8s/dcgm-exporter). Manual: the
+        # tag is a compound <DCGM>-<exporter>-<variant> string, not a plain
+        # semver an auto-tracker can compare.
+        "name": "NVIDIA DCGM exporter",
+        "var_name": "dcgm_exporter_version",
+        "category": "manual",
+        "source_url": "https://github.com/NVIDIA/dcgm-exporter/releases",
+        "notes": "nvcr.io tag <DCGM>-<exporter>-<variant>, e.g. 4.6.0-4.8.3-distroless.",
     },
     # --- Container images ---
     {
@@ -464,6 +495,14 @@ SERVICE_REGISTRY: list[dict] = [
         "helm_repo": "https://charts.external-secrets.io",
         "helm_chart": "external-secrets",
         "source_url": "https://artifacthub.io/packages/helm/external-secrets-operator/external-secrets",
+    },
+    {
+        "name": "NVIDIA device plugin",
+        "var_name": "helm_chart_versions.nvidia_device_plugin",
+        "category": "helm",
+        "helm_repo": "https://nvidia.github.io/k8s-device-plugin",
+        "helm_chart": "nvidia-device-plugin",
+        "source_url": "https://github.com/NVIDIA/k8s-device-plugin/releases",
     },
     {
         "name": "Tailscale",
@@ -2374,6 +2413,8 @@ def get_deploy_command(result: ServiceVersion) -> str:
         "exportarr_version", "proxmox_exporter_version",
         "zfs_exporter_version", "adguard_exporter_version",
         "unbound_exporter_version", "redis_exporter_version",
+        # NVIDIA DCGM exporter (raw DaemonSet, Flux-reconciled via cluster-versions)
+        "dcgm_exporter_version",
         # tailnet-dns CoreDNS resolver image (kubernetes/apps/tailnet-dns)
         "coredns_tailnet_version",
     )
@@ -2385,6 +2426,11 @@ def get_deploy_command(result: ServiceVersion) -> str:
         return "task maintenance:update-k3s-nodes"
     if var_name == "kube_vip_version":
         return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
+
+    # NVIDIA driver + container toolkit on the GPU k3s agent (k3s role gpu.yml,
+    # Ansible-managed node op — never CI). docs/43.
+    if var_name in ("nvidia_driver_version", "nvidia_container_toolkit_version"):
+        return "task k3s:deploy  # Re-run k3s deployment on the GPU agent (docs/43)"
 
     # Flux CLI used by CI deploy-verify (pin + sha256 live together)
     if var_name == "flux_version":

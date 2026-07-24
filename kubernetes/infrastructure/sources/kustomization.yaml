@@ -24,4 +24,5 @@ resources:
   - kured.yaml
   - stakater.yaml
   - tailscale-operator.yaml
+  - nvidia.yaml
   - versions-configmap.yaml

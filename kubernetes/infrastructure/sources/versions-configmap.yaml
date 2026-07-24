@@ -8,11 +8,12 @@ data:
   adguard_home_version: 0.107.78
   adguardhome_sync_version: 0.9.2
   alloy_host_version: 1.18.0-1
-  authentik_version: 2026.5.5
+  authentik_version: 2026.5.6
   bar_assistant_version: 5.15.3
   busybox_version: '1.38'
   containerd_version: 2.2.6-1~debian.13~trixie
   coredns_tailnet_version: 1.14.6
+  dcgm_exporter_version: 4.6.0-4.8.3-distroless
   debian_version: '13'
   docker_buildx_plugin_version: 0.35.0-1~debian.13~trixie
   docker_ce_version: 5:29.6.2-1~debian.13~trixie
@@ -29,8 +30,9 @@ data:
   helm_chart_versions_external_secrets: 2.8.0
   helm_chart_versions_kube_prometheus_stack: 87.19.0
   helm_chart_versions_kured: 6.1.0
-  helm_chart_versions_loki: 18.5.2
+  helm_chart_versions_loki: 18.5.3
   helm_chart_versions_metallb: 0.15.3
+  helm_chart_versions_nvidia_device_plugin: 0.19.3
   helm_chart_versions_onepassword_connect: 2.4.1
   helm_chart_versions_prometheus_blackbox_exporter: 11.15.1
   helm_chart_versions_prometheus_operator_crds: 30.0.1
@@ -39,13 +41,13 @@ data:
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.217
+  hermes_claude_version: 2.1.218
   hermes_codex_version: 0.145.0
   hermes_image_version: v2026.7.20-r1
   hermes_op_version: 2.35.0-1
   hermes_version: v2026.7.20
   hindsight_llamacpp_version: b10068
-  hindsight_version: 0.8.4
+  hindsight_version: 0.8.5
   homarr_version: v1.71.0
   immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
   immich_valkey_version: '9'
@@ -54,21 +56,23 @@ data:
   kube_vip_version: v1.2.1
   lidarr_version: 3.1.0.4875
   mealie_postgresql_version: 18.4-alpine
-  mealie_version: v3.20.1
+  mealie_version: v3.21.0
   meilisearch_version: v1.15.2
   nextcloud_exporter_version: 0.9.1
   nextcloud_postgres_version: 18.4-trixie
-  nextcloud_version: 34.0.1
+  nextcloud_version: 34.0.2
+  nvidia_container_toolkit_version: 1.19.1-1
+  nvidia_driver_version: 590.48.01-1
   nzbget_version: '26.2'
   plex_version: 1.43.3.10828-00f62d37d
   postgresql_version: 18.4-trixie
-  prowlarr_version: 2.4.0.5397
+  prowlarr_version: 2.5.2.5491
   proxmox_exporter_version: 3.9.0
-  pulsarr_version: 0.17.3
+  pulsarr_version: 0.17.4
   qbittorrent_version: 5.2.3
   radarr_version: 6.3.0.10514
   rclone_version: 1.74.4
-  redis_exporter_version: v1.87.0
+  redis_exporter_version: v1.88.0
   redis_version: 8.8.0-alpine
   registry_cache_version: 3.1.1
   restic_version: ''

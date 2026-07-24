@@ -1,0 +1,82 @@
+---
+# NVIDIA k8s device plugin — a DaemonSet that discovers the GPU on the node and
+# advertises it to the kubelet as the nvidia.com/gpu extended resource. With
+# time-slicing (values.config below) the single physical GPU is advertised as 4
+# shareable units, so the GPU is a general cluster resource: any pod can request
+# `nvidia.com/gpu: 1` (a slice) — Hindsight's llama container is just one of them.
+# Pinned to the GPU node by nodeSelector on the esweiss.com/gpu=nvidia label
+# (hosts.yml VM 207). It exports no metrics — DCGM does that
+# (observability/exporters/dcgm-exporter).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nvidia-device-plugin
+  namespace: nvidia-device-plugin
+spec:
+  interval: 30m
+  releaseName: nvidia-device-plugin
+  chart:
+    spec:
+      chart: nvidia-device-plugin
+      version: "${helm_chart_versions_nvidia_device_plugin}"
+      sourceRef:
+        kind: HelmRepository
+        name: nvidia
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    # Run the plugin pod under the nvidia runtime so it can talk to the driver.
+    # The RuntimeClass is applied alongside this release (runtimeclass.yaml).
+    runtimeClassName: nvidia
+    # Only the labelled GPU node runs the plugin (single-GPU cluster). Without a
+    # selector the DaemonSet lands on every node and the plugin just exits where
+    # there is no GPU — pinning keeps it tidy.
+    nodeSelector:
+      esweiss.com/gpu: nvidia
+    # Tolerate the node's soft compute taint (PreferNoSchedule) so the plugin is
+    # not penalised there, plus the conventional GPU taint the chart expects.
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      - key: esweiss.com/compute
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule
+    # Memory limit only — no CPU limit (repo-wide policy, docs/33). Tiny footprint.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+    # Time-slicing: advertise the one physical GPU as 4 shareable replicas so
+    # multiple pods can co-schedule on it (the node reports nvidia.com/gpu: 4).
+    # The chart materialises config.map.<name> into a ConfigMap and a
+    # config-manager selects it; config.default names the entry to use on a node
+    # with no `nvidia.com/device-plugin.config` label (ours has none), so
+    # `default: any` -> `map.any` is required, not optional.
+    #
+    # NOTE: time-slicing shares COMPUTE, not VRAM — the card's 6 GB is shared
+    # across co-scheduled pods, which must fit together. Hindsight's Gemma-4B-Q4
+    # uses ~2.5 GB, leaving headroom for another small workload. `replicas` is the
+    # concurrency ceiling, not a memory guarantee.
+    config:
+      default: any
+      map:
+        any: |-
+          version: v1
+          flags:
+            migStrategy: none
+          sharing:
+            timeSlicing:
+              resources:
+                - name: nvidia.com/gpu
+                  replicas: 4

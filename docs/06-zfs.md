@@ -477,6 +477,14 @@ sudo zfs get compression,compressratio
 
 ### ARC (Adaptive Replacement Cache)
 
+The compute Proxmox hosts carry a group-wide **8 GiB ARC cap**
+(`zfs_arc_cap_max_bytes` in `group_vars/proxmox.yml`, applied by the
+`zfs_arc_cap` role on every non-NAS host). On the 14-15 GiB opt/laptop hosts it
+is a harmless ceiling; on the **62 GiB `pve-prec-01`** it is the protective cap
+that keeps the ARC from colliding with VM 207's VFIO-pinned, non-swappable GPU
+RAM — see [docs/43](43-gpu-passthrough.md). (The NAS's separate 4 GiB cap is
+below, under *NAS memory management*.)
+
 Monitor ARC usage:
 
 ```bash

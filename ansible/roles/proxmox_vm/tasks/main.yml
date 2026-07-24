@@ -383,6 +383,28 @@
     - not _vm_is_windows
   changed_when: true
 
+# PCI passthrough (VFIO). CREATE-TIME ONLY, on purpose: attaching a PCI device
+# requires the guest STOPPED, so — unlike the balloon/agent/onboot reconciles —
+# this cannot be a live drift-reconcile against a running VM. Attaching here (a
+# `qm set` right after create, mirroring the disk/cloud-init/boot attaches above)
+# realizes vm_hostpci for a freshly-provisioned guest; an EXISTING guest that
+# gains vm_hostpci is applied by the operator with a manual `qm set <id>
+# --hostpci0 …` in a stop/start maintenance window (same apply gap as vm_memory —
+# see docs/43). Each list entry maps to --hostpci<index> and is passed verbatim,
+# so it carries any Proxmox hostpci options (e.g. `0000:01:00,pcie=1`); the k3s
+# GPU node passes the whole multifunction device on i440fx as `0000:01:00` (all
+# functions, no pcie=1) — see hosts.yml + docs/43.
+- name: Attach PCI passthrough devices (create-time)
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    qm set {{ vm_id | quote }}{% for pci in vm_hostpci %} --hostpci{{ loop.index0 }} {{ pci | quote }}{% endfor %}
+  when:
+    - not ansible_check_mode
+    - vm_exists.rc != 0
+    - not _vm_is_windows
+    - vm_hostpci | default([]) | length > 0
+  changed_when: true
+
 # --- Windows guest: firmware (EFI vars + TPM 2.0), empty boot disk, and the
 # install + VirtIO driver CDROMs. The install/VirtIO media is validated and
 # fetched in the preflight block above (before `qm create`). Boot order is set

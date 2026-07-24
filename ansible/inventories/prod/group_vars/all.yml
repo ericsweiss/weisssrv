@@ -182,7 +182,7 @@ kube_vip_version: "v1.2.1"
 flux_version: "2.9.0"
 
 # Authentik SSO identity provider
-authentik_version: "2026.5.5"
+authentik_version: "2026.5.6"
 
 # PostgreSQL version for Authentik (bundled with Helm chart)
 # Using Debian Trixie base for consistency with homelab standard
@@ -207,11 +207,11 @@ busybox_version: "1.38"
 gluetun_version: "v3.41.1"
 nzbget_version: "26.2"
 qbittorrent_version: "5.2.3"
-prowlarr_version: "2.4.0.5397"
+prowlarr_version: "2.5.2.5491"
 sonarr_version: "4.0.19.2979"
 radarr_version: "6.3.0.10514"
 lidarr_version: "3.1.0.4875"
-pulsarr_version: "0.17.3"
+pulsarr_version: "0.17.4"
 
 # wg-easy WireGuard VPN (internet-exit VPN for the user + friends/family).
 # Container tag has NO leading "v" (upstream convention: :15.3.0, not :v15.3.0).
@@ -224,7 +224,7 @@ wg_easy_version: "15.3.0"
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
-mealie_version: "v3.20.1"
+mealie_version: "v3.21.0"
 bar_assistant_version: "5.15.3"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
@@ -262,7 +262,7 @@ registry_cache_version: "3.1.1"
 # single-source-of-truth convention (they flow harmlessly into the versions
 # ConfigMap; no k8s manifest references them).
 # Nextcloud server: https://github.com/nextcloud/docker/blob/master/versions.json (34 = current stable, PHP 8.5, Debian trixie)
-nextcloud_version: "34.0.1"
+nextcloud_version: "34.0.2"
 # PostgreSQL: PG 18 is Nextcloud-recommended; matches the homelab postgres pin.
 # https://hub.docker.com/_/postgres/tags
 nextcloud_postgres_version: "18.4-trixie"
@@ -351,7 +351,7 @@ hermes_codex_version: "0.145.0"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.217"
+hermes_claude_version: "2.1.218"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
@@ -382,13 +382,39 @@ hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
 # memory backend (kubernetes/apps/hindsight, docs/37 §Memory backend). The pin
 # is the ghcr.io/vectorize-io/hindsight image tag (bare semver; the git tag
 # carries a leading "v"). https://github.com/vectorize-io/hindsight/releases
-hindsight_version: "0.8.4"
-# llama.cpp server sidecar for Hindsight's local LLM (image tag
-# ghcr.io/ggml-org/llama.cpp:server-<pin>). Upstream tags a build (bNNNN) many
-# times per day and not every build publishes a server image — bumped
-# opportunistically (any recent build serves the pinned Gemma GGUF), category
+hindsight_version: "0.8.5"
+# llama.cpp server sidecar for Hindsight's local LLM. The deployment builds the
+# image tag as ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> — the CUDA build,
+# for GPU offload on the pve-prec-01 1660 Ti (docs/43). Upstream tags a build
+# (bNNNN) many times per day and publishes BOTH server-<build> (CPU) and
+# server-cuda-<build> (CUDA) for a given build, so this one pin drives both; not
+# every build publishes images, so it is bumped opportunistically (any recent
+# build with a server-cuda- variant serves the pinned Gemma GGUF), category
 # "manual" in check-versions. https://github.com/ggml-org/llama.cpp/releases
 hindsight_llamacpp_version: "b10068"
+
+# GPU stack for the pve-prec-01 1660 Ti (Hindsight CUDA offload, docs/43).
+# nvidia-open (the open GPU kernel modules) comes from NVIDIA's own CUDA apt repo
+# (debian13), NOT Debian non-free — installed on the agent VM by the k3s role's
+# tasks/gpu.yml. The open modules support Turing (TU116 is GSP-equipped) and are
+# CUDA-12.8-capable: the Hindsight llama.cpp image is built against CUDA 12.8,
+# which needs a native driver >= 570 on a consumer GeForce card (cuda-compat
+# forward-compat is unsupported there), so the Debian non-free 550 is too old.
+# The driver pin is an EXACT apt version — bump it when the CUDA repo moves the
+# package (a drifted pin fails the install loudly rather than silently upgrading).
+# https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
+nvidia_driver_version: "590.48.01-1"
+# nvidia-container-toolkit from NVIDIA's libnvidia-container apt repo (added via
+# the apt_signed_repo pattern). Provides nvidia-container-runtime, which k3s
+# (>=1.30) auto-detects on PATH and wires into its generated containerd config as
+# the `nvidia` runtime handler (no config-v3.toml.tmpl needed). Exact apt pin.
+# https://github.com/NVIDIA/nvidia-container-toolkit/releases
+nvidia_container_toolkit_version: "1.19.1-1"
+# NVIDIA DCGM exporter image (raw DaemonSet on the GPU node,
+# kubernetes/infrastructure/observability/exporters/dcgm-exporter.yaml). Tag form
+# is <DCGM ver>-<exporter ver>-<variant>. nvcr.io/nvidia/k8s/dcgm-exporter.
+# https://github.com/NVIDIA/dcgm-exporter/releases
+dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 
 # Homarr dashboard (kubernetes/apps/homarr, docs/41) — the ghcr.io/homarr-labs/
 # homarr image tag. The Docker tag is v-PREFIXED (v1.71.0 returns 200; a bare
@@ -431,7 +457,7 @@ adguard_exporter_version: "v1.2.1"
 # integrity. On bump: shasum -a 256 the downloaded .deb and update both lines.
 unbound_exporter_version: "0.6.0"
 unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
-redis_exporter_version: "v1.87.0"
+redis_exporter_version: "v1.88.0"
 
 # Helm chart versions for k3s platform workloads
 # These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
@@ -465,7 +491,7 @@ helm_chart_versions:
   # operator 0.92.x. COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
   prometheus_operator_crds: "30.0.1"
-  loki: "18.5.2"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  loki: "18.5.3"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.0"
   prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"
@@ -473,6 +499,10 @@ helm_chart_versions:
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.14"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
   tailscale_operator: "1.98.9"  # Tailscale K8s operator (appVersion v1.98.9; tracks the host tailscale_version); exposes internal Traefik + tailnet-dns to the tailnet
+  # NVIDIA k8s device plugin — advertises nvidia.com/gpu on the labelled GPU node
+  # (kubernetes/infrastructure/controllers/nvidia-device-plugin). Chart tracks the
+  # plugin appVersion. https://github.com/NVIDIA/k8s-device-plugin/releases
+  nvidia_device_plugin: "0.19.3"
 
 # Proxmox resource pools
 # These are created automatically when provisioning VMs/LXCs

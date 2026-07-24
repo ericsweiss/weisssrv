@@ -369,6 +369,13 @@ README for the two-container hindsight + llama.cpp architecture, the fully
 local LLM, and the Postgres-on-NFS storage decision). Hermes talks to it via
 the bundled `hindsight` memory plugin in **`local_external`** mode.
 
+The `llama.cpp` sidecar offloads inference to the **GTX 1660 Ti passed through to
+the prec-01 agent** (`server-cuda-` image + `-ngl 99` + `nvidia.com/gpu`), which
+cuts extraction latency ~10× vs the prior CPU build; the CPU-era
+timeout/thread tuning is annotated as legacy pending GPU re-measurement. Full
+mechanics + the driver/CUDA compatibility risk are in
+[docs/43-gpu-passthrough.md](43-gpu-passthrough.md).
+
 **Enablement is runtime config, deliberately NOT in git**: `memory.provider`
 lives in Hermes' config on the NFS volume (like the platform tokens), so git
 carries the infrastructure and the operator flips the switch.

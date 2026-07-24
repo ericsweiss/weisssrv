@@ -209,6 +209,23 @@ spec:
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
+  # GPU-telemetry DaemonSet (one pod, GPU node only). Auto to match the other
+  # exporter/DaemonSet VPAs; maxAllowed.memory stays above the pod's 256Mi limit
+  # so a recommendation never clamps below it.
+  name: dcgm-exporter
+spec:
+  targetRef: {apiVersion: apps/v1, kind: DaemonSet, name: dcgm-exporter}
+  updatePolicy: {updateMode: Auto}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        minAllowed: {cpu: 25m, memory: 64Mi}
+        maxAllowed: {cpu: 300m, memory: 384Mi}
+        controlledResources: [cpu, memory]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
   name: grafana
 spec:
   targetRef: {apiVersion: apps/v1, kind: Deployment, name: kube-prometheus-stack-grafana}

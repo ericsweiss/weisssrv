@@ -12,3 +12,4 @@ resources:
   - kured
   - reloader
   - tailscale-operator
+  - nvidia-device-plugin

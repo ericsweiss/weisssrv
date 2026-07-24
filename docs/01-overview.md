@@ -15,7 +15,7 @@ Internet
     |   +-- pve-opt-01    (192.168.0.104) - Compute
     |   +-- pve-opt-02    (192.168.0.105) - Compute
     |   +-- pve-opt-03    (192.168.0.106) - Compute
-    |   +-- pve-prec-01   (192.168.0.107) - Compute (Dell Precision 3630)
+    |   +-- pve-prec-01   (192.168.0.107) - Compute (Dell Precision 3630, 62G RAM, GTX 1660 Ti → VM 207 via VFIO; docs/43)
     |
     +-- Infrastructure LXC (HA-managed)
     |   +-- dns-01        (192.168.0.150) - Primary DNS (AdGuard + Unbound)
@@ -44,7 +44,7 @@ Internet
     |       +-- k3s-agt-opt-01    (192.168.0.204) - Agent (ingress + general)
     |       +-- k3s-agt-opt-02    (192.168.0.205) - Agent (ingress + general)
     |       +-- k3s-agt-opt-03    (192.168.0.206) - Agent (ingress + general)
-    |       +-- k3s-agt-prec-01   (192.168.0.207) - Agent (general + compute)
+    |       +-- k3s-agt-prec-01   (192.168.0.207) - Agent (general + compute + GPU; 30G, 1660 Ti for Hindsight; docs/43)
     |
     +-- Virtual IPs
         +-- vip-public    (192.168.0.100) - MetalLB public ingress

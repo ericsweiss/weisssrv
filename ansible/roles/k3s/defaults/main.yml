@@ -92,6 +92,22 @@ k3s_flannel_backend: "wireguard-native"
 k3s_labels: {}
 k3s_taints: []
 
+# NVIDIA GPU node. When true, agent.yml includes tasks/gpu.yml, which installs
+# the NVIDIA driver + nvidia-container-toolkit so k3s auto-detects the `nvidia`
+# container runtime (no containerd template edit). Set true only on the GPU agent
+# (k3s-agt-prec-01, hosts.yml). See tasks/gpu.yml + docs/43-gpu-passthrough.md.
+k3s_gpu_node: false
+
+# Molecule/check-mode escape hatch for the GPU path: render the repo/component
+# config but skip the driver/toolkit apt installs + nvidia-smi probe (no GPU or
+# NVIDIA packages in a CI container). Mirrors skip_k3s_install.
+skip_k3s_gpu_install: false
+
+# The deb822 Debian sources file whose Components line gpu.yml enables non-free
+# on. Overridable so the molecule agent scenario can point it at a scratch file
+# (leaving the container's real apt sources — and thus `apt update` — untouched).
+k3s_gpu_debian_sources_path: /etc/apt/sources.list.d/debian.sources
+
 # kube-vip configuration
 # Note: Version should be set in group_vars/k3s.yml or all.yml (all.yml pins the
 # live value). Keep this default aligned with all.yml's kube_vip_version so a

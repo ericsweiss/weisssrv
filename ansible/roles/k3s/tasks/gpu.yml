@@ -1,0 +1,172 @@
+---
+# NVIDIA GPU enablement for a k3s agent (included from agent.yml when
+# k3s_gpu_node is true). Installs the NVIDIA driver + nvidia-container-toolkit so
+# k3s AUTO-DETECTS the `nvidia` container runtime at start — no containerd
+# config-v3.toml.tmpl edit is needed (k3s writes its own containerd config and
+# injects an `nvidia` runtime handler when nvidia-container-runtime is on PATH).
+#
+# DRIVER: `nvidia-open` (the open GPU kernel modules) pinned in group_vars/all.yml
+# as nvidia_driver_version, installed from NVIDIA's own CUDA apt repo
+# (developer.download.nvidia.com/.../debian13) — NOT the Debian non-free
+# `nvidia-driver`. The container toolkit comes from NVIDIA's libnvidia-container
+# apt repo.
+#
+# WHY nvidia-open from the CUDA repo (docs/43): the Hindsight llama.cpp sidecar
+# image `ghcr.io/ggml-org/llama.cpp:server-cuda-b10068` is built against **CUDA
+# 12.8**, whose runtime needs a native driver **>= 570** to initialize on a
+# consumer GeForce card — NVIDIA CUDA forward-compat (cuda-compat) is officially
+# UNSUPPORTED on GeForce. The Debian non-free driver tops out at 550 (CUDA 12.4),
+# so it would fail to init CUDA. The CUDA repo ships `nvidia-open` at 590+, which
+# supports CUDA 12.8 AND Turing (the 1660 Ti / TU116 is GSP-equipped, which the
+# open kernel modules require). The DKMS module build + `nvidia-smi` + CUDA init
+# are validated in the maintenance window — a first driver install always needs
+# one VM reboot to load the freshly-built kernel module.
+#
+# skip_k3s_gpu_install gates the network/package work so the k3s `agent` molecule
+# scenario exercises the include + the (network-free) component-enable without a
+# real GPU or NVIDIA packages.
+
+# --- Enable Debian non-free-firmware (GPU firmware; harmless) -----------------
+- name: Check for the deb822 Debian sources file
+  ansible.builtin.stat:
+    path: "{{ k3s_gpu_debian_sources_path }}"
+  register: k3s_gpu_debian_sources
+
+- name: Enable contrib/non-free/non-free-firmware components
+  # Normalize EVERY Components line (the deb822 file's main + security stanzas)
+  # to the full set. Trixie enables non-free-firmware BY DEFAULT (the firmware
+  # GR), so a fresh agent's debian.sources ships `Components: main
+  # non-free-firmware` — a non-free-firmware-gated match (negative lookahead)
+  # would skip that default line and NEVER add contrib/non-free (the driver/
+  # firmware packages live there). Matching every Components line and replacing
+  # with the canonical set handles all partial states (`main`, `main
+  # non-free-firmware`, already-full) and stays idempotent: re-replacing an
+  # already-full line with the identical string is a no-op. Runs even in molecule
+  # (network-free, against a scratch sources file) — the one directly-asserted
+  # effect of this task file.
+  ansible.builtin.replace:
+    path: "{{ k3s_gpu_debian_sources_path }}"
+    regexp: '^Components:.*$'
+    replace: 'Components: main contrib non-free non-free-firmware'
+  when: k3s_gpu_debian_sources.stat.exists | default(false)
+
+# --- NVIDIA container-toolkit apt repository (fingerprint-verified) -----------
+- name: Add the NVIDIA container-toolkit apt repository
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: "https://nvidia.github.io/libnvidia-container/gpgkey"
+    apt_signed_repo_fingerprint: "C95B321B61E88C1809C4F759DDCAE044F796ECB0"
+    apt_signed_repo_keyring_path: /etc/apt/keyrings/nvidia-container-toolkit.gpg
+    apt_signed_repo_repo_line: "deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/amd64 /"
+    apt_signed_repo_filename: nvidia-container-toolkit
+    apt_signed_repo_install_gnupg: true
+  when: not (skip_k3s_gpu_install | default(false))
+
+# --- NVIDIA CUDA apt repository (nvidia-open driver; fingerprint-verified) -----
+# NVIDIA signs every CUDA repo (all distros) with ONE key. The debian13 repo path
+# does not serve the .pub, so fetch it from the debian12 path (same key, HTTP 200)
+# — it is the key that signs the debian13 Release file.
+- name: Add the NVIDIA CUDA apt repository
+  ansible.builtin.include_role:
+    name: apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: "https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/3bf863cc.pub"
+    apt_signed_repo_fingerprint: "EB693B3035CD5710E231E123A4B469963BF863CC"
+    apt_signed_repo_keyring_path: /etc/apt/keyrings/nvidia-cuda.gpg
+    apt_signed_repo_repo_line: "deb [signed-by=/etc/apt/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/ /"
+    apt_signed_repo_filename: nvidia-cuda
+    apt_signed_repo_install_gnupg: true
+  when: not (skip_k3s_gpu_install | default(false))
+
+# --- Driver + toolkit install -------------------------------------------------
+- name: Install kernel headers for the DKMS driver build
+  ansible.builtin.apt:
+    name: linux-headers-amd64
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: not (skip_k3s_gpu_install | default(false))
+
+# `nvidia-open` (from the CUDA repo) + the toolkit are both exact-pinned.
+# Installing the toolkit notifies a k3s-agent restart so k3s re-generates its
+# containerd config and picks up the auto-detected `nvidia` runtime (a harmless
+# no-op on a fresh install where the agent starts after this task via the
+# install-script handler).
+- name: Install the NVIDIA driver (nvidia-open, CUDA repo) + container toolkit (pinned)
+  ansible.builtin.apt:
+    name:
+      - "nvidia-open={{ nvidia_driver_version }}"
+      - "nvidia-container-toolkit={{ nvidia_container_toolkit_version }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    allow_change_held_packages: true
+  when: not (skip_k3s_gpu_install | default(false))
+  notify:
+    - Restart k3s-agent
+    - Confirm the restarted k3s-agent is up and stable
+    - Wait for agent node Ready
+
+# --- Container-toolkit: accept NVIDIA_VISIBLE_DEVICES for unprivileged pods ----
+# The DCGM exporter injects the GPU via NVIDIA_VISIBLE_DEVICES=all (it does NOT
+# claim an nvidia.com/gpu device-plugin allocation — see dcgm-exporter.yaml). The
+# container toolkit IGNORES that env var for UNPRIVILEGED pods unless this flag is
+# set in /etc/nvidia-container-runtime/config.toml. Without it DCGM still starts
+# and its target reads up==1, but it emits ZERO DCGM_FI_DEV_* series — silent GPU
+# telemetry loss (the dashboards + temp/offload alerts have nothing to fire on).
+# nvidia-ctk ships with the toolkit; the grep gate keeps it idempotent (a missing
+# config.toml greps non-zero → nvidia-ctk creates it from defaults + the flag).
+- name: Check the container-toolkit unprivileged visible-devices flag
+  ansible.builtin.command:
+    cmd: >-
+      grep -qE '^[[:space:]]*accept-nvidia-visible-devices-envvar-when-unprivileged[[:space:]]*=[[:space:]]*true[[:space:]]*$'
+      /etc/nvidia-container-runtime/config.toml
+  register: k3s_gpu_ctk_flag
+  changed_when: false
+  failed_when: false
+  when: not (skip_k3s_gpu_install | default(false))
+
+- name: Allow NVIDIA_VISIBLE_DEVICES for unprivileged pods (DCGM GPU injection)
+  ansible.builtin.command:
+    cmd: >-
+      nvidia-ctk config
+      --set accept-nvidia-visible-devices-envvar-when-unprivileged=true
+      --in-place
+  changed_when: true
+  when:
+    - not (skip_k3s_gpu_install | default(false))
+    - (k3s_gpu_ctk_flag.rc | default(1)) != 0
+
+# --- Verify (best-effort — the module load may need a VM reboot) --------------
+- name: Load the NVIDIA kernel module (best-effort)
+  ansible.builtin.command: modprobe nvidia
+  changed_when: false
+  failed_when: false
+  when: not (skip_k3s_gpu_install | default(false))
+
+- name: Probe nvidia-smi (non-fatal)
+  ansible.builtin.command: nvidia-smi
+  register: k3s_gpu_nvidia_smi
+  changed_when: false
+  failed_when: false
+  when: not (skip_k3s_gpu_install | default(false))
+
+- name: Report the GPU driver status
+  # A HINT, not an asserted single cause: nvidia-smi is a failed_when:false probe,
+  # so a non-zero rc has two very different fixes. Distinguish "ran but no GPU
+  # attached" (No devices were found → attach the card) from "cannot reach the
+  # driver" (module not loaded → reboot the VM).
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'nvidia-smi OK — the GPU is visible to the agent.'
+         if (k3s_gpu_nvidia_smi.rc | default(1)) == 0
+         else ('nvidia-smi ran but found NO GPU ("No devices were found"): the card
+                is likely not attached to this VM yet — attach it in the window
+                (qm set 207 --hostpci0 0000:01:00, docs/43 step 6), then re-check.'
+               if 'No devices were found' in ((k3s_gpu_nvidia_smi.stdout | default(''))
+                                              ~ (k3s_gpu_nvidia_smi.stderr | default('')))
+               else 'nvidia-smi could not reach the driver — most likely the DKMS
+                     kernel module is not loaded yet: REBOOT this VM to load it, then
+                     re-check (expected right after a first driver install; docs/43).') }}
+  when: not (skip_k3s_gpu_install | default(false))

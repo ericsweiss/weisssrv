@@ -1,0 +1,16 @@
+---
+# Role metadata
+
+galaxy_info:
+  role_name: vfio_passthrough
+  namespace: weisssrv
+  author: Eric Weiss
+  description: GPU VFIO host codification (IOMMU cmdline, vfio-pci bind, driver blacklist); stages config, flags reboot-required, never reboots
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

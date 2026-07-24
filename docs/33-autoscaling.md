@@ -141,7 +141,7 @@ script's `CPU_LIMIT_ALLOWLIST` (currently empty).
 |---|---|---|
 | `Auto` | exporters (proxmox, blackbox, plex, redis, exportarr, zfs, adguard, unbound), MetalLB, cert-manager, ESO, Connect, alloy, node-exporter, kube-state-metrics, kps operator | updater evicts to apply new requests (brief restart) |
 | `Initial` | **Traefik** (moved from Auto — see below), apps (downloads incl. the gluetun sidecars caught by wildcard `*` policies, recipes incl. bar-assistant redis/meilisearch/salt-rim, authentik server/worker, runners, agent), external-dns (single replica, no PDB), Flux controllers, Grafana | new requests apply only when the pod restarts naturally — no surprise evictions mid-download or mid-reconcile |
-| `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs (the Prometheus/Alertmanager VPAs target the operator CRs, not the StatefulSets — see docs/31) | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive) |
+| `Off` | Prometheus, Alertmanager, Loki, both PostgreSQLs (the Prometheus/Alertmanager VPAs target the operator CRs, not the StatefulSets — see docs/31), **Hindsight** | recommendation-only; requests stay hand-tuned in the HelmRelease/manifest (zvol-pinned, eviction-sensitive). Hindsight stays `Off` because its llama container is GPU-pinned (`nvidia.com/gpu`) and its memory is VRAM/model-dictated, not usage-history driven (docs/43) |
 
 **Traefik is `Initial`, not `Auto`** (changed after the ingress-churn
 incident): Traefik is the ingress data path for every service, including the

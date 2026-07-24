@@ -1,0 +1,105 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "celsius", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 83 } ] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false } },
+      "pluginVersion": "11",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(DCGM_FI_DEV_GPU_TEMP{job=\"dcgm-exporter\"})", "legendFormat": "GPU temp", "refId": "A" } ],
+      "title": "GPU Temperature",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false } },
+      "pluginVersion": "11",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(DCGM_FI_DEV_GPU_UTIL{job=\"dcgm-exporter\"})", "legendFormat": "GPU util", "refId": "A" } ],
+      "title": "GPU Utilization",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "watt", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false } },
+      "pluginVersion": "11",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(DCGM_FI_DEV_POWER_USAGE{job=\"dcgm-exporter\"})", "legendFormat": "GPU power", "refId": "A" } ],
+      "title": "GPU Power",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "decmbytes", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false } },
+      "pluginVersion": "11",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(DCGM_FI_DEV_FB_USED{job=\"dcgm-exporter\"})", "legendFormat": "VRAM used", "refId": "A" } ],
+      "title": "GPU Memory Used",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "id": 5,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "DCGM_FI_DEV_GPU_UTIL{job=\"dcgm-exporter\"}", "legendFormat": "{{gpu}} {{modelName}}", "refId": "A" } ],
+      "title": "GPU Utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "decmbytes", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "id": 6,
+      "options": { "legend": { "calcs": [ "max" ], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "DCGM_FI_DEV_FB_USED{job=\"dcgm-exporter\"}", "legendFormat": "used {{gpu}}", "refId": "A" }, { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "DCGM_FI_DEV_FB_FREE{job=\"dcgm-exporter\"}", "legendFormat": "free {{gpu}}", "refId": "B" } ],
+      "title": "GPU Memory (VRAM)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "celsius", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 83 } ] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "id": 7,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "DCGM_FI_DEV_GPU_TEMP{job=\"dcgm-exporter\"}", "legendFormat": "temp {{gpu}}", "refId": "A" } ],
+      "title": "GPU Temperature",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "watt", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "id": 8,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "DCGM_FI_DEV_POWER_USAGE{job=\"dcgm-exporter\"}", "legendFormat": "power {{gpu}}", "refId": "A" }, { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "DCGM_FI_DEV_SM_CLOCK{job=\"dcgm-exporter\"}", "legendFormat": "SM clock MHz {{gpu}}", "refId": "B" } ],
+      "title": "GPU Power & SM Clock",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [ "gpu", "nvidia", "dcgm" ],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GPU (NVIDIA DCGM)",
+  "uid": "gpu-nvidia-dcgm",
+  "version": 1,
+  "weekStart": ""
+}

@@ -8,13 +8,15 @@ through the UI, so a chart adds nothing over these.
 
 - **URLs**: `dashboard.ericsweiss.com` (external) / `dashboard.esweiss.com`
   (internal, LAN/Tailscale-scoped).
-- **SSO**: Homarr's own Authentik OIDC login (`AUTH_PROVIDERS=oidc,credentials`)
+- **SSO**: Homarr's own Authentik OIDC login (`AUTH_PROVIDERS=oidc`, SSO-only)
   — no forward-auth middleware; Traefik passes straight through and Homarr 302s
   unauthenticated browsers into Authentik (one login, both hostnames). The
   `homarr-admins` Authentik group (matched from the `groups` claim) maps to the
-  same-named Homarr admin group. A local `credentials` admin, created at
-  onboarding, is the break-glass path when Authentik is down. Authentik objects
-  live in `terraform/authentik` (docs/40).
+  same-named Homarr admin group — that grants admin. There is **no standing
+  local admin** (the onboarding credentials break-glass was retired in !193). DR
+  for a total Authentik outage: re-enable `credentials` via `task flux:dev-apply`
+  + `homarr-cli recreate-admin` (see docs/41 §SSO). Authentik objects live in
+  `terraform/authentik` (docs/40).
 - **Image**: `ghcr.io/homarr-labs/homarr` (public, v-prefixed tag) — version
   pinned via `homarr_version` in
   `ansible/inventories/prod/group_vars/all.yml`.

@@ -52,6 +52,14 @@
     success_msg: "Config file successfully created at /etc/rancher/k3s/config.yaml"
   when: not ansible_check_mode
 
+# GPU-node enablement: install the NVIDIA driver + container toolkit BEFORE the
+# k3s install/restart below so k3s auto-detects the nvidia container runtime the
+# first time it starts. Gated on k3s_gpu_node (only k3s-agt-prec-01). See
+# tasks/gpu.yml + docs/43-gpu-passthrough.md.
+- name: Enable NVIDIA GPU support on this agent
+  ansible.builtin.include_tasks: gpu.yml
+  when: k3s_gpu_node | default(false)
+
 # Version detection + install-script staging (shared with server.yml)
 - name: Detect k3s version and stage install script
   ansible.builtin.include_tasks: install-script.yml

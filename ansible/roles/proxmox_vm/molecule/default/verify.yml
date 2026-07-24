@@ -19,6 +19,7 @@
         - 09-disk-slot-assert.json
         - 10-meta-drift.json
         - 11-windows-guest.json
+        - 12-hostpci.json
       register: artifacts
 
     - name: Decode artifacts
@@ -34,6 +35,7 @@
         slot_assert: "{{ artifacts.results[8].content | b64decode | from_json }}"
         meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
         windows: "{{ artifacts.results[10].content | b64decode | from_json }}"
+        hostpci: "{{ artifacts.results[11].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:

@@ -136,6 +136,40 @@
         mode: "0644"
         content: "{{ win_scan.stdout }}"
 
+    # 2p. PCI passthrough — a create-time vm_hostpci list must attach each device
+    # as `qm set <id> --hostpci<index> <spec>` (Linux guest, VM-missing state, so
+    # the create path runs). Verifies index derivation and verbatim spec passing.
+    - name: Reset qm.log for the hostpci case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: HostPCI passthrough run
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        vm_hostpci:
+          - "0000:01:00"
+
+    - name: Scan the hostpci qm.log
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        hostpci0=$(grep -c -- '^qm set 999 --hostpci0 0000:01:00$' "$log" || true)
+        printf '{"hostpci0": %s}\n' "$hostpci0"
+      args:
+        executable: /bin/bash
+      register: hostpci_scan
+      changed_when: false
+
+    - name: Capture hostpci result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/12-hostpci.json
+        mode: "0644"
+        content: "{{ hostpci_scan.stdout }}"
+
     # 3. Pool-validation failure path
     - name: Pool-validation failure (expect failure)
       block:

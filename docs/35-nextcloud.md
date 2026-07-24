@@ -134,6 +134,31 @@ group provisioning on, `allow_multiple_user_backends=0`).
 > mapped from the `nextcloud-admins` group automatically — first admin logs in
 > via SSO and is promoted, or use the break-glass local admin.
 
+### SSRF toggle (`allow_local_remote_servers`) — accepted risk
+
+The `nextcloud` role sets `allow_local_remote_servers=true` (`tasks/main.yml`).
+Nextcloud's SSRF guard (`LocalAddressChecker`) otherwise refuses any server-side
+fetch to an RFC1918 address, and split-horizon DNS resolves `auth.ericsweiss.com`
+to the **internal** Traefik VIP `192.168.0.101` — so the `user_oidc` discovery
+fetch is itself a "local" request and SSO login fails without it. It is
+**required** for OIDC to work here.
+
+The caveat is that the toggle is **global**: Nextcloud has no per-URL allowlist
+and no per-host `user_oidc` discovery override that would bypass the global
+`LocalAddressChecker`, so enabling it widens **every** server-side fetch surface,
+not just OIDC discovery. The surfaces actually reachable today are federation
+("add remote share") and the `text` app's reference/link previews — both
+authenticated-user-triggerable arbitrary-host fetches. SSRF only *relays* the
+VM's existing LAN reach; it grants no new network position.
+
+**Risk = LOW under the current posture**, bounded by two facts: login is
+SSO-only with single-operator provisioning (no self-registration app), and
+`files_external` is **DISABLED** (the highest-value SSRF vector). It escalates to
+**MEDIUM** the moment untrusted or family accounts are added — at which point the
+mitigation is a **default-deny egress firewall on the nextcloud VM** (allowlisting
+only DNS, the OIDC VIP, the SMTP relay, apt, NFS, NTP). That is future/supervised
+work and is **not** implemented today.
+
 ## Outgoing mail (SMTP relay)
 
 Nextcloud sends notifications, share invites, and password-reset mail through the

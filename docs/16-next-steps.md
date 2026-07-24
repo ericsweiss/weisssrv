@@ -60,10 +60,15 @@ This document tracks remaining work and planned improvements for the weisssrv ho
   - See docs/37-hermes.md (Codex login + messaging-platform onboarding are user
     follow-ups)
 - [x] Homarr dashboard deployed (dashboard.esweiss.com / dashboard.ericsweiss.com):
-  homelab launcher with Authentik OIDC (`homarr-admins`) + break-glass local
-  admin, NFS-backed SQLite on encrypted `ssd/appdata`, direct-URL integrations
-  to the running services — see docs/41-homarr.md (integration wiring is a
-  post-deploy UI checklist there)
+  homelab launcher with Authentik OIDC (`homarr-admins`), SSO-only (no standing
+  local admin), NFS-backed SQLite on encrypted `ssd/appdata`, direct-URL
+  integrations to the running services — see docs/41-homarr.md (integration
+  wiring is a post-deploy UI checklist there)
+- [x] GPU passthrough (pve-prec-01 GTX 1660 Ti → k3s GPU agent): VFIO host prep,
+  NVIDIA driver + container toolkit, nvidia-device-plugin (time-sliced), DCGM
+  telemetry, and Hindsight llama.cpp GPU offload — all codified; the physical
+  apply (host reboot + `qm set`) is a supervised window. See
+  docs/43-gpu-passthrough.md
 
 ---
 

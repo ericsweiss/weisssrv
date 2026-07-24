@@ -69,6 +69,19 @@ spec:
               value: "http://pulsarr.downloads.svc.cluster.local:3003"
             - name: port
               value: "3003"
+            # SSO-only: disable Pulsarr's own login so a single Authentik sign-on
+            # suffices (no second Pulsarr prompt) — the same posture as the *arr
+            # apps' "Authentication: External". The env value is authoritative
+            # over Pulsarr's stored DB config on every boot, so this is durable
+            # and the UI cannot silently re-enable it. The only path to :3003 is
+            # Traefik (networkpolicy admits just the traefik namespace), which
+            # gates every request through the authentik-auth forward-auth
+            # middleware + the media-admins binding — so forward-auth + the
+            # NetworkPolicy are the sole gate once native auth is off. Recovery:
+            # flip this back to `required` to restore the native login (the DB
+            # admin account is untouched). docs/21 §Authentik SSO Integration.
+            - name: authenticationMethod
+              value: disabled
           ports:
             - name: http
               containerPort: 3003

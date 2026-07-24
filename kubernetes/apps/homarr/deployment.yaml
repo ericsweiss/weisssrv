@@ -91,13 +91,16 @@ spec:
                 secretKeyRef:
                   name: homarr-secrets
                   key: secret-encryption-key
-            # Auth providers: OIDC (Authentik) as the primary login PLUS a local
-            # credentials provider. The credentials provider is the break-glass
-            # path — it seeds a local admin at first-run onboarding (usable when
-            # SSO-only: the onboarding-era credentials break-glass is retired —
-            # admin rides the homarr-admins OIDC group claim (verified synced
-            # before this flip); a total Authentik outage is recovered by
-            # re-adding "credentials" here via dev-apply. docs/41 §SSO.
+            # SSO-only: OIDC (Authentik) is the sole login provider. The
+            # onboarding-era `credentials` break-glass was retired in !193 —
+            # there is no standing local admin. Admin is granted via the
+            # `homarr-admins` OIDC groups claim (the Authentik group maps to the
+            # same-named Homarr admin group; verified synced before this flip).
+            # homarr-labs#2108: a pure OIDC-only first login doesn't auto-grant
+            # admin — the group mapping does. DR for a total Authentik outage:
+            # re-enable "credentials" via `task flux:dev-apply` + run
+            # `homarr-cli recreate-admin` in the pod, NOT a standing local
+            # admin. See docs/41 §SSO.
             - name: AUTH_PROVIDERS
               value: "oidc"
             - name: AUTH_OIDC_CLIENT_ID

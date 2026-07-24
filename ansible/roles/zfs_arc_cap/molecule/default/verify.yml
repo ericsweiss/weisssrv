@@ -1,0 +1,29 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stat the rendered modprobe.d file
+      ansible.builtin.stat:
+        path: /etc/modprobe.d/zfs.conf
+      register: zfs_conf
+
+    - name: Assert the ARC-cap modprobe.d file was rendered
+      ansible.builtin.assert:
+        that:
+          - zfs_conf.stat.exists
+        fail_msg: "/etc/modprobe.d/zfs.conf was not rendered by zfs_arc_cap"
+        success_msg: "/etc/modprobe.d/zfs.conf rendered"
+
+    - name: Read the modprobe.d file
+      ansible.builtin.slurp:
+        src: /etc/modprobe.d/zfs.conf
+      register: zfs_conf_content
+
+    - name: Assert the ARC cap value is present
+      ansible.builtin.assert:
+        that:
+          - "'options zfs zfs_arc_max=8589934592' in (zfs_conf_content.content | b64decode)"
+        fail_msg: "zfs.conf is missing the expected `options zfs zfs_arc_max=8589934592` line"
+        success_msg: "zfs.conf caps the ARC at the expected byte count"

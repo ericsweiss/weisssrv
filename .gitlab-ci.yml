@@ -1954,6 +1954,10 @@ molecule-tests:
       # its scenario contract-tests the crypttab/systemd render on the skip path.
       - ROLE: encrypted_swap
         SCENARIO: default
+      - ROLE: zfs_arc_cap
+        SCENARIO: default
+      - ROLE: vfio_passthrough
+        SCENARIO: default
       - ROLE: nextcloud
         SCENARIO: default
       - ROLE: nfs_tls
@@ -2372,11 +2376,17 @@ deploy-ansible-base:
   script:
     - cd ansible
     - op run -- ansible-playbook -i inventories/prod playbooks/base.yml
-    # base.yml doesn't include node_exporter_host or alloy_host (those live
-    # in site.yml); when changes touch them we follow up with a tag-scoped
-    # site.yml run so the rules block below stays honest. Idempotent if
-    # neither role changed; the tag filter skips everything else in site.yml.
-    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --tags node_exporter_host,alloy_host
+    # base.yml doesn't include node_exporter_host, alloy_host, or
+    # encrypted_swap (those live in site.yml); when changes touch them we
+    # follow up with a tag-scoped site.yml run so the rules block below stays
+    # honest. Idempotent if none changed; the tag filter skips everything else
+    # in site.yml. encrypted_swap was listed in the TRIGGERS below but missing
+    # from this tag list, so the job went green on every role change while the
+    # role never executed on any host (caught when the NAS reboot activated
+    # nothing: /etc/crypttab empty fleet-wide). With swap near zero in use,
+    # the role's live-switchover path activates the encrypted mapper without
+    # another reboot.
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --tags node_exporter_host,alloy_host,encrypted_swap
   environment:
     name: production/ansible-base
   rules:
@@ -2433,8 +2443,8 @@ deploy-ansible-proxmox:
     TAILSCALE_AUTH_KEY: "op://Homelab/Tailscale Auth Key/credential"
   script:
     - cd ansible
-    # Deploy qol, postfix_null_client, tailscale to proxmox hosts
-    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit proxmox --tags qol,postfix_null_client,tailscale
+    # Deploy qol, postfix_null_client, tailscale, zfs_arc_cap, vfio_passthrough to proxmox hosts
+    - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --limit proxmox --tags qol,postfix_null_client,tailscale,zfs_arc_cap,vfio_passthrough
   environment:
     name: production/ansible-proxmox
   rules:
@@ -2444,6 +2454,8 @@ deploy-ansible-proxmox:
         - ansible/roles/qol/**/*
         - ansible/roles/tailscale/**/*
         - ansible/roles/postfix_null_client/**/*
+        - ansible/roles/zfs_arc_cap/**/*
+        - ansible/roles/vfio_passthrough/**/*
         # This job RUNS site.yml plays (--limit proxmox); a change to those
         # plays must redeploy too (idempotent, so extra triggers are safe).
         - ansible/playbooks/site.yml

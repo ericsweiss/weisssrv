@@ -592,9 +592,9 @@ applications, and bindings are code in `terraform/authentik/`, docs/40). The
 namespace NetworkPolicy admits only Traefik to the pods — the middleware
 chain is the only path in.
 
-Because the *arrs/NZBGet/qBittorrent have no native OIDC/SAML (a known
+Because the *arrs/NZBGet/qBittorrent/Pulsarr have no native OIDC/SAML (a known
 upstream limitation — see [Sonarr #2477](https://github.com/Sonarr/Sonarr/issues/2477)),
-the single-login experience is achieved per app with one of three
+the single-login experience is achieved per app with one of four
 passthrough mechanisms:
 
 ### 1. *arr apps — `Authentication: External` (in-app setting)
@@ -662,6 +662,40 @@ kubectl scale deploy/qbittorrent -n downloads --replicas=1
 Note: Flux's kustomize-controller reverts the replica count on its next
 reconcile — acceptable here (the edit happens between scale-down and the
 revert; re-check the conf took effect after the pod is back).
+
+### 4. Pulsarr — native auth disabled (declarative env)
+
+Pulsarr has no native OIDC and no HTTP Basic backend, so neither the
+`External`-style trust nor the credential-injection route applies. Instead it
+exposes `authenticationMethod`, which at `disabled` bypasses its own login for
+every request. It is set right in the Deployment env
+(`kubernetes/apps/download-clients/pulsarr.yaml`):
+
+```yaml
+- name: authenticationMethod
+  value: disabled
+```
+
+This is the cleanest of the four patterns — fully declarative, no terraform, no
+1Password item, no middleware swap, no supervised runbook. Pulsarr treats env
+vars as authoritative over its stored DB config on every boot, so the setting is
+durable and the UI cannot silently re-enable the login (toggling auth in the
+Pulsarr UI is a no-op after a restart — the value is env-managed).
+
+**Trust model**: identical to the *arr `External` precedent — with native auth
+off, the sole gate is the NetworkPolicy (admits ONLY the Traefik namespace to
+`:3003`) plus the `authentik-auth` forward-auth middleware and the `media-admins`
+binding on the IngressRoute. The IngressRoute keeps the shared `authentik-auth`
+middleware (NOT `authentik-auth-basic` — there is no credential to inject).
+**Residual risk**: same as qBittorrent — the NetworkPolicy is load-bearing;
+Pulsarr is not in the HA-bypass route and no intra-namespace peer opens `:3003`.
+
+**Recovery / break-glass**: there is no direct app login while disabled; flip the
+env back to `required` (or `requiredExceptLocal`) to restore Pulsarr's native
+login instantly — the DB admin account on the `/config` volume is untouched.
+Equivalent emergency access is `kubectl port-forward svc/pulsarr -n downloads
+3003:3003` (gated by kubeconfig possession, same posture as the *arr `External`
+mode).
 
 ### Per-app access control
 

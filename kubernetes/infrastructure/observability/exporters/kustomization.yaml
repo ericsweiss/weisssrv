@@ -15,3 +15,4 @@ resources:
   - node-exporter-host.yaml
   - plex-exporter.yaml
   - redis-exporter.yaml
+  - dcgm-exporter.yaml

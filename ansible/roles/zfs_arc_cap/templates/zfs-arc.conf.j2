@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Managed by the zfs_arc_cap Ansible role (compute Proxmox hosts).
+#
+# zfs_arc_max caps the ZFS ARC in bytes. It is a LOAD-TIME module parameter, so
+# it only takes effect at the value present when the zfs module loads — which on
+# these hosts is during the initramfs (the local-ssd pool imports at early boot).
+# The role therefore rebuilds the initramfs whenever this file changes, and also
+# writes the running value to /sys/module/zfs/parameters/zfs_arc_max so a changed
+# cap applies live without a reboot. Value comes from zfs_arc_cap_max_bytes.
+options zfs zfs_arc_max={{ zfs_arc_cap_max_bytes }}

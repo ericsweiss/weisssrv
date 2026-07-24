@@ -71,6 +71,14 @@ provisioner:
         skip_ssh_config: true
         skip_dns_config: true
         skip_k3s_install: true  # Skip actual k3s install in container
+        # Exercise the GPU-node include path (tasks/gpu.yml). skip_k3s_gpu_install
+        # skips the driver/toolkit apt installs + nvidia-smi probe (no GPU or
+        # NVIDIA packages in CI); the non-free component-enable still runs against
+        # a SCRATCH sources file (prepare.yml stages it) so the container's real
+        # apt sources — and `apt update` — stay untouched. verify asserts it.
+        k3s_gpu_node: true
+        skip_k3s_gpu_install: true
+        k3s_gpu_debian_sources_path: /tmp/gpu-test-debian.sources
 verifier:
   name: ansible
 scenario:

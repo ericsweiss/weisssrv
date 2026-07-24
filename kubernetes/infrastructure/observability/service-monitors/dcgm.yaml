@@ -1,0 +1,18 @@
+---
+# Scrape the DCGM exporter's GPU metrics (kubernetes/infrastructure/
+# observability/exporters/dcgm-exporter.yaml). In-namespace, so the
+# allow-intra-namespace-ingress NetworkPolicy already admits the Prometheus
+# scrape. jobLabel sets job=dcgm-exporter for the GPU dashboard + alert selectors.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: observability
+spec:
+  jobLabel: app.kubernetes.io/name
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s

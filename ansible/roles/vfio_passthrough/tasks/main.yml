@@ -1,0 +1,72 @@
+---
+# Host-side GPU VFIO codification. Every task self-gates on
+# vfio_passthrough_enabled, so the role is a clean no-op on hosts that don't set
+# it. It only STAGES the config (grub cmdline + vfio-pci bind + host-driver
+# blacklist) and prints a reboot-required warning — it NEVER reboots. The
+# operator applies it in a maintenance window (docs/43-gpu-passthrough.md).
+
+- name: Assert PCI IDs are provided when passthrough is enabled
+  ansible.builtin.assert:
+    that:
+      - vfio_passthrough_pci_ids | default([]) | length > 0
+    fail_msg: >-
+      vfio_passthrough_enabled is true but vfio_passthrough_pci_ids is empty.
+      Set the GPU's PCI function IDs (vendor:device) so `options vfio-pci ids=`
+      is well-formed — otherwise vfio-pci would bind nothing.
+    success_msg: "vfio_passthrough_pci_ids provided ({{ vfio_passthrough_pci_ids | length }} function(s))"
+  when: vfio_passthrough_enabled | default(false)
+
+# --- IOMMU kernel command line (GRUB drop-in) -------------------------------
+- name: Ensure the GRUB drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/default/grub.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: vfio_passthrough_enabled | default(false)
+
+- name: Append the IOMMU kernel parameters via a GRUB drop-in
+  ansible.builtin.template:
+    src: grub-vfio.cfg.j2
+    dest: /etc/default/grub.d/vfio-iommu.cfg
+    owner: root
+    group: root
+    mode: "0644"
+  when: vfio_passthrough_enabled | default(false)
+  notify:
+    - Update GRUB for VFIO
+    - Warn that a VFIO reboot is required
+
+# --- vfio-pci binding + host-driver blacklist (modprobe.d) ------------------
+- name: Bind the GPU to vfio-pci and blacklist the host driver(s)
+  ansible.builtin.template:
+    src: vfio.conf.j2
+    dest: /etc/modprobe.d/vfio.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: vfio_passthrough_enabled | default(false)
+  notify:
+    - Rebuild initramfs for VFIO
+    - Warn that a VFIO reboot is required
+
+# --- Force vfio-pci to load at boot (modules-load.d) ------------------------
+# Belt-and-suspenders fallback to the `vfio-pci.ids=` kernel cmdline (the primary,
+# earliest bind, set by the GRUB drop-in above). systemd-modules-load reads this
+# file at real-root boot and loads vfio-pci even if nothing else pulls it in
+# (nouveau is blacklisted, so its softdep never fires); vfio-pci then claims the
+# functions via the cmdline ids= (and the redundant modprobe.d `options ids=`).
+- name: Force vfio-pci to load early at boot
+  ansible.builtin.template:
+    src: modules-load-vfio.conf.j2
+    dest: /etc/modules-load.d/vfio-pci.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - vfio_passthrough_enabled | default(false)
+    - vfio_passthrough_force_load | default(true)
+  notify:
+    - Rebuild initramfs for VFIO
+    - Warn that a VFIO reboot is required

@@ -65,6 +65,17 @@ nic_tuning_ip_forward: true
 # traffic is unaffected (host.fw OUT rules are host-originated only).
 proxmox_firewall_egress_filtering: true
 
+# ZFS ARC cap for the COMPUTE Proxmox hosts (8 GiB). Consumed by the zfs_arc_cap
+# role, which the site.yml proxmox play runs only where proxmox_role != 'nas' —
+# so although this var is visible to all six hosts here, pve-nas-01 never uses it
+# (its ARC stays owned by nas_storage + host_vars/pve-nas-01.yml at 4 GiB). The
+# cap became load-bearing when pve-prec-01 gained a VFIO GPU-passthrough guest
+# whose RAM is host-pinned/mlock'd: an uncapped ARC (~½ of 62 GiB) would collide
+# with the pinned VM and thrash. On the 14-15 GiB opt/laptop hosts 8 GiB sits
+# at/above their ~½-RAM default, so it is a harmless ceiling there (available RAM
+# self-limits ARC); it is the protective cap on the 62 GiB pve-prec-01. docs/43.
+zfs_arc_cap_max_bytes: 8589934592
+
 # NFSv4-over-TLS handshake daemon on every Proxmox host: prerequisite for the
 # tank-proxmox storage.cfg target moving to hostname + xprtsec=tls (the
 # proxmox_backup role's codified shape — storage.cfg is clustered, so EVERY

@@ -97,6 +97,23 @@
           would try to join with an empty credential instead of failing
           loudly. Check the validation assert in tasks/agent.yml.
 
+    # GPU-node include path (tasks/gpu.yml): the non-free component-enable must
+    # have rewritten the scratch sources file (real installs are skipped via
+    # skip_k3s_gpu_install). Proves the k3s_gpu_node include is reached + wired.
+    - name: Read the GPU-path scratch sources file
+      ansible.builtin.slurp:
+        src: /tmp/gpu-test-debian.sources
+      register: k3s_gpu_sources
+
+    - name: Assert the GPU node enabled non-free components
+      ansible.builtin.assert:
+        that:
+          - "'Components: main contrib non-free non-free-firmware' in (k3s_gpu_sources.content | b64decode)"
+        fail_msg: >-
+          tasks/gpu.yml did not enable contrib/non-free/non-free-firmware — the
+          k3s_gpu_node include path or the component-enable is broken.
+        success_msg: "GPU node enabled the non-free Debian components"
+
     # Verify kube-vip manifest does NOT exist for agents
     - name: Check kube-vip manifest does NOT exist
       ansible.builtin.stat:

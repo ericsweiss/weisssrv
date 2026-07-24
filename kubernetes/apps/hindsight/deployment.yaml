@@ -35,16 +35,16 @@ spec:
         app.kubernetes.io/name: hindsight
         app.kubernetes.io/part-of: hindsight
     spec:
-      # HOME: k3s-agt-prec-01 — hostname-pinned. This is a heavy, RAM-hungry
-      # local-inference workload (llama.cpp AVX2 sidecar + in-process torch
-      # embeddings); its ~5Gi request only fits where the RAM was provisioned
-      # for it (the prec agent VM was raised 12->18G in hosts.yml specifically
-      # for this). The other modern agents run at ~85% and the NAS agent is
-      # kept clear of extra compute, so a hard pin is honest — a single-replica
-      # RWO/Recreate app lives on exactly one node anyway. If prec-01 is down,
-      # Hindsight is down and Hermes degrades to its built-in memory (which
-      # always runs alongside), an acceptable failure mode for a memory
-      # backend. Rehome = edit this hostname + move/grow the RAM.
+      # HOME: k3s-agt-prec-01 — hostname-pinned. This is where the GTX 1660 Ti is
+      # passed through (hosts.yml VM 207 vm_hostpci + esweiss.com/gpu=nvidia), so
+      # the llama sidecar's `nvidia.com/gpu: 1` request is only satisfiable here.
+      # GPU offload SHRINKS this pod's host RAM (the model lives in VRAM now — see
+      # the llama resources below); the prec agent's 30G is fleet modern-CPU
+      # headroom, not a Hindsight requirement. A hard pin is honest — a
+      # single-replica RWO/Recreate app lives on exactly one node anyway. If
+      # prec-01 is down, Hindsight is down and Hermes degrades to its built-in
+      # memory (which always runs alongside), an acceptable failure mode for a
+      # memory backend. Rehome = move the GPU + edit this hostname.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -57,6 +57,14 @@ spec:
       nodeSelector:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"
+        esweiss.com/gpu: "nvidia"
+      # Run under the nvidia containerd runtime (k3s auto-detects it from the
+      # installed container toolkit; RuntimeClass in
+      # infrastructure/controllers/nvidia-device-plugin). The runtime injects the
+      # driver + GPU into the llama container (which requests nvidia.com/gpu); the
+      # hindsight container requests none, so it gets no GPU (NVIDIA_VISIBLE_DEVICES
+      # void) — harmless.
+      runtimeClassName: nvidia
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -93,17 +101,16 @@ spec:
               value: not-needed
             - name: HINDSIGHT_API_LLM_MODEL
               value: gemma-4-e2b-it
-            # LLM request timeouts. Default is 120s, but a single fact-extraction
-            # on the CPU-only llama sidecar takes ~80s (measured: 1081 tokens at
-            # 13 tok/s), and with N_PARALLEL=1 the server serializes inference —
-            # so a retain op that QUEUES behind another waits queue-time + ~80s,
-            # routinely exceeding 120s. That timed the client out, and every
-            # burst of turns then burned all 4 retry attempts producing nothing
-            # but heat (observed live 2026-07-20: attempt=4/4, node fan flat
-            # out). 300s comfortably covers queue-wait + a slow extraction so
-            # each op lands on the first attempt. CONSOLIDATION uses the same
-            # local model on the same serialized server, so it gets the same
-            # headroom or it would hit the identical wall during memory merges.
+            # CPU-LEGACY (pending GPU re-measurement, docs/43): 300s was sized for
+            # CPU inference (~13 tok/s -> ~80s/extraction + queue-wait routinely
+            # over the 120s default). GPU offload should cut per-op latency ~10x,
+            # so this headroom is now generous — kept unchanged until measured, do
+            # NOT blind-lower (a too-tight timeout under a cold model load or a
+            # queue burst re-introduces the retry storm). Original CPU rationale:
+            # a retain queued behind another waited queue-time + ~80s, timing the
+            # client out and burning all 4 retries producing only heat (observed
+            # 2026-07-20). CONSOLIDATION shares the same serialized server, so it
+            # gets the same headroom.
             - name: HINDSIGHT_API_LLM_TIMEOUT
               value: "300"
             - name: HINDSIGHT_API_CONSOLIDATION_LLM_TIMEOUT
@@ -158,10 +165,16 @@ spec:
               mountPath: /home/hindsight/.pg0
         # ── llama.cpp server: local LLM for memory extraction ────────────
         - name: llama
-          # Official llama.cpp server image; tag pinned as server-<bNNNN build>
-          # (hindsight_llamacpp_version in all.yml, category "manual" in
-          # check-versions — see the pin's comment there).
-          image: ghcr.io/ggml-org/llama.cpp:server-${hindsight_llamacpp_version}
+          # Official llama.cpp server CUDA image; tag pinned as
+          # server-cuda-<bNNNN build> (hindsight_llamacpp_version in all.yml,
+          # category "manual"). The CUDA build (vs the plain server- build) offloads
+          # inference to the passed-through 1660 Ti. NOTE the image is CUDA 12.8 —
+          # see the driver KNOWN-RISK note in the k3s role's tasks/gpu.yml + docs/43.
+          # llama.cpp's GHCR publishes server-<bNNNN> and server-cuda-<bNNNN> from
+          # the SAME build number, so the one hindsight_llamacpp_version pin covers
+          # both — verified server-cuda-b10068 exists on GHCR, so no separate
+          # _cuda version pin is needed.
+          image: ghcr.io/ggml-org/llama.cpp:server-cuda-${hindsight_llamacpp_version}
           imagePullPolicy: IfNotPresent
           env:
             # Bind all interfaces so the kubelet's httpGet probes (which
@@ -172,6 +185,14 @@ spec:
               value: "0.0.0.0"
             - name: LLAMA_ARG_PORT
               value: "8080"
+            # Offload ALL model layers to the GPU (99 = "every layer"). The
+            # gemma-4-E2B Q4_K_M weights (~2 GB) + the 8192-ctx KV cache fit the
+            # 1660 Ti's 6 GB VRAM comfortably, so full offload is safe and is the
+            # whole point of the CUDA image. If the device plugin has not
+            # advertised the GPU (nvidia.com/gpu unschedulable), the pod stays
+            # Pending rather than silently falling back to CPU.
+            - name: LLAMA_ARG_N_GPU_LAYERS
+              value: "99"
             # Auto-download the default Gemma GGUF (~3.5 GB) from HuggingFace
             # on first start — the same model Hindsight's own in-process
             # llamacpp provider defaults to. Cached on the NFS volume (see the
@@ -193,17 +214,14 @@ spec:
             # needed.
             - name: LLAMA_ARG_N_PARALLEL
               value: "1"
-            # Threads for inference on the agent VM's 6 cores. History: 4
-            # parallel slots pegged the node (2026-07-20), then a 2-thread cap
-            # quieted it but overshot — measured extractions hit 234-295s
-            # (2026-07-21), starving the serialized queue (stuck retains,
-            # consolidation pinned at 0/3) and blowing even the 300s server
-            # timeout under queue-wait. 4 threads roughly halves that
-            # (~120-150s/op) while N_PARALLEL=1 still guarantees only ONE
-            # inference runs at a time, so the worst-case burst is bounded and
-            # the queue can actually drain. prec-01 co-hosts Hermes; if fan
-            # noise returns, the next lever is a faster/smaller extraction
-            # model, NOT re-lowering threads below queue-sustainable rate.
+            # CPU-LEGACY (pending GPU re-measurement, docs/43): the thread count
+            # governed CPU inference speed; with -ngl 99 the work runs on the GPU
+            # and CPU threads only feed it, so 4 is now almost certainly more than
+            # needed. Kept unchanged until measured on the GPU — retune with fresh
+            # tok/s, do NOT blind-delete. Original CPU rationale: 4 parallel slots
+            # pegged the node (2026-07-20), a 2-thread cap overshot to 234-295s/op
+            # (2026-07-21) starving the serialized queue; 4 threads (~120-150s/op)
+            # with N_PARALLEL=1 bounded the worst-case burst so the queue drained.
             - name: LLAMA_ARG_THREADS
               value: "4"
           # /health is llama-server's built-in readiness route (503 while the
@@ -224,16 +242,21 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
-          # Memory request sized to the resident model (~3.5 GB mmap'd GGUF +
-          # KV cache + runtime): requesting what it actually uses keeps the
-          # scheduler honest about node headroom. No CPU limit (docs/33);
-          # inference bursts onto the node's spare cores.
+          # Memory dropped now that the model + KV cache live in VRAM (offloaded
+          # by -ngl 99): the host side is only the mmap'd GGUF header pages
+          # (reclaimable, file-backed), CUDA host-pinned staging buffers, and the
+          # server runtime — a fraction of the old ~3.5 GB resident model. Sized
+          # generously (retune with measured RSS, docs/43). No CPU limit (docs/33).
+          # nvidia.com/gpu is the device-plugin resource that pins the pod to the
+          # GPU node and injects the card; request auto-mirrors the limit (it is
+          # an integer extended resource, so requests==limits is required).
           resources:
             requests:
-              cpu: 500m
-              memory: 4Gi
+              cpu: 250m
+              memory: 1536Mi
             limits:
-              memory: 6Gi
+              memory: 3Gi
+              nvidia.com/gpu: "1"
           volumeMounts:
             # llama-server stores HuggingFace downloads under
             # ~/.cache/huggingface (the image runs as root, so /root) — mount

@@ -1,0 +1,16 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Single-namespace dir: pin the namespace so the shared default-deny-ingress
+# component lands in nvidia-device-plugin. The RuntimeClass is cluster-scoped;
+# kustomize leaves it namespaceless.
+namespace: nvidia-device-plugin
+resources:
+  - namespace.yaml
+  - runtimeclass.yaml
+  - release.yaml
+
+# default-deny-ingress from the shared baseline component (the plugin has no
+# ingress — it registers with the kubelet over a host socket).
+components:
+  - ../../../components/netpol-baseline
