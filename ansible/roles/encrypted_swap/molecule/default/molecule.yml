@@ -1,7 +1,8 @@
 ---
-# Scenario: assert the crypttab + fstab rendering (the live swapoff/cryptsetup
-# switchover is molecule-notest — it needs real devices). Shared driver/
-# provisioner config comes from ansible/molecule/base.yml via `-c`.
+# Scenario: assert the crypttab + fstab rendering + boot-finalize wiring
+# (activation is deferred to reboot — real devices — so there is nothing live to
+# exercise here). Shared driver/provisioner config comes from
+# ansible/molecule/base.yml via `-c`.
 platforms:
   - name: encrypted-swap-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest

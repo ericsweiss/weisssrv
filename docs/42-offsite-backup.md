@@ -197,13 +197,18 @@ key, `aes-xts-plain64`/`size=512` = AES-256-XTS) + `/etc/fstab`
 (`/dev/mapper/cryptswap`). A fresh key each boot ⇒ on-disk swap unrecoverable
 after a reboot.
 
-- **Compute hosts** (near-idle swap): the role switches over **live** (safe
-  `swapoff` gated on MemAvailable). kured reboots also activate cleanly.
-- **pve-nas-01** (GBs of swap in use): the switchover is **deferred to reboot**
-  (can't cryptsetup-open an active swap device). **Reboot pve-nas-01 to
-  activate.** `swap-clean` is device-agnostic (`swapoff -a`/`swapon -a`) and
-  works transparently post-reboot; pre-reboot, prefer to reboot promptly (see the
-  encrypted_swap README for the one-time caveat).
+Activation is **deferred to the next reboot** on all six hosts — there is no
+live (running-host) switchover. On reboot `systemd-cryptsetup` opens and
+`mkswap`s the mapper from crypttab and the `nofail` fstab mapper line swaps it
+on; the boot finalize unit then drops the retained plaintext line. Existing
+plaintext swap keeps running until then, so the deploy and a normal activation
+reboot have **no swapless window** (the encrypted_swap README documents one rare
+boot-race exception that can leave a host swapless until the next reboot,
+surfaced by the `NASSwapGone` alert). **Reboot to activate** (compute hosts on
+their next kured reboot; reboot
+`pve-nas-01` when convenient). `swap-clean` is device-agnostic
+(`swapoff -a`/`swapon -a`) and works transparently post-reboot; its pre-flight
+skips the cycle while the mapper is still pending (see the encrypted_swap README).
 
 ## Step 0 — prerequisites (supervised, before the deploy)
 

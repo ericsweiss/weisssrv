@@ -216,7 +216,7 @@ weisssrv/
 | zfs_encryption | Boot-time ZFS pool key fetch from 1Password Connect |
 | nfs_tls | NFSv4 over kernel TLS via tlshd (opt-in, `nfs_tls_enabled`) |
 | restic_offsite | Nightly offsite backup to Backblaze B2 (restic via rclone, client-side encrypted) on the NAS; chained after archive-backup, reads archsync snapshots + clones the immich/nextcloud data zvols (docs/42) |
-| encrypted_swap | dm-crypt plain-mode random-key encrypted swap (AES-256-XTS, crypttab + fstab) on the six Proxmox hosts; live-switch when memory-safe, else defer to reboot (docs/42) |
+| encrypted_swap | dm-crypt plain-mode random-key encrypted swap (AES-256-XTS, crypttab + fstab) on the six Proxmox hosts; activation deferred to the next reboot (docs/42) |
 | zfs_arc_cap | Cap the ZFS ARC on the compute Proxmox hosts (modprobe.d + initramfs + live sysfs); protects the VFIO GPU host's pinned guest RAM from an uncapped ARC (docs/43). NAS ARC stays owned by nas_storage |
 | vfio_passthrough | Host-side GPU VFIO codification on pve-prec-01 (IOMMU cmdline, nouveau blacklist, vfio-pci bind); stages config, prints reboot-required, never auto-reboots (docs/43) |
 

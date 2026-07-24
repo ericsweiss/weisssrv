@@ -2383,9 +2383,9 @@ deploy-ansible-base:
     # in site.yml. encrypted_swap was listed in the TRIGGERS below but missing
     # from this tag list, so the job went green on every role change while the
     # role never executed on any host (caught when the NAS reboot activated
-    # nothing: /etc/crypttab empty fleet-wide). With swap near zero in use,
-    # the role's live-switchover path activates the encrypted mapper without
-    # another reboot.
+    # nothing: /etc/crypttab empty fleet-wide). The role writes the crypttab +
+    # fstab + boot finalize config idempotently; encrypted swap activates on each
+    # host's next reboot (there is no live switchover).
     - op run -- ansible-playbook -i inventories/prod playbooks/site.yml --tags node_exporter_host,alloy_host,encrypted_swap
   environment:
     name: production/ansible-base

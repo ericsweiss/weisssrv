@@ -228,7 +228,7 @@ mealie_version: "v3.21.0"
 bar_assistant_version: "5.15.3"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
-redis_version: "8.8.0-alpine"
+redis_version: "8.8.1-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.3.10828-00f62d37d"
@@ -351,7 +351,7 @@ hermes_codex_version: "0.145.0"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.218"
+hermes_claude_version: "2.1.219"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
@@ -419,7 +419,7 @@ dcgm_exporter_version: "4.6.0-4.8.3-distroless"
 # Homarr dashboard (kubernetes/apps/homarr, docs/41) — the ghcr.io/homarr-labs/
 # homarr image tag. The Docker tag is v-PREFIXED (v1.71.0 returns 200; a bare
 # 1.71.0 is 404), so keep the leading "v". https://github.com/homarr-labs/homarr/releases
-homarr_version: "v1.71.0"
+homarr_version: "v1.72.0"
 
 # Offsite backup binaries (restic_offsite role on pve-nas-01, docs/42).
 # restic installs from Debian apt (0.18.x, current); a NON-EMPTY restic_version
@@ -483,7 +483,7 @@ helm_chart_versions:
   cert_manager: "v1.21.0"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.8.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.19.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "87.19.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
@@ -491,7 +491,7 @@ helm_chart_versions:
   # operator 0.92.x. COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
   prometheus_operator_crds: "30.0.1"
-  loki: "18.5.3"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  loki: "18.5.4"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.0"
   prometheus_blackbox_exporter: "11.15.1"
   onepassword_connect: "2.4.1"

@@ -12,16 +12,24 @@
 #     verify, THEN finalize. Any failure keeps the plaintext fallback and
 #     exits green — the host must never end up swapless; NASSwapGone /
 #     deploy-verification surface a persistently unactivated mapper.
-# Idempotent: a no-op once the plaintext line is already commented (or removed
-# on a live-switched host).
+# Idempotent: a no-op once the plaintext line is already commented.
 set -uo pipefail
 
 dev="{{ encrypted_swap_source_device }}"
 mapper_name="{{ encrypted_swap_mapper_name }}"
 mapper="/dev/mapper/${mapper_name}"
 
+# /proc/swaps lists a dm device by its RESOLVED kernel name (/dev/dm-N), NOT the
+# /dev/mapper/<name> symlink — so match on both the symlink and its readlink -f
+# target. Matching only the /dev/mapper path silently never sees an active mapper
+# (it always reads as "not active"), which would make this script wrongly enter
+# its boot-race recovery arm on every boot. If the mapper node does not exist yet,
+# readlink yields nothing and the mapper is (correctly) reported inactive.
 mapper_active() {
-  awk -v m="$mapper" '$1 == m { found=1 } END { exit !found }' /proc/swaps
+  local real
+  real="$(readlink -f "$mapper" 2>/dev/null)"
+  awk -v m="$mapper" -v r="$real" \
+    '$1 == m || (r != "" && $1 == r) { found=1 } END { exit !found }' /proc/swaps
 }
 
 if ! mapper_active; then

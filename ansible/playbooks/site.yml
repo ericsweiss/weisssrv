@@ -36,8 +36,8 @@
     - role: postfix_null_client
       tags: [postfix_null_client]
     # dm-crypt plain-mode random-key encrypted swap on the six bare-metal hosts.
-    # Config-only + memory-safe live switchover (defers to reboot on the tight
-    # NAS); self-gates on encrypted_swap_enabled.
+    # Config-only; activation is deferred to each host's next reboot (no live
+    # switchover); self-gates on encrypted_swap_enabled.
     - role: encrypted_swap
       tags: [encrypted_swap]
     # ZFS ARC cap on the COMPUTE hosts only (proxmox_role != 'nas'):
