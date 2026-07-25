@@ -63,7 +63,7 @@ data:
   nextcloud_version: 34.0.2
   nvidia_container_toolkit_version: 1.19.1-1
   nvidia_cuda_keyring_version: 1.1-1
-  nvidia_driver_version: 590.48.01-1
+  nvidia_driver_version: 610.43.02-1
   nzbget_version: '26.2'
   plex_version: 1.43.3.10828-00f62d37d
   postgresql_version: 18.4-trixie

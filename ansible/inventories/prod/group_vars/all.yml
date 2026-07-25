@@ -400,10 +400,11 @@ hindsight_llamacpp_version: "b10068"
 # CUDA-12.8-capable: the Hindsight llama.cpp image is built against CUDA 12.8,
 # which needs a native driver >= 570 on a consumer GeForce card (cuda-compat
 # forward-compat is unsupported there), so the Debian non-free 550 is too old.
-# The driver pin is an EXACT apt version — bump it when the CUDA repo moves the
-# package (a drifted pin fails the install loudly rather than silently upgrading).
+# The driver pin is an EXACT apt version. gpu.yml HOLDS nvidia-open after install
+# so a routine `apt upgrade` can't move it off the pin; bump this pin to upgrade
+# (the install passes allow_change_held_packages, so it applies over the hold).
 # https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
-nvidia_driver_version: "590.48.01-1"
+nvidia_driver_version: "610.43.02-1"
 # NVIDIA CUDA apt repo keyring. The debian13 CUDA repo InRelease is signed by a key
 # NVIDIA does NOT publish as a standalone .pub (unlike debian12's older 3bf863cc.pub
 # — a DIFFERENT key); it ships ONLY in the official cuda-keyring package, which also

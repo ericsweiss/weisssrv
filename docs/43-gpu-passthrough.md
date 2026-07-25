@@ -36,7 +36,7 @@ supervised operator window, never unattended CI.
 | GPU offload | `apps/hindsight/deployment.yaml` (CUDA image, `-ngl 99`, `nvidia.com/gpu: 1`, `runtimeClassName: nvidia`) | Flux reconciles; the llama pod goes **Pending** until the GPU is advertised. |
 | Observability | `observability/exporters/dcgm-exporter.yaml` + ServiceMonitor + dashboard + `homelab.gpu` alerts | Flux reconciles; DCGM has no node until 207 is a GPU node. |
 
-## Driver / CUDA compatibility — why nvidia-open 590
+## Driver / CUDA compatibility — why nvidia-open (CUDA repo)
 
 The Hindsight sidecar image `ghcr.io/ggml-org/llama.cpp:server-cuda-b10068` is
 built against **CUDA 12.8** (verified: `NVIDIA_REQUIRE_CUDA=cuda>=12.8`). CUDA
@@ -44,11 +44,12 @@ built against **CUDA 12.8** (verified: `NVIDIA_REQUIRE_CUDA=cuda>=12.8`). CUDA
 card, and NVIDIA CUDA **forward-compat** (`cuda-compat`) is officially
 **unsupported on GeForce** — so a too-old driver fails to init CUDA.
 
-The repo therefore ships **`nvidia-open` (590.48.01)** from **NVIDIA's own CUDA
-apt repo** (`developer.download.nvidia.com/.../debian13`), pinned as
-`nvidia_driver_version` and installed by the k3s role's `tasks/gpu.yml`. This is
-**not** the Debian non-free `nvidia-driver`, which tops out at 550 (CUDA 12.4)
-and would fail CUDA init. The open GPU kernel modules require a **GSP-equipped**
+The repo therefore ships **`nvidia-open`** (pinned as `nvidia_driver_version`,
+`610.43.02-1` today — any CUDA-repo version ≥ 570 works) from **NVIDIA's own CUDA
+apt repo** (`developer.download.nvidia.com/.../debian13`), installed by the k3s
+role's `tasks/gpu.yml`, which also **holds** the package so a routine `apt
+upgrade` can't drift it off the pin. This is **not** the Debian non-free
+`nvidia-driver`, which tops out at 550 (CUDA 12.4) and would fail CUDA init. The open GPU kernel modules require a **GSP-equipped**
 GPU — the 1660 Ti (TU116, Turing) has a GSP, so it is supported — and the
 CUDA-repo `nvidia-open` is CUDA-12.8-capable.
 
