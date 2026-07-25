@@ -26,14 +26,23 @@ vfio_passthrough_pci_ids: []
 # vfio_passthrough_force_load below).
 vfio_passthrough_blacklist_modules:
   - nouveau
+  # i2c_nvidia_gpu provides the `nvidia-gpu` driver for the card's UCSI/USB-C
+  # controller (01:00.3). It auto-loads on PCI match and claimed .3 before
+  # vfio-pci despite the `vfio-pci.ids=` cmdline (seen in the first GPU window),
+  # leaving one function of the IOMMU group on a host driver — Proxmox then had
+  # to rebind it to vfio-pci at VM start. It is NVIDIA-GPU-only (nothing else on
+  # the host uses it), so hard-blacklist it like nouveau; vfio-pci claims .3 via
+  # `ids=` at boot and the whole group is guest-ready without a VM-start rebind.
+  - i2c_nvidia_gpu
 
 # Host drivers that DO load at boot (they also serve OTHER host devices, so they
 # must NOT be blacklisted) but must let vfio-pci grab the passed-through function
 # first: each gets `softdep <mod> pre: vfio-pci` so vfio-pci is pulled in ahead of
 # it and binds its `ids=` before the host driver enumerates. For the TU116 these
 # are the multifunction GPU's HD-audio (snd_hda_intel, 01:00.1) and USB-C xHCI
-# (xhci_hcd, 01:00.2) functions. The UART/UCSI function (01:00.3) has no host
-# driver that auto-loads, so it needs neither a blacklist nor a softdep.
+# (xhci_hcd, 01:00.2) functions. The UART/UCSI function (01:00.3) is claimed by
+# i2c_nvidia_gpu, which is hard-blacklisted above (NVIDIA-GPU-only, unlike these
+# two host-shared drivers), so it needs no softdep here.
 vfio_passthrough_softdep_modules:
   - snd_hda_intel
   - xhci_hcd

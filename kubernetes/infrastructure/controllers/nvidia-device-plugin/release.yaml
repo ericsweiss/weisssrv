@@ -50,6 +50,18 @@ spec:
         operator: Equal
         value: "true"
         effect: PreferNoSchedule
+    # Clear the chart's default GPU-autodetect nodeAffinity. Out of the box the
+    # chart REQUIRES one of feature.node.kubernetes.io/pci-10de.present /
+    # cpu-model.vendor_id=NVIDIA / nvidia.com/gpu.present — labels produced by
+    # Node Feature Discovery + GPU Feature Discovery. This cluster labels the GPU
+    # node MANUALLY (esweiss.com/gpu=nvidia, above) and runs neither NFD nor GFD,
+    # so that required affinity matches nothing and the DaemonSet sits at
+    # DESIRED=0 (the plugin never schedules, the node never advertises
+    # nvidia.com/gpu). NULL the key — not `{}`: Helm deep-merges maps, so an empty
+    # map leaves the chart default in place (verified via `helm template`); a null
+    # removes the key during values coalescing. The nodeSelector then governs.
+    affinity:
+      nodeAffinity: null
     # Memory limit only — no CPU limit (repo-wide policy, docs/33). Tiny footprint.
     resources:
       requests:

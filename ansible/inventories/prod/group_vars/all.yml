@@ -351,7 +351,7 @@ hermes_codex_version: "0.145.0"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. Build-time only; rides in the versions
 # ConfigMap as a harmless superset (same as hermes_codex_version).
-hermes_claude_version: "2.1.219"
+hermes_claude_version: "2.1.220"
 # 1Password CLI (op), the official first-party binary. Baked into the hermes
 # image (docker/hermes-agent/Dockerfile.codex) so Hermes' first-party 1Password
 # skill can drive `op` against the isolated Agent vault via a service-account
@@ -404,6 +404,16 @@ hindsight_llamacpp_version: "b10068"
 # package (a drifted pin fails the install loudly rather than silently upgrading).
 # https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
 nvidia_driver_version: "590.48.01-1"
+# NVIDIA CUDA apt repo keyring. The debian13 CUDA repo InRelease is signed by a key
+# NVIDIA does NOT publish as a standalone .pub (unlike debian12's older 3bf863cc.pub
+# — a DIFFERENT key); it ships ONLY in the official cuda-keyring package, which also
+# drops the matching sources file. gpu.yml verifies this SHA256 BEFORE installing
+# the deb (it runs maintainer scripts as root, so the artifact is checked up front
+# — verify-before-trust); the repo it drops (signed key 02182E60…8793F200) is then
+# apt-verified against that key on every fetch. Bump version + sha256 in lockstep.
+# https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/
+nvidia_cuda_keyring_version: "1.1-1"
+nvidia_cuda_keyring_sha256: "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
 # nvidia-container-toolkit from NVIDIA's libnvidia-container apt repo (added via
 # the apt_signed_repo pattern). Provides nvidia-container-runtime, which k3s
 # (>=1.30) auto-detects on PATH and wires into its generated containerd config as

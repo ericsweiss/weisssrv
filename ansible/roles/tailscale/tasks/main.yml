@@ -240,6 +240,53 @@
 #     per the runbook, AFTER the ACL defines tagOwners): STRICT. Any non-zero rc
 #     fails the play, so an adoption that silently fails on a host is caught
 #     instead of leaving the lockdown half-applied behind a green run.
+# `tailscale set --advertise-tags` exists only on some CLI versions; the pinned
+# release dropped it (the flag now lives on `tailscale up`, which needs an
+# interactive reauth — see the up task above). Detect support first and only run
+# the non-interactive reconcile where the CLI actually has the flag; otherwise it
+# fails with a full usage dump on EVERY deploy (best-effort, so non-fatal, but
+# noisy — seen fleet-wide) while the tags themselves stay correctly adopted
+# server-side. Where unsupported, tags are (re)adopted via the supervised
+# `tailscale up --advertise-tags` runbook and persist across reboots.
+- name: Check whether `tailscale set` supports --advertise-tags on this CLI
+  ansible.builtin.command: tailscale set --help
+  register: tailscale_set_help
+  changed_when: false
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - tailscale_advertise_tags | length > 0
+
+# Strict/supervised mode (tailscale_tags_require_adoption=true) exists to ENFORCE
+# tag adoption. When the CLI can't run the non-interactive reconcile below, that
+# task is skipped and its failed_when never fires — so strict mode would pass
+# SILENTLY. But failing unconditionally would also be wrong: the operator adopts
+# tags out-of-band via `tailscale up --advertise-tags`, so on a supported host the
+# tags ARE present and strict mode should pass. So VERIFY the live tag state from
+# `tailscale status` (Self.Tags) and fail only when a requested tag is still
+# missing. (Best-effort default mode is unaffected — it legitimately skips.)
+- name: Verify strict tag adoption when the CLI cannot reconcile tags non-interactively
+  ansible.builtin.assert:
+    that:
+      - >-
+        (tailscale_advertise_tags
+         | difference((tailscale_status.stdout | default('{}') | from_json).get('Self', {}).get('Tags', []) | default([], true))
+         | length) == 0
+    fail_msg: >-
+      tailscale_tags_require_adoption is set but this Tailscale CLI's `tailscale
+      set` has no --advertise-tags and the node is still missing one or more
+      requested tags ({{ tailscale_advertise_tags | join(',') }}). Complete the
+      supervised `tailscale up --advertise-tags` adoption
+      (terraform/tailscale/README.md) and verify with `tailscale status`.
+    success_msg: "Strict mode: node already advertises all requested ACL tags."
+  when:
+    - not ansible_check_mode
+    - tailscale_advertise_tags | length > 0
+    - tailscale_tags_require_adoption | default(false) | bool
+    - tailscale_status.rc == 0
+    - (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') == "Running"
+    - "'--advertise-tags' not in ((tailscale_set_help.stdout | default('')) ~ (tailscale_set_help.stderr | default('')))"
+
 - name: Reconcile advertised Tailscale ACL tags on authenticated node
   ansible.builtin.command: >
     tailscale set
@@ -249,6 +296,7 @@
     - tailscale_advertise_tags | length > 0
     - tailscale_status.rc == 0
     - (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') == "Running"
+    - "'--advertise-tags' in ((tailscale_set_help.stdout | default('')) ~ (tailscale_set_help.stderr | default('')))"
   changed_when: false
   failed_when:
     - tailscale_tags_require_adoption | default(false) | bool
@@ -258,7 +306,12 @@
 - name: Surface Tailscale tag reconciliation result
   ansible.builtin.debug:
     msg: >-
-      {% if tailscale_set_tags is defined and tailscale_set_tags.rc is defined and tailscale_set_tags.rc != 0 %}
+      {% if '--advertise-tags' not in ((tailscale_set_help.stdout | default('')) ~ (tailscale_set_help.stderr | default(''))) %}
+      Tag reconcile skipped: this Tailscale CLI's `tailscale set` has no
+      --advertise-tags. Tags are (re)adopted via `tailscale up --advertise-tags`
+      (supervised — terraform/tailscale/README.md, tagOwners) and persist
+      server-side; verify with `tailscale status`.
+      {% elif (tailscale_set_tags.rc | default(0)) != 0 %}
       Advertising {{ tailscale_advertise_tags | join(',') }} did not complete non-interactively
       (rc={{ tailscale_set_tags.rc }}; stderr={{ tailscale_set_tags.stderr | default('') | trim }}).
       Expected BEFORE the live ACL defines tagOwners (the host needs an interactive reauth to adopt

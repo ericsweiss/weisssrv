@@ -194,6 +194,31 @@ If q35 is ever pursued, verify the post-q35 NIC name in a window first (and pin
 it with a systemd-link rule if it changes). i440fx conventional PCI passthrough
 is the safe, sufficient path for a 6GB Turing.
 
+## Gotchas fixed on first live enablement (all codified — here for context)
+
+Four things bit the first real bring-up and are now fixed in-repo, so a future
+GPU node should not re-hit them:
+
+- **CUDA repo key.** The debian13 CUDA repo's `InRelease` is signed by a key
+  (`02182E60…8793F200`) NVIDIA ships **only** in the `cuda-keyring` package — not
+  as a standalone `.pub`. Fetching debian12's `3bf863cc.pub` (a *different*, older
+  key) left apt unable to verify the repo and the driver never installed.
+  `k3s/tasks/gpu.yml` now installs `cuda-keyring`, SHA256-verified before install
+  (the deb runs maintainer scripts as root — verify-before-trust).
+- **Device-plugin nodeAffinity.** The NVIDIA device-plugin chart injects a
+  *required* nodeAffinity keyed on NFD/GFD labels (`…/pci-10de.present`,
+  `nvidia.com/gpu.present`, …). This cluster labels the GPU node manually and runs
+  no NFD/GFD, so the DaemonSet sat at `DESIRED=0` and the node never advertised
+  `nvidia.com/gpu`. The HelmRelease now sets `affinity.nodeAffinity: null` —
+  **not** `{}`, which Helm's map deep-merge leaves the chart default in place —
+  so the `nodeSelector` alone governs placement.
+- **UCSI function (`01:00.3`) host driver.** `i2c_nvidia_gpu` auto-loads and
+  claims `.3` before vfio-pci despite `vfio-pci.ids=`, forcing a Proxmox rebind at
+  VM start. `vfio_passthrough` now hard-blacklists it, so all four functions bind
+  vfio-pci at host boot.
+- **DCGM exporter OOM.** Its 256Mi limit OOMKilled (exit 137) the instant DCGM +
+  NVML initialized on the real GPU; the limit is now 1Gi.
+
 ## Related
 
 - `docs/19-k3s-deployment.md` — k3s node layer.

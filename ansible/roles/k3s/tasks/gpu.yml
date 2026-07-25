@@ -63,20 +63,46 @@
     apt_signed_repo_install_gnupg: true
   when: not (skip_k3s_gpu_install | default(false))
 
-# --- NVIDIA CUDA apt repository (nvidia-open driver; fingerprint-verified) -----
-# NVIDIA signs every CUDA repo (all distros) with ONE key. The debian13 repo path
-# does not serve the .pub, so fetch it from the debian12 path (same key, HTTP 200)
-# — it is the key that signs the debian13 Release file.
-- name: Add the NVIDIA CUDA apt repository
-  ansible.builtin.include_role:
-    name: apt_signed_repo
-  vars:
-    apt_signed_repo_key_url: "https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/3bf863cc.pub"
-    apt_signed_repo_fingerprint: "EB693B3035CD5710E231E123A4B469963BF863CC"
-    apt_signed_repo_keyring_path: /etc/apt/keyrings/nvidia-cuda.gpg
-    apt_signed_repo_repo_line: "deb [signed-by=/etc/apt/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/ /"
-    apt_signed_repo_filename: nvidia-cuda
-    apt_signed_repo_install_gnupg: true
+# --- NVIDIA CUDA apt repository (nvidia-open driver) via the official keyring ----
+# The debian13 CUDA repo InRelease is signed by a key NVIDIA does NOT publish as a
+# standalone .pub (unlike debian12's 3bf863cc.pub, which is a DIFFERENT, older
+# key). Fetching that debian12 .pub left apt unable to verify the debian13
+# InRelease ("repository is not signed", missing key 02182E60…8793F200) — the
+# first fleet GPU install failed there. The debian13 signing key ships ONLY in
+# NVIDIA's cuda-keyring package, which also installs the matching sources file.
+# The deb runs maintainer scripts as root, so VERIFY IT BEFORE INSTALL: download
+# with a pinned SHA256 (get_url fails on mismatch, before dpkg touches it), then
+# install the verified local file — verify-before-trust for the artifact itself.
+# apt then verifies the repo's InRelease against the key the deb dropped on every
+# fetch, so a separate keyring-fingerprint check would be redundant.
+- name: Remove the stale hand-rolled NVIDIA CUDA repo (superseded by cuda-keyring)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/nvidia-cuda.list
+    - /etc/apt/sources.list.d/nvidia-cuda.sources
+    - /etc/apt/keyrings/nvidia-cuda.gpg
+  when: not (skip_k3s_gpu_install | default(false))
+
+- name: Download the NVIDIA cuda-keyring package (SHA256 verified before install)
+  ansible.builtin.get_url:
+    url: "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_{{ nvidia_cuda_keyring_version }}_all.deb"
+    dest: "/tmp/cuda-keyring_{{ nvidia_cuda_keyring_version }}_all.deb"
+    checksum: "sha256:{{ nvidia_cuda_keyring_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: not (skip_k3s_gpu_install | default(false))
+
+- name: Install the verified cuda-keyring package (repo + debian13 signing key)
+  ansible.builtin.apt:
+    deb: "/tmp/cuda-keyring_{{ nvidia_cuda_keyring_version }}_all.deb"
+  when: not (skip_k3s_gpu_install | default(false))
+
+- name: Refresh apt cache with the CUDA repo enabled
+  ansible.builtin.apt:
+    update_cache: true
   when: not (skip_k3s_gpu_install | default(false))
 
 # --- Driver + toolkit install -------------------------------------------------

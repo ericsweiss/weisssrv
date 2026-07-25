@@ -283,6 +283,17 @@ SERVICE_REGISTRY: list[dict] = [
         "notes": "Apt version X.Y.Z-N from nvidia.github.io/libnvidia-container/stable/deb.",
     },
     {
+        # cuda-keyring apt package — ships the debian13 CUDA repo signing key +
+        # the matching sources file (k3s role tasks/gpu.yml, SHA256-verified
+        # before install). Manual: NVIDIA versions the .deb; bump it and the
+        # nvidia_cuda_keyring_sha256 pin in all.yml in lockstep.
+        "name": "NVIDIA cuda-keyring",
+        "var_name": "nvidia_cuda_keyring_version",
+        "category": "manual",
+        "source_url": "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/",
+        "notes": "cuda-keyring_<version>_all.deb; SHA256-pinned in all.yml (nvidia_cuda_keyring_sha256).",
+    },
+    {
         # DCGM exporter image tag (nvcr.io/nvidia/k8s/dcgm-exporter). Manual: the
         # tag is a compound <DCGM>-<exporter>-<variant> string, not a plain
         # semver an auto-tracker can compare.
@@ -2427,9 +2438,13 @@ def get_deploy_command(result: ServiceVersion) -> str:
     if var_name == "kube_vip_version":
         return "task k3s:deploy  # Re-run k3s deployment to update kube-vip"
 
-    # NVIDIA driver + container toolkit on the GPU k3s agent (k3s role gpu.yml,
-    # Ansible-managed node op — never CI). docs/43.
-    if var_name in ("nvidia_driver_version", "nvidia_container_toolkit_version"):
+    # NVIDIA driver + container toolkit + CUDA repo keyring on the GPU k3s agent
+    # (k3s role gpu.yml, Ansible-managed node op — never CI). docs/43.
+    if var_name in (
+        "nvidia_driver_version",
+        "nvidia_container_toolkit_version",
+        "nvidia_cuda_keyring_version",
+    ):
         return "task k3s:deploy  # Re-run k3s deployment on the GPU agent (docs/43)"
 
     # Flux CLI used by CI deploy-verify (pin + sha256 live together)

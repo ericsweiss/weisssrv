@@ -41,7 +41,7 @@ data:
   helm_chart_versions_traefik: 41.0.2
   helm_chart_versions_vpa: 4.12.3
   hermes_camofox_version: 1.13.0
-  hermes_claude_version: 2.1.219
+  hermes_claude_version: 2.1.220
   hermes_codex_version: 0.145.0
   hermes_image_version: v2026.7.20-r1
   hermes_op_version: 2.35.0-1
@@ -62,6 +62,7 @@ data:
   nextcloud_postgres_version: 18.4-trixie
   nextcloud_version: 34.0.2
   nvidia_container_toolkit_version: 1.19.1-1
+  nvidia_cuda_keyring_version: 1.1-1
   nvidia_driver_version: 590.48.01-1
   nzbget_version: '26.2'
   plex_version: 1.43.3.10828-00f62d37d

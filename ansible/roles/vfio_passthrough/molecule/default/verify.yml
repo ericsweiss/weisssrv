@@ -14,6 +14,9 @@
         that:
           - "'options vfio-pci ids=10de:2182,10de:1aeb,10de:1aec,10de:1aed' in (vfio_conf.content | b64decode)"
           - "'blacklist nouveau' in (vfio_conf.content | b64decode)"
+          # i2c_nvidia_gpu claims the UCSI function (01:00.3); hard-blacklisted so
+          # vfio-pci binds it at boot (no VM-start rebind).
+          - "'blacklist i2c_nvidia_gpu' in (vfio_conf.content | b64decode)"
           # nouveau is blacklisted so its softdep would be dead — it must NOT be emitted.
           - "'softdep nouveau pre: vfio-pci' not in (vfio_conf.content | b64decode)"
           # The real host drivers of the non-VGA functions get the softdep so vfio-pci wins.
