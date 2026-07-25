@@ -62,6 +62,11 @@
   when:
     - admin_user != 'root'
     - (omz_head.stdout | default('')) != omz_commit
+  # GitHub git fetches intermittently reset from CI runners — retry before failing.
+  register: omz_clone
+  until: omz_clone is succeeded
+  retries: 3
+  delay: 5
 
 - name: Deploy .zshrc configuration
   ansible.builtin.template:

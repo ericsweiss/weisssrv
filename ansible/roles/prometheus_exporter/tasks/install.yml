@@ -40,6 +40,12 @@
     # all.yml, so this is just the generic fallback for a checksumless caller.
     checksum: "{{ prometheus_exporter_checksum | default(omit, true) }}"
   when: prometheus_exporter_needs_install
+  # Release artifacts are fetched from GitHub, whose TLS handshakes/connections
+  # intermittently reset from CI runners — retry before failing the play.
+  register: prometheus_exporter_download
+  until: prometheus_exporter_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Extract tarball for {{ prometheus_exporter_name }}
   ansible.builtin.unarchive:

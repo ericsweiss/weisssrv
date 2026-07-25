@@ -28,6 +28,11 @@
   become: true
   become_user: "{{ admin_user }}"
   when: admin_user != 'root'
+  # GitHub git fetches intermittently reset from CI runners — retry before failing.
+  register: vundle_clone
+  until: vundle_clone is succeeded
+  retries: 3
+  delay: 5
 
 - name: Deploy neovim init.vim configuration
   ansible.builtin.template:

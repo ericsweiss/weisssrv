@@ -141,9 +141,37 @@ workflow:
     - apt-get update -qq
     - apt-get install -y -qq curl gnupg openssh-client
     - |
-      # Install 1Password CLI
-      curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
-        gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+      # Install 1Password CLI.
+      #
+      # SUPPLY-CHAIN PIN: TLS alone does not prove the signing key is authentic
+      # (a compromised/MITM'd endpoint could serve a substituted key that then
+      # signs a malicious apt repo). So verify the downloaded key's fingerprint
+      # against 1Password's published code-signing key BEFORE trusting it.
+      # This RSA4096 code-signing key (created 2017-05-18, expires 2032-05-16) is
+      # long-lived; the fingerprint was obtained with:
+      #   curl -sSf https://downloads.1password.com/linux/keys/1password.asc \
+      #     | gpg --show-keys --with-fingerprint --with-colons \
+      #     | awk -F: '/^fpr:/{print $10; exit}'
+      OP_APT_KEY_FPR="3FEF9748469ADBE15DA7CA80AC2D62742012EA22"
+      op_key="$(mktemp)"
+      curl -sSf https://downloads.1password.com/linux/keys/1password.asc -o "$op_key"
+      # Collect the fingerprint of EVERY primary (pub) key in the downloaded
+      # material — not only the first — and require the set to be EXACTLY the one
+      # expected key. `gpg --dearmor` trusts every key in the file, so a bundle
+      # that prepends the genuine 1Password key before an injected primary key
+      # would otherwise pass a first-match check and still install the extra key.
+      got_fprs="$(gpg --show-keys --with-fingerprint --with-colons "$op_key" \
+        | awk -F: '/^pub:/ {p=1; next} /^fpr:/ && p {print $10; p=0}')"
+      if [ "$got_fprs" != "$OP_APT_KEY_FPR" ]; then
+        echo "ERROR: 1Password apt key material did not verify. Expected exactly:" >&2
+        echo "  $OP_APT_KEY_FPR" >&2
+        echo "Got:" >&2
+        echo "$got_fprs" | sed 's/^/  /' >&2
+        rm -f "$op_key"
+        exit 1
+      fi
+      gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg < "$op_key"
+      rm -f "$op_key"
       echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
         > /etc/apt/sources.list.d/1password.list
       apt-get update -qq && apt-get install -y -qq 1password-cli
@@ -158,8 +186,28 @@ workflow:
       # the index. The older `curl 1password.asc | gpg --dearmor` form broke once
       # 1Password moved to this RSA key — apk reported "UNTRUSTED signature" and
       # 1password-cli became unselectable. See 1password.dev/cli/get-started.
+      #
+      # SUPPLY-CHAIN PIN: TLS alone does not prove the key is authentic, so verify
+      # the downloaded RSA public key's SHA-256 checksum against the known-good
+      # value BEFORE adding the repo / installing. This apk key is a bare RSA
+      # public key (not a GPG key), so we pin its content hash rather than a GPG
+      # fingerprint; recompute with `curl -sSf <url> | sha256sum` if 1Password
+      # ever rotates it.
+      OP_APK_KEY_SHA256="0e88171d9f8b7630763f70cbf69f2a01b4ba8ea1d8e79487f59c162db255eb84"
+      op_apk_key="/etc/apk/keys/support@1password.com-61ddfc31.rsa.pub"
+      op_apk_key_tmp="$(mktemp)"
       curl -sSf https://downloads.1password.com/linux/keys/alpinelinux/support@1password.com-61ddfc31.rsa.pub \
-        -o /etc/apk/keys/support@1password.com-61ddfc31.rsa.pub
+        -o "$op_apk_key_tmp"
+      # Verify BEFORE moving into /etc/apk/keys: never let unverified key material
+      # sit in the trusted keys dir, and don't clobber a pre-existing valid key on
+      # a mismatched re-download.
+      if ! echo "${OP_APK_KEY_SHA256}  ${op_apk_key_tmp}" | sha256sum -c - ; then
+        echo "ERROR: 1Password apk key checksum mismatch (expected $OP_APK_KEY_SHA256)" >&2
+        rm -f "$op_apk_key_tmp"
+        exit 1
+      fi
+      install -m 0644 "$op_apk_key_tmp" "$op_apk_key"
+      rm -f "$op_apk_key_tmp"
       echo "https://downloads.1password.com/linux/alpinelinux/stable/" >> /etc/apk/repositories
       apk update
       apk add --no-cache 1password-cli
@@ -274,30 +322,13 @@ workflow:
     - .gitlab-ci.yml
     - kubernetes/infrastructure/sources/versions-configmap.yaml
     - Taskfile.yml
-.paths-shellcheck:
-  changes:
-    - scripts/**/*
-    # ansible-root helper scripts (test-all-roles.sh) — outside roles/, so the
-    # role globs below don't cover them.
-    - ansible/*.sh
-    - ansible/roles/**/*.sh
-    - ansible/roles/**/*.sh.j2
-.paths-yaml-lint:
-  changes:
-    - ansible/**/*
-    - kubernetes/**/*
-    - .gitlab-ci.yml
-    - .gitlab/ci/**/*
 .paths-ansible:
   changes:
     - ansible/**/*
-.paths-terraform:
-  changes:
-    - terraform/**/*
 # Cloudflare-only jobs (terraform-plan, deploy-terraform) gate on just the
 # cloudflare module so an unrelated tailscale change can't fire a Cloudflare
-# plan+apply. The broad .paths-terraform above stays for the multi-module
-# terraform-fmt / terraform-validate jobs.
+# plan+apply. (terraform-fmt / terraform-validate come from the shared CI
+# library and use its default terraform/**/* changes filter across all modules.)
 .paths-terraform-cloudflare:
   changes:
     - terraform/cloudflare/**/*
@@ -311,29 +342,6 @@ workflow:
   changes:
     - scripts/b2-bucket-drift.py
     - scripts/test_b2_bucket_drift.py
-.paths-docs-links:
-  changes:
-    - docs/**/*
-    - README.md
-    - CLAUDE.md
-    - ansible/TESTING.md
-    - scripts/check-doc-links.py
-    - scripts/test_check_doc_links.py
-.paths-python-tests:
-  changes:
-    # The pytest suite validates real tree files beyond scripts/:
-    # test_adguard_api_body.py asserts on the adguard_home role, and
-    # test_check_molecule_matrix_coverage.py smoke-tests the live matrix.
-    - scripts/**/*
-    - ansible/inventories/prod/group_vars/all.yml
-    - ansible/roles/adguard_home/tasks/api_base_config.yml
-    - ansible/roles/**/molecule/**/*
-    - ansible/integration-tests/**/*
-    - .gitlab-ci.yml
-.paths-flux-lint:
-  changes:
-    - kubernetes/**/*
-    - ansible/inventories/prod/group_vars/all.yml
 .paths-prometheus-config:
   changes:
     - kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
@@ -1082,148 +1090,6 @@ repo-policy-checks:
       when: manual
       allow_failure: true
 
-shellcheck:
-  needs: []
-  stage: lint
-  # Pinned (not :stable) so lint results are reproducible — a moving tag could
-  # silently change shellcheck behavior between runs.
-  image: koalaman/shellcheck-alpine:v0.10.0
-  script:
-    - echo "Running ShellCheck..."
-    # ansible/*.sh: root-level helper scripts (test-all-roles.sh) sit outside
-    # both the scripts/ glob and the roles find below.
-    - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh ansible/*.sh
-    - |
-      # Also lint shell scripts shipped in Ansible roles.
-      # `find ... | while ...` would mask failures: the pipeline's exit code is
-      # the while loop's, i.e. the rc of its LAST iteration — a shellcheck
-      # failure on any earlier file goes green. `-exec ... {} +` returns
-      # non-zero if shellcheck fails on ANY file, so the job fails correctly.
-      find ansible/roles -name '*.sh' -type f \
-        -exec shellcheck --severity=warning --exclude=SC1091,SC2034 {} +
-    - |
-      # Lint shell-script Jinja templates (*.sh.j2) shipped in roles (incl. the
-      # boot-time crypto-unlock units). We can't render real values, so
-      # neutralize Jinja first. The {# #} comment-RANGE delete eats bash
-      # ${#arr[@]} and corrupts the body, so {% raw %}-wrapped scripts (literal
-      # bash) instead delete only FULL-LINE {# ... #} comments (anchored, can't
-      # touch a mid-line ${#...}); plain templates keep the full neutralizer.
-      # CONSTRAINT: a multi-line/inline {# #} in the out-of-raw header of a raw-
-      # wrapped template isn't stripped — keep header comments to single lines.
-      #
-      # Accumulate rc (not `find | while`, whose exit status is only the last
-      # iteration's) via a list file — not a pipe or process substitution, since
-      # this job's shell is ash/sh — so the loop runs in the current shell and
-      # rc survives. `rc=1` on any failure + the final `exit $rc` fails the job.
-      rendered=$(mktemp)
-      tmpl_list=$(mktemp)
-      rc=0
-      find ansible/roles -name '*.sh.j2' -type f > "$tmpl_list"
-      while read -r tmpl; do
-        echo "Checking: $tmpl"
-        if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
-          sed -E \
-            -e '/^[[:space:]]*\{#.*#\}[[:space:]]*$/d' \
-            -e '/\{%.*%\}/d' \
-            -e 's/\{\{"\{"\}\}/{/g' \
-            -e 's/\{\{"\}"\}\}/}/g' \
-            -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
-        else
-          sed -E \
-            -e '/\{#/,/#\}/d' \
-            -e '/\{%.*%\}/d' \
-            -e 's/\{\{"\{"\}\}/{/g' \
-            -e 's/\{\{"\}"\}\}/}/g' \
-            -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
-        fi
-        shellcheck --severity=warning --exclude=SC1091,SC2034 "$rendered" || rc=1
-      done < "$tmpl_list"
-      rm -f "$rendered" "$tmpl_list"
-      [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
-    - echo "ShellCheck passed"
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-shellcheck, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-shellcheck, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-# Catches role changes that aren't mapped to any deploy-* job. Fails
-# loudly with a list of unmapped roles + the two ways to resolve. See
-# scripts/check-deploy-coverage.sh for the gate logic and the
-# INTENTIONALLY_UNMAPPED_ROLES list.
-# Fails if a molecule scenario (ansible/roles/*/molecule/*/) or an integration
-# test (ansible/integration-tests/*/) exists on disk with no corresponding
-# entry in the molecule-tests / integration-tests parallel:matrix. Prevents a
-# new role's tests from silently never running in CI. See
-# scripts/check-molecule-matrix-coverage.sh.
-# deploy-verify hardcodes FLUX_VERSION + tarball sha256 as a pin pair
-# (supply-chain), with a runtime guard against versions-configmap. But
-# deploy-verify only runs on main, so a flux_version bump that forgets
-# the CI pin would surface AFTER merge. This job runs the same drift
-# check in MR pipelines so the incomplete bump fails before merge.
-# The CI kubectl pin (.kubectl-setup) has no drift guard, unlike FLUX_VERSION
-# above. A k3s_version bump merged via all.yml -> versions-configmap could push
-# the hardcoded kubectl pin to 2 minors of skew with nothing catching it, at
-# which point the kubectl calls in deploy-verify / maintenance jobs could break.
-# This asserts the pin stays within Kubernetes' supported +/-1 minor skew of the
-# cluster's k3s_version; on failure, bump the kubectl version + sha256 in
-# .kubectl-setup.
-# docs/ + the top-level READMEs are the declared source of truth, and the tree
-# carries dozens of internal `](docs/NN-*.md)` cross-links. Docs get renumbered/
-# reorganized, so a renamed or deleted doc silently rots these links. This gate
-# resolves every relative `.md` link against the filesystem (offline, stdlib
-# only — no tool download). scripts/test_check_doc_links.py guards the checker
-# itself in the python-tests job.
-docs-link-check:
-  needs: []
-  stage: lint
-  image: python:3.11-slim
-  script:
-    - python3 scripts/check-doc-links.py
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-docs-links, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-docs-links, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-# Taskfile.yml is the operator control surface but nothing validated it —
-# yaml-lint skips the repo root and no job ran `task`. A YAML/go-task schema
-# break, or a reference to a deleted/renamed script, surfaced only at an
-# operator's next `task` run. `task --list` compiles + parses the Taskfile
-# (catches a malformed/broken schema); scripts/check-taskfile.sh then asserts
-# every referenced script exists (go-task evaluates templates lazily and never
-# stats them, so --list alone would miss a dangling reference).
-yaml-lint:
-  needs: []
-  stage: lint
-  # `-d relaxed` is a baseline syntax check across the whole tree. Strict
-  # enforcement of ansible/.yamllint (160-char line-length, truthy, octal)
-  # is owned by the ansible-lint job, which loads that config from `cd
-  # ansible` and honors the repo's `# noqa yaml[...]` exemptions — raw
-  # yamllint cannot, so don't point this job at ansible/.yamllint.
-  before_script:
-    # Keep the yamllint pin in step with requirements.txt (molecule-ci image).
-    - pip install --quiet yamllint==1.38.0
-  script:
-    - yamllint -d relaxed ansible/
-    - yamllint -d relaxed kubernetes/
-    - yamllint -d relaxed .gitlab-ci.yml
-    - yamllint -d relaxed .gitlab/ci/
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-yaml-lint, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-yaml-lint, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
 ansible-lint:
   needs: []
   stage: lint
@@ -1256,25 +1122,6 @@ ansible-lint:
       changes: !reference [.paths-ansible, changes]
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes: !reference [.paths-ansible, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-terraform-fmt:
-  needs: []
-  stage: lint
-  image:
-    name: hashicorp/terraform:1.15
-    entrypoint: [""]
-  script:
-    # Cover every module under terraform/ (cloudflare + tailscale + authentik),
-    # not just one.
-    - terraform fmt -check -recursive terraform/
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-terraform, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-terraform, changes]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # ============================================================================
@@ -1376,32 +1223,6 @@ pr-agent-review:
 # ============================================================================
 # VALIDATE STAGE - Schema and configuration validation
 # ============================================================================
-
-terraform-validate:
-  needs: []
-  stage: validate
-  image:
-    name: hashicorp/terraform:1.15
-    entrypoint: [""]
-  script:
-    # Validate every module under terraform/ (cloudflare + tailscale +
-    # authentik). Each needs its own init (different providers);
-    # -backend=false skips state/creds.
-    - |
-      set -eo pipefail
-      for mod in terraform/*/; do
-        [ -f "${mod}versions.tf" ] || continue
-        echo "=== terraform validate ${mod} ==="
-        ( cd "$mod" && terraform init -backend=false && terraform validate )
-      done
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-terraform, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-terraform, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 terraform-plan:
   extends: .terraform-http-backend
@@ -1594,237 +1415,6 @@ b2-drift-plan:
       changes: !reference [.paths-b2-drift, changes]
     - if: '$CI_COMMIT_BRANCH == "main" && $OP_SERVICE_ACCOUNT_TOKEN'
       changes: !reference [.paths-b2-drift, changes]
-
-python-tests:
-  # Runs pytest against scripts/. test_*.py live next to the scripts they
-  # exercise (version-update tooling, the ConfigMap generator, the HPA/VPA
-  # invariant guard).
-  stage: test
-  needs: []  # run in parallel with lint stage
-  image: python:3.11-slim
-  before_script:
-    # git is required by test_check_deploy_coverage.py (it builds throwaway git
-    # repos to exercise check-deploy-coverage.sh); the slim image omits it.
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git jq
-    - pip install --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}"
-  script:
-    - pytest scripts/ -v --junitxml=report.xml
-  artifacts:
-    when: always
-    reports:
-      junit: report.xml
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    # The pytest suite validates real tree files beyond scripts/: test_adguard_api_body.py
-    # asserts on ansible/roles/adguard_home/tasks/api_base_config.yml, and
-    # test_check_molecule_matrix_coverage.py smoke-tests the live .gitlab-ci.yml matrix +
-    # molecule/integration dirs. Those paths must be in `changes:` or an MR that edits
-    # only them would skip the tests that guard them.
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-python-tests, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-python-tests, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-flux-lint:
-  needs: []
-  # Renders every top-level Flux Kustomization, substitutes postBuild vars
-  # from kubernetes/infrastructure/sources/versions-configmap.yaml, verifies
-  # zero unsubstituted ${var} placeholders remain, then validates with
-  # kubeconform. Also schema-validates the value-heavy HelmReleases'
-  # .spec.values via `helm template` (kustomize build emits HelmReleases
-  # verbatim, so a chart values-key typo would otherwise be unchecked).
-  stage: lint
-  image: python:3.11-slim
-  # Cache the pinned lint binaries across runs, keyed on .gitlab-ci.yml (where
-  # the versions + sha256s live), so a bump busts the cache. No-op without a
-  # runner cache backend. The versions-extraction is shared with deploy-verify
-  # via scripts/flux-render.sh; the binaries are the download-heavy part.
-  cache:
-    key:
-      prefix: flux-lint
-      files:
-        - .gitlab-ci.yml
-    paths:
-      - .cache/flux-lint-tools
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq curl gettext-base
-    - pip install --quiet "pyyaml==${PYYAML_VERSION}"
-    - |
-      # The cache holds VERIFIED TARBALLS, not extracted binaries: every run —
-      # cache hit or miss — re-checks each tarball against its pinned sha256
-      # and re-extracts, so a tampered/mutated runner cache can never smuggle
-      # an unverified binary onto PATH. Download only on miss/corruption.
-      # before_script and script share one shell, so the export persists.
-      TOOLS_CACHE="${CI_PROJECT_DIR}/.cache/flux-lint-tools"
-      TOOLS_BIN=/usr/local/bin
-      mkdir -p "$TOOLS_CACHE"
-      fetch_verified() { # <file> <url> <sha256>
-        if ! echo "$3  $TOOLS_CACHE/$1" | sha256sum -c - >/dev/null 2>&1; then
-          curl -fsSL -o "$TOOLS_CACHE/$1" "$2"
-          echo "$3  $TOOLS_CACHE/$1" | sha256sum -c -
-        fi
-      }
-      fetch_verified kubeconform.tar.gz \
-        https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
-        95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
-      tar xzf "$TOOLS_CACHE/kubeconform.tar.gz" -C "$TOOLS_BIN" kubeconform
-      fetch_verified kustomize.tar.gz \
-        "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
-        "${KUSTOMIZE_SHA256}"
-      tar xzf "$TOOLS_CACHE/kustomize.tar.gz" -C "$TOOLS_BIN" kustomize
-      # helm: schema-validates HelmRelease .spec.values (scripts/validate-helm-values.py).
-      # Tarball unpacks to linux-amd64/helm (unlike kubeconform/kustomize bare binaries).
-      fetch_verified helm.tar.gz https://get.helm.sh/helm-v3.18.4-linux-amd64.tar.gz \
-        f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1
-      tar xzf "$TOOLS_CACHE/helm.tar.gz" -C "$TOOLS_BIN" --strip-components=1 linux-amd64/helm
-      kubeconform -v && kustomize version && helm version --short && envsubst --version | head -1
-  script:
-    - |
-      set -eo pipefail
-      FAILED=0
-      # Extract cluster-versions ConfigMap keys and export as env so envsubst
-      # can substitute ${var} placeholders in rendered manifests. This mirrors
-      # what Flux's kustomize-controller does at reconcile time (postBuild).
-      # Shared with Taskfile flux:lint via scripts/flux-render.sh so the two
-      # paths can't drift.
-      VERSIONS_CONFIGMAP=kubernetes/infrastructure/sources/versions-configmap.yaml
-      VARS=$(bash scripts/flux-render.sh export-versions "$VERSIONS_CONFIGMAP") \
-        || { echo "ERROR: failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
-      eval "$VARS"
-
-      # Accumulate the full rendered corpus so the HPA/VPA invariant check
-      # (below) sees standalone HPAs + VPAs across every namespace at once.
-      # Mirrors the Taskfile flux:lint RENDER_ALL pattern.
-      RENDER_ALL=$(mktemp)
-      trap 'rm -f "$RENDER_ALL"' EXIT
-
-      # kubeconform schema version derived from k3s_version (shared helper) so
-      # local lint + CI validate against the same MAJOR.MINOR.0 API schemas.
-      K8S_VER=$(bash scripts/flux-render.sh k8s-version "$VERSIONS_CONFIGMAP")
-      echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
-      # Iterate every Flux Kustomization under clusters/weisssrv/ and validate
-      # the target path it points at. This picks up new top-level Kustomizations
-      # automatically without CI edits.
-      for ks in kubernetes/clusters/weisssrv/*.yaml; do
-        [ -f "$ks" ] || continue
-        NAME=$(basename "$ks" .yaml)
-        [ "$NAME" = "kustomization" ] && continue
-        if ! SRCPATH=$(python3 -c "
-      import yaml, sys
-      with open('$ks') as f:
-          doc = yaml.safe_load(f)
-      print(doc.get('spec', {}).get('path', '') or '')
-      "); then
-          echo "ERROR: failed to parse $ks"
-          FAILED=1
-          continue
-        fi
-        [ -z "$SRCPATH" ] && continue
-        SRCPATH="${SRCPATH#./}"
-        echo "=== Building + validating $ks (path $SRCPATH) ==="
-        if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
-          echo "ERROR: kustomize build failed for $SRCPATH:"
-          echo "$RAW"
-          FAILED=1
-          continue
-        fi
-        # Check every ${var} reference in the pre-substitution output against
-        # the exported ConfigMap keys. envsubst renders unknown vars as empty
-        # string (so post-substitution grep wouldn't catch them) — Flux has
-        # the same silent-empty default behavior. Our lint is intentionally
-        # stricter so typos in version keys fail CI.
-        MISSING=""
-        for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
-          varname=${ref#\$\{}
-          varname=${varname%\}}
-          if [ -z "${!varname+x}" ]; then
-            MISSING="$MISSING $varname"
-          fi
-        done
-        MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
-        if [ -n "$MISSING" ]; then
-          echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
-          echo "$MISSING" | sed 's/^/  - /'
-          FAILED=1
-          continue
-        fi
-        # printf '%s\n' (NOT echo): rendered manifests carry Grafana dashboard
-        # JSON with thousands of literal \n inside block scalars, and echo would
-        # expand those into real newlines and corrupt the YAML stream (same
-        # rationale as the deploy-verify dry-run block).
-        RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
-        printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
-        # KNOWN GAP: -ignore-missing-schemas silently SKIPS any CR whose schema
-        # is absent from (or unreachable in) the datreeio CRDs-catalog. Most CRDs
-        # we use (IngressRoute, VPA, ExternalSecret, ServiceMonitor, Certificate)
-        # are in the catalog, but a CR for a kind not in the catalog is unchecked.
-        # Tracked as a follow-up (vendor CRD JSON schemas + a second strict pass).
-        if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
-            -kubernetes-version "$K8S_VER" \
-            -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            -summary; then
-          FAILED=1
-        fi
-      done
-
-      # [informational] Track which rendered kinds kubeconform could NOT schema-
-      # validate because -ignore-missing-schemas skipped them (no schema in the
-      # datreeio catalog). Every kind in use today IS covered, but nothing else
-      # signals when a NEW CRD-backed kind starts slipping through unvalidated.
-      # scripts/kubeconform-skipped.py lists any skipped kinds over the whole
-      # corpus so that shows up at review time. Never fails the gate (|| true) —
-      # the per-Kustomization passes above are the gate.
-      echo "=== kubeconform unvalidated-kind tracking (informational) ==="
-      # -verbose is load-bearing: without it kubeconform's JSON omits
-      # valid/skipped resources entirely and the tracker always reports
-      # "no skips".
-      kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
-        -schema-location default \
-        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-        -output json < "$RENDER_ALL" 2>/dev/null | python3 scripts/kubeconform-skipped.py || true
-
-      # HPA/VPA invariant: no workload may have both an HPA and a VPA driving
-      # the same resource (docs/33-autoscaling.md). --require-chart-native-vpas
-      # also statically asserts the chart-native-HPA workloads
-      # (Traefik/authentik/Connect) each have a memory-only VPA in the rendered
-      # corpus. MUST match the Taskfile flux:lint invocation — without the flag
-      # the gate would silently skip the chart-native assertion.
-      echo "=== Checking HPA/VPA invariant ==="
-      if ! python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < "$RENDER_ALL"; then
-        FAILED=1
-      fi
-
-      # Also build the cluster root to catch malformed top-level kustomization.yaml
-      # (the loop above validates target paths, not the cluster root itself).
-      echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
-      if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
-        echo "ERROR: cluster root kustomization failed to build"
-        FAILED=1
-      fi
-
-      # Schema-validate the value-heavy HelmReleases' .spec.values via
-      # `helm template` — kustomize build above emits HelmReleases verbatim, so
-      # a typo in a chart values key (.spec.values is a free-form object in the
-      # HelmRelease CRD) would otherwise be unchecked. Needs network (helm repo
-      # add/update). Covers traefik (values.schema.json catches key typos),
-      # kube-prometheus-stack, authentik. MUST match the Taskfile flux:lint call.
-      echo "=== Schema-validating HelmRelease values blocks (helm template) ==="
-      if ! python3 scripts/validate-helm-values.py --kubeconform; then
-        FAILED=1
-      fi
-
-      exit $FAILED
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: !reference [.paths-flux-lint, changes]
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes: !reference [.paths-flux-lint, changes]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # Validate the kube-prometheus-stack alert rules (PromQL in HelmRelease values)
 # and the Alertmanager config (ExternalSecret template) that kubeconform /
@@ -2126,40 +1716,100 @@ molecule-trigger:
 # ============================================================================
 
 include:
-  - template: Jobs/Secret-Detection.gitlab-ci.yml
-  # .molecule-base + the molecule/integration job templates live in an
-  # includable file so the generated MR child pipeline (molecule-plan ->
-  # molecule-trigger) reuses the exact same job definitions.
+  # Secret-Detection (gitleaks) is pulled in by the shared library's
+  # secret-detection component below, which overrides the managed job — so it is
+  # NOT included directly here (a second include of the same managed template
+  # would be redundant).
+  #
+  # .molecule-base + the molecule/integration job templates stay LOCAL: the
+  # generated MR child pipeline (molecule-plan -> molecule-trigger) includes ONLY
+  # this file, so moving it into the shared library would break the "child
+  # includes just this file" invariant (docs/16 ARCH-4) and re-introduce the
+  # default: tags non-inheritance bug pipeline 777 hit.
   - local: .gitlab/ci/molecule-jobs.gitlab-ci.yml
 
-secret_detection:
-  stage: security
-  needs: []  # run in parallel with lint/test stages
-  variables:
-    SECRET_DETECTION_HISTORIC_SCAN: "false"
-    # Custom gitleaks config is loaded via `.gitlab/secret-detection-ruleset.toml`
-    # which `[[secrets.passthrough]]`s `.gitleaks.toml`. The previously-used
-    # `SECRET_DETECTION_RULESET_PATH` variable is not a documented GitLab
-    # variable and was silently ignored. `.gitleaks.toml` carries
-    # content-allowlist regexes (`op://`, `[your-...]`, anchored test/fake
-    # fixture tokens) that cover the placeholder shapes docs use — `docs/*.md`
-    # is scanned normally — plus a rule-scoped allowlist that exempts ONLY the
-    # `private-key` rule under the molecule/integration-test trees (throwaway
-    # PEM fixtures); every other rule still scans those paths, so a real cloud
-    # key/token committed there IS caught. Details in `.gitleaks.toml`.
-    # Require modern CPU (gitleaks binary uses POPCNT/SSE4.2 - OptiPlex Core 2 Quads crash with SIGILL)
-    # OPERATIONAL INVARIANT: this job is pinned to esweiss.com/cpu=modern nodes.
-    # If no modern-CPU node is schedulable the job sits Pending and is NOT a
-    # passed scan — a skipped/pending secret_detection must be investigated, not
-    # treated as green. validation-gate needs it non-optionally so this can't be
-    # silently lost on a main pipeline.
-    KUBERNETES_NODE_SELECTOR_CPU: "esweiss.com/cpu=modern"
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    # Run on schedules so anything that snuck in via tags/branch merges that
-    # didn't trigger a normal pipeline still gets scanned (security best practice).
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  # ---------------------------------------------------------------------------
+  # Shared CI library (eric/weisssrv-lib @ v0.1.1) — the generic/parameterizable
+  # lint/validate/test/security jobs, consumed via include:project + pinned tag.
+  # Inputs reproduce weisssrv's prior INLINE behavior job-for-job: the default
+  # tags:[infrastructure] keeps every job on the privileged infrastructure
+  # runner, and each `changes:` path list matches the old .paths-* anchor. The
+  # adoption MR description carries the job-by-job parity evidence.
+  # ---------------------------------------------------------------------------
+  # yaml-lint: defaults reproduce weisssrv's four `yamllint -d relaxed <target>`
+  # invocations + .paths-yaml-lint.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/lint/yaml-lint.yml
+  # shellcheck: defaults reproduce the scripts/ + ansible/*.sh globs, the
+  # ansible/roles find, the *.sh.j2 Jinja neutralizer, and .paths-shellcheck.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/lint/shellcheck.yml
+  # docs-link-check: runs weisssrv's repo-local scripts/check-doc-links.py. The
+  # library default `changes` omits ansible/TESTING.md (out of library scope), so
+  # pass weisssrv's full .paths-docs-links to keep the ansible-doc trigger.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/lint/docs-link-check.yml
+    inputs:
+      changes:
+        - "docs/**/*"
+        - "README.md"
+        - "CLAUDE.md"
+        - "ansible/TESTING.md"
+        - "scripts/check-doc-links.py"
+        - "scripts/test_check_doc_links.py"
+  # terraform: one include emits BOTH terraform-fmt (lint stage) and
+  # terraform-validate (validate stage); defaults reproduce fmt_dir terraform/,
+  # module_glob terraform/*/, and .paths-terraform.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/validate/terraform.yml
+  # secret_detection: overrides GitLab's managed Secret-Detection job. Defaults
+  # (cpu_selector esweiss.com/cpu=modern, allow_failure true, MR/main/schedule
+  # rules) match weisssrv's inline job; the hard block still comes from
+  # validation-gate needing this job non-optionally.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/security/secret-detection.yml
+  # python-tests: pytest scripts/. The library default `changes` omits the four
+  # ansible paths whose files the suite validates, so pass the full
+  # .paths-python-tests.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/test/python-tests.yml
+    inputs:
+      changes:
+        - "scripts/**/*"
+        - "ansible/inventories/prod/group_vars/all.yml"
+        - "ansible/roles/adguard_home/tasks/api_base_config.yml"
+        - "ansible/roles/**/molecule/**/*"
+        - "ansible/integration-tests/**/*"
+        - ".gitlab-ci.yml"
+  # flux-lint: substitute mode (postBuild var substitution from the cluster
+  # versions ConfigMap; needs a root runner for gettext-base). Version pins +
+  # cluster paths are passed explicitly (equal to the library defaults); the
+  # default `changes` already equals .paths-flux-lint. extra_validation carries
+  # weisssrv's HPA/VPA invariant + helm-values checks, which call weisssrv-local
+  # scripts (kept in scripts/), running with $RENDER_ALL / $FAILED in scope.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/validate/flux-lint.yml
+    inputs:
+      substitute: true
+      kubeconform_version: "0.6.7"
+      kubeconform_sha256: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
+      kustomize_version: "5.4.3"
+      kustomize_sha256: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
+      helm_version: "3.18.4"
+      helm_sha256: "f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
+      pyyaml_version: "6.0.2"
+      cluster_dir: "kubernetes/clusters/weisssrv"
+      versions_configmap: "kubernetes/infrastructure/sources/versions-configmap.yaml"
+      flux_render_script: "scripts/flux-render.sh"
+      skipped_script: "scripts/kubeconform-skipped.py"
+      extra_validation: 'echo "=== Checking HPA/VPA invariant ==="; python3 scripts/check-hpa-vpa-invariant.py --require-chart-native-vpas < "$RENDER_ALL" || FAILED=1; echo "=== Schema-validating HelmRelease values blocks (helm template) ==="; python3 scripts/validate-helm-values.py --kubeconform || FAILED=1'
 
 # ============================================================================
 # GATE STAGE - Validation gate for deploy jobs
