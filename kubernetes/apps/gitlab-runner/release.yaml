@@ -89,6 +89,15 @@ spec:
             memory_limit = "4Gi"
             memory_request = "1Gi"
 
+            # Let jobs right-size DOWN from the defaults — the ceilings equal
+            # the defaults, so an override can only shrink a pod, never grow
+            # it (this runner also serves tenant projects). A lint pod
+            # declaring KUBERNETES_MEMORY_LIMIT=1Gi stops a 12-job fan-out
+            # from bursting the namespace quota at pod creation —
+            # weisssrv-lib pipelines 929/931/932/934 failed exactly there.
+            memory_limit_overwrite_max_allowed = "4Gi"
+            memory_request_overwrite_max_allowed = "1Gi"
+
             # Job-pod service account: token-less, no RBAC (serviceaccount.yaml)
             # — NOT the manager SA, whose Role could read the runner token and
             # exec into concurrent jobs.
