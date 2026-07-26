@@ -1,0 +1,18 @@
+---
+# Disable TX/segmentation + receive offloads on the onboard Intel e1000e NIC
+# (nic0, 00:19.0). Its TX unit intermittently wedges ("e1000e ... Detected
+# Hardware Unit Hang"); the driver cannot reset it and the link stays up, so the
+# active-backup bond never fails over — the host loses all network, drops off the
+# Proxmox cluster, and needs a power-cycle. Hit all three OptiPlex opt nodes
+# (opt-01 + opt-02 crashed 2026-07-25; opt-03 had an episode 2026-07-24).
+# tso/gso/gro off is the standard e1000e cure; nic_tuning applies it live and
+# persists it via an ethtool ifup drop-in.
+nic_tuning_overrides:
+  - interface: nic0
+    options:
+      - feature: tso
+        value: "off"
+      - feature: gso
+        value: "off"
+      - feature: gro
+        value: "off"

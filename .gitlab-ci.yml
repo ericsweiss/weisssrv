@@ -2074,6 +2074,14 @@ deploy-ansible-base:
         - ansible/inventories/prod/group_vars/proxmox.yml
         # hosts.yml: host roster/IP/topology changes must redeploy the base play
         - ansible/inventories/prod/hosts.yml
+        # Proxmox-host host_vars (e.g. per-NIC nic_tuning overrides) must
+        # likewise redeploy the base play so the change actually lands — the
+        # role/all.yml/proxmox.yml triggers above never see a host_vars-only
+        # edit. Listed explicitly per host (not a pve-*.yml glob) so the
+        # deploy-coverage gate credits each path — it ignores wildcards by design.
+        - ansible/inventories/prod/host_vars/pve-opt-01.yml
+        - ansible/inventories/prod/host_vars/pve-opt-02.yml
+        - ansible/inventories/prod/host_vars/pve-opt-03.yml
         - ansible/inventories/prod/host_vars/pve-nas-01.yml
 
 # Proxmox host configuration (qol, postfix_null_client, tailscale)
