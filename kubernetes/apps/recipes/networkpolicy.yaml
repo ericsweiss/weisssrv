@@ -11,8 +11,9 @@ spec:
     - Egress
 
 ---
-# Mealie: ingress from Traefik (HTTP UI) and observability (no /metrics today,
-# but exportarr-style scrape may show up later — start with Traefik only).
+# Mealie: ingress from Traefik only (HTTP UI). Mealie exposes no /metrics today,
+# so there is deliberately no observability allow; add one alongside any future
+# ServiceMonitor (task flux:lint enforces that pairing).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -227,17 +228,22 @@ spec:
 #
 # OIDC discovery note: both apps point their OIDC issuer/base URL at the
 # EXTERNAL host auth.ericsweiss.com (mealie OIDC_CONFIGURATION_URL,
-# bar-assistant AUTHENTIK_BASE_URL). That host has no AdGuard rewrite, so it
-# resolves to the PUBLIC IP and the server-side discovery fetch egresses via
-# the broad 0.0.0.0/0 (except RFC1918) :443 rule below (hairpin back through
-# the public Traefik VIP). The external host is intentional: Authentik derives
-# the OIDC `iss` claim from the request host, and the browser completes the
-# flow at auth.ericsweiss.com (the external authentik IngressRoute), so the
-# server-side issuer MUST match that host or token validation fails. The
-# 192.168.0.101/32 (internal Traefik VIP) allow below is therefore NOT on the
-# OIDC path for these apps; it is retained only so a future move to the
-# internal host (auth.esweiss.com -> .101, which would also require a fixed
-# Authentik issuer) works without another egress edit.
+# bar-assistant AUTHENTIK_BASE_URL). The external host is intentional:
+# Authentik derives the OIDC `iss` claim from the request host and the browser
+# completes the flow at auth.ericsweiss.com, so the server-side issuer MUST
+# match that host or token validation fails.
+#
+# Since !164 (dns.yml auth.ericsweiss.com -> 192.168.0.101) that host is
+# split-horizoned to the INTERNAL Traefik VIP, so the server-side discovery/JWKS
+# and code->token fetches never take the public path: they leave the pod aimed at
+# .101, which kube-proxy DNATs to a Traefik POD IP *before* NetworkPolicy
+# evaluation. The load-bearing peer is therefore the traefik namespaceSelector
+# below — the .101 ipBlock can never match post-DNAT (proven cluster-wide, see
+# hermes/networkpolicy.yaml), and the broad 0.0.0.0/0 rule excludes both
+# 192.168/16 and the 10.42/16 pod CIDR. It is kept belt-and-braces (mirroring
+# homarr/registry-cache) so a CNI change that stops DNATing cannot silently
+# break login. Both apps disable password login, so a blocked fetch means NO
+# login path at all for food.* and bar.*.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -285,12 +291,16 @@ spec:
         # and no app dials cleartext 25.
         - protocol: TCP
           port: 587
+    # Traefik pods on websecure — the OIDC backend path (auth.ericsweiss.com,
+    # split-horizoned to the internal VIP; see the block comment above) plus any
+    # other *.esweiss.com host these apps fetch server-side.
     - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        # Belt-and-braces pre-DNAT form of the same destination (MetalLB
+        # internal Traefik VIP), matching homarr/registry-cache.
         - ipBlock:
-            # MetalLB internal Traefik VIP. Reserved for internal-host access
-            # (*.esweiss.com -> .101 via AdGuard rewrite). NOT on the OIDC path
-            # today: these apps use auth.ericsweiss.com (public IP) per the
-            # block comment above. Retained for future internal-host moves.
             cidr: 192.168.0.101/32
       ports:
         - protocol: TCP

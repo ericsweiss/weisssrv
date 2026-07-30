@@ -123,11 +123,19 @@ spec:
     # WAN/Cloudflare path 403s non-browser user agents). From a pod,
     # kube-proxy DNATs the VIP to the backend POD IP before NetworkPolicy
     # evaluation, so this rule matches by pod/namespace selector — a VIP
-    # ipBlock could never match (see the removed-pinhole note above). Scope
-    # note: this admits reach to any Traefik-fronted internal vhost; every
-    # such route carries its own forward-auth/OIDC gate. Also the path for
-    # HASS_URL=https://home.esweiss.com (HA toolset) and any internal vhost
-    # the agent legitimately consumes.
+    # ipBlock could never match (see the removed-pinhole note above). Also the
+    # path for HASS_URL=https://home.esweiss.com (HA toolset) and any internal
+    # vhost the agent legitimately consumes.
+    #
+    # Scope note: a namespaceSelector is the only peer shape that can match
+    # post-DNAT, so this necessarily admits reach to EVERY Traefik-fronted
+    # vhost — it cannot be narrowed per-host at L3. The gate is therefore on
+    # the Traefik side, not here: the routes whose only network gate is an IP
+    # allowlist (router.esweiss.com, the dns-01/dns-02 AdGuard raw routes,
+    # connect.esweiss.com) sit behind lan-tailscale-strict, which excludes the
+    # pod CIDR — so this rule cannot reach them. The rest carry either
+    # forward-auth (the *arr/qbit/vpn routes) or their own application login
+    # (plex, home, git, the SSO-only apps).
     - to:
         - namespaceSelector:
             matchLabels:
