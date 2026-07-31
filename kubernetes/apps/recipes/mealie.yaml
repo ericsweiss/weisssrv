@@ -3,9 +3,7 @@
 # URL: food.esweiss.com / food.ericsweiss.com
 # Docs: https://docs.mealie.io/
 
-# =============================================================================
 # PostgreSQL Database (pinned to NAS node for local storage)
-# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,7 +56,6 @@ spec:
           effect: PreferNoSchedule
       containers:
         - name: postgres
-          # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: postgres:${mealie_postgresql_version}
           imagePullPolicy: IfNotPresent
           # No drop:[ALL]/allowPrivilegeEscalation:false: the image starts as root
@@ -133,9 +130,7 @@ spec:
   type: ClusterIP
 
 ---
-# =============================================================================
 # Mealie Application
-# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -184,7 +179,6 @@ spec:
             value: "1"
           - name: single-request-reopen
       containers:
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: mealie
           image: ghcr.io/mealie-recipes/mealie:${mealie_version}
           imagePullPolicy: IfNotPresent
@@ -196,9 +190,31 @@ spec:
               value: "1000"
             - name: PGID
               value: "2000"
-            # Base URL for proper link generation (use external domain for shared links)
-            - name: BASE_URL
-              value: https://food.ericsweiss.com
+            # BASE_URL is deliberately NOT set, which is what makes login work on
+            # BOTH hostnames. Mealie builds the OIDC redirect_uri like this
+            # (routes/auth/auth.py, unchanged across v3.20.1..v3.22.0):
+            #
+            #   if not settings.is_default_base_url:
+            #       base = settings.BASE_URL or request.base_url
+            #   else:
+            #       base = request.base_url
+            #
+            # so ANY value here pins the callback to that one host. With it set to
+            # the external host, starting a login on food.esweiss.com bounced the
+            # callback to food.ericsweiss.com — a different origin, so the session
+            # cookie holding the OAuth state was not sent and authlib raised
+            # MismatchingStateError ("Something Went Wrong!", 500 on
+            # /api/auth/oauth/callback). Left at the default, each host gets its own
+            # callback and both work; authentik already registers both /login URIs.
+            #
+            # Safe because uvicorn runs with forwarded_allow_ips="*" (app.py), so
+            # request.base_url resolves from Traefik's X-Forwarded-* headers and
+            # yields https://<host-you-came-in-on>/ — an http:// scheme here would
+            # fail the provider's strict redirect-URI match.
+            #
+            # Trade-off: links generated with no request context (e.g. from a
+            # background task) fall back to the default rather than the external
+            # host. Login working on both hostnames is worth more.
             # Database configuration
             - name: DB_ENGINE
               value: postgres
