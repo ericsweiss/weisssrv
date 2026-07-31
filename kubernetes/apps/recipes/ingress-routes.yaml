@@ -2,9 +2,7 @@
 # IngressRoutes for Mealie and Bar Assistant
 # Both external (ericsweiss.com) and internal (esweiss.com) domains
 
-# =============================================================================
 # Mealie IngressRoutes
-# =============================================================================
 
 # External - food.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -54,11 +52,9 @@ spec:
     secretName: recipes-esweiss-tls
 
 ---
-# =============================================================================
 # Bar Assistant IngressRoutes
 # Salt Rim (frontend) serves the main UI
 # Bar Assistant API is proxied at /api and /search paths
-# =============================================================================
 
 # External - bar.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -118,7 +114,52 @@ spec:
     secretName: recipes-ericsweiss-tls
 
 ---
-# Internal - bar.esweiss.com
+# Canonical-host redirect for bar.esweiss.com -> bar.ericsweiss.com.
+#
+# Bar Assistant can only ever have ONE callback origin: Socialite is handed
+# services.authentik.redirect (env AUTHENTIK_REDIRECT_URI) as a fixed absolute
+# URL and uses it verbatim, and SSOAuthController never calls redirectUrl() to
+# vary it per request. Note the login itself is NOT session-bound -- the
+# controller calls ->stateless(), so nothing here is about a lost state cookie.
+#
+# The consequence is subtler: a login begun on bar.esweiss.com completes
+# successfully but lands on bar.ericsweiss.com, so the issued token is stored
+# against THAT origin. bar.esweiss.com could never end up logged in, and simply
+# bounced you to the other hostname mid-flow.
+#
+# So the internal name is made an explicit redirect to the canonical one instead
+# of a second, permanently-logged-out origin. Old bookmarks and Homarr tiles keep
+# working.
+#
+# permanent: false (302), deliberately, even though the redirect is semantically
+# "canonical". redirectRegex only offers 301 (permanent: true) or 302; there is
+# no 308 here. A 301 is cached hard and indefinitely by browsers, and this
+# redirect exists only to compensate for an upstream app limitation -- if Bar
+# Assistant ever derives its callback per request (as Mealie does), this route
+# goes away, and anyone holding a cached 301 would keep being bounced with no way
+# to clear it but wiping browser state. 302 keeps that reversible for the cost of
+# one revalidation.
+#
+# Mealie needs none of this: it derives its redirect from the request host, so
+# both of its hostnames work natively (see mealie.yaml BASE_URL).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: bar-assistant-canonical-host
+  namespace: recipes
+spec:
+  redirectRegex:
+    regex: ^https://bar\.esweiss\.com/(.*)
+    # $${1}, not ${1}: Flux runs envsubst over this manifest (postBuild
+    # substituteFrom, cluster-versions), and a bare ${1} is consumed as an
+    # undefined variable and replaced with empty string -- which would silently
+    # turn every redirect into one pointing at the bare host, dropping the path.
+    # $$ escapes it so Traefik receives the capture group it needs.
+    replacement: https://bar.ericsweiss.com/$${1}
+    permanent: false
+
+---
+# Internal - bar.esweiss.com (redirect only; see the Middleware above)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -128,49 +169,21 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # API backend
-    - match: Host(`bar.esweiss.com`) && PathPrefix(`/api`)
-      kind: Rule
-      middlewares:
-        - name: lan-tailscale-only
-          namespace: traefik
-        - name: hsts-header
-          namespace: traefik
-      services:
-        - name: bar-assistant
-          port: 8080
-    # Uploads (served by Bar Assistant)
-    - match: Host(`bar.esweiss.com`) && PathPrefix(`/uploads`)
-      kind: Rule
-      middlewares:
-        - name: lan-tailscale-only
-          namespace: traefik
-        - name: hsts-header
-          namespace: traefik
-      services:
-        - name: bar-assistant
-          port: 8080
-    # Meilisearch proxy for frontend search
-    - match: Host(`bar.esweiss.com`) && PathPrefix(`/search`)
-      kind: Rule
-      middlewares:
-        - name: lan-tailscale-only
-          namespace: traefik
-        - name: hsts-header
-          namespace: traefik
-        - name: bar-assistant-search-strip
-          namespace: recipes
-      services:
-        - name: bar-assistant-meilisearch
-          port: 7700
-    # Frontend (Salt Rim) - default route (must be last, handles /oauth too)
+    # Single catch-all: every path redirects to the canonical host. The service
+    # is still required by the CRD schema, but the middleware short-circuits
+    # before anything is proxied to it.
     - match: Host(`bar.esweiss.com`)
       kind: Rule
       middlewares:
         - name: lan-tailscale-only
           namespace: traefik
+        # Retained on the redirect response itself: the browser must still be
+        # told to pin HTTPS for bar.esweiss.com, otherwise dropping it here is a
+        # downgrade from what the previous internal routes advertised.
         - name: hsts-header
           namespace: traefik
+        - name: bar-assistant-canonical-host
+          namespace: recipes
       services:
         - name: salt-rim
           port: 8080
