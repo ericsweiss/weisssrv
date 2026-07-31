@@ -8,9 +8,7 @@
 # These certs are used by Traefik for TLS termination since nested subdomains
 # use DNS-only mode (not proxied through Cloudflare).
 
-# =============================================================================
 # GitLab Web UI and Registry - git.ericsweiss.com, registry.git.ericsweiss.com
-# =============================================================================
 
 # External domain - git.ericsweiss.com (covered by wildcard) + registry.git (nested)
 apiVersion: cert-manager.io/v1
@@ -48,9 +46,7 @@ spec:
   renewBefore: 720h
 
 ---
-# =============================================================================
 # GitLab Pages - pages.git.ericsweiss.com and *.pages.git.ericsweiss.com
-# =============================================================================
 
 # GitLab Pages wildcard - external domain
 #
@@ -105,9 +101,7 @@ spec:
   renewBefore: 720h
 
 ---
-# =============================================================================
 # GitLab Web IDE - *.ide.git.ericsweiss.com (extension host)
-# =============================================================================
 #
 # Per-extension SOP isolation: each VS Code extension iframe is loaded from
 # <ext-id>.ide.git.ericsweiss.com so the browser SOP keeps extension JS away

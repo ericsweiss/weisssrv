@@ -117,6 +117,7 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell:
     cmd: |
+      set -euo pipefail
       if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
         pvesh create /pools --poolid {{ item }}
         echo "created"
@@ -565,8 +566,12 @@
   when:
     - not ansible_check_mode
     - vm_exists.rc != 0
-    # Honor skip_create alongside the sibling create-path tasks (Create VM,
-    # cloud-init qm set) — don't mutate/fail during a skip-create/stub run.
+    # Honor skip_create. NOTE: the flag is NOT a blanket "don't create" — most
+    # of the create path (Create VM, the disk import/attach/resize, cloud-init,
+    # boot order, PCI passthrough, Start VM) is gated on `vm_exists.rc != 0`
+    # alone. What it actually suppresses is the tasks that reach OFF the host or
+    # would mutate a stub: the cloud-image fetch and this qm set. See
+    # defaults/main.yml, which documents the real contract.
     - not (proxmox_vm_skip_create | default(false))
   changed_when: true
 
@@ -637,15 +642,24 @@
 # is reserved lazily as data is written (used for large data disks like the
 # Nextcloud/Immich bulk user-data stores). Omitting the key preserves the
 # historical thick-provisioned behavior — existing disks are unaffected.
+#
+# set -euo pipefail is load-bearing here, not boilerplate: without it the task's
+# rc is the trailing `echo`'s, so a failed `zfs create` (pool not imported, out
+# of space, quota refusal, typo in item.zvol) returned rc 0 + "created" +
+# CHANGED and the play carried on as if the data disk existed. The `zfs list`
+# probe sits under `if !`, which errexit exempts.
 - name: Create ZFS zvol for additional disks
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    if ! zfs list {{ item.zvol }} 2>/dev/null; then
-      zfs create -p {{ '-s ' if (item.sparse | default(false) | bool) else '' }}-V {{ item.size }} {{ item.zvol }}
-      echo "created"
-    else
-      echo "exists"
-    fi
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      if ! zfs list {{ item.zvol }} 2>/dev/null; then
+        zfs create -p {{ '-s ' if (item.sparse | default(false) | bool) else '' }}-V {{ item.size }} {{ item.zvol }}
+        echo "created"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
   loop: "{{ vm_additional_disks | default([]) }}"
   register: zvol_creation_result
   changed_when: "'created' in zvol_creation_result.stdout"

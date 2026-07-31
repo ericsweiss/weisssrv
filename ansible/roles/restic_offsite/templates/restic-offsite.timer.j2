@@ -4,6 +4,12 @@ Description=Fallback trigger for the nightly offsite B2 backup
 # PRIMARY trigger is OnSuccess=restic-offsite.service on archive-backup.service;
 # this timer is belt-and-suspenders for the (rare) path where that OnSuccess is
 # skipped. The in-script freshness guard refuses to upload a stale tree either way.
+# The timer is UNCONDITIONAL by design — the "did the chained run already cover
+# this generation?" decision lives in restic-offsitectl's already-uploaded
+# short-circuit, not here, so the guard also applies to a manual invocation.
+# (Before that guard existed both triggers fired every night: two full
+# backup+prune cycles, with the second one's prune discarding the first's
+# chain-verified snapshot.)
 
 [Timer]
 OnCalendar={{ restic_offsite_timer_calendar }}

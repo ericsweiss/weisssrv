@@ -30,3 +30,13 @@ alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD'
 # capping disk use and replay lag. Override per-host if a node is space-constrained.
 alloy_host_wal_enabled: true
 alloy_host_wal_max_segment_age: "1h"
+
+# How far back a restarted Alloy re-reads the journal (loki.source.journal
+# max_age; Alloy's own default is 7h). This is the sender half of a pair with
+# Loki's out-of-order accept window, which is ingester.max_chunk_age/2 = 3h
+# (kubernetes/infrastructure/observability/loki/release.yaml). Re-read entries
+# older than that window are rejected `too_far_behind` on push and lost — the
+# mechanism behind 1.93M discarded lines in a 7-day sample, arriving in short
+# restart-shaped bursts. Keep this <= the Loki accept window; raise BOTH
+# together if a longer recovery horizon is ever wanted.
+alloy_host_journal_max_age: "3h"

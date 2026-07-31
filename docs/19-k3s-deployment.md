@@ -350,11 +350,11 @@ This:
    `kustomization.yaml` to the current branch.
 5. Creates the `GitRepository` and top-level `Kustomization` CRs that watch this repo.
 
-After bootstrap, Flux reconciles five Kustomizations in `dependsOn` order:
-`infrastructure-sources` → `infrastructure-controllers` →
-`infrastructure-configs`, which fans out to `infrastructure-observability`
-and `apps` in parallel (apps deliberately do not gate on observability
-health). The
+After bootstrap, Flux reconciles six Kustomizations in `dependsOn` order:
+`infrastructure-sources` → `infrastructure-crds` →
+`infrastructure-controllers` → `infrastructure-configs`, which fans out to
+`infrastructure-observability` and `apps` in parallel (apps deliberately do not
+gate on observability health). The
 canonical description of each stage's role and membership lives in
 `docs/29-flux-operations.md`; each stage's `kustomization.yaml` under
 `kubernetes/infrastructure/` and `kubernetes/apps/` is the current set.
@@ -382,7 +382,9 @@ Expected state (Flux Kustomization stages reconcile in dependsOn order):
 
 - `flux-system` `GitRepository` — Ready
 - `infrastructure-sources` `Kustomization` — Ready
-- `infrastructure-controllers` `Kustomization` — Ready (after sources)
+- `infrastructure-crds` `Kustomization` — Ready (after sources; installs the
+  prometheus-operator CRDs, `wait: true`)
+- `infrastructure-controllers` `Kustomization` — Ready (after sources + crds)
 - `infrastructure-configs` `Kustomization` — Ready (after controllers)
 - `infrastructure-observability` `Kustomization` — Ready (after configs)
 - `apps` `Kustomization` — Ready (after infrastructure-configs)
@@ -470,14 +472,13 @@ kubectl logs -n external-dns -l app.kubernetes.io/name=external-dns -f
 
 ## Post-Deployment
 
-### Update Tailscale (Optional)
+### Tailscale (nothing to do here)
 
-```bash
-# SSH to each k3s node and run tailscale up
-ssh eric@192.168.0.222 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@192.168.0.202 "sudo tailscale up --accept-routes --accept-dns=false"
-ssh eric@192.168.0.206 "sudo tailscale up --accept-routes --accept-dns=false"
-```
+Tailscale runs on the **Proxmox hosts only** — they are the subnet routers that
+advertise `192.168.0.0/24` to the tailnet, so the k3s VMs are reachable over
+Tailscale without running the daemon themselves. Do not run `tailscale up
+--accept-routes` on a subnet router: `group_vars/proxmox.yml` and
+`docs/05-tailscale.md` forbid accepting routes on these hosts.
 
 ### Collect Cluster State
 
@@ -781,8 +782,11 @@ kubectl get pods -n kube-system | grep etcd
 
 ## Next Steps
 
-1. **Deploy additional workloads** - Immich, Nextcloud (all via Flux)
-2. **Configure backups** - Velero for cluster backups
+1. **Add an application** - follow `docs/29-flux-operations.md` § Adding a New
+   App (not every app is Flux-managed: Nextcloud and Immich are docker-compose
+   stacks on dedicated VMs — docs/35, docs/36)
+2. **Backups** - already covered by the archive/restic/vzdump chain and the
+   per-app logical dumps (docs/17, docs/42); Velero is deliberately not used
 
 ## Related Documentation
 
@@ -792,5 +796,5 @@ kubectl get pods -n kube-system | grep etcd
 - `docs/31-observability.md` - Observability stack (Prometheus, Grafana, Loki, Alloy)
 - `docs/43-gpu-passthrough.md` - GPU node (pve-prec-01): VFIO passthrough, NVIDIA driver/toolkit, DCGM
 - `kubernetes/README.md` - Top-level k8s layout guide (Flux-aware)
-- `kubernetes/infrastructure/` - Platform components (sources, controllers, configs, observability)
-- `kubernetes/apps/` - Applications (authentik, download-clients, hermes, hindsight, recipes, gitlab-*, tailnet-dns, vm-ingress, wg-easy)
+- `kubernetes/infrastructure/` - Platform components (sources, crds, controllers, configs, observability)
+- `kubernetes/apps/` - Applications (authentik, download-clients, hermes, hindsight, homarr, recipes, gitlab-*, registry-cache, tailnet-dns, vm-ingress, wg-easy)

@@ -1,9 +1,15 @@
 ---
-# Handlers for node_exporter_host role
-
 - name: Restart node_exporter_host
   ansible.builtin.systemd:
     name: prometheus-node-exporter
+    state: restarted
+    daemon_reload: true
+
+# The healthcheck .service is oneshot (fired by the timer), so only the timer
+# needs re-arming when either unit file changes.
+- name: Restart node_exporter_host_healthcheck_timer
+  ansible.builtin.systemd:
+    name: node-exporter-healthcheck.timer
     state: restarted
     daemon_reload: true
 

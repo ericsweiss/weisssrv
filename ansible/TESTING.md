@@ -7,13 +7,16 @@ This document describes the Molecule-based testing infrastructure for weisssrv A
 Molecule tests run each role inside a Docker container (Debian Trixie with systemd) to verify
 that tasks execute correctly, configurations are deployed as expected, and services start properly.
 
-**Tested roles (30 roles, 32 scenarios):**
+**Tested roles (40 roles, 43 scenarios — every role in `ansible/roles/` has a
+molecule scenario; the CI matrix and `scripts/check-molecule-matrix-coverage.sh`
+enforce that):**
 
 | Role | Scenarios | What it tests | Container notes |
 |------|-----------|--------------|-----------------|
 | base | default | Package install, user/sudoers, authorized_keys, timezone, DNS template, SSH hardening (`sshd -T` asserted against a seeded conflicting `50-cloud-init.conf`) | Skips DNS config in containers; SSH hardening IS exercised |
 | qol | default | Oh My Zsh, neovim/Vundle, zsh plugins, shell change | Plugin config validated |
 | adguard_home | default | Binary install, systemd service, user/group, HTTP port, config content | Architecture-aware download |
+| adguard_home | tls | `adguard_tls_enabled: true` path: the `/control/tls/configure` POST fires, `/control/tls/status` echoes server_name/ports/cert paths, and a second run is idempotent | Self-signed certs seeded by prepare.yml; guards a POST-every-run non-idempotence |
 | adguard_sync | default | Binary download, systemd timer, config generation | Binary may not run on ARM hosts |
 | acme_certs | default | acme.sh install, SSH keys, cert reload script | Pre-installs via git |
 | alloy_host | default | Grafana Alloy install, config render, systemd service, journald scrape config | Loki endpoint is mocked |
@@ -42,6 +45,16 @@ that tasks execute correctly, configurations are deployed as expected, and servi
 | proxmox_backup | default | storage.cfg + vzdump job reconciliation against stub `pvesh`/`pvesm` CLIs | Real Proxmox state absent; tests drift logic + create-fixed fail-loud against stubs |
 | proxmox_ha | default | **Smoke test only**: role completes end-to-end against stub Proxmox CLIs with empty desired-state lists (no rules / resources / replication jobs) | Real drift-detection branches (rule add/update, resource add, replication job add) need real Proxmox state to validate end-to-end and are exercised in production runs only. CI only proves the role exits cleanly + parses pvecm output |
 | zfs_encryption | default | Connect token file (0400 root:root), per-pool env file, `zfs-load-key.sh` (set -euo pipefail, `-H @-` stdin token, exit-code taxonomy), `zfs-load-key@.service` ordering (After zfs-import.target / Before+RequiredBy zfs-mount.service), per-pool service enabled | No ZFS kernel module in container — `zfs load-key` not exercised. No live Connect endpoint — token + env file are mocked |
+| compose_app | default | Shared compose systemd unit (both shapes) + the `write_prom_metrics` backup-metric library | Contract test on rendered artefacts; no container engine in the test container |
+| docker_engine | default | Pinned Docker CE/containerd/buildx/compose install path, `dpkg` holds, rendered `daemon.json` | Apt install is stubbed; asserts the pin + hold contract |
+| encrypted_swap | default | `/etc/crypttab` + `/etc/fstab` rendering and the boot-finalize unit wiring | Activation is deferred to reboot by design — no live dm-crypt switch in CI |
+| immich | default | Rendered compose stack + nginx vhost + backup wiring (render/contract scenario) | No live containers; asserts the rendered files |
+| immich_ml | default | Rendered ML compose stack (OpenVINO), LXC-side paths | Render/contract scenario |
+| nextcloud | default | Rendered compose stack, nginx vhost, `occ` bootstrap flow, backup wiring | Render/contract scenario |
+| restic_offsite | default | Control script + secret files + timer render, plus a real restic run against a LOCAL file repo (snapshot + success metric) | No B2 in CI — the rclone remote is swapped for a local repo |
+| textfile_collector | default | Shared oneshot service + timer scaffold render | Helper role; also exercised transitively by node_exporter_host/smtp_relay |
+| vfio_passthrough | default | vfio-pci modprobe.d, nouveau blacklist, IOMMU cmdline staging | Never reboots; asserts staged config only |
+| zfs_arc_cap | default | modprobe.d ARC cap render + initramfs/live-sysfs handling | No ZFS module in container |
 
 ## Prerequisites
 
@@ -76,25 +89,42 @@ cd ansible && ./test-all-roles.sh unbound smtp_relay
 
 ### Individual role testing
 
+**Prefer `task ansible:test -- <role>`.** A bare `molecule` run inside a role
+directory does NOT inherit the shared config: `ansible/molecule/base.yml` is the
+only place carrying `driver: docker`, the galaxy dependency, the shared prepare
+playbook and the `test_sequence`, and it is applied via molecule's `-c` flag —
+by `test-all-roles.sh` (for `default` scenarios) and by the CI molecule-tests
+matrix. Every per-scenario `molecule.yml` header points here for that reason.
+Non-`default` scenarios (e.g. `resolv_conf/empty-search`) are self-contained and
+take no `-c`.
+
 ```bash
-# Full test cycle (create -> converge -> verify -> destroy)
+# Full test cycle (create -> converge -> verify -> destroy) — the wrapper
+# resolves molecule and passes the shared base config for you
+task ansible:test -- unbound
+
+# Same thing by hand, if you need a single molecule subcommand. The -c path is
+# relative to the role directory (ansible/roles/<role>/ -> ansible/molecule/).
 cd ansible/roles/unbound
-python3 -m molecule test
+python3 -m molecule -c ../../molecule/base.yml test
 
 # Just converge (apply role) without destroying
-python3 -m molecule converge
+python3 -m molecule -c ../../molecule/base.yml converge
 
 # Run verification only (after converge)
-python3 -m molecule verify
+python3 -m molecule -c ../../molecule/base.yml verify
 
 # Keep container running after test (for debugging)
-python3 -m molecule test --destroy=never
+python3 -m molecule -c ../../molecule/base.yml test --destroy=never
+
+# A non-default scenario is self-contained — no -c
+python3 -m molecule test -s empty-search
 
 # Shell into test container for debugging
 docker exec -it <container-name> bash
 
 # Destroy test container
-python3 -m molecule destroy
+python3 -m molecule -c ../../molecule/base.yml destroy
 ```
 
 ### Keeping containers for debugging
@@ -256,7 +286,7 @@ python3 -m molecule destroy   # Cleanup
 
 ## Partial-coverage roles (and why)
 
-All 30 roles have at least one Molecule scenario. Several are partial-coverage
+Every role has at least one Molecule scenario (counts live in the coverage table above — do not duplicate them here). Several are partial-coverage
 "contract" tests by necessity rather than choice:
 
 | Role | Scope limit | Why |
@@ -600,7 +630,7 @@ The testing strategy follows a pyramid structure:
                / Integr.  \      <- Multi-role integration tests (5 scenarios)
               /------------\
              /              \
-            /   Unit Tests   \   <- Individual role molecule tests (30 roles, 32 scenarios)
+            /   Unit Tests   \   <- Individual role molecule tests (see the coverage table)
            /------------------\
           /                    \
          /    Static Analysis   \  <- ansible-lint, kubeconform, terraform validate
@@ -609,7 +639,7 @@ The testing strategy follows a pyramid structure:
 
 **Test Coverage:**
 - **Static Analysis:** ansible-lint, yamllint, kubeconform, terraform validate
-- **Unit Tests:** 30 roles with 32 Molecule scenarios (including idempotency)
+- **Unit Tests:** one Molecule scenario per role, several with extras (including idempotency) — see the coverage table above for the current counts
 - **Integration Tests:** 5 multi-role scenarios testing cross-service interactions
 - **E2E Tests:** Production verification via postflight.yml playbook
 

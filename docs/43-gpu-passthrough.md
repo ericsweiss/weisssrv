@@ -1,4 +1,4 @@
-# 43 — GPU passthrough (pve-prec-01 GTX 1660 Ti → Hindsight)
+# GPU passthrough (pve-prec-01 GTX 1660 Ti → Hindsight)
 
 Puts the NVIDIA GTX 1660 Ti (TU116) in **pve-prec-01** into service for the
 Hindsight ML stack: the host passes the whole card through to the k3s agent VM

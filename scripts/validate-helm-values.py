@@ -121,6 +121,17 @@ RELEASES = [
         "repo_name": "tailscale",
         "repo_url": "https://pkgs.tailscale.com/helmcharts",
     },
+    {
+        # Listed for the CPU-limit check specifically: the release's values set
+        # only a memory limit, which is safe solely because the chart's current
+        # default is `resources: {}`. A future chart version adding a default
+        # limits.cpu would merge in silently, and only `helm template` sees it.
+        "name": "gitlab-agent",
+        "manifest": "kubernetes/apps/gitlab-agent/release.yaml",
+        "chart": "gitlab-agent",
+        "repo_name": "gitlab",
+        "repo_url": "https://charts.gitlab.io",
+    },
 ]
 
 VERSIONS_CONFIGMAP = "kubernetes/infrastructure/sources/versions-configmap.yaml"

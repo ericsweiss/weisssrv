@@ -86,7 +86,7 @@ spec:
           image: registry:${registry_cache_version}
           imagePullPolicy: IfNotPresent
           env:
-            # --- Pull-through / proxy mode ---
+            # Pull-through / proxy mode
             # Upstream = the real GitLab container registry. Credentials are a
             # read_registry-scoped GitLab DEPLOY TOKEN (externalsecret.yaml);
             # pull-through mode requires auth to fetch private repo blobs.
@@ -102,14 +102,14 @@ spec:
                 secretKeyRef:
                   name: registry-cache-secrets
                   key: proxy-password
-            # --- Serving + storage ---
+            # Serving + storage
             - name: REGISTRY_HTTP_ADDR
               value: ":5000"
             # Blob store lives on the node-local emptyDir mounted below. Explicit
             # so the readOnlyRootFilesystem below leaves exactly one writable path.
             - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
               value: /var/lib/registry
-            # --- Metrics (debug endpoint) ---
+            # Metrics (debug endpoint)
             # The registry serves Prometheus metrics on a SEPARATE debug listener
             # (:5001), scraped by observability/service-monitors/registry-cache.yaml.
             - name: REGISTRY_HTTP_DEBUG_ADDR

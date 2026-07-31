@@ -133,7 +133,13 @@ task terraform:authentik-import   # one-time/DR state bootstrap (import.sh; idem
 4. Final acceptance: `terraform plan` → `Plan: 0 to add, 1 to change, 0 to
    destroy` (the Sonarr exception below). Import blocks over populated state
    are a silent no-op, so `imports.tf` stays committed as the permanent
-   address↔object map and the disaster-recovery re-import path.
+   address↔object map.
+
+`imports.tf` covers the **44 adopted objects only**. Everything this module has
+authored since (3 applications, 4 providers, 6 groups, all 20 policy bindings)
+has no import block, because authentik assigns their pks/uuids at create time.
+A state-loss rebuild is therefore *not* a one-command re-import — see the DR
+runbook in the `imports.tf` header for the two extra steps.
 
 ## The Sonarr exception (approved, pending clear)
 

@@ -1,4 +1,4 @@
-# 41 — Homarr Dashboard
+# Homarr Dashboard
 
 [Homarr](https://github.com/homarr-labs/homarr) is a self-hosted homelab
 dashboard / launcher: a board of live-status widgets (integrations that poll

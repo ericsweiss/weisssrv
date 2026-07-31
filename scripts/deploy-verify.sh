@@ -31,7 +31,10 @@ _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Install tools needed for server-side dry-run validation.
 # These are already in the flux-lint job's before_script but deploy-verify
 # extends .k3s-deploy-base (kubectl + jq only), so we install them here.
-apt-get install -y -qq gettext-base > /dev/null 2>&1
+# stdout is muted, stderr is NOT: under `set -e` a failed install used to abort
+# the job with a completely empty log (nothing had been echoed yet), leaving the
+# operator to guess.
+apt-get install -y -qq gettext-base > /dev/null
 pip install --quiet "pyyaml==${PYYAML_VERSION}"
 curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
 echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c -
@@ -278,15 +281,24 @@ fi
 # stuck (any child HelmRelease failing), the above broad check catches
 # it too, but naming them explicitly yields clear failure signals in
 # the pipeline output.
+# The names are DERIVED from kubernetes/clusters/weisssrv/*.yaml, not
+# hand-listed: the previous hand-written list omitted infrastructure-crds, so a
+# wedged CRD stage produced no named failure signal here.
+TOP_KUSTOMIZATIONS=$(python3 "$_SCRIPT_DIR/flux-child-kustomizations.py")
+if [ -z "$TOP_KUSTOMIZATIONS" ]; then
+  echo "ERROR: could not derive the child Kustomization list from kubernetes/clusters/weisssrv/"
+  exit 1
+fi
+echo "Top-level Kustomizations under gate: $(echo "$TOP_KUSTOMIZATIONS" | tr '\n' ' ')"
 check_top_kustomizations_ready() {
-  for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
+  for ks_name in $TOP_KUSTOMIZATIONS; do
     KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
     if [ "$KS_READY" != "True" ]; then return 1; fi
   done
 }
 if ! wait_for "top-level Kustomizations ready" 180 5 check_top_kustomizations_ready; then
-  for ks_name in infrastructure-sources infrastructure-controllers infrastructure-configs infrastructure-observability apps; do
+  for ks_name in $TOP_KUSTOMIZATIONS; do
     KS_READY=$(kubectl -n flux-system get kustomization "$ks_name" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
     if [ "$KS_READY" != "True" ]; then

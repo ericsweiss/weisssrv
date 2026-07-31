@@ -1,0 +1,206 @@
+---
+# promtool unit tests for homelab.host-exporter — the group that backfills the
+# upstream node-exporter mixin for job="node-exporter-host" (the 15 bare-metal /
+# LXC / VM targets on :9101, which every chart-shipped node rule misses because
+# it is scoped to job="node-exporter").
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # HostExporterDown: one target down fires (the case TargetDown mathematically
+  # cannot catch at 1/15 = 6.7% < 10%), and its healthy peers do not.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '0+0x20'
+      - series: 'up{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HostExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+
+  # A scrape that recovers inside the 15m hold must not page (host reboot /
+  # kured cycle).
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HostExporterDown
+        exp_alerts: []
+
+  # absent() arm: the whole job vanishing (Service / Endpoints / ServiceMonitor
+  # broken) is the failure that would otherwise leave every host silently
+  # unmonitored, so it must fire with no series present at all.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HostExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+
+  # HostTextfileCollectorScrapeError: a malformed .prom zeroes that host's
+  # SMART / ZFS / backup metrics while the collector timer still reports success.
+  - interval: 1m
+    input_series:
+      - series: 'node_textfile_scrape_error{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '1+0x20'
+      - series: 'node_textfile_scrape_error{job="node-exporter-host", instance="192.168.0.103:9101"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HostTextfileCollectorScrapeError
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.102:9101'
+
+  # HostBondingDegraded: 2 configured slaves, 1 active.
+  - interval: 1m
+    input_series:
+      - series: 'node_bonding_slaves{job="node-exporter-host", instance="192.168.0.104:9101", master="bond0"}'
+        values: '2+0x20'
+      - series: 'node_bonding_active{job="node-exporter-host", instance="192.168.0.104:9101", master="bond0"}'
+        values: '1+0x20'
+      - series: 'node_bonding_slaves{job="node-exporter-host", instance="192.168.0.105:9101", master="bond0"}'
+        values: '2+0x20'
+      - series: 'node_bonding_active{job="node-exporter-host", instance="192.168.0.105:9101", master="bond0"}'
+        values: '2+0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HostBondingDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              master: bond0
+
+  # HostFilesystemReadOnly: a real filesystem remounted ro pages; the virtual
+  # filesystems carved out of the expression (and a healthy rw mount) do not.
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="192.168.0.102:9101", device="/dev/sda1", mountpoint="/", fstype="ext4"}'
+        values: '1+0x20'
+      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="192.168.0.102:9101", device="/dev/sdb1", mountpoint="/mnt/data", fstype="ext4"}'
+        values: '0+0x20'
+      - series: 'node_filesystem_readonly{job="node-exporter-host", instance="192.168.0.102:9101", device="squash", mountpoint="/snap/x", fstype="squashfs"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HostFilesystemReadOnly
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-exporter-host
+              instance: '192.168.0.102:9101'
+              device: /dev/sda1
+              mountpoint: /
+              fstype: ext4
+
+  # HostNetworkInterfaceFlapping: at the job's real 60s scrape interval a
+  # bouncing link (>4 carrier transitions inside 10m) fires, while a single
+  # clean link event — 2 transitions, what a cable reseat or a reboot looks
+  # like — does not. The interval here mirrors the ServiceMonitor's 60s, which
+  # is what makes the mixin's [2m]/>2 shape unfireable and this one correct.
+  - interval: 1m
+    input_series:
+      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '1 0 1 0 1 0 1 0 1 0 1 0'
+      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+        values: '1 1 1 1 0 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HostNetworkInterfaceFlapping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              device: nic0
+
+  # Per-guest virtual interfaces (fwbr/fwln/tap/veth) appear and disappear with
+  # every guest start and would flap this rule permanently — the device
+  # allow-list must keep them out.
+  - interval: 1m
+    input_series:
+      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.104:9101", device="fwbr150i0"}'
+        values: '1 0 1 0 1 0 1 0 1 0 1 0'
+      - series: 'node_network_up{job="node-exporter-host", instance="192.168.0.104:9101", device="veth150i0"}'
+        values: '1 0 1 0 1 0 1 0 1 0 1 0'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HostNetworkInterfaceFlapping
+        exp_alerts: []
+
+  # HostClockNotSynchronising needs BOTH arms: no sync AND a maxerror past 16s.
+  # A host that lost sync moments ago (maxerror still small) must not page.
+  - interval: 1m
+    input_series:
+      - series: 'node_timex_sync_status{job="node-exporter-host", instance="192.168.0.222:9101"}'
+        values: '0+0x20'
+      - series: 'node_timex_maxerror_seconds{job="node-exporter-host", instance="192.168.0.222:9101"}'
+        values: '20+0x20'
+      - series: 'node_timex_sync_status{job="node-exporter-host", instance="192.168.0.223:9101"}'
+        values: '0+0x20'
+      - series: 'node_timex_maxerror_seconds{job="node-exporter-host", instance="192.168.0.223:9101"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HostClockNotSynchronising
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.222:9101'
+
+  # HostNetworkTransmitErrs: the mixin's 1%-of-packets ratio over an hour.
+  - interval: 1m
+    input_series:
+      - series: 'node_network_transmit_errs_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '0+5x80'
+      - series: 'node_network_transmit_packets_total{job="node-exporter-host", instance="192.168.0.104:9101", device="nic0"}'
+        values: '0+100x80'
+      - series: 'node_network_transmit_errs_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+        values: '0+0x80'
+      - series: 'node_network_transmit_packets_total{job="node-exporter-host", instance="192.168.0.105:9101", device="nic0"}'
+        values: '0+100x80'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HostNetworkTransmitErrs
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.104:9101'
+              device: nic0
+
+  # HostConntrackEntriesHigh at 75% of the table.
+  - interval: 1m
+    input_series:
+      - series: 'node_nf_conntrack_entries{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '90000+0x20'
+      - series: 'node_nf_conntrack_entries_limit{job="node-exporter-host", instance="192.168.0.102:9101"}'
+        values: '100000+0x20'
+      - series: 'node_nf_conntrack_entries{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '1000+0x20'
+      - series: 'node_nf_conntrack_entries_limit{job="node-exporter-host", instance="192.168.0.104:9101"}'
+        values: '100000+0x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HostConntrackEntriesHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter-host
+              instance: '192.168.0.102:9101'

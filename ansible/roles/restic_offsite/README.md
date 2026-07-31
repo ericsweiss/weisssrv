@@ -40,9 +40,19 @@ that land on `tank/backups/apps/*` (which the `backups` source walks whole).
 
 ## Control script — `restic-offsitectl`
 
-`run` (timer/OnSuccess target), `restore <name> [snap] [dir]`,
-`verify [--full]` (`restic check`), `snapshots`, `prune`, `status`. Single-
-instance `flock`; run/restore/verify/prune share the lock.
+`run [--force]` (timer/OnSuccess target), `restore <name> [snap] [dir]`,
+`verify [--full|--auto-subset]` (`restic check`; `--auto-subset` is the rotating
+1/12 read-data mode the weekly `restic-offsite-verify.timer` runs), `snapshots`,
+`prune`, `status`. Single-instance `flock`; run/restore/verify/prune share the
+lock.
+
+`run` carries two guards. The **freshness guard** refuses to upload a tree whose
+newest `archsync-*` snapshot is older than `restic_offsite_freshness_max_age_h`
+(aborts with `success=0`). The **already-uploaded guard** skips entirely when the
+last successful run already covers the newest source snapshot AND every source is
+present and fresh — because BOTH triggers (archive-backup's `OnSuccess=` and the
+fallback timer) fire every night, and without it the job ran twice. `--force`
+overrides the second guard only.
 
 ## Metrics (node_exporter textfile)
 
@@ -60,8 +70,11 @@ instance `flock`; run/restore/verify/prune share the lock.
 2. Archive replication (raw `zfs send -w` — encrypted-at-rest blobs, no key).
 3. Offsite: B2 holds **restic client-side ciphertext** (repo password =
    `restic_repo_password`); SSE-B2 is a redundant extra. rclone deletes by
-   *hiding*, and the B2 lifecycle (terraform/b2) expires hidden versions, so a
-   capability-restricted key (no `deleteFiles`) still prunes.
+   *hiding*, and the B2 lifecycle (codified in `scripts/b2-bucket-drift.py` —
+   the retired `terraform/b2` module is gone) expires hidden versions at 30 days,
+   so a capability-restricted key (no `deleteFiles`) still prunes. The bucket has
+   **no Object Lock**, so `restic_offsite_keep_last` is the retention floor that
+   keeps corruption from walking every restore point out (docs/42).
 
 ## Secrets
 
@@ -71,10 +84,14 @@ instance `flock`; run/restore/verify/prune share the lock.
 
 ## Install / versions
 
-`restic` + `rclone` install from the Debian archive (`state: present`) so the
-molecule scenario stays hermetic. `restic_version` / `rclone_version` are
-**advisory** apt pins (empty = distro) — set to an exact Debian version to
-hard-pin.
+`restic` installs from the Debian archive (`state: present`) so the molecule
+scenario stays hermetic; `restic_version` is an **advisory** apt pin (empty = distro).
+
+`rclone` does **not**: it installs from the upstream **rclone.org release deb**,
+and `rclone_version` + `rclone_deb_sha256` are
+**mandatory, asserted** pins (`tasks/main.yml`, "Assert the rclone pin inputs are
+sane") — the role refuses to run without a matching checksum. Any stray
+`/usr/local/bin/rclone` shadowing the packaged binary is removed.
 
 ## Molecule
 

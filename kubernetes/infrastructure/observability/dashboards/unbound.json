@@ -428,7 +428,7 @@
       "type": "logs",
       "targets": [
         {
-          "expr": "{host=~\"dns-0[12]\", unit=\"unbound.service\"}",
+          "expr": "{job=\"journal\", host=~\"dns-0[12]\", unit=\"unbound.service\"}",
           "legendFormat": "",
           "refId": "A"
         }

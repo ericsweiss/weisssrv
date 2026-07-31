@@ -9,7 +9,7 @@
 # or positional args and writes a verdict to stdout / returns an exit status —
 # none of them call kubectl/curl/ansible themselves.
 
-# --- post-maintenance-verify.sh parsers -----------------------------------
+# post-maintenance-verify.sh parsers
 
 # not_ready_node_names: read `kubectl get nodes --no-headers` on stdin, print the
 # NAME ($1) of each node whose STATUS ($2) does not begin with "Ready" (so
@@ -97,7 +97,7 @@ deployment_pod_nodes() {
   awk -F'\t' -v d="$1" '$1 ~ "^"d"-[b-df-hj-np-tv-z2-9]+-" {print ($2 == "" ? "<unscheduled>" : $2)}'
 }
 
-# --- maintenance-rearm-self-reboot.sh helpers ------------------------------
+# maintenance-rearm-self-reboot.sh helpers
 
 # rearm_marker_host: read a self-host marker file's content on stdin and print
 # the target hostname (first line, all whitespace stripped). Prints nothing
@@ -123,7 +123,7 @@ rearm_remote_command() {
   printf '%s' "systemctl reset-failed maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemctl stop maintenance-self-reboot-prompt.timer maintenance-self-reboot-prompt.service 2>/dev/null || true; systemd-run --no-block --collect --on-active=${delay}s --unit=maintenance-self-reboot-prompt systemctl reboot && { systemctl reset-failed maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; systemctl stop maintenance-self-reboot.timer maintenance-self-reboot.service 2>/dev/null || true; }"
 }
 
-# --- maintenance-ha-restart.sh parsers -------------------------------------
+# maintenance-ha-restart.sh parsers
 
 # ha_reset_verdict: read the captured `ansible ... -m shell` output on stdin and
 # print one of: err / ok / notfound. Checks err BEFORE ok and anchors both

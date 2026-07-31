@@ -57,7 +57,7 @@ a tree the local archive tier did not just certify. Restoring the archive pool
 | Live data | Offsite path | In B2? |
 |---|---|---|
 | authentik/mealie postgres (zvol) | `*-pg-dump` → `tank/backups/apps/<app>` | YES |
-| gitlab repos+DB+secrets/config | `gitlab-backup` tar + `gitlab-secrets.json` + `gitlab.rb` → `tank/backups/apps/gitlab` | YES |
+| gitlab repos+DB+secrets/config | `gitlab-backup` tar + `gitlab-secrets.json` + `gitlab.rb` → `tank/backups/apps/gitlab` | YES [^gitlab-tar] |
 | immich/nextcloud postgres (zvol) | `*-backup` pg_dump → `tank/backups/apps/<app>` | YES |
 | plex `/config` (ssd/appdata) | appdata walk (60G cache/metadata excluded) | YES (DB/prefs) |
 | all appdata `/config` dirs | appdata walk | YES |
@@ -67,7 +67,20 @@ a tree the local archive tier did not just certify. Restoring the archive pool
 | tank/share, tank/backups legacy | direct walk | YES |
 | prometheus/loki (zvol) | — | NO (own retention, huge) |
 | whole-VM images (`tank/proxmox`) | — | NO (local + archive DR only) |
+| **`/etc/pve` (PVE cluster identity)** | `pve-cluster-backup.timer` tar → `tank/backups/apps/pve-cluster` | **YES** |
 | tank/media | — | NO (huge, non-sensitive; Samba/local) |
+| `nvme/media` (hot download tier) | — | NO (staging only; media-mover tiers it to the equally-unbacked `tank/media`) |
+
+[^gitlab-tar]: "YES" is a claim about the *tarball*, not about the directory
+    being non-empty. `gitlab.rb` and `gitlab-secrets.json` are re-copied there
+    nightly, so an empty-of-tarballs landing zone still looks fresh to anything
+    that only checks mtimes. That is exactly how four days of total offsite loss
+    went unnoticed (`gitlab.rb`'s relocated `backup_path` never reached the Rails
+    config because a `notify: Reconfigure gitlab` was lost). Guards added since:
+    the `gitlab` role compares the EFFECTIVE Rails backup path and re-runs the
+    reconfigure itself; the NAS artifact collector matches a per-app glob
+    (`*_gitlab_backup.tar`), not any file; and `BackupArtifactEmpty` fires on any
+    `*_backup_last_size_bytes == 0`. **Audit artefact NAMES, not just mtimes.**
 
 ### The logical-dump landing zone (`tank/backups/apps`)
 
@@ -125,9 +138,22 @@ restic-offsitectl verify --full  # restic check --read-data (reads ALL data)
 # against bit-rot every ~12 weeks at bounded egress. There is no traditional
 # "re-baseline": restic is content-addressed, every snapshot is logically a
 # full, and the nightly forget --prune continuously repacks.
-restic-offsitectl run            # run now (freshness-guarded)
+restic-offsitectl run            # run now (freshness-guarded + already-uploaded guard)
+restic-offsitectl run --force    # …ignoring the already-uploaded guard
 restic-offsitectl prune          # restic forget --prune (GFS retention)
 ```
+
+**Two triggers, one run per generation.** `archive-backup.service` carries
+`OnSuccess=restic-offsite.service` (the primary trigger) and
+`restic-offsite.timer` fires at 07:15 (the fallback for a skipped OnSuccess).
+Both fire every night, so `cmd_run` short-circuits when the last successful run
+already covers the newest `archsync-*` source snapshot **and** every source is
+present and fresh — logging `already-uploaded` and exiting 0 without touching the
+metrics. Before that guard, the estate ran two full `backup` + `forget --prune`
+cycles a night, and the second prune discarded the chain-verified snapshot in
+favour of the fallback one. The freshness condition is load-bearing: a source
+that is stale or missing (i.e. archsync itself failed) must NOT be skipped — it
+falls through to the freshness guard and aborts loudly with `success=0`.
 
 **Restore** (see also docs/17):
 
@@ -143,7 +169,26 @@ This offsite depth (3/2/3/1) is **deliberately shallower** than the local
 archive tier (`KEEP_RECENT 3` + `KEEP_MONTHLY 6`, `archive-backupctl`, docs/06):
 offsite depth is cost-driven (B2 $/TB-mo), and the deeper monthly history already
 lives on the local `archive` pool — both tiers coexist rather than B2 mirroring
-the full archive retention.
+the full archive retention. `--keep-last 5` is a WORM-ish floor on top, and
+`--group-by host` is pinned (restic's default is `host,paths`, which forks a new
+retention group whenever the source list changes and freezes the old group's
+snapshots forever).
+
+**Retention ceiling.** The bucket has no Object Lock, so past the hide-lifecycle
+window a `forget` is unrecoverable — and both the keep policy and `--group-by`
+change which snapshots are expendable (pinning to `host` *merges* groups, so
+snapshots that were frozen become collectable in one step). `restic-offsitectl`
+therefore dry-runs the exact policy before the destructive pass and refuses to
+prune when the delete set exceeds `restic_offsite_forget_max_remove` (3):
+
+```bash
+restic-offsitectl prune                 # guarded: refuses a delete set > 3
+restic-offsitectl prune --max-remove 7  # accept a deliberate, inspected delete set
+```
+
+A refusal fails the nightly run (the backup itself already landed; retention
+needs an operator decision, and keeping the run red is the only way to say so).
+Inspect with `restic-offsitectl snapshots` before raising the ceiling.
 
 ### Metrics / alerts
 
@@ -154,24 +199,86 @@ the full archive retention.
 Alerts `ResticOffsiteFailed` / `ResticOffsiteStale` (kube-prometheus-stack).
 
 The **NAS-side** `backup_artifact_last_mtime_seconds{app}` collector stats the
-newest file under each `tank/backups/apps/<app>` — the independent "the dump
-landed offsite-eligible" signal (alert `BackupArtifactStale`), distinct from the
-VM/k8s wrappers' own "the dump ran" metrics.
+newest file matching that app's **artefact glob** (`nas_backup_artifact_apps[].pattern`)
+under `tank/backups/apps/<app>` — the independent "a RESTORABLE dump landed
+offsite-eligible" signal (alert `BackupArtifactStale`), distinct from the VM/k8s
+wrappers' own "the dump ran" metrics. The glob is not cosmetic: while it matched
+any file, GitLab's nightly `gitlab.rb`/`gitlab-secrets.json` copies kept the
+alert green through four days in which no tarball reached the landing zone.
+
+`BackupArtifactEmpty` closes the same class from the wrapper side: it fires on
+any `*_backup_last_size_bytes == 0`, i.e. a run that reported success while
+producing no artefact, regardless of what the freshness signals say.
+
+### Restore drills
+
+`restic check` proves the repository's structure and checksums. It does **not**
+prove that a restored `pg_dump` replays, that `gitlab-backup restore` runs, or
+that the encrypted HAOS tars decrypt with the key in 1Password. Integrity is not
+restorability, and only a drill closes that gap.
+
+**Quarterly drill (documented, ~1 h).** Restore one artefact per app class and
+actually replay it:
+
+1. `restic-offsitectl restore backups` — pull the logical-dump tree.
+2. **Postgres class** — take the newest `authentik-*.sql.gz`, replay into a
+   throwaway database (`gunzip -c … | psql -d drill_tmp`), confirm the schema
+   and a row count, drop it.
+3. **GitLab class** — confirm the newest `*_gitlab_backup.tar` unpacks and its
+   `backup_information.yml` names the expected GitLab version. (A full
+   `gitlab-backup restore` needs a scratch VM; unpack-and-inspect is the
+   quarterly floor, full restore the annual one.)
+4. **Home Assistant class** — confirm the newest `Automatic_backup_*.tar`
+   decrypts with `backup_encryption_key` from the "Home Assistant API Token"
+   1Password item. **If that field is empty, the HA tars are unrecoverable** —
+   fix it before anything else.
+5. **File class** — restore one known file out of `appdata` and diff it against
+   the live copy.
+6. Record the result: `pve-cluster-backup`-style textfile metric
+   `backup_restore_drill_last_success_seconds` (write it by hand from the drill,
+   `date +%s`), so a ~100-day staleness alert can page when the drill lapses —
+   mirroring the `restic_offsite_last_verify_*` pattern.
+
+The only positive restorability evidence on record so far is the one-time
+post-merge smoke test below (2026-07-23: a single-file restore that came back
+byte-identical). That is a start, not a drill.
 
 ## Cost
 
-Curated B2 footprint now **includes** the ~2 TB immich photo library +
-nextcloud user files (via the zvol clones) on top of the ~0.8 TB curated set:
+The planning estimate assumed a ~2 TB immich photo library; that was the sparse
+**zvol ceiling**, not the footprint. Measured on 2026-07-25, once the tier had
+been running for three nights:
 
-| Component | approx |
-|---|---|
-| tank/backups (legacy + apps dumps) + share + appdata configs + dumps | ~0.8 TB |
-| immich photo library + nextcloud user files (zvol clones) | ~2 TB |
-| **Total stored (post restic dedup/zstd)** | **~2.5–2.8 TB** |
+| Component | planned | **measured** |
+|---|---|---|
+| tank/backups (legacy + apps dumps) + share + appdata configs + dumps | ~0.8 TB | ~0.6 TB (≈75% of it legacy machine backups) |
+| immich photo library + nextcloud user files (zvol clones) | ~2 TB | **23 GB + 1.9 GB** |
+| **Total stored (`restic_offsite_repo_size_bytes`, raw-data)** | ~2.5–2.8 TB | **621 GB** |
 
-B2 storage $6/TB-mo ⇒ **~$15–25/month** deduped; egress free within 3×
-stored/month. Within the **user-approved ~$48/month budget envelope**. (vzdump
-images stay excluded — nightly-fresh, poorly dedupable `.zst`.)
+B2 storage $6/TB-mo ⇒ **≈$3.70/month** at the measured footprint (the
+~$15–25/month figure was derived from the 2 TB ceiling). Egress is free within
+3× stored/month, and this is far inside the **user-approved ~$48/month budget
+envelope**. (vzdump images stay excluded — nightly-fresh, poorly dedupable
+`.zst`.) Re-measure from the metric rather than re-deriving from zvol sizes:
+`restic_offsite_repo_size_bytes` is on the Backup — Nightly Jobs dashboard.
+
+Note the *shape* of the footprint: `tank/backups` is dominated by immutable
+legacy machine backups (Amy-Laptop-Old 2022, Desktop-Backup 2021, …) that are
+re-walked nightly. If the bill ever matters, moving those to a separate cold
+prefix with its own retention is the biggest single lever.
+
+### Effective restore depth
+
+GFS is `keep-daily 3 / keep-weekly 2 / keep-monthly 3 / keep-yearly 1`, plus a
+`keep-last 5` floor (`restic_offsite_keep_last`). The floor exists because the
+bucket has **no Object Lock** (`scripts/b2-bucket-drift.py` sets
+`defaultRetention: {mode: None}`) and the lifecycle expires hidden versions at 30
+days: with the calendar buckets alone, corruption that persists three days walks
+every daily restore point out of the window. The documented monthly/yearly depth
+only materialises as the repo ages — a freshly-seeded repo has days of history,
+not months, whatever the policy says. `restic-offsitectl snapshots` shows the
+truth. Object Lock (governance mode) on the restic prefix remains the stronger
+answer and is the recommended next step if the threat model tightens.
 
 ## Nightly-chain right-sizing (vzdump)
 
@@ -246,20 +353,23 @@ Hermes OIDC cutover, so all three sets of prerequisites are gathered here.)
      terraform provider's read path returns empty attributes against B2's
      current API, so terraform plan reported a permanent phantom diff.)
    restic/rclone keep working — they only ever hide.
-3. **Supervised terraform applies** (each a plan-reviewed manual apply, no
-   `-auto-approve`):
+3. **Supervised B2 bucket reconcile** (not terraform — `task b2:apply` runs
+   `scripts/b2-bucket-drift.py --apply`, which replaced the `terraform/b2`
+   module for the reason given above):
    - **`task b2:apply`** — reconcile the `weisssrv-backup` bucket settings
      (allPrivate / SSE-B2 / lifecycle) after reviewing `task b2:drift`. The
      30-day hidden-version lifecycle rule is what lets the restricted key's
-     hide-only prune reclaim space (scripts/b2-bucket-drift.py).
+     hide-only prune reclaim space.
+4. **Supervised terraform apply** (plan-reviewed manual apply, no
+   `-auto-approve`):
    - **`terraform/authentik`** — the Hermes dashboard OIDC cutover **and** the
      Homarr OIDC objects (provider / application / `homarr-admins` group /
      binding), docs/40.
-4. **Homarr external record** — `dashboard.ericsweiss.com` is
+5. **Homarr external record** — `dashboard.ericsweiss.com` is
    **external-dns-managed** (auto-created when Flux reconciles the Homarr
    ingress; there is **no** manual terraform/cloudflare step). Just confirm it
    resolves once reconciled (docs/41).
-5. **Verify the NAS swap-line spelling** — the encrypted_swap fstab edits and
+6. **Verify the NAS swap-line spelling** — the encrypted_swap fstab edits and
    crypttab source key off `encrypted_swap_source_device` (`/dev/pve/swap`).
    Confirm `grep swap /etc/fstab` on pve-nas-01 uses exactly that spelling
    (not `UUID=`/`/dev/mapper/pve-swap`); if it differs, set the var to match
@@ -287,8 +397,17 @@ Hermes OIDC cutover, so all three sets of prerequisites are gathered here.)
    - VM wrappers: `systemctl start gitlab-backup.service` (gitlab),
      `systemctl start immich-backup.service` / `nextcloud-backup.service` on
      their VMs; HA: trigger a native backup from the UI step below;
+   - `/etc/pve`: `systemctl start pve-cluster-backup.service` on pve-nas-01
+     (its landing dir is created by the same deploy, so its
+     `backup_artifact_last_mtime_seconds{app="pve-cluster"}` series starts at 0
+     and would trip the staleness arm about an hour after deploy otherwise);
    - then `systemctl start backup-artifact-collector.service` on pve-nas-01 and
      confirm every `backup_artifact_last_mtime_seconds{app=...}` series is fresh.
+   - **Check artefact NAMES, not just mtimes.** The collector now matches a
+     per-app glob, so `ls -lt /mnt/tank/backups/apps/*/` should show a real dump
+     per app — a directory holding only `gitlab.rb` + `gitlab-secrets.json` is
+     the failure this whole guard exists for. `BackupArtifactEmpty` covers the
+     wrapper side (`*_backup_last_size_bytes == 0`).
 4. First restic run (watch it): `restic-offsitectl run` — confirm repo init,
    freshness guard passes, zvol clones mount + tear down, snapshot created,
    metrics written.
@@ -299,8 +418,11 @@ Hermes OIDC cutover, so all three sets of prerequisites are gathered here.)
 8. **Verify the restricted key prunes** (it was minted at-merge in Step 0, not
    swapped in here): a `restic-offsitectl prune` completes — the hide-only
    forget/prune succeeds with **no** `deleteFiles` capability.
-9. **B2 spend check** after ~a week: ~2.5–2.8 TB stored, lifecycle expiring
-   hidden versions at 30 days.
+9. **B2 spend check** after ~a week: read `restic_offsite_repo_size_bytes` off
+   the Backup — Nightly Jobs dashboard rather than re-deriving from zvol sizes
+   (measured 621 GB / ≈$3.70 mo on 2026-07-25, vs the ~2.5–2.8 TB planning
+   estimate that assumed a full 2 TB photo library); confirm the lifecycle is
+   expiring hidden versions at 30 days.
 10. **Reboot pve-nas-01 to activate encrypted swap** (timing is convenience,
     not emergency): on the defer path the plaintext swap line is retained
     alongside the mapper line, and swap-clean's pre-flight skips its cycle

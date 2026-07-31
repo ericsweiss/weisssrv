@@ -162,13 +162,11 @@
           {"pct_create_calls": {{ (pct_exist_lines.stdout | from_json).pct_create_calls }},
            "pct_set_calls": {{ (pct_exist_lines.stdout | from_json).pct_set_calls }}}
 
-    # =====================================================================
     # 6/7/8 — create-path rendering contracts: GPU idmap GID arithmetic
     # (both GID orderings), the standard idmap, and the bind-mount pct set.
     # The idmap tasks rewrite /etc/pve/lxc/<id>.conf directly, so each case
     # seeds a conf with Proxmox-default idmap lines and asserts the exact
     # rewritten content (golden output documented in docs/20-plex.md).
-    # =====================================================================
     - name: 6 — reset stub state (container absent) and pct.log
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -324,11 +322,9 @@
           {"conf": {{ conf_standard.content | b64decode | to_json }},
            "mp0_calls": {{ (std_mp_lines.stdout | from_json).mp0_calls }}}
 
-    # =====================================================================
     # 9/10 — reconcile contracts on an EXISTING container (mirrors the
     # proxmox_vm cases): the firewall=1 NIC repair (missing key + explicit
     # firewall=0 replacement) and the onboot/startup drift reconcile.
-    # =====================================================================
     - name: 9 — flip stub to "container exists", reset pct.log
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -448,12 +444,10 @@
           {"startup_set": {{ (lxc_meta_drift.stdout | from_json).startup_set }},
            "any_onboot_set": {{ (lxc_meta_drift.stdout | from_json).any_onboot_set }}}
 
-    # =====================================================================
     # 11 — GPU passthrough WITHOUT bind mounts (the immich-ml shape): the
     # GPU idmap must render byte-identical to case 6 — the video/render GID
     # passthrough is the only thing that lets a mount-less unprivileged GPU
     # guest open /dev/dri — while zero bind-mount pct sets fire.
-    # =====================================================================
     - name: 11 — reset stub state (container absent), pct.log, and conf
       ansible.builtin.copy:
         dest: "{{ item.dest }}"

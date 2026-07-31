@@ -26,6 +26,8 @@ dns-01 (Primary)
       │   ├── dns-02 (AdGuard Home)
       │   ├── smtp-relay (Postfix TLS)
       │   ├── gitlab (/etc/gitlab/ssl, `gitlab-ctl hup nginx`)
+      │   ├── nextcloud (/etc/ssl/nextcloud, `systemctl reload nginx`)
+      │   ├── immich (/etc/nginx/ssl, `systemctl reload nginx`)
       │   ├── pve-nas-01 (/etc/ssl/private, tlshd/NFS-TLS)
       │   └── plex (/etc/ssl/plex, PKCS#12 conversion via plex-cert-reload.sh)
       └── Legacy scp push (operator-managed appliance, no sudo):
@@ -84,7 +86,7 @@ This will:
 1. Detect that certificates exist in `/root/.acme.sh/esweiss.com_ecc/`
 2. Install them to `/opt/AdGuardHome/certs/` on dns-01
 3. Configure the `--reloadcmd` hook to run `homelab-cert-reload.sh`
-4. The reload script distributes certs to all six targets, then restarts/reloads each service
+4. The reload script distributes certs to all eight targets, then restarts/reloads each service
 
 **Important**: This is idempotent - once certificates are installed, subsequent runs will skip
 the installation step.
@@ -112,8 +114,8 @@ the source of truth for targets, per-target SSH host-key pinning, cert
 paths/permissions, and restart commands. It also emits per-target
 Prometheus metrics.
 
-For the five **sudo targets** (dns-02, smtp-relay, gitlab, pve-nas-01, plex)
-the push is a single SSH round-trip: the script streams the cert bundle
+For the seven **sudo targets** (dns-02, smtp-relay, gitlab, nextcloud, immich,
+pve-nas-01, plex) the push is a single SSH round-trip: the script streams the cert bundle
 (fullchain + delimiter + privkey) to the target's stdin, where the pinned
 forced command runs `/usr/local/sbin/cert-receive`. The receiver validates,
 installs, reloads, and prints `OK` / `unchanged` / `FAIL` — no scp, no remote
@@ -124,8 +126,13 @@ mktemp/chown, no client-side pre-checks. Per-target install specifics:
 2. **dns-02**: `/opt/AdGuardHome/certs`, restart AdGuard
 3. **smtp-relay**: `/etc/postfix/tls`, restart Postfix
 4. **gitlab**: `/etc/gitlab/ssl`, `gitlab-ctl hup nginx`
-5. **pve-nas-01**: `/etc/ssl/private` (tlshd for NFS-over-TLS; the NFS server is the sole TLS cert holder — k3s agents are xprtsec=tls clients that validate via the system CA and hold no cert)
-6. **plex**: `/etc/ssl/plex`, PKCS#12 conversion via `plex-cert-reload.sh`
+5. **nextcloud** (.156): `/etc/ssl/nextcloud`, `systemctl reload nginx` — replaces the
+   self-signed bootstrap cert the `nextcloud` role seeds, which is what lets Traefik's
+   `vm-tls-wildcard` backend validation succeed for `cloud.esweiss.com` (docs/35)
+6. **immich** (.157): `/etc/nginx/ssl`, `systemctl reload nginx` — same bootstrap-cert
+   replacement for `photos.esweiss.com` (docs/36)
+7. **pve-nas-01**: `/etc/ssl/private` (tlshd for NFS-over-TLS; the NFS server is the sole TLS cert holder — k3s agents are xprtsec=tls clients that validate via the system CA and hold no cert)
+8. **plex**: `/etc/ssl/plex`, PKCS#12 conversion via `plex-cert-reload.sh`
 
 **home (HAOS)** is the one remaining **legacy scp push** (`/ssl` via SSH
 :22222 as root, `ha core restart`): its `authorized_keys` is operator-managed
@@ -311,7 +318,7 @@ sudo journalctl -u postfix -f
 ### Distribution Failing
 
 1. **Check SSH connectivity** (using the cert distribution key; repeat for
-   each target in `cert_distribution_targets`). On the five sudo targets the
+   each target in `cert_distribution_targets`). On the seven sudo targets the
    key is pinned to the forced-command receiver, so any connection runs
    `cert-receive` — an empty stdin probe answering `FAIL: empty bundle`
    proves SSH + forced command + sudoers are all wired:

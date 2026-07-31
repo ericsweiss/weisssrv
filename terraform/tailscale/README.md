@@ -19,9 +19,20 @@ relies on). `apply` stays **out of CI and supervised**; only a read-only drift
 tailscale-module MRs, so an Admin-console hot-fix surfaces as drift instead of
 being silently reverted at the next apply.
 
-> Until this lockdown is applied, `tailscale-drift-plan` will report a **non-empty
-> plan (yellow / exit 2)** for the whole policy rewrite — that is the *designed*
-> advisory signal that live state has not yet been cut over, not a failure.
+> **Is the lockdown applied?** Partly, and the plan is the only authority.
+> `tag:k8s` tagOwners is live (the operator-registered `ts-dns` and
+> `traefik-tailnet` devices could not have joined otherwise) — but that proves
+> one stanza, not the whole policy, and the supervised cutover's other half is
+> demonstrably still open: `tailscale status --json` on the Proxmox hosts shows
+> `Self.Tags: null` (checked 2026-07-27 on pve-opt-01), so none of the six
+> carries `tag:subnet-router` yet. `docs/16-next-steps.md` tracks it as
+> IMPLEMENTED (pending supervised apply).
+>
+> So treat `tailscale-drift-plan` as **expected empty**, and confirm with a
+> supervised `task terraform:tailscale-drift-plan` before deciding what a
+> non-empty plan means — real drift (an Admin-console hot-fix) and the
+> not-yet-applied remainder look identical in the job output, and applying
+> either rewrites the tailnet ACL. Do not wave it through unread.
 
 ## What the policy grants (rule by rule)
 

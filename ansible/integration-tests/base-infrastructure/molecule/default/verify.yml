@@ -8,9 +8,7 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # Base Role Verification
-    # ============================================
     - name: Check admin user exists
       ansible.builtin.user:
         name: eric
@@ -86,9 +84,7 @@
         fail_msg: "Timezone not configured correctly"
         success_msg: "Timezone configured"
 
-    # ============================================
     # QoL Role Verification
-    # ============================================
     - name: Check Oh My Zsh installed
       ansible.builtin.stat:
         path: /home/eric/.oh-my-zsh
@@ -181,9 +177,7 @@
         fail_msg: "ripgrep not installed"
         success_msg: "ripgrep installed"
 
-    # ============================================
     # Tailscale Role Verification
-    # ============================================
     - name: Check Tailscale apt source
       ansible.builtin.stat:
         path: /etc/apt/sources.list.d/tailscale.list
@@ -225,9 +219,7 @@
       ansible.builtin.debug:
         msg: "Tailscaled service: {{ tailscaled_service.status.ActiveState }}"
 
-    # ============================================
     # Integration Verification
-    # ============================================
     - name: Test zsh is functional
       become: true
       become_user: eric
@@ -254,9 +246,7 @@
       ansible.builtin.debug:
         msg: "Oh My Zsh theme: {{ theme_test.stdout }}"
 
-    # ============================================
     # Final Summary
-    # ============================================
     - name: Integration test summary
       ansible.builtin.debug:
         msg: |

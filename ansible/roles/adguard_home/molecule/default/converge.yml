@@ -4,7 +4,6 @@
   hosts: all
   become: true
   pre_tasks:
-    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
     - name: Wait for apt locks to be released
       ansible.builtin.shell: |
         while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \

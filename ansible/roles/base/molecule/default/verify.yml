@@ -144,9 +144,7 @@
     # molecule scenarios (default, empty-search); dns.yml is skipped here
     # because /etc/resolv.conf is a docker bind mount.
 
-    # ========================================================================
     # SSH hardening verification
-    # ========================================================================
     - name: Check the SSH hardening drop-in exists
       ansible.builtin.stat:
         path: /etc/ssh/sshd_config.d/00-hardening.conf
@@ -185,9 +183,7 @@
         fail_msg: "ssh service is not active/enabled"
         success_msg: "ssh service is active and enabled"
 
-    # ========================================================================
     # Fail2ban verification
-    # ========================================================================
     - name: Check if fail2ban is installed
       ansible.builtin.command: dpkg -l fail2ban
       register: fail2ban_pkg
@@ -219,7 +215,6 @@
         fail_msg: "jail.local does not render the expected container-mode fail2ban configuration"
         success_msg: "jail.local renders the container branch (banaction = route, no recidive)"
 
-    # ========================================================================
     # Physical/VM branch coverage. The container above renders banaction=route;
     # the branch all 6 bare-metal Proxmox hosts use (iptables banaction,
     # recidive jail, pveproxy jail + proxmox.conf filter) is never rendered in a

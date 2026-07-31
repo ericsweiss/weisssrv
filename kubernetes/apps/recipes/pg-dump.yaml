@@ -1,8 +1,10 @@
 ---
 # Nightly logical backup of the Mealie PostgreSQL. The postgres zvol is only a
 # crash-consistent snapshot; this pg_dump adds a restorable logical dump
-# (gzipped plain SQL, DROP-if-exists) to NFS on the encrypted ssd/appdata
-# dataset, captured by the nightly ssd/appdata -> archive replication. Restore:
+# (gzipped plain SQL, DROP-if-exists) to the per-app NFS export
+# /backups-apps/mealie = tank/backups/apps/mealie (encrypted aes-256-gcm), NOT
+# ssd/appdata — the landing zone is deliberately the offsite-eligible one, so the
+# dump rides tank/backups -> archive AND the restic B2 file walk (docs/42). Restore:
 # `gunzip -c <file> | psql -h mealie-postgres -U mealie mealie`.
 #
 # 02:45: after smartd's 02:00 short tests, well before the 03:30-~05:45 vzdump
@@ -77,6 +79,11 @@ spec:
                     if [ "$i" = 30 ]; then echo "postgres unreachable after 150s" >&2; exit 1; fi
                     sleep 5
                   done
+                  # Sweep partial writes from earlier failed runs first: the
+                  # retention loop below globs only *.sql.gz, so a crashed dump's
+                  # .tmp file would otherwise sit in the restore directory forever
+                  # and ride into B2.
+                  rm -f /backups/mealie-*.sql.gz.tmp
                   ts="$(date +%Y%m%d-%H%M%S)"
                   out="/backups/mealie-$ts.sql.gz"
                   echo "pg_dump $PGDATABASE -> $out"

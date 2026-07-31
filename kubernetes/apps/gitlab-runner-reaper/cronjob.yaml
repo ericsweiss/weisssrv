@@ -1,76 +1,22 @@
 ---
 # GitLab Runner leaked-pod + leaked-credentials-secret reaper.
+# Full rationale (what leaks and why, the guard-by-guard reasoning, the RBAC
+# trade-off): docs/13-ci-cd.md § Runner garbage collection.
 #
-# WHY: the runner manager normally DELETES each job's executor pod (and the
-# per-job image-pull credentials Secret it creates, type
-# kubernetes.io/dockercfg) when the job ends. But when a lot of privileged jobs
-# fail/get cancelled, or the manager restarts mid-cleanup, terminal executor
-# pods LEAK (stay Error/Completed) and their dockercfg Secrets LEAK alongside
-# them, and both accumulate — pods bloat etcd, add scheduler churn, consume the
-# runner namespaces' `pods` ResourceQuota dimension (which can 403 the manager's
-# NEXT job-pod create), and trip maintenance/verify pod scans; the orphaned
-# dockercfg Secrets pile up in the same namespaces (registry-credential blobs
-# with no owning job left). Leaked Error pods have failed maintenance-run-all;
-# this is the authoritative backstop for both classes of leak. GitLab
-# Runner 19.x has no built-in GC for this leak-on-cancel / leak-on-manager-restart
-# case (the manager-side [runners.kubernetes] cleanup_* settings only run on the
-# graceful end-of-job path, never when the manager itself dies mid-cleanup).
+# The three pod guards (any one alone excludes a manager pod): label
+# `esweiss.com/runner-class` MUST EXIST; phase in {Succeeded, Failed}; name
+# matches runner-*-project-*-concurrent-*.
+# The three Secret guards: type == kubernetes.io/dockercfg (also applied
+# server-side via fieldSelector); name starts with `runner-`; not referenced by
+# any live pod via imagePullSecrets or ownerReferences.
 #
-# SELECTOR — three INDEPENDENT manager-proof guards (any one alone excludes a
-# manager), applied in the Python below:
-#   1. label `esweiss.com/runner-class` MUST EXIST. Set on every executor/job pod
-#      via [runners.kubernetes.pod_labels] in BOTH release.yaml files
-#      (privileged="infrastructure", shared="shared"). The manager Deployment
-#      pods are labeled app=gitlab-runner[-privileged] and NEVER carry this label
-#      — so a label-existence selector is structurally incapable of matching a
-#      manager. (kured/release.yaml relies on this exact fact.)
-#   2. phase in {Succeeded, Failed} ONLY. A manager is Running; an in-flight job
-#      pod is Running (the docker:dind sidecar runs the whole job) or Pending —
-#      all unselectable.
-#   3. name MUST match runner-*-project-*-concurrent-* (manager is
-#      gitlab-runner-<hash>). Defensive secondary assert.
-#
-# GRACE: a terminal pod is deleted only if its NEWEST container termination time
-# is >MAX_AGE_MINUTES (30m) in the past, measured from container finishedAt (NOT
-# pod creation), so a 2h job runs Running for 2h and the 30m clock only starts
-# when it goes terminal. If ANY started container lacks a parseable finishedAt the
-# pod is KEPT (we never fall back to creation/startTime, which can be hours older
-# than completion and would delete a freshly-terminal long job). Consequence: a
-# terminal pod with NO recorded finishedAt anywhere (e.g. a node-lost pod) is kept
-# — that is the safe choice (k8s's own node-pod-GC reaps node-lost pods; the
-# common leak, a job that fails/cancels, exits its container and DOES have
-# finishedAt, so it IS reaped).
-#
-# SECRET SELECTOR — the per-job dockercfg Secret carries no runner-class label,
-# so it gets its own three INDEPENDENT guards, applied in the Python below:
-#   1. type == kubernetes.io/dockercfg (narrowed SERVER-SIDE via fieldSelector,
-#      so the list never returns the runner token or SA-token secrets at all).
-#   2. name starts with `runner-` — the per-job credentials Secret is named from
-#      the executor pod's unique prefix (runner-<id>-project-<n>-concurrent-<n>-
-#      <rand>); the ESO runner token (gitlab-runner-token) and SA-token secrets
-#      never do. Defensive secondary to the type filter.
-#   3. NOT still owned/used by a live job — kept if any current pod references it
-#      via imagePullSecrets OR owns it via ownerReferences.uid. So a Secret is
-#      only reaped once its job pod is gone (the reaper deletes pods first, so a
-#      leaked pair clears over consecutive runs).
-#
-# SECRET GRACE: a dockercfg Secret has no termination time, so age is measured
-# from creationTimestamp and it is deleted only if >MAX_SECRET_AGE_MINUTES (180m)
-# old AND unreferenced (guard 3). A live job never runs 3h here (job pods sum to
-# ~5Gi, concurrent 7), so the age floor structurally protects any in-flight job's
-# Secret and closes the create-Secret-then-create-pod race window.
-#
-# SCALE: lists are PAGED (limit=25 + continue) so a large backlog can't OOM the
-# 64Mi container, and a soft BUDGET_SECONDS stops cleanly under
-# activeDeadlineSeconds — partial progress this run, the rest next */15 run,
-# rather than a hard deadline-kill that marks the Job failed.
-#
-# RBAC NOTE: k8s RBAC cannot scope `delete` to a label/phase/type selector, so
-# `pods: delete` + `secrets: delete` in the two runner namespaces is the least
-# grant that performs this function (no configmaps, no cluster-wide). The
-# type/name/reference guards are client-side (the type filter is also applied
-# server-side); defence-in-depth is the digest-pinned image + the fixed no-input
-# script + namespace scope.
+# GRACE, the one rule that is unrecoverable from the code below: a terminal pod
+# is aged from its NEWEST container `finishedAt`, never from creation/startTime
+# — a 2h job is Running for 2h and the 30m clock starts only when it goes
+# terminal. If any started container lacks a parseable finishedAt the pod is
+# KEPT. Secrets have no termination time, so they age from creationTimestamp
+# with a much higher floor (180m) plus the unreferenced guard, which closes the
+# create-Secret-then-create-pod race.
 apiVersion: batch/v1
 kind: CronJob
 metadata:

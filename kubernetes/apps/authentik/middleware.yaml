@@ -26,8 +26,8 @@ spec:
 # ForwardAuth middleware WITH basic-auth credential injection: identical to
 # authentik-auth above, plus `Authorization` in authResponseHeaders. Traefik
 # DELETES every listed header from the client request and re-adds it only if
-# the outpost's auth response carries it (source-verified: traefik v3.7
-# forward.go + authentik 2026.5.5 mode_forward.go) — so adding Authorization
+# the outpost's auth response carries it (source-verified against traefik's
+# forward.go and authentik's mode_forward.go) — so adding Authorization
 # to the SHARED middleware above would strip client-sent credentials (API
 # keys, basic auth) on every route that uses it. This dedicated variant is
 # attached ONLY to routes whose upstream expects the authentik-injected

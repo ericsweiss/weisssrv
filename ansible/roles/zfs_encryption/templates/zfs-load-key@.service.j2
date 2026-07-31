@@ -45,8 +45,8 @@
 # well under StartLimitBurst=60 in the 3600s StartLimitIntervalSec window,
 # so the unit retries forever rather than parking failed.
 #
-# The ONE residual fast-fail exit is exit 5 (encryptionroot enumeration
-# failure, zfs-load-key.sh:288-292) — it fires immediately AFTER a
+# The ONE residual fast-fail exit is exit 5 (the `zfs get encryptionroot`
+# enumeration failure path in zfs-load-key.sh) — it fires immediately AFTER a
 # successful Connect fetch, so a persistent failure of that shape cycles
 # at ~RestartSec (30s) and WILL trip StartLimitBurst=60 in roughly half an
 # hour, surfacing as failed. That's the intended "misconfiguration

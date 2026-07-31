@@ -38,7 +38,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Flux controllers (PodMonitor) | flux-system | `/metrics` | 30s |
 | Proxmox hosts (x6) | observability | `/pve` | 60s |
 | ZFS exporter (pve-nas-01) | observability | `/metrics` | 60s |
-| Node exporter (Proxmox hosts x6 + DNS hosts x2 + GitLab VM, port 9101) | observability | `/metrics` | 60s |
+| Node exporter (15 pinned Endpoints: 6 Proxmox hosts, dns-01/dns-02, smtp-relay, GitLab/Nextcloud/Immich VMs, 3 k3s servers; port 9101) | observability | `/metrics` | 60s |
 | Unbound exporter (dns-01 + dns-02) | observability | `/metrics` | 60s |
 | AdGuard exporter | observability | `/metrics` | 60s |
 | Plex exporter | observability | `/metrics` | 60s |
@@ -51,7 +51,7 @@ In addition to the built-in scrape targets, custom ServiceMonitors collect metri
 | Nextcloud (VM exporter) | observability (external endpoint) | `/metrics` | 60s |
 | wg-easy | wg-easy | `/metrics/prometheus` | 30s |
 | Hindsight | hindsight | `/metrics` | 30s |
-| Blackbox exporter (22 HTTP + 2 DNS + 3 TCP probes) | observability | `/probe` | 60s |
+| Blackbox exporter (33 HTTP + 2 DNS + 3 TCP probes) | observability | `/probe` | 60s |
 | cert-manager | cert-manager | `/metrics` | (chart default) |
 | Traefik | traefik | `/metrics` | (chart default) |
 | MetalLB | metallb-system | `/metrics` | (chart default) |
@@ -152,7 +152,18 @@ row ("Per-host journald Ingest Rate").
 
 ### Host-Level Metrics
 
-The `node_exporter_host` Ansible role installs Prometheus node_exporter on all 6 bare-metal Proxmox hosts, both DNS LXC containers (dns-01, dns-02), and the GitLab VM (192.168.0.153), listening on port 9101 (port 9100 is reserved for the kube-prometheus-stack DaemonSet on k3s nodes). On Proxmox hosts this provides hardware-level metrics not available from inside VMs: CPU and board thermals, SMART disk health, physical disk I/O, and fan speeds. On the DNS containers and the GitLab VM it provides container/VM-level CPU/memory/disk metrics and enables the textfile collector for script-freshness metrics (cert renewal on DNS; backup freshness on GitLab).
+The `node_exporter_host` Ansible role installs Prometheus node_exporter on port
+9101 (port 9100 is reserved for the kube-prometheus-stack DaemonSet on k3s
+nodes). `site.yml` targets `proxmox:dns:mail:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers`
+— 15 hosts, matching the pinned `Endpoints` list one-for-one:
+
+| Group | Hosts | What it contributes |
+|---|---|---|
+| Bare-metal Proxmox | .102-.107 (x6) | Hardware metrics unavailable from inside a VM: CPU/board thermals, SMART disk health, physical disk I/O, fan speeds |
+| DNS LXCs | dns-01 (.150), dns-02 (.160) | Container CPU/memory/disk + the cert-renewal textfile collector |
+| Mail LXC | smtp-relay (.151) | Container metrics + the postfix-queue textfile collector |
+| App VMs | gitlab (.153), nextcloud (.156), immich (.157) | VM metrics + the `*_backup_*` freshness textfile collectors |
+| k3s servers | .222, .223, .227 | `etcd_snapshot_last_copy_timestamp_seconds` — the input to `EtcdSnapshotStale` (see docs/17) |
 
 Each bare host is scraped via a headless `Service` + manually pinned `Endpoints` in `kubernetes/infrastructure/observability/exporters/node-exporter-host.yaml`, selected by a single `ServiceMonitor` (`jobLabel: app.kubernetes.io/name`). The GitLab VM's 9101 scrape is authorized by the `sg-metrics` security group it already carries.
 
@@ -211,7 +222,9 @@ Create the following items in the "Homelab" vault (if they do not already exist)
 **Loki Push Auth** (new item):
 - Field: `htpasswd` -- bcrypt users file for the Loki push IngressRoute basic-auth middleware (consumed by host-side `alloy_host` shippers; see Log Collection above)
 
-All *arr API keys are configured and their exportarr Deployments are active (replicas: 1). If you need to rotate API keys, update the values in the "Download Client API Keys" 1Password item and run `task flux:rotate-secret -- observability/observability-exporter-secrets`.
+All *arr API keys are configured and their exportarr Deployments are active (replicas: 1). If you need to rotate API keys, update the values in the "Download Client API Keys" 1Password item and run `task flux:rotate-secret -- observability-exporters` (force-syncs the
+ExternalSecret and restarts the eight exporter Deployments that read it via
+`secretKeyRef` — Reloader ignores Secrets, so a refresh alone is a no-op).
 
 All ExternalSecret manifests reference 1Password items by title. If you rename items, update the titles in:
 - `kubernetes/infrastructure/observability/kube-prometheus-stack/externalsecret.yaml`
@@ -333,6 +346,25 @@ data:
 
 Add the ConfigMap to `kubernetes/infrastructure/observability/dashboards/` and reference it in the dashboards kustomization.yaml. Export dashboards from Grafana UI (Share > Export > Save to file) and paste the JSON into the ConfigMap.
 
+**Secrets are not a dashboard source.** The Grafana ServiceAccount is bound to a
+configmaps-only ClusterRole shipped in
+`kube-prometheus-stack/grafana-rbac.yaml` (`grafana.rbac.create: false` turns the
+chart's own `configmaps + secrets` ClusterRole and binding off), the pod does not
+automount its token, and only the two sidecars get one — see the comments in that
+file. A Secret-backed dashboard/datasource needs `secrets` added back there AND
+the sidecar `resource:` widened, deliberately two edits.
+
+After the reconcile that first ships this, confirm Helm removed the objects it
+used to own (the replacements carry different names, which is what lets the
+binding change at all — `roleRef` is immutable):
+
+```bash
+kubectl get clusterrole,clusterrolebinding | grep grafana
+# expect ONLY kube-prometheus-stack-grafana-configmaps (role + binding);
+# a surviving kube-prometheus-stack-grafana-clusterrole/-clusterrolebinding
+# still grants cluster-wide secret reads and must be deleted by hand.
+```
+
 ### Dashboard Inventory
 
 **Community dashboards** (vendored as JSON ConfigMaps in
@@ -406,6 +438,15 @@ kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 909
 # Set matchers (e.g., alertname="DiskUsageWarning", instance="k3s-agt-nas-01:9100")
 # Set duration and comment
 ```
+
+**Silence durability.** Alertmanager's data directory is an `emptyDir` (see the
+comment on `alertmanagerSpec` for why neither local-path nor an NFS PV is the
+right trade here), so silences and the notification log live only in the
+running pods. It runs **two gossiping replicas**: a rolling restart or a single
+reschedule replicates state from the surviving peer, but losing both pods at
+once (or recreating the StatefulSet) still drops every active silence and
+re-notifies alerts that were already sent. For a long maintenance window,
+re-check the silence list afterwards.
 
 ### PromQL Tips
 
@@ -488,7 +529,11 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
    - PV capacity in `kubernetes/infrastructure/observability/kube-prometheus-stack/storage.yaml`
    - VolumeClaimTemplate request in `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml` (under `prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage`)
 
-4. **Update `retentionSize`** in the HelmRelease if needed (currently `120GB`).
+4. **Update `retentionSize`** in the HelmRelease if needed (currently `110GB`).
+   Size it against the *filesystem*, not the PV: `DiskUsageWarning` is computed
+   from `node_filesystem_avail_bytes`, which excludes ext4's 5% reserve, so a
+   cap above ~117GB on the current 157.4GB volume guarantees a warning that
+   fires and never clears.
 
 5. Commit and push. Flux will reconcile the updated PV/PVC sizes.
 
@@ -496,7 +541,13 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
 
 **Prometheus:**
 - Time-based: `retention: 365d` (in kube-prometheus-stack HelmRelease)
-- Size-based: `retentionSize: 120GB` (whichever limit hits first)
+- Size-based: `retentionSize: 110GB` — **this is the limit that actually binds.**
+  At ~1GB of blocks per day the 365d bound is unreachable; the effective window
+  is the size cap divided by the daily ingest (~110 days at the time of
+  writing, and longer since the duplicated k3s server registry was dropped from
+  `job="kubelet"`). Treat 365d as an outer bound, not a promise — a
+  year-over-year query returns nothing.
+- Size accounting includes the WAL and head chunks, not just persisted blocks.
 - Adjust in `kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml` under `prometheusSpec`
 
 **Loki:**
@@ -512,15 +563,20 @@ To expand a zvol (e.g., Prometheus needs more than 150GB):
 |----------|-----------|-----------------|
 | **critical** | Email (`ericsweiss1@gmail.com`) + Discord webhook | 4h |
 | **warning** | Discord webhook only | 12h |
-| **Watchdog** (always firing) | healthchecks.io heartbeat (`watchdog-heartbeat` receiver) | 1m ping |
+| **Watchdog** (always firing) | healthchecks.io heartbeat (`watchdog-heartbeat` receiver) | 1m configured, **~2m observed** |
 
-Alerts are grouped by `alertname` and `namespace` with a 30s group wait and 10m group interval; warnings repeat at 12h. Node-outage inhibition suppresses per-pod/per-target warnings while a `KubeNodeNotReady`/`KubeNodeUnreachable` alert is firing, and the custom warning/critical pairs inhibit on `instance`+`component`.
+Alerts are grouped by `alertname`, `namespace` and `instance` with a 30s group wait and 10m group interval; warnings repeat at 12h. Node-outage inhibition suppresses per-pod/per-target warnings while a `KubeNodeNotReady`/`KubeNodeUnreachable` alert is firing, and the custom warning/critical pairs inhibit on `instance`+`component`.
 
 **Dead-man's switch:** the chart's always-firing `Watchdog` alert is routed to
 healthchecks.io (ping URL from the `Healthchecks Watchdog` 1Password item via
 the alertmanager-config ExternalSecret); the external service alarms when the
 pings STOP — i.e. when Prometheus, Alertmanager, the NAS node, or notification
-egress is down. See docs/17 for the DR framing.
+egress is down. See docs/17 for the DR framing. The effective ping cadence is ~2 minutes,
+not the configured 1m: `group_interval` and `repeat_interval` are both 1m, so a
+repeat only goes out on the flush tick after the interval has elapsed. Size the
+healthchecks.io grace period against the observed ~2m — and note that a
+single-digit-minute Alertmanager gap (a pod reschedule) is exactly the outage
+this switch is the last line of defence for.
 
 **Alerting depends on DNS:** the SMTP and Discord receivers both need name
 resolution (smtp-relay hostname, discord.com). With **both** resolvers
@@ -553,10 +609,10 @@ the release for exact expressions and thresholds.
 |-------|-----------|----------|-----|
 | DiskUsageWarning / DiskUsageCritical | Filesystem usage > 80% / > 90% | warning / critical | 10m / 5m |
 | PVCUsageWarning / PVCUsageCritical | PVC usage > 80% / > 90% | warning / critical | 10m / 5m |
-| InodeUsageWarning / InodeUsageCritical | Inode usage > 80% / > 90% | warning / critical | 10m / 5m |
+| InodeUsageWarning / InodeUsageCritical | Free inodes < 10% / < 5% (i.e. usage > 90% / > 95%) | warning / critical | 10m / 5m |
 | SMARTDeviceUnhealthy | smartctl overall-health != PASSED | warning | 15m |
 | SMARTReallocatedSectorsGrowing / SMARTPendingSectors / SMARTOfflineUncorrectable / SMARTMediaErrors | SMART attribute deltas (textfile collector) | warning | — |
-| SMARTCollectorStale | SMART textfile metric stopped updating | warning | 1h |
+| SMARTCollectorStale | SMART textfile metric stopped updating (> 15m) or absent | warning | 5m |
 | NASSwapNotClearing | NAS swap above 2 GiB for 2 days (swap-clean textfile metric) | warning | 1h |
 | LocalPathPVExists | any PV on the `local-path` StorageClass (`kube_persistentvolume_info{storageclass="local-path"}`) — nothing may use it (stateless VM bootdisk, excluded from backups); catches PVC storageClass drift (see the loki guard, docs/29) | warning | 15m |
 
@@ -566,7 +622,9 @@ the release for exact expressions and thresholds.
 |-------|-----------|----------|-----|
 | VPNDown | Gluetun VPN status != 1 (downloads ns) | critical | 15m |
 | VPNExporterDown | gluetun_vpn_status series absent (downloads ns) | warning | 15m |
-| LokiRequestFailures / LokiIngestionRateLimited | Loki 5xx rate / 429 rejections | warning | — |
+| LokiRequestFailures | Loki 5xx rate > 5% | warning | 15m |
+| LokiIngestionRateLimited | Loki discarding samples (any reason, incl. `too_far_behind` out-of-order rejections) | warning | 5m |
+| LokiRulerRulesMissing / LokiRulerEvaluationFailures / LokiRulerNotificationFailures | meta-monitoring for the Loki-ruler alert path (see below) | warning | 15m |
 | FluxReconciliationFailure | Flux controller reconcile error rate > 0 | warning | 15m |
 | FluxResourceNotReady | gotk_resource_info shows Ready=False | warning | — |
 | OnePasswordConnectDown | Connect deployment has 0 available replicas | warning | 5m |
@@ -589,18 +647,49 @@ the release for exact expressions and thresholds.
 | NodeStuckCordoned / MaintenanceRebootDeferred | kured maintenance flow stuck (see docs/33 / docs/12) | warning |
 | CorosyncWedged / PmxcfsStale / CorosyncHealthCollectorStale | Proxmox cluster-stack health (textfile collector) | critical / warning |
 | ZFSPoolDeviceErrors / ZFSPoolDataErrors / ZFSPoolNotOnline / ZFSPoolScrubStale / ZFSPoolCollectorStale | zpool-health textfile collector (per-device read/write/cksum errors, data errors, pool state, scrub age, collector freshness) | warning-critical |
-| ZFSPoolSpaceWarning / ZFSPoolSpaceCritical | Pool allocated/size > 80% / > 90% (zfs_exporter) | warning / critical |
+| ZFSPoolSpaceWarning / ZFSPoolSpaceCritical | Pool allocated/size > 80% / > 90% (`zfs_pool_status_*` from the zpool-status **textfile collector**, so the five compute `local-ssd` pools are covered too — not the NAS-only `zfs_exporter`) | warning / critical |
 | EndpointDown | blackbox probe_success == 0 | warning |
 | EndpointDownCritical | probe_success == 0 for the critical endpoints (auth/git/home .esweiss.com) | critical |
 | DNSResolutionDown | blackbox DNS probe failing against a resolver | critical |
 | DNSResolverProbeMissing | the .150/.160 DNS probe series is absent (probe config lost) | warning |
-| BlackboxExporterDown | blackbox exporter itself unreachable | warning |
+| BlackboxExporterDown | blackbox exporter itself unreachable (no `up == 1` for any blackbox target) | critical |
 | NodeMemoryPressure | Node available memory critically low | warning |
 | ProxmoxHostIOPressure | Proxmox host PSI I/O pressure sustained | warning |
 | ProxmoxHostMemoryPressure | Proxmox host PSI memory pressure sustained | warning |
 | ImmichDown | Immich scrape target down or absent | warning |
 | NextcloudDown | `nextcloud_up` == 0 or absent | warning |
 | WindowsRdpDown | Windows VM RDP (192.168.0.155:3389) unreachable while powered on | warning |
+
+#### Bare-metal / VM node_exporter (`homelab.host-exporter`)
+
+Every rule the chart ships from the node-exporter mixin is scoped to
+`job="node-exporter"` — the in-cluster DaemonSet. The 15 `:9101` targets carry
+`job="node-exporter-host"` and match none of them, so this group backfills the
+ones that matter for bare metal. (Disk/inode, PSI, thermals, SMART and ZFS were
+already backfilled into the other groups.)
+
+| Alert | Condition | Severity | For |
+|-------|-----------|----------|-----|
+| HostExporterDown | `up == 0` for a `node-exporter-host` target, or the whole job absent — the case `TargetDown` cannot see (1/15 = 6.7% < its 10% threshold), and the reason a dead exporter silently disarms that host's SMART/ZFS/thermal/PSI/backup alerts | warning | 15m |
+| HostNetworkTransmitErrs / HostNetworkReceiveErrs | NIC error ratio > 1% of packets (physical/bond/guest NICs only) | warning | 1h |
+| HostNetworkInterfaceFlapping | > 4 carrier transitions in 10m (sized for this job's 60s scrape — the mixin's `[2m] > 2` cannot fire at that interval) | warning | 2m |
+| HostBondingDegraded | bond has fewer active slaves than configured (docs/34) | warning | 5m |
+| HostTextfileCollectorScrapeError | a `.prom` file failed to parse — silently zeroes that host's SMART/ZFS/backup/swap metrics | warning | 10m |
+| HostClockNotSynchronising | no NTP sync and max error >= 16s (etcd/corosync degrade on skew) | warning | 10m |
+| HostFilesystemReadOnly | a real filesystem remounted read-only (post-I/O-error) | critical | 5m |
+| HostConntrackEntriesHigh | conntrack table > 75% full | warning | 10m |
+
+#### Loki ruler alert path
+
+The 23 `HostLogShippingStale` rules
+(`kubernetes/infrastructure/observability/loki/host-log-staleness.yaml`) are
+evaluated by Loki's **in-process ruler** and pushed straight to Alertmanager,
+bypassing Prometheus. They therefore never appear in Prometheus' `ALERTS`
+series or in the top-line rule count on the Alerts-overview dashboard — that
+dashboard has a dedicated "Loki ruler" row instead. `LokiRulerRulesMissing`
+compares the ruler's loaded rule count against the number git ships (a literal
+kept in step by `scripts/test_host_log_staleness.py`), and the two companion
+rules watch evaluation and Alertmanager-delivery errors.
 
 #### Custom Script Alerts (`homelab.scripts`)
 
@@ -678,7 +767,8 @@ Flux controller metrics (source-controller, kustomize-controller, helm-controlle
    ```
 
 2. If full, reduce retention temporarily:
-   - Edit `release.yaml`: set `retentionSize: 130GB` (or lower)
+   - Edit `release.yaml`: set `retentionSize` **below** its current value
+     (`110GB`) — e.g. `90GB`. Raising it makes a disk-full incident worse.
    - Commit and push, or use `task flux:dev-apply -- kubernetes/infrastructure/observability`
 
 3. Force compaction by restarting Prometheus:

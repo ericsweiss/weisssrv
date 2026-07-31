@@ -141,7 +141,17 @@ With setgid + GID 2000:
   +-- media                (bind: /mnt/media - mergerfs union)
   +-- tank-proxmox         (bind: /mnt/tank/proxmox)
   +-- k3s-etcd             (bind: /mnt/ssd/k3s-etcd)
+  +-- backups-apps/        (per-app logical-dump targets, bind: /mnt/tank/backups/apps/*)
+        +-- authentik      (k3s agents + servers)
+        +-- mealie         (k3s agents + servers)
+        +-- gitlab         (.153)
+        +-- immich         (.157)
+        +-- nextcloud      (.156)
+        +-- home-assistant (.154 — the one plaintext export)
 ```
+
+`nas_storage_exports` in `host_vars/pve-nas-01.yml` is the source of truth for
+the export set, its per-client options and `xprtsec`.
 
 ### Access Control
 
@@ -153,6 +163,15 @@ With setgid + GID 2000:
 | /export/media | k3s VMs, .154 (Home Assistant) | RW (k3s), RO (.154) | require TLS (`xprtsec=tls` on k3s lines); **.154 plaintext** via its own line (HAOS can't do `xprtsec`) |
 | /export/tank-proxmox | Proxmox hosts only | RW, no_root_squash | export lines carry no `xprtsec`; the Proxmox storage entry mounts with `xprtsec=tls` by hostname (proxmox_backup role) |
 | /export/k3s-etcd | k3s servers only (.222/.223/.227, as explicit /32s) | RW, no_root_squash (mode 0700) | require TLS (`xprtsec=tls`); plaintext rejected. Off-node k3s etcd snapshot copies — see docs/17 |
+| /export/backups-apps/authentik, /export/backups-apps/mealie | k3s agents (192.168.0.200/29) + servers (192.168.0.220/29, .227/32) | RW, all_squash to eric:media | require TLS (`xprtsec=tls`) |
+| /export/backups-apps/gitlab | .153 | RW, all_squash | require TLS (`xprtsec=tls`) |
+| /export/backups-apps/immich | .157 | RW, all_squash | require TLS (`xprtsec=tls`) |
+| /export/backups-apps/nextcloud | .156 | RW, all_squash | require TLS (`xprtsec=tls`) |
+| /export/backups-apps/home-assistant | .154 | RW, all_squash | **plaintext** — HAOS ships no tlshd and hardcodes its NFS mount; the one documented exception (docs/24) |
+
+The six `backups-apps/*` exports are the landing zone for the per-app logical
+dumps (pg_dump / rake backup / HA native backups) that `restic_offsite` then
+ships to B2 — see docs/42 and docs/17.
 
 The `/export` pseudo-root is traversal-only: NFSv4 clients cross from it into
 whichever child exports are explicitly listed for them. `crossmnt` is

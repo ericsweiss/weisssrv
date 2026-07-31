@@ -27,6 +27,19 @@ echo ""
 # Taskfile uses); K3S_SERVERS is already IPs in hosts.env.
 PVE_HOSTS="$PVE_IPS"
 
+# Addresses whose ARP entries matter when chasing a MAC flap (docs/34): the HA
+# service IPs, which come from hosts.env, plus the three VIPs hosts.env does not
+# yet carry. Built here once instead of being repeated as a literal octet list.
+# The MetalLB pools (.100 public / .101 internal) and the kube-vip API VIP (.161)
+# are defined in group_vars/all.yml and are NOT exported by
+# generate-hosts-env.py — until they are, they are named here rather than
+# inlined into a regex nobody can read.
+VIP_EXTRA_IPS="192.168.0.100 192.168.0.101 192.168.0.161"
+VIP_OCTET_RE="$(
+    printf '%s\n' $DNS_IPS $MAIL_IPS "$HOME_ASSISTANT_IP" $VIP_EXTRA_IPS \
+        | sed 's/.*\(\.[0-9]*\)$/\1/' | sort -u | paste -sd'|' - | sed 's/^/(/; s/$/)/; s/\./\\./g'
+)"
+
 # SSH options as an array so word splitting is explicit and shellcheck-clean.
 # ServerAlive* bound a post-connect stall even on the no-timeout fallback path
 # (host without GNU/BSD timeout) so a hung remote can't block a section.
@@ -102,7 +115,17 @@ echo "5. ARP TABLE STATE (looking for churn)"
 echo "========================================"
 for host in $PVE_HOSTS; do
     echo "--- $host ARP entries for VIPs ---"
-    ssh_cmd eric@"$host" "ip neigh show | grep -E '(\.100|\.101|\.150|\.151|\.154|\.160|\.161)'" 2>/dev/null || echo "No VIP entries or host unreachable"
+    # rc is checked FIRST so "grep matched nothing" (rc 1) and "host
+    # unreachable" (ssh rc 255 / timeout) are not reported as the same thing —
+    # they mean opposite things when you are chasing an ARP/MAC flap.
+    arp_out=$(ssh_cmd eric@"$host" "ip neigh show" 2>/dev/null)
+    arp_rc=$?
+    if [ "$arp_rc" -ne 0 ]; then
+        echo "Host unreachable (ssh rc=$arp_rc)"
+    else
+        arp_vips=$(printf '%s\n' "$arp_out" | grep -E "$VIP_OCTET_RE" || true)
+        if [ -n "$arp_vips" ]; then printf '%s\n' "$arp_vips"; else echo "No VIP entries in the ARP table"; fi
+    fi
     echo ""
 done
 
@@ -165,7 +188,16 @@ echo "10. RECENT KERNEL NETWORK ERRORS"
 echo "========================================"
 for host in $PVE_HOSTS; do
     echo "--- $host dmesg (last 5 network-related) ---"
-    ssh_cmd eric@"$host" "sudo dmesg | grep -iE '(eth|network|arp|link|drop)' | tail -5" 2>/dev/null || echo "Host unreachable"
+    # Same rc-first split as the ARP section: a clean dmesg is good news and
+    # must not read as "host unreachable".
+    dmesg_out=$(ssh_cmd eric@"$host" "sudo dmesg 2>/dev/null" 2>/dev/null)
+    dmesg_rc=$?
+    if [ "$dmesg_rc" -ne 0 ]; then
+        echo "Host unreachable (ssh rc=$dmesg_rc)"
+    else
+        dmesg_net=$(printf '%s\n' "$dmesg_out" | grep -iE '(eth|network|arp|link|drop)' | tail -5 || true)
+        if [ -n "$dmesg_net" ]; then printf '%s\n' "$dmesg_net"; else echo "No network-related kernel messages"; fi
+    fi
     echo ""
 done
 

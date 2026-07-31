@@ -1,6 +1,4 @@
 ---
-# Default variables for SMTP relay server role
-
 smtp_tls_cert_dir: /etc/postfix/tls
 
 # Where the queue-depth collector drops its .prom file. Must match

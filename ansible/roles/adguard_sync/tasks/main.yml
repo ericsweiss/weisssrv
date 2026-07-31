@@ -12,7 +12,12 @@
         tasks_from: install
       vars:
         _as_base: "https://github.com/bakito/adguardhome-sync/releases/download"
-        _as_file: "adguardhome-sync_{{ adguardhome_sync_version }}_linux_amd64.tar.gz"
+        # Upstream publishes both arches. Hardcoding amd64 made the version
+        # probe fail with "Exec format error" on aarch64, and because the probe
+        # gates the download, install reported CHANGED on every run there. Same
+        # mapping the adguard_home role uses.
+        _as_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+        _as_file: "adguardhome-sync_{{ adguardhome_sync_version }}_linux_{{ _as_arch }}.tar.gz"
         prometheus_exporter_name: adguardhome-sync
         prometheus_exporter_version: "{{ adguardhome_sync_version }}"
         prometheus_exporter_artifact_type: tarball

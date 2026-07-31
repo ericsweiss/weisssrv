@@ -10,8 +10,8 @@ makes removal trivial (delete the file, remove the entry from
 `kustomization.yaml`, push — Flux prunes the resources it created).
 
 For the tenant-side repo scaffold (lint + kubeconform + secret-scan CI; deploys
-happen cluster-side via Flux, not CI), fork the `weisssrv-project-template`
-GitLab project (`git.ericsweiss.com/eric/weisssrv-project-template`) — see
+happen cluster-side via Flux, not CI), fork the `weisssrv-app-template`
+GitLab project (`git.ericsweiss.com/eric/weisssrv-app-template`) — see
 `docs/16-next-steps.md`. Tenants can instead hand-author their `kubernetes/`
 tree following the patterns in this repo.
 
@@ -84,6 +84,13 @@ kind: ClusterSecretStore
 metadata:
   name: onepassword-example-app
 spec:
+  # A ClusterSecretStore is cluster-scoped: without conditions, ANY namespace
+  # (including another tenant's) can reference it by name and read this store's
+  # vault. Scope every tenant store to its own namespace — same mechanism the
+  # platform store uses (infrastructure/configs/cluster-secret-store.yaml).
+  conditions:
+    - namespaces:
+        - example-app
   provider:
     onepassword:
       connectHost: http://onepassword-connect.external-secrets.svc.cluster.local:8080
@@ -241,9 +248,14 @@ spec:
 >
 > The `onepassword-homelab` ClusterSecretStore used by the main repo's workloads is
 > separate from per-tenant `ClusterSecretStore` resources, but both point at the same
-> Connect server and vault. Namespace-level enforcement is cooperative today — a
-> future admission controller (Kyverno/OPA) could restrict which stores a namespace
-> may reference.
+> Connect server and vault. Cross-store reference is no longer cooperative: both the
+> platform store and the tenant example above declare `spec.conditions` listing the
+> namespaces allowed to use them, so a tenant ExternalSecret pointed at
+> `onepassword-homelab` is refused by ESO. `task flux:lint`
+> (`scripts/check-secretstore-scope.py`) fails the build if a store loses its
+> conditions or a consumer namespace is missing from them. What conditions do NOT
+> give you is per-item scoping inside a vault — that still needs Options A/B in
+> `docs/30-multi-repo-onboarding.md` (or a future admission controller).
 >
 > **Before onboarding the first tenant**: the Traefik CRD provider currently runs
 > with `allowCrossNamespace: true` (see the accepted-risk comment in

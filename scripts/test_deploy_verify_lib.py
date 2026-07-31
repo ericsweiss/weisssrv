@@ -48,7 +48,7 @@ def _items(*objs) -> str:
     return json.dumps({"items": list(objs)})
 
 
-# --- count_not_ready -------------------------------------------------------
+# count_not_ready
 
 
 @needs_jq
@@ -86,7 +86,7 @@ class TestCountNotReady:
         assert _run("count_not_ready", "").stdout.strip() == ""
 
 
-# --- not_ready_ns_names ----------------------------------------------------
+# not_ready_ns_names
 
 
 @needs_jq
@@ -109,7 +109,7 @@ class TestNotReadyNsNames:
         assert out == ""
 
 
-# --- steady_state ----------------------------------------------------------
+# steady_state
 
 
 class TestSteadyState:
@@ -130,7 +130,7 @@ class TestSteadyState:
         assert _run("steady_state").stdout.strip() == "false"
 
 
-# --- nodes_not_ready_count -------------------------------------------------
+# nodes_not_ready_count
 
 
 class TestNodesNotReadyCount:
@@ -152,7 +152,7 @@ class TestNodesNotReadyCount:
         assert _run("nodes_not_ready_count", "").stdout.strip() == "0"
 
 
-# --- pods_not_running_or_completed -----------------------------------------
+# pods_not_running_or_completed
 
 
 class TestPodsNotRunningOrCompleted:
@@ -169,7 +169,7 @@ class TestPodsNotRunningOrCompleted:
         assert "ok" not in out
 
 
-# --- pods_non_transient ----------------------------------------------------
+# pods_non_transient
 
 
 class TestPodsNonTransient:
@@ -203,7 +203,7 @@ class TestPodsNonTransient:
         assert "prog" not in out
 
 
-# --- pods_running_unready --------------------------------------------------
+# pods_running_unready
 
 
 class TestPodsRunningUnready:
@@ -224,7 +224,7 @@ class TestPodsRunningUnready:
         assert _run("pods_running_unready", rows).stdout.strip() == ""
 
 
-# --- helmreleases_not_ready_names ------------------------------------------
+# helmreleases_not_ready_names
 
 
 @needs_jq
@@ -247,7 +247,7 @@ class TestHelmreleasesNotReadyNames:
         assert out == ""
 
 
-# --- helmreleases_hard_failed ----------------------------------------------
+# helmreleases_hard_failed
 
 
 @needs_jq

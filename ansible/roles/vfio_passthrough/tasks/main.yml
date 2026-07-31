@@ -16,7 +16,7 @@
     success_msg: "vfio_passthrough_pci_ids provided ({{ vfio_passthrough_pci_ids | length }} function(s))"
   when: vfio_passthrough_enabled | default(false)
 
-# --- IOMMU kernel command line (GRUB drop-in) -------------------------------
+# IOMMU kernel command line (GRUB drop-in)
 - name: Ensure the GRUB drop-in directory exists
   ansible.builtin.file:
     path: /etc/default/grub.d
@@ -38,7 +38,7 @@
     - Update GRUB for VFIO
     - Warn that a VFIO reboot is required
 
-# --- vfio-pci binding + host-driver blacklist (modprobe.d) ------------------
+# vfio-pci binding + host-driver blacklist (modprobe.d)
 - name: Bind the GPU to vfio-pci and blacklist the host driver(s)
   ansible.builtin.template:
     src: vfio.conf.j2
@@ -51,7 +51,7 @@
     - Rebuild initramfs for VFIO
     - Warn that a VFIO reboot is required
 
-# --- Force vfio-pci to load at boot (modules-load.d) ------------------------
+# Force vfio-pci to load at boot (modules-load.d)
 # Belt-and-suspenders fallback to the `vfio-pci.ids=` kernel cmdline (the primary,
 # earliest bind, set by the GRUB drop-in above). systemd-modules-load reads this
 # file at real-root boot and loads vfio-pci even if nothing else pulls it in

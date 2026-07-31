@@ -25,7 +25,7 @@ vhv = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vhv)
 
 
-# --- substitute() ----------------------------------------------------------
+# substitute()
 
 class TestSubstitute:
     def test_resolves_known_keys(self):
@@ -54,7 +54,7 @@ class TestSubstitute:
         assert missing == []
 
 
-# --- load_versions() -------------------------------------------------------
+# load_versions()
 
 class TestLoadVersions:
     def _write_cm(self, tmp_path: Path, body: str) -> Path:
@@ -101,7 +101,7 @@ class TestDeriveKubeVersion:
         assert vhv.derive_kube_version({"k3s_version": "garbage"}) == vhv.KUBE_VERSION_FALLBACK
 
 
-# --- extract_helmrelease() -------------------------------------------------
+# extract_helmrelease()
 
 class TestExtractHelmRelease:
     def test_returns_first_helmrelease(self, tmp_path):

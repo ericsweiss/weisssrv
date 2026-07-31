@@ -13,9 +13,7 @@
     immich_compose_dir: /mnt/immich-app/compose
     immich_config_dir: /mnt/immich-app/config
   tasks:
-    # ==========================================================================
     # docker-compose.yml
-    # ==========================================================================
     - name: Slurp docker-compose.yml
       ansible.builtin.slurp:
         src: "{{ immich_compose_dir }}/docker-compose.yml"
@@ -38,9 +36,7 @@
         fail_msg: "docker-compose.yml missing expected image pins / telemetry / network config"
         success_msg: "docker-compose.yml pins images and wires metrics, config, trusted proxy, network"
 
-    # ==========================================================================
     # Compose .env (secret) — perms + content
-    # ==========================================================================
     - name: Stat the compose .env
       ansible.builtin.stat:
         path: "{{ immich_compose_dir }}/.env"
@@ -74,9 +70,7 @@
         fail_msg: ".env missing expected storage/database keys"
         success_msg: ".env carries storage + database configuration"
 
-    # ==========================================================================
     # System config file (SSO-only default state)
-    # ==========================================================================
     - name: Slurp the rendered immich-config.json
       ansible.builtin.slurp:
         src: "{{ immich_config_dir }}/immich-config.json"
@@ -107,9 +101,7 @@
         fail_msg: "immich-config.json is not in the expected SSO-only state"
         success_msg: "immich-config.json renders SSO-only (password login off, oauth on)"
 
-    # ==========================================================================
     # System config file (bootstrap branch, side-rendered in converge)
-    # ==========================================================================
     - name: Slurp the bootstrap-mode config
       ansible.builtin.slurp:
         src: /tmp/immich-config-bootstrap.json
@@ -128,9 +120,7 @@
         fail_msg: "bootstrap-mode config did not flip password login on / oauth off"
         success_msg: "bootstrap-mode config enables the admin-registration escape hatch"
 
-    # ==========================================================================
     # nginx site
-    # ==========================================================================
     - name: Slurp the nginx site
       ansible.builtin.slurp:
         src: /etc/nginx/sites-available/immich.conf
@@ -162,9 +152,7 @@
       register: immich_placeholder_cert
       failed_when: not immich_placeholder_cert.stat.exists
 
-    # ==========================================================================
     # systemd units
-    # ==========================================================================
     - name: Stat the systemd units
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -175,9 +163,7 @@
         - /etc/systemd/system/immich-backup.service
         - /etc/systemd/system/immich-backup.timer
 
-    # ==========================================================================
     # Backup wrapper — metric paths (mock docker from prepare.yml)
-    # ==========================================================================
     - name: Stat the backup wrapper
       ansible.builtin.stat:
         path: /usr/local/sbin/immich-backup-run.sh
@@ -232,6 +218,16 @@
       register: immich_ts_ok
       changed_when: false
 
+    # A failed dump must NOT report 0 bytes while good dumps sit in the landing
+    # zone: 0 is BackupArtifactEmpty's (critical) "no artefact exists at all",
+    # whose runbook describes a landing-path fault. ImmichBackupFailed already
+    # carries "tonight's dump failed". Seeded at a known size (and newest by
+    # mtime) so the fallback is asserted on an exact number.
+    - name: Seed a known-size prior dump for the failure path
+      ansible.builtin.command:
+        cmd: dd if=/dev/zero of=/mnt/immich-app/backups/immich-20200101-000000.sql.gz bs=4096 count=1
+        creates: /mnt/immich-app/backups/immich-20200101-000000.sql.gz
+
     - name: Arm the backup failure
       ansible.builtin.file:
         path: /tmp/immich-backup-fail
@@ -256,8 +252,13 @@
           - >-
             'immich_backup_last_success_timestamp_seconds ' ~ immich_ts_ok.stdout
             in (immich_prom_fail.content | b64decode)
-        fail_msg: "failure path did not record success=0 or lost the prior success timestamp"
-        success_msg: "failure path records success=0 and preserves the last success timestamp"
+          # Sized from the seeded prior dump, not 0 — see the seed task above.
+          - "'immich_backup_last_size_bytes 4096' in (immich_prom_fail.content | b64decode)"
+        fail_msg: >-
+          failure path did not record success=0, lost the prior success
+          timestamp, or reported 0 bytes while a good dump was in the landing
+          zone (a false BackupArtifactEmpty page)
+        success_msg: "failure path records success=0, keeps the timestamp, and sizes the newest existing dump"
 
     - name: Disarm the backup failure
       ansible.builtin.file:

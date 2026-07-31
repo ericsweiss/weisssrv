@@ -92,14 +92,14 @@ alias kn='kubectl config set-context --current --namespace'
 
 ### Installation
 
-Neovim is installed with Vundle plugin manager and common plugins:
+Neovim is installed with the Vundle plugin manager (bootstrapped by the role
+itself, not listed as a plugin) and these `nvim_plugins` defaults:
 
 ```yaml
 nvim_plugins:
-  - VundleVim/Vundle.vim         # Plugin manager
   - tpope/vim-fugitive           # Git integration
   - sheerun/vim-polyglot         # Language pack
-  - joshdick/onedark.vim         # Color scheme
+  - joshdick/onedark.vim         # Color scheme (nvim_colorscheme: onedark)
 ```
 
 ### Configuration
@@ -139,6 +139,22 @@ set tabstop=4 shiftwidth=4 softtabstop=0 expandtab smarttab
 ## Development Tools
 
 ### Installed Packages
+
+The `qol` role installs its own `qol_packages` on top of the base set, so
+`--tags qol` is standalone:
+
+```yaml
+qol_packages:
+  - zsh
+  - neovim          # also in base common_packages
+  - fzf
+  - ripgrep
+  - fd-find
+```
+
+Oh My Zsh is installed at a pinned commit (`omz_commit` in
+`ansible/roles/qol/defaults/main.yml`) rather than tracking `master` — bump it
+deliberately like any other version pin.
 
 Common development tools installed by the `base` role:
 

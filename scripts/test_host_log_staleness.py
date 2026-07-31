@@ -27,6 +27,7 @@ Run with pytest:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -43,13 +44,19 @@ ALERT_YML = (
     / "loki"
     / "host-log-staleness.yaml"
 )
+RELEASE_YML = (
+    REPO
+    / "kubernetes"
+    / "infrastructure"
+    / "observability"
+    / "kube-prometheus-stack"
+    / "release.yaml"
+)
 
 ALLOY_HOST_ROLE = "alloy_host"
 
 
-# ---------------------------------------------------------------------------
 # Derivation helpers (no hardcoded host / group names)
-# ---------------------------------------------------------------------------
 
 def _role_names(play: dict) -> list[str]:
     """Role names referenced by a play's `roles:` list (dict or bare-string form)."""
@@ -69,6 +76,13 @@ def alloy_host_target_groups(site_yml: Path) -> list[str]:
 
     Finds the single play whose roles include `alloy_host` and splits its
     `hosts:` expression on Ansible's `:` group-union operator.
+
+    `!group` exclusion tokens are dropped: the only one in play is
+    `!deploy_skipped`, a ledger group that _reachability-probe.yml fills at
+    runtime and that is always empty in the static inventory. It subtracts
+    hosts that a given run could not reach, which is exactly the set the
+    HostLogShippingStale alert still has to cover — so the expected set is the
+    unexcluded union.
     """
     plays = yaml.safe_load(site_yml.read_text())
     matches = [
@@ -85,7 +99,9 @@ def alloy_host_target_groups(site_yml: Path) -> list[str]:
     tokens: list[str] = []
     parts = hosts_expr if isinstance(hosts_expr, list) else [hosts_expr]
     for part in parts:
-        tokens.extend(t for t in str(part).split(":") if t)
+        tokens.extend(
+            t for t in str(part).split(":") if t and not t.startswith("!")
+        )
     return tokens
 
 
@@ -138,9 +154,7 @@ def expected_alloy_host_set() -> set[str]:
     return hosts
 
 
-# ---------------------------------------------------------------------------
 # Alert-file parsing
-# ---------------------------------------------------------------------------
 
 def _alert_rules() -> list[dict]:
     doc = yaml.safe_load(ALERT_YML.read_text())
@@ -154,9 +168,7 @@ def alert_host_labels() -> set[str]:
     return {r["labels"]["host"] for r in _alert_rules()}
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 class TestHostSetInSync:
     def test_alert_hosts_equal_alloy_host_inventory_set(self):
@@ -191,6 +203,58 @@ class TestRuleShape:
             assert f'host="{host}"' in rule["expr"], (
                 f'rule labelled host={host} does not select host="{host}" in its expr'
             )
+
+    def test_every_rule_is_actionable(self):
+        # Same convention as every custom alert in kube-prometheus-stack: a
+        # runbook link and a description saying what to do, not just what broke.
+        for rule in _alert_rules():
+            host = rule["labels"]["host"]
+            annotations = rule.get("annotations") or {}
+            assert annotations.get("runbook_url"), f"rule for {host} missing runbook_url"
+            assert annotations.get("description"), f"rule for {host} missing description"
+
+
+class TestRulerMetaAlertThreshold:
+    """LokiRulerRulesMissing counts these rules, and lives in another file.
+
+    The Loki ruler pushes these alerts straight to Alertmanager, so Prometheus
+    cannot see them fail; the only watchdog is a Prometheus alert comparing the
+    ruler's loaded rule count against the number shipped here. That threshold is
+    a literal in kube-prometheus-stack/release.yaml — this test is what keeps it
+    from silently under-detecting when a host is added.
+    """
+
+    THRESHOLD_ALERT = "LokiRulerRulesMissing"
+
+    def _threshold(self) -> int:
+        release = yaml.safe_load(RELEASE_YML.read_text())
+        rules_map = release["spec"]["values"]["additionalPrometheusRulesMap"]
+        for entry in rules_map.values():
+            for group in entry.get("groups", []):
+                for rule in group.get("rules", []):
+                    if rule.get("alert") == self.THRESHOLD_ALERT:
+                        match = re.search(
+                            r"loki_prometheus_rule_group_rules\{[^}]*\}[)\s]*<\s*(\d+)",
+                            rule["expr"],
+                        )
+                        assert match, (
+                            f"{self.THRESHOLD_ALERT} no longer compares "
+                            f"loki_prometheus_rule_group_rules against a literal count"
+                        )
+                        return int(match.group(1))
+        raise AssertionError(
+            f"{self.THRESHOLD_ALERT} is missing from {RELEASE_YML.name} — the Loki "
+            f"ruler alert path would have no meta-monitoring at all"
+        )
+
+    def test_threshold_equals_shipped_rule_count(self):
+        shipped = len(_alert_rules())
+        assert self._threshold() == shipped, (
+            f"{self.THRESHOLD_ALERT} expects {self._threshold()} ruler rules but "
+            f"host-log-staleness.yaml ships {shipped}. Update the threshold in "
+            f"kube-prometheus-stack/release.yaml, or the alert under-detects a "
+            f"partially-delivered rules ConfigMap."
+        )
 
 
 if __name__ == "__main__":

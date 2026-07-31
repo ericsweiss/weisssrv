@@ -21,7 +21,15 @@
 # Exit status:
 #   0  check ran (missing keys, if any, on stdout)
 #   1  usage / bad app argument (message on stderr)
+#   2  the provider is empty or not one this script knows (message on stderr)
+#      — callers MUST refuse on this. Returning "nothing missing" for an
+#      unrecognised provider read straight from the live ConfigMap made the
+#      pre-flight pass for exactly the input it exists to catch (a hand-patched,
+#      renamed or blanked vpn_provider), and the pod then rolled into gluetun
+#      settings-validation failure under strategy Recreate — fully down.
 set -euo pipefail
+
+UNKNOWN_PROVIDER_RC=2
 
 NS=downloads
 
@@ -45,9 +53,10 @@ if [ -z "$provider" ]; then
 fi
 
 # Map gluetun's provider string to the vpn-credentials keys its settings
-# validation requires. An unknown/empty provider maps to no required keys — the
-# callers whitelist the provider name separately, so this stays focused on the
-# credential presence check.
+# validation requires. An unknown/empty provider is a HARD ERROR, not an empty
+# requirement list: `task downloads:vpn` calls this with no provider argument,
+# so the value comes unvalidated from the live ConfigMap and "no required keys"
+# would read as "fully wired".
 case "$provider" in
     privado)
         req_keys="privadovpn-user privadovpn-password"
@@ -57,7 +66,10 @@ case "$provider" in
             vpnunlimited-clientcrt vpnunlimited-clientkey"
         ;;
     *)
-        req_keys=""
+        echo "ERROR: unknown VPN provider '${provider}' for app '${app}'." >&2
+        echo "       Known providers: privado, 'vpn unlimited'. Add its required" >&2
+        echo "       vpn-credentials keys here before enabling it (docs/21)." >&2
+        exit "$UNKNOWN_PROVIDER_RC"
         ;;
 esac
 

@@ -105,7 +105,6 @@ spec:
 
       containers:
         # NZBGet - main application container
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
         # LinuxServer.io uses version-vX.Y tag format
         - name: nzbget
           image: lscr.io/linuxserver/nzbget:version-v${nzbget_version}

@@ -13,20 +13,20 @@ locals {
   # App slug -> the group gating it. The seven Downloads (media-client) apps
   # share media-admins; every other app is gated by its own per-app group.
   application_group_bindings = {
-    # --- Home ---
+    # Home
     bar    = authentik_group.app["bar-assistant-users"].id
     food   = authentik_group.app["mealie-users"].id
     home   = authentik_group.app["home-assistant-users"].id
     photos = authentik_group.app["immich-users"].id
 
-    # --- Software ---
+    # Software
     agent   = authentik_group.app["hermes-users"].id
     cloud   = authentik_group.app["nextcloud-users"].id
     git     = authentik_group.app["gitlab-users"].id
     grafana = authentik_group.app["grafana-users"].id
     vpn     = authentik_group.app["vpn-admins"].id
 
-    # --- Downloads ---
+    # Downloads
     movies      = authentik_group.media_admins.id
     music       = authentik_group.media_admins.id
     nzbget      = authentik_group.media_admins.id

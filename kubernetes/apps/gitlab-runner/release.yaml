@@ -53,7 +53,6 @@ spec:
       # to protected branches.
       protected: false
 
-      # Executor type
       executor: kubernetes
 
       # Kubernetes executor config
@@ -83,8 +82,10 @@ spec:
             image = "debian:trixie@sha256:d07d1b51c39f51188e60be9b64e6bf769fa94e187f092bc32b91305cfa34ba5a"
             privileged = false
 
-            # CPU/Memory limits for job pods
-            cpu_limit = "2"
+            # CPU/Memory for job pods. No cpu_limit (docs/33, repo-wide): CPU
+            # is compressible, so a limit only adds CFS throttling — cpu_request
+            # sets the contention share and the namespace ResourceQuota's
+            # requests.cpu bounds the aggregate.
             cpu_request = "500m"
             memory_limit = "4Gi"
             memory_request = "1Gi"

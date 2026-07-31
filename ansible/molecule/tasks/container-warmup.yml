@@ -5,7 +5,6 @@
 # Waits out the apt/dpkg races a fresh systemd container starts with, then
 # refreshes the apt cache and confirms systemd is up.
 
-# Wait for apt locks to be released (unattended-upgrades runs on container startup)
 - name: Wait for apt locks to be released
   ansible.builtin.shell: |
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \

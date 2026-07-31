@@ -19,6 +19,10 @@ metadata:
 spec:
   interval: 30m
   releaseName: kured
+  # Correct out-of-band edits to chart-rendered objects — see the rationale on
+  # controllers/traefik/release.yaml. Safe here: no webhooks, no HPA.
+  driftDetection:
+    mode: enabled
   chart:
     spec:
       chart: kured

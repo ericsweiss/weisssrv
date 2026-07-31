@@ -100,9 +100,11 @@ This document provides step-by-step procedures for common operational tasks.
 1. **Create Container**:
    ```bash
    # Via Proxmox Web UI or CLI
-   # Note: Use Debian 13 (Trixie) and local-ssd storage
+   # Note: Use Debian 13 (Trixie) and local-ssd storage. The template name is
+   # pinned as `lxc_template` in all.yml — upstream rotates the point release
+   # and a stale name breaks a recreate.
    sudo pct create 200 \
-     local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst \
+     local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
      --hostname new-service \
      --net0 name=eth0,bridge=vmbr0,ip=192.168.0.XXX/24,gw=192.168.0.1 \
      --storage local-ssd \
@@ -392,6 +394,21 @@ label.
    sudo cat /etc/pve/firewall/cluster.fw
    ```
 
+### A Proxmox host or guest went dark
+
+Two host-level network faults have their own runbook in
+[34-bond-mac-flapping.md](34-bond-mac-flapping.md) — check which shape you have
+before chasing the switch:
+
+- **A single guest** on a bonded host (`.104` / `.105` / `.106`) black-holed
+  while the host and its co-resident guests stay reachable → the
+  `all_slaves_active` bond bug.
+- **A whole OptiPlex host** dropped out of the cluster and needed a
+  power-cycle, with `e1000e 0000:00:19.0 nic0: Detected Hardware Unit Hang` in
+  the journal (or in Loki, which survives the power-cycle) → the e1000e TX hang;
+  the fix is `tso/gso/gro off` on `nic0`, codified in
+  `host_vars/pve-opt-0{1,2,3}.yml`.
+
 ---
 
 ## NFS Server Recovery (pve-nas-01)
@@ -506,7 +523,7 @@ from the postfix-queue textfile collector (smtp_relay role) scraped from
 
 5. **Run Specific Tags**:
    ```bash
-   ansible-playbook ansible/playbooks/site.yml --tags failed-role --limit failed-host
+   ansible-playbook ansible/playbooks/site.yml --tags <role-tag> --limit <host>
    ```
 
 ---
@@ -594,14 +611,29 @@ post-merge checklist in docs/42.
 #### GitLabBackupFailed / GitLabBackupStale / GitLabBackupStaleCritical
 
 Nightly GitLab backup via `/usr/local/sbin/gitlab-backup-run.sh` (`gitlab` role,
-daily cron), which emits `gitlab_backup_last_run_success` /
-`..._last_run_duration_seconds` / `..._last_size_bytes` textfile metrics.
+`gitlab-backup.timer` at 02:00 — a systemd timer, not cron), which emits
+`gitlab_backup_last_run_success` / `..._last_run_duration_seconds` /
+`..._last_size_bytes` textfile metrics.
 
 - **GitLabBackupFailed** — the last backup run exited non-zero. Inspect the run
   (`ssh gitlab "journalctl -t gitlab-backup-run"`) and re-run with
   `ssh gitlab "sudo /usr/local/sbin/gitlab-backup-run.sh"`.
 - **GitLabBackupStale / …StaleCritical** — no successful backup within the
   warning / critical freshness windows. Full backup/restore procedure: docs/27.
+- **BackupArtifactEmpty** (`metric=gitlab_backup_last_size_bytes`) — the run
+  reported SUCCESS but the newest artefact is 0 bytes, i.e. the wrapper found no
+  file to size. The alert matches `.+_backup_last_size_bytes` across every
+  producer (gitlab, immich, nextcloud, pve-cluster), and all of them size the
+  newest EXISTING artefact, so 0 always means "none in the landing zone" — a
+  failed run with good artefacts still there reports their size and fires only
+  `<app>BackupFailed`. Almost always a landing-path change that never reached
+  the application. Compare the two paths, which is what actually bit here:
+  `ssh gitlab "sudo grep backup_path /etc/gitlab/gitlab.rb"` versus
+  `ssh gitlab "sudo grep -A1 '^  backup:' /var/opt/gitlab/gitlab-rails/etc/gitlab.yml"`.
+  If they disagree, `gitlab.rb` was never applied — run `sudo gitlab-ctl
+  reconfigure` (a re-run of the `gitlab` role now detects and repairs this by
+  itself). Then confirm the next 02:00 run lands a `*_gitlab_backup.tar` in
+  `/mnt/backups-offsite`, not just the `gitlab.rb`/`gitlab-secrets.json` copies.
 
 #### EtcdSnapshotStale
 
@@ -659,8 +691,8 @@ sudo zfs rollback tank/media@backup-20260101
 ```
 
 **Proxmox Restore** (use a ZFS pool actually in use — `ssd` on the NAS,
-`local-ssd` on compute nodes; `local-lvm` exists from the default install but
-holds no managed guests except the Plex/k3s NAS roots):
+`local-ssd` on compute nodes; `local-lvm` exists from the default install and
+holds only the Plex/k3s NAS roots and the immich-ml LXC rootfs, docs/36):
 ```bash
 sudo qmrestore /path/to/backup.vma.zst 100 --storage local-ssd
 ```
@@ -1340,9 +1372,10 @@ When Proxmox HA migrates a VM/container to a different node (due to node failure
    # Look at the "Node" column in ha-manager status
    # Compare against source_node values in ansible/inventories/prod/group_vars/all.yml
 
-   # Example output showing failover (dns-01 expected on pve-laptop-01, running on pve-opt-01):
+   # Example output showing failover (home-assistant expected on pve-prec-01,
+   # running on pve-opt-02):
    # VMID   Type  State    Node
-   # 150    ct    started  pve-opt-01   <-- MISMATCH: source_node is pve-laptop-01
+   # 154    vm    started  pve-opt-02   <-- MISMATCH: source_node is pve-prec-01
    ```
 
 3. **Check replication status for errors:**
@@ -1372,17 +1405,23 @@ Use this when the original node is offline for extended maintenance or has faile
    # Find the storage_replication_jobs section
    # Update source_node for all jobs of the affected VMID
 
-   # Example: dns-01 (VMID 150) failed over from pve-laptop-01 to pve-opt-01
+   # Example: home-assistant (VMID 154) failed over from pve-prec-01 to pve-opt-02
    # BEFORE:
-   - id: "150-0"
-     source_node: pve-laptop-01  # <-- old source
-     target_node: pve-opt-01
+   - id: "154-0"
+     source_node: pve-prec-01  # <-- old source
+     target_node: pve-opt-02
 
    # AFTER:
-   - id: "150-0"
-     source_node: pve-opt-01     # <-- new source (where service is now running)
-     target_node: pve-laptop-01  # <-- swap: old source becomes a target
+   - id: "154-0"
+     source_node: pve-opt-02   # <-- new source (where service is now running)
+     target_node: pve-prec-01  # <-- swap: old source becomes a target
    ```
+
+   The `ha_rules` node-affinity home for the VMID must move with it (`source_node`
+   has to track the HA home or `proxmox_ha/replication.yml` cannot manage the jobs).
+   Never make `pve-laptop-01` a home (priority >= 2) — it has a memtest-confirmed
+   dead RAM cell masked via `GRUB_BADRAM` and is fallback-only until the DIMM is
+   replaced (`all.yml` `affinity-dns-01` carries the same note).
 
 2. **Update all 4 jobs for the VMID:**
    - Change `source_node` to the current running node
@@ -1426,8 +1465,8 @@ Use this when the original node is back online and you want to restore the origi
    # For VMs
    sudo qm migrate <vmid> <original_node> --online
 
-   # Example: migrate dns-01 back to pve-laptop-01
-   sudo pct migrate 150 pve-laptop-01 --online
+   # Example: migrate home-assistant back to its home node
+   sudo qm migrate 154 pve-prec-01 --online
    ```
 
 3. **Verify replication resumes:**
@@ -1442,10 +1481,16 @@ Use this when the original node is back online and you want to restore the origi
 
 | Service | VMID | Primary Node | Schedule | Notes |
 |---------|------|--------------|----------|-------|
-| dns-01 | 150 | pve-laptop-01 | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
+| dns-01 | 150 | pve-opt-01 [†] | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
 | smtp-relay | 151 | pve-opt-01 | `3-59/15` (3,18,33,48) | Single instance; brief outage during failover |
 | dns-02 | 160 | pve-opt-03 | `6-59/15` (6,21,36,51) | Secondary DNS; dns-01 provides redundancy |
 | home-assistant | 154 | pve-prec-01 | `9-59/15` (9,24,39,54) | HAOS VM; check integrations after failover |
+
+[†] dns-01's home moved off pve-laptop-01 (memtest-confirmed dead RAM cell, masked
+via `GRUB_BADRAM`, DIMM replacement pending). pve-laptop-01 stays a priority-1
+fallback and must never be a home until the RAM is replaced and re-tested —
+`ha_rules` / `storage_replication_jobs` in `group_vars/all.yml` are the source of
+truth for the current homes.
 
 ### Replication Job ID Format
 

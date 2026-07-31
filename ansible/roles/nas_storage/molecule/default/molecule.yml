@@ -1,9 +1,5 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
-# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
-# custom scenario where needed).
+# Scenario overrides; shared config in ansible/molecule/base.yml (ansible/TESTING.md).
 platforms:
   - name: nas-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -106,6 +102,11 @@ provisioner:
           - /mnt/tank/backups/apps/home-assistant
         nas_backup_apps_base: /mnt/tank/backups/apps
         nas_backup_artifact_metrics_enabled: true
+        # /etc/pve archive. The container has no pmxcfs, so verify points the
+        # script at a synthetic SRC to exercise the real tar/validate/retention
+        # path (and asserts the absent-source arm fails loudly).
+        nas_pve_cluster_backup_enabled: true
+        nas_pve_cluster_backup_keep: 2
         media_mover_enabled: true
         media_mover_src: /mnt/nvme/media/library
         media_mover_dst: /mnt/tank/media/library

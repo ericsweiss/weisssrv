@@ -574,7 +574,7 @@ Configure *arr apps to use:
 
 ### Pulsarr
 
-> **AVX Requirement**: Pulsarr uses the Bun JavaScript runtime (v0.10.0+) which requires AVX CPU instructions. It is pinned to NAS nodes (`esweiss.com/nas: "true"`) because only pve-nas-01 (12th Gen Intel i7-12700K) has AVX support. The pve-opt-03 node (Core 2 Quad Q9650) does NOT support AVX and will cause Pulsarr to crash with an "Illegal instruction" error. Do not reschedule Pulsarr to non-NAS nodes without verifying AVX support on the target hardware.
+> **AVX Requirement**: Pulsarr uses the Bun JavaScript runtime (v0.10.0+) which requires AVX CPU instructions. The three Core 2 Quad opt agents do NOT support AVX and crash it with "Illegal instruction". The precise gate for that is the `esweiss.com/cpu=modern` label (docs/33), carried today by k3s-agt-nas-01, k3s-agt-laptop-01 and k3s-agt-prec-01. Pulsarr's `nodeSelector` predates that label taxonomy and still pins it to the NAS node (`esweiss.com/nas: "true"`) — a strict subset of the modern-CPU nodes, so it is safe but narrower than necessary. If you reschedule it, `esweiss.com/cpu: modern` is the constraint that actually matters.
 
 1. Access: https://pulsarr.esweiss.com
 2. Configure:

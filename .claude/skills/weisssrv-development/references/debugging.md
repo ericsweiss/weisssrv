@@ -19,10 +19,12 @@ ops — Flux owns `kubernetes/`. Full day-2 procedures: `docs/29-flux-operations
 
 ## Pod issues
 
-- `task <ns>:status` / `task <ns>:logs` wrappers exist for the app namespaces
-  (`downloads`, `recipes`, `home-assistant`, `gitlab`, `authentik`,
-  `observability`). Otherwise `kubectl -n <ns> describe pod/<p>` +
-  `kubectl -n <ns> logs`.
+- `task <ns>:status` / `task <ns>:logs` wrappers exist for the app namespaces —
+  `downloads`, `recipes`, `home-assistant`, `gitlab`, `authentik`,
+  `observability`, `hermes`, `immich`, `immich-ml`, `nextcloud`, `vpn`
+  (`task --list` is the source of truth; there are also `downloads:vpn-status`,
+  `observability:silence`, `b2:drift`, `terraform:{tailscale,authentik}-plan`).
+  Otherwise `kubectl -n <ns> describe pod/<p>` + `kubectl -n <ns> logs`.
 - **NFS stale file handle** on an established mount (after a NAS reboot): delete
   the pod so it remounts (`kubectl -n <ns> delete pod <p>`). The PV is
   hostname+TLS-mounted; a fresh pod re-does the handshake.

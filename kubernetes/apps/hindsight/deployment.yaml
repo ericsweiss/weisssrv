@@ -81,7 +81,6 @@ spec:
       containers:
         # ── Hindsight API (:8888) + control-plane UI (:9999) ─────────────
         - name: hindsight
-          # Version managed in ansible/inventories/prod/group_vars/all.yml
           # (hindsight_version — the bare-semver image tag of release
           # v<hindsight_version>).
           image: ghcr.io/vectorize-io/hindsight:${hindsight_version}
@@ -245,15 +244,23 @@ spec:
           # Memory dropped now that the model + KV cache live in VRAM (offloaded
           # by -ngl 99): the host side is only the mmap'd GGUF header pages
           # (reclaimable, file-backed), CUDA host-pinned staging buffers, and the
-          # server runtime — a fraction of the old ~3.5 GB resident model. Sized
-          # generously (retune with measured RSS, docs/43). No CPU limit (docs/33).
+          # server runtime — a fraction of the old ~3.5 GB resident model. No CPU
+          # limit (docs/33).
+          #
+          # The request covers ~560Mi RSS plus the active slice of the mmap'd
+          # GGUF's page cache: the measured working set is 2.7Gi, of which ~2.2Gi
+          # is reclaimable file-backed cache, so requesting the full working set
+          # would reserve node memory that evaporates under pressure while 1536Mi
+          # left the container permanently above its own reservation (worst
+          # eviction rank). The 3Gi limit is a reclaim ceiling, not an OOM
+          # ceiling — no OOM event has ever been recorded here.
           # nvidia.com/gpu is the device-plugin resource that pins the pod to the
           # GPU node and injects the card; request auto-mirrors the limit (it is
           # an integer extended resource, so requests==limits is required).
           resources:
             requests:
               cpu: 250m
-              memory: 1536Mi
+              memory: 2Gi
             limits:
               memory: 3Gi
               nvidia.com/gpu: "1"

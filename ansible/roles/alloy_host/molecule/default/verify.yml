@@ -65,11 +65,60 @@
           - "'loki.relabel' in (config_content.content | b64decode)"
           - "'loki.write' in (config_content.content | b64decode)"
           - "'job' in (config_content.content | b64decode)"
-          - "'__journal__systemd_unit' in (config_content.content | b64decode)"
-          - "'__journal_priority_keyword' in (config_content.content | b64decode)"
           - "'http://127.0.0.1:31100/loki/api/v1/push' in (config_content.content | b64decode)"
         fail_msg: "Config file missing expected configuration"
         success_msg: "Config file has correct configuration"
+
+    # Stream-label budget: `unit` is the only journal label kept (see the
+    # template comment + Loki max_global_streams_per_user). priority and
+    # hostname were deliberately dropped; re-adding one is a cardinality
+    # decision, not a tidy-up. Asserted on the rendered RULES, not on the file
+    # as a substring: the template's rationale comment names both dropped
+    # journal keys, and `//` is Alloy syntax, so those names ARE in the
+    # rendered config by design.
+    - name: Extract the rendered journal relabel rules
+      ansible.builtin.set_fact:
+        alloy_rule_sources: "{{ (config_content.content | b64decode) | regex_findall('(?m)^\\s*source_labels\\s*=\\s*\\[\"([^\"]+)\"\\]') }}"
+        alloy_rule_targets: "{{ (config_content.content | b64decode) | regex_findall('(?m)^\\s*target_label\\s*=\\s*\"([^\"]+)\"') }}"
+
+    - name: Assert `unit` is the only journal stream label
+      ansible.builtin.assert:
+        that:
+          - alloy_rule_sources == ['__journal__systemd_unit']
+          - alloy_rule_targets == ['unit']
+        fail_msg: >-
+          The journal relabel rules render
+          {{ alloy_rule_sources }} -> {{ alloy_rule_targets }}, not
+          ['__journal__systemd_unit'] -> ['unit']. Every rule here is a Loki
+          STREAM label; adding one multiplies open chunks against
+          max_global_streams_per_user.
+        success_msg: "`unit` is the only journal stream label"
+
+    # Regression guard: the journal relabel rules must be applied exactly ONCE.
+    # Forwarding the source into loki.relabel while ALSO passing that component's
+    # rules as relabel_rules re-ran them after Alloy had dropped the __journal_*
+    # metadata, which blanked (deleted) the `unit` label on every host.
+    - name: Assert journal relabel rules are applied once
+      ansible.builtin.assert:
+        that:
+          - "'forward_to    = [loki.write.default.receiver]' in (config_content.content | b64decode)"
+          - "'relabel_rules = loki.relabel.journal.rules' in (config_content.content | b64decode)"
+          - "'loki.relabel.journal.receiver' not in (config_content.content | b64decode)"
+          - "'forward_to = []' in (config_content.content | b64decode)"
+        fail_msg: >-
+          The journal pipeline routes entries through loki.relabel AND passes
+          its rules to the source — the double-application that strips the
+          `unit` label.
+        success_msg: "Journal relabel rules are applied exactly once"
+
+    # The journal re-read horizon must be rendered (Alloy's 7h default is wider
+    # than Loki's out-of-order accept window; see the role README).
+    - name: Assert the journal max_age is pinned
+      ansible.builtin.assert:
+        that:
+          - "'max_age = \"3h\"' in (config_content.content | b64decode)"
+        fail_msg: "loki.source.journal is missing the pinned max_age"
+        success_msg: "loki.source.journal max_age is pinned"
 
     # Negative-path artifact: the https-without-creds role run in converge
     # post_tasks must have been blocked by the credentials assert.

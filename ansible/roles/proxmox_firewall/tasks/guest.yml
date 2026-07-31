@@ -1,6 +1,4 @@
 ---
-# Deploy per-guest firewall configuration
-
 # Guest .fw configs live on the shared pmxcfs (/etc/pve/firewall/<vmid>.fw), so
 # ANY reachable Proxmox node can write them. Delegate to the already-computed
 # reachable delegate (main.yml) rather than hard-pinning groups['proxmox'][0] —

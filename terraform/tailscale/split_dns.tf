@@ -4,35 +4,35 @@
 # traefik-tailnet device for Traefik-fronted names (mesh path) and forwards the
 # rest to AdGuard. See kubernetes/apps/tailnet-dns and docs/05-tailscale.md.
 #
-# GATED so the ACL (policy.hujson) can be applied on its own FIRST. The ts-dns
-# device does not exist until the Flux changes are merged and the operator has
-# registered it, so the data source below cannot be read until then. Leave
-# enable_split_dns=false (default) for the phase-A ACL apply; flip it on only for
-# the final phase-B apply, once `kubectl -n tailnet-dns get svc ts-dns` shows a
-# 100.x EXTERNAL-IP:
-#
-#   Phase A (ACL only):   task terraform:tailscale-apply
-#   Phase B (Split-DNS):  terraform import 'tailscale_dns_split_nameservers.esweiss[0]' esweiss.com   # adopt the existing console entry
-#                         TF_VAR_enable_split_dns=true task terraform:tailscale-apply
-
-variable "enable_split_dns" {
-  description = "Manage the esweiss.com Split-DNS nameserver (requires the ts-dns operator device to be registered). Keep false until phase B."
-  type        = bool
-  default     = false
-}
+# This was gated behind `enable_split_dns` (default false) so the ACL could be
+# applied on its own first, back when the ts-dns device did not exist yet. That
+# phased rollout is DONE: the device is registered, the entry is in state and
+# live (`tailscale dns status` on a node shows `esweiss.com -> 100.87.106.104`).
+# The gate is removed rather than defaulted to true because nothing ever set
+# TF_VAR_enable_split_dns — not the Taskfile's tf_tailscale_env anchor, not the
+# tailscale-drift-plan job — so every plan computed count = 0 and proposed
+# DESTROYING the live entry: permanent false drift in the drift job, and a
+# routine supervised ACL apply one confirmation away from deleting tailnet
+# *.esweiss.com resolution.
 
 # Read the ts-dns device's tailnet IP by its deterministic hostname (set via the
 # Service's tailscale.com/hostname annotation). Derives the 100.x at apply time
 # rather than hardcoding a runtime-assigned address; self-heals if the device is
 # rebuilt. addresses[0] is the IPv4 (100.x) Tailscale address.
 data "tailscale_device" "ts_dns" {
-  count    = var.enable_split_dns ? 1 : 0
   hostname = "ts-dns"
   wait_for = "60s"
 }
 
 resource "tailscale_dns_split_nameservers" "esweiss" {
-  count       = var.enable_split_dns ? 1 : 0
   domain      = "esweiss.com"
-  nameservers = [data.tailscale_device.ts_dns[0].addresses[0]]
+  nameservers = [data.tailscale_device.ts_dns.addresses[0]]
+
+  # Same reasoning as the ACL in main.tf: dropping this entry silently breaks
+  # *.esweiss.com resolution for every tailnet client (the mesh path in
+  # docs/05-tailscale.md), so removing it has to be an explicit break-glass
+  # edit rather than a side effect of a refactor.
+  lifecycle {
+    prevent_destroy = true
+  }
 }

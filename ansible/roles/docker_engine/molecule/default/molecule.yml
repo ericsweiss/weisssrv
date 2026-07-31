@@ -1,12 +1,11 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). This is a render/contract
-# scenario: docker_engine_skip_install skips the apt repo add, the pinned engine
-# install/hold, and the service enable/start (all need the real
-# download.docker.com repo + a running daemon), so it renders + asserts the
-# journald daemon.json without a container runtime — the same render-only posture
-# the immich/nextcloud scenarios use for their compose stacks.
+# Scenario overrides; shared config in ansible/molecule/base.yml.
+# This is a render/contract scenario: docker_engine_skip_install skips the apt
+# repo add, the pinned engine install/hold, and the service enable/start (all
+# need the real download.docker.com repo + a running daemon), so it renders +
+# asserts the journald daemon.json without a container runtime — the same
+# render-only posture the immich/nextcloud scenarios use for their compose
+# stacks.
 platforms:
   - name: docker-engine-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest

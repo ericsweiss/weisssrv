@@ -14,6 +14,18 @@ metadata:
   namespace: external-secrets
 spec:
   interval: 30m
+  # Correct out-of-band edits to chart-rendered objects — see the rationale on
+  # controllers/traefik/release.yaml. No webhooks here, but unlike Traefik this
+  # chart DOES render .spec.replicas (connect.replicas: 2) while its own HPA
+  # scales to 3, so that one path must be ignored or every reconcile would scale
+  # the Deployment back down to the floor.
+  driftDetection:
+    mode: enabled
+    ignore:
+      - paths: ["/spec/replicas"]
+        target:
+          kind: Deployment
+          name: onepassword-connect
   chart:
     spec:
       chart: connect

@@ -163,12 +163,14 @@ weisssrv/
 │   └── authentik/            # Authentik SSO state as code (applications, providers, groups)
 ├── kubernetes/               # Flux-managed cluster state
 │   ├── clusters/weisssrv/    # Flux bootstrap + top-level Kustomizations
-│   ├── infrastructure/       # Platform — four subdirectories (sources, controllers, configs, observability)
+│   ├── infrastructure/       # Platform — five subdirectories (sources, crds, controllers, configs, observability)
 │   │                         #   reconciled in dependsOn order; configs fans out to observability and apps:
 │   │                         #     infrastructure-sources       (HelmRepository CRs + versions-configmap)
+│   │                         #     infrastructure-crds          (prometheus-operator CRDs, wait:true — fresh-bootstrap ordering)
 │   │                         #     infrastructure-controllers   (platform HelmReleases — see the dir for the current set)
 │   │                         #     infrastructure-configs       (CRs requiring controller CRDs — see the dir for the current set)
 │   │                         #     infrastructure-observability (kube-prometheus-stack, Loki, Alloy, exporters, dashboards)
+│   ├── components/           # Reusable Kustomize components (netpol-baseline — mandatory for every app, gitlab-runner-common)
 │   └── apps/                 # Sibling top-level Kustomization (dependsOn infrastructure-configs,
 │                             #   parallel to observability so its health can't freeze app reconciliation):
 │                             #   one dir per app — see kubernetes/apps/ for the current set
@@ -176,6 +178,16 @@ weisssrv/
 ├── docs/                     # Documentation
 └── Taskfile.yml              # Task runner commands (including flux:*)
 ```
+
+### Related repositories
+
+- **`eric/weisssrv-lib`** — shared CI library. `.gitlab-ci.yml` `include:`s seven
+  generic lint/validate/test/security jobs from it at a pinned tag
+  (yaml-lint, shellcheck, docs-link-check, terraform, secret-detection,
+  python-tests, flux-lint). Change those jobs in the library, not here:
+  [docs/13-ci-cd.md](docs/13-ci-cd.md) § Shared CI library.
+- **`eric/weisssrv-app-template`** — the scaffold a tenant repo forks to deploy
+  into this cluster: [docs/30-multi-repo-onboarding.md](docs/30-multi-repo-onboarding.md).
 
 ## Ansible Roles
 
@@ -203,10 +215,12 @@ weisssrv/
 | nextcloud | Nextcloud (Docker Compose: nextcloud-apache + postgres + redis + cron + exporter) on a NAS-pinned VM, host-nginx TLS, Authentik OIDC SSO (docs/35) |
 | immich | Immich photo management (docker-compose stack + host nginx) on a NAS-pinned VM |
 | immich_ml | Immich machine learning (OpenVINO on the Intel Arc GPU) in a docker LXC on the NAS — the Immich VM's primary ML endpoint (docs/36) |
+| compose_app | Shared scaffolding for the single-project docker-compose guests (compose systemd unit, nginx task flow, backup lib); backs immich, immich_ml, nextcloud |
+| docker_engine | Shared pinned + `dpkg`-held Docker CE / containerd / buildx / compose install (via apt_signed_repo); backs immich, immich_ml, nextcloud |
 | resolv_conf | Shared /etc/resolv.conf management |
 | zvol_mount | Shared ZFS zvol mounting with UUID-based fstab |
-| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex, nextcloud, immich, immich_ml) |
-| nic_tuning | NIC/kernel tuning (AQC113 GRO disable, `ip_forward` sysctl drop-in, active-backup bond `all_slaves_active` MAC-flap guard — docs/34) |
+| apt_signed_repo | Shared fingerprint-verified signed-APT-repo setup (used by alloy_host, gitlab, plex, nextcloud, immich, immich_ml, docker_engine) |
+| nic_tuning | NIC/kernel tuning (AQC113 GRO disable, opt-node e1000e tso/gso/gro disable, `ip_forward` + swappiness sysctl drop-ins, active-backup bond `all_slaves_active` MAC-flap guard — docs/34) |
 | prometheus_exporter | Shared install pipeline for download-based exporters (tarball/.deb); backs zfs_exporter + unbound_exporter |
 | textfile_collector | Shared textfile-collector oneshot service + timer scaffold; backs node_exporter_host (corosync/zpool/smartmon) and smtp_relay (postfix queue) |
 | zfs_exporter | Prometheus ZFS exporter (pool health, scrub status) on the NAS; thin wrapper over prometheus_exporter |
@@ -434,42 +448,88 @@ Homelab dashboard/launcher for every service in the cluster:
 | [10-mail](docs/10-mail.md) | Mail relay configuration |
 | [11-firewall](docs/11-firewall.md) | Proxmox firewall (IPSets + Security Groups) |
 
+### Platform (k3s, Flux, observability, SSO, GPU)
+
+| Document | Description |
+|----------|-------------|
+| [19-k3s-deployment](docs/19-k3s-deployment.md) | K3s cluster deployment (complete workflow) |
+| [29-flux-operations](docs/29-flux-operations.md) | Flux operator guide (bootstrap, adopt, rotate, add app, troubleshoot) |
+| [30-multi-repo-onboarding](docs/30-multi-repo-onboarding.md) | Adding external repos that deploy into this cluster via Flux |
+| [31-observability](docs/31-observability.md) | Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting) |
+| [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
+| [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
+| [40-authentik-terraform](docs/40-authentik-terraform.md) | Authentik SSO as code (terraform/authentik day-2 ops: drift, rotation, DR) |
+| [43-gpu-passthrough](docs/43-gpu-passthrough.md) | GPU passthrough (pve-prec-01 1660 Ti → Hindsight): VFIO host prep, driver/toolkit, device plugin, DCGM, RAM right-sizing, operator runbook |
+
+### Applications
+
+| Document | Description |
+|----------|-------------|
+| [20-plex-deployment](docs/20-plex-deployment.md) | Plex Media Server deployment |
+| [21-download-clients-deployment](docs/21-download-clients-deployment.md) | Download clients and media stack |
+| [22-recipes-deployment](docs/22-recipes-deployment.md) | Recipe management (Mealie, Bar Assistant) |
+| [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration (the manual SSO walkthrough is **superseded** by terraform/authentik — docs/40) |
+| [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
+| [27-gitlab-deployment](docs/27-gitlab-deployment.md) | GitLab EE deployment (VM, registry, pages, runners) |
+| [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
+| [36-immich](docs/36-immich.md) | Immich photo management (NAS-pinned VM, docker-compose, encrypted zvols, Authentik OIDC, backups) |
+| [37-hermes](docs/37-hermes.md) | Hermes Agent (NousResearch AI agent + dashboard): self-built image, three-container pod, dashboard Authentik-OIDC SSO |
+| [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
+| [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
+| [41-homarr](docs/41-homarr.md) | Homarr dashboard (raw manifests, Authentik OIDC, NFS SQLite, direct-URL integrations) |
+
 ### Operations and Planning
 
 | Document | Description |
 |----------|-------------|
 | [12-runbooks](docs/12-runbooks.md) | Operational procedures |
 | [13-ci-cd](docs/13-ci-cd.md) | CI/CD pipelines (GitLab CI) |
-| [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning (superseded — historical record) |
 | [15-credential-rotation](docs/15-credential-rotation.md) | Credential rotation procedures |
 | [16-next-steps](docs/16-next-steps.md) | TODO and feature roadmap |
 | [17-disaster-recovery](docs/17-disaster-recovery.md) | Disaster recovery and backup procedures |
 | [18-bootstrap-new-systems](docs/18-bootstrap-new-systems.md) | Bootstrapping new LXC containers and VMs |
-| [19-k3s-deployment](docs/19-k3s-deployment.md) | K3s cluster deployment (complete workflow) |
-| [20-plex-deployment](docs/20-plex-deployment.md) | Plex Media Server deployment |
-| [21-download-clients-deployment](docs/21-download-clients-deployment.md) | Download clients and media stack |
-| [22-recipes-deployment](docs/22-recipes-deployment.md) | Recipe management (Mealie, Bar Assistant) |
-| [23-recipes-sso-setup](docs/23-recipes-sso-setup.md) | Recipes SSO and OpenAI configuration |
-| [24-home-assistant-deployment](docs/24-home-assistant-deployment.md) | Home Assistant OS with Authentik SSO |
-| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA |
-| [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation (completed — retained for rebuild reference) |
-| [27-gitlab-deployment](docs/27-gitlab-deployment.md) | GitLab EE deployment (VM, registry, pages, runners) |
-| [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
-| [29-flux-operations](docs/29-flux-operations.md) | Flux operator guide (bootstrap, adopt, rotate, add app, troubleshoot) |
-| [30-multi-repo-onboarding](docs/30-multi-repo-onboarding.md) | Adding external repos that deploy into this cluster via Flux |
-| [31-observability](docs/31-observability.md) | Observability stack (Prometheus, Grafana, Loki, Alloy, exporters, alerting) |
-| [32-zfs-encryption](docs/32-zfs-encryption.md) | ZFS native encryption with passphrase-from-Connect boot-time unlock |
-| [33-autoscaling](docs/33-autoscaling.md) | VPA tiers, CoreDNS HPA pin, hand-tuned baselines, Proxmox-level guidance |
-| [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | active-backup bond `all_slaves_active` MAC-flap black-hole: diagnosis, recovery, nic_tuning guard |
-| [35-nextcloud](docs/35-nextcloud.md) | Nextcloud VM (Docker Compose, zvol storage, host-nginx TLS, Authentik OIDC SSO, backups, observability, runbooks) |
-| [36-immich](docs/36-immich.md) | Immich photo management (NAS-pinned VM, docker-compose, encrypted zvols, Authentik OIDC, backups) |
-| [37-hermes](docs/37-hermes.md) | Hermes Agent (NousResearch AI agent + dashboard): self-built image, three-container pod, dashboard Authentik-OIDC SSO |
-| [38-wireguard-vpn](docs/38-wireguard-vpn.md) | wg-easy internet-exit VPN (two-layer no-LAN egress fence, client onboarding, restore) |
-| [39-windows-vm](docs/39-windows-vm.md) | Windows 11 VM (OVMF/TPM/q35 shell via proxmox_vm, interactive install, RDP) |
-| [40-authentik-terraform](docs/40-authentik-terraform.md) | Authentik SSO as code (terraform/authentik day-2 ops: drift, rotation, DR) |
-| [41-homarr](docs/41-homarr.md) | Homarr dashboard (raw manifests, Authentik OIDC, NFS SQLite, direct-URL integrations) |
+| [25-multi-node-expansion](docs/25-multi-node-expansion.md) | Multi-node expansion and Proxmox HA — the current HA-operations reference (docs/26 defers to it) |
+| [34-bond-mac-flapping](docs/34-bond-mac-flapping.md) | Opt-node network faults: the active-backup bond `all_slaves_active` MAC-flap black-hole **and** the e1000e TX Hardware Unit Hang — diagnosis, recovery, nic_tuning fixes |
 | [42-offsite-backup](docs/42-offsite-backup.md) | Offsite backup (restic → Backblaze B2, client-side encrypted) + encrypted swap |
-| [43-gpu-passthrough](docs/43-gpu-passthrough.md) | GPU passthrough (pve-prec-01 1660 Ti → Hindsight): VFIO host prep, driver/toolkit, device plugin, DCGM, RAM right-sizing, operator runbook |
+
+### Historical (completed / superseded — read-only)
+
+| Document | Description |
+|----------|-------------|
+| [14-post-base-plan](docs/14-post-base-plan.md) | K3s platform roadmap and workload planning (superseded — historical record) |
+| [26-multi-node-implementation](docs/26-multi-node-implementation.md) | Step-by-step 6-node cluster implementation (completed — retained for rebuild reference) |
+| [28-gitlab-migration](docs/28-gitlab-migration.md) | GitHub to GitLab migration guide |
+
+### Component docs (outside the numbered set)
+
+| Document | Description |
+|----------|-------------|
+| [ansible/README](ansible/README.md) | Ansible layout, code conventions, testing entry point |
+| [ansible/TESTING](ansible/TESTING.md) | Molecule testing infrastructure and per-role scenario coverage |
+| [kubernetes/README](kubernetes/README.md) | Flux tree layout, reconcile order, namespace ownership |
+| [kubernetes/apps/authentik/README](kubernetes/apps/authentik/README.md) | **Canonical** Authentik application doc (the Terraform layer is docs/40) |
+
+### Documentation conventions
+
+- **Numbered docs (`docs/NN-topic.md`)** are for a subsystem or an application
+  someone has to operate. Numbers are assigned in order of creation and are
+  **not** re-used; the grouping above (Getting Started / Infrastructure /
+  Platform / Applications / Operations / Historical) is the taxonomy, the number
+  is just an identifier. Do not repeat the number in the document's `#` title —
+  that turns a renumber into a content edit.
+- **A role or app README** (`ansible/roles/<role>/README.md`,
+  `kubernetes/apps/<app>/README.md`) covers what lives in that folder. If a
+  numbered doc owns the subject, say so in the README's first paragraph and link
+  it, the way `kubernetes/apps/download-clients/README.md` does.
+- **Declare the source of truth** in the first paragraph of any doc whose subject
+  is also described elsewhere, and link rather than restate. Enumerations that
+  must stay exact (roles, apps, exports, namespaces) should name the file that
+  generates them.
+- **Superseded docs keep their number** and gain a status banner in the H1 plus a
+  row in the Historical table above; they are never silently deleted, because
+  older MRs and runbooks link to them.
+- Every relative `.md` link is CI-checked (`docs-link-check` over every tracked
+  Markdown file), so a rename that breaks a cross-link fails the pipeline.
 
 **Agent guidance**: coding agents should start from the
 [`weisssrv-development` skill](.claude/skills/weisssrv-development/SKILL.md) — it

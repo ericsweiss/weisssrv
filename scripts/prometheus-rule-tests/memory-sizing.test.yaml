@@ -1,0 +1,143 @@
+---
+# promtool unit tests for the two memory-sizing alerts added after the
+# 2026-07-25 authentik-postgresql OOMKill: VPARecommendationExceedsLimit (the
+# VPA knows the workload needs more than its limit allows) and
+# ContainerOOMKilled (the kill itself, which no upstream rule reports for a
+# container that restarts cleanly). Separate file from autoscaling.test.yaml
+# because that one evaluates at 6h ticks for VPARecommendationCapped's 24h hold;
+# these need 1m granularity. Numbers are the real ones from the incident.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # Off-tier drift, replayed: a 684Mi (716711186 B) recommendation against the
+  # 512Mi limit the container actually had. The kube-state-metrics series
+  # carries its OWN namespace label (observability, where KSM runs), so the
+  # rule's label_replace must rewrite it to the VPA's target namespace both for
+  # the join to land and for the alert to route on the workload's namespace.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
+        values: '716711186+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '536870912+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              verticalpodautoscaler: authentik-postgresql
+              container: postgresql
+      # Still inside the 6h hold: pending, not firing.
+      - eval_time: 5h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # The same workload after the fix in apps/authentik/release.yaml (limit 1Gi):
+  # the recommendation now fits inside the limit, so the alert stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", container="postgresql", resource="memory", unit="byte", update_mode="Off"}'
+        values: '716711186+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1073741824+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # An Initial/Auto VPA on the default controlledValues (RequestsAndLimits)
+  # rewrites the limit with the request at the next admission, so the same
+  # over-limit recommendation is self-healing and must NOT page: the unscoped
+  # expression fired downloads/pulsarr for 57 straight hours on exactly this
+  # shape, and it resolved with no operator action.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="downloads", namespace="observability", verticalpodautoscaler="pulsarr", container="pulsarr", resource="memory", unit="byte", update_mode="Initial"}'
+        values: '1073741824+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="downloads", pod="pulsarr-0", container="pulsarr", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '953155584+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # The other in-scope shape: a MUTATING VPA pinned to RequestsOnly, whose limit
+  # never moves either (authentik-server, node-exporter, dcgm-exporter, the
+  # RequestsOnly *arr tier). Must fire.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-server", container="server", resource="memory", unit="byte", update_mode="Initial", controlled_values="RequestsOnly"}'
+        values: '1610612736+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-server-0", container="server", resource="memory", unit="byte", node="k3s-agt-nas-01"}'
+        values: '1610612735+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              verticalpodautoscaler: authentik-server
+              container: server
+
+  # A CPU recommendation above a CPU limit is deliberately out of scope (the
+  # repo sets no CPU limits and CPU is compressible): the resource="memory"
+  # selector must drop these even when the numbers would otherwise match.
+  - interval: 1m
+    input_series:
+      - series: 'vpa_recommendation_target{exported_namespace="authentik", namespace="observability", verticalpodautoscaler="authentik-postgresql", container="postgresql", resource="cpu", unit="core", update_mode="Off"}'
+        values: '2+0x480'
+      - series: 'kube_pod_container_resource_limits{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", resource="cpu", unit="core", node="k3s-agt-nas-01"}'
+        values: '1+0x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VPARecommendationExceedsLimit
+        exp_alerts: []
+
+  # ContainerOOMKilled: a restart whose last-terminated reason is OOMKilled.
+  # Edge-triggered, so the restart counter has to step during the window.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="authentik", pod="authentik-postgresql-0", container="postgresql"}'
+        values: '0+0x10 1+0x30'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", reason="OOMKilled"}'
+        values: '0+0x10 1+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: authentik
+              pod: authentik-postgresql-0
+              container: postgresql
+
+  # A restart for any other reason — a node reboot leaves exit 255 "Unknown",
+  # which is this cluster's usual restart cause — must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="downloads", pod="sonarr-0", container="sonarr"}'
+        values: '0+0x10 1+0x30'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="downloads", pod="sonarr-0", container="sonarr", reason="Unknown"}'
+        values: '0+0x10 1+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerOOMKilled
+        exp_alerts: []
+
+  # The reason gauge stays 1 for the rest of the container's life, so a pod that
+  # OOMKilled hours ago and has been stable since must not keep alerting —
+  # without the restart-counter edge this rule would page forever.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="authentik", pod="authentik-postgresql-0", container="postgresql"}'
+        values: '1+0x180'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="authentik", pod="authentik-postgresql-0", container="postgresql", reason="OOMKilled"}'
+        values: '1+0x180'
+    alert_rule_test:
+      - eval_time: 170m
+        alertname: ContainerOOMKilled
+        exp_alerts: []

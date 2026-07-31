@@ -1,0 +1,54 @@
+---
+# Reachability ledger (first half) — imported by base.yml and site.yml.
+#
+# The multi-host plays in both playbooks carry `ignore_unreachable: true` so one
+# down box (bare metal out for hardware work, an HA-migrating guest) cannot red
+# the whole fleet run and skip the downstream CI DAG. But ansible-core does NOT
+# record such a host as `dark`: with ignore_unreachable set it increments `ok`
+# and `ignored` and never adds the host to `_unreachable_hosts`
+# (plugins/strategy/__init__.py), so the recap prints `unreachable=0` and
+# ansible-playbook exits 0. A deploy that configured NOTHING on a host would
+# otherwise report success — deploy-ansible-base/proxmox/firewall/mail/dns all
+# go green having converged nothing there.
+#
+# This play probes each targeted host once and records the misses in the
+# in-memory `deploy_skipped` group. Three things then consume it:
+#   - the deploy plays target `<group>:!deploy_skipped`, so a host known absent
+#     is not dialled again in every later play (8+ connection timeouts) and,
+#     more importantly, cannot hard-FAIL on the first task that templates a
+#     fact it never gathered — which is what used to red the run even for a
+#     host declared in deploy_expected_absent_hosts;
+#   - `_reachability-gate.yml` (imported last) turns the ledger into a loud,
+#     non-zero ending;
+#   - the gate re-probes whatever is NOT on the ledger, so a host lost mid-run
+#     is caught too.
+# Both halves are tagged `always` so a tag-scoped run (`site.yml --tags
+# proxmox_firewall`) is gated too, and both carry the SAME host pattern, so
+# --limit scopes the ledger and the gate identically. Keep them in step: a gate
+# play that --limit can empty (it was `hosts: localhost`) silently stops gating.
+#
+# SCOPE is base_managed (proxmox + dns + mail) — the host set whose
+# ignore_unreachable exists for the hardware-work case. The metrics/alloy plays
+# at the end of site.yml reach further (app VMs, k3s nodes); their
+# ignore_unreachable covers the documented FIRST-DEPLOY ordering, where a
+# not-yet-provisioned VM is legitimately absent and its own playbook deploys the
+# role. Those are deliberately not gated.
+- name: Probe reachability of every targeted host
+  hosts: base_managed
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Probe the connection
+      ansible.builtin.ping:
+      register: deploy_reachability_probe
+      changed_when: false
+      tags: [always]
+
+    - name: Record the probe outcome in the skip ledger
+      # group_by (unlike add_host, which is BYPASS_HOST_LOOP) runs once per host
+      # and needs no connection, so it still executes for a host whose probe came
+      # back unreachable — that host stays in the play under ignore_unreachable.
+      ansible.builtin.group_by:
+        key: "deploy_{{ 'skipped' if (deploy_reachability_probe.unreachable | default(false)) else 'reached' }}"
+      changed_when: false
+      tags: [always]

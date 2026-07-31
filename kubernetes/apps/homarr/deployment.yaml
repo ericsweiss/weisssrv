@@ -70,10 +70,8 @@ spec:
           - name: single-request-reopen
       containers:
         - name: homarr
-          # Public image (no imagePullSecret). Version managed in
-          # ansible/inventories/prod/group_vars/all.yml (homarr_version, a
-          # v-prefixed docker tag e.g. v1.71.0) and resolved at reconcile by
-          # Flux postBuild.substituteFrom (cluster-versions ConfigMap).
+          # Public image (no imagePullSecret). homarr_version is a
+          # v-prefixed docker tag, unlike every other pin in all.yml.
           image: ghcr.io/homarr-labs/homarr:${homarr_version}
           imagePullPolicy: IfNotPresent
           env:

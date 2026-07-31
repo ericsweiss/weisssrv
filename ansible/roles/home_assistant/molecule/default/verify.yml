@@ -21,9 +21,7 @@
   become: true
   gather_facts: false
   tasks:
-    # ========================================================================
     # 1. Both rendered files exist on the test container
-    # ========================================================================
     - name: Stat /tmp/ha-configuration.yaml
       ansible.builtin.stat:
         path: /tmp/ha-configuration.yaml
@@ -46,9 +44,7 @@
           /tmp/ha-secrets.yaml (0600) to exist after the role's
           render-only converge.
 
-    # ========================================================================
     # 2. configuration.yaml.j2 — slurp + structural assertions
-    # ========================================================================
     - name: Slurp rendered configuration.yaml
       ansible.builtin.slurp:
         src: /tmp/ha-configuration.yaml
@@ -121,9 +117,7 @@
           Expected prometheus, default_config, tts (google_translate),
           and the !include lines for automations / scripts / scenes.
 
-    # ========================================================================
     # 3. secrets.yaml.j2 — slurp + injected-value assertions
-    # ========================================================================
     - name: Slurp rendered secrets.yaml
       ansible.builtin.slurp:
         src: /tmp/ha-secrets.yaml
@@ -156,9 +150,7 @@
           removed SMTP key (smtp_username/password/admin_email) came back.
       no_log: true
 
-    # ========================================================================
     # 4. Deploy/validate/rescue behavioral coverage (render_only=false)
-    # ========================================================================
     # The role's only stateful logic — scp stage, pre-deploy backup, atomic
     # install, `ha core check`, and the rescue rollback — drives HAOS via raw
     # ssh/scp commands, so it can't run against a real HAOS in CI. Instead,
@@ -270,7 +262,7 @@
         state: directory
         mode: "0755"
 
-    # --- a. success path ---------------------------------------------------
+    # a. success path
     - name: Deploy for real through the shims (success path)
       ansible.builtin.include_role:
         name: home_assistant
@@ -319,7 +311,7 @@
           (or left .bak/staging files behind).
         success_msg: "deploy replaced /config atomically; .baks and staging cleaned up"
 
-    # --- b. check-failure path: rescue restores the pre-deploy config -------
+    # b. check-failure path: rescue restores the pre-deploy config
     - name: Arm the `ha core check` fault
       ansible.builtin.file:
         path: /tmp/ha-core-check-fail
@@ -376,7 +368,7 @@
           `ha core check` (or left .bak files behind).
         success_msg: "rescue restored the pre-deploy config from .bak on check failure"
 
-    # --- c. first-deploy failure: rescue removes the newly-created files ----
+    # c. first-deploy failure: rescue removes the newly-created files
     - name: Empty /config (first-deploy case, fault still armed)
       ansible.builtin.file:
         path: "/tmp/haos-config/{{ item }}"
@@ -430,9 +422,7 @@
         path: /tmp/ha-core-check-fail
         state: absent
 
-    # ========================================================================
     # Summary
-    # ========================================================================
     - name: Display test results
       ansible.builtin.debug:
         msg:

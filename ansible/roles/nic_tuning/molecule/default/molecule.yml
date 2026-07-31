@@ -1,9 +1,5 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
-# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
-# custom scenario where needed).
+# Scenario overrides; shared config in ansible/molecule/base.yml (ansible/TESTING.md).
 platforms:
   - name: nic-tuning-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest
@@ -25,6 +21,13 @@ provisioner:
     group_vars:
       all:
         nic_tuning_ip_forward: true
+        # The container's lo/eth0 have no ethtool feature ioctls (both
+        # `ethtool -K` and `ethtool --show-features` return ENOTTY), so the
+        # role's read-back verification has nothing real to assert against.
+        # The drop-in rendering + cleanup paths below are what this scenario
+        # covers; the verification logic is unit-tested against captured
+        # `ethtool --show-features` output instead.
+        nic_tuning_verify_offloads: false
         nic_tuning_vm_swappiness: 10
         nic_tuning_overrides:
           - interface: lo

@@ -1,6 +1,4 @@
 ---
-# Role metadata
-
 galaxy_info:
   role_name: zfs_arc_cap
   namespace: weisssrv

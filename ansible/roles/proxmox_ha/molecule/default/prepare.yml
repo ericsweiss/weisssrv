@@ -22,7 +22,7 @@
         mode: "0755"
       become: true
 
-    # --- Configurable current state (defaults: nothing present) -------------
+    # Configurable current state (defaults: nothing present)
     # `ha-manager config` resource list lines (e.g. "vm:150"). Empty => the
     # resource is absent and `ha-manager add` is expected.
     - name: Default HA resource list to empty
@@ -62,7 +62,7 @@
         mode: "0644"
       become: true
 
-    # --- Stub binaries ------------------------------------------------------
+    # Stub binaries
     - name: Pvecm stub (always quorate)
       ansible.builtin.copy:
         dest: /usr/local/bin/pvecm

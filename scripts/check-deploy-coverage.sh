@@ -35,170 +35,73 @@
 # not a silent pass). `changes:` is accepted in both GitLab forms — the
 # plain list and the `changes: {paths: [...]}` mapping.
 #
-# ## Policy: trade-off of the intentionally-unmapped lists
+# ## Policy: the intentionally-unmapped lists
 #
-# 1. Why these lists exist. Some role/playbook/inventory paths are
-#    deployed by human-in-the-loop task wrappers (k3s, proxmox_ha,
-#    zfs_encryption, proxmox_vm/lxc) or affect every Ansible deploy
-#    globally (hosts.yml — group memberships drive role targeting).
-#    Mapping any of those to a single CI deploy-* job either
-#    mis-fans-out (wrong rollout for the change) or fans the change
-#    into every deploy-* rule and produces noisy redeploys for changes
-#    the operator should review host-by-host.
+# Some paths are deployed by human-in-the-loop `task` wrappers (k3s,
+# proxmox_ha, zfs_encryption, proxmox_vm/lxc) or affect every deploy globally
+# (hosts.yml — group memberships drive role targeting). Mapping those to one
+# deploy-* job mis-fans-out; fanning them into every job produces redeploys the
+# operator should review host-by-host instead.
 #
-# 2. What the gate gives up. A vars-only change to a path on one of
-#    the INTENTIONALLY_UNMAPPED_* lists will NOT force a
-#    deploy-coverage failure. For example, editing
-#    host_vars/plex.yml or group_vars/k3s.yml passes this gate
-#    silently. The operator is responsible for re-running the right
-#    `task` wrapper (e.g. `task plex:deploy`, `task k3s:deploy`)
-#    after touching those paths. Don't assume CI will catch you.
+# What that gives up: a change to a listed path does NOT fail this gate, so the
+# operator must re-run the right wrapper (`task plex:deploy`, `task k3s:deploy`,
+# …) by hand. CI will not catch it.
 #
-# 3. Why we accept it. The alternative — fanning every change into
-#    every deploy-* job — produces noisier CI than the value gained,
-#    and a noisy gate is one operators learn to ignore. The lists are
-#    short, scoped, and reviewed-on-add, which keeps them honest.
-#
-# 4. How to keep the lists honest. Every entry below MUST have an
-#    inline rationale comment explaining (a) why it isn't mapped to a
-#    CI deploy job and (b) which task wrapper or operator workflow
-#    deploys it instead. Reviewers reject any addition without one.
-#    If you're tempted to add an entry without a rationale, you
-#    probably want to wire the path into a deploy-* job's `changes:`
-#    list instead.
+# Rule for additions: every entry below carries a TRAILING rationale comment
+# naming what deploys it instead. No rationale => wire the path into a deploy-*
+# job's `changes:` list instead of listing it here.
 
 set -euo pipefail
 
-# Roles deliberately not mapped to a CI deploy job because deployment
-# requires human-in-the-loop work that doesn't belong in unattended CI:
-#
-#   k3s            — node lifecycle (rolling cordon/upgrade; kernel reboots
-#                    delegated to kured) via `task k3s:deploy` /
-#                    `task maintenance:update-k3s-nodes`.
-#   proxmox_vm     — VM provisioning, intentionally out of CI; runs via
-#                    `task k3s:provision-vms` and similar wrappers.
-#   proxmox_lxc    — same reasoning as proxmox_vm.
-#   proxmox_ha     — HA rules / replication; sensitive, manual via
-#                    `task proxmox:ha`.
-#   zfs_encryption — ZFS-native passphrase activation; sensitive cold-boot
-#                    operation. Manual via `task zfs:encrypt`.
+# Roles not mapped to a CI deploy job (deployment needs human-in-the-loop work).
 INTENTIONALLY_UNMAPPED_ROLES=(
-    k3s
-    proxmox_vm
-    proxmox_lxc
-    proxmox_ha
-    zfs_encryption
+    k3s             # node lifecycle (rolling cordon/upgrade, kured reboots): task k3s:deploy / maintenance:update-k3s-nodes
+    proxmox_vm      # VM provisioning: task k3s:provision-vms and friends
+    proxmox_lxc     # LXC provisioning: same reasoning as proxmox_vm
+    proxmox_ha      # HA rules / replication, sensitive: task proxmox:ha
+    zfs_encryption  # ZFS passphrase activation, cold-boot sensitive: task zfs:encrypt
 )
 
-# Playbooks deliberately not mapped to a CI deploy job. Identified by
-# their path relative to ansible/playbooks/ (e.g. "k3s.yml",
-# "bootstrap/storage-bootstrap.yml"). Reasons:
-#
-#   site.yml                     — broad fan-out playbook used by many
-#                                  deploy-* jobs via --limit/--tags.
-#                                  No 1:1 mapping; each deploy job that
-#                                  invokes site.yml lists its own
-#                                  role/inventory triggers.
-#   k3s.yml                      — k3s node lifecycle (rolling
-#                                  cordon/upgrade) via
-#                                  `task k3s:deploy`. Never CI-driven.
-#   k3s-provision-vms.yml        — VM provisioning on Proxmox hosts
-#                                  via `task k3s:provision-vms`. Manual.
-#   windows.yml                  — Windows 11 VM provisioning (proxmox_vm shell
-#                                  + guest firewall) via `task windows:provision`.
-#                                  VM provisioning is out of CI (same reasoning
-#                                  as k3s-provision-vms); Windows is then
-#                                  installed interactively by the operator.
-#   zfs-encryption.yml           — Sensitive cold-boot ZFS passphrase
-#                                  activation. Manual via
-#                                  `task zfs:encrypt`.
-#   proxmox-ha.yml               — HA rules / replication; manual via
-#                                  `task proxmox:ha`.
-#   proxmox-enable-autostart.yml — One-shot autostart enablement after
-#                                  cluster expansion. Manual.
-#   postflight.yml               — Operator-run post-deploy verification
-#                                  helper, invoked locally not by CI.
-#   show-cert-host-keys.yml      — Operator helper for populating
-#                                  host_vars/dns-01.yml host_key fields
-#                                  during cert distribution setup.
-#   bootstrap/storage-bootstrap.yml — One-shot ZFS pool bootstrap on
-#                                  pve-nas-01. Pool creation is too
-#                                  destructive to automate via CI.
-#   maintenance/_ensure-nfs-server-healthy.yml,
-#   maintenance/_reboot-if-needed.yml,
-#   maintenance/_wait-no-kured-server-reboot.yml,
-#   maintenance/update-applications.yml,
-#   maintenance/update-full.yml,
-#   maintenance/update-helm-charts.yml,
-#   maintenance/update-k3s-nodes.yml,
-#   maintenance/update-packages.yml — Wrapped by the maintenance-* CI
-#                                  jobs (manual-trigger), not by the
-#                                  deploy stage. The maintenance jobs
-#                                  have their own change rules; the
-#                                  deploy-coverage gate doesn't apply.
+# Playbooks not mapped to a CI deploy job, by path relative to ansible/playbooks/.
 INTENTIONALLY_UNMAPPED_PLAYBOOKS=(
-    site.yml
-    k3s.yml
-    k3s-provision-vms.yml
-    windows.yml
-    zfs-encryption.yml
-    proxmox-ha.yml
-    proxmox-enable-autostart.yml
-    postflight.yml
-    show-cert-host-keys.yml
-    bootstrap/storage-bootstrap.yml
-    maintenance/_ensure-nfs-server-healthy.yml
-    maintenance/_reboot-if-needed.yml
-    maintenance/_uncordon-and-wait-ready.yml
-    maintenance/_wait-no-kured-server-reboot.yml
-    tasks/_check-mode-reachable.yml
-    maintenance/update-applications.yml
-    maintenance/update-full.yml
-    maintenance/update-helm-charts.yml
-    maintenance/update-k3s-nodes.yml
-    maintenance/update-packages.yml
+    site.yml                        # broad fan-out; each deploy-* job lists its own role/inventory triggers
+    k3s.yml                         # node lifecycle: task k3s:deploy, never CI-driven
+    k3s-provision-vms.yml           # VM provisioning: task k3s:provision-vms
+    windows.yml                     # Windows VM shell + guest firewall: task windows:provision, then an interactive install
+    zfs-encryption.yml              # cold-boot passphrase activation: task zfs:encrypt
+    proxmox-ha.yml                  # HA rules / replication: task proxmox:ha
+    proxmox-enable-autostart.yml    # one-shot after cluster expansion, manual
+    postflight.yml                  # operator-run post-deploy verification helper
+    rotate-mail-credential.yml      # credential rotation: task mail:rotate-credential, never CI-driven (docs/15)
+    show-cert-host-keys.yml         # operator helper for host_vars/dns-01.yml host_key fields
+    bootstrap/storage-bootstrap.yml # one-shot ZFS pool bootstrap; pool creation is never automated
+    maintenance/_ensure-nfs-server-healthy.yml  # helper included by the maintenance-* CI jobs
+    maintenance/_reboot-if-needed.yml           # helper included by the maintenance-* CI jobs
+    maintenance/_uncordon-and-wait-ready.yml    # helper included by the maintenance-* CI jobs
+    maintenance/_wait-no-kured-server-reboot.yml # helper included by the maintenance-* CI jobs
+    tasks/_check-mode-reachable.yml # shared guard imported by app playbooks; ships with whichever deploy job runs them
+    _reachability-probe.yml         # import_playbook'd by site.yml + base.yml; never run alone
+    _reachability-gate.yml          # import_playbook'd by site.yml + base.yml; never run alone
+    maintenance/update-applications.yml # run by the manual maintenance-* jobs, which carry their own rules
+    maintenance/update-full.yml         # run by the manual maintenance-* jobs
+    maintenance/update-helm-charts.yml  # run by the manual maintenance-* jobs
+    maintenance/update-k3s-nodes.yml    # run by the manual maintenance-* jobs
+    maintenance/update-packages.yml     # run by the manual maintenance-* jobs
 )
 
-# Inventory paths deliberately not mapped to a CI deploy job.
-# Identified by path relative to ansible/inventories/prod/ (e.g.
-# "group_vars/k3s.yml", "host_vars/plex.yml", "hosts.yml"). Reasons:
+# Inventory paths not mapped to a CI deploy job, by path relative to
+# ansible/inventories/prod/.
 #
-#   hosts.yml                — THE inventory file: lists every host
-#                              and its group memberships. A change
-#                              here affects every Ansible deploy
-#                              because group memberships drive role
-#                              targeting (which hosts get base, dns,
-#                              storage, etc.). Mapping it to a single
-#                              deploy-* job would mis-fan-out;
-#                              fanning it into every deploy-* rule
-#                              would generate noisy redeploys for
-#                              changes the operator should review
-#                              host-by-host. Operator decides which
-#                              deploy-* jobs to re-run manually after
-#                              a hosts.yml change. EXCEPTION: per-guest
-#                              firewall assignments (guest_security_groups /
-#                              firewall_ipsets) live ONLY in hosts.yml, so
-#                              deploy-ansible-firewall explicitly watches
-#                              ansible/inventories/prod/hosts.yml in its
-#                              rules.changes (.gitlab-ci.yml). Do NOT remove
-#                              that path — it is the only trigger for an
-#                              inventory-only firewall edit.
-#   group_vars/k3s.yml       — k3s cluster vars; deploy is manual via
-#                              `task k3s:deploy`.
-#   host_vars/plex.yml       — Plex LXC vars consumed by the plex.yml
-#                              playbook (already mapped via the
-#                              playbook entry in deploy-plex). Listed
-#                              here so a vars-only change still maps
-#                              cleanly without extra CI churn.
-#   host_vars/smtp-relay.yml — Mail relay host vars; deploy-ansible-mail
-#                              triggers off the role paths. Listed here
-#                              because mail role + playbook changes are
-#                              the deploy gate, not host vars.
+# hosts.yml EXCEPTION, do not undo: per-guest firewall assignments
+# (guest_security_groups / firewall_ipsets) live ONLY in hosts.yml, so
+# deploy-ansible-firewall explicitly watches ansible/inventories/prod/hosts.yml
+# in its rules.changes. That path is the only trigger for an inventory-only
+# firewall edit — removing it silently drops firewall deploys.
 INTENTIONALLY_UNMAPPED_INVENTORY_PATHS=(
-    hosts.yml
-    group_vars/k3s.yml
-    host_vars/plex.yml
-    host_vars/smtp-relay.yml
+    hosts.yml                # affects every deploy (group membership drives role targeting); operator picks which deploy-* jobs to re-run
+    group_vars/k3s.yml       # k3s cluster vars: task k3s:deploy
+    host_vars/plex.yml       # consumed by plex.yml, which deploy-plex already watches
+    host_vars/smtp-relay.yml # mail role + playbook changes are the deploy-ansible-mail gate
 )
 
 # Resolve the diff base in priority order:

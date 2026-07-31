@@ -70,7 +70,6 @@ spec:
         # Gluetun VPN sidecar - provides VPN tunnel when enabled
         # When VPN is disabled, this container runs `sleep infinity` (minimal
         # resources — the pod stays healthy; network path bypasses gluetun).
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: gluetun
           image: qmcgaw/gluetun:${gluetun_version}
           imagePullPolicy: IfNotPresent

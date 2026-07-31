@@ -6,9 +6,7 @@
 # backup-metrics helper) lives in the compose_app role, included below with
 # immich-specific vars.
 
-# =============================================================================
 # Persistent storage (ZFS zvols attached as SCSI devices by proxmox_vm)
-# =============================================================================
 - name: Mount additional persistent disks
   ansible.builtin.include_role:
     name: zvol_mount
@@ -16,9 +14,7 @@
     zvol_mount_disks: "{{ vm_additional_disks | default([]) }}"
   when: vm_additional_disks is defined and vm_additional_disks | length > 0
 
-# =============================================================================
 # Credential guards (fail early + clearly if `op run` didn't inject secrets)
-# =============================================================================
 - name: Validate required database credential
   ansible.builtin.assert:
     that:
@@ -42,9 +38,7 @@
     success_msg: "OIDC credentials present"
   no_log: true
 
-# =============================================================================
 # Docker Engine (shared docker_engine via compose_app)
-# =============================================================================
 # immich_skip_install gates the install/service-management steps (mapped onto
 # compose_app_skip_install) so the molecule scenario can render + assert every
 # template without Docker/systemd services in the CI container. It defaults
@@ -57,9 +51,7 @@
   vars:
     compose_app_skip_install: "{{ immich_skip_install | default(false) }}"
 
-# =============================================================================
 # Compose project directories (on the encrypted zvols)
-# =============================================================================
 - name: Create Immich compose project directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -83,9 +75,7 @@
     group: root
     mode: "0750"
 
-# =============================================================================
 # Host nginx (TLS terminator in front of the compose stack) — shared task flow
-# =============================================================================
 # Capture this role's nginx site template as an absolute path BEFORE the include
 # (role_path inside an include_role resolves to the INCLUDED role, so it must be
 # resolved eagerly here). compose_app/nginx.yml deploys it byte-unchanged.
@@ -111,9 +101,7 @@
     # Immich seeds the placeholder unconditionally (its molecule asserts it).
     compose_app_nginx_bootstrap_cert: true
 
-# =============================================================================
 # Rendered config: the SSO/telemetry config file, the compose .env, the stack
-# =============================================================================
 # IMMICH_CONFIG_FILE holds the system config (oauth secret inline) — no_log.
 - name: Render the Immich system config file
   ansible.builtin.template:
@@ -145,9 +133,7 @@
     mode: "0640"
   notify: Restart compose stack
 
-# =============================================================================
 # Systemd unit that owns the compose lifecycle (shared compose_app unit)
-# =============================================================================
 - name: Deploy + start the Immich compose stack
   ansible.builtin.include_role:
     name: compose_app
@@ -168,9 +154,7 @@
       - "`up -d` reconciles the running stack to the rendered compose/.env/config,"
       - "recreating only the containers whose definition changed."
 
-# =============================================================================
 # Backup landing zone (offsite NFS when enabled) + nightly pg_dump timer
-# =============================================================================
 # immich_backup_dir resolves to the NFS mountpoint when immich_backup_nfs_enabled
 # (tank/backups/apps/immich -> archsync -> B2), otherwise the app zvol. This one
 # task creates whichever; the mount below (gated) overlays it when NFS-backed.

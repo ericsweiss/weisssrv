@@ -6,9 +6,7 @@
   become: true
   gather_facts: true
   tasks:
-    # ==========================================================================
     # Verify gitlab.rb configuration file
-    # ==========================================================================
     - name: Check if gitlab.rb exists
       ansible.builtin.stat:
         path: /etc/gitlab/gitlab.rb
@@ -33,9 +31,7 @@
       ansible.builtin.set_fact:
         gitlab_config: "{{ gitlab_rb_content.content | b64decode }}"
 
-    # ==========================================================================
     # Verify Core Configuration
-    # ==========================================================================
     - name: Verify external_url is set
       ansible.builtin.assert:
         that:
@@ -63,9 +59,6 @@
         fail_msg: "Time zone not configured"
         success_msg: "Time zone configured correctly"
 
-    # ==========================================================================
-    # Verify SSH Configuration
-    # ==========================================================================
     - name: Verify SSH port configuration
       ansible.builtin.assert:
         that:
@@ -73,9 +66,7 @@
         fail_msg: "SSH port not configured"
         success_msg: "SSH port configured correctly"
 
-    # ==========================================================================
     # Verify NGINX Configuration (Traefik proxy)
-    # ==========================================================================
     - name: Verify NGINX listen settings for Traefik
       ansible.builtin.assert:
         that:
@@ -104,9 +95,7 @@
         fail_msg: "NGINX proxy headers not configured"
         success_msg: "NGINX proxy headers configured correctly"
 
-    # ==========================================================================
     # Verify NGINX TLS branch (side render from converge — prod default)
-    # ==========================================================================
     - name: Read the TLS-branch render
       ansible.builtin.slurp:
         src: /tmp/gitlab.rb.tls
@@ -129,9 +118,7 @@
         fail_msg: "TLS branch of gitlab.rb.j2 did not render nginx TLS settings (cert paths or TLS 1.3 floor)"
         success_msg: "TLS branch renders listen_https=true, the distributed cert paths, and the TLS 1.3-only floor"
 
-    # ==========================================================================
     # Verify Let's Encrypt is DISABLED (Traefik handles TLS)
-    # ==========================================================================
     - name: Verify Let's Encrypt is disabled
       ansible.builtin.assert:
         that:
@@ -140,9 +127,7 @@
         fail_msg: "Let's Encrypt should be disabled (Traefik handles TLS)"
         success_msg: "Let's Encrypt correctly disabled"
 
-    # ==========================================================================
     # Verify SMTP Configuration
-    # ==========================================================================
     - name: Verify SMTP is enabled
       ansible.builtin.assert:
         that:
@@ -163,9 +148,7 @@
         fail_msg: "SMTP credentials not set in config"
         success_msg: "SMTP credentials present in config"
 
-    # ==========================================================================
     # Verify Container Registry Configuration
-    # ==========================================================================
     - name: Verify Container Registry is enabled
       ansible.builtin.assert:
         that:
@@ -178,9 +161,7 @@
         fail_msg: "Container Registry not configured correctly"
         success_msg: "Container Registry configured correctly"
 
-    # ==========================================================================
     # Verify GitLab Pages Configuration
-    # ==========================================================================
     - name: Verify GitLab Pages is enabled
       ansible.builtin.assert:
         that:
@@ -198,9 +179,7 @@
         fail_msg: "GitLab Pages not configured correctly"
         success_msg: "GitLab Pages configured correctly"
 
-    # ==========================================================================
     # Verify SAML SSO Configuration
-    # ==========================================================================
     - name: Verify OmniAuth is enabled
       ansible.builtin.assert:
         that:
@@ -245,9 +224,7 @@
         fail_msg: "SAML attribute statements not configured correctly"
         success_msg: "SAML attribute statements configured correctly"
 
-    # ==========================================================================
     # Verify Backup Configuration
-    # ==========================================================================
     - name: Verify backup settings
       ansible.builtin.assert:
         that:
@@ -257,9 +234,7 @@
         fail_msg: "Backup settings not configured correctly"
         success_msg: "Backup settings configured correctly"
 
-    # ==========================================================================
     # Verify Performance Tuning
-    # ==========================================================================
     - name: Verify performance settings
       ansible.builtin.assert:
         that:
@@ -269,9 +244,7 @@
         fail_msg: "Performance settings not configured correctly"
         success_msg: "Performance settings configured correctly"
 
-    # ==========================================================================
     # Verify Repository Storage Configuration (GitLab 18+)
-    # ==========================================================================
     - name: Verify Gitaly storage configuration
       ansible.builtin.assert:
         that:
@@ -310,9 +283,7 @@
         success_msg: "Git data directory {{ item.item }} configured correctly"
       loop: "{{ git_data_dirs.results }}"
 
-    # ==========================================================================
     # Verify Monitoring Endpoint
-    # ==========================================================================
     - name: Verify monitoring whitelist
       ansible.builtin.assert:
         that:
@@ -321,9 +292,7 @@
         fail_msg: "Monitoring whitelist not configured correctly"
         success_msg: "Monitoring whitelist configured correctly"
 
-    # ==========================================================================
     # Verify Backup Directory
-    # ==========================================================================
     - name: Check if backup directory exists
       ansible.builtin.stat:
         path: /var/opt/gitlab/backups
@@ -340,9 +309,7 @@
         fail_msg: "Backup directory has incorrect permissions"
         success_msg: "Backup directory has correct permissions (0700, uid 998)"
 
-    # ==========================================================================
     # Verify Backup Timer + Service (replaced the root cron)
-    # ==========================================================================
     - name: Read the gitlab-backup service unit
       ansible.builtin.slurp:
         src: /etc/systemd/system/gitlab-backup.service
@@ -424,9 +391,7 @@
         fail_msg: "fail-closed guard did not record success=0 on an unmounted landing zone"
         success_msg: "fail-closed guard records success=0 and aborts when the landing zone is unmounted"
 
-    # ==========================================================================
     # Verify Backup Wrapper + Textfile Metric
-    # ==========================================================================
     - name: Stat GitLab backup wrapper
       ansible.builtin.stat:
         path: /usr/local/sbin/gitlab-backup-run.sh
@@ -565,9 +530,7 @@
         state: touch
         mode: "0600"
 
-    # ==========================================================================
     # Verify Mock GitLab Status (via mock gitlab-ctl)
-    # ==========================================================================
     - name: Check mock gitlab-ctl status
       ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl status
       register: gitlab_status
@@ -581,9 +544,7 @@
         fail_msg: "Mock gitlab-ctl status failed"
         success_msg: "Mock gitlab-ctl status works correctly"
 
-    # ==========================================================================
     # SSH Redirect NAT Rules
-    # ==========================================================================
     # prepare.yml seeds drifted variants (a commented PREROUTING rule, an
     # OUTPUT rule missing -o lo); after converge each chain must hold exactly
     # the one managed rule and the seeded drift must be gone.
@@ -619,9 +580,7 @@
           rule per chain (OUTPUT with -o lo, no legacy comment variants).
         success_msg: "Exactly one managed SSH redirect rule per chain; seeded drift cleaned"
 
-    # ==========================================================================
     # SSH Login Restriction (AllowUsers drop-in)
-    # ==========================================================================
     - name: Read the AllowUsers drop-in
       ansible.builtin.slurp:
         src: /etc/ssh/sshd_config.d/60-gitlab-allowusers.conf
@@ -636,9 +595,7 @@
         fail_msg: "AllowUsers drop-in missing or incomplete — WAN-exposed sshd accepts any local account"
         success_msg: "sshd restricted to git + admin from admin networks"
 
-    # ==========================================================================
     # Fail2ban GitLab SSH Jail Verification
-    # ==========================================================================
     # NOTE: GitLab manages the git user's authorized_keys via gitlab-shell.
     # SSH auth failures are logged to systemd journal, not gitlab-shell.log.
     # We use the built-in sshd filter with systemd backend.
@@ -716,9 +673,7 @@
         msg: "fail2ban not installed - skipping fail2ban verification (installed by base role)"
       when: not fail2ban_installed.stat.exists
 
-    # ==========================================================================
     # Display Test Summary
-    # ==========================================================================
     - name: Display test results
       ansible.builtin.debug:
         msg:

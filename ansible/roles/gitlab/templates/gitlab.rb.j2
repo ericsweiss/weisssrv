@@ -1,6 +1,33 @@
 # {{ ansible_managed }}
 # GitLab EE Configuration
 # See https://docs.gitlab.com/omnibus/settings/configuration.html
+{#
+  rb() renders a value as a Ruby literal, safe against BOTH injection classes
+  gitlab.rb (which is evaluated as Ruby) is exposed to:
+
+    1. Quote/backslash break-out — `to_json` handles it: JSON string escaping
+       is valid Ruby double-quoted-string escaping, so a rotated SMTP password
+       containing " or \ can no longer render a syntactically invalid file and
+       break the next `gitlab-ctl reconfigure` on a live GitLab.
+    2. Ruby #{...} interpolation — `to_json` does NOT escape `#`, and Ruby
+       interpolates inside double quotes, so a credential containing `#{` would
+       be EVALUATED at reconfigure time (NameError aborting the chef run at
+       best). The `ruby -c` validate on the template task cannot catch it:
+       "#{foo}" is syntactically valid. Escaping every `#` as `\#` closes it —
+       in a Ruby double-quoted string `\#` is a plain `#`, verified with
+       `ruby -e 'p "a\#{1+1}b"'` -> "a\#{1+1}b" (literal, not evaluated).
+       to_json never emits `#` itself (its escapes are \" \\ \n \uXXXX), so the
+       replace only ever touches payload characters, and it is applied AFTER
+       to_json so an escaped backslash still pairs correctly (`\#{` -> "\\\#{").
+
+  Used for every credential-bearing or operator-supplied value below, and for
+  the JSON arrays too — a Ruby array literal of double-quoted strings
+  interpolates exactly the same way. (adguard_sync/immich/home_assistant already
+  do the equivalent for their own config formats.)
+#}
+{%- macro rb(value) -%}
+{{ value | to_json | replace('#', '\\#') }}
+{%- endmacro %}
 
 # =============================================================================
 # Core Configuration
@@ -43,7 +70,7 @@ nginx['ssl_protocols'] = "{{ gitlab_nginx_ssl_protocols }}"
 {% endif %}
 
 # Trust Traefik proxy headers
-nginx['real_ip_trusted_addresses'] = {{ gitlab_nginx_real_ip_trusted_addresses | to_json }}
+nginx['real_ip_trusted_addresses'] = {{ rb(gitlab_nginx_real_ip_trusted_addresses) }}
 nginx['real_ip_header'] = 'X-Forwarded-For'
 nginx['real_ip_recursive'] = 'on'
 
@@ -64,12 +91,14 @@ letsencrypt['auto_renew'] = false
 # SMTP Configuration
 # =============================================================================
 
+{# Credential-bearing values go through rb() (see the macro at the top), never
+   bare Ruby quotes — same for the SAML fingerprint below. #}
 {% if gitlab_smtp_enabled %}
 gitlab_rails['smtp_enable'] = true
 gitlab_rails['smtp_address'] = '{{ gitlab_smtp_address }}'
 gitlab_rails['smtp_port'] = {{ gitlab_smtp_port }}
-gitlab_rails['smtp_user_name'] = '{{ gitlab_smtp_user }}'
-gitlab_rails['smtp_password'] = '{{ gitlab_smtp_password }}'
+gitlab_rails['smtp_user_name'] = {{ rb(gitlab_smtp_user) }}
+gitlab_rails['smtp_password'] = {{ rb(gitlab_smtp_password) }}
 gitlab_rails['smtp_domain'] = '{{ gitlab_smtp_domain }}'
 gitlab_rails['smtp_authentication'] = '{{ gitlab_smtp_authentication }}'
 gitlab_rails['smtp_enable_starttls_auto'] = {{ gitlab_smtp_enable_starttls_auto | lower }}
@@ -139,17 +168,17 @@ gitlab_rails['omniauth_providers'] = [
     icon: "https://auth.ericsweiss.com/static/dist/assets/icons/icon.svg",
     groups_attribute: "{{ gitlab_saml_groups_attribute }}",
 {% if gitlab_saml_required_groups is defined and gitlab_saml_required_groups | length > 0 %}
-    required_groups: {{ gitlab_saml_required_groups | to_json }},
+    required_groups: {{ rb(gitlab_saml_required_groups) }},
 {% endif %}
 {% if gitlab_saml_admin_groups is defined and gitlab_saml_admin_groups | length > 0 %}
-    admin_groups: {{ gitlab_saml_admin_groups | to_json }},
+    admin_groups: {{ rb(gitlab_saml_admin_groups) }},
 {% endif %}
 {% if gitlab_saml_external_groups is defined and gitlab_saml_external_groups | length > 0 %}
-    external_groups: {{ gitlab_saml_external_groups | to_json }},
+    external_groups: {{ rb(gitlab_saml_external_groups) }},
 {% endif %}
     args: {
       assertion_consumer_service_url: "{{ gitlab_external_url }}/users/auth/saml/callback",
-      idp_cert_fingerprint: "{{ gitlab_saml_idp_cert_fingerprint }}",
+      idp_cert_fingerprint: {{ rb(gitlab_saml_idp_cert_fingerprint) }},
       idp_sso_target_url: "{{ gitlab_saml_idp_sso_url }}",
       issuer: "{{ gitlab_external_url }}",
       name_identifier_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
@@ -187,6 +216,14 @@ gitaly['configuration'] = {
 # Backup Configuration
 # =============================================================================
 
+# backup_path is a root-squashed NFS mount, so chef's storage_directory resource
+# cannot chown it as root and aborts the ENTIRE reconfigure with Errno::EPERM —
+# every `gitlab-ctl reconfigure` on this host failed until this was set, which
+# also meant a re-templated gitlab.rb was written but never applied. The export
+# already creates the directory with the right ownership, so omnibus has nothing
+# to manage. Deliberately not re-exporting no_root_squash, which would hand
+# every NFS client root on the backup share.
+gitlab_rails['manage_backup_path'] = false
 gitlab_rails['backup_path'] = '{{ gitlab_backup_path }}'
 gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_time }}
 
@@ -209,4 +246,4 @@ prometheus_monitoring['enable'] = true
 # (firewall-gated) plus the k3s pod CIDR. See that var for the real_ip
 # mechanics: in-cluster verify probes reach here with a pod source IP when
 # their runner pod shares a node with a Traefik replica.
-gitlab_rails['monitoring_whitelist'] = {{ gitlab_monitoring_whitelist | to_json }}
+gitlab_rails['monitoring_whitelist'] = {{ rb(gitlab_monitoring_whitelist) }}

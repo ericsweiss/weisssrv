@@ -7,9 +7,7 @@
 # IP->hostname cutover deletes+recreates each PV (Retain → data safe) and rolls
 # the consuming pod. See docs/16 cutover procedure.
 
-# =============================================================================
 # Mealie App Config Storage
-# =============================================================================
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -101,9 +99,7 @@ spec:
   volumeName: mealie-postgres-data
 
 ---
-# =============================================================================
 # Bar Assistant App Config Storage
-# =============================================================================
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -153,9 +149,7 @@ spec:
   volumeName: recipes-appdata-bar-assistant
 
 ---
-# =============================================================================
 # Mealie pg_dump backup target
-# =============================================================================
 # NFS-backed target for the mealie-pg-dump CronJob's logical backups. The mealie
 # postgres zvol above is only a crash-consistent snapshot; these dumps add a
 # restorable logical backup. Landing zone is tank/backups/apps/mealie (the

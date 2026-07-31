@@ -16,7 +16,10 @@ description: >-
 Homelab Infrastructure-as-Code: Proxmox + Ansible + Terraform + k3s/Flux GitOps.
 This skill is the operating map — it points at the canonical docs and encodes the
 workflow/gates that live nowhere else. It does not restate doc content; open the
-referenced files. All paths below are repo-relative.
+referenced files. Paths are repo-relative, with two shorthands: anything starting
+`references/` is relative to this skill directory
+(`.claude/skills/weisssrv-development/`), and `group_vars/…` / `host_vars/…` are
+shorthand for `ansible/inventories/prod/…`.
 
 Canonical remote: GitLab (`git.ericsweiss.com/eric/weisssrv`). GitHub is a
 read-only mirror. `CLAUDE.md` is the top-level fact source; `README.md` owns the
@@ -44,13 +47,25 @@ roles table and docs index; `task --list` owns the command set.
   `kubernetes/infrastructure/sources/versions-configmap.yaml`. Never hand-edit
   the ConfigMap. Manifests reference `${snake_case_version}` placeholders.
 - **Ansible conventions** (FQCN, snake_case + role-prefixed vars, `no_log: true`
-  on any secret-touching task, handler + service patterns) are canonical in
-  `CLAUDE.md` § "Code Conventions" — follow that section, do not reinvent.
+  on any secret-touching task, handler + service patterns, the `--tags` caveat)
+  are canonical in `ansible/README.md` § "Code conventions" — follow that
+  section, do not reinvent.
+- **CI is not all in this repo.** Seven lint/validate/test/security jobs are
+  `include:`d from `eric/weisssrv-lib` at a pinned `ref:`. Never re-add one
+  inline (a same-named local job silently overrides the include); change the
+  library, have the tag cut, then bump the `ref:` here **and** in
+  `weisssrv-app-template` (`.gitlab-ci.yml` + `scripts/rename.sh`), proving
+  pipeline parity. Detail: `CLAUDE.md` § "Repo family", `docs/13-ci-cd.md`
+  § "Shared CI library".
 - **No AI/Claude attribution anywhere** — commits, code, comments, docs, MR text.
 - **Fold available version bumps into any MR revision** (never open a revision
   just for bumps). Read the *pipeline's* `version-check` job output each round —
   not a local run — since the local cache can be stale.
 - **MR test sections describe what WAS done** — never unchecked checkboxes.
+- **The skill rides along with the change.** If a change alters a workflow, gate,
+  invariant, or canonical-doc pointer, update `SKILL.md` / the matching
+  `references/` file in the same MR. CI checks only the skill's relative links
+  and the `task <ns>:<name>` references it names; nothing validates its prose.
 
 ## Decision tree — what am I changing?
 
@@ -58,7 +73,7 @@ roles table and docs index; `task --list` owns the command set.
 |---|---|---|
 | Kubernetes app (dir under `kubernetes/apps/`) | `references/add-k8s-app.md` | `docs/29-flux-operations.md` (Adding a New App), `docs/33-autoscaling.md` |
 | New Proxmox VM / LXC app | `references/add-vm-app.md` | `docs/27-gitlab-deployment.md` (GitLab example), `docs/06-zfs.md`, `docs/11-firewall.md`, `docs/17-disaster-recovery.md`, `docs/18-bootstrap-new-systems.md` |
-| Ansible role / base infra | `CLAUDE.md` § Ansible Roles + Code Conventions | `docs/18-bootstrap-new-systems.md`, the role's README |
+| Ansible role / base infra | `ansible/README.md` (layout + code conventions) + `CLAUDE.md` § Ansible Roles | `docs/18-bootstrap-new-systems.md`, `ansible/TESTING.md`, the role's README |
 | Terraform (Cloudflare DNS / Tailscale ACL / Authentik SSO) | `terraform/<module>/` + neighbours | `docs/08-dns.md`, `docs/05-tailscale.md`, `docs/40-authentik-terraform.md` (Authentik apply is a supervised manual `op run -- terraform apply` — no task) |
 | Version bump / upgrade / maintenance | `references/maintenance-upgrades.md` | `docs/12-runbooks.md`, `docs/16-next-steps.md` |
 | Debug / incident response | `references/debugging.md` | `docs/29-flux-operations.md`, `docs/12-runbooks.md`, `docs/32-zfs-encryption.md`, `docs/34-bond-mac-flapping.md` |
@@ -73,9 +88,12 @@ out the per-change-type checklist.
 
 ## Pre-MR gates (run from the worktree root)
 
-- `task lint` — the full local mirror of the CI lint stage (ansible-lint,
-  terraform fmt/validate, `flux:lint`, `scripts:test`, shellcheck, yamllint,
-  coverage-checks, flux-version-pin). Run this for every change.
+- `task lint` — the local lint aggregate. Run it for every change. It runs every
+  sub-task in the `lint:` list in `Taskfile.yml` (Taskfile is the source of truth
+  for the current set: ansible-lint, terraform fmt/validate-local, `flux:lint`,
+  `scripts:test`, shellcheck, yamllint, coverage-checks, sync-checks,
+  flux-version-pin, kubectl-version-pin, doc-links, taskfile-smoke,
+  prometheus-config).
 - Ansible role touched → `task ansible:test -- <role...>` (omit the args to run
   every scenario; the `--` is required for go-task to pass roles through). Needs
   Docker; CI runs the molecule matrix regardless — see `references/debugging.md`
@@ -88,8 +106,8 @@ out the per-change-type checklist.
 - `kubernetes/` touched → `task flux:lint` (kustomize build + envsubst with zero
   unsubstituted `${...}` + kubeconform + helm-template). Optionally preview with
   `task flux:dev-apply -- kubernetes/apps/<app>` (reverted next reconcile).
-- Prometheus/alert rules touched → `task lint:prometheus-config` (promtool/amtool;
-  NOT part of the top-level `task lint`).
+- Prometheus/alert rules touched → `task lint:prometheus-config` (promtool/amtool
+  must be on PATH; now also runs inside the top-level `task lint`).
 
 ## CI, review loop, and merge
 

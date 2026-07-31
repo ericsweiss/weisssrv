@@ -262,16 +262,21 @@ encrypted-tree restores need the source pool key loaded before mount).
 
 ## Docker Engine version bumps
 
-Docker Engine + the compose plugin are pinned in `group_vars/all.yml`
-(`nextcloud_docker_version`, `nextcloud_containerd_version`,
-`nextcloud_docker_compose_version`) from `download.docker.com` (Debian trixie).
-Because download.docker.com prunes old versions over time, bump all three
-together when a pin ages out:
+Docker Engine + the plugins are pinned in `group_vars/all.yml` as **shared**
+pins consumed by the `docker_engine` role — `docker_ce_version`,
+`containerd_version`, `docker_buildx_plugin_version`,
+`docker_compose_plugin_version` — from `download.docker.com` (Debian trixie),
+and `dpkg`-held so the maintenance apt-upgrade cannot bump them under a running
+stack. The same four pins back **immich, immich_ml and nextcloud**, so a bump
+redeploys all three guests. Because download.docker.com prunes old versions over
+time, bump them together when a pin ages out:
 
 ```bash
 apt-cache policy docker-ce            # on the VM, or read the repo Packages index
-# update the three nextcloud_*_version pins in all.yml, then:
+# update the four docker_* pins in all.yml, then redeploy each consumer:
 task nextcloud:deploy
+task immich:deploy
+task immich-ml:deploy
 ```
 
 (`task maintenance:check-versions` tracks the four image pins; the docker apt

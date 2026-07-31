@@ -1,6 +1,4 @@
 ---
-# Role metadata
-
 galaxy_info:
   role_name: smtp_relay
   namespace: weisssrv

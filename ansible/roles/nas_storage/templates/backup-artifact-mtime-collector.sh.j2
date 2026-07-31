@@ -1,13 +1,19 @@
 #!/bin/sh
 # {{ ansible_managed }}
-# NAS-side backup-artifact freshness collector. Stats the newest file under each
-# tank/backups/apps/<app> subdir and emits its mtime, so a broken mount / wrong
-# path (the "green wrapper metric, no file on the NAS" failure mode) is caught
-# independently of the VM/k8s wrappers' own metrics. Companion alert
-# BackupArtifactStale lives in kube-prometheus-stack/release.yaml.
+# NAS-side backup-artifact freshness collector. Stats the newest RESTORABLE
+# artefact under each tank/backups/apps/<app> subdir and emits its mtime, so a
+# broken mount / wrong path (the "green wrapper metric, no file on the NAS"
+# failure mode) is caught independently of the VM/k8s wrappers' own metrics.
+# Companion alert BackupArtifactStale lives in kube-prometheus-stack/release.yaml.
 #
-#   backup_artifact_last_mtime_seconds{app}      unix mtime of the newest file (0 = none)
+#   backup_artifact_last_mtime_seconds{app}      unix mtime of the newest matching artifact (0 = none)
 #   backup_artifact_collector_last_success_seconds  collector sentinel (meta-failure)
+#
+# RESTORABLE is the operative word: this collector previously took the newest
+# file of ANY name, so GitLab's nightly gitlab.rb + gitlab-secrets.json copies
+# kept the alert green across four days in which no tarball reached the landing
+# zone. Each app therefore declares an artefact glob
+# (nas_backup_artifact_apps[].pattern) and only files matching it count.
 #
 # Atomic write (.tmp + rename) so node_exporter never reads a half-written file.
 set -eu
@@ -19,24 +25,53 @@ TMP="$OUT.tmp"
 BASE="{{ nas_backup_apps_base }}"
 mkdir -p "$OUT_DIR"
 
+# app<TAB>glob, one per declared app. Rendered from nas_backup_artifact_apps so
+# the pattern list is inventory-controlled, not baked into this script.
+APP_PATTERNS="$(cat <<'APP_PATTERNS_EOF'
+{% for app in nas_backup_artifact_apps %}
+{{ app.name }}	{{ app.pattern }}
+{% endfor %}
+APP_PATTERNS_EOF
+)"
+
+# The independence this collector advertises only holds while the landing zone
+# is a real mounted dataset. `tank` has mountpoint=none, so with tank/backups
+# unmounted $BASE is a plain directory on the root filesystem — and any producer
+# local to the NAS (pve-cluster) would have shadow-written its artefacts there,
+# which this collector would then read as fresh. Emit NO per-app series in that
+# state so every BackupArtifactStale absent() arm fires: an unmounted
+# tank/backups means no app's artefact is reachable, which is the truth.
+BACKUPS_MOUNT="{{ nas_backup_apps_base | dirname }}"
+REQUIRE_MOUNT={{ '1' if (nas_backup_require_mounted_dataset | default(true) | bool) else '0' }}
+backups_mounted=1
+if [ "$REQUIRE_MOUNT" = "1" ]; then
+  mountpoint -q "$BACKUPS_MOUNT" || backups_mounted=0
+fi
+
 {
-  printf '# HELP backup_artifact_last_mtime_seconds Unix mtime of the newest file under tank/backups/apps/<app> (0 = no artifact present).\n'
+  printf '# HELP backup_artifact_last_mtime_seconds Unix mtime of the newest restorable artifact under tank/backups/apps/<app> (0 = none matching the app pattern).\n'
   printf '# TYPE backup_artifact_last_mtime_seconds gauge\n'
-  if [ -d "$BASE" ]; then
-    for dir in "$BASE"/*/; do
-      [ -d "$dir" ] || continue
-      app="$(basename "$dir")"
-      # Newest file mtime under the app dir (GNU find %T@ = epoch.frac). 0 when
-      # the dir is empty. `set +e` per app so a vanished dir can't kill the run.
-      set +e
-      # Partial/temp files are NOT restorable artifacts: the pg-dump jobs write
-      # "$out.tmp" then rename, so a failed dump leaves a fresh .tmp that would
-      # otherwise mask BackupArtifactStale.
-      mtime="$(find "$dir" -type f ! -name '*.tmp' ! -name '*.partial' ! -name '*.part' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)"
-      set -e
-      mtime="${mtime%%.*}"
-      case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
-      printf 'backup_artifact_last_mtime_seconds{app="%s"} %s\n' "$app" "$mtime"
+  if [ "$backups_mounted" -eq 1 ]; then
+    echo "$APP_PATTERNS" | while IFS='	' read -r app pattern; do
+    [ -n "$app" ] || continue
+    dir="$BASE/$app"
+    # A missing dir emits NO series, which is what BackupArtifactStale's per-app
+    # absent() arms key on (a present-but-empty dir emits 0 and trips the
+    # freshness arm instead).
+    [ -d "$dir" ] || continue
+    # Newest matching-file mtime under the app dir (GNU find %T@ = epoch.frac).
+    # 0 when nothing matches. `set +e` per app so a vanished dir can't kill the
+    # run. Partial/temp files are excluded on top of the pattern: the pg-dump
+    # jobs write "$out.tmp" then rename, so a failed dump leaves a fresh .tmp
+    # that would otherwise mask BackupArtifactStale.
+    set +e
+    mtime="$(find "$dir" -type f -name "$pattern" \
+      ! -name '*.tmp' ! -name '*.partial' ! -name '*.part' \
+      -printf '%T@\n' 2>/dev/null | sort -n | tail -1)"
+    set -e
+    mtime="${mtime%%.*}"
+    case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+    printf 'backup_artifact_last_mtime_seconds{app="%s"} %s\n' "$app" "$mtime"
     done
   fi
   printf '# HELP backup_artifact_collector_last_success_seconds Unix time the backup-artifact collector last completed (staleness = collector broken).\n'

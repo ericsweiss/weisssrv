@@ -1,6 +1,4 @@
 ---
-# Default variables for base role
-
 admin_user: eric
 
 ssh_port: 22
@@ -36,9 +34,7 @@ vm_packages:
 # ssh_authorized_keys:
 #   - "ssh-ed25519 AAAA... user@host"
 
-# ============================================================================
 # Fail2ban Configuration
-# ============================================================================
 # Fail2ban provides intrusion prevention by banning IPs after failed auth attempts
 # Enabled by default on all hosts for SSH protection
 #

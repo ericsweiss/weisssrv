@@ -8,9 +8,7 @@
 # the distributed *.esweiss.com wildcard cert and proxies to the loopback-bound
 # web container. There is NO NFS anywhere — all state rides the zvols.
 
-# =============================================================================
 # Persistent disks (ZFS zvols attached as SCSI devices by proxmox_vm)
-# =============================================================================
 - name: Mount additional persistent disks
   ansible.builtin.include_role:
     name: zvol_mount
@@ -18,9 +16,7 @@
     zvol_mount_disks: "{{ vm_additional_disks | default([]) }}"
   when: vm_additional_disks is defined and vm_additional_disks | length > 0
 
-# =============================================================================
 # Secret-presence assertions (fail fast with a clear pointer)
-# =============================================================================
 - name: Validate required Nextcloud secrets are present
   ansible.builtin.assert:
     that:
@@ -51,9 +47,7 @@
     - not (skip_nextcloud_deploy | default(false))
     - nextcloud_oidc_enabled | default(true)
 
-# =============================================================================
 # Docker Engine + Compose plugin (download.docker.com apt repo, via compose_app)
-# =============================================================================
 # Pinned-engine install + dpkg hold + journald daemon.json via the shared
 # docker_engine role (also backs immich + immich_ml), included through the shared
 # compose_app role. skip_nextcloud_deploy maps onto compose_app_skip_install.
@@ -64,9 +58,7 @@
   vars:
     compose_app_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
 
-# =============================================================================
 # Persistent directories on the zvols
-# =============================================================================
 - name: Create Nextcloud application directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -92,9 +84,7 @@
     - "{{ nextcloud_html_dir }}"
     - "{{ nextcloud_data_dir }}"
 
-# =============================================================================
 # Host nginx TLS front end (shared compose_app task flow)
-# =============================================================================
 # Capture this role's nginx site template as an absolute path BEFORE the include
 # (role_path inside an include_role resolves to the INCLUDED role, so it must be
 # resolved eagerly here). compose_app/nginx.yml deploys it byte-unchanged.
@@ -123,9 +113,7 @@
     compose_app_nginx_bootstrap_cert: "{{ not (skip_nextcloud_deploy | default(false)) }}"
   when: nextcloud_nginx_enabled | default(true)
 
-# =============================================================================
 # Compose project (.env holds secrets; compose file is secret-free)
-# =============================================================================
 - name: Deploy the Nextcloud compose environment file
   ansible.builtin.template:
     src: nextcloud.env.j2
@@ -145,9 +133,7 @@
     mode: "0644"
   notify: Restart compose stack
 
-# =============================================================================
 # Systemd unit that owns the compose lifecycle (shared compose_app unit)
-# =============================================================================
 # compose_app main.yml deploys the shared unit, enables it, flushes handlers
 # (bringing the stack up so the readiness wait + occ/SSO tasks below act on the
 # freshly-applied containers), and starts it.
@@ -171,9 +157,7 @@
       - "only the containers whose definition changed (ExecReload matches ExecStart so"
       - "`systemctl reload` re-applies without a full down/up)."
 
-# =============================================================================
 # Wait for first-install to complete, then configure SSO + serverinfo
-# =============================================================================
 - name: Wait for Nextcloud to finish installing
   ansible.builtin.command:
     cmd: docker compose exec -T -u www-data nextcloud php occ status --output=json
@@ -265,9 +249,7 @@
   changed_when: false
   when: not (skip_nextcloud_deploy | default(false))
 
-# =============================================================================
 # Backup landing zone (offsite NFS when enabled) + nightly PostgreSQL backup
-# =============================================================================
 # nextcloud_backup_dir resolves to the NFS mountpoint when
 # nextcloud_backup_nfs_enabled (tank/backups/apps/nextcloud -> archsync -> B2),
 # otherwise the app zvol. This one task creates whichever; the mount below

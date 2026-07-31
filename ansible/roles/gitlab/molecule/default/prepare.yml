@@ -11,9 +11,7 @@
     - name: Disable apt background services
       ansible.builtin.import_tasks: ../../../../molecule/tasks/prepare-apt-disable.yml
 
-    # ==========================================================================
     # Install fail2ban for GitLab SSH jail testing
-    # ==========================================================================
     - name: Wait for apt locks to be released
       ansible.builtin.raw: |
         while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
@@ -52,11 +50,9 @@
         executable: /bin/bash
       changed_when: false
 
-    # ==========================================================================
     # Create mock GitLab environment for template testing
     # We skip actual GitLab installation but need the directory structure
     # and git user to exist for testing configuration templates
-    # ==========================================================================
 
     - name: Create mock GitLab environment
       ansible.builtin.raw: |

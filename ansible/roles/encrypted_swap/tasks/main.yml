@@ -76,10 +76,9 @@
         group: root
         mode: "0644"
 
-    # Remove the obsolete live-switch decision script left on hosts managed
-    # before the live path was dropped. It is no longer invoked, but it still
-    # carries the unsafe swapoff→open→swapon logic (the one that stranded hosts
-    # swapless), so purge it rather than leave a hand-runnable footgun on disk.
+    # Purge the unreferenced live-switch script: nothing invokes it, but it
+    # carries the unsafe swapoff→open→swapon logic that can strand a host
+    # swapless, so it must not sit hand-runnable on disk.
     - name: Remove the obsolete encrypted-swap live-switch script
       ansible.builtin.file:
         path: /usr/local/sbin/encrypted-swap-switch.sh

@@ -25,6 +25,27 @@ spec:
         target:
           type: Utilization
           averageUtilization: 80
+  # Be honest about what this is: at a 50m request an 80% target trips at 40m,
+  # and 7d per-pod CPU is p95 0.2m — three orders of magnitude below it. This
+  # HPA is an HA floor (min=2) far more than an autoscaler, the same candour the
+  # coredns pin carries in configs/coredns/hpa.yaml. The behavior block exists
+  # because that gap cuts both ways: a single scrape-window blip (config reload,
+  # a burst of concurrent asset requests) clears 40m easily and, with the default
+  # 0s scaleUp window, takes it straight to max=4 where the 5-min downscale
+  # damping parks it. Same shape as the traefik/authentik-server blocks.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
 ---
 # Keep at least one salt-rim replica during voluntary disruption (node drains,
 # rolling upgrades) so the Bar Assistant UI stays reachable.

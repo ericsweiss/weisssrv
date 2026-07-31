@@ -8,9 +8,7 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # Unbound Verification
-    # ============================================
     - name: Check Unbound service is running
       ansible.builtin.systemd:
         name: unbound
@@ -79,9 +77,7 @@
         fail_msg: "unbound_forwarders from converge did not render (default forwarders present) — variable ignored/renamed?"
         success_msg: "Custom unbound forwarders rendered (defaults not present)"
 
-    # ============================================
     # AdGuard Home Verification
-    # ============================================
     - name: Check AdGuard Home service is running
       ansible.builtin.systemd:
         name: AdGuardHome
@@ -128,13 +124,11 @@
     # We verify the service is running and web UI is accessible;
     # DNS resolution is tested via Unbound (which is AdGuard's upstream)
 
-    # ============================================
     # AdGuard rewrite reconciliation (dns-01 only)
     # api_config.yml is gated on inventory_hostname == 'dns-01', so the rewrite
     # add/reconcile path runs there; dns-02 would receive them via sync (not
     # exercised here). Proves the codified adguard_rewrites reached the live
     # instance through the role's API path.
-    # ============================================
     - name: Fetch live DNS rewrites from AdGuard (dns-01)
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ adguard_http_port | default(3000) }}/control/rewrite/list"
@@ -159,10 +153,8 @@
         label: "{{ item.domain }}"
       when: "'dns_primary' in group_names"
 
-    # ============================================
     # AdGuard Sync Verification (primary only - dns-01)
     # Note: Sync runs ON dns-01 to push config TO dns-02
-    # ============================================
     - name: Check AdGuard Sync service exists
       ansible.builtin.stat:
         path: /etc/systemd/system/adguardhome-sync.service
@@ -205,9 +197,7 @@
         success_msg: "AdGuard Sync configuration exists"
       when: "'dns_primary' in group_names"
 
-    # ============================================
     # Integration Tests
-    # ============================================
     - name: Wait for services to stabilize
       ansible.builtin.pause:
         seconds: 5
@@ -221,9 +211,7 @@
         fail_msg: "Unbound DNS resolution failed"
         success_msg: "Unbound DNS resolution working (Unbound → upstream)"
 
-    # ============================================
     # Cross-server connectivity (dns-02 -> dns-01)
-    # ============================================
     - name: Wait for primary AdGuard Home to be accessible
       ansible.builtin.pause:
         seconds: 5
@@ -251,9 +239,7 @@
         - "'dns_replica' in group_names"
         - replica_to_primary.status is not defined or replica_to_primary.status not in [200, 301, 302, 401, 403]
 
-    # ============================================
     # Final Summary
-    # ============================================
     - name: Integration test summary
       ansible.builtin.debug:
         msg: |

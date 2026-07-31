@@ -36,7 +36,5 @@ resources:
 # a readiness gate that defers the GET until the kube-router egress chain
 # is installed) so re-adding the policy doesn't crashloop fresh pods again.
 
-# default-deny-ingress from the shared baseline component (see
-# kubernetes/components/netpol-baseline).
 components:
   - ../../components/netpol-baseline

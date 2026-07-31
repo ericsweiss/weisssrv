@@ -1,6 +1,4 @@
 ---
-# Role metadata
-
 galaxy_info:
   role_name: apt_signed_repo
   namespace: weisssrv

@@ -100,7 +100,9 @@ The codified list covers (see dns.yml for the authoritative entries):
 
 - All six Proxmox hosts (`pve-*.esweiss.com` → .102–.107)
 - Infrastructure VMs/LXCs: `smtp-relay` (.151), `plex-direct` (.152),
-  `gitlab` (.153), `home-direct` (.154), `windows` (.155)
+  `gitlab` (.153), `home-direct` (.154), `windows` (.155), `nextcloud` (.156),
+  `immich` (.157). The immich-ml LXC (.158) has no rewrite on purpose — it is
+  reached only by the Immich VM, by IP.
 - All nine k3s nodes plus `k3s.esweiss.com` → .161 (API VIP)
 - `dns.esweiss.com` → .150/.160 (direct DoT access);
   `dns-01`/`dns-02.esweiss.com` → **192.168.0.101** (Traefik internal VIP,

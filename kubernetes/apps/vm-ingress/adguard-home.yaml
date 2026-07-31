@@ -1,10 +1,14 @@
 ---
 # AdGuard Home dashboards, two route flavours per instance (docs/08):
 #   * dns-01/dns-02.esweiss.com — the RAW routes (below): no SSO, AdGuard's
-#     own login. Kept untouched as the break-glass path — together with the
-#     direct IPs (.150/.160) they stay reachable when Authentik or the
-#     cluster is degraded (DNS is the one service that must never depend on
-#     the SSO stack to administer).
+#     own login. Kept as the break-glass path — together with the direct IPs
+#     (.150/.160) they stay reachable when Authentik or the cluster is degraded
+#     (DNS is the one service that must never depend on the SSO stack to
+#     administer). Because AdGuard's own login is the only gate, these two use
+#     lan-tailscale-STRICT (LAN + Tailscale, no k3s pod CIDR) rather than
+#     lan-tailscale-only: an in-cluster pod holding blanket :443 egress to the
+#     traefik namespace (hermes, homarr) must not reach the DNS admin UI.
+#     In-cluster consumers of AdGuard use the direct IPs, not these routes.
 #   * adguard/adguard-02.esweiss.com — the SSO routes (further below):
 #     Authentik forward-auth (dns-admins group) with basic-auth credential
 #     injection, so members land straight on the dashboard with no second
@@ -30,7 +34,7 @@ spec:
     - match: Host(`dns-01.esweiss.com`)
       kind: Rule
       middlewares:
-        - name: lan-tailscale-only
+        - name: lan-tailscale-strict
           namespace: traefik
         - name: hsts-header
           namespace: traefik
@@ -55,7 +59,7 @@ spec:
     - match: Host(`dns-02.esweiss.com`)
       kind: Rule
       middlewares:
-        - name: lan-tailscale-only
+        - name: lan-tailscale-strict
           namespace: traefik
         - name: hsts-header
           namespace: traefik

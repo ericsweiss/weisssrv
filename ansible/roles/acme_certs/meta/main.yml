@@ -1,6 +1,4 @@
 ---
-# Role metadata
-
 galaxy_info:
   role_name: acme_certs
   namespace: weisssrv

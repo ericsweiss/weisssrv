@@ -193,19 +193,26 @@ External Secrets Operator (1Password Connect provider) supplies all k8s Secrets.
 
 - **Flux controllers** bootstrapped via `flux bootstrap gitlab` into
   `kubernetes/clusters/weisssrv/flux-system/`.
-- **Platform** (`kubernetes/infrastructure/`) reconciles in four stages via
+- **Platform** (`kubernetes/infrastructure/`) reconciles in five stages via
   `dependsOn` ordering: sources (HelmRepositories + versions-configmap — runs
   first so the ConfigMap exists in-cluster before later stages render their
-  HelmRelease `postBuild` substitutions), controllers (MetalLB, Traefik,
-  cert-manager, external-dns, external-secrets), configs (ClusterSecretStore,
-  ClusterIssuer, CoreDNS HelmChartConfig, DDNS CronJob), and observability
-  (kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards).
-  Apps then depend on `infrastructure-observability`.
-- **Apps** (`kubernetes/apps/`): `authentik/`, `download-clients/`, `recipes/`,
-  `gitlab-runner/`, `gitlab-runner-privileged/`, `gitlab-runner-reaper/` (a
-  maintenance CronJob that reaps leaked runner pods, not a runner),
-  `gitlab-agent/`, `vm-ingress/` (IngressRoutes for non-k8s services: Plex,
-  Home Assistant, GitLab VM, AdGuard, router, Traefik dashboard).
+  HelmRelease `postBuild` substitutions), crds (prometheus-operator CRDs, so a
+  fresh bootstrap has them before any controller renders a ServiceMonitor),
+  controllers (MetalLB, Traefik, cert-manager, external-dns, external-secrets),
+  configs (ClusterSecretStore, ClusterIssuer, CoreDNS HelmChartConfig, DDNS
+  CronJob), and observability (kube-prometheus-stack, Loki, Alloy, exporters,
+  ServiceMonitors, dashboards). `configs` then fans out to `observability` and
+  `apps` in parallel — apps `dependsOn: infrastructure-configs`, not
+  observability (`clusters/weisssrv/apps.yaml`). docs/29 owns the canonical
+  description.
+- **Apps** (`kubernetes/apps/`): the resource list in
+  `kubernetes/apps/kustomization.yaml` is the source of truth — today
+  `authentik/`, `download-clients/`, `hermes/`, `homarr/`, `hindsight/`,
+  `recipes/`, `gitlab-runner/`, `gitlab-runner-privileged/`,
+  `gitlab-runner-reaper/` (a maintenance CronJob that reaps leaked runner pods,
+  not a runner), `gitlab-agent/`, `registry-cache/`, `tailnet-dns/`,
+  `vm-ingress/` (IngressRoutes for non-k8s services: Plex, Home Assistant,
+  GitLab VM, AdGuard, router, Traefik dashboard), `wg-easy/`.
 - **Version flow**: `all.yml` → `task flux:sync-versions` → `cluster-versions`
   ConfigMap → Flux `postBuild.substituteFrom` substitutes `${...}` placeholders.
 - **Secrets**: two bootstrap Secrets (`op-credentials` and `onepassword-connect-token`)
@@ -296,22 +303,28 @@ runs on a weekly schedule and surfaces updates without noise.
 
 ---
 
-## weisssrv-project-template GitLab template project
+## weisssrv-app-template GitLab template project
 
 The tenant-side scaffold lives in its own repo:
-`https://git.ericsweiss.com/eric/weisssrv-project-template`. New repos deploying
-to this cluster fork/copy it. It is pre-wired with:
+`https://git.ericsweiss.com/eric/weisssrv-app-template`. New repos deploying to
+this cluster fork/copy it. **`docs/30-multi-repo-onboarding.md` § weisssrv-app-template
+Repo is the single description of its contents** — do not restate the file list
+here; that duplication is exactly what went stale (this section previously
+claimed a `renovate.json`, `maintenance:*` task wrappers and a
+namespace/Kustomization stub, none of which the template ships — the family
+policy is no Renovate anywhere, and the namespace + Kustomization are
+operator-side).
 
-- `.gitlab-ci.yml` with standard stages (lint, validate, security,
-  AI review conditional on OP/openai secrets)
-- `.gitleaks.toml`, `.editorconfig`, `.pre-commit-config.yaml`, `renovate.json`
-- `Taskfile.yml` with flux:* and maintenance:* wrappers
-- `kubernetes/flux/` stub: namespace, Kustomization, ExternalSecret,
-  release.yaml/resource.yaml templates
-- `.cursorrules`, `CLAUDE.md`, `AGENTS.md` templates
-- `CODEOWNERS`, issue/MR templates, LICENSE, README scaffold
+Two facts worth carrying on the roadmap page:
 
-See docs/30-multi-repo-onboarding.md for the tenant onboarding pattern it uses.
+- The template's CI is `include:`d from `eric/weisssrv-lib` at a pinned tag, the
+  same shared library this repo consumes (docs/13 § Shared CI library). A
+  library tag bump therefore fans out to three places: this repo's
+  `.gitlab-ci.yml`, the template's `.gitlab-ci.yml`, and the template's
+  `scripts/rename.sh` pin.
+- The template ships `scripts/rename.sh` (a wrapper over the library's
+  `weisssrv-new-project rename` CLI) — the rename affordance to reuse if the
+  cluster-side scaffold is ever split out as `weisssrv-cluster-template`.
 
 Onboarding flow: fork template → add CI vars → add wiring YAML under
 `kubernetes/clusters/weisssrv/tenants/` in this repo.
@@ -546,7 +559,7 @@ all EXECUTED 2026-06-11 — see docs/19 §Status and docs/29. Still pending:
   update_version_in_file, debian_version_compare
 - shellcheck CI pattern misses *.j2 shell templates (archive-backupctl,
   media-mover, cert-reload) — add a render-then-shellcheck step
-- cert-distribution postflight asserts only 2 of 6 targets
+- cert-distribution postflight asserts only 2 of 8 targets
 - Samba password-rotation path (smbclient auth-probe → smbpasswd) has no
   molecule coverage; same for the qm/pct firewall=1 reconcile failure path
   (inject a failing qm set in the existing stub) and collect-state's
@@ -864,13 +877,6 @@ Follow-ups (not blockers):
 
 ### GitOps / Flux bootstrap robustness
 
-- [ ] Make a fresh-cluster bootstrap self-sufficient for the prometheus-operator
-  CRDs. Today Traefik's `serviceMonitor.enabled` emits a `ServiceMonitor` with no
-  `.Capabilities` guard, so a first boot needs the CRDs pre-applied (documented
-  in docs/29 § "Fresh bootstrap / disaster recovery"). Durable fix: a CRDs-only
-  resource in `infrastructure-sources` + `kube-prometheus-stack` `crds.enabled:
-  false`. Deferred because migrating CRD Helm-ownership on the live cluster is
-  risky and must be done as its own carefully-staged change.
 - [ ] CoreDNS pod topology spread. The HPA pin (`configs/coredns/hpa.yaml`,
   min==max==2) guarantees two replicas but not that they land on different nodes,
   so a single node loss can take out both. k3s owns the CoreDNS Deployment (a

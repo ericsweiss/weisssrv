@@ -20,6 +20,47 @@
 nic_tuning_overrides: []
 nic_tuning_ip_forward: false
 
+# `ethtool -K` takes short feature names; `ethtool --show-features` reports the
+# long ones. The role verifies each applied override by reading the state back,
+# so every short name used in nic_tuning_overrides needs an entry here — a
+# missing one fails that assert with exactly that message instead of silently
+# passing. Names per ethtool(8) "feature names" / netdev_features.h.
+# Read the applied overrides back out of the kernel and fail the play when they
+# did not take. ONLY ever set false by the molecule scenario: a container's lo
+# and veth expose no ethtool feature ioctls at all (`ethtool -K` itself returns
+# "Inappropriate ioctl for device" there), so the apply the check verifies
+# cannot run in the first place. Every real host leaves this true.
+#
+# The assert hard-fails base.yml (and therefore deploy-ansible-base), so it was
+# validated read-only against the actual hardware before it shipped —
+# `ethtool --show-features` on 2026-07-27 reported, on every interface this
+# fleet overrides:
+#   pve-opt-01/02/03 nic0 (e1000e): tcp-segmentation-offload: off
+#                                   generic-segmentation-offload: off
+#                                   generic-receive-offload: off
+#   pve-nas-01       nic1 (atlantic): generic-receive-offload: off
+# i.e. all four match the requested values verbatim, with no `[fixed]` suffix
+# and no driver that refuses the feature. Adding an override for a NIC/driver
+# not in that list means adding a case this gate has never seen: read the
+# feature back by hand first (`ethtool --show-features <iface>`) and confirm the
+# long name in nic_tuning_feature_names appears with the value you are asking
+# for, rather than discovering it as a red fleet deploy.
+nic_tuning_verify_offloads: true
+
+nic_tuning_feature_names:
+  gro: generic-receive-offload
+  gso: generic-segmentation-offload
+  lro: large-receive-offload
+  ntuple: ntuple-filters
+  rx: rx-checksumming
+  rxhash: receive-hashing
+  rxvlan: rx-vlan-offload
+  sg: scatter-gather
+  tso: tcp-segmentation-offload
+  tx: tx-checksumming
+  txvlan: tx-vlan-offload
+  ufo: udp-fragmentation-offload
+
 # Lower vm.swappiness on memory-committed Proxmox hosts. Set to an integer
 # (0-100) per host/group to write a /etc/sysctl.d/ drop-in and apply it live;
 # leave null (the default) to leave swappiness unmanaged (kernel default 60).

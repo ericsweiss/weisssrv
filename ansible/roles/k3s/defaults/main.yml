@@ -25,9 +25,7 @@ k3s_storage_host_pins:
   - name: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
     ip: "192.168.0.102"
 
-# ---------------------------------------------------------------------------
 # Kernel inotify limits (docs/19 "CI molecule flake: Too many open files")
-# ---------------------------------------------------------------------------
 # Raise the per-UID inotify instance/watch ceilings on every k3s node. Each
 # systemd-in-Docker container (the molecule CI jobs the in-cluster GitLab
 # runners execute) needs one inotify instance to watch its own cgroup. The
@@ -115,9 +113,7 @@ k3s_gpu_debian_sources_path: /etc/apt/sources.list.d/debian.sources
 kube_vip_version: "v1.2.1"
 kube_vip_interface: "eth0"
 
-# ---------------------------------------------------------------------------
 # Off-node etcd snapshot copy (docs/17 "etcd Snapshots")
-# ---------------------------------------------------------------------------
 # k3s writes scheduled etcd snapshots to k3s_etcd_snapshot_dir on each server's
 # LOCAL disk only; losing all three servers (or the Proxmox hosts under them)
 # loses etcd — the only backup class without an off-node copy. When enabled, a

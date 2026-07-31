@@ -4,16 +4,7 @@
 # updated on drift; create-fixed properties (server, export, path) fail loud
 # with recreation instructions instead of silently diverging. Entries are
 # defined in host_vars — pve-nas-01 owns tank-proxmox.
-#
-# Example:
-# pve_storage:
-#   - id: tank-proxmox
-#     type: nfs
-#     server: pve-nas-01.esweiss.com  # hostname, not IP — the wildcard TLS cert has no IP SAN
-#     export: /tank-proxmox
-#     content: "snippets,backup,vztmpl,iso"
-#     options: "vers=4.2,xprtsec=tls"
-pve_storage: []
+pve_storage: []  # maintained example: host_vars/pve-nas-01.yml
 
 # Declarative vzdump backup jobs (jobs.cfg), reconciled via pvesh
 # (/cluster/backup): absent jobs are created with the configured id; existing
@@ -21,23 +12,10 @@ pve_storage: []
 # adopt an existing job (GUI-created ids look like backup-xxxxxxxx-xxxx).
 # Unmanaged live jobs are warned about, never deleted.
 #
-# Example:
-# pve_vzdump_jobs:
-#   - id: backup-10f33360-a177
-#     storage: tank-proxmox
-#     schedule: "03:30"
-#     mode: snapshot
-#     compress: zstd
-#     all: true                # back up every guest (--all 1)
-#     bwlimit: 30720           # optional: cap per-node backup I/O (KiB/s). A
-#                              # cluster-wide `all` job runs on every node at
-#                              # once, all writing to one target — bwlimit bounds
-#                              # the aggregate so a backup can't saturate the pool.
-#     prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
-#     notification_mode: notification-system
-#     enabled: true
-#     script: /usr/local/bin/vzdump-metrics-hook.sh  # jobs.cfg `script` prop
-pve_vzdump_jobs: []
+# `bwlimit` (KiB/s per node) is not optional in practice for a cluster-wide
+# `all` job: every node runs it at 03:30 and writes to the same target, and an
+# unthrottled aggregate froze pve-nas-01 once (see the host_vars comment).
+pve_vzdump_jobs: []  # maintained example: host_vars/pve-nas-01.yml
 
 # The vzdump metrics hookscript that a job's `script` key points at is deployed
 # fleet-wide by node_exporter_host (to /usr/local/bin/vzdump-metrics-hook.sh on

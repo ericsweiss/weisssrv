@@ -17,7 +17,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo >&2 "FAIL: $*"; exit 1; }
 
-# --- archive-backupctl: _load_prev_dataset_metrics + write_prom_metrics ------
+# archive-backupctl: _load_prev_dataset_metrics + write_prom_metrics
 # Source the script with its entrypoint disabled so the functions are callable.
 sed 's/^main "\$@"$/# main disabled for behavior test/' "$ARCHIVE" > "$WORK/archive-lib.sh"
 grep -q 'main disabled for behavior test' "$WORK/archive-lib.sh" \
@@ -65,7 +65,7 @@ grep -qxF 'archive_backup_dataset_deferred_runs{dataset="tank/share"} 0' "$PROM_
 grep -q 'tank/removed-from-src-list' "$PROM_FILE" \
   && fail "orphan series for a removed dataset was re-emitted"
 
-# --- media-mover: failure branch preserves the last-success timestamp --------
+# media-mover: failure branch preserves the last-success timestamp
 # media-mover.sh runs top-level code on source, so extract just the function.
 awk '/^write_prom_metrics\(\) \{/{f=1} f; f && /^\}/{exit}' "$MOVER" > "$WORK/mover-fn.sh"
 grep -q 'media_mover_last_run_success' "$WORK/mover-fn.sh" \
@@ -82,7 +82,7 @@ env -i bash -c '
   grep -qx "media_mover_last_success_timestamp_seconds 1650000000" "$PROM_FILE"
 ' || fail "media-mover failure run did not preserve the last-success timestamp"
 
-# --- swap-clean: write_prom_metrics arms + cleanup restart-failure demotion ---
+# swap-clean: write_prom_metrics arms + cleanup restart-failure demotion
 # swap-clean.sh runs its logic in main() and ends with `main "$@"`, so neutralize
 # the entrypoint (as the sibling archive/restic behavior tests do) and source the
 # rest to get the functions + globals WITHOUT running any swapoff/swapon.

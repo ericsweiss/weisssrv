@@ -540,8 +540,9 @@ sudo zpool iostat -v tank 5
 `archive-backupctl` (on pve-nas-01, nightly timer) replicates the source datasets
 to the `archive` pool as **raw, encrypted** `zfs send -w` streams, so the archive
 copies are encrypted at rest under each source's own key — the archive never
-loads a key. Replicated datasets: `tank/{share,backups,nextcloud-data,proxmox,
-immich-data}` and `ssd/{appdata,databases}`. Retention: the newest few `archsync`
+loads a key. Replicated datasets (`SRC_LIST` in `archive-backupctl.sh.j2` is the source of
+truth): `tank/{share,backups,nextcloud-data,proxmox,immich-data}` and
+`ssd/{appdata,databases,k3s-etcd}`. Retention: the newest few `archsync`
 snapshots plus a grandfather monthly.
 
 Do **not** run manual `zfs send | zfs receive` into `archive/*` — it breaks the
@@ -620,7 +621,10 @@ runner config:
    (deploys/backups/ML) and that swap never self-clears. A `swap-clean.timer`
    (nightly) runs `/usr/local/sbin/swap-clean.sh`, which shrinks ARC for headroom,
    `swapoff -a`/`swapon -a`, and restores ARC — **only** when the freed RAM
-   comfortably covers the swap in use.
+   comfortably covers the swap in use. It is device-agnostic, so it works
+   unchanged now that swap is `/dev/mapper/cryptswap` (`encrypted_swap`, see the
+   At Rest table below and docs/42); its pre-flight skips the cycle while the
+   mapper is still pending on a host that has not yet rebooted into it.
    **Recovery escalation** (`nas_swap_clean_stop_guests`): if the ARC-shrink
    headroom alone can't cover the swap, rather than just aborting the reset
    *gracefully shuts down* heavy guests from an ordered candidate list
@@ -733,7 +737,7 @@ the posture is explicit rather than assumed.
 |---|---|---|
 | ZFS pools `tank`, `ssd` | Yes (dataset-level) | Encryption roots `tank/share`, `tank/backups`, `tank/proxmox`, `tank/nextcloud-data`, `tank/immich-data`, `ssd/appdata` (+ children), `ssd/databases`, `ssd/pve`, `ssd/k3s-etcd`; boot unlock via Connect. `tank/media` and `tank/pve` stay plaintext by design. See `docs/32-zfs-encryption.md`. |
 | ZFS pool `nvme` | No | Media domain (hot-tier media, transcode scratch, ephemeral images) — non-sensitive, plaintext by design. See `docs/32-zfs-encryption.md`. |
-| ZFS pool `archive` | Dataset-level (raw) | Plaintext pool; the seven replicated backup datasets arrive as raw `zfs send -w` streams encrypted under their source keys (`archive-backupctl`). See `docs/32-zfs-encryption.md`. |
+| ZFS pool `archive` | Dataset-level (raw) | Plaintext pool; the eight replicated backup datasets arrive as raw `zfs send -w` streams encrypted under their source keys (`archive-backupctl`). See `docs/32-zfs-encryption.md`. |
 | Compute-node `local-ssd` ZFS pools (5 hosts) | No | Intentionally plaintext — see `docs/32-zfs-encryption.md` for the cold-boot rationale. |
 | App PVCs — zvol-backed (Authentik PG, Mealie PG, GitLab repos, Prometheus, Loki) | Yes | Each is a zvol under `ssd/appdata/*` → inherits the encrypted parent. |
 | App PVCs — NFS-backed (Grafana) | Yes | Grafana SQLite DB on an NFS PV (`pve-nas-01.esweiss.com:/appdata/grafana`, i.e. `ssd/appdata/grafana`) — not a zvol, but the export lives on the encrypted `ssd/appdata` dataset. |
@@ -743,6 +747,7 @@ the posture is explicit rather than assumed.
 | 1Password vault (cloud + Connect sync source) | Yes | Vendor end-to-end (SRP + secret key). |
 | Backups (NAS archive pool, ZFS snapshots, GitLab backups) | Yes (dataset-level) | `tank/proxmox` (VM backup target) is encrypted; `archive`'s backup datasets arrive as raw-encrypted `zfs send -w` streams under their source keys. |
 | Proxmox host root filesystems | No | Standard install, no LUKS. |
+| Proxmox host swap (all 6 hosts) | Yes | `encrypted_swap` role — dm-crypt plain-mode AES-256-XTS over `/dev/pve/swap` with a random ephemeral key regenerated every boot (`/dev/mapper/cryptswap`), so paged-out memory is unrecoverable after a reboot. See `docs/42-offsite-backup.md` § Encrypted swap. |
 
 ### In Transit
 
@@ -788,7 +793,7 @@ in `docs/32-zfs-encryption.md`. Scope (post-rollout):
   images) — one logical media domain, LAN-trust acceptable and encryption
   complicates `zfs send` to off-pool replicas,
   `tank/pve` (ephemeral VM/LXC images), the `archive` pool root
-  (plaintext; its seven replicated backup datasets are raw-encrypted at rest
+  (plaintext; its eight replicated backup datasets are raw-encrypted at rest
   under their source keys — see `docs/32-zfs-encryption.md`), every compute node's
   `local-ssd` pool (encrypting it deadlocks cold-boot — k3s VMs live
   on `local-ssd`, Connect runs in k3s, Connect would need to be up

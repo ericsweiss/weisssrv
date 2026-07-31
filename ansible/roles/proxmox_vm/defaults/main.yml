@@ -57,9 +57,7 @@ cloudinit_dns:
   - 192.168.0.160
 cloudinit_gateway: 192.168.0.1
 
-# ---------------------------------------------------------------------------
 # Guest type
-# ---------------------------------------------------------------------------
 # 'linux'  (default) — the cloud-init Debian path above; every existing VM
 #          (k3s nodes, gitlab, …) uses this and is unaffected.
 # 'windows' — a full-spec Win11 guest: q35 + OVMF/UEFI + pre-enrolled Secure

@@ -53,14 +53,27 @@ cert_distribution_targets:
   - host: dns-02                    # inventory hostname (drives the IP env var)
     ip: 192.168.0.160               # SSH target address
     host_key: "ssh-ed25519 AAAA..." # REQUIRED; capture via task certs:show-host-keys
-    cert_dir: /opt/AdGuardHome/certs
-    owner: root
+    cert_dir: /opt/AdGuardHome/certs # where fullchain.pem + privkey.pem land
+    owner: root                     # ownership applied after the move
     group: adguard
-    cert_mode: "0644"
-    key_mode: "0640"
-    restart_service: AdGuardHome    # or restart_command for compound reloads
+    cert_mode: "0644"               # chmod for fullchain.pem
+    key_mode: "0640"                # chmod for privkey.pem
+    restart_service: AdGuardHome    # expanded to `[sudo] systemctl restart <svc>`
+    # restart_command: "sudo gitlab-ctl hup nginx"   # overrides restart_service
     # ssh_port / ssh_user / ssh_no_sudo override the defaults (22 / eric / sudo)
 ```
+
+Two constraints that are not obvious from the shape:
+
+- **`host_key` is required and pinned.** The role deploys a strict `known_hosts`
+  entry on dns-01 from it, and the reload script runs with
+  `StrictHostKeyChecking=yes`, so a fingerprint mismatch (host rebuilt without
+  an inventory update, or a MITM) fails the push loudly instead of trusting a
+  new key. After a target rebuild, re-run `task certs:show-host-keys` and paste
+  the new value.
+- **`restart_command` must carry its own `sudo`** for anything needing root. The
+  reload script does not prepend `sudo`, because compound shell constructs
+  (`if … then … fi`) reject `sudo if`.
 
 ### 1Password Secrets
 

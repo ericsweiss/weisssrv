@@ -16,6 +16,12 @@ Configures Postfix as a null client (satellite system) that forwards all local m
 - SASL credentials for smtp-relay (from 1Password)
 - Hashed password file (postmap)
 - Secure permissions (mode 0600)
+- Compiled-map repair: `sasl_passwd.db` and `aliases.db` are rebuilt whenever
+  they stop matching their source. Both sources are templated with `notify:`,
+  so a run that dies before `flush_handlers` otherwise leaves a correct source
+  next to a stale database that postfix keeps reading — the host relays root
+  mail locally, or keeps authenticating with a revoked credential, with nothing
+  reporting changed
 
 ## Configuration
 
@@ -63,9 +69,13 @@ ansible-playbook ansible/playbooks/site.yml --tags postfix_null_client
 ansible-playbook ansible/playbooks/site.yml --tags postfix_null_client --limit dns
 ```
 
-The role is also applied by the `dns.yml`, `k3s.yml`, `gitlab.yml`, and
-`plex.yml` playbooks (untagged there — those playbooks deploy their whole
-stack).
+The role is also applied by the `dns.yml`, `k3s.yml`, `gitlab.yml`, `plex.yml`,
+`immich.yml`, `immich-ml.yml` and `nextcloud.yml` playbooks (untagged there —
+those playbooks deploy their whole stack, so `--tags postfix_null_client`
+selects none of this role's tasks against them). To re-deploy just the
+credential to that remainder — the app VMs and k3s nodes — use
+`task mail:rotate-credential` (`playbooks/rotate-mail-credential.yml`); see
+docs/15-credential-rotation.md.
 
 ## Architecture
 
@@ -85,6 +95,9 @@ Managed Hosts (null clients)
 ## Files
 
 - `tasks/main.yml` - Main task orchestration
+- `tasks/repair-compiled-maps.yml` - Rebuilds `aliases.db` / `sasl_passwd.db`
+  when they no longer match their source (imported by `main.yml`; molecule
+  drives it directly against a deliberately-stale database)
 - `templates/main.cf.j2` - Postfix main configuration
 - `templates/sasl_passwd.j2` - SASL credentials
 - `templates/virtual.j2` - Virtual alias table

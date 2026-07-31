@@ -3,7 +3,6 @@
 # Provides intrusion prevention for SSH and other services
 #
 # LXC Container Compatibility:
-# ============================================================================
 # Unprivileged LXC containers cannot use iptables/nftables for packet filtering
 # because they lack the CAP_NET_ADMIN capability for the netfilter subsystem.
 #
@@ -20,7 +19,6 @@
 #   - https://pieterbakker.com/secure-debian-12-with-fail2ban-and-nftables/
 #   - https://www.faqforge.com/linux/controlpanels/ispconfig3/configure-fail2ban-to-use-route-instead-of-iptables-to-block-connections/
 #   - https://forum.proxmox.com/threads/iptables-inside-lxc-container-not-blocking-anything.123807/
-# ============================================================================
 
 - name: Install fail2ban
   ansible.builtin.apt:

@@ -18,9 +18,37 @@
     - role: proxmox_lxc
       tags: [proxmox_lxc]
 
+# Runs after the SMTP provisioning play above (which must own the first
+# connection attempt to smtp-relay) and before anything is deployed. Its
+# companion gate is imported at the very bottom of this file.
+- name: Probe reachability before deploying
+  ansible.builtin.import_playbook: _reachability-probe.yml
+
 - name: Deploy base configuration to all managed hosts
-  hosts: base_managed
+  # !deploy_skipped drops whatever the probe above could not reach: it is
+  # already on the ledger, and leaving it in would make it fail this play on
+  # the first task templating an ungathered fact (a hard failure the gate's
+  # deploy_expected_absent_hosts downgrade cannot undo). Every play below that
+  # tolerates an absent host carries the same exclusion.
+  hosts: base_managed:!deploy_skipped
   become: true
+  # Still needed for a host that dies BETWEEN the probe and here: skip it
+  # instead of failing the whole play, because this is a multi-host reconciler
+  # and the hosts that ARE up still converge. A genuinely-down host
+  # surfaces as NodeDown — and a bare-metal host out for hardware work (or an
+  # HA-migrating guest) no longer reds every tag-scoped site.yml deploy at the
+  # first play and skips the whole downstream CI DAG.
+  #
+  # The recap does NOT compensate: with ignore_unreachable ansible-core counts
+  # the host into `ok`+`ignored`, never into `dark`, so the recap prints
+  # `unreachable=0` and the playbook exits 0. The reachability probe/gate pair
+  # imported around these plays is what keeps a skipped host from passing as a
+  # successful deploy.
+  # `--tags` does NOT suppress fact gathering, so this bites even for plays a
+  # tag-scoped run selects zero tasks from. Deliberately NOT applied to the
+  # single-host plays below (mail, pve-nas-01): there, skipping the one host
+  # means the deploy did nothing at all, which must stay red.
+  ignore_unreachable: true
   roles:
     - role: base
       tags: [base]
@@ -28,8 +56,10 @@
       tags: [nic_tuning, network]
 
 - name: Deploy Proxmox host configuration
-  hosts: proxmox
+  hosts: proxmox:!deploy_skipped
   become: true
+  # See the reachability note on the base_managed play above.
+  ignore_unreachable: true
   roles:
     - role: qol
       tags: [qol]
@@ -71,9 +101,13 @@
       tags: [proxmox_firewall]
 
 - name: Deploy DNS server configuration
-  hosts: dns
+  hosts: dns:!deploy_skipped
   become: true
   serial: 1  # one resolver at a time — never restart unbound/AdGuard on both at once
+  # See the reachability note on the base_managed play above. It matters more
+  # here: with serial: 1 an unreachable dns-01 is a batch of one, and a failed
+  # batch ends the play — so the OTHER resolver would never be reconciled.
+  ignore_unreachable: true
   roles:
     - role: postfix_null_client
       tags: [postfix_null_client]
@@ -85,9 +119,11 @@
       tags: [adguard_home]
 
 - name: Deploy certificate management and sync
-  hosts: dns
+  hosts: dns:!deploy_skipped
   become: true
   serial: 1  # acme reload restarts AdGuardHome — keep the other resolver up
+  # Same serial-batch reasoning as the DNS play above.
+  ignore_unreachable: true
   roles:
     - role: acme_certs
       tags: [acme_certs]
@@ -127,7 +163,9 @@
       tags: [zfs_exporter]
 
 - name: Deploy DNS guest firewall rules
-  hosts: dns
+  hosts: dns:!deploy_skipped
+  # See the reachability note on the base_managed play above.
+  ignore_unreachable: true
   roles:
     - role: proxmox_firewall
       tags: [proxmox_firewall]
@@ -146,7 +184,7 @@
       tags: [proxmox_firewall]
 
 - name: Deploy host-level metrics (node_exporter on bare metal, DNS, mail, GitLab, Nextcloud, Immich, and k3s-server hosts)
-  hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers
+  hosts: proxmox:dns:mail:gitlab_servers:nextcloud_servers:immich_servers:k3s_servers:!deploy_skipped
   become: true
   # App VMs (nextcloud, immich) are provisioned by their own deploy jobs, which
   # need deploy-ansible-base to succeed first — so on a first deploy the VM does
@@ -160,7 +198,7 @@
       tags: [node_exporter_host]
 
 - name: Deploy host-side log collection (Alloy → Loki)
-  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:immich_ml_servers:k3s_servers:k3s_agents
+  hosts: base_managed:plex_servers:gitlab_servers:nextcloud_servers:immich_servers:immich_ml_servers:k3s_servers:k3s_agents:!deploy_skipped
   become: true
   # Same first-deploy ordering as the metrics play above: skip a not-yet-provisioned
   # app VM instead of failing the base deploy (the app's own playbook ships alloy_host).
@@ -195,3 +233,10 @@
   roles:
     - role: proxmox_firewall
       tags: [proxmox_firewall]
+
+# Last, so every play has had its chance to converge: fail the run if any
+# base_managed host was skipped as unreachable above, or has stopped answering
+# since the probe. Carries the probe's host pattern (NOT localhost, which
+# --limit empties) so the scoped CI jobs are gated too.
+- name: Gate on the reachability ledger
+  ansible.builtin.import_playbook: _reachability-gate.yml

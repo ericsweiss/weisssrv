@@ -90,16 +90,6 @@
     - Reload postfix
   no_log: true
 
-# Safety-net: the handler above only runs when the plaintext sasl_passwd
-# changes, so a deleted/corrupted .db would never be rebuilt on a re-run and
-# the Gmail SASL lookup would silently fail (fleet-wide mail defer). Rebuild it
-# whenever the .db is missing, mirroring postfix_null_client.
-- name: Ensure SASL password database exists
-  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
-  args:
-    creates: /etc/postfix/sasl_passwd.db
-  no_log: true
-
 - name: Create SASL configuration directory
   ansible.builtin.file:
     path: /etc/postfix/sasl
@@ -129,6 +119,10 @@
   register: sasl_user_check
   failed_when: false
   changed_when: false
+  # postfix_sasl_user is the relay credential's username (SMTP_RELAY_USER, a
+  # 1Password value) rendered into the command line; every sibling task that
+  # touches the credential pair in this file already carries no_log.
+  no_log: true
 
 # sasldb stores no recoverable plaintext to compare against, so rotation is
 # detected via this fingerprint: it changes exactly when the credentials do,
@@ -191,15 +185,23 @@
     mode: "0644"
   notify: Newaliases
 
+# Both map sources above are notify-only, so a lost handler leaves a correct
+# source next to a stale compiled .db that postfix keeps reading. Assert the
+# .db against the configured values, not the source. Runs before postfix is
+# started so a first converge has a usable sasl_passwd.db without waiting for
+# the handler flush. import_tasks, not include_tasks: a static import puts these
+# tasks in the play at parse time, so they are addressable by --tags and visible
+# to --list-tasks.
+- name: Repair stale compiled postfix maps
+  ansible.builtin.import_tasks: repair-compiled-maps.yml
+
 - name: Ensure postfix is enabled and running
   ansible.builtin.service:
     name: postfix
     state: started
     enabled: true
 
-# ---------------------------------------------------------------------------
 # Postfix queue depth collector
-# ---------------------------------------------------------------------------
 # A wedged Gmail hop (expired app password, rate-limit) queues mail silently:
 # postfix stays active and the LXC gauges stay green while the deferred queue
 # grows. The collector feeds postfix_queue_depth / postfix_up to the

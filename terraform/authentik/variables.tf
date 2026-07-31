@@ -15,7 +15,7 @@ variable "authentik_token" {
   sensitive   = true
 }
 
-# --- OAuth2 client secrets -------------------------------------------------
+# OAuth2 client secrets
 # One sensitive variable per OAuth2 provider, injected by the Taskfile / CI via
 # `op run` from the SAME 1Password items the applications themselves consume
 # (docs/15-credential-rotation.md "Required 1Password Items"), so Terraform and
@@ -69,7 +69,7 @@ variable "oauth2_client_secret_homarr" {
   sensitive   = true
 }
 
-# --- Basic-auth injection credentials ---------------------------------------
+# Basic-auth injection credentials
 # Per-app upstream credentials stored as GROUP attributes (groups.tf) and
 # injected by proxy providers with basic_auth_enabled (providers_proxy.tf):
 # the embedded outpost sends them as the Authorization header, which the

@@ -31,9 +31,24 @@ k3s_service_cidr: "10.43.0.0/16"
 resolv_conf_search_domains: []
 
 # Disable built-in components (we deploy our own)
+#
+# local-storage: k3s's local-path-provisioner ships `local-path` as the
+# CLUSTER-DEFAULT StorageClass, so any PVC that omits storageClassName is
+# silently defaulted onto the k3s VM bootdisk — a disk no backup path covers
+# (archive replication and vzdump cover zvols and OS disks only). That is
+# exactly how observability/storage-loki-0 was provisioned in 2026-07 before
+# the loki `storageClass: "-"` guard landed. Every PV in this cluster is
+# statically provisioned with `storageClassName: ""` + Retain, so nothing
+# consumes the class; removing it turns a silent fall-through into a Pending
+# PVC. The LocalPathPVExists alert stays as the detective control in case a
+# future k3s release re-enables it.
+#
+# NOTE: applying this restarts the k3s servers (config.yaml change), which
+# needs a healthy etcd quorum — do not deploy it with a server node down.
 k3s_disable:
-  - servicelb   # Using MetalLB
-  - traefik     # Deploying our own Traefik
+  - servicelb       # Using MetalLB
+  - traefik         # Deploying our own Traefik
+  - local-storage   # No dynamic provisioning: all PVs are static (see above)
 
 # Flannel backend = wireguard-native: pod-to-pod traffic across nodes
 # is encrypted with WireGuard (kernel module). Replaces the default

@@ -20,8 +20,15 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    remediation:
-      retries: 3
+    # RetryOnFailure, NOT the default RemediateOnFailure: install remediation has
+    # no strategy field, so it ALWAYS remediates by uninstalling — between each
+    # retry. An uninstall here deletes the Helm-owned metallb.io CRDs, which
+    # cascade-deletes the IPAddressPools + L2Advertisement and flips .99/.100/.101
+    # to <pending> — the exact outage recorded in the crds comment below, this
+    # time reached from the install path. Retrying in place cannot do that.
+    strategy:
+      name: RetryOnFailure
+      retryInterval: 5m
   upgrade:
     remediation:
       retries: 3
@@ -80,3 +87,21 @@ spec:
           memory: 64Mi
         limits:
           memory: 256Mi
+  # `crds.enabled: true` above makes the chart OWN the metallb.io CRDs, which
+  # means a helm uninstall deletes them (and cascade-deletes every IPAddressPool
+  # + L2Advertisement with them). Chart 0.15.3 exposes no crds.annotations hook,
+  # so stamp helm.sh/resource-policy: keep onto the rendered CRDs instead — the
+  # same post-render mechanism onepassword-connect uses. The name regex covers
+  # all 9 CRDs the chart ships; they all render with an annotations map already,
+  # so `op: add` on the sub-path is safe.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: apiextensions.k8s.io
+              kind: CustomResourceDefinition
+              name: ".*\\.metallb\\.io"
+            patch: |
+              - op: add
+                path: /metadata/annotations/helm.sh~1resource-policy
+                value: keep

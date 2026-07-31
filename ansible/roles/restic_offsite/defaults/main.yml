@@ -63,6 +63,34 @@ restic_offsite_keep_daily: 3
 restic_offsite_keep_weekly: 2
 restic_offsite_keep_monthly: 3
 restic_offsite_keep_yearly: 1
+# WORM-ish floor. The B2 bucket has NO Object Lock (scripts/b2-bucket-drift.py
+# sets defaultRetention mode None), so the only thing standing between silent
+# corruption and total loss is retention depth. With keep-daily 3 alone,
+# corruption that persists 3 days walks every daily restore point out of the
+# window. --keep-last N is a hard floor independent of the calendar buckets: the
+# N most recent snapshots survive no matter how the daily/weekly boundaries fall.
+restic_offsite_keep_last: 5
+# Retention GROUPING. restic's default is `host,paths`, which silently starts a
+# NEW retention group whenever restic_offsite_sources / _zvol_sources change —
+# freezing the old group's snapshots forever under their own policy (they stop
+# being pruned AND stop counting toward the new group's keeps). Pin to `host` so
+# a source-list change re-groups instead of forking.
+#
+# Merging is also the one moment the pin itself is dangerous: snapshots frozen
+# in a retired `host,paths` group stop being frozen and become expendable in a
+# single step, and the bucket has no Object Lock. The live repo holds ONE group
+# today (every snapshot was taken under the same source list), so `host`
+# collapses to that same group and the first prune's delete set is empty — but
+# the ceiling below is what makes the transition safe by construction rather
+# than by one-off inspection.
+restic_offsite_forget_group_by: host
+# Blast-radius ceiling on `restic forget`. restic-offsitectl dry-runs the exact
+# retention policy before the destructive pass and REFUSES to prune when the
+# delete set is larger than this. Steady state forgets 0-1 snapshots a night, so
+# 3 absorbs a missed-run catch-up while still catching a policy or --group-by
+# change that would walk history out of the repo. A delete set that IS intended
+# is applied by naming it: `restic-offsitectl prune --max-remove <N>`.
+restic_offsite_forget_max_remove: 3
 
 # systemd load-shaping (mirror media-mover: deferential under contention).
 restic_offsite_nice: 10

@@ -306,7 +306,7 @@ Ensure SSH access and proper user configuration on all nodes before running Ansi
 All hosts use the `eric` user for SSH access with passwordless sudo:
 
 - **Proxmox Hosts** (pve-nas-01, pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01): User `eric` with sudo
-- **LXC Containers** (dns-01, dns-02, smtp-relay): User `eric` with sudo
+- **LXC Containers** (dns-01, dns-02, smtp-relay, plex, immich-ml): User `eric` with sudo
 
 Root SSH login is disabled on all hosts.
 
@@ -508,6 +508,21 @@ task terraform:apply
 
 > **Note**: The `task terraform:*` commands are preferred because they inject Cloudflare API credentials and GitLab HTTP state backend auth via `op run`. For manual `terraform` commands, you must export `TF_VAR_cloudflare_api_token`, `TF_VAR_cloudflare_account_id`, and the `TF_HTTP_*` environment variables yourself.
 
+### Phase 9: Deploy the k3s Platform
+
+Base infrastructure is now complete. The k3s cluster (VMs, k3s itself, kube-vip)
+is a separate two-phase deployment — Ansible provisions it, Flux then reconciles
+everything inside it:
+
+```bash
+task k3s:deploy      # provision the 9 VMs + install k3s + kube-vip
+task k3s:status
+```
+
+Full procedure, including the Flux bootstrap and the expected post-bootstrap
+state: [19-k3s-deployment.md](19-k3s-deployment.md), then
+[29-flux-operations.md](29-flux-operations.md) for day-2 operations.
+
 ## Testing and Validation
 
 ### 1. SSH Access
@@ -562,14 +577,15 @@ openssl s_client -connect 192.168.0.151:587 -starttls smtp
 ### 5. NFS Exports
 
 ```bash
-# List exports
+# List exports (from a host in one of the allowed client sets)
 showmount -e 192.168.0.102
 
-# Expected:
-# /export 192.168.0.200/29
-# /export/media 192.168.0.200/29
-# /export/appdata 192.168.0.200/29
-# ...
+# Expect the pseudo-root plus the child exports defined by
+# nas_storage_exports in host_vars/pve-nas-01.yml — /export, /export/appdata,
+# /export/share, /export/media, /export/tank-proxmox, /export/k3s-etcd and the
+# six /export/backups-apps/* targets, each listed against its own client set.
+# Most child exports require xprtsec=tls (docs/07); showmount itself only lists
+# them, it does not prove the TLS handshake works.
 ```
 
 ### 6. Firewall
@@ -763,6 +779,7 @@ After successful deployment:
 1. Review [03-ssh-users.md](03-ssh-users.md) for SSH and user management
 2. Configure quality of life improvements: [04-qol.md](04-qol.md)
 3. Set up Tailscale VPN: [05-tailscale.md](05-tailscale.md)
-4. Plan k3s deployment: [14-post-base-plan.md](14-post-base-plan.md)
+4. Deploy k3s: [19-k3s-deployment.md](19-k3s-deployment.md) (the k3s layer;
+   [14-post-base-plan.md](14-post-base-plan.md) is the superseded historical plan)
 
 Your homelab is now fully operational and managed via GitOps.

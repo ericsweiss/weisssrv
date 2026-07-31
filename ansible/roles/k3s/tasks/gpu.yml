@@ -26,7 +26,7 @@
 # scenario exercises the include + the (network-free) component-enable without a
 # real GPU or NVIDIA packages.
 
-# --- Enable Debian non-free-firmware (GPU firmware; harmless) -----------------
+# Enable Debian non-free-firmware (GPU firmware; harmless)
 - name: Check for the deb822 Debian sources file
   ansible.builtin.stat:
     path: "{{ k3s_gpu_debian_sources_path }}"
@@ -50,7 +50,7 @@
     replace: 'Components: main contrib non-free non-free-firmware'
   when: k3s_gpu_debian_sources.stat.exists | default(false)
 
-# --- NVIDIA container-toolkit apt repository (fingerprint-verified) -----------
+# NVIDIA container-toolkit apt repository (fingerprint-verified)
 - name: Add the NVIDIA container-toolkit apt repository
   ansible.builtin.include_role:
     name: apt_signed_repo
@@ -63,7 +63,7 @@
     apt_signed_repo_install_gnupg: true
   when: not (skip_k3s_gpu_install | default(false))
 
-# --- NVIDIA CUDA apt repository (nvidia-open driver) via the official keyring ----
+# NVIDIA CUDA apt repository (nvidia-open driver) via the official keyring
 # The debian13 CUDA repo InRelease is signed by a key NVIDIA does NOT publish as a
 # standalone .pub (unlike debian12's 3bf863cc.pub, which is a DIFFERENT, older
 # key). Fetching that debian12 .pub left apt unable to verify the debian13
@@ -105,7 +105,7 @@
     update_cache: true
   when: not (skip_k3s_gpu_install | default(false))
 
-# --- Driver + toolkit install -------------------------------------------------
+# Driver + toolkit install
 - name: Install kernel headers for the DKMS driver build
   ansible.builtin.apt:
     name: linux-headers-amd64
@@ -167,7 +167,7 @@
   loop: "{{ ansible_facts.packages.keys() | select('match', nvidia_hold_regex) | sort | list }}"
   when: not (skip_k3s_gpu_install | default(false))
 
-# --- Container-toolkit: accept NVIDIA_VISIBLE_DEVICES for unprivileged pods ----
+# Container-toolkit: accept NVIDIA_VISIBLE_DEVICES for unprivileged pods
 # The DCGM exporter injects the GPU via NVIDIA_VISIBLE_DEVICES=all (it does NOT
 # claim an nvidia.com/gpu device-plugin allocation — see dcgm-exporter.yaml). The
 # container toolkit IGNORES that env var for UNPRIVILEGED pods unless this flag is
@@ -197,7 +197,7 @@
     - not (skip_k3s_gpu_install | default(false))
     - (k3s_gpu_ctk_flag.rc | default(1)) != 0
 
-# --- Verify (best-effort — the module load may need a VM reboot) --------------
+# Verify (best-effort — the module load may need a VM reboot)
 - name: Load the NVIDIA kernel module (best-effort)
   ansible.builtin.command: modprobe nvidia
   changed_when: false

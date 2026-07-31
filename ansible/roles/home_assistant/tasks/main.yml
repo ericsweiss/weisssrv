@@ -5,9 +5,7 @@
 # This role only manages configuration files via SSH/SCP
 # It does NOT attempt to manage the OS itself via Ansible
 
-# ---------------------------------------------------------------------
 # SSH host-key pinning
-# ---------------------------------------------------------------------
 # HAOS exposes SSH on port 22222 as root with no sudo, so we cannot use
 # the standard accept-new TOFU path used elsewhere — a swapped HAOS
 # image would silently re-register a new host key. Instead the operator

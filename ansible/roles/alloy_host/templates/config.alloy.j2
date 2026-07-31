@@ -2,29 +2,49 @@
 
 // Read system journal
 loki.source.journal "system" {
-  forward_to    = [loki.relabel.journal.receiver]
+  // Forward STRAIGHT to loki.write — not through loki.relabel.journal. The
+  // __journal_* metadata only exists inside the source's own relabel pass
+  // (Alloy drops every __-prefixed label before forwarding), so routing the
+  // entries through the loki.relabel component afterwards ran the same rules a
+  // second time against absent source labels: each `target_label` was set to ""
+  // which DELETES it. That silently stripped `unit` from all 23 hosts' journal
+  // streams and left the mail + unbound dashboards' `unit=` panels permanently
+  // empty. loki.relabel below is a rules holder only.
+  forward_to    = [loki.write.default.receiver]
   relabel_rules = loki.relabel.journal.rules
+  // Bound how far back a restarted Alloy re-reads the journal (Alloy's default
+  // is 7h). Loki only accepts out-of-order writes within max_chunk_age/2 of a
+  // stream's newest entry (6h/2 = 3h — kubernetes/infrastructure/observability/
+  // loki/release.yaml), so anything older is rejected `too_far_behind` and lost
+  // after the push. A re-read is only useful if Loki will take it.
+  max_age = {{ alloy_host_journal_max_age | to_json }}
   labels = {
     job  = "journal",
     host = "{{ inventory_hostname }}",
   }
 }
 
-// Add useful labels from journal metadata
+// Journal-metadata relabel rules, consumed by loki.source.journal above via
+// relabel_rules. forward_to is deliberately empty: nothing pushes INTO this
+// component (see the comment above), it exists only to export `rules`.
+//
+// `unit` ONLY, deliberately — every rule here is a Loki STREAM label, so each
+// one multiplies the number of open chunks the ingester holds for up to
+// max_chunk_age (6h). Measured on 16 live hosts: 199 distinct units in 24h
+// (~285 fleet-wide over 23 hosts), which the two dashboards that select on
+// `unit=` need. The rules for `priority` and `hostname` were dropped:
+// __journal_priority_keyword is a pure multiplier (276 unit x priority pairs on
+// the same sample, ~1.4x, ~110 extra streams) with no consumer in any dashboard
+// or rule, and __journal__hostname duplicates the `host` label the source
+// already sets (verified equal on Proxmox hosts, LXC guests and k3s VMs).
+// Loki's per-tenant stream ceiling is pinned alongside these numbers in
+// kubernetes/infrastructure/observability/loki/release.yaml.
 loki.relabel "journal" {
-  forward_to = [loki.write.default.receiver]
+  forward_to = []
 
   rule {
     source_labels = ["__journal__systemd_unit"]
     target_label  = "unit"
-  }
-  rule {
-    source_labels = ["__journal_priority_keyword"]
-    target_label  = "priority"
-  }
-  rule {
-    source_labels = ["__journal__hostname"]
-    target_label  = "hostname"
   }
 }
 

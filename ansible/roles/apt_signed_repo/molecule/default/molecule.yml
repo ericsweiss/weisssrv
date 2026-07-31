@@ -1,9 +1,8 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). This scenario is fully
-# hermetic: converge generates a throwaway signing key locally and serves it
-# over file://, so no network or upstream key is touched.
+# Scenario overrides; shared config in ansible/molecule/base.yml.
+# This scenario is fully hermetic: converge generates a throwaway signing key
+# locally and serves it over file://, so no network or upstream key is
+# touched.
 platforms:
   - name: apt-signed-repo-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest

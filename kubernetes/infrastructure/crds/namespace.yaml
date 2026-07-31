@@ -10,3 +10,9 @@ metadata:
     app.kubernetes.io/name: prometheus-operator-crds
     app.kubernetes.io/part-of: kube-prometheus-stack
     app.kubernetes.io/managed-by: flux
+    # Nothing runs here — the release is CRDs only (no pods, no chart hooks), so
+    # the strictest profile is free and any pod that ever appears is a surprise
+    # worth blocking.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

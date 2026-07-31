@@ -13,9 +13,7 @@
 # - Redis - Cache and session storage
 
 
-# =============================================================================
 # Redis (cache and session storage)
-# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -143,9 +141,7 @@ spec:
   type: ClusterIP
 
 ---
-# =============================================================================
 # Meilisearch (search engine - using v1.15 per official docker-compose)
-# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -264,9 +260,7 @@ spec:
   type: ClusterIP
 
 ---
-# =============================================================================
 # Bar Assistant API (Laravel backend with SQLite)
-# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -315,7 +309,6 @@ spec:
           effect: PreferNoSchedule
       containers:
         - name: bar-assistant
-          # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: barassistant/server:${bar_assistant_version}
           imagePullPolicy: IfNotPresent
           securityContext:
@@ -445,9 +438,7 @@ spec:
   type: ClusterIP
 
 ---
-# =============================================================================
 # Salt Rim Configuration (config.js)
-# =============================================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -462,9 +453,7 @@ data:
     };
 
 ---
-# =============================================================================
 # Salt Rim (Bar Assistant Web UI)
-# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -520,7 +509,6 @@ spec:
           type: RuntimeDefault
       containers:
         - name: salt-rim
-          # Version managed in ansible/inventories/prod/group_vars/all.yml
           image: barassistant/salt-rim:${salt_rim_version}
           imagePullPolicy: IfNotPresent
           securityContext:

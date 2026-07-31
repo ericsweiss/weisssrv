@@ -9,8 +9,10 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
 - Dataset verification and property enforcement (datasets are created
   manually; a missing dataset fails the deploy — see `tasks/zfs.yml`)
 - Automated periodic snapshots via zfs-auto-snapshot
-- Optional ARC cap: when `zfs_arc_max_bytes` is set (host_vars; 6711934976
-  ≈ 6.25 GiB on pve-nas-01), renders `/etc/modprobe.d/zfs.conf` with
+- Optional ARC cap: when `zfs_arc_max_bytes` is set (the live value is in
+  `host_vars/pve-nas-01.yml` — 4 GiB, sized against the app VMs and the
+  ballooning floors, not the ~6.25 GiB this README used to claim), renders
+  `/etc/modprobe.d/zfs.conf` with
   `options zfs zfs_arc_max=<bytes>` and notifies an `Update initramfs`
   handler so the cap applies at early boot, before the pools import. It also
   applies the value to the running kernel via
@@ -210,6 +212,7 @@ pve-nas-01
 ├─ Samba: Shares to LAN
 ├─ Media Mover: nvme → tank (06:00 daily, load-shaped)
 ├─ Archive backup: archive-backupctl → archive pool (06:30 nightly)
+├─ /etc/pve archive: pve-cluster-backup → tank/backups/apps/pve-cluster (02:15 nightly)
 ├─ Swap reset: swap-clean → ARC-shrink + optional graceful guest-stop (07:00 daily)
 └─ SMART: Monitoring + alerts
 ```
@@ -223,6 +226,23 @@ pve-nas-01
 - `tasks/mergerfs.yml` - Unified media directory
 - `tasks/media_mover.yml` - Automated file mover
 - `tasks/archive_backup.yml` - Nightly ZFS replication to the archive pool
+- `tasks/pve_cluster_backup.yml` - Nightly `/etc/pve` (pmxcfs) tar into the
+  offsite-eligible landing zone. vzdump backs up GUESTS, not the cluster
+  filesystem, so `user.cfg` (users/ACLs/API tokens), `corosync.conf` and `priv/`
+  (cluster CA + node certs + `authkey.pub`) had no backup at any tier. Opt-in via
+  `nas_pve_cluster_backup_enabled`; the archive holds private key material and is
+  root-only 0700/0600 at every hop, with no NFS export. Fails closed on BOTH
+  mounts: an unmounted `tank/backups` would shadow-write the archive onto the
+  root filesystem (`nas_backup_require_mounted_dataset`), and an unmounted
+  pmxcfs — `/etc/pve` still exists as an empty directory when
+  `pve-cluster.service` is down — would tar to a 112-byte "successful" backup
+  of nothing and retire the real archives via retention
+  (`nas_pve_cluster_backup_require_src_mount`).
+- `tasks/backup_metrics.yml` - NAS-side backup-artifact freshness collector. Each
+  app declares an artefact GLOB (`nas_backup_artifact_apps[].pattern`) so only
+  restorable files count — while it matched any file, GitLab's nightly
+  `gitlab.rb`/`gitlab-secrets.json` copies kept `BackupArtifactStale` green
+  through four days with no tarball in the landing zone.
 - `tasks/swap_clean.yml` - Nightly swap reset timer (`swap-clean.{sh,service,timer}.j2`)
 - `tasks/smartd.yml` - SMART monitoring
 - `templates/*` - Configuration templates

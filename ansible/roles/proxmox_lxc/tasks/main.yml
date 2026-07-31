@@ -124,6 +124,7 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell:
     cmd: |
+      set -euo pipefail
       if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
         pvesh create /pools --poolid {{ item }}
         echo "created"
@@ -416,22 +417,32 @@
 # The mapping format: container-uid:host-uid:count
 - name: Configure UID/GID mapping (standard)
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    CONF_FILE="/etc/pve/lxc/{{ container_id }}.conf"
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      CONF_FILE="/etc/pve/lxc/{{ container_id }}.conf"
+      # Guard before the redirect: `>` creates .tmp before grep runs, and grep
+      # exits 1 on an unreadable/absent file — with the old `|| true` the mv
+      # then REPLACED the container config with an empty file plus the idmap
+      # lines appended below. Fail instead.
+      [ -f "$CONF_FILE" ] || { echo "missing $CONF_FILE" >&2; exit 1; }
 
-    # Remove default lxc.idmap entries created by Proxmox
-    grep -v "^lxc.idmap" "$CONF_FILE" > "${CONF_FILE}.tmp" || true
-    mv "${CONF_FILE}.tmp" "$CONF_FILE"
+      # Remove default lxc.idmap entries created by Proxmox. grep exits 1 when
+      # it matches nothing (a config with no idmap lines yet), which is normal
+      # here and not an error — hence the `|| [ $? -eq 1 ]`.
+      grep -v "^lxc.idmap" "$CONF_FILE" > "${CONF_FILE}.tmp" || [ $? -eq 1 ]
+      mv "${CONF_FILE}.tmp" "$CONF_FILE"
 
-    # UID mapping - passthrough for eric (1000)
-    echo "lxc.idmap: u 0 100000 1000" >> "$CONF_FILE"
-    echo "lxc.idmap: u 1000 1000 1" >> "$CONF_FILE"
-    echo "lxc.idmap: u 1001 101001 64535" >> "$CONF_FILE"
+      # UID mapping - passthrough for eric (1000)
+      echo "lxc.idmap: u 0 100000 1000" >> "$CONF_FILE"
+      echo "lxc.idmap: u 1000 1000 1" >> "$CONF_FILE"
+      echo "lxc.idmap: u 1001 101001 64535" >> "$CONF_FILE"
 
-    # GID mapping - passthrough for media (2000)
-    echo "lxc.idmap: g 0 100000 2000" >> "$CONF_FILE"
-    echo "lxc.idmap: g 2000 2000 1" >> "$CONF_FILE"
-    echo "lxc.idmap: g 2001 102001 63535" >> "$CONF_FILE"
+      # GID mapping - passthrough for media (2000)
+      echo "lxc.idmap: g 0 100000 2000" >> "$CONF_FILE"
+      echo "lxc.idmap: g 2000 2000 1" >> "$CONF_FILE"
+      echo "lxc.idmap: g 2001 102001 63535" >> "$CONF_FILE"
   when:
     - not ansible_check_mode
     - container_exists.rc != 0
@@ -454,11 +465,16 @@
     video_gid: "{{ host_video_gid }}"
     render_gid: "{{ host_render_gid }}"
   ansible.builtin.shell:
+    executable: /bin/bash
     cmd: |
+      set -euo pipefail
       CONF_FILE="/etc/pve/lxc/{{ container_id }}.conf"
+      # See the guard rationale on "Configure UID/GID mapping (standard)".
+      [ -f "$CONF_FILE" ] || { echo "missing $CONF_FILE" >&2; exit 1; }
 
-      # Remove default lxc.idmap entries created by Proxmox
-      grep -v "^lxc.idmap" "$CONF_FILE" > "${CONF_FILE}.tmp" || true
+      # Remove default lxc.idmap entries created by Proxmox (grep exits 1 when
+      # there are none, which is normal).
+      grep -v "^lxc.idmap" "$CONF_FILE" > "${CONF_FILE}.tmp" || [ $? -eq 1 ]
       mv "${CONF_FILE}.tmp" "$CONF_FILE"
 
       # UID mapping - passthrough for eric (1000)

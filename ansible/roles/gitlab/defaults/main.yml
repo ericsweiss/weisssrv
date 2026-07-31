@@ -166,6 +166,11 @@ gitlab_backup_nfs_server: "pve-nas-01.esweiss.com"
 gitlab_backup_nfs_export: "/backups-apps/gitlab"
 gitlab_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
 gitlab_backup_mountpoint: "/mnt/backups-offsite"
+# The Rails config `gitlab-ctl reconfigure` renders from gitlab.rb. The role
+# reads it back to prove the backup path actually converged — gitlab.rb alone is
+# inert, and a lost `notify: Reconfigure gitlab` once left the two disagreeing
+# for four days with no offsite tarball and every metric green.
+gitlab_effective_rails_config: "/var/opt/gitlab/gitlab-rails/etc/gitlab.yml"
 # Components excluded from the tarball (gitlab-backup SKIP=). The container
 # registry was ~7.5G and CI artifacts ~1.4G — vs a 16K repo — so unfiltered
 # backups were ~6.5-8.5G/day and overran the 99G OS disk (DiskUsageCritical ->

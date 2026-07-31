@@ -22,7 +22,7 @@ source "$WORK/lib.sh"
 PROM_FILE="$WORK/restic_offsite.prom"
 VERIFY_PROM_FILE="$WORK/restic_offsite_verify.prom"
 
-# --- write_prom_metrics: a failed run preserves the last-success timestamp ---
+# write_prom_metrics: a failed run preserves the last-success timestamp
 printf 'restic_offsite_last_success_timestamp_seconds 1650000000\n' > "$PROM_FILE"
 write_prom_metrics 0 42 0 0
 grep -qx 'restic_offsite_last_run_success 0' "$PROM_FILE" \
@@ -36,7 +36,7 @@ grep -qx 'restic_offsite_last_run_success 1' "$PROM_FILE" || fail "success not w
 grep -qx 'restic_offsite_repo_size_bytes 123' "$PROM_FILE" || fail "repo size gauge missing"
 grep -qx 'restic_offsite_snapshot_total_bytes 45' "$PROM_FILE" || fail "snapshot size gauge missing"
 
-# --- write_verify_metrics: preservation mirrors the run metric ---
+# write_verify_metrics: preservation mirrors the run metric
 printf 'restic_offsite_last_verify_timestamp_seconds 1640000000\n' > "$VERIFY_PROM_FILE"
 write_verify_metrics 0
 grep -qx 'restic_offsite_last_verify_success 0' "$VERIFY_PROM_FILE" \
@@ -44,7 +44,7 @@ grep -qx 'restic_offsite_last_verify_success 0' "$VERIFY_PROM_FILE" \
 grep -qx 'restic_offsite_last_verify_timestamp_seconds 1640000000' "$VERIFY_PROM_FILE" \
   || fail "verify failure did not preserve the last-verify timestamp"
 
-# --- snap_age_seconds: parses archsync-YYYYMMDD-HHMMSS names ---
+# snap_age_seconds: parses archsync-YYYYMMDD-HHMMSS names
 old_age="$(snap_age_seconds archsync-20200101-000000)"
 [ "$old_age" -gt 100000000 ] || fail "old snapshot age not large ($old_age)"
 now_name="archsync-$(date -u +%Y%m%d-%H%M%S)"

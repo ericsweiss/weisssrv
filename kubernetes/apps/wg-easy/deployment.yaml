@@ -89,7 +89,7 @@ spec:
           image: ghcr.io/wg-easy/wg-easy:${wg_easy_version}
           imagePullPolicy: IfNotPresent
           env:
-            # --- First-boot bootstrap (INIT_*) -------------------------------
+            # First-boot bootstrap (INIT_*)
             # Applied ONLY when /etc/wireguard has no database yet. Editing these
             # later is a no-op; change config in the UI. See docs/38.
             - name: INIT_ENABLED
@@ -127,7 +127,7 @@ spec:
             # route.
             - name: INIT_ALLOWED_IPS
               value: "0.0.0.0/0"
-            # --- Runtime config ----------------------------------------------
+            # Runtime config
             # v4-only: the LAN has no working IPv6 egress, so an IPv6 tunnel
             # would black-hole. Disables v6 interface addrs + firewall rules.
             - name: DISABLE_IPV6

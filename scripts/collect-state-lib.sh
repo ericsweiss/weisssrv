@@ -8,7 +8,7 @@
 # it is safe to `source` from both collect-state.sh and the pytest harness.
 # None of the functions call ssh/kubectl/curl themselves.
 
-# --- secret redaction --------------------------------------------------------
+# secret redaction
 
 # Redaction patterns using POSIX-compatible character classes
 # Note: Use [[:space:]] instead of \s and [^[:space:]] instead of \S for portability
@@ -75,7 +75,44 @@ redact_file() {
         ' > "$outfile"
 }
 
-# --- tri-state health classification -----------------------------------------
+# remote section emitters
+# collect-state.sh's remote bodies used to write `producer | head -N || echo
+# "none"`. Both halves of that are broken: a pipeline exits with head's status
+# so the `|| echo` fallback is dead (a failed probe renders as an EMPTY section,
+# indistinguishable from "nothing to report"), and the cap is applied silently
+# so a clipped section is indistinguishable from a complete one. These two
+# helpers replace the idiom; collect-state.sh injects them into every remote
+# body via `declare -f` so the same unit-tested code runs on the host.
+#
+# cs_capped <cap> <fallback> — read a producer's output on stdin, print at most
+# <cap> lines (cap 0 = uncapped), print <fallback> when the producer emitted
+# nothing, and append an explicit truncation marker when the cap clipped output.
+# The whole stream is consumed (rather than closing the pipe like `head`) so the
+# marker can report the real total and the producer never takes SIGPIPE.
+cs_capped() {
+    local cap=$1 fallback=$2 n=0 line
+    # `|| [ -n "$line" ]` keeps a final unterminated line (kubectl -o jsonpath
+    # emits one) from being silently dropped by read's non-zero exit.
+    while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n + 1))
+        if [ "$cap" -eq 0 ] || [ "$n" -le "$cap" ]; then
+            printf '%s\n' "$line"
+        fi
+    done
+    if [ "$n" -eq 0 ]; then
+        printf '%s\n' "$fallback"
+    elif [ "$cap" -ne 0 ] && [ "$n" -gt "$cap" ]; then
+        printf '  ... (truncated: showing %s of %s lines)\n' "$cap" "$n"
+    fi
+}
+
+# cs_emit <fallback> — uncapped cs_capped, for sections that must never be
+# clipped (ZFS datasets, df: the DR-critical inventories) or are short anyway.
+cs_emit() {
+    cs_capped 0 "$1"
+}
+
+# tri-state health classification
 # Both collect-state modes feed these classifiers from the shared probes
 # (see the SH-3 block in collect-state.sh). The regular/--json differences
 # (host-coverage floor, all-collected-hosts strictness) are deliberate and
@@ -84,31 +121,42 @@ redact_file() {
 
 # classify_regular <pve_reachable> <k3s_api_ok true|false> <k3s_ready> <k3s_total> \
 #                  <hosts_ok> <hosts_total> <coverage_pct> <coverage_floor> \
-#                  <flux_not_ready> <zfs_degraded> <gitlab_ok 0|1>
+#                  <flux_not_ready> <zfs_degraded> <gitlab_ok 0|1> \
+#                  <sections_ok> <sections_total> <alerts_firing>
 # Prints the regular-mode verdict:
 #   FAILED  (red)    catastrophic — no Proxmox host reachable, OR K3s API
 #                    reachable but zero nodes Ready, OR coverage below floor.
-#   OK      (green)  full host coverage, all k3s nodes Ready, zero Flux
-#                    not-ready, zero non-ONLINE ZFS pools, GitLab healthy.
+#   OK      (green)  full host coverage, every specialised collector section
+#                    collected, all k3s nodes Ready, zero Flux not-ready, zero
+#                    non-ONLINE ZFS pools, GitLab healthy, no firing alerts.
 #   PARTIAL (yellow) anything else with core infra still up.
 # The K3s catastrophic check is gated on k3s_api_ok so a missing/misconfigured
 # local kubeconfig produces PARTIAL (visibly degraded) rather than a false
 # FAILED that hides the per-host SSH collection.
+# sections_ok/sections_total are regular-only (the --json branch runs no
+# specialised collectors): a Proxmox/DNS/k3s/GitLab/compose block that failed
+# its own SSH used to leave "Failed (rc=N)" in the artifact while the header
+# still read OK, because only collect_host fed the host counters.
+# alerts_firing counts non-Watchdog Alertmanager alerts; it degrades but never
+# fails a run (the artifact is still worth keeping when the cluster is noisy).
 classify_regular() {
     local pve_reachable="$1" k3s_api_ok="$2" k3s_ready="$3" k3s_total="$4"
     local hosts_ok="$5" hosts_total="$6" coverage_pct="$7" coverage_floor="$8"
     local flux_not_ready="$9" zfs_degraded="${10}" gitlab_ok="${11}"
+    local sections_ok="${12}" sections_total="${13}" alerts_firing="${14}"
     if [ "$pve_reachable" -eq 0 ] \
        || { [ "$k3s_api_ok" = true ] && [ "$k3s_ready" -eq 0 ]; } \
        || [ "$coverage_pct" -lt "$coverage_floor" ]; then
         echo "FAILED"
     elif [ "$hosts_ok" -eq "$hosts_total" ] \
+         && [ "$sections_ok" -eq "$sections_total" ] \
          && [ "$k3s_api_ok" = true ] \
          && [ "$k3s_total" -gt 0 ] \
          && [ "$k3s_ready" -eq "$k3s_total" ] \
          && [ "$flux_not_ready" -eq 0 ] \
          && [ "$zfs_degraded" -eq 0 ] \
-         && [ "$gitlab_ok" -eq 1 ]; then
+         && [ "$gitlab_ok" -eq 1 ] \
+         && [ "$alerts_firing" -eq 0 ]; then
         echo "OK"
     else
         echo "PARTIAL"
@@ -143,7 +191,7 @@ classify_json() {
     fi
 }
 
-# --- collect_compose_app section dispatch ------------------------------------
+# collect_compose_app section dispatch
 # collect-state.sh's NAS-pinned docker-compose app block (Nextcloud/Immich/
 # Immich-ML) renders optional sections only for the apps that have them; a "-"
 # argument means "this app lacks that section". Pulling the sentinel→sections
@@ -168,7 +216,7 @@ compose_active_sections() {
     echo "$out"
 }
 
-# --- firewall guest .fw enumeration ------------------------------------------
+# firewall guest .fw enumeration
 # The Proxmox host report enumerates every per-guest firewall config
 # (/etc/pve/firewall/<vmid>.fw) rather than a hand-maintained VMID list that
 # silently dropped new guests. This is the pure filter behind it: read candidate

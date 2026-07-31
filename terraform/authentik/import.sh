@@ -7,12 +7,12 @@
 # writes Terraform state — it never modifies authentik objects and never
 # applies configuration.
 #
-# ORDER MATTERS: providers first, then groups, then applications. The legacy
-# import command validates the whole configuration on every invocation, and
-# local.applications references the provider resources — importing an
-# application before its provider exists in state would evaluate against an
-# unknown provider (fine), but the reverse order keeps every evaluation fully
-# known and mirrors the resource dependency graph.
+# Order mirrors the dependency graph: providers, then groups, then
+# applications. `terraform import` validates the whole configuration on every
+# invocation and local.applications references the provider resources, so
+# importing in dependency order keeps every evaluation fully known. The reverse
+# order still succeeds (an unresolved provider evaluates as unknown), so this is
+# a legibility choice, not a correctness one.
 #
 # Invoke via `task terraform:authentik-import` (wraps this in `op run` with
 # the TF_VAR_* credentials and TF_HTTP_* state backend env).
@@ -67,6 +67,25 @@ authentik_application.app["pulsarr"]|pulsarr
 authentik_application.app["qbittorrent"]|qbittorrent
 authentik_application.app["tv"]|tv
 '
+
+# The application slugs above are a hand-maintained copy of local.applications'
+# keys. A new app added to applications.tf without a line here would be silently
+# left out of the DR bootstrap — and only noticed when the post-import plan
+# proposes CREATING an application that already exists. Fail loudly instead.
+# (Only local.applications is checkable this way: the Terraform-AUTHORED
+# objects deliberately have no import entry — see the imports.tf header.)
+declared_apps="$(awk '/^  applications = \{/,/^  \}$/' applications.tf \
+  | grep -oE '^    [a-zA-Z0-9_-]+ = \{' | awk '{print $1}' | sort)"
+listed_apps="$(printf '%s\n' "${IMPORTS}" \
+  | sed -n 's/^authentik_application\.app\["\([^"]*\)"\].*/\1/p' | sort)"
+if [ "${declared_apps}" != "${listed_apps}" ]; then
+  echo "ERROR: import.sh's application list is out of sync with local.applications." >&2
+  echo "Only in applications.tf:" >&2
+  comm -23 <(printf '%s\n' "${declared_apps}") <(printf '%s\n' "${listed_apps}") >&2
+  echo "Only in import.sh:" >&2
+  comm -13 <(printf '%s\n' "${declared_apps}") <(printf '%s\n' "${listed_apps}") >&2
+  exit 1
+fi
 
 STATE="$(terraform state list 2>/dev/null || true)"
 imported=0

@@ -1,5 +1,21 @@
 ---
+# Namespace for the NVIDIA device plugin DaemonSet (pve-prec-01 GTX 1660 Ti —
+# docs/43-gpu-passthrough.md).
+#
+# pod-security enforce=privileged: the plugin mounts the host device tree and
+# talks to the kubelet device-plugin socket, which baseline/restricted forbid.
+# It ran that way already (an unlabelled namespace defaults to privileged) — the
+# labels make it an explicit, reviewable decision scoped to this namespace, and
+# restore the warn/audit signal for anything else that lands here. Matches the
+# tailscale namespace, the other privileged platform component.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: nvidia-device-plugin
+  labels:
+    app.kubernetes.io/name: nvidia-device-plugin
+    app.kubernetes.io/part-of: gpu
+    app.kubernetes.io/managed-by: flux
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged

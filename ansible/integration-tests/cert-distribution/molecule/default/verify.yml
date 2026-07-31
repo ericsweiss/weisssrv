@@ -8,9 +8,7 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # acme.sh Installation Verification
-    # ============================================
     - name: Check acme.sh is installed
       ansible.builtin.stat:
         path: /root/.acme.sh/acme.sh
@@ -33,9 +31,7 @@
       ansible.builtin.debug:
         msg: "acme.sh account configured: {{ acme_account.stat.exists }}"
 
-    # ============================================
     # Certificate Files Verification
-    # ============================================
     - name: Check certificate directories exist
       ansible.builtin.stat:
         path: "/root/.acme.sh/{{ item.domain }}"
@@ -81,9 +77,7 @@
         success_msg: "Private key exists with correct permissions for {{ item.item.domain }}"
       loop: "{{ key_files.results }}"
 
-    # ============================================
     # SSH Key Setup Verification (matches role output)
-    # ============================================
     - name: Check SSH private key for distribution
       ansible.builtin.stat:
         path: /home/eric/.ssh/id_ed25519_certs
@@ -151,9 +145,7 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # Certificate Directory Verification
-    # ============================================
     - name: Check certificate directory exists
       ansible.builtin.stat:
         path: /etc/ssl/certs/wildcard
@@ -167,9 +159,7 @@
         fail_msg: "Certificate directory not created"
         success_msg: "Certificate directory exists"
 
-    # ============================================
     # Distributed Certificate Verification
-    # ============================================
     - name: Check for distributed fullchain certificate
       ansible.builtin.stat:
         path: /etc/ssl/certs/wildcard/fullchain.pem
@@ -222,9 +212,7 @@
         fail_msg: "Distributed private key does not contain valid PEM content"
         success_msg: "Distributed private key contains valid PEM content"
 
-    # ============================================
     # SSH Connectivity Verification
-    # ============================================
     - name: Check SSH service is running
       ansible.builtin.systemd:
         name: ssh
@@ -256,9 +244,7 @@
         fail_msg: "cert-distribution pubkey missing from {{ admin_username }}'s authorized_keys"
         success_msg: "cert-distribution key present in authorized_keys ({{ authorized_key_check.stdout }})"
 
-    # ============================================
     # Forced-command receiver hardening verification
-    # ============================================
     - name: Check the forced-command receiver was deployed
       ansible.builtin.stat:
         path: /usr/local/sbin/cert-receive

@@ -83,7 +83,6 @@ spec:
       # no other project's jobs can reach root+DinD execution (docs/27 Step 8).
       protected: false
 
-      # Executor type
       executor: kubernetes
 
       # Kubernetes executor config
@@ -124,8 +123,10 @@ spec:
             # the dominant CPU consumer during converge (~0.9 cpu actively driving
             # tasks), so request 900m — the earlier 250m under-reserved and let
             # the scheduler over-pack small nodes (see the concurrent: note).
-            # cpu_limit stays generous (bursty ansible).
-            cpu_limit = "4"
+            # No cpu_limit: the repo-wide no-CPU-limit policy (docs/33) applies
+            # to job pods too. CPU is compressible, cpu_request already sets the
+            # contention share, and the namespace ResourceQuota deliberately
+            # carries no cpu/limits.cpu dimension (resourcequota.yaml).
             cpu_request = "900m"
             memory_limit = "1Gi"
             memory_request = "384Mi"
@@ -136,7 +137,11 @@ spec:
             # CPU request 500m reserves the dind daemon + the systemd test
             # container's steady CPU (build 900m + dind 500m + helper 100m ≈ the
             # ~1.5 cpu a real converge uses, so per-node packing matches reality).
-            service_cpu_limit = "2"
+            # No service_cpu_limit: dind's load is burst-shaped (image unpack,
+            # parallel molecule containers), and the 2-core limit throttled it
+            # for 28-46% of CFS periods across every measured job pod — pure
+            # CI wall-clock loss, which is exactly what docs/33 says a CPU limit
+            # buys you.
             service_cpu_request = "500m"
             service_memory_limit = "2Gi"
             service_memory_request = "512Mi"

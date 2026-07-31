@@ -20,6 +20,13 @@ timeout_cmd() {
     elif command -v gtimeout >/dev/null 2>&1; then
         gtimeout "$seconds" "$@"
     else
+        # Warn once per shell: silently losing the wall-clock backstop turns a
+        # bounded probe into an indefinite hang on a host that connects and then
+        # stalls, and the operator has no way to tell that happened.
+        if [ -z "${_SHELL_LIB_TIMEOUT_WARNED:-}" ]; then
+            echo "warning: neither timeout(1) nor gtimeout(1) found — probes run UNBOUNDED (macOS: brew install coreutils)" >&2
+            _SHELL_LIB_TIMEOUT_WARNED=1
+        fi
         "$@"
     fi
 }

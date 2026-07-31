@@ -104,9 +104,26 @@
     # acme_certs), so a changed/unknown host key fails loudly here exactly as
     # the real cert push would — accept-new would mask that. Loops over every
     # cert_distribution_target rather than two hardcoded hosts.
+    #
+    # The payload is NOT an arbitrary command. Every sudo target pins the
+    # distribution pubkey with command="sudo /usr/local/sbin/cert-receive",restrict,
+    # so the remote command is REPLACED by the receiver: the previous
+    # `'echo success'` + `failed_when: 'success' not in stdout` could never pass
+    # (the receiver answers "FAIL: empty bundle" on stderr and exits 3), leaving
+    # `task infra:verify` permanently red on this check.
+    #
+    # Instead, assert the forced command's own refusal: `ssh -n` (empty stdin)
+    # must produce rc 3 and "FAIL: empty bundle". Reaching that message proves
+    # host-key pin + key auth + forced command + sudoers + receiver install all
+    # at once — strictly more than `echo success` ever did. ssh's own failures
+    # (255 host-key/auth) and any other receiver rc are still errors.
+    #
+    # ssh_no_sudo targets (HAOS) have no receiver and no forced command — their
+    # authorized_keys is pasted by hand — so there the payload really does run
+    # and `echo success` is the correct assertion.
     - name: Test SSH to each certificate distribution target
       ansible.builtin.command: >-
-        ssh -i /home/eric/.ssh/id_ed25519_certs
+        ssh -n -i /home/eric/.ssh/id_ed25519_certs
         -o BatchMode=yes
         -o StrictHostKeyChecking=yes
         -o UserKnownHostsFile=/root/.ssh/known_hosts
@@ -114,8 +131,15 @@
         -p {{ item.ssh_port | default(22) }}
         {{ item.ssh_user | default('eric') }}@{{ item.ip }} 'echo success'
       changed_when: false
+      # infra:verify is routinely run with --check; without this the command is
+      # skipped, cert_target_ssh has no rc/stdout, and failed_when explodes.
+      check_mode: false
       register: cert_target_ssh
-      failed_when: "'success' not in cert_target_ssh.stdout"
+      failed_when: >-
+        (item.ssh_no_sudo | default(false))
+        | ternary('success' not in cert_target_ssh.stdout,
+                  cert_target_ssh.rc != 3
+                  or 'FAIL: empty bundle' not in cert_target_ssh.stderr)
       loop: "{{ cert_distribution_targets }}"
       loop_control:
         label: "{{ item.host }} ({{ item.ip }})"
@@ -243,12 +267,16 @@
     - name: Verify MergerFS mounts
       ansible.builtin.command: findmnt -t fuse.mergerfs -o TARGET,SOURCE
       changed_when: false
-      register: mergerfs_mounts
-      failed_when: mergerfs_mounts.rc != 0
+      # NOT `mergerfs_mounts`: a registered var is a host fact for the rest of
+      # the run and outranks host_vars, so registering that name would shadow
+      # pve-nas-01's real mergerfs_mounts table (host_vars/pve-nas-01.yml) with
+      # a command result for every later play on the host.
+      register: postflight_mergerfs_check
+      failed_when: postflight_mergerfs_check.rc != 0
 
     - name: Display MergerFS mounts
       ansible.builtin.debug:
-        msg: "{{ mergerfs_mounts.stdout_lines }}"
+        msg: "{{ postflight_mergerfs_check.stdout_lines }}"
 
     - name: Check disk space on critical mounts
       ansible.builtin.command: df -h
@@ -344,8 +372,10 @@
     - name: Check NFS exports are active
       ansible.builtin.command: showmount -e localhost
       changed_when: false
-      register: nfs_exports
-      failed_when: "'/export' not in nfs_exports.stdout"
+      # Renamed for the same reason as postflight_mergerfs_check above: plain
+      # `nfs_exports` is pve-nas-01's 12-entry export table in host_vars.
+      register: postflight_nfs_exports_check
+      failed_when: "'/export' not in postflight_nfs_exports_check.stdout"
 
     - name: Verify Samba is running
       ansible.builtin.service:
@@ -386,9 +416,15 @@
       when: media_mover_enabled | default(false) and mover_status.rc == 0
 
 # gitlab_servers included: the gitlab VM carries the gitlab-repos zvol via the
-# same vm_additional_disks mechanism as the k3s agents.
-- name: Verify persistent storage mounts (k3s + gitlab)
-  hosts: k3s:gitlab_servers
+# same vm_additional_disks mechanism as the k3s agents. nextcloud_servers and
+# immich_servers likewise carry three passthrough zvols each — five of the six
+# on encrypted pools that must be unlocked before pve-start-encrypted-guests
+# starts the guest, so this is exactly where docs/32's failure mode (a guest
+# started with an unmounted passthrough disk, writing into the empty
+# mountpoint directory) has to be caught. The tasks already loop
+# `vm_additional_disks | default([])`, so the host pattern is the only change.
+- name: Verify persistent storage mounts (k3s + gitlab + nextcloud + immich)
+  hosts: k3s:gitlab_servers:nextcloud_servers:immich_servers
   become: true
   tasks:
     - name: Verify additional disk mount points

@@ -1,10 +1,6 @@
 ---
 # GitLab EE installation and configuration
 
-# =============================================================================
-# Mount additional persistent disks (ZFS zvols)
-# =============================================================================
-
 # Mount additional persistent disks (ZFS zvols attached as SCSI devices by proxmox_vm role)
 - name: Mount additional persistent disks
   ansible.builtin.include_role:
@@ -13,9 +9,7 @@
     zvol_mount_disks: "{{ vm_additional_disks | default([]) }}"
   when: vm_additional_disks is defined and vm_additional_disks | length > 0
 
-# =============================================================================
 # Prepare GitLab data directories
-# =============================================================================
 # If using separate storage for repositories, create the git-data directory
 # with proper ownership. The 'git' user/group (998:998) is created by GitLab.
 
@@ -30,9 +24,7 @@
   when: gitlab_git_data_dir != '/var/opt/gitlab/git-data'
   notify: Reconfigure gitlab
 
-# =============================================================================
 # Relocate the Container Registry blob store onto external storage (one-time)
-# =============================================================================
 # The registry blob store (~7.5G, the largest runit-supervised component and the
 # DiskUsageCritical culprit) defaults to the Omnibus path on the OS disk. When
 # gitlab_registry_data_dir points off-disk (prod: the /mnt/gitlab-repos zvol),
@@ -158,9 +150,7 @@
 # Ownership is set after GitLab install (git user doesn't exist yet)
 # See task below: "Set ownership on git-data directory"
 
-# =============================================================================
 # GitLab Installation
-# =============================================================================
 
 - name: Validate required SMTP credentials
   ansible.builtin.assert:
@@ -211,9 +201,7 @@
     update_cache: true
   when: not (skip_gitlab_install | default(false))
 
-# =============================================================================
 # Kernel tuning required by GitLab Omnibus Redis
-# =============================================================================
 # Two settings the upstream Redis docs require, applied here because Omnibus
 # does not manage them itself:
 #
@@ -418,21 +406,21 @@
     - git_data_stat.stat.exists
     - git_data_stat.stat.pw_name != 'git' or git_data_stat.stat.gr_name != 'git'
 
-- name: Deploy gitlab.rb configuration
-  ansible.builtin.template:
-    src: gitlab.rb.j2
-    dest: /etc/gitlab/gitlab.rb
-    owner: root
-    group: root
-    mode: '0600'
-  no_log: true
-  notify: Reconfigure gitlab
-
 # Backup landing. Prod relocates it onto the offsite-eligible tank/backups/apps
 # NFS export so the tarball + gitlab-secrets.json + gitlab.rb ride the archsync
 # file walk into restic B2. When NFS-backed, the NAS owns the (all_squashed,
 # 1000:2000, 02775) export dir — the role only mounts it and must NOT chown it;
 # the git-user tarball + the root-run secrets copy both squash to 1000:2000.
+#
+# ORDERING (do not move below the gitlab.rb template): this task used to sit
+# immediately AFTER the template. A mount failure therefore aborted the play one
+# task after `Deploy gitlab.rb configuration` reported changed — and Ansible does
+# not flush handlers on a failed play, so `notify: Reconfigure gitlab` was lost.
+# Because the template is idempotent it never re-fired, leaving gitlab.rb's new
+# backup_path permanently unapplied: four days of tarballs written to the VM OS
+# disk with zero offsite copy while every backup metric stayed green.
+# Mounting first also means `gitlab-ctl reconfigure` can never create a local
+# directory that masks the export mountpoint.
 - name: Mount the offsite backup NFS export
   ansible.posix.mount:
     path: "{{ gitlab_backup_mountpoint }}"
@@ -453,11 +441,93 @@
     mode: '0700'
   when: not (gitlab_backup_nfs_enabled | default(false))
 
+# Omnibus ships its own ruby; the host has none. Used below to syntax-check
+# gitlab.rb before it lands, so a bad render fails the task instead of the
+# reconfigure that follows it. Absent on a --skip-install / pre-install run,
+# where validation is simply skipped.
+- name: Check for the Omnibus embedded ruby (gitlab.rb validation)
+  ansible.builtin.stat:
+    path: /opt/gitlab/embedded/bin/ruby
+  register: gitlab_embedded_ruby
+
+- name: Deploy gitlab.rb configuration
+  ansible.builtin.template:
+    src: gitlab.rb.j2
+    dest: /etc/gitlab/gitlab.rb
+    owner: root
+    group: root
+    mode: '0600'
+    # gitlab.rb is executed as Ruby by `gitlab-ctl reconfigure`; a syntax error
+    # here (e.g. an interpolated credential that broke out of its string) would
+    # otherwise be discovered mid-chef-run, on a live GitLab, by the handler.
+    validate: "{{ '/opt/gitlab/embedded/bin/ruby -c %s' if gitlab_embedded_ruby.stat.exists else omit }}"
+  no_log: true
+  notify: Reconfigure gitlab
+
+# gitlab.rb -> Rails convergence guard
+# gitlab.rb is inert until `gitlab-ctl reconfigure` renders it into the Rails
+# config. The template above only NOTIFIES that handler, so any later failure in
+# this play (or an operator Ctrl-C) drops the reconfigure — and since the
+# template is idempotent, no subsequent run re-notifies it. The tasks below
+# compare the CONVERGED state instead of relying on a notify surviving, then
+# flush immediately so the reconfigure is not hostage to the rest of the play.
+# Nothing between the gitlab.rb template above and the flush_handlers below may
+# fail the play: gitlab.rb has already changed on disk, the template is
+# idempotent, and a failure here would strand the notify exactly as the original
+# four-day silent-divergence incident did. The slurp is `failed_when: false`,
+# but the parse chain below it is not inherently safe (a truncated or
+# partially-written gitlab.yml, a non-mapping `production`), so the whole guard
+# runs inside a block whose rescue swallows the failure and falls through to the
+# flush. Losing the guard costs a drift check; losing the flush costs the
+# reconfigure.
+- name: Check gitlab.rb -> Rails convergence (best effort)
+  tags:
+    - molecule-notest
+  block:
+    - name: Read the effective Rails configuration (backup-path convergence guard)
+      ansible.builtin.slurp:
+        src: "{{ gitlab_effective_rails_config }}"
+      register: gitlab_effective_rails_raw
+      failed_when: false
+      changed_when: false
+
+    - name: Extract the effective Rails backup path
+      ansible.builtin.set_fact:
+        gitlab_effective_backup_path: >-
+          {{ ((gitlab_effective_rails_raw.content | b64decode | from_yaml).production.backup.path)
+             | default('', true) }}
+      when: gitlab_effective_rails_raw.content is defined
+
+    - name: Re-run reconfigure when the effective backup path drifted from gitlab.rb
+      ansible.builtin.debug:
+        msg: >-
+          Rails backup path is '{{ gitlab_effective_backup_path }}' but gitlab.rb sets
+          '{{ gitlab_backup_path }}' — a previous reconfigure never ran. Reconfiguring.
+      changed_when: true
+      notify: Reconfigure gitlab
+      when:
+        - gitlab_effective_backup_path is defined
+        - gitlab_effective_backup_path | length > 0
+        - gitlab_effective_backup_path != gitlab_backup_path
+  rescue:
+    - name: Report that the convergence guard could not be evaluated
+      ansible.builtin.debug:
+        msg: >-
+          Could not read the effective Rails backup path from
+          {{ gitlab_effective_rails_config }} — skipping the drift check and
+          continuing to the reconfigure flush. Re-run once GitLab has rendered a
+          complete gitlab.yml if the backup path is in doubt.
+
+# Run the reconfigure now rather than at end-of-play: a failure in any later
+# task would otherwise strand it exactly as the original incident did.
+- name: Apply pending GitLab configuration before continuing
+  ansible.builtin.meta: flush_handlers
+
 # The wrapper runs the backup, copies gitlab-secrets.json + gitlab.rb on
 # success (a restore needs them to decrypt CI variables, 2FA, runner
 # tokens), and emits node_exporter textfile metrics so GitLabBackupFailed /
-# GitLabBackupStale can fire. It owns the create-then-copy semantics the
-# cron line used to carry inline.
+# GitLabBackupStale can fire. It owns the create-then-copy semantics; the cron
+# line just invokes it.
 - name: Deploy GitLab backup wrapper (runs backup + emits metric)
   ansible.builtin.template:
     src: gitlab-backup-run.sh.j2
@@ -524,9 +594,7 @@
     - gitlab_status.rc != 0
   changed_when: true
 
-# =============================================================================
 # SSH Port Redirect ({{ gitlab_ssh_port }} -> 22)
-# =============================================================================
 # GitLab SSH runs on port 22, but external access uses port {{ gitlab_ssh_port }}.
 # We use iptables to redirect incoming connections on {{ gitlab_ssh_port }} to 22.
 
@@ -549,9 +617,7 @@
     loop_var: gitlab_ssh_redirect
     label: "{{ gitlab_ssh_redirect.chain }}"
 
-# =============================================================================
 # GitLab-specific fail2ban jail (SSH protection)
-# =============================================================================
 # Port {{ gitlab_ssh_port }} is open to the internet for Git SSH access.
 # fail2ban protects against brute-force attacks on GitLab SSH.
 #
@@ -612,9 +678,7 @@
     - gitlab_fail2ban_enabled | default(true)
     - gitlab_fail2ban_installed.rc | default(1) == 0
 
-# =============================================================================
 # SSH login restriction (AllowUsers)
-# =============================================================================
 # The WAN-open Git SSH port ({{ gitlab_ssh_port }}) REDIRECTs to the full
 # system sshd on 22, so without this drop-in internet clients can attempt
 # pubkey auth against ANY local account — bypassing the firewall's admin-only
@@ -649,10 +713,8 @@
   notify: Restart sshd
   when: not (gitlab_ssh_allowusers_enabled | default(true))
 
-# =============================================================================
 # Web IDE extension host configuration (API-driven; no Omnibus key on the
 # pinned release — re-check for a gitlab.rb equivalent on major bumps)
-# =============================================================================
 # CVE-2026-5816 mitigation: disable single-origin fallback once the
 # self-hosted ide.git.ericsweiss.com extension host is reachable.
 # Settings are sequenced so the host domain is configured BEFORE the fallback

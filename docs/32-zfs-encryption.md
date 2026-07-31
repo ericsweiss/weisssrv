@@ -46,8 +46,10 @@ reference, and NFS export path — are unchanged by encryption.
   - `tank/share` (LAN file share) — migrated via send/recv.
   - `tank/proxmox` (Proxmox VM backup target, ~3T referenced) — migrated.
   - `tank/backups` (765G) — migrated via send/recv.
-  - `tank/nextcloud-data` — created encrypted (Nextcloud not yet deployed).
-  - `tank/immich-data` — created encrypted (Immich not yet deployed).
+  - `tank/nextcloud-data` — created encrypted; holds the Nextcloud VM's
+    passthrough zvols (docs/35).
+  - `tank/immich-data` — created encrypted; holds the Immich photo library
+    zvol (docs/36).
   - `ssd/appdata` and its children (`authentik` + `authentik/postgres` are
     their own roots; `gitlab`, `loki`, `mealie`, `prometheus` inherit from
     `ssd/appdata`) — every app PV / DB. Migrated one at a time.
@@ -78,9 +80,9 @@ reference, and NFS export path — are unchanged by encryption.
 - `tank/pve` — ephemeral Proxmox VM/LXC images. (`tank/proxmox` is in
   the encrypted list above because it holds VM backup tarballs that
   contain persistent app state.)
-- `archive` pool — the pool itself is plaintext, but the seven replicated
+- `archive` pool — the pool itself is plaintext, but the eight replicated
   datasets (`archive/{share,backups,nextcloud-data,proxmox,immich-data,appdata,
-  databases}`) now arrive as **raw** `zfs send -w` streams from their
+  databases,k3s-etcd}`) now arrive as **raw** `zfs send -w` streams from their
   encrypted tank/ssd sources (`archive-backupctl`), so that backup data is
   encrypted at rest under the source's own key — archive never loads a key, and
   a restore needs `zfs load-key`. (`ssd/appdata` holds zvol children — the app
@@ -91,8 +93,8 @@ reference, and NFS export path — are unchanged by encryption.
   dataset, never to the zvol descendants.) (Sending the now-encrypted sources non-raw is impossible with
   `-R`: ZFS rejects sending an encrypted dataset with properties unless raw.)
   This gives the replicated data native at-rest encryption — raw `zfs send -w`
-  replication IS the at-rest protection for those seven archive datasets (the
-  archive pool itself loads no key); only archive data outside those seven
+  replication IS the at-rest protection for those eight archive datasets (the
+  archive pool itself loads no key); only archive data outside those eight
   datasets stays plaintext. Raw replication
   preserves the source's compression (ZFS compresses before it encrypts), so the
   encrypted archive copies are the same size as the sources — not larger. The
@@ -468,7 +470,7 @@ qm status 153; qm status 202; pct status 152         # running
 
 | Threat | Protected? |
 |--------|-----------|
-| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s seven replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
+| Stolen offline drive (RMA, disposal, theft from rack) | Yes — `tank`/`ssd` are ZFS-encrypted; `archive`'s eight replicated datasets are raw-encrypted under their source keys (`nvme` and `tank/media` are plaintext by design) |
 | Stolen offline drive bundled with stolen Proxmox host (no LAN) | Yes (Connect token unusable without LAN reach to `connect.esweiss.com`) |
 | Stolen running NAS still on the same LAN | No (running root extracts both token and key) |
 | Compromised root via remote exploit on running host | No (same as above) |
@@ -477,6 +479,16 @@ qm status 153; qm status 202; pct status 152         # running
 For the running-system threat, a TPM-sealed Proxmox root with measured
 boot would be the next step. Tracked in `docs/16-next-steps.md` as a
 follow-up project.
+
+## Out of scope: host swap
+
+Swap is **not** a ZFS dataset and is not handled by this role. All six Proxmox
+hosts run dm-crypt plain-mode AES-256-XTS swap with a random key regenerated on
+every boot (`encrypted_swap` role → `/dev/mapper/cryptswap`), which needs no
+1Password key material and no unlock step. Details and the activation-reboot
+caveat: `docs/42-offsite-backup.md` § Encrypted swap and
+`ansible/roles/encrypted_swap/README.md`; the at-rest posture table in
+`docs/06-zfs.md` carries the summary row.
 
 ## References
 

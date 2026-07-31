@@ -1,0 +1,75 @@
+---
+# Self-heal for postfix's COMPILED map databases (.db).
+#
+# Both source files are templated with `notify:`, so the .db is rebuilt only
+# when the source CHANGES. Any run that loses its handlers — a play that fails
+# before flush_handlers, documented for the gitlab role at
+# ansible/roles/gitlab/tasks/main.yml:415 — leaves a correct source next to a
+# stale .db, and nothing ever reports changed again. Postfix reads the .db.
+#
+#   /etc/aliases: found stale on four hosts (pve-opt-01/02, pve-prec-01,
+#   gitlab) — root: was in the source but absent from aliases.db, so root mail
+#   was delivered to /var/mail/root instead of relayed. Silent for months.
+#
+#   /etc/postfix/sasl_passwd: same shape, worse blast radius — after a
+#   credential rotation the host keeps authenticating to the relay with the OLD
+#   password forever, with nothing reporting changed.
+#
+# Both checks compare the .db against the CONFIGURED value, not merely "resolves
+# to something": a .db holding a RETIRED target/credential satisfies a non-empty
+# test, so a value-blind guard skips the rebuild and the drift is permanent.
+#
+# Kept in a separate file so molecule can drive it against a deliberately-stale
+# .db (molecule/default/verify.yml). import_tasks, not include_tasks: a static
+# import puts these tasks in the play at parse time, so they are individually
+# addressable by --tags and visible to --list-tasks. (A dynamic include would
+# still RUN them under the role tag — children inherit the include's tags — but
+# they would be invisible until the include executes.)
+#
+# smtp_relay carries a byte-equivalent copy (same two map files, same hazard);
+# the roles are kept self-contained so a change to one cannot silently ship
+# without the other's deploy job firing.
+
+- name: Check that the compiled alias database resolves root to the configured target
+  ansible.builtin.command:
+    cmd: postmap -q root hash:/etc/aliases
+  register: postfix_alias_root
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Rebuild the alias database when it does not match the configured target
+  ansible.builtin.command:
+    cmd: newaliases
+  changed_when: true
+  when: (postfix_alias_root.stdout | trim) != (mail_aliases.root | default(''))
+
+# The credential must never reach the log or a registered value, so the whole
+# comparison happens inside the shell and only its EXIT STATUS leaves: rc 0 =
+# the .db serves what the source holds, non-zero = rebuild. A missing .db, a
+# stale value and an unparseable source all land on non-zero, which self-heals
+# (and, if the source were ever unparseable, reports changed on every run
+# instead of passing silently — molecule's idempotence step catches that).
+- name: Check that the compiled SASL map matches the deployed credential
+  ansible.builtin.shell: |
+    set -o pipefail
+    key=$(awk '$1 !~ /^#/ && NF > 1 {print $1; exit}' /etc/postfix/sasl_passwd)
+    [ -n "$key" ] || exit 2
+    src=$(awk -v k="$key" '$1 == k {sub(/^[^[:blank:]]+[[:blank:]]+/, ""); print; exit}' \
+      /etc/postfix/sasl_passwd | sha256sum)
+    db=$(postmap -q "$key" hash:/etc/postfix/sasl_passwd | sha256sum)
+    [ "$src" = "$db" ]
+  args:
+    executable: /bin/bash
+  register: postfix_sasl_map
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Rebuild the SASL password database when it does not match the source
+  ansible.builtin.command:
+    cmd: postmap /etc/postfix/sasl_passwd
+  changed_when: true
+  when: postfix_sasl_map.rc != 0
+  no_log: true

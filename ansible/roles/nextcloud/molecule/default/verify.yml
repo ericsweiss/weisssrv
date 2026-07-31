@@ -163,9 +163,8 @@
           # nextcloud's size-gauge HELP noun is "dump" (immich's is "database dump").
           - (nextcloud_backup_lib.content | b64decode) is search('Size of the most recent dump in bytes')
 
-    # Run the wrapper end-to-end (mocked docker) and assert the EMITTED .prom, so
-    # the nextcloud_backup_* metric names (NextcloudBackupStale keys on them) are
-    # proven unchanged by the lib extraction.
+    # Run the wrapper end-to-end (mocked docker) and assert the EMITTED .prom:
+    # the NextcloudBackupStale alert keys on those exact metric names.
     - name: Run the backup wrapper (success path)
       ansible.builtin.command: /usr/local/sbin/nextcloud-backup-run.sh
       changed_when: false
@@ -192,6 +191,16 @@
       register: nextcloud_ts_ok
       changed_when: false
 
+    # A failed dump must NOT report 0 bytes while good dumps sit in the landing
+    # zone: 0 is BackupArtifactEmpty's (critical) "no artefact exists at all",
+    # whose runbook describes a landing-path fault. NextcloudBackupFailed already
+    # carries "tonight's dump failed". Seeded at a known size (and newest by
+    # mtime) so the fallback is asserted on an exact number.
+    - name: Seed a known-size prior dump for the failure path
+      ansible.builtin.command:
+        cmd: dd if=/dev/zero of=/mnt/nextcloud-app/backups/nextcloud-db-20200101-000000.sql.gz bs=4096 count=1
+        creates: /mnt/nextcloud-app/backups/nextcloud-db-20200101-000000.sql.gz
+
     - name: Arm the backup failure
       ansible.builtin.file:
         path: /tmp/nextcloud-backup-fail
@@ -216,8 +225,13 @@
           - >-
             'nextcloud_backup_last_success_timestamp_seconds ' ~ nextcloud_ts_ok.stdout
             in (nextcloud_prom_fail.content | b64decode)
-        fail_msg: "failure path did not record success=0 or lost the prior success timestamp"
-        success_msg: "failure path records success=0 and preserves the last success timestamp"
+          # Sized from the seeded prior dump, not 0 — see the seed task above.
+          - "'nextcloud_backup_last_size_bytes 4096' in (nextcloud_prom_fail.content | b64decode)"
+        fail_msg: >-
+          failure path did not record success=0, lost the prior success
+          timestamp, or reported 0 bytes while a good dump was in the landing
+          zone (a false BackupArtifactEmpty page)
+        success_msg: "failure path records success=0, keeps the timestamp, and sizes the newest existing dump"
 
     - name: Disarm the backup failure
       ansible.builtin.file:

@@ -115,23 +115,28 @@ Null Clients (Proxmox, DNS, k3s)
 6. Deploy main.cf (relay configuration)
 7. Deploy master.cf (submission service)
 8. Deploy SASL password file (Gmail credentials)
-9. Ensure SASL password database exists (postmap; rebuilt if .db is missing)
-10. Create SASL configuration directory
-11. Deploy smtpd.conf (inbound auth config)
-12. Check if SASL user exists
-13. Read existing + compute expected credential fingerprint (rotation detection)
-14. Create/update relay user in SASL database (changed_when keyed on fingerprint)
-15. Record credential fingerprint (only after saslpasswd2 succeeds)
-16. Set permissions on /etc/sasldb2 (root:postfix 0640)
-17. Configure mail aliases (mail_aliases -> /etc/aliases)
-18. Run newaliases
-19. Ensure Postfix is enabled and running
-20. Deploy postfix queue collector (script + oneshot + timer)
+9. Create SASL configuration directory
+10. Deploy smtpd.conf (inbound auth config)
+11. Check if SASL user exists
+12. Read existing + compute expected credential fingerprint (rotation detection)
+13. Create/update relay user in SASL database (changed_when keyed on fingerprint)
+14. Record credential fingerprint (only after saslpasswd2 succeeds)
+15. Set permissions on /etc/sasldb2 (root:postfix 0640)
+16. Configure mail aliases (mail_aliases -> /etc/aliases)
+17. Repair stale compiled maps (rebuild aliases.db / sasl_passwd.db when they
+    no longer match their source — the `notify` handlers alone cannot, since a
+    play that dies before flush_handlers never fires them)
+18. Ensure Postfix is enabled and running
+19. Deploy postfix queue collector (script + oneshot + timer)
 ```
 
 ## Files
 
 - `tasks/main.yml` - Main task orchestration
+- `tasks/repair-compiled-maps.yml` - Rebuilds `aliases.db` / `sasl_passwd.db`
+  when they no longer match their source (relay-side copy of the
+  postfix_null_client repair; the roles stay self-contained so a change to one
+  cannot ship without the other's deploy job firing)
 - `templates/main.cf.j2` - Postfix main configuration
 - `templates/master.cf.j2` - Postfix master configuration (submission service)
 - `templates/sasl_passwd.j2` - Gmail credentials

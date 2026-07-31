@@ -107,10 +107,8 @@
         mode: "0755"
 
   tasks:
-    # =====================================================================
     # CASE A — absent HA resource triggers `ha-manager add`.
     # Stub state: resource list empty (resource not present in HA).
-    # =====================================================================
     - name: A — reset stub logs and set "resource absent"
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -142,10 +140,8 @@
       register: case_a
       changed_when: false
 
-    # =====================================================================
     # CASE B — already-correct HA resource triggers NO `ha-manager set`.
     # Stub state: resource listed + detail matches desired exactly.
-    # =====================================================================
     - name: B — reset log, list resource, supply matching detail
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -176,10 +172,8 @@
       register: case_b
       changed_when: false
 
-    # =====================================================================
     # CASE C — drifted HA resource triggers exactly one `ha-manager set`.
     # Stub state: resource listed + detail has wrong state (stopped).
-    # =====================================================================
     - name: C — reset log, list resource, supply drifted detail
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -210,12 +204,10 @@
       register: case_c
       changed_when: false
 
-    # =====================================================================
     # CASE C2 — fields REMOVED from config (comment/max_restart/max_relocate
     # still set live) trigger exactly one `ha-manager set` that clears the
     # comment (--comment "") and --deletes the numeric keys — the removal
     # must CONVERGE, not re-fire every run.
-    # =====================================================================
     - name: C2 — reset log, list resource, supply removal-drift detail
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -251,13 +243,11 @@
       register: case_c2
       changed_when: false
 
-    # =====================================================================
     # CASE C2b — post-clear convergence: with the fields gone from the live
     # detail too, the trimmed config must trigger NO further `set` (drives
     # all three "not defined and empty current" arms false — the one
     # convergence path no other case covers; tests role drift logic, not
     # real Proxmox `--comment ""` behavior, which a stub cannot model).
-    # =====================================================================
     - name: C2b — reset log, list resource, supply post-clear clean detail
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -290,12 +280,10 @@
       register: case_c2b
       changed_when: false
 
-    # =====================================================================
     # CASE D — replication job absent triggers `pvesr create-local-job`.
     # Stub state: pvesr list empty + VMID 150 resides locally (qm).
     # Replication tasks are not in main.yml; include them directly, exactly
     # as playbooks/proxmox-ha.yml does (tasks_from: replication).
-    # =====================================================================
     - name: D — reset log, empty replication list, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -327,10 +315,8 @@
       register: case_d
       changed_when: false
 
-    # =====================================================================
     # CASE J — REAL target drift (desired target set differs) with the VM
     # local: exactly one `pvesr delete` + one `pvesr create-local-job`.
-    # =====================================================================
     - name: J — reset log, seed a job on the wrong target, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -365,11 +351,9 @@
       register: case_j
       changed_when: false
 
-    # =====================================================================
     # CASE K — same target drift but the VM is NOT local: the live job must
     # NOT be deleted (it could never be recreated here — deleting it would
     # silently drop a replication target). Source-drift warning only.
-    # =====================================================================
     - name: K — reset log, same drifted job, NO local VMIDs
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -404,12 +388,10 @@
       register: case_k
       changed_when: false
 
-    # =====================================================================
     # CASE L — permuted job-ID<->target assignments with an IDENTICAL target
     # set (what Proxmox leaves behind after a migration round-trip): NOT
     # drift. No delete/create/update — a delete+recreate here would force a
     # full ZFS resync per touched target.
-    # =====================================================================
     - name: L — reset log, seed permuted-ID jobs (same target set), VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -447,11 +429,9 @@
       register: case_l
       changed_when: false
 
-    # =====================================================================
     # CASE M — orphaned job (exists on this node, absent from config) next
     # to an already-correct configured job: warning only, ZERO mutations.
     # Orphan cleanup is deliberately manual (see tasks/replication.yml).
-    # =====================================================================
     - name: M — reset log, seed a matching job + an orphan, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -489,13 +469,11 @@
       register: case_m
       changed_when: false
 
-    # =====================================================================
     # CASE E — already-correct node-affinity RULE triggers NO `rules set`.
     # PVE9 `ha-manager rules list --output-format=json` returns nodes/resources
     # as HASHES; the stub serves a rule matching test_ha_rules[0] exactly (node
     # priority 0 == the desired unprioritised nodes), so drift must be false.
     # Guards the rule idempotency the string-split comparison used to break.
-    # =====================================================================
     - name: E — reset log, pre-seed a matching node-affinity rule (PVE9 hash form)
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -531,10 +509,8 @@
       register: case_e
       changed_when: false
 
-    # =====================================================================
     # CASE F — drifted node-affinity RULE (a node removed) triggers exactly
     # one `rules set`.
-    # =====================================================================
     - name: F — reset log, pre-seed a drifted node-affinity rule
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -569,12 +545,10 @@
       register: case_f
       changed_when: false
 
-    # =====================================================================
     # CASE E2 — already-correct rule whose nodes carry EXPLICIT priorities
     # (the real inventory shape) triggers NO `rules set`. Pre-seeded PVE9 hash
     # matches the priorities/strict/comment exactly. Locks in the priority-
     # preservation contract production rules depend on.
-    # =====================================================================
     - name: E2 — reset log, pre-seed a matching prioritised rule (PVE9 hash form)
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -611,10 +585,8 @@
       register: case_e2
       changed_when: false
 
-    # =====================================================================
     # CASE G — strict drift (current strict=0, desired strict=1) triggers
     # exactly one `rules set`. Nodes/resources match so strict is the sole driver.
-    # =====================================================================
     - name: G — reset log, pre-seed a rule that differs only in strict
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -650,10 +622,8 @@
       register: case_g
       changed_when: false
 
-    # =====================================================================
     # CASE H — comment drift (current comment differs) triggers exactly one
     # `rules set`. Nodes/resources/strict match so the comment is the sole driver.
-    # =====================================================================
     - name: H — reset log, pre-seed a rule that differs only in comment
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -689,10 +659,8 @@
       register: case_h
       changed_when: false
 
-    # =====================================================================
     # CASE I — resource drift (current carries an extra resource) triggers
     # exactly one `rules set`. Nodes/strict/comment match so resources alone drive.
-    # =====================================================================
     - name: I — reset log, pre-seed a rule that differs only in resources
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -735,7 +703,6 @@
     # molecule without seeding a non-PVE9 JSON shape the role would never see in
     # prod. Left untested deliberately — it's a defensive fallback, not a path.
 
-    # ---------------------------------------------------------------------
     - name: Capture HA contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/ha-contract.json

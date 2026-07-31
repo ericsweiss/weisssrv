@@ -1,9 +1,7 @@
 ---
 # nas_storage role defaults.
 
-# ---------------------------------------------------------------------------
 # ZFS ARC cap (module parameter)
-# ---------------------------------------------------------------------------
 # When set to a byte count, rendered into /etc/modprobe.d/zfs.conf as
 # `options zfs zfs_arc_max=<bytes>` and baked into the initramfs (an
 # update-initramfs handler runs so the cap applies at EARLY boot, before the
@@ -13,9 +11,7 @@
 # unset.
 zfs_arc_max_bytes: ""
 
-# ---------------------------------------------------------------------------
 # Media-mover load-shaping
-# ---------------------------------------------------------------------------
 # The nvme->tank mover runs in the nightly window alongside vzdump/scrub/smartd,
 # so it is deliberately deferential — it yields CPU and disk under contention
 # rather than adding to the fleet-wide load spike. Nice + ionice set absolute
@@ -30,9 +26,7 @@ media_mover_cpu_weight: 20
 media_mover_io_weight: 20
 media_mover_bwlimit: ""
 
-# ---------------------------------------------------------------------------
 # Per-app appdata directories (NFS export /export/appdata -> /mnt/ssd/appdata)
-# ---------------------------------------------------------------------------
 # The k3s apps that persist config on the appdata NFS export need their
 # subdirectory to exist and be writable before their first write. The export
 # uses all_squash,anonuid=1000,anongid=2000, so every client write maps to
@@ -66,9 +60,7 @@ nas_appdata_dirs:
   # /export/backups-apps/<app> exports), NOT ssd/appdata — keep it that way so
   # the dumps ride the archsync file walk into restic B2.
 
-# ---------------------------------------------------------------------------
 # Offsite-eligible logical-dump landing zone (tank/backups/apps -> B2)
-# ---------------------------------------------------------------------------
 # Every zvol-backed app lands a compact logical dump under tank/backups/apps/<app>
 # so it rides the archsync file walk into the restic B2 copy (a file walk can't
 # see the live zvol). tank/backups is aes-256-gcm encrypted -> no extra crypto.
@@ -80,19 +72,76 @@ nas_appdata_dirs:
 # freshness (nas_backup_artifact_apps below).
 nas_backup_apps_base: /mnt/tank/backups/apps
 
-# ---------------------------------------------------------------------------
+# RUNTIME mounted-dataset guard for everything that reads or writes under
+# nas_backup_apps_base. `tank` has mountpoint=none, so with tank/backups
+# unmounted (the documented 2026-06-26 key-load failure) that path is a plain
+# directory on the unencrypted root filesystem: a writer would shadow-write
+# there, a collector would read the shadow copy as fresh, and both alert arms
+# would stay green. Rendered into pve-cluster-backup.sh and
+# backup-artifact-mtime-collector.sh as a `mountpoint -q` fail-closed check —
+# the runtime half of the deploy-time guard in tasks/pve_cluster_backup.yml, and
+# the same contract gitlab-backup-run.sh applies to its NFS landing zone.
+# Follows skip_zfs_operations so molecule (where the path is an ordinary
+# container dir) renders it off; the scenario flips it back on to test the
+# fail-closed behaviour. Never set false on a real NAS.
+nas_backup_require_mounted_dataset: "{{ not (skip_zfs_operations | default(false)) }}"
+
 # Backup-artifact mtime collector (independent NAS-side freshness signal)
-# ---------------------------------------------------------------------------
 # The VM/k8s wrappers emit their own <app>_backup_last_* metrics, but those go
 # green even if the dump never REACHED tank/backups (broken mount / wrong path).
-# This NAS-side collector stats the newest file under each backups-apps/<app>
-# and emits backup_artifact_last_mtime_seconds{app=...} — the "the dump landed
-# offsite-eligible" signal (alert BackupArtifactStale, kube-prometheus-stack).
+# This NAS-side collector stats the newest RESTORABLE artefact under each
+# backups-apps/<app> and emits backup_artifact_last_mtime_seconds{app=...} — the
+# "the dump landed offsite-eligible" signal (alert BackupArtifactStale,
+# kube-prometheus-stack).
+#
+# `pattern` is mandatory and is why this is a list of mappings rather than bare
+# names: the collector used to take the newest file of ANY name under the app
+# dir, so GitLab's nightly gitlab.rb + gitlab-secrets.json copies kept
+# BackupArtifactStale{app="gitlab"} green through four days in which no tarball
+# reached the landing zone at all. A config-file copy must never satisfy "a
+# restorable dump landed". Patterns are shell globs matched against the
+# BASENAME; keep them tight enough to exclude the app's own sidecar files.
 nas_backup_artifact_metrics_enabled: true
 nas_backup_artifact_apps:
-  - authentik
-  - mealie
-  - gitlab
-  - immich
-  - nextcloud
-  - home-assistant
+  - name: authentik
+    pattern: "authentik-*.sql.gz"
+  - name: mealie
+    pattern: "mealie-*.sql.gz"
+  # The tarball only — gitlab.rb / gitlab-secrets.json land in the same dir
+  # nightly and are useless without the DB they decrypt.
+  - name: gitlab
+    pattern: "*_gitlab_backup.tar"
+  - name: immich
+    pattern: "immich-*.sql.gz"
+  - name: nextcloud
+    pattern: "nextcloud-db-*.sql.gz"
+  # HAOS native backups (Automatic_backup_<version>_<date>.tar), written by the
+  # Home Assistant backup scheduler over its network-storage mount.
+  - name: home-assistant
+    pattern: "*.tar"
+  # /etc/pve archive (pve_cluster_backup below).
+  - name: pve-cluster
+    pattern: "etc-pve-*.tar.gz"
+
+# /etc/pve (pmxcfs) archive
+# vzdump captures GUESTS, not the cluster filesystem: user.cfg (PVE
+# users/ACLs/API tokens), corosync.conf and priv/ (cluster CA + node certs +
+# authkey) had no backup anywhere, so a total-cluster loss meant rebuilding the
+# cluster identity from scratch. The nightly tar lands in the offsite-eligible
+# landing zone and rides archsync into restic B2. Opt-in (NAS-only, and only on
+# a PVE cluster member); disabled by default so molecule and any non-PVE
+# consumer of this role are unaffected.
+nas_pve_cluster_backup_enabled: false
+nas_pve_cluster_backup_src: /etc/pve
+# RUNTIME mounted-SOURCE guard, the mirror of nas_backup_require_mounted_dataset
+# above. /etc/pve is a FUSE mount; with pve-cluster.service down it is an empty
+# plain directory that tars into a 112-byte "successful" backup of nothing —
+# which retention then retires the real archives behind. Follows
+# skip_zfs_operations for the same reason the destination guard does: molecule
+# points SRC at a synthetic tree, and flips this back on to test the fail-closed
+# path. Never set false on a real PVE host.
+nas_pve_cluster_backup_require_src_mount: "{{ not (skip_zfs_operations | default(false)) }}"
+nas_pve_cluster_backup_schedule: "*-*-* 02:15:00"
+nas_pve_cluster_backup_random_delay: 300
+nas_pve_cluster_backup_keep: 14
+nas_pve_cluster_backup_nice: 10

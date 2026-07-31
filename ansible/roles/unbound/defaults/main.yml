@@ -1,6 +1,4 @@
 ---
-# Default variables for unbound role
-
 unbound_port: 5335
 unbound_interface: 127.0.0.1
 

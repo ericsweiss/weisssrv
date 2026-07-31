@@ -1,6 +1,4 @@
 ---
-# Default variables for acme_certs role
-
 acme_email: "admin@esweiss.com"
 # Pin acme.sh to a specific release tag (avoid mutable get.acme.sh redirect).
 # The full release tarball is installed — not the single acme.sh file — so the
@@ -29,16 +27,6 @@ acme_certs_key_from: "192.168.0.150"
 # push path (see docs/09-certs.md); they are not receiver-deployed here.
 acme_certs_receiver_path: /usr/local/sbin/cert-receive
 
-# Certificate distribution targets — see the schema in
-# inventories/prod/host_vars/dns-01.yml for the full field set
-# (host_key is REQUIRED per target; get it via `task certs:show-host-keys`).
-# cert_distribution_targets:
-#   - host: dns-02
-#     ip: 192.168.0.160
-#     host_key: "ssh-ed25519 AAAA..."
-#     cert_dir: /opt/AdGuardHome/certs
-#     owner: root
-#     group: adguard
-#     cert_mode: "0644"
-#     key_mode: "0640"
-#     restart_service: AdGuardHome
+# Certificate distribution targets are defined per-inventory in
+# inventories/prod/host_vars/dns-01.yml; the per-field schema lives in this
+# role's README (§ Configuration). host_key is REQUIRED on every target.

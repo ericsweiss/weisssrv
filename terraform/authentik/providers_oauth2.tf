@@ -3,30 +3,30 @@
 # injected per provider from the SAME 1Password items the applications consume
 # (see variables.tf), so Terraform and the app can never disagree.
 #
-# grant_types is order-sensitive server-side; the two orderings below are the
-# exact lists the API stores (older providers were created with a different
-# UI ordering than the 2026.x-created ones).
+# grant_types is order-sensitive server-side. The import captured whatever the
+# creating UI happened to store — every grant type authentik offers, on all
+# eight providers. Every app here uses the authorization-code flow with refresh,
+# so the rest is unused surface: `implicit`/`hybrid` deliver tokens in the URL
+# fragment, which is precisely what would turn a loose redirect-URI match into
+# token exfiltration (the redirect URIs below are `strict` for the same reason),
+# and `client_credentials`/`password`/`device_code` are token endpoints no client
+# calls. Least privilege: authorization_code + refresh_token only.
+#
+# If a client ever genuinely needs more, override grant_types on that provider
+# alone rather than widening this shared list.
+#
+# Every allowed_redirect_uris entry is matching_mode = "strict" and must stay
+# that way. Mealie, Bar Assistant and Home Assistant were imported as "regex"
+# with a plain URL as the pattern — authentik full-matches those, and in a regex
+# `.` is any character, so https://home.esweiss.com/auth/openid/callback also
+# matched https://home-esweiss.com/... and every other registrable look-alike.
+# Use "regex" only with escaped dots and an anchored pattern, and only when an
+# exact URL genuinely cannot express the callback.
 
 locals {
-  # Mealie / Bar Assistant / Home Assistant / Grafana (created pre-2026)
-  oauth2_grant_types_legacy = [
+  oauth2_grant_types = [
     "authorization_code",
-    "hybrid",
-    "implicit",
-    "client_credentials",
-    "password",
-    "urn:ietf:params:oauth:grant-type:device_code",
     "refresh_token",
-  ]
-  # Nextcloud / Immich / Hermes Dashboard (created on 2026.x)
-  oauth2_grant_types_current = [
-    "authorization_code",
-    "implicit",
-    "hybrid",
-    "refresh_token",
-    "client_credentials",
-    "password",
-    "urn:ietf:params:oauth:grant-type:device_code",
   ]
 
   # Server-side ordering of the default scope mappings on every OAuth2 provider.
@@ -35,6 +35,48 @@ locals {
     data.authentik_property_mapping_provider_scope.email.id,
     data.authentik_property_mapping_provider_scope.profile.id,
   ]
+
+  # Mealie only: same ordering, but the built-in email scope is swapped for the
+  # replacement below. See that resource for why.
+  oauth2_property_mappings_email_verified = [
+    data.authentik_property_mapping_provider_scope.openid.id,
+    authentik_property_mapping_provider_scope.email_verified.id,
+    data.authentik_property_mapping_provider_scope.profile.id,
+  ]
+}
+
+# authentik's built-in email scope mapping emits `email_verified: False`:
+#
+#   return {"email": request.user.email, "email_verified": False}
+#
+# Mealie rejects any login whose ID token and userinfo lack a *true*
+# email_verified ("[OIDC] email_verified claim is missing or false; refusing to
+# authenticate" -> 401 on /api/auth/oauth/callback), so with the built-in scope
+# Mealie has no working login path at all. The built-in cannot simply be edited:
+# it is a managed blueprint object (goauthentik.io/providers/oauth2/scope-email)
+# and authentik restores it on upgrade. Hence a separate, unmanaged mapping that
+# only Mealie is given.
+#
+# Asserting true is correct here rather than a fudge: authentik has no email
+# verification flow enabled, and every account is created by the admin in
+# authentik with an address chosen by the admin, so the address is trusted by
+# construction. Nothing self-registers.
+#
+# Deliberately scoped to Mealie. Every other provider keeps the built-in, so if
+# another app grows the same requirement, add it to that provider explicitly
+# rather than widening the shared list — the claim asserts something, and it
+# should be asserted only where it is needed.
+resource "authentik_property_mapping_provider_scope" "email_verified" {
+  name        = "OIDC email (asserted verified)"
+  scope_name  = "email"
+  description = "Email address, with email_verified asserted true. Mealie refuses to authenticate without it; authentik's built-in email scope hardcodes false."
+
+  expression = <<-EOT
+    return {
+        "email": request.user.email,
+        "email_verified": True,
+    }
+  EOT
 }
 
 resource "authentik_provider_oauth2" "mealie" {
@@ -43,20 +85,20 @@ resource "authentik_provider_oauth2" "mealie" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_mealie
-  grant_types   = local.oauth2_grant_types_legacy
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
-  property_mappings  = local.oauth2_property_mappings
+  property_mappings  = local.oauth2_property_mappings_email_verified
 
   allowed_redirect_uris = [
     {
-      matching_mode     = "regex",
+      matching_mode     = "strict",
       redirect_uri_type = "authorization",
       url               = "https://food.ericsweiss.com/login",
     },
     {
-      matching_mode     = "regex",
+      matching_mode     = "strict",
       redirect_uri_type = "authorization",
       url               = "https://food.esweiss.com/login",
     },
@@ -79,7 +121,7 @@ resource "authentik_provider_oauth2" "bar_assistant" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_bar_assistant
-  grant_types   = local.oauth2_grant_types_legacy
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
@@ -87,12 +129,12 @@ resource "authentik_provider_oauth2" "bar_assistant" {
 
   allowed_redirect_uris = [
     {
-      matching_mode     = "regex",
+      matching_mode     = "strict",
       redirect_uri_type = "authorization",
       url               = "https://bar.ericsweiss.com/oauth/callback",
     },
     {
-      matching_mode     = "regex",
+      matching_mode     = "strict",
       redirect_uri_type = "authorization",
       url               = "https://bar.esweiss.com/oauth/callback",
     },
@@ -117,7 +159,7 @@ resource "authentik_provider_oauth2" "home_assistant" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_home_assistant
-  grant_types   = local.oauth2_grant_types_legacy
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
@@ -125,12 +167,12 @@ resource "authentik_provider_oauth2" "home_assistant" {
 
   allowed_redirect_uris = [
     {
-      matching_mode     = "regex",
+      matching_mode     = "strict",
       redirect_uri_type = "authorization",
       url               = "https://home.ericsweiss.com/auth/openid/callback",
     },
     {
-      matching_mode     = "regex",
+      matching_mode     = "strict",
       redirect_uri_type = "authorization",
       url               = "https://home.esweiss.com/auth/openid/callback",
     },
@@ -153,7 +195,7 @@ resource "authentik_provider_oauth2" "grafana" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_grafana
-  grant_types   = local.oauth2_grant_types_legacy
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
@@ -184,7 +226,7 @@ resource "authentik_provider_oauth2" "nextcloud" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_nextcloud
-  grant_types   = local.oauth2_grant_types_current
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
@@ -226,7 +268,7 @@ resource "authentik_provider_oauth2" "hermes_dashboard" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_hermes_dashboard
-  grant_types   = local.oauth2_grant_types_current
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
@@ -271,7 +313,7 @@ resource "authentik_provider_oauth2" "homarr" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_homarr
-  grant_types   = local.oauth2_grant_types_current
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id
@@ -312,7 +354,7 @@ resource "authentik_provider_oauth2" "immich" {
 
   client_type   = "confidential"
   client_secret = var.oauth2_client_secret_immich
-  grant_types   = local.oauth2_grant_types_current
+  grant_types   = local.oauth2_grant_types
 
   authorization_flow = data.authentik_flow.provider_authorization.id
   invalidation_flow  = data.authentik_flow.provider_invalidation.id

@@ -2,9 +2,7 @@
 # IngressRoutes for GitLab services
 # Routes traffic from Traefik to GitLab VM (192.168.0.153)
 
-# =============================================================================
 # GitLab Web UI
-# =============================================================================
 
 # External - git.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -91,9 +89,7 @@ spec:
     secretName: gitlab-services-esweiss-tls
 
 ---
-# =============================================================================
 # GitLab Container Registry
-# =============================================================================
 
 # External - registry.git.ericsweiss.com
 apiVersion: traefik.io/v1alpha1
@@ -145,10 +141,8 @@ spec:
     secretName: gitlab-services-esweiss-tls
 
 ---
-# =============================================================================
 # GitLab Pages
 # Uses HostRegexp for wildcard matching
-# =============================================================================
 #
 # LIMITATION: These routes only match single-label subdomains (e.g., user.pages.git.ericsweiss.com).
 # Nested subdomains like group.subgroup.pages.git.ericsweiss.com will NOT match and will NOT
@@ -238,10 +232,8 @@ spec:
     secretName: gitlab-pages-esweiss-tls
 
 ---
-# =============================================================================
 # GitLab Web IDE Extension Host
 # Uses HostRegexp for wildcard matching, mirrors gitlab-pages pattern
-# =============================================================================
 #
 # LIMITATION: This route only matches single-label subdomains (e.g.,
 # foo.ide.git.ericsweiss.com). Nested subdomains will NOT match and will NOT

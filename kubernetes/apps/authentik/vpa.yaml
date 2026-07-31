@@ -16,7 +16,14 @@ spec:
   updatePolicy: {updateMode: Initial}
   resourcePolicy:
     containerPolicies:
+      # RequestsOnly: the server's memory limit is a fixed burst ceiling set in
+      # release.yaml. The default RequestsAndLimits preserves the manifest's
+      # request:limit ratio, which had rewritten the live limit down to the
+      # request (878Mi == 878Mi) against an 810Mi working set — the same
+      # zero-headroom trap documented for prowlarr in
+      # apps/download-clients/vpa.yaml.
       - containerName: "*"
+        controlledValues: RequestsOnly
         minAllowed: {memory: 256Mi}
         maxAllowed: {memory: 2Gi}
         controlledResources: [memory]

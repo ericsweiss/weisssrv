@@ -84,6 +84,117 @@
         fail_msg: "aliases missing expected entries"
         success_msg: "aliases configured correctly"
 
+    # The source file being right proves nothing: postfix reads the COMPILED db,
+    # and a stale one silently sends root mail to /var/mail/root instead of the
+    # relay. That is what happened on four production hosts, invisible to the
+    # assertion above.
+    - name: Look up root in the compiled alias database
+      ansible.builtin.command:
+        cmd: postmap -q root hash:/etc/aliases
+      register: aliases_compiled_root
+      changed_when: false
+      failed_when: false
+
+    - name: Verify the compiled alias database resolves root
+      ansible.builtin.assert:
+        that:
+          - aliases_compiled_root.rc == 0
+          - "aliases_compiled_root.stdout | trim == 'test@test.local'"
+        fail_msg: >-
+          /etc/aliases.db does not resolve root to test@test.local
+          (rc={{ aliases_compiled_root.rc }},
+          stdout='{{ aliases_compiled_root.stdout | trim }}') — root mail would
+          be delivered locally instead of relayed
+        success_msg: "compiled alias database resolves root"
+
+    # The assertion above cannot fail the role's repair tasks away: on converge
+    # `Configure mail aliases` ALWAYS reports changed (the rendered file differs
+    # from Debian's packaged /etc/aliases), so the pre-existing Newaliases
+    # handler rebuilds the db and satisfies it even with the repair deleted.
+    # The shape that actually bites production is the opposite one — source
+    # already correct, .db holding a RETIRED value, handler never notified —
+    # which no converge ever produces. Build it here and drive the repair tasks
+    # against it, both maps, checking the pre-state so the fixture itself cannot
+    # rot into a no-op. Values are the scenario's synthetic ones (molecule.yml).
+    - name: Stale db | compile aliases.db from a retired target, then restore the source
+      ansible.builtin.shell: |
+        set -eo pipefail
+        cp -a /etc/aliases /tmp/aliases.managed
+        printf 'root: retired@test.local\npostmaster: root\n' > /etc/aliases
+        newaliases
+        cp -a /tmp/aliases.managed /etc/aliases
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Stale db | compile sasl_passwd.db from a retired credential, then restore the source
+      ansible.builtin.shell: |
+        set -eo pipefail
+        cp -a /etc/postfix/sasl_passwd /tmp/sasl_passwd.managed
+        printf '[smtp-relay.test.local]:587    retired:retired\n' > /etc/postfix/sasl_passwd
+        postmap /etc/postfix/sasl_passwd
+        cp -a /tmp/sasl_passwd.managed /etc/postfix/sasl_passwd
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Stale db | read both compiled maps before the repair
+      ansible.builtin.command:
+        cmd: "postmap -q {{ item.key }} hash:{{ item.map }}"
+      register: postfix_stale_before
+      changed_when: false
+      failed_when: false
+      loop:
+        - {key: root, map: /etc/aliases}
+        - {key: '[smtp-relay.test.local]:587', map: /etc/postfix/sasl_passwd}
+      loop_control:
+        label: "{{ item.map }}"
+
+    # Both arms are asserted non-empty on purpose: that is precisely the state a
+    # value-blind guard ("does root resolve to ANYTHING?") reads as healthy.
+    - name: Stale db | the fixture must be stale, and stale in the value-blind way
+      ansible.builtin.assert:
+        that:
+          - postfix_stale_before.results[0].stdout | trim == 'retired@test.local'
+          - postfix_stale_before.results[1].stdout | trim == 'retired:retired'
+        fail_msg: >-
+          The stale-db fixture did not take, so the repair below is not being
+          exercised against a stale database at all
+        success_msg: "both compiled maps hold retired values while their sources are correct"
+
+    - name: Stale db | drive the role's compiled-map repair
+      ansible.builtin.include_role:
+        name: postfix_null_client
+        tasks_from: repair-compiled-maps.yml
+
+    - name: Stale db | read both compiled maps after the repair
+      ansible.builtin.command:
+        cmd: "postmap -q {{ item.key }} hash:{{ item.map }}"
+      register: postfix_stale_after
+      changed_when: false
+      failed_when: false
+      loop:
+        - {key: root, map: /etc/aliases}
+        - {key: '[smtp-relay.test.local]:587', map: /etc/postfix/sasl_passwd}
+      loop_control:
+        label: "{{ item.map }}"
+
+    - name: Stale db | the repair must recompile both maps from their sources
+      ansible.builtin.assert:
+        that:
+          - postfix_stale_after.results[0].stdout | trim == 'test@test.local'
+          - postfix_stale_after.results[1].stdout | trim == 'testuser:testpassword'
+        # The SASL value is deliberately NOT echoed — this assertion is the
+        # template an operator copies, and on a real host that string is the
+        # relay credential.
+        fail_msg: >-
+          A compiled map still holds a retired value after the repair
+          (aliases='{{ postfix_stale_after.results[0].stdout | trim }}',
+          sasl map matched={{ postfix_stale_after.results[1].stdout | trim == 'testuser:testpassword' }})
+          — a lost handler would leave this host relaying root mail locally and
+          authenticating with a revoked credential, with nothing reporting changed
+        success_msg: "the repair rebuilds a stale aliases.db and sasl_passwd.db"
+
     - name: Display test results
       ansible.builtin.debug:
         msg:

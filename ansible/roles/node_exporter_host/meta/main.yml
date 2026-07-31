@@ -1,6 +1,4 @@
 ---
-# Role metadata
-
 galaxy_info:
   role_name: node_exporter_host
   namespace: weisssrv

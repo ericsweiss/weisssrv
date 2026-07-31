@@ -121,8 +121,8 @@ spec:
         # timeout, node reboot, OOM, etc.). On the next start, qbittorrent
         # detects the stale IPC socket as a "running" instance, gracefully
         # terminates immediately, and the pod enters CrashLoopBackOff with
-        # the cycle "qBittorrent v5.2.1 started ... qBittorrent termination
-        # initiated" repeating every ~1s.
+        # the cycle "qBittorrent <version> started ... qBittorrent
+        # termination initiated" repeating every ~1s.
         #
         # Removing the stale files on every start is safe because the
         # Deployment is single-replica with `Recreate` strategy, so no other
@@ -305,7 +305,6 @@ spec:
             capabilities:
               drop: ["ALL"]
 
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
         # Note: qBittorrent uses bare version tags (not version- prefixed like other LinuxServer images)
         - name: qbittorrent
           image: lscr.io/linuxserver/qbittorrent:${qbittorrent_version}

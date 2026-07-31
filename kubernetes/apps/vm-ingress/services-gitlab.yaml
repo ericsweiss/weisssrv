@@ -2,9 +2,7 @@
 # Services and EndpointSlices for GitLab VM (192.168.0.153)
 # GitLab runs outside the cluster; Traefik routes to it via these services
 
-# =============================================================================
 # GitLab Web UI (HTTPS on 443)
-# =============================================================================
 # GitLab Omnibus nginx now listens on 443 with the cert distributed by
 # acme_certs (see host_vars/dns-01.yml). Traefik connects with
 # scheme: https + the vm-tls-wildcard ServersTransport so the
@@ -40,9 +38,7 @@ endpoints:
       ready: true
 
 ---
-# =============================================================================
 # GitLab Container Registry (port 5050)
-# =============================================================================
 apiVersion: v1
 kind: Service
 metadata:
@@ -74,9 +70,7 @@ endpoints:
       ready: true
 
 ---
-# =============================================================================
 # GitLab Pages (pages_nginx TLS on 8443)
-# =============================================================================
 apiVersion: v1
 kind: Service
 metadata:

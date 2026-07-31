@@ -4,3 +4,12 @@ node_exporter_host_port: 9101
 
 # Textfile collector directory for custom script metrics
 node_exporter_host_textfile_dir: /var/lib/node_exporter
+
+# How often the liveness gate probes /metrics (see tasks/main.yml). 5min keeps
+# the worst-case blind window well inside the 15m `for:` on HostExporterDown, so
+# the self-heal normally lands before the alert does. Sized against
+# HostExporterDown, NOT TargetDown: TargetDown needs >10% of a job's targets
+# down and there are 15 node-exporter-host targets, so a single zombie exporter
+# (1/15 = 6.7%) never trips it at all — which is exactly why HostExporterDown
+# was added.
+node_exporter_host_healthcheck_interval: 5min

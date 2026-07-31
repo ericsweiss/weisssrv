@@ -121,7 +121,20 @@
   changed_when: false
   # Tolerant like the ifup drop-in's `|| logger` fallback: a transient ethtool
   # failure here should not fail the play (the boot-time drop-in re-applies it).
+  # The read-back below is what turns a PERSISTENT failure into a red play.
   failed_when: false
+
+# Without this, the role that exists to stop the AQC113 GRO deadlock and the
+# opt-node e1000e TX hang could go fully green with the offloads still on: the
+# apply above swallows every failure, the ifup drop-in's only failure signal is
+# a syslog line, and node_exporter's ethtool collector is disabled fleet-wide,
+# so nothing else observes the effective kernel state. A renamed interface or a
+# driver that refuses the feature is exactly the silent no-op this catches.
+- name: Verify the applied NIC offload overrides took effect
+  ansible.builtin.include_tasks: verify-offloads.yml
+  when:
+    - nic_tuning_verify_offloads | bool
+    - nic_tuning_overrides | length > 0
 
 # --- active-backup bond MAC-flap guard -------------------------------------
 # Force all_slaves_active=0 on active-backup bonds so the inactive backup leg's

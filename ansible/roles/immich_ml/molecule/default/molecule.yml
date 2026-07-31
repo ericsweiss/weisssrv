@@ -1,10 +1,9 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). This is a render/contract
-# scenario: skip_immich_ml_deploy skips the GPU guard, the Docker install, and
-# all service management, so the compose file + systemd unit are rendered and
-# asserted without a container runtime or a /dev/dri device.
+# Scenario overrides; shared config in ansible/molecule/base.yml.
+# This is a render/contract scenario: skip_immich_ml_deploy skips the GPU
+# guard, the Docker install, and all service management, so the compose file +
+# systemd unit are rendered and asserted without a container runtime or a
+# /dev/dri device.
 platforms:
   - name: immich-ml-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest

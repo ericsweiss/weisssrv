@@ -51,6 +51,10 @@ spec:
         app.kubernetes.io/name: kube-vip
     spec:
       serviceAccountName: kube-vip
+      # kube-vip owns the API VIP ({{ k3s_api_vip }}); without this it inherits
+      # the default priority (0) and is a first-choice preemption victim on a
+      # control-plane node under pressure.
+      priorityClassName: system-node-critical
       hostNetwork: true
       hostAliases:
       - hostnames:
@@ -111,6 +115,18 @@ spec:
           value: "10"
         - name: address
           value: "{{ k3s_api_vip }}"
+        # Upstream ships no resources block, which makes the pod BestEffort —
+        # the kubelet's first eviction victim under node memory pressure, on
+        # the pod that owns the API VIP. Sized from 7d observed usage (cpu p95
+        # 1m, memory max 62Mi). Memory limit only, no CPU limit (docs/33);
+        # the Off-mode VPA in kubernetes/infrastructure/configs/vpa/platform.yaml
+        # records a right-sizing signal without ever evicting it.
+        resources:
+          requests:
+            cpu: 25m
+            memory: 96Mi
+          limits:
+            memory: 192Mi
         securityContext:
           capabilities:
             add:

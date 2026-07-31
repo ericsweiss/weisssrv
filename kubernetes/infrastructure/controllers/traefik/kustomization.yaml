@@ -11,7 +11,5 @@ resources:
   - traefik-tailnet-service.yaml
   - networkpolicy.yaml
 
-# default-deny-ingress from the shared baseline component (see
-# kubernetes/components/netpol-baseline).
 components:
   - ../../../components/netpol-baseline

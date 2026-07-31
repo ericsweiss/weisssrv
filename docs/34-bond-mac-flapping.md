@@ -6,6 +6,13 @@ switch / MAC-flapping" hardware problem. The root cause is a bonding option,
 not the switch. This runbook documents the diagnosis, the immediate recovery,
 and the permanent fix (codified in the `nic_tuning` role).
 
+> **Two different opt-node network faults live in this file.** If the *whole
+> host* went dark (dropped out of the Proxmox cluster, needed a power-cycle),
+> this is **not** the bond bug — jump to
+> [e1000e TX Hardware Unit Hang](#e1000e-tx-hardware-unit-hang-whole-host-goes-dark).
+> The bond bug below black-holes a *guest* while the host and its co-resident
+> guests stay reachable.
+
 ## Symptom
 
 - A guest on a **bonded** Proxmox host (`.104` / `.105` / `.106`) loses all
@@ -132,3 +139,86 @@ ansible-playbook ansible/playbooks/site.yml --tags network --limit 'pve-opt-*'
 - Gratuitous ARP (`arp_notify`) was investigated and ruled out — the guests'
   ARP was working; the problem was the bridge FDB being poisoned, not a stale
   switch entry.
+
+---
+
+## e1000e TX Hardware Unit Hang (whole host goes dark)
+
+A **separate** fault on the same three OptiPlex hosts (`pve-opt-01` .104,
+`pve-opt-02` .105, `pve-opt-03` .106), fixed in `!199`.
+
+### Symptom
+
+- The **entire host** stops answering: it drops out of the Proxmox cluster
+  (`pvecm status` on a peer shows it offline), its guests are unreachable, and
+  only a power-cycle recovers it. Contrast the bond bug above, where the host
+  and its other guests keep working.
+- No fail-over happens: the driver cannot reset the wedged TX unit and the
+  **link stays up**, so the active-backup bond sees a healthy leg and never
+  switches to `nic1`.
+
+### Confirming the diagnosis
+
+The signature is in the journal on the affected host, and (because
+`alloy_host` ships journald to Loki) it survives the power-cycle:
+
+```bash
+# On the host after recovery
+sudo journalctl -k -b -1 | grep -i "Hardware Unit Hang"
+
+# Or fleet-wide in Grafana -> Explore -> Loki (survives a reboot).
+# The journal stream label is job="journal" (alloy_host sets it; there is no
+# "systemd-journal" job in this Loki) — a wrong label returns an EMPTY result,
+# which reads as "not the e1000e hang" during exactly this incident:
+#   {job="journal"} |= "Detected Hardware Unit Hang"
+# Narrow to one host with e.g. {job="journal", host="pve-opt-01"}.
+```
+
+```
+e1000e 0000:00:19.0 nic0: Detected Hardware Unit Hang:
+  TDH   <x>
+  TDT   <y>
+  ...
+```
+
+Ruled out during diagnosis: swap/OOM pressure, the `all_slaves_active` bond bug
+above, and the switch. The hang is reported by the driver for the **onboard
+Intel e1000e NIC only** (`nic0`, PCI `00:19.0`); `nic1` (the second bond leg) is
+a different controller and was never implicated.
+
+### Fix (codified)
+
+`tso`/`gso`/`gro` **off** on `nic0` — the standard e1000e cure for the TX-hang
+class. Codified per host in
+`ansible/inventories/prod/host_vars/pve-opt-0{1,2,3}.yml`:
+
+```yaml
+nic_tuning_overrides:
+  - interface: nic0
+    options:
+      - feature: tso
+        value: "off"
+      - feature: gso
+        value: "off"
+      - feature: gro
+        value: "off"
+```
+
+`nic_tuning` applies the change live with `ethtool` (no link blip, no reboot)
+and persists it through an ifup drop-in, so it survives reboots. Deploy the
+same way as the bond fix:
+
+```bash
+ansible-playbook ansible/playbooks/site.yml --tags network --limit 'pve-opt-*'
+```
+
+Verify on the host: `ethtool -k nic0 | grep -E 'tcp-segmentation|generic-(segmentation|receive)'`
+— all three `off`.
+
+### Notes
+
+- The offloads are disabled only on the three opt nodes. `.102` / `.103` /
+  `.107` use different NICs and keep their offloads (`nic_tuning` is override-
+  driven, so an empty `nic_tuning_overrides` is a no-op).
+- Turning off segmentation offload costs some CPU per gigabit; on these hosts
+  that is irrelevant next to an unattended power-cycle.

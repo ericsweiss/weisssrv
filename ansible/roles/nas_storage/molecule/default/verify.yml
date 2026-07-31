@@ -252,6 +252,303 @@
       changed_when: false
       failed_when: backup_artifact_timer.stdout | trim != 'enabled'
 
+    # Behavioural gate on the per-app artefact pattern. Before it, the collector
+    # took the newest file of ANY name, so GitLab's nightly gitlab.rb +
+    # gitlab-secrets.json copies kept BackupArtifactStale{app="gitlab"} green
+    # through four days with no tarball in the landing zone at all. Both arms are
+    # asserted: a dir holding only sidecar files must report 0, and the same dir
+    # must report a real mtime once a matching artefact lands.
+    - name: Seed the gitlab landing dir with sidecar files only (non-restorable)
+      ansible.builtin.file:
+        path: "/mnt/tank/backups/apps/gitlab/{{ item }}"
+        state: touch
+        mode: "0600"
+      loop:
+        - gitlab.rb
+        - gitlab-secrets.json
+        - 1785142817_2026_07_27_19.2.0-ee_gitlab_backup.tar.tmp
+
+    - name: Run the collector against a scratch textfile dir (sidecars only)
+      ansible.builtin.command: /usr/local/sbin/backup-artifact-mtime-collector.sh /tmp/backup-artifact-verify
+      changed_when: false
+
+    - name: Read the sidecar-only collector output
+      ansible.builtin.slurp:
+        src: /tmp/backup-artifact-verify/backup_artifact_mtime.prom
+      register: backup_artifact_sidecars_only
+
+    - name: A config-file copy must NOT satisfy backup-artifact freshness
+      ansible.builtin.assert:
+        that:
+          - "'backup_artifact_last_mtime_seconds{app=\"gitlab\"} 0' in (backup_artifact_sidecars_only.content | b64decode)"
+        fail_msg: >-
+          The collector reported a non-zero gitlab artifact mtime while only
+          gitlab.rb / gitlab-secrets.json / a .tmp partial were present — the
+          exact false-green that hid four days of total offsite loss.
+
+    - name: Land a real GitLab tarball in the same dir
+      ansible.builtin.file:
+        path: /mnt/tank/backups/apps/gitlab/1785142817_2026_07_27_19.2.0-ee_gitlab_backup.tar
+        state: touch
+        mode: "0600"
+
+    - name: Re-run the collector with a restorable artifact present
+      ansible.builtin.command: /usr/local/sbin/backup-artifact-mtime-collector.sh /tmp/backup-artifact-verify
+      changed_when: false
+
+    - name: Read the with-artifact collector output
+      ansible.builtin.slurp:
+        src: /tmp/backup-artifact-verify/backup_artifact_mtime.prom
+      register: backup_artifact_with_tarball
+
+    - name: A matching artifact must produce a real mtime
+      ansible.builtin.assert:
+        that:
+          - "'backup_artifact_last_mtime_seconds{app=\"gitlab\"} 0' not in (backup_artifact_with_tarball.content | b64decode)"
+          - "'backup_artifact_last_mtime_seconds{app=\"gitlab\"}' in (backup_artifact_with_tarball.content | b64decode)"
+        fail_msg: >-
+          The collector did not pick up a file matching the gitlab artefact
+          pattern — the freshness signal would now be permanently 0/stale.
+
+    # Mounted-dataset guard. `tank` has mountpoint=none, so an unmounted
+    # tank/backups leaves $BASE a plain dir on the root fs — where a NAS-local
+    # producer would shadow-write and this collector would read the shadow copy
+    # as fresh, keeping BackupArtifactStale green across a total backup outage.
+    # The container's path is never a mountpoint, so the rendered guard is off
+    # here (nas_backup_require_mounted_dataset -> skip_zfs_operations); flip it
+    # back on to exercise the behaviour prod actually runs.
+    - name: Run the collector with the mounted-dataset guard forced ON
+      ansible.builtin.shell: |
+        set -eo pipefail
+        sed 's#^REQUIRE_MOUNT=.*#REQUIRE_MOUNT=1#' \
+          /usr/local/sbin/backup-artifact-mtime-collector.sh > /tmp/collector-guard.sh
+        # `sh <file>`, not an exec bit: molecule mounts /tmp as a Docker tmpfs,
+        # which defaults to noexec, so a chmod +x there still gives rc=126.
+        sh /tmp/collector-guard.sh /tmp/backup-artifact-guard
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Read the guard-on collector output
+      ansible.builtin.slurp:
+        src: /tmp/backup-artifact-guard/backup_artifact_mtime.prom
+      register: backup_artifact_guard_on
+
+    - name: An unmounted landing zone must emit NO per-app series
+      ansible.builtin.assert:
+        that:
+          - "'backup_artifact_last_mtime_seconds{app=' not in (backup_artifact_guard_on.content | b64decode)"
+          - "'backup_artifact_collector_last_success_seconds ' in (backup_artifact_guard_on.content | b64decode)"
+        fail_msg: >-
+          The collector reported per-app artifact mtimes with tank/backups
+          unmounted — every BackupArtifactStale absent() arm would stay green
+          while nothing offsite-eligible exists.
+
+    - name: Remove the backup-artifact verification fixtures
+      ansible.builtin.file:
+        path: "/mnt/tank/backups/apps/gitlab/{{ item }}"
+        state: absent
+      loop:
+        - gitlab.rb
+        - gitlab-secrets.json
+        - 1785142817_2026_07_27_19.2.0-ee_gitlab_backup.tar
+        - 1785142817_2026_07_27_19.2.0-ee_gitlab_backup.tar.tmp
+
+    # /etc/pve cluster-identity archive. vzdump captures guests, not pmxcfs, so
+    # this is the ONLY backup of user.cfg / corosync.conf / priv (cluster CA +
+    # node certs). Exercised end to end against a synthetic source: the container
+    # has no /etc/pve, and a producer with no test is how the class of bug this
+    # closes (a "successful" run with no restorable artefact) gets shipped.
+    - name: Stat the pve-cluster backup script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/pve-cluster-backup.sh
+      register: nas_storage_pve_cluster_script
+      failed_when: >-
+        not nas_storage_pve_cluster_script.stat.exists
+        or nas_storage_pve_cluster_script.stat.mode != '0755'
+
+    - name: Check the pve-cluster-backup timer is enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled pve-cluster-backup.timer
+      register: nas_storage_pve_cluster_timer
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_timer.stdout | trim != 'enabled'
+
+    - name: Stat the pve-cluster landing directory (must be root-only — holds key material)
+      ansible.builtin.stat:
+        path: /mnt/tank/backups/apps/pve-cluster
+      register: nas_storage_pve_cluster_dir
+      failed_when: >-
+        not nas_storage_pve_cluster_dir.stat.exists
+        or not nas_storage_pve_cluster_dir.stat.isdir
+        or nas_storage_pve_cluster_dir.stat.mode != '0700'
+        or nas_storage_pve_cluster_dir.stat.uid != 0
+
+    - name: An absent source must fail loudly, not report success
+      ansible.builtin.shell: |
+        set -o pipefail
+        sed 's#^SRC=.*#SRC="/nonexistent/etc/pve"#' /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb-missing.sh
+        # `bash <file>`: /tmp is a noexec Docker tmpfs here, so +x is not enough.
+        bash /tmp/pvecb-missing.sh
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_missing
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_missing.rc == 0
+
+    - name: Read the metrics written by the absent-source run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/pve_cluster_backup.prom
+      register: nas_storage_pve_cluster_prom_fail
+
+    - name: A failed run records success=0 and size=0
+      ansible.builtin.assert:
+        that:
+          - "'pve_cluster_backup_last_run_success 0' in (nas_storage_pve_cluster_prom_fail.content | b64decode)"
+          - "'pve_cluster_backup_last_size_bytes 0' in (nas_storage_pve_cluster_prom_fail.content | b64decode)"
+        fail_msg: "An absent /etc/pve did not record a failed run — the alert arms would stay green."
+
+    # Mounted-dataset guard, the runtime half of the deploy-time `mountpoint -q`
+    # in tasks/pve_cluster_backup.yml. With tank/backups unmounted the landing
+    # dir is a plain path on the unencrypted root fs, and this producer is
+    # NAS-local (the others write over NFS, which simply disappears), so without
+    # the guard it would tar /etc/pve — priv/ included — there, report
+    # success=1 with a non-zero size, and the artefact collector would read the
+    # same shadowed dir. Rendered off in the container (the path is not a mount
+    # by design); forced on here to test the fail-closed path.
+    - name: An unmounted landing zone must fail closed, not shadow-write /etc/pve
+      ansible.builtin.shell: |
+        set -o pipefail
+        sed -e 's#^SRC=.*#SRC="/tmp/fake-pve-guard"#' \
+            -e 's#^REQUIRE_MOUNT=.*#REQUIRE_MOUNT=1#' \
+            /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb-guard.sh
+        mkdir -p /tmp/fake-pve-guard/priv
+        echo 'FAKE-CA' > /tmp/fake-pve-guard/priv/pve-root-ca.pem
+        bash /tmp/pvecb-guard.sh
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_unmounted
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_unmounted.rc == 0
+
+    - name: The unmounted run records success=0 and produced no archive
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -c '^pve_cluster_backup_last_run_success 0' /var/lib/node_exporter/pve_cluster_backup.prom \
+          | tr -d '[:space:]'
+        echo
+        ls /mnt/tank/backups/apps/pve-cluster/etc-pve-*.tar.gz 2>/dev/null | wc -l | tr -d '[:space:]'
+        echo
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_unmounted_state
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_unmounted_state.stdout_lines != ['1', '0']
+
+    # Source-side mount guard, the mirror of the landing-zone one above.
+    # /etc/pve is pmxcfs (FUSE): with pve-cluster.service down the path still
+    # EXISTS as an empty plain directory and every downstream check passes on it
+    # — tar exits 0, the archive is non-empty gzip framing, `tar -tzf` reads it —
+    # so the run would publish a ~100-byte backup of nothing as success and
+    # retention would retire the real archives behind it. Rendered off in the
+    # container (SRC is a synthetic tree, never a mount); forced on here.
+    - name: An unmounted pmxcfs source must fail closed, not archive an empty mountpoint
+      ansible.builtin.shell: |
+        set -o pipefail
+        sed -e 's#^SRC=.*#SRC="/tmp/fake-pve-src"#' \
+            -e 's#^REQUIRE_SRC_MOUNT=.*#REQUIRE_SRC_MOUNT=1#' \
+            /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb-src.sh
+        mkdir -p /tmp/fake-pve-src
+        bash /tmp/pvecb-src.sh
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_src_unmounted
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_src_unmounted.rc == 0
+
+    - name: The unmounted-source run records success=0 and produced no archive
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -c '^pve_cluster_backup_last_run_success 0' /var/lib/node_exporter/pve_cluster_backup.prom \
+          | tr -d '[:space:]'
+        echo
+        ls /mnt/tank/backups/apps/pve-cluster/etc-pve-*.tar.gz 2>/dev/null | wc -l | tr -d '[:space:]'
+        echo
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_src_unmounted_state
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_src_unmounted_state.stdout_lines != ['1', '0']
+
+    - name: Seed a synthetic pmxcfs tree
+      ansible.builtin.shell: |
+        set -eo pipefail
+        rm -rf /tmp/fake-pve
+        mkdir -p /tmp/fake-pve/priv
+        echo 'user:root@pam:1:0:::::' > /tmp/fake-pve/user.cfg
+        echo 'totem { cluster_name: weisssrv }' > /tmp/fake-pve/corosync.conf
+        echo 'FAKE-CA' > /tmp/fake-pve/priv/pve-root-ca.pem
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Run the pve-cluster backup against the synthetic source (twice, for retention)
+      ansible.builtin.shell: |
+        set -eo pipefail
+        sed 's#^SRC=.*#SRC="/tmp/fake-pve"#' /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb.sh
+        bash /tmp/pvecb.sh
+        sleep 1
+        bash /tmp/pvecb.sh
+        sleep 1
+        bash /tmp/pvecb.sh
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Read the metrics written by the successful run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/pve_cluster_backup.prom
+      register: nas_storage_pve_cluster_prom_ok
+
+    - name: A successful run records success=1 and a NON-ZERO size
+      ansible.builtin.assert:
+        that:
+          - "'pve_cluster_backup_last_run_success 1' in (nas_storage_pve_cluster_prom_ok.content | b64decode)"
+          - "'pve_cluster_backup_last_success_timestamp_seconds ' in (nas_storage_pve_cluster_prom_ok.content | b64decode)"
+          - "'pve_cluster_backup_last_size_bytes 0' not in (nas_storage_pve_cluster_prom_ok.content | b64decode)"
+        fail_msg: >-
+          The archive run did not record success + a non-zero size — a 0 here is
+          what BackupArtifactEmpty exists to catch.
+
+    - name: List the produced archives
+      ansible.builtin.find:
+        paths: /mnt/tank/backups/apps/pve-cluster
+        patterns: "etc-pve-*.tar.gz"
+      register: nas_storage_pve_cluster_archives
+
+    - name: Retention keeps exactly nas_pve_cluster_backup_keep archives, mode 0600
+      ansible.builtin.assert:
+        that:
+          - nas_storage_pve_cluster_archives.matched == 2
+          - nas_storage_pve_cluster_archives.files | map(attribute='mode') | unique == ['0600']
+        fail_msg: >-
+          Expected 2 archives (keep=2) at 0600 after three runs, found
+          {{ nas_storage_pve_cluster_archives.matched }} — retention or the
+          key-material file mode regressed.
+
+    - name: The archive must actually contain the cluster identity files
+      ansible.builtin.shell: |
+        set -o pipefail
+        newest=$(ls -t /mnt/tank/backups/apps/pve-cluster/etc-pve-*.tar.gz | head -1)
+        tar -tzf "$newest"
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_listing
+      changed_when: false
+      failed_when: >-
+        'user.cfg' not in nas_storage_pve_cluster_listing.stdout
+        or 'corosync.conf' not in nas_storage_pve_cluster_listing.stdout
+        or 'priv/pve-root-ca.pem' not in nas_storage_pve_cluster_listing.stdout
+
     - name: Check if Samba is installed
       ansible.builtin.package:
         name: samba

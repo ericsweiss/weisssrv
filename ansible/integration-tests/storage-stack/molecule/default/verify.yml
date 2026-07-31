@@ -16,10 +16,8 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # NFS Configuration Verification
     # (Service may not run, but config should be correct)
-    # ============================================
     - name: Check NFS server package is installed
       ansible.builtin.package:
         name: nfs-kernel-server
@@ -90,10 +88,8 @@
         fail_msg: "/export/appdata bind mount not mounted"
         success_msg: "/export/appdata bind mount is live"
 
-    # ============================================
     # Samba Server Verification
     # (Samba works fully in Docker containers)
-    # ============================================
     - name: Check Samba package is installed
       ansible.builtin.package:
         name: samba
@@ -208,9 +204,7 @@
         fail_msg: "Expected Samba shares not visible locally"
         success_msg: "Samba shares are visible locally"
 
-    # ============================================
     # Service Status Summary
-    # ============================================
     - name: Check NFS service status (informational only)
       ansible.builtin.systemd:
         name: nfs-kernel-server
@@ -231,9 +225,7 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # Samba Client Connectivity Tests
-    # ============================================
     - name: Check smbclient is installed
       ansible.builtin.package:
         name: smbclient

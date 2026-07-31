@@ -62,13 +62,25 @@ spec:
     # removes the key during values coalescing. The nodeSelector then governs.
     affinity:
       nodeAffinity: null
-    # Memory limit only — no CPU limit (repo-wide policy, docs/33). Tiny footprint.
+    # Memory limit only — no CPU limit (repo-wide policy, docs/33). Small, but
+    # not as small as first sized: the 7d working set is ~49Mi, which was 78% of
+    # the old 64Mi limit and above the old 32Mi request. No VPA can right-size
+    # this (it is the DaemonSet that advertises the GPU resource, so an eviction
+    # would deschedule every GPU pod), so the numbers are hand-set against
+    # measurement: request at the observed working set, limit at 2x.
+    #
+    # This key reaches the *-ctr containers ONLY (daemonset-device-plugin.yml
+    # renders `resources` under nvidia-device-plugin-ctr; the config-manager
+    # sidecar it adds whenever config.map is set is hard-coded with no resources
+    # block and no values key). The sidecar is reserved by the postRenderer at
+    # the bottom of this file — without it the pod requests 64Mi while its 7d
+    # pod-cgroup peak is 94Mi.
     resources:
       requests:
         cpu: 25m
-        memory: 32Mi
-      limits:
         memory: 64Mi
+      limits:
+        memory: 128Mi
     # Time-slicing: advertise the one physical GPU as 4 shareable replicas so
     # multiple pods can co-schedule on it (the node reports nvidia.com/gpu: 4).
     # The chart materialises config.map.<name> into a ConfigMap and a
@@ -92,3 +104,41 @@ spec:
               resources:
                 - name: nvidia.com/gpu
                   replicas: 4
+  # Reserve the config-manager sidecar the chart injects alongside the plugin
+  # (it exists because config.map is set, and watches the node's
+  # nvidia.com/device-plugin.config label to hot-swap the sharing config). The
+  # chart offers no values key for its resources, so the live container ran with
+  # none at all: the scheduler saw a 64Mi pod against a 94Mi 7d pod-cgroup peak.
+  # Sized by the same measured method as the plugin container — request at the
+  # container's own 7d working-set peak (15.5Mi), limit at 2x. Strategic-merge
+  # (containers are name-keyed), so it survives any change in container ORDER,
+  # unlike a JSON-pointer index patch.
+  postRenderers:
+    - kustomize:
+        patches:
+          # target.name is a FULL-match regex in kustomize, so this hits only the
+          # plugin DaemonSet and not the nvidia-device-plugin-mps-control-daemon
+          # one the chart renders beside it (verified by building the patch
+          # against `helm template` output: the mps DaemonSet comes out
+          # unchanged, no appended container).
+          - target:
+              group: apps
+              version: v1
+              kind: DaemonSet
+              name: nvidia-device-plugin
+            patch: |
+              apiVersion: apps/v1
+              kind: DaemonSet
+              metadata:
+                name: nvidia-device-plugin
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: nvidia-device-plugin-sidecar
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 16Mi
+                          limits:
+                            memory: 32Mi

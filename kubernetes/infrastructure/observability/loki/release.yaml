@@ -58,6 +58,32 @@ spec:
         ingestion_burst_size_mb: 16
         per_stream_rate_limit: 4MB
         per_stream_rate_limit_burst: 8MB
+        # Stream ceiling, pinned rather than left at Loki's 5000 default so the
+        # cardinality budget is reviewable next to the labels that spend it.
+        # Live: 117 in-memory streams, 7d peak 449. The host journal senders add
+        # a `unit` stream label (alloy_host config.alloy.j2) worth ~285 streams
+        # fleet-wide, measured over 16 hosts; `priority`/`hostname` were dropped
+        # there rather than pay another ~1.4x. Every stream holds an open chunk
+        # for up to max_chunk_age (6h below), so this is a memory bound as much
+        # as an index one — the ingester runs under a 1Gi limit at a 554MB 7d
+        # peak. 2000 leaves ~3x headroom over the post-change projection and
+        # still stops a relabel mistake (a per-pid or per-message-id label) from
+        # taking the log plane down.
+        max_global_streams_per_user: 2000
+      # Out-of-order accept window. Loki takes a push whose timestamps are up to
+      # max_chunk_age/2 behind the stream's newest entry and rejects the rest as
+      # `too_far_behind` — 1.93M lines were dropped that way in a 7-day sample,
+      # in short bursts shaped like sender restarts. The senders' backfill
+      # horizon is the alloy_host journal re-read (loki.source.journal max_age,
+      # pinned to 3h in that role's defaults) plus its ~1h on-disk WAL replay,
+      # so the chart default (2h -> a 1h window) was narrower than what the
+      # senders are configured to resend. 6h gives a 3h window that covers both.
+      # Cost is bounded: an open chunk is cut on chunk_target_size long before
+      # this age for any busy stream, so only idle streams hold memory longer.
+      # Raising this REQUIRES raising alloy_host_journal_max_age with it (and
+      # vice versa) — scripts/test_alloy_journal_pipeline.py enforces the pair.
+      ingester:
+        max_chunk_age: 6h
       compactor:
         retention_enabled: true
         delete_request_store: filesystem

@@ -39,9 +39,7 @@
 # to high-mapped UIDs (e.g., 100997), breaking access for other processes.
 #
 
-# =============================================================================
 # Plex custom-certificate hook
-# =============================================================================
 # acme_certs distributes the wildcard cert to /etc/ssl/plex (cert_dir
 # in host_vars/dns-01.yml's cert_distribution_targets entry for
 # host=plex). plex-cert-reload.sh converts the PEM pair into a PKCS#12

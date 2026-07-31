@@ -54,15 +54,18 @@ spec:
       - 10.42.0.0/16       # K3s pod CIDR (see k3s_cluster_cidr in group_vars)
 
 ---
-# Stricter allowlist for the secrets-backend front door (1Password Connect at
-# connect.esweiss.com). Same as lan-tailscale-only but WITHOUT the pod CIDR: no
-# in-cluster consumer needs the connect.esweiss.com ingress — ESO reaches
-# Connect via the ClusterIP directly (cluster-secret-store.yaml), and Connect's
-# own NetworkPolicy (controllers/onepassword-connect/networkpolicy.yaml) scopes
-# that ClusterIP to same-namespace ESO pods. Putting Connect behind the broad
-# pod-CIDR allowlist would let any pod reach the secrets API through Traefik,
-# undoing that scoping. Only LAN + Tailscale boot clients (zfs-load-key@) reach
-# this front door.
+# Stricter allowlist: same as lan-tailscale-only but WITHOUT the pod CIDR. Use
+# it for any route whose only gates are the IP allowlist plus the backend's own
+# login — i.e. where an in-cluster pod reaching the route would be a real
+# escalation. Current consumers:
+#   * connect.esweiss.com (1Password Connect) — no in-cluster consumer needs the
+#     ingress: ESO reaches Connect via the ClusterIP (cluster-secret-store.yaml)
+#     and Connect's NetworkPolicy scopes that ClusterIP to same-namespace ESO
+#     pods; the pod-CIDR allowlist would undo that scoping.
+#   * router.esweiss.com and the dns-01/dns-02 AdGuard raw routes — appliance
+#     admin UIs with no forward-auth. Pods that hold blanket :443 egress to the
+#     traefik namespace (hermes runs LLM-authored code; homarr) must not reach
+#     them; in-cluster AdGuard consumers use the direct .150/.160 IPs.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:

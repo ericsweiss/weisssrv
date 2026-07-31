@@ -1,6 +1,4 @@
 ---
-# Default variables for QoL role
-
 admin_user: eric
 
 # Packages installed by the QoL role (override per host/group as needed).

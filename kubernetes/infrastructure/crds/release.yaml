@@ -15,11 +15,12 @@
 # Ownership: this chart ships the CRDs as Helm-owned templates (charts/crds/
 # templates/crd-*.yaml, each gated on .Values.<crd>.enabled), unlike kps which
 # ships them via a crds/ directory (install-only, no Helm ownership). The pinned
-# version 30.0.1 = appVersion v0.92.1, byte-matching the operator kps 87.17.0
-# deploys, so steady-state reconciles are a no-op. A one-time metadata adoption
-# (label/annotate the existing unowned CRDs into this release) is required on the
-# live cluster during the migration deploy window — see docs/29 (Fresh bootstrap
-# / disaster recovery). On a truly fresh cluster nothing manual is needed.
+# version's appVersion byte-matches the operator kube-prometheus-stack deploys
+# (see the lockstep note below), so steady-state reconciles are a no-op. A
+# one-time metadata adoption (label/annotate the existing unowned CRDs into this
+# release) is required on the live cluster during the migration deploy window —
+# see docs/29 (Fresh bootstrap / disaster recovery). On a truly fresh cluster
+# nothing manual is needed.
 #
 # Keep the prometheus_operator_crds pin in all.yml in lockstep with
 # kube_prometheus_stack so the CRD set stays version-matched to the operator.
@@ -28,6 +29,12 @@ kind: HelmRelease
 metadata:
   name: prometheus-operator-crds
   namespace: prometheus-operator-crds
+  annotations:
+    # Garbage-collecting this HelmRelease (a stage rename/move under
+    # infrastructure-crds, which reconciles with prune: true) would trigger a
+    # `helm uninstall`. Opt out of prune so a refactor cannot take the CRDs with
+    # it; deleting this release is then a deliberate manual act.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   interval: 30m
   releaseName: prometheus-operator-crds
@@ -42,12 +49,28 @@ spec:
         namespace: flux-system
       interval: 12h
   install:
-    remediation:
-      retries: 3
+    # RetryOnFailure, NOT the default RemediateOnFailure: install remediation has
+    # no strategy field, so it ALWAYS remediates by uninstalling — between each
+    # retry. For a release whose entire content is Helm-owned CRDs, that would
+    # cascade-delete every Prometheus/Alertmanager/ServiceMonitor/PodMonitor/
+    # PrometheusRule/Probe/ScrapeConfig object in the cluster. Retrying in place
+    # leaves a failed install visibly stuck instead, which is always recoverable.
+    strategy:
+      name: RetryOnFailure
+      retryInterval: 5m
   upgrade:
     remediation:
       retries: 3
       remediateLastFailure: true
-  # Values left at chart defaults: all 10 CRDs enabled, matching kps's set. The
-  # chart ships CRDs as templates (not a crds/ dir), so no install.crds field is
-  # needed here.
+  values:
+    # Belt to the install-strategy braces: stamp helm.sh/resource-policy: keep on
+    # every CRD so ANY helm uninstall of this release (manual, or a re-install
+    # after Helm history loss) leaves the CRDs — and therefore every monitoring CR
+    # — in place. Same protection cert-manager gets from crds.keep and ESO from
+    # crds.annotations. Recovering from that state needs the one-time metadata
+    # adoption in docs/29, not a rebuild of the observability stack.
+    # All 10 CRDs stay enabled (chart default), matching kps's set; the chart
+    # ships them as templates (not a crds/ dir), so no install.crds field applies.
+    crds:
+      annotations:
+        helm.sh/resource-policy: keep

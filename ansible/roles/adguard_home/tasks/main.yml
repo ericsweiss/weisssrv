@@ -6,6 +6,9 @@
   ansible.builtin.apt:
     name:
       - python3-passlib
+      # PyYAML backs adguard-admin-hash.py, which parses AdGuardHome.yaml to
+      # find the admin's password line instead of pattern-matching for it.
+      - python3-yaml
       # dig backs the DNS-resolution verify below; install it here so the role
       # is self-contained rather than relying on the base role having run first.
       - dnsutils
@@ -243,17 +246,22 @@
     path: "{{ adguard_install_path }}/AdGuardHome.yaml"
   register: adguard_config
 
-# tail -1 (not head -1) so this read targets the SAME password line the
-# "Update admin password" lineinfile rewrites below: lineinfile with a bare
-# regexp (no backrefs/firstmatch) replaces the LAST matching line, so a second
-# indented password key elsewhere in the config would otherwise split verify
-# (first match) from write (last match).
+# Read and write both go through adguard-admin-hash.py, which resolves the
+# admin's password line by PARSING the YAML (files/adguard-admin-hash.py has the
+# full rationale). The previous pair — `grep '^\s+password:' | tail -1` to read,
+# a bare-regexp lineinfile to write — both meant "the last indented password key
+# in the file", so a second AdGuard user would have had its hash read and
+# overwritten on every deploy while the admin's was never reconciled.
+#
+# Both invoke the script THROUGH python3 rather than letting `script` execve the
+# copy it drops in remote_tmp: remote_tmp can land on a noexec mount — the
+# dns-stack scenario points it at a Docker tmpfs /tmp, which Docker mounts noexec
+# by default — where the +x bit `script` sets still yields rc=126. Naming the
+# interpreter only reads the file, so it works either way.
 - name: Read existing password hash from config
-  ansible.builtin.shell: |
-    set -o pipefail
-    grep -E '^\s+password:' "{{ adguard_install_path }}/AdGuardHome.yaml" | tail -1 | sed 's/.*password:\s*//'
+  ansible.builtin.script: adguard-admin-hash.py --config {{ adguard_install_path }}/AdGuardHome.yaml --user {{ adguard_admin_user }} read
   args:
-    executable: /bin/bash
+    executable: python3
   register: existing_hash_result
   changed_when: false
   failed_when: false
@@ -262,6 +270,23 @@
     - not (skip_adguard_api_config | default(false))
     - adguard_config.stat.exists
   no_log: true
+
+# Deferred and re-raised for the same reason as the write below: no_log would
+# otherwise collapse the script's distinct errors into "output has been hidden".
+# A swallowed read is not benign — it leaves stdout empty, which skips the
+# verify, re-salts the hash, and so rewrites the config and restarts the resolver
+# on every single run.
+- name: Surface an admin-password-hash read failure
+  ansible.builtin.fail:
+    msg: >-
+      adguard-admin-hash.py read failed on {{ inventory_hostname }}
+      (rc={{ existing_hash_result.rc | default('?') }}):
+      {{ existing_hash_result.stderr | default('') | trim
+         | default('no stderr captured', true) }}
+  when:
+    - not (skip_adguard_api_config | default(false))
+    - adguard_config.stat.exists
+    - existing_hash_result.rc | default(0) != 0
 
 - name: Verify existing hash against password
   ansible.builtin.shell: |
@@ -357,20 +382,67 @@
   when: not (skip_adguard_api_config | default(false))
 
 - name: Update admin password in AdGuard Home config
-  ansible.builtin.lineinfile:
+  ansible.builtin.script: adguard-admin-hash.py --config {{ adguard_install_path }}/AdGuardHome.yaml --user {{ adguard_admin_user }} write
+  args:
+    executable: python3
+  environment:
+    # Env, not a script argument, so the hash never reaches
+    # adguard-admin-hash.py's OWN argv (where it would sit in
+    # /proc/<pid>/cmdline for anyone on the box, and in any crash/trace of it).
+    # It is NOT invisible: ansible.builtin.script prefixes the assignment onto
+    # the command string it hands the remote shell (plugins/action/script.py
+    # joins _compute_environment_string with the command), so the wrapping
+    # `sh -c` argv carries it for the length of the run — which is also why
+    # no_log below is not optional.
+    ADGUARD_HASH: "{{ adguard_admin_password_hash }}"
+  register: adguard_hash_write_result
+  # The script rewrites only the admin's line and re-parses the result before
+  # committing it, so a real change is the only path to CHANGED — and therefore
+  # the only path to a restart of the resolver. Compared exactly, NOT with the
+  # `'CHANGED' in ...` idiom the rest of the repo uses: this script's negative
+  # verdict is UNCHANGED, which contains CHANGED, so `in` matches both.
+  changed_when: adguard_hash_write_result.stdout | default('') | trim == 'CHANGED'
+  when:
+    - adguard_config.stat.exists
+    - not (skip_adguard_api_config | default(false))
+  notify: Restart AdGuardHome
+  # no_log because the hash is in this task's `environment`, which Ansible does
+  # render into the verbose exec line. It costs nothing here — the script's own
+  # stdout is only CHANGED/UNCHANGED — but it would otherwise reduce all five of
+  # the script's distinct exit-1 conditions (user absent, duplicate users, no
+  # password key, multi-line scalar, post-write verification failed) to "the
+  # output has been hidden", on the host the whole LAN resolves through. So the
+  # failure is deferred and re-raised by the next task, which prints the
+  # script's stderr; none of its ERROR messages contain the hash.
+  no_log: true
+  failed_when: false
+  # Serialize execution to prevent Docker exec race conditions in test containers
+  throttle: 1
+
+- name: Surface an admin-password-hash rewrite failure
+  ansible.builtin.fail:
+    msg: >-
+      adguard-admin-hash.py write failed on {{ inventory_hostname }}
+      (rc={{ adguard_hash_write_result.rc | default('?') }}):
+      {{ adguard_hash_write_result.stderr | default('') | trim
+         | default('no stderr captured', true) }}
+  when:
+    - adguard_config.stat.exists
+    - not (skip_adguard_api_config | default(false))
+    - adguard_hash_write_result.rc | default(0) != 0
+
+# The rewrite preserves the file's existing mode/ownership rather than asserting
+# it (the lineinfile it replaced set both inline); keep the assertion here so a
+# config left world-readable by AdGuard or an operator is still corrected.
+- name: Enforce ownership and mode on the AdGuard Home config
+  ansible.builtin.file:
     path: "{{ adguard_install_path }}/AdGuardHome.yaml"
-    regexp: '^(\s+password:\s+).*$'
-    line: '    password: {{ adguard_admin_password_hash }}'
     owner: "{{ adguard_user }}"
     group: "{{ adguard_group }}"
     mode: "0600"
   when:
     - adguard_config.stat.exists
     - not (skip_adguard_api_config | default(false))
-  notify: Restart AdGuardHome
-  no_log: true
-  # Serialize execution to prevent Docker exec race conditions in test containers
-  throttle: 1
 
 # Brief pause after config update to stabilize Docker exec interface
 # This prevents race conditions when multiple containers modify configs concurrently

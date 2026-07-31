@@ -16,6 +16,23 @@ locals {
   ddns_placeholder_ip = "104.156.98.15"
 }
 
+# PREVENT_DESTROY POLICY (referenced by every record below)
+#
+# This is the ONE Terraform module that auto-applies to production: on a main
+# push touching terraform/cloudflare/**, deploy-terraform runs
+# `terraform apply -auto-approve tfplan` (.gitlab-ci.yml), and the MR widget
+# shows only create/update/delete COUNTS — not which records. Deleting or
+# renaming a resource block (or a for_each key) therefore takes the record out
+# of DNS with no confirmation step: the apex, GitLab web+SSH, the `direct`
+# target every nested-wildcard CNAME points at, the WireGuard endpoint, the
+# Immich upload path, or the CAA allow-list that gates cert issuance.
+#
+# `prevent_destroy = true` turns that into a hard plan-time error, so removing a
+# record is a deliberate two-step change: delete the lifecycle block in one
+# commit, then the resource. Same reasoning as the tailnet ACL in
+# terraform/tailscale/main.tf. It does NOT block in-place updates, and `moved`
+# blocks (state renames) are unaffected.
+
 resource "cloudflare_record" "root" {
   zone_id = data.cloudflare_zone.external.id
   name    = var.external_domain # ericsweiss.com
@@ -34,6 +51,9 @@ resource "cloudflare_record" "root" {
     # (Cloudflare defaults a fresh record to proxied=false), so there's no
     # divergence risk with the values above.
     ignore_changes = [content]
+
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
   }
 }
 
@@ -76,6 +96,14 @@ resource "cloudflare_record" "caa" {
   }
 
   comment = each.value.comment
+
+  lifecycle {
+    # See the PREVENT_DESTROY POLICY note at the top of this file. On this
+    # for_each that also guards a KEY rename, which Terraform plans as
+    # destroy+create — dropping a CA from the allow-list mid-apply would fail
+    # in-flight cert issuance.
+    prevent_destroy = true
+  }
 }
 
 # Migrate the previously hand-written per-record CAA blocks into the for_each
@@ -124,6 +152,11 @@ resource "cloudflare_record" "spf" {
   content = "v=spf1 ~all"
   ttl     = 1
   comment = "SPF - softfail (monitoring); tighten to -all after DMARC reports"
+
+  lifecycle {
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
+  }
 }
 
 resource "cloudflare_record" "dmarc" {
@@ -133,6 +166,11 @@ resource "cloudflare_record" "dmarc" {
   content = "v=DMARC1; p=none; rua=mailto:ericsweiss1@gmail.com"
   ttl     = 1
   comment = "DMARC - monitoring policy (p=none); rua best-effort (cross-domain to consumer Gmail)"
+
+  lifecycle {
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
+  }
 }
 
 # Records present in the Cloudflare zone but intentionally managed outside this
@@ -145,12 +183,10 @@ resource "cloudflare_record" "dmarc" {
 # static one-offs — not worth the state overhead. `terraform plan` will not
 # touch them.
 
-# =============================================================================
 # GitLab DNS Records
 # These are managed by Terraform (not external-dns) because:
 # - Subdomains like registry.git require explicit management
 # - Wildcard domains (*.pages.git) aren't supported by external-dns annotations
-# =============================================================================
 
 # GitLab Web UI + SSH - git.ericsweiss.com
 # DNS-only mode allows both HTTPS (via Traefik) and SSH access on the same hostname
@@ -173,6 +209,9 @@ resource "cloudflare_record" "git" {
     # update; its per-record literal only seeds record creation, so `proxied`
     # below stays Terraform-owned.
     ignore_changes = [content]
+
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
   }
 }
 
@@ -205,6 +244,9 @@ resource "cloudflare_record" "direct" {
     # update; its per-record literal only seeds record creation, so `proxied`
     # below stays Terraform-owned.
     ignore_changes = [content]
+
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
   }
 }
 
@@ -230,6 +272,9 @@ resource "cloudflare_record" "vpn" {
     # update; its per-record literal only seeds record creation, so `proxied`
     # below stays Terraform-owned.
     ignore_changes = [content]
+
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
   }
 }
 
@@ -249,6 +294,11 @@ resource "cloudflare_record" "photos" {
   proxied = false # DNS-only: mobile uploads exceed the 100 MB proxied body cap
   ttl     = 1
   comment = "Immich - DNS only (proxy bypass for large uploads), TLS via Traefik"
+
+  lifecycle {
+    # See the PREVENT_DESTROY POLICY note at the top of this file.
+    prevent_destroy = true
+  }
 }
 
 # Nested-subdomain records pointing at direct.${var.external_domain} (DNS-only,
@@ -282,6 +332,12 @@ resource "cloudflare_record" "gitlab_direct" {
   proxied = false
   ttl     = 1
   comment = each.value
+
+  lifecycle {
+    # See the PREVENT_DESTROY POLICY note at the top of this file. Renaming a
+    # key here destroys the record: registry/pages/ide all resolve through it.
+    prevent_destroy = true
+  }
 }
 
 # Migrate the previously hand-written per-record CNAME blocks into the for_each

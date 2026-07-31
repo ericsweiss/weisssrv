@@ -1,6 +1,4 @@
 ---
-# Handlers for unbound role
-
 - name: Restart unbound
   ansible.builtin.service:
     name: unbound

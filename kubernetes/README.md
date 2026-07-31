@@ -12,18 +12,23 @@ kubernetes/
 ├── clusters/weisssrv/             # Flux entrypoint (written by `flux bootstrap`)
 │   ├── flux-system/               # gotk-components.yaml + gotk-sync.yaml are managed by `flux bootstrap` — manual edits risk breaking reconciliation
 │   ├── infrastructure-sources.yaml       # Flux Kustomization → ../../infrastructure/sources (no deps)
-│   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources)
+│   ├── infrastructure-crds.yaml          # Flux Kustomization → ../../infrastructure/crds (dependsOn: sources, wait: true)
+│   ├── infrastructure-controllers.yaml   # Flux Kustomization → ../../infrastructure/controllers (dependsOn: sources + crds)
 │   ├── infrastructure-configs.yaml       # Flux Kustomization → ../../infrastructure/configs (dependsOn: controllers)
 │   ├── infrastructure-observability.yaml # Flux Kustomization → ../../infrastructure/observability (dependsOn: configs)
 │   ├── apps.yaml                  # Flux Kustomization → ../../apps (dependsOn: infrastructure-configs)
-│   ├── kustomization.yaml         # Lists flux-system + the 5 top-level Kustomizations + tenants/
+│   ├── kustomization.yaml         # Lists flux-system + the 6 top-level Kustomizations + tenants/
 │   └── tenants/                   # One-file-per-tenant wiring (GitRepository + Kustomization + ClusterSecretStore)
 │       └── README.md              # Onboarding examples
 ├── infrastructure/                # Platform (reconciled before apps)
 │   ├── sources/                   # HelmRepository CRs + versions-configmap.yaml (needed by controllers)
+│   ├── crds/                      # prometheus-operator CRDs, installed before any controller renders a ServiceMonitor
 │   ├── controllers/               # Platform HelmReleases — see controllers/kustomization.yaml for the current set
 │   ├── configs/                   # Cluster-wide CRs requiring the controllers' CRDs — see configs/kustomization.yaml
 │   └── observability/             # kube-prometheus-stack, Loki, Alloy, exporters, ServiceMonitors, dashboards, ingress
+├── components/                    # Reusable Kustomize components pulled in via `components:` in an app's kustomization.yaml
+│   ├── netpol-baseline/           # default-deny-ingress — MANDATORY for every app (docs/29 § Adding a New App)
+│   └── gitlab-runner-common/      # Shared runner values/objects for the two runner releases
 └── apps/                          # Workloads — one dir per app; see apps/kustomization.yaml for the current set
 ```
 
@@ -34,8 +39,8 @@ kubernetes/
 2. Flux's `source-controller` fetches this repo — push-triggered via the
    GitLab agent's Flux module, with a 1m poll as fallback.
 3. Flux's `kustomize-controller` reconciles in dependency order: `sources` →
-   `controllers` → `configs`, then `observability` and `apps` in parallel
-   (apps deliberately do not gate on observability health).
+   `crds` → `controllers` → `configs`, then `observability` and `apps` in
+   parallel (apps deliberately do not gate on observability health).
 4. `postBuild.substituteFrom: cluster-versions` substitutes `${var}`
    placeholders (e.g., `${authentik_version}`) from the `cluster-versions`
    ConfigMap, generated from `all.yml` via `task flux:sync-versions`.
@@ -63,7 +68,7 @@ task flux:lint              # kustomize build + kubeconform for infra/ and apps/
 ## Cluster topology
 
 Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
-(API .161 via kube-vip; MetalLB .100 public / .101 internal) live in
+(API .161 via kube-vip; MetalLB .100 public / .101 internal / .99 wg-easy) live in
 [docs/01-overview.md](../docs/01-overview.md) (canonical).
 
 ## Namespaces (by owner)
@@ -79,14 +84,25 @@ Node-by-node list (3 servers forming the etcd quorum + 6 agents) and the VIPs
 | `vpa-system` | Flux (HelmRelease) | Vertical Pod Autoscaler (docs/33) |
 | `reloader` | Flux (HelmRelease) | Reloader — rolls workloads on ConfigMap changes only (Secrets excluded via `ignoreSecrets: true`) |
 | `kube-system` | k3s (+ Flux HelmRelease for kured) | k3s built-ins + kured reboot coordinator |
+| `kube-node-lease`, `kube-public` | k3s | Cluster built-ins, nothing deployed into them |
 | `cloudflare-ddns` | Flux (Kustomize) | DDNS CronJob |
 | `authentik` | Flux (HelmRelease) | Authentik SSO + bundled PostgreSQL |
 | `downloads` | Flux (Kustomize) | Gluetun + *arr (privileged PSS — Gluetun needs CAP_NET_ADMIN) |
 | `recipes` | Flux (Kustomize) | Mealie + Bar Assistant + Salt Rim + postgres + meilisearch + redis |
-| `gitlab-runner` | Flux (HelmRelease) | Both shared and privileged runners live here |
+| `gitlab-runner` | Flux (HelmRelease) | Shared (unprivileged, tag `k8s-deploy`) runner |
+| `gitlab-runner-privileged` | Flux (HelmRelease) | Infrastructure (privileged, tag `infrastructure`) runner |
 | `gitlab-runner-reaper` | Flux (Kustomize) | CronJob that GCs leaked runner pods + dockercfg Secrets |
 | `gitlab-agent` | Flux (HelmRelease) | `weisssrv-k3s` agent for Kubernetes |
 | `observability` | Flux (HelmRelease + Kustomize) | kube-prometheus-stack, Loki, Alloy, exporters, dashboards |
+| `prometheus-operator-crds` | Flux (HelmRelease) | The `monitoring.coreos.com` CRDs (`infrastructure-crds` stage) |
+| `hermes` | Flux (Kustomize) | Hermes agent + dashboard + camofox (docs/37) |
+| `hindsight` | Flux (Kustomize) | Hermes' memory backend + llama.cpp GPU sidecar, no ingress (docs/37) |
+| `homarr` | Flux (Kustomize) | Homarr dashboard (docs/41) |
+| `registry-cache` | Flux (Kustomize) | Pull-through registry cache for CI (docs/27) |
+| `wg-easy` | Flux (Kustomize) | wg-easy WireGuard VPN (docs/38) |
+| `tailnet-dns` | Flux (Kustomize) | Tailnet-facing DNS forwarder |
+| `tailscale` | Flux (HelmRelease) | tailscale-operator |
+| `nvidia-device-plugin` | Flux (HelmRelease) | Time-sliced GPU device plugin (docs/43) |
 | `default` | Flux (Kustomize) | IngressRoutes for non-k8s VMs (via `apps/vm-ingress/`) |
 | `gitlab` | Flux (Kustomize) | IngressRoutes for the GitLab VM (web + registry + pages) |
 

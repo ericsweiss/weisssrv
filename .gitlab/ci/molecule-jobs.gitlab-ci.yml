@@ -94,9 +94,9 @@
         sleep 1
       done
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    # Cache-first pull, SHA tag before :latest (unchanged semantics: when
-    # build-molecule-test rebuilt the image this pipeline, jobs must use the
-    # SHA build, not a stale :latest — the anti-retag race). Every cache pull
+    # Cache-first pull, SHA tag before :latest: when build-molecule-test
+    # rebuilt the image this pipeline, jobs must use the SHA build, not a stale
+    # :latest (the anti-retag race). Every cache pull
     # is timeout-bounded and falls back to the direct registry, so a cache
     # outage can never break or stall CI — it only loses the warm hit.
     - |

@@ -10,7 +10,9 @@
 > - `docs/31-observability.md` — the observability stack (Prometheus + Grafana +
 >   Loki + Alloy), **deployed since 2026-04-17** — the "Layer 3: Observability
 >   (PLANNED)" / "Planned Applications" sections below are now DONE (only Uptime
->   Kuma remains)
+>   Kuma remains). Immich (docs/36) and Nextcloud (docs/35) also shipped — as
+>   docker-compose stacks on dedicated VMs, not the k8s namespaces the tables
+>   below imagine — so milestones 11 and 12 are complete despite their `[ ]`.
 > - `docs/16-next-steps.md` — ongoing/next work (observability, alerting, etc.)
 >
 > Do NOT follow any "deploy" commands below — they predate the Flux

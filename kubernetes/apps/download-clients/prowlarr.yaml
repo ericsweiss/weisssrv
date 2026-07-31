@@ -49,7 +49,6 @@ spec:
           # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
       containers:
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: prowlarr
           image: lscr.io/linuxserver/prowlarr:version-${prowlarr_version}
           imagePullPolicy: IfNotPresent

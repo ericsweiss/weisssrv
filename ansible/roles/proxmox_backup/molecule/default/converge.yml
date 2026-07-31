@@ -72,11 +72,9 @@
         mode: "0755"
 
   tasks:
-    # =====================================================================
     # CASE A — storage entry + vzdump job both absent: exactly one
     # `pvesh create /storage` and one `pvesh create /cluster/backup`, each
     # with the exact expected argument vector.
-    # =====================================================================
     - name: A — reset log and set empty live state
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -117,10 +115,8 @@
       register: case_a
       changed_when: false
 
-    # =====================================================================
     # CASE B — both present and matching (with Proxmox-reordered comma
     # lists): ZERO mutations. This is the no-churn idempotency contract.
-    # =====================================================================
     - name: B — reset log, seed matching live state
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -150,10 +146,8 @@
       register: case_b
       changed_when: false
 
-    # =====================================================================
     # CASE C — vzdump job present with a drifted schedule: exactly one
     # `pvesh set /cluster/backup/<id>` and no storage mutation.
-    # =====================================================================
     - name: C — reset log, seed matching storage + drifted job schedule
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -194,11 +188,9 @@
       register: case_c
       changed_when: false
 
-    # =====================================================================
     # CASE C2 — vzdump job present with all=1/no exclude, config adds an
     # exclude: exactly one `pvesh set /cluster/backup/<id>` carrying
     # `--exclude 100` and no storage mutation. Guards guest-selection drift.
-    # =====================================================================
     - name: C2 — reset log, seed matching storage + all=1 job with no exclude
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -234,13 +226,11 @@
       register: case_c2
       changed_when: false
 
-    # =====================================================================
     # CASE C3 — live job carries a stale `exclude` (100) that the config no
     # longer sets: the role must clear it with `--delete exclude`. pvesh set
     # only updates the flags it is given, so a removed exclude/vmid must be
     # explicitly deleted or it keeps silently skipping guests. Exactly one
     # `pvesh set` carrying `--delete exclude` and no storage mutation.
-    # =====================================================================
     - name: C3 — reset log, seed matching job WITH a stale exclude
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -282,10 +272,8 @@
       register: case_c3
       changed_when: false
 
-    # =====================================================================
     # CASE D — storage present with drifted (mutable) content: exactly one
     # `pvesh set /storage/<id>` and no job mutation.
-    # =====================================================================
     - name: D — reset log, seed drifted storage content + matching job
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -323,11 +311,9 @@
       register: case_d
       changed_when: false
 
-    # =====================================================================
     # CASE E — storage present with a drifted CREATE-FIXED property (server
     # still the old IP): the role must FAIL LOUD (recreation is a manual
     # step) and issue ZERO mutations.
-    # =====================================================================
     - name: E — reset log, seed storage with the legacy IP server
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -372,7 +358,6 @@
       register: case_e
       changed_when: false
 
-    # ---------------------------------------------------------------------
     - name: Capture backup contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/backup-contract.json

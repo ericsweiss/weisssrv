@@ -152,12 +152,18 @@ spec:
       # well above the ~60-70m idle draw — otherwise the threshold trips at
       # near-idle and the HPA pins to maxReplicas. VPA manages memory only
       # for this Deployment (see vpa.yaml), so this CPU request stays static.
+      #
+      # memory limit MUST stay above the request: with request == limit the
+      # VPA's default controlledValues would rewrite the limit down 1:1 with
+      # every request revision, leaving zero burst headroom (the prowlarr
+      # failure mode — download-clients/vpa.yaml). vpa.yaml pins
+      # controlledValues: RequestsOnly here as the belt to this braces.
       resources:
         requests:
           cpu: 200m
           memory: 1Gi
         limits:
-          memory: 1Gi
+          memory: 1536Mi
 
       # Spread replicas across nodes
       affinity:
@@ -275,12 +281,18 @@ spec:
           size: 10Gi
           storageClass: ""
           existingClaim: authentik-postgres-data  # Use dedicated ZFS zvol PVC
+        # Hand-applied from the Off-tier VPA recommendation (vpa.yaml keeps this
+        # StatefulSet recommendation-only): the 512Mi limit was OOMKilled on
+        # 2026-07-25 with a 7d working-set peak of 504Mi (98.4% of it) while the
+        # recorded target sat at 684Mi. Request is the target rounded down to a
+        # 64Mi boundary, limit is 1Gi (~1.5x the target) for burst headroom. CPU
+        # stays 100m: the recorded CPU target is 50m (uncapped 35m).
         resources:
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 640Mi
           limits:
-            memory: 512Mi
+            memory: 1Gi
         # Pin to NAS agent for local storage
         affinity:
           nodeAffinity:

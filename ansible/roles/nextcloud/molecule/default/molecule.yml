@@ -1,8 +1,5 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
-# and inventory live here.
+# Scenario overrides; shared config in ansible/molecule/base.yml (ansible/TESTING.md).
 #
 # skip_nextcloud_deploy: true — the CI container has no Docker daemon and no
 # Nextcloud, so this scenario exercises the template-render + config contract

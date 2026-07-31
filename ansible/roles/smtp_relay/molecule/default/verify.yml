@@ -140,6 +140,87 @@
         fail_msg: "queue collector did not emit expected metrics"
         success_msg: "queue collector emitted expected Prometheus metrics"
 
+    # Compiled-map repair (tasks/repair-compiled-maps.yml). A converge always
+    # reports `Configure mail aliases` / `Deploy SASL password file` changed, so
+    # the notify handlers rebuild both .db files and any assertion on them
+    # passes with the repair deleted. The shape that bites production is the
+    # opposite one — source already correct, .db holding a RETIRED value,
+    # handler never notified (a play that dies before flush_handlers) — which no
+    # converge produces. Build it and drive the repair against it. Values are
+    # the scenario's synthetic ones (molecule.yml).
+    - name: Stale db | compile both maps from retired values, then restore the sources
+      ansible.builtin.shell: |
+        set -eo pipefail
+        cp -a /etc/aliases /tmp/aliases.managed
+        printf 'root: retired@test.local\npostmaster: root\n' > /etc/aliases
+        newaliases
+        cp -a /tmp/aliases.managed /etc/aliases
+        cp -a /etc/postfix/sasl_passwd /tmp/sasl_passwd.managed
+        printf '[smtp.gmail.com]:587    retired:retired\n' > /etc/postfix/sasl_passwd
+        postmap /etc/postfix/sasl_passwd
+        cp -a /tmp/sasl_passwd.managed /etc/postfix/sasl_passwd
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Stale db | read both compiled maps before the repair
+      ansible.builtin.command:
+        cmd: "postmap -q {{ item.key }} hash:{{ item.map }}"
+      register: smtp_relay_stale_before
+      changed_when: false
+      failed_when: false
+      loop:
+        - {key: root, map: /etc/aliases}
+        - {key: '[smtp.gmail.com]:587', map: /etc/postfix/sasl_passwd}
+      loop_control:
+        label: "{{ item.map }}"
+
+    # Both arms are asserted non-empty on purpose: that is precisely the state a
+    # value-blind guard ("does root resolve to ANYTHING?") reads as healthy.
+    - name: Stale db | the fixture must be stale, and stale in the value-blind way
+      ansible.builtin.assert:
+        that:
+          - smtp_relay_stale_before.results[0].stdout | trim == 'retired@test.local'
+          - smtp_relay_stale_before.results[1].stdout | trim == 'retired:retired'
+        fail_msg: >-
+          The stale-db fixture did not take, so the repair below is not being
+          exercised against a stale database at all
+        success_msg: "both compiled maps hold retired values while their sources are correct"
+
+    - name: Stale db | drive the role's compiled-map repair
+      ansible.builtin.include_role:
+        name: smtp_relay
+        tasks_from: repair-compiled-maps.yml
+
+    - name: Stale db | read both compiled maps after the repair
+      ansible.builtin.command:
+        cmd: "postmap -q {{ item.key }} hash:{{ item.map }}"
+      register: smtp_relay_stale_after
+      changed_when: false
+      failed_when: false
+      loop:
+        - {key: root, map: /etc/aliases}
+        - {key: '[smtp.gmail.com]:587', map: /etc/postfix/sasl_passwd}
+      loop_control:
+        label: "{{ item.map }}"
+
+    - name: Stale db | the repair must recompile both maps from their sources
+      ansible.builtin.assert:
+        that:
+          - smtp_relay_stale_after.results[0].stdout | trim == 'test@test.local'
+          - smtp_relay_stale_after.results[1].stdout | trim == 'testgmail@gmail.com:testgmailpass'
+        # The SASL value is deliberately NOT echoed — this assertion is the
+        # template an operator copies, and on the real relay that string is the
+        # Gmail app password.
+        fail_msg: >-
+          A compiled map still holds a retired value after the repair
+          (aliases='{{ smtp_relay_stale_after.results[0].stdout | trim }}',
+          sasl map matched={{ smtp_relay_stale_after.results[1].stdout | trim == 'testgmail@gmail.com:testgmailpass' }})
+          — a lost handler would leave the relay delivering root mail locally and
+          authenticating to Gmail with a revoked app password, with nothing
+          reporting changed
+        success_msg: "the repair rebuilds a stale aliases.db and sasl_passwd.db"
+
     - name: Display test results
       ansible.builtin.debug:
         msg:

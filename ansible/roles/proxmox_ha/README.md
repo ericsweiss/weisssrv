@@ -38,11 +38,16 @@ ha_rules:
     comment: "dns-01 home pve-opt-01; never pve-nas-01"
     enabled: true
 
-# HA Resources - VMs/containers managed by HA
+# HA Resources - VMs/containers managed by HA.
+# max_restart / max_relocate are OPTIONAL (omitted -> Proxmox defaults). The
+# role passes them to `ha-manager add` when present; all.yml does not currently
+# set them, so this is their only documented shape.
 ha_resources:
   - type: ct
     vmid: 150
     state: started
+    max_restart: 2      # optional: restart attempts on the current node
+    max_relocate: 1     # optional: relocation attempts to another node
     comment: "dns-01 (AdGuard Home primary)"
     enabled: true
 
@@ -50,11 +55,13 @@ ha_resources:
 # Schedules are explicit staggered minute lists (not "*/15") so each service
 # gets a deterministic offset and the four services never replicate at once.
 storage_replication_jobs:
+  # dns-01's HOME is pve-opt-01 (it must never be pve-laptop-01 — memtest-confirmed
+  # bad RAM, docs/12), so the source is the home and the targets are the peers.
   - id: "150-0"
-    source_node: pve-laptop-01
-    target_node: pve-opt-01
+    source_node: pve-opt-01
+    target_node: pve-laptop-01
     schedule: "0,15,30,45"   # dns-01 slots; the next service uses "3,18,33,48"
-    comment: "dns-01 -> pve-opt-01"
+    comment: "dns-01 -> pve-laptop-01"
     enabled: true
 ```
 

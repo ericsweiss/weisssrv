@@ -43,7 +43,7 @@ ssh_pubkey_authentication: true
 
 This is a standard Proxmox requirement - the cluster cannot function without root-level access between nodes. Password authentication remains disabled; only key-based authentication is allowed.
 
-### LXC Containers (dns-01, dns-02, smtp-relay)
+### LXC Containers (dns-01, dns-02, smtp-relay, plex, immich-ml)
 
 **User**: `eric` (all containers)
 
@@ -96,9 +96,10 @@ ssh eric@192.168.0.152  # plex
 ### Via Tailscale VPN
 
 ```bash
-# Proxmox hosts via Tailscale
-ssh eric@pve-nas-01.tail-scale.ts.net
-ssh eric@pve-opt-03.tail-scale.ts.net
+# Proxmox hosts via Tailscale (<tailnet> = the tailnet's MagicDNS suffix,
+# from `tailscale status`)
+ssh eric@pve-nas-01.<tailnet>.ts.net
+ssh eric@pve-opt-03.<tailnet>.ts.net
 
 # Or via Tailscale IP
 tailscale status  # Get Tailscale IPs

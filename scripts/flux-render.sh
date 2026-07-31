@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DUAL-MAINTAINED: eric/weisssrv-lib ships a copy of this script for its other
+# consumers, and the library CI templates take the script PATH from the consumer
+# tree (.gitlab-ci.yml inputs), so this repo-local copy is the one CI runs. A
+# behaviour change here should be mirrored into weisssrv-lib and released with
+# the next tag bump; nothing compares the two automatically.
 # Shared Flux render helpers: extract the postBuild substitution variables from
 # the cluster-versions ConfigMap and derive the kubeconform schema version.
 # The byte-identical extraction block previously lived in four places
@@ -68,7 +73,11 @@ cmd_k8s_version() {
     # validate against the same kubeconform API schemas. `|| true` keeps the
     # empty-match fallback reachable under `set -eo pipefail`.
     ver=$(grep -E '^ *k3s_version:' "$cm" | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
-    printf '%s.0\n' "${ver:-1.36}"
+    # No silent fallback: the whole point is that local lint and CI validate
+    # against the SAME schema version. A hardcoded default would let a missing /
+    # renamed k3s_version key drift the two apart without anyone noticing.
+    [ -n "$ver" ] || die "could not derive k3s_version from ${cm} (expected a 'k3s_version: X.Y.Z' key) — run 'task flux:sync-versions'"
+    printf '%s.0\n' "$ver"
 }
 
 main() {

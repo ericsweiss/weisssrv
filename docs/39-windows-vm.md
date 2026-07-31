@@ -1,4 +1,4 @@
-# 39 — Windows 11 VM
+# Windows 11 VM
 
 A NAS-pinned Windows 11 Pro VM (`windows`, VMID 155, `192.168.0.155`) on
 `pve-nas-01`, provisioned as Infrastructure-as-Code down to a bootable
@@ -66,14 +66,15 @@ Proxmox guest firewall. There are **no** external-dns / Cloudflare records —
   consequences to keep in mind:
   - **Backup-window encroachment.** VM 155 is a *new pve-nas-01 local guest* in
     the `all` job, so its image lengthens **this host's** slice of the shared
-    backup window. That window (03:30–~05:45, throttled to 30 MiB/s/node by the
-    `bwlimit` on `pve_vzdump_jobs`) already ends only ~15 min ahead of the 06:00
-    media-mover and 06:30 archive-backup timer. Once Windows is installed and
-    the image fills out (~15–25 min at the bwlimit for a typical footprint, more
-    as the guest and pagefile grow), **re-verify** that pve-nas-01's backup
-    still finishes before 06:00 and that the `ProxmoxHost` I/O-pressure alerts
-    stay quiet through a full window (this is the post-install check in the
-    provisioning runbook). If it slips, exclude VMID 155 (below) or move it to a
+    backup window. That window (03:30–~04:45, throttled to 60 MiB/s/node by the
+    `bwlimit` on `pve_vzdump_jobs` — raised from 30 after the 07-20 measurement,
+    see docs/42) ends ~75 min ahead of the 06:00 media-mover and 06:30
+    archive-backup timer. Once Windows is installed and the image fills out
+    (VM 155's 38G dump takes ~11 min at the current bwlimit, more as the guest
+    and pagefile grow), **re-verify** that pve-nas-01's backup still finishes
+    before 06:00 and that the `ProxmoxHost` I/O-pressure alerts stay quiet
+    through a full window (this is the post-install check in the provisioning
+    runbook). If it slips, exclude VMID 155 (below) or move it to a
     separate, lower-frequency job. History for this window lives in the
     `pve_vzdump_jobs` comment in `host_vars/pve-nas-01.yml`.
   - **Opting out.** If you'd rather not back the desktop up at all, exclude VMID
@@ -187,7 +188,7 @@ pushed pve-nas-01's slice of the nightly vzdump past the 06:00 media-mover /
 ssh eric@192.168.0.102 "journalctl -u 'vzdump*' --since yesterday | tail"
 ```
 
-If pve-nas-01's backup now finishes after ~05:55, exclude VMID 155 or move it to
+If pve-nas-01's backup now finishes after ~05:45, exclude VMID 155 or move it to
 a separate job (see [Encryption & backups](#encryption--backups)).
 
 ---

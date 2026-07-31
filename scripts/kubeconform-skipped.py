@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# DUAL-MAINTAINED: eric/weisssrv-lib ships a copy of this script for its other
+# consumers, and the library CI templates take the script PATH from the consumer
+# tree (.gitlab-ci.yml inputs), so this repo-local copy is the one CI runs. A
+# behaviour change here should be mirrored into weisssrv-lib and released with
+# the next tag bump; nothing compares the two automatically.
 """Print the distinct kinds kubeconform SKIPPED (no schema in the catalog).
 
 flux-lint runs kubeconform with `-ignore-missing-schemas`, which silently marks

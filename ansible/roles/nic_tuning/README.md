@@ -24,8 +24,16 @@ Per-NIC tuning for homelab Proxmox hosts and anywhere else a persistent
   out to the switch — an intermittent "MAC-flapping" black-hole that recurs on
   reboots/HA-moves and hit dns-02 (and any guest that lands on a bonded host).
   Full diagnosis + recovery: `docs/34-bond-mac-flapping.md`.
+- The same three OptiPlex hosts carry an onboard Intel **e1000e** NIC (`nic0`,
+  `00:19.0`) whose TX unit intermittently wedges ("Detected Hardware Unit
+  Hang"). The driver cannot reset it and the link stays up, so the
+  active-backup bond never fails over and the whole host drops off the cluster
+  until it is power-cycled. `tso/gso/gro off` on `nic0` (via
+  `nic_tuning_overrides` in each host's `host_vars`) is the fix. Diagnosis +
+  journal signature: `docs/34-bond-mac-flapping.md` § e1000e TX Hardware Unit
+  Hang.
 
-This role codifies all four.
+This role codifies all five.
 
 ## Variables
 

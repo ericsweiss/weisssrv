@@ -1,6 +1,4 @@
 ---
-# Role metadata
-
 galaxy_info:
   # Explicit role_name + namespace so ansible-compat's FQCN derivation
   # doesn't fall back to "<author>.proxmox_vm" (which contains a space

@@ -75,9 +75,7 @@ try:
 except ImportError:  # pragma: no cover - dependency guard mirrors sibling scripts
     sys.exit("PyYAML required: pip install pyyaml (or brew install python && pip3 install pyyaml)")
 
-# ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
 
 REPO = Path(__file__).resolve().parent.parent
 CI_FILE = REPO / ".gitlab-ci.yml"
@@ -142,9 +140,7 @@ class CoverageError(RuntimeError):
     """A changed role/test has no matrix entry — a coverage bug, fail loud."""
 
 
-# ---------------------------------------------------------------------------
 # YAML loading (tolerant of GitLab custom tags such as !reference)
-# ---------------------------------------------------------------------------
 
 def _tag_passthrough(loader, tag_suffix, node):
     """Preserve custom-tagged nodes structurally (mirrors
@@ -184,9 +180,7 @@ def _load_yaml(path: Path):
         return None
 
 
-# ---------------------------------------------------------------------------
 # Matrix parsing (single source of truth = .gitlab-ci.yml)
-# ---------------------------------------------------------------------------
 
 def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]], list[str]]:
     """Parse the molecule-tests / integration-tests parallel:matrix from the CI file.
@@ -239,9 +233,7 @@ def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]]
     return ({r: sorted(s) for r, s in role_scenarios.items()}, sorted(integration))
 
 
-# ---------------------------------------------------------------------------
 # Dependency-graph derivation (from the repo, not hardcoded)
-# ---------------------------------------------------------------------------
 
 
 def _yaml_files(root: Path):
@@ -405,9 +397,7 @@ def build_inventory_consumers(
     return dict(consumers)
 
 
-# ---------------------------------------------------------------------------
 # Path classification
-# ---------------------------------------------------------------------------
 
 def is_global_trigger(path: str) -> bool:
     """True if a change to `path` forces the full matrix."""
@@ -463,9 +453,7 @@ def classify_integration_path(path: str, integration_tests: set[str]):
     )
 
 
-# ---------------------------------------------------------------------------
 # Selection
-# ---------------------------------------------------------------------------
 
 class Selection:
     """Result of computing the affected set."""
@@ -586,9 +574,7 @@ def select(changed_files: list[str], *, repo: Path = REPO) -> Selection:
     )
 
 
-# ---------------------------------------------------------------------------
 # Rendering
-# ---------------------------------------------------------------------------
 
 _HEADER = (
     "---\n"
@@ -649,9 +635,7 @@ def render_child_pipeline(selection: Selection) -> str:
     return _HEADER + yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 
 def _git_changed_files(base: str, repo: Path = REPO) -> list[str]:
     """`git diff --name-only <base>...HEAD` (three-dot: HEAD vs the merge-base)."""

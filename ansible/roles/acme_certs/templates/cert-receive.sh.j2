@@ -16,17 +16,17 @@
 set -euo pipefail
 
 # --- Baked-in, client-immutable parameters (rendered by acme_certs) ---
-CERT_DIR="{{ item.cert_dir }}"
-OWNER="{{ item.owner }}"
-GROUP="{{ item.group }}"
-CERT_MODE="{{ item.cert_mode }}"
-KEY_MODE="{{ item.key_mode }}"
+CERT_DIR="{{ _acme_target.cert_dir }}"
+OWNER="{{ _acme_target.owner }}"
+GROUP="{{ _acme_target.group }}"
+CERT_MODE="{{ _acme_target.cert_mode }}"
+KEY_MODE="{{ _acme_target.key_mode }}"
 EXPECT_DOMAIN="{{ internal_domain }}"
 # This script already runs as root (forced command is `sudo cert-receive`), so
 # the reload runs verbatim. restart_command values that carry their own `sudo`
 # still work — sudo root->root needs no password or tty on these Debian hosts
 # (no `Defaults requiretty`).
-RELOAD={{ (item.restart_command | default('systemctl restart ' ~ (item.restart_service | default('')))) | quote }}
+RELOAD={{ (_acme_target.restart_command | default('systemctl restart ' ~ (_acme_target.restart_service | default('')))) | quote }}
 DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
 MAX_BYTES=65536
 

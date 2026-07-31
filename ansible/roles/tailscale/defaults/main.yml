@@ -1,6 +1,4 @@
 ---
-# Default variables for tailscale role
-
 tailscale_enabled: true
 tailscale_accept_routes: false  # CRITICAL: Should be false to prevent routing loops (especially for subnet routers)
 tailscale_accept_dns: false  # We use our own DNS infrastructure

@@ -1,8 +1,5 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
-# and inventory live here.
+# Scenario overrides; shared config in ansible/molecule/base.yml (ansible/TESTING.md).
 #
 # The container has no ZFS module (so /sys/module/zfs/parameters/zfs_arc_max is
 # absent — the live-apply task self-skips on that stat) and no real /boot kernel

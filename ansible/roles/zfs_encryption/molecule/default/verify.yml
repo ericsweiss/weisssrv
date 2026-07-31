@@ -7,9 +7,7 @@
     expected_pool: testpool
     expected_item: "ZFS Pool testpool Passphrase"
   tasks:
-    # ========================================================================
     # 1. Connect token file
-    # ========================================================================
     - name: Stat /etc/onepassword-connect/token
       ansible.builtin.stat:
         path: /etc/onepassword-connect/token
@@ -38,9 +36,7 @@
           - (token_content.content | b64decode) is search('fake-test-token-must-be-non-empty')
         fail_msg: "token file does not contain the fake test token"
 
-    # ========================================================================
     # 2. Per-pool environment file
-    # ========================================================================
     - name: Stat /etc/zfs/encryption/pools/testpool.conf
       ansible.builtin.stat:
         path: "/etc/zfs/encryption/pools/{{ expected_pool }}.conf"
@@ -65,9 +61,7 @@
           - (pool_conf_content.content | b64decode) is search('^ZFS_ENCRYPTION_ITEM=' ~ expected_item, multiline=True)
           - (pool_conf_content.content | b64decode) is search('^ZFS_ENCRYPTION_FIELD=passphrase', multiline=True)
 
-    # ========================================================================
     # 3. Boot-time unlock script
-    # ========================================================================
     - name: Stat /usr/local/sbin/zfs-load-key.sh
       ansible.builtin.stat:
         path: /usr/local/sbin/zfs-load-key.sh
@@ -97,9 +91,7 @@
           # token-via-stdin (-H @-) — never on argv (avoids /proc/<pid>/cmdline leak)
           - (script_content.content | b64decode) is search('-H @-')
 
-    # ========================================================================
     # 4. Systemd template unit
-    # ========================================================================
     - name: Stat /etc/systemd/system/zfs-load-key@.service
       ansible.builtin.stat:
         path: /etc/systemd/system/zfs-load-key@.service
@@ -161,9 +153,7 @@
       changed_when: false
       failed_when: systemctl_cat.rc != 0
 
-    # ========================================================================
     # 5. Per-pool service is enabled
-    # ========================================================================
     - name: Check zfs-load-key@testpool.service enabled state  # noqa command-instead-of-module
       ansible.builtin.command:
         cmd: systemctl is-enabled zfs-load-key@testpool.service
@@ -180,9 +170,7 @@
           - pool_unit_enabled.stdout | trim == 'enabled'
         fail_msg: "Expected zfs-load-key@testpool.service to be 'enabled', got '{{ pool_unit_enabled.stdout | trim }}'"
 
-    # ========================================================================
     # 6. Late encrypted-dataset mount anchor (zfs-mount-encrypted.service)
-    # ========================================================================
     - name: Stat /etc/systemd/system/zfs-mount-encrypted.service
       ansible.builtin.stat:
         path: /etc/systemd/system/zfs-mount-encrypted.service
@@ -255,9 +243,7 @@
           exists={{ pool_requires_link.stat.exists }}) — the early-boot edge that
           caused the documented boot-hang incident.
 
-    # ========================================================================
     # 7. Encrypted-storage guest-start cohort (pve-start-encrypted-guests)
-    # ========================================================================
     - name: Read the guest-start script
       ansible.builtin.slurp:
         src: /usr/local/sbin/zfs-start-encrypted-guests.sh
@@ -282,10 +268,8 @@
           - guest_unit_enabled.stdout | trim == 'enabled'
         fail_msg: "Expected pve-start-encrypted-guests.service to be 'enabled', got '{{ guest_unit_enabled.stdout | trim }}'"
 
-    # ========================================================================
     # 8. Reconciliation of de-listed pools (prepare.yml staged stalepool
     #    artifacts; converge must have removed both)
-    # ========================================================================
     - name: Stat the stale pool env file
       ansible.builtin.stat:
         path: /etc/zfs/encryption/pools/stalepool.conf
@@ -308,9 +292,7 @@
           tasks (Remove stale pool env files / Disable stale per-pool
           zfs-load-key services) regressed.
 
-    # ========================================================================
     # Summary
-    # ========================================================================
     - name: Display test results
       ansible.builtin.debug:
         msg:

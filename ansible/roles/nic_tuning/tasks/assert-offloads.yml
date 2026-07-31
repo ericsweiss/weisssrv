@@ -1,0 +1,33 @@
+---
+# Compare captured `ethtool --show-features` output (nic_tuning_offload_state)
+# against nic_tuning_overrides. Separate from the read-back so tests can drive
+# it with fabricated ethtool output.
+- name: Assert every requested NIC offload override is live
+  vars:
+    _nic_state: "{{ nic_tuning_offload_state.results | selectattr('item.interface', 'equalto', item.0.interface) | first }}"
+    _nic_feature: "{{ nic_tuning_feature_names[item.1.feature] | default('') }}"
+  ansible.builtin.assert:
+    that:
+      - _nic_state.rc == 0
+      - _nic_feature | length > 0
+      # `ethtool --show-features` prints top-level features unindented and their
+      # sub-features tab-indented, so anchoring at the line start reads the
+      # aggregate. A driver-fixed feature reads "off [fixed]", which still
+      # matches when it is the value we asked for and fails when it is not.
+      # `\\s` (not `\s`): Jinja string literals process Python escapes, so a
+      # bare `\b` would become a backspace rather than a word boundary.
+      - _nic_state.stdout_lines | select('match', _nic_feature ~ ':\\s*' ~ item.1.value) | list | length > 0
+    fail_msg: >-
+      {{ item.0.interface }} {{ item.1.feature }} is NOT {{ item.1.value }} after apply
+      {{ '(ethtool exit ' ~ _nic_state.rc ~ ': ' ~ (_nic_state.stderr | default('') | trim) ~ ')'
+         if _nic_state.rc != 0
+         else ('(no nic_tuning_feature_names entry for ' ~ item.1.feature ~ ')'
+               if (_nic_feature | length == 0)
+               else '(live: ' ~ (_nic_state.stdout_lines | select('match', _nic_feature ~ ':') | first | default('feature not reported')) ~ ')') }}.
+      This is the state the ifup drop-in re-applies at every boot, so leaving it
+      unfixed means the workaround this role exists for is not in effect.
+    quiet: true
+  loop: "{{ nic_tuning_overrides | subelements('options', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.interface }} {{ item.1.feature }}={{ item.1.value }}"
+  when: not ansible_check_mode

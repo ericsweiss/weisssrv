@@ -15,7 +15,7 @@
 #
 # See docs/36-immich.md for the deployment runbook and the SSO bootstrap flow.
 
-# --- Compose project layout (all on the encrypted ssd/tank zvols) -----------
+# Compose project layout (all on the encrypted ssd/tank zvols)
 # App zvol  (ssd/appdata/immich/app, /mnt/immich-app): compose dir, rendered
 #   config + .env, ML model cache, pg_dump backups.
 # DB zvol   (ssd/appdata/immich/postgres, /mnt/immich-postgres): Postgres data.
@@ -35,12 +35,12 @@ immich_db_data_location: /mnt/immich-postgres
 immich_data_dir: /mnt/immich-data
 immich_upload_location: "{{ immich_data_dir }}/library"
 
-# --- URLs --------------------------------------------------------------------
+# URLs
 # External (canonical) URL; internal access works via the AdGuard rewrite.
 immich_external_url: "https://photos.ericsweiss.com"
 immich_internal_url: "https://photos.esweiss.com"
 
-# --- Container image pins (from group_vars/all.yml) --------------------------
+# Container image pins (from group_vars/all.yml)
 # immich_version / immich_postgres_version(+digest) / immich_valkey_version(+
 # digest) are pinned centrally in all.yml. Immich couples its Postgres image to
 # each release (vectorchord/pgvectors build), so the DB tag MUST come from the
@@ -58,7 +58,7 @@ immich_valkey_image: "docker.io/valkey/valkey:{{ immich_valkey_version }}@{{ imm
 immich_compose_subnet: "172.28.0.0/16"
 immich_compose_gateway: "172.28.0.1"
 
-# --- Database ----------------------------------------------------------------
+# Database
 # Matches Immich's own example.env: the Postgres superuser is `postgres`, the
 # database is `immich`. Keeping the superuser name means pg_dumpall inside the
 # container authenticates over the local socket (peer/trust) with no password.
@@ -66,7 +66,7 @@ immich_db_username: postgres
 immich_db_database_name: immich
 immich_db_password: "{{ lookup('ansible.builtin.env', 'IMMICH_DB_PASSWORD') }}"
 
-# --- Machine-learning endpoints ----------------------------------------------
+# Machine-learning endpoints
 # machineLearning.urls in the rendered system config. Immich-server tries the
 # URLs IN ORDER and moves on when one is unreachable — sequential failover is
 # upstream behavior. Primary = the GPU OpenVINO LXC (immich-ml, .158 — see the
@@ -78,7 +78,7 @@ immich_ml_urls:
   - "http://192.168.0.158:3003"
   - "http://immich-machine-learning:3003"
 
-# --- Native Prometheus telemetry (immich-server) -----------------------------
+# Native Prometheus telemetry (immich-server)
 # IMMICH_TELEMETRY_INCLUDE=all exposes /metrics on the API (8081) and
 # microservices (8082) ports of the immich-server container. Both are published
 # on the VM and scraped by the in-cluster ServiceMonitor; the guest firewall
@@ -87,7 +87,7 @@ immich_telemetry_include: all
 immich_api_metrics_port: 8081
 immich_microservices_metrics_port: 8082
 
-# --- SSO (Authentik OIDC) ----------------------------------------------------
+# SSO (Authentik OIDC)
 # Issuer = the Authentik provider's application slug URL (external host always).
 # Immich appends /.well-known/openid-configuration itself.
 immich_oauth_issuer_url: "https://auth.ericsweiss.com/application/o/photos/"
@@ -124,7 +124,7 @@ immich_bootstrap_mode: false
 # textfile-metric/alert plumbing). Verify the config key on major upgrades.
 immich_builtin_db_backup_enabled: false
 
-# --- Host nginx (TLS terminator in front of the compose stack) ---------------
+# Host nginx (TLS terminator in front of the compose stack)
 # Terminates 443 with the acme_certs-distributed *.esweiss.com wildcard and
 # reverse-proxies to the immich-server container bound on loopback. Traefik
 # reaches this over the LAN with serversTransport vm-tls-wildcard.
@@ -153,7 +153,7 @@ immich_nginx_real_ip_from:
   - 192.168.0.223
   - 192.168.0.227
 
-# --- Backups -----------------------------------------------------------------
+# Backups
 # Nightly pg_dumpall onto the offsite NFS landing zone (tank/backups/apps/immich)
 # instead of the app zvol, so the compact logical dump rides the archsync file
 # walk into B2 (a file walk cannot see the zvol-backed data). node_exporter_host
@@ -172,7 +172,7 @@ immich_backup_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/l
 # by immich-backup-run.sh so the metric-writing logic is shared with nextcloud.
 immich_backup_lib_path: /usr/local/lib/immich-backup-lib.sh
 
-# --- Offsite backup landing zone (NFS mount of tank/backups/apps/immich) ------
+# Offsite backup landing zone (NFS mount of tank/backups/apps/immich)
 # When enabled, the pg_dump lands on the shared, file-walkable tank/backups/apps
 # zone (rides the archsync file walk into B2 — docs/42) instead of the app zvol.
 # OFF by default (opt-in): flip immich_backup_nfs_enabled in group_vars once the

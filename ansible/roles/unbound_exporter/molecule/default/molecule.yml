@@ -1,9 +1,5 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
-# and inventory live here (plus role-specific provisioner.env / remote_tmp / a
-# custom scenario where needed).
+# Scenario overrides; shared config in ansible/molecule/base.yml (ansible/TESTING.md).
 platforms:
   - name: unbound-exporter-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest

@@ -59,7 +59,7 @@ def _make_stub(path: Path, body: str = "exit 0", mode: int = 0o755) -> Path:
     return path
 
 
-# --- tier 1: on PATH -------------------------------------------------------
+# tier 1: on PATH
 
 class TestTier1OnPath:
     def test_tool_on_path_wins(self, tmp_path):
@@ -74,7 +74,7 @@ class TestTier1OnPath:
         assert res.stdout.strip() == "faketool"
 
 
-# --- tier 2: python3 -m <module> -------------------------------------------
+# tier 2: python3 -m <module>
 
 class TestTier2PythonModule:
     def test_python_module_resolves(self, tmp_path):
@@ -103,7 +103,7 @@ class TestTier2PythonModule:
         assert res.stdout.strip() == "python3 -m mymod"
 
 
-# --- tier 3: validated pyenv glob ------------------------------------------
+# tier 3: validated pyenv glob
 
 class TestTier3PyenvGlob:
     def _candidate(self, home: Path) -> Path:
@@ -140,7 +140,7 @@ class TestTier3PyenvGlob:
         assert res.stdout.strip() == ""
 
 
-# --- nothing found ---------------------------------------------------------
+# nothing found
 
 class TestNothingFound:
     def test_no_tier_matches(self, tmp_path):
@@ -166,7 +166,7 @@ class TestNothingFound:
         assert res.stdout.strip() == ""
 
 
-# --- usage -----------------------------------------------------------------
+# usage
 
 class TestUsage:
     def test_no_args_is_usage_error(self, tmp_path):

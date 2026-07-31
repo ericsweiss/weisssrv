@@ -158,13 +158,10 @@
           should carry 'policy_out: DROP' and 150.fw (dns-01) should omit
           policy_out. Check the conditional in guest.fw.j2.
 
-    # Regression guard for the verify scope-creep bug fixed in 234c0e2:
-    # verify.yml used to be `hosts: all`, blowing up on the local-
-    # connection placeholder hosts that can't see files written via
-    # docker exec. This play is explicitly scoped to proxmox-firewall-test;
-    # if a future change broadens it again, the assertion below catches
-    # the regression by checking that the play recap only ran on the
-    # docker host (ansible_play_hosts_all length == 1).
+    # This play MUST stay scoped to proxmox-firewall-test. Broadening it to
+    # `hosts: all` pulls in the local-connection placeholder hosts, which
+    # cannot see files written via docker exec. The assertion below catches a
+    # re-broadening by checking the play ran on exactly one host.
     - name: Assert verify play is scoped to the docker platform only
       ansible.builtin.assert:
         that:

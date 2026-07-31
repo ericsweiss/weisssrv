@@ -60,12 +60,11 @@
     - dns01_ssh_public_key is defined
     - dns01_ssh_public_key != ''
 
-# Deploy dns-01's cert-distribution pubkey to each target's
-# authorized_keys, regardless of which play invokes the role. Adding a
-# host to host_vars/dns-01.yml's cert_distribution_targets is enough.
-#
-# delegate_to runs on each target directly, so targets outside the play's
-# host scope (gitlab, pve-nas-01, plex, ...) still get the pubkey.
+# Deploy dns-01's cert-distribution pubkey (plus the forced-command receiver
+# and its sudoers rule) to each target, regardless of which play invokes the
+# role. Adding a host to host_vars/dns-01.yml's cert_distribution_targets is
+# enough — delegation reaches targets outside the play's host scope (gitlab,
+# pve-nas-01, plex, ...).
 #
 # Skips ssh_no_sudo targets (HAOS) because Ansible's SSH path doesn't
 # manage their authorized_keys; the operator must paste the pubkey via
@@ -74,83 +73,47 @@
 # No run_once: combined with the dns-01 when-clause it would silently
 # skip if dns-02 ever sorted first in the play; the when-clause alone
 # already limits execution to dns-01.
-# Deploy the forced-command receiver to each sudo target BEFORE the key is
-# pinned to it: authorized_keys will force `sudo <receiver>`, so the receiver
-# and its sudoers rule must already exist when the next cert push arrives.
-- name: Deploy cert-receive forced-command receiver to each sudo target
-  ansible.builtin.template:
-    src: cert-receive.sh.j2
-    dest: "{{ acme_certs_receiver_path }}"
-    owner: root
-    group: root
-    mode: "0500"
+#
+# The per-target work lives in distribute-key.yml, included once per target:
+# a LOOPED delegate_to whose delegate is down takes dns-01 itself out of the
+# play and ends the whole (serial: 1) playbook — see that file's header.
+#
+# Molecule overrides cert_distribution_targets in its inventory to exercise
+# template rendering, but the targets aren't molecule platforms, so delegation
+# would fall back to the prod inventory and try to SSH to a real LAN IP.
+# acme_certs_distribute_pubkeys=false short-circuits the include there while
+# still letting the earlier rendering tasks run.
+- name: Reset the cert-target reachability results
+  ansible.builtin.set_fact:
+    acme_certs_unreachable_targets: []
+  when: inventory_hostname == 'dns-01'
+
+- name: Enroll the cert-distribution key on each sudo target
+  ansible.builtin.include_tasks: distribute-key.yml
   loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
   loop_control:
-    label: "{{ item.host }}"
-  delegate_to: "{{ item.host }}"
+    loop_var: _acme_target
+    label: "{{ _acme_target.host }}"
   when:
     - inventory_hostname == 'dns-01'
-    - not (item.ssh_no_sudo | default(false))
+    - not (_acme_target.ssh_no_sudo | default(false))
     - dns01_ssh_public_key is defined
     - acme_certs_distribute_pubkeys | default(true)
 
-# Scopes the escalation: the cert key's forced command `sudo <receiver>` is the
-# ONLY thing this rule permits, so even if eric's broad sudo is later tightened
-# the receiver still runs — and the key can do nothing else.
-- name: Deploy cert-receive sudoers drop-in to each sudo target
-  ansible.builtin.copy:
-    # Static marker, not {{ ansible_managed }}: the copy module (unlike template)
-    # does not inject ansible_managed, so referencing it here is undefined on
-    # modern ansible-core and aborts the task.
-    content: |
-      # Ansible managed - acme_certs cert-receive sudoers drop-in
-      {{ item.ssh_user | default('eric') }} ALL=(root) NOPASSWD: {{ acme_certs_receiver_path }}
-      Defaults!{{ acme_certs_receiver_path }} !requiretty
-    dest: /etc/sudoers.d/cert-receive
-    owner: root
-    group: root
-    mode: "0440"
-    validate: "visudo -cf %s"
-  loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
-  loop_control:
-    label: "{{ item.host }}"
-  delegate_to: "{{ item.host }}"
+# The push itself (homelab-cert-reload.sh, below) already fails the play when a
+# target is unreachable, so this is a heads-up rather than the alarm: it names
+# the targets whose key/receiver enrollment was skipped this run, which is what
+# an operator needs when a rebuilt target later refuses a cert push.
+- name: Report cert targets skipped as unreachable
+  ansible.builtin.debug:
+    msg: >-
+      Cert-key enrollment skipped on unreachable targets:
+      {{ acme_certs_unreachable_targets | join(', ') }}.
+      Their receiver/sudoers/authorized_keys were NOT reconciled this run —
+      re-run once the host is back.
   when:
     - inventory_hostname == 'dns-01'
-    - not (item.ssh_no_sudo | default(false))
-    - dns01_ssh_public_key is defined
-    - acme_certs_distribute_pubkeys | default(true)
-
-- name: Deploy dns-01 cert-distribution pubkey to each target's authorized_keys
-  ansible.posix.authorized_key:
-    user: "{{ item.ssh_user | default('eric') }}"
-    state: present
-    key: "{{ dns01_ssh_public_key }}"
-    comment: "eric@dns-01 (cert distribution)"
-    # Lock the key to the forced-command receiver: restrict (no pty/agent/port/
-    # X11/user-rc) + command="sudo <receiver>" so a leaked key can only install a
-    # validated cert and run the target's baked-in reload — never a shell. The
-    # from= source pin is kept as defense in depth (dns-01 holds .150 across HA
-    # moves); acme_certs_key_from empty drops only that clause (e.g. molecule).
-    key_options: >-
-      {{ (('from="' ~ acme_certs_key_from ~ '",') if (acme_certs_key_from | default('') | length > 0) else '')
-         ~ 'command="sudo ' ~ acme_certs_receiver_path ~ '",restrict' }}
-  loop: "{{ hostvars['dns-01'].cert_distribution_targets | default([]) }}"
-  loop_control:
-    label: "{{ item.host }}"
-  delegate_to: "{{ item.host }}"
-  when:
-    - inventory_hostname == 'dns-01'
-    - not (item.ssh_no_sudo | default(false))
-    - dns01_ssh_public_key is defined
-    # Molecule overrides cert_distribution_targets in its inventory to
-    # exercise template rendering — but the targets aren't molecule
-    # platforms, so delegate_to falls back to the prod inventory and
-    # tries to SSH to a real LAN IP, which times out from the CI runner
-    # pod. acme_certs_distribute_pubkeys=false in molecule short-circuits
-    # this task while still letting earlier rendering tasks run.
-    - acme_certs_distribute_pubkeys | default(true)
-    - dns01_ssh_public_key != ''
+    - acme_certs_unreachable_targets | default([]) | length > 0
 
 # cron is required by acme.sh --install / --install-cronjob (renewals are
 # cron-driven); a minimal image without crontab would otherwise leave

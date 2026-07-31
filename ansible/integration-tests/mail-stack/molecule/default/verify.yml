@@ -8,9 +8,7 @@
   gather_facts: true
 
   tasks:
-    # ============================================
     # SMTP Relay Server Verification
-    # ============================================
     - name: Check Postfix service on relay
       ansible.builtin.systemd:
         name: postfix
@@ -66,9 +64,7 @@
       when: "'relay_servers' in group_names"
 
 
-    # ============================================
     # Mail Client Verification
-    # ============================================
     - name: Check Postfix service on clients
       ansible.builtin.systemd:
         name: postfix
@@ -129,9 +125,7 @@
         success_msg: "Client virtual alias file configured"
       when: "'mail_clients' in group_names"
 
-    # ============================================
     # Integration Tests (Client -> Relay)
-    # ============================================
     # Tested end to end below: transport connectivity (banner), then a real
     # message relayed client -> relay (alias rewriting + relay acceptance +
     # queuing for [smtp.gmail.com]:587). The Gmail upstream itself is NOT
@@ -211,9 +205,7 @@
         success_msg: "Client mail relayed end-to-end: accepted by relay, rewritten to admin@example.com, queued for the Gmail upstream"
       when: "'relay_servers' in group_names"
 
-    # ============================================
     # Configuration Verification
-    # ============================================
     - name: Verify Postfix is in null client mode
       ansible.builtin.command: postconf -h inet_interfaces
       register: client_interfaces
@@ -239,9 +231,7 @@
         msg: "Relay mynetworks: {{ relay_mynetworks.stdout }}"
       when: "'relay_servers' in group_names"
 
-    # ============================================
     # Final Summary
-    # ============================================
     - name: Integration test summary
       ansible.builtin.debug:
         msg: |

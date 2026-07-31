@@ -10,6 +10,19 @@ metadata:
 spec:
   interval: 30m
   releaseName: traefik
+  # Correct out-of-band edits to chart-rendered objects (a `kubectl edit deploy
+  # traefik`, a manual scale, a hand-patched Service). Without this, helm-
+  # controller only re-renders when the chart version or .spec.values change, so
+  # a manual mutation survives forever — which contradicts the repo's "Flux owns
+  # everything in-cluster" contract. Safe here: the chart renders no webhook
+  # whose caBundle a runtime controller injects, and with autoscaling.enabled the
+  # Deployment omits .spec.replicas entirely, so the HPA has nothing to fight.
+  # NOT enabled on cert-manager / external-secrets / metallb / vpa /
+  # kube-prometheus-stack: each ships a webhook whose caBundle is written at
+  # runtime (cainjector, cert-controller, the metallb controller, a chart hook),
+  # and drift correction would wipe it on every reconcile.
+  driftDetection:
+    mode: enabled
   chart:
     spec:
       chart: traefik
@@ -130,7 +143,6 @@ spec:
       enabled: true
       format: json
 
-    # Metrics
     metrics:
       prometheus:
         enabled: true
@@ -145,7 +157,6 @@ spec:
           # series (the label_replace @-strip becomes a no-op on the bare value).
           honorLabels: true
 
-    # Providers
     providers:
       kubernetesCRD:
         enabled: true
@@ -157,6 +168,16 @@ spec:
         # multi-repo tenant onboarding (docs/30) goes live, guard this — scope
         # the provider per-tenant or add a validating policy that pins each
         # tenant's @namespace refs — otherwise revert to allowCrossNamespace:false.
+        #
+        # Paired exposure to weigh in that same review: because the CRD/Ingress
+        # providers watch every namespace, the chart's ClusterRole grants the
+        # Traefik SA cluster-wide `secrets` get/list/watch (it must resolve TLS
+        # and basic-auth middleware Secrets wherever a route lives). Traefik is
+        # the internet-facing edge, so scoping the provider to a namespace list
+        # is what also makes `rbac.namespaced: true` possible — the two are one
+        # decision, not two. Kept as-is today: routes live in ~10 namespaces that
+        # already hold nearly every app Secret, so the reduction would be small
+        # and every new namespace would silently stop routing until listed.
         allowCrossNamespace: true
       kubernetesIngress:
         enabled: true

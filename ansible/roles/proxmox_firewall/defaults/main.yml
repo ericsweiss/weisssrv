@@ -1,6 +1,4 @@
 ---
-# Default variables for Proxmox firewall role
-
 pve_firewall_enabled: true
 
 # host.fw inbound drop logging. policy_in is DROP, so flipping this to "info"

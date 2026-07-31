@@ -1,16 +1,9 @@
 ---
 # Default configuration for Proxmox HA
 
-# HA resources define which VMs/containers should be managed by HA
-# Example:
-# ha_resources:
-#   - type: ct  # or 'vm'
-#     vmid: 150
-#     state: started  # started, stopped, ignored, disabled
-#     max_restart: 3  # Max restart attempts before giving up
-#     max_relocate: 3  # Max relocate attempts before giving up
-#     comment: "dns-01 (AdGuard Home primary)"
-#     enabled: true  # Set to false to remove from HA
+# HA resources define which VMs/containers are managed by HA; ha_rules pin
+# their home/fallback nodes. Maintained examples (and the authoritative live
+# set): group_vars/all.yml `ha_resources` / `ha_rules` / `storage_replication_jobs`.
 
 # All three managed variables default to empty lists (tasks guard every read
 # with `| default([])` / `is defined`, but defaulting them here keeps the three

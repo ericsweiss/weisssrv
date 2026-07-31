@@ -23,10 +23,10 @@ spec:
         app.kubernetes.io/name: pulsarr
         app.kubernetes.io/component: automation
     spec:
-      # Pin to NAS nodes - REQUIRED: Pulsarr uses the Bun runtime (v0.10.0+)
-      # which requires AVX CPU instructions. Only pve-nas-01 (12th Gen Intel)
-      # has AVX support. pve-opt-03 (Core 2 Quad Q9650) does NOT have AVX.
-      # Do NOT move this workload to non-NAS nodes without verifying AVX support.
+      # AVX is REQUIRED: Pulsarr's Bun runtime (v0.10.0+) SIGILLs on the Core 2
+      # Quad opt agents. The precise gate is esweiss.com/cpu=modern (docs/33);
+      # this NAS pin predates that label and is a strict subset of it. Any
+      # replacement selector must still keep the pod off the legacy nodes.
       nodeSelector:
         esweiss.com/nas: "true"
       tolerations:
@@ -54,7 +54,6 @@ spec:
           # second parallel A/AAAA query avoids the ~5s conntrack DNAT race.
           - name: single-request-reopen
       containers:
-        # Version managed in ansible/inventories/prod/group_vars/all.yml
         - name: pulsarr
           image: lakker/pulsarr:${pulsarr_version}
           imagePullPolicy: IfNotPresent

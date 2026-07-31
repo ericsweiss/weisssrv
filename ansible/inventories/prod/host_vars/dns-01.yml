@@ -20,46 +20,16 @@ acme_email: "{{ admin_email }}"
 
 # Certificate distribution targets.
 #
-# After every acme.sh renewal, /usr/local/sbin/homelab-cert-reload.sh
-# pushes fullchain.pem + privkey.pem to each target via SSH (using
-# /home/eric/.ssh/id_ed25519_certs), chowns/chmods, and runs the
-# reload command. Adding a target here is enough for the cert to
-# auto-rotate on every renewal.
+# After every acme.sh renewal, /usr/local/sbin/homelab-cert-reload.sh pushes
+# fullchain.pem + privkey.pem to each target over SSH and runs its reload.
+# Adding a target here is enough for it to auto-rotate on every renewal.
 #
-# Per-target keys:
-#   host             — inventory hostname (used for the IP env var name)
-#   ip               — IP or hostname the SSH connection targets
-#   host_key         — REQUIRED. Pinned SSH host key, format
-#                      `<keytype> <base64>` (no leading IP). Captured
-#                      once via `task certs:show-host-keys` and pasted
-#                      here. Used by the role to deploy a strict
-#                      known_hosts entry on dns-01; the cert-reload
-#                      script then runs with StrictHostKeyChecking=yes
-#                      so a fingerprint mismatch (host rebuild without
-#                      inventory update, or MITM) fails the cert push
-#                      loudly. Rotate by re-running the capture task
-#                      after the rebuild + pasting the new value.
-#   cert_dir         — directory on the target where fullchain.pem +
-#                      privkey.pem are placed
-#   owner / group    — ownership applied after the move
-#   cert_mode        — chmod for fullchain.pem
-#   key_mode         — chmod for privkey.pem
-#   restart_service  — basic case: expanded to `[sudo] systemctl restart <svc>`
-#                      (sudo prefix omitted automatically when
-#                      ssh_no_sudo: true)
-#   restart_command  — overrides restart_service when the backend
-#                      needs something other than `systemctl restart`
-#                      (e.g. gitlab-ctl hup, plex PFX regen, a
-#                      multi-command conditional, etc.). MUST include
-#                      its own `sudo` for any subcommand that needs
-#                      root — the cert-reload script does NOT prepend
-#                      sudo to restart_command, because compound shell
-#                      constructs (`if … then … fi`) reject `sudo if`.
-#   ssh_port         — defaults to 22 (HAOS uses 22222)
-#   ssh_user         — defaults to eric (HAOS SSH add-on logs in as root)
-#   ssh_no_sudo      — true on hosts that don't have sudo available
-#                      (HAOS root-as-default; doesn't matter on
-#                      sudo-bearing systems)
+# Full per-field schema: ansible/roles/acme_certs/README.md § Configuration.
+# The two constraints that bite:
+#   * host_key is REQUIRED and pinned (StrictHostKeyChecking=yes) — capture it
+#     with `task certs:show-host-keys` and re-capture after a target rebuild.
+#   * restart_command must carry its OWN `sudo`; the reload script does not
+#     prepend it (compound shell constructs reject `sudo if`).
 cert_distribution_targets:
   - host: dns-02
     ip: 192.168.0.160

@@ -10,7 +10,7 @@ How to attach an external Git repository to the weisssrv k3s cluster so Flux rec
 4. [Namespace Isolation](#namespace-isolation)
 5. [Rate Limits (1Password Families Plan)](#rate-limits-1password-families-plan)
 6. [Removal](#removal)
-7. [weisssrv-project-template Repo](#weisssrv-project-template-repo)
+7. [weisssrv-app-template Repo](#weisssrv-app-template-repo)
 8. [Worked Example: Onboarding `example-app`](#worked-example-onboarding-example-app)
 
 ---
@@ -635,10 +635,10 @@ PVCs have `pvc-protection` finalizers and aren't deleted during tenant removal u
 
 ---
 
-## weisssrv-project-template Repo
+## weisssrv-app-template Repo
 
 The tenant-side scaffold lives in its own repo:
-`https://git.ericsweiss.com/eric/weisssrv-project-template`. New tenant repos fork
+`https://git.ericsweiss.com/eric/weisssrv-app-template`. New tenant repos fork
 it. It is pre-wired with:
 
 - `.gitlab-ci.yml` with lint + kubeconform + secret-scan CI (tag-less so jobs
@@ -647,7 +647,17 @@ it. It is pre-wired with:
 - `kubernetes/flux/` skeleton with a full example manifest set (Deployment,
   Service, IngressRoute, Certificate, ExternalSecret, NetworkPolicy,
   ServiceMonitor, PrometheusRule, VPA, PodDisruptionBudget — plus opt-in HPA).
-- `README.md` walking through onboarding from the tenant side.
+- `README.md` plus `docs/{ARCHITECTURE,CONSUMING,ONBOARDING}.md` walking through
+  onboarding from the tenant side, a `Dockerfile` scaffold, a
+  `project-development` agent skill (+ `CLAUDE.md` / `AGENTS.md` / `.cursorrules`),
+  `CODEOWNERS`, and `scripts/rename.sh` — a wrapper over the shared library's
+  `weisssrv-new-project rename` CLI that substitutes the `changeme-*`
+  placeholders.
+- A `Taskfile.yml` with `lint`, `yaml-lint`, `flux-lint`, `render`, `build`,
+  `flux:status`, `flux:reconcile`, `secrets:check`.
+- CI `include:`d from `eric/weisssrv-lib` at a pinned tag (the same shared
+  library weisssrv consumes — docs/13 § Shared CI library). There is **no**
+  Renovate anywhere in the family; image tags are bumped by hand.
 
 Onboarding is therefore:
 
@@ -656,7 +666,7 @@ Onboarding is therefore:
 3. Operator (me) adds the wiring file to this repo.
 4. Push — running.
 
-See `docs/16-next-steps.md` for the template's full contents.
+This section is the canonical description of the template's contents.
 
 ---
 

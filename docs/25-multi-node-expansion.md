@@ -533,10 +533,15 @@ Services are distributed across 5 nodes with `local-ssd` storage (excluding pve-
 
 | Service | VMID | Primary Node | Replication Targets |
 |---------|------|---------------------|---------------------|
-| dns-01 | 150 | pve-laptop-01 | pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 |
+| dns-01 | 150 | pve-opt-01 [†] | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 |
 | smtp-relay | 151 | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 |
 | dns-02 | 160 | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 |
 | home-assistant | 154 | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 |
+
+[†] dns-01's primary moved off pve-laptop-01 (memtest-confirmed dead RAM cell);
+pve-laptop-01 is a replication target and priority-1 HA fallback only until the
+DIMM is replaced. `storage_replication_jobs` / `ha_rules` in
+`ansible/inventories/prod/group_vars/all.yml` are the source of truth.
 
 Each service replicates every 15 minutes to ALL 4 other nodes. When any node fails, HA can restart the service on ANY surviving node that has replicated data.
 
@@ -757,8 +762,9 @@ sudo ha-manager fence pve-nas-01
 # Before test: Note which node dns-01 is on
 sudo ha-manager status | grep 150
 
-# Trigger migration of dns-01 to another node
-sudo ha-manager migrate ct:150 pve-laptop-01
+# Trigger migration of dns-01 to another fallback node (not pve-laptop-01 —
+# bad RAM, see the primary-node table above; never pve-nas-01 — no local-ssd)
+sudo ha-manager migrate ct:150 pve-opt-02
 
 # Wait for migration to complete (monitor in web UI or:)
 watch 'sudo ha-manager status'
@@ -767,8 +773,8 @@ watch 'sudo ha-manager status'
 dig google.com @192.168.0.150
 # Should still resolve (same IP, different host)
 
-# Migrate back
-sudo ha-manager migrate ct:150 pve-nas-01
+# Migrate back to the home node
+sudo ha-manager migrate ct:150 pve-opt-01
 ```
 
 #### Test 3: Verify Service IP Persistence
@@ -782,7 +788,7 @@ ping -i 1 192.168.0.154 &  # home-assistant
 
 # Trigger a migration (e.g., dns-01)
 # On a cluster member:
-sudo ha-manager migrate ct:150 pve-laptop-01
+sudo ha-manager migrate ct:150 pve-opt-02
 
 # Observe: You should see a few lost pings, then the service resumes
 # at the same IP address

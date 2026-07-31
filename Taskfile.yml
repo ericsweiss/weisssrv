@@ -167,12 +167,24 @@ tasks:
       DNS01_SSH_PUBLIC_KEY: op://Homelab/DNS-01 SSH Key/public key
       LOKI_PUSH_USER: op://Homelab/Loki Push Auth/username
       LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
+      # site.yml runs restic_offsite on pve-nas-01, whose secret-shape assert
+      # dereferences all three. Without them the whole-estate converge aborts
+      # the NAS play before proxmox_backup/zfs_exporter. Same restricted
+      # hide-only key fields storage:deploy uses (docs/42).
+      B2_KEY_ID: op://Homelab/B2 Archive Backup/restic_key_id
+      B2_APPLICATION_KEY: op://Homelab/B2 Archive Backup/restic_application_key
+      RESTIC_REPO_PASSWORD: op://Homelab/B2 Archive Backup/restic_repo_password
     preconditions:
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed. Install Ansible first (pip install ansible or brew install ansible), then run: task ansible:install-collections"
       - sh: command -v op
         msg: "1Password CLI is not installed. Install via: https://developer.1password.com/docs/cli/get-started/"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/site.yml {{.CLI_ARGS}}
@@ -211,6 +223,18 @@ tasks:
       LOKI_PUSH_PASSWORD: op://Homelab/Loki Push Auth/password
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/dns.yml {{.CLI_ARGS}}
+
+  mail:rotate-credential:
+    desc: Re-deploy the SMTP relay credential to the app VMs and k3s nodes (docs/15)
+    dir: "{{.ANSIBLE_DIR}}"
+    env:
+      # postfix_null_client only: the relay credential pair plus admin_email,
+      # which mail_aliases.root resolves from.
+      ROOT_EMAIL_ALIAS: op://Homelab/Email Config/root_alias
+      SMTP_RELAY_USER: op://Homelab/SMTP Relay Auth/username
+      SMTP_RELAY_PASSWORD: op://Homelab/SMTP Relay Auth/password
+    cmds:
+      - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/rotate-mail-credential.yml {{.CLI_ARGS}}
 
   storage:deploy:
     desc: Deploy NAS storage configuration
@@ -459,7 +483,7 @@ tasks:
       - kubectl rollout restart daemonset -n observability
 
   observability:silence:
-    desc: "Create an Alertmanager silence (ALERT=alertname, DURATION=2H — BSD date units: S/M/H/d)"
+    desc: "Create an Alertmanager silence (ALERT=alertname, DURATION=2H — units S/M/H/d; works with BSD or GNU date)"
     vars:
       ALERT: '{{.ALERT | default "Watchdog"}}'
       DURATION: '{{.DURATION | default "2H"}}'
@@ -468,9 +492,20 @@ tasks:
         RESP=$(mktemp)
         cleanup() { kill $PF_PID 2>/dev/null; rm -f "$RESP"; }
         trap cleanup EXIT
-        # Requires BSD date (macOS local dev); GNU date won't parse +2H.
-        END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
-        if [ -z "$END" ]; then echo "ERROR: Invalid DURATION '{{.DURATION}}' (use BSD date units: S/M/H/d — this task expects macOS BSD date)"; exit 1; fi
+        # Portable end-time: BSD date (macOS) first, GNU date (Linux/CI) as the
+        # fallback — same two-arm pattern collect-state.sh uses. The task used to
+        # hard-require `date -v`, which made it unusable from a Linux workstation
+        # or CI runner. DURATION uses BSD units (S/M/H/d); the GNU arm maps them.
+        END=$(date -u -v+{{.DURATION}} '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || true)
+        if [ -z "$END" ]; then
+          GNU_DUR=$(printf '%s' '{{.DURATION}}' | sed -E 's/^([0-9]+)S$/\1 seconds/; s/^([0-9]+)M$/\1 minutes/; s/^([0-9]+)H$/\1 hours/; s/^([0-9]+)d$/\1 days/')
+          case "$GNU_DUR" in
+            *' seconds'|*' minutes'|*' hours'|*' days') ;;
+            *) echo "ERROR: Invalid DURATION '{{.DURATION}}' (use S/M/H/d, e.g. 2H)"; exit 1 ;;
+          esac
+          END=$(date -u -d "+$GNU_DUR" '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || true)
+        fi
+        if [ -z "$END" ]; then echo "ERROR: could not compute an end time for DURATION '{{.DURATION}}' with either BSD or GNU date"; exit 1; fi
         START=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
         kubectl port-forward -n observability svc/kube-prometheus-stack-alertmanager 9093:9093 &
         PF_PID=$!
@@ -588,7 +623,12 @@ tasks:
         msg: "flux CLI not installed. Run: task flux:install-cli"
       - sh: kubectl cluster-info 2>/dev/null
         msg: "Cannot reach cluster. Ensure KUBECONFIG points at the k3s cluster"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not signed in. Run: eval $(op signin)"
       - sh: kubectl -n external-secrets get secret op-credentials 2>/dev/null
         msg: "Bootstrap Secret 'op-credentials' not found in external-secrets namespace. Run `task flux:bootstrap-onepassword` for instructions."
@@ -648,7 +688,12 @@ tasks:
     preconditions:
       - sh: command -v op
         msg: "1Password CLI is not installed. Install via: https://developer.1password.com/docs/cli/get-started/"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
       - sh: command -v kubectl
         msg: "kubectl not found"
@@ -687,17 +732,25 @@ tasks:
         msg: "flux CLI not installed. Run: task flux:install-cli"
       - sh: command -v kubectl
         msg: "kubectl not found"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml) — needed to derive the child Kustomization order"
     cmds:
       - flux reconcile source git flux-system
       # Root first: it applies the child Kustomization CRs themselves, so
       # edits under kubernetes/clusters/weisssrv/ take effect immediately
       # instead of waiting for the root's own interval.
       - flux reconcile kustomization flux-system
-      - flux reconcile kustomization infrastructure-sources
-      - flux reconcile kustomization infrastructure-controllers
-      - flux reconcile kustomization infrastructure-configs
-      - flux reconcile kustomization infrastructure-observability
-      - flux reconcile kustomization apps
+      # Children derived from kubernetes/clusters/weisssrv/*.yaml in dependsOn
+      # order rather than hand-listed: the hand-written list silently omitted
+      # infrastructure-crds, so a "full reconciliation" could push
+      # infrastructure-controllers against the pre-bump CRD set — the exact
+      # ordering the crds stage exists to prevent.
+      - |
+        set -eu
+        python3 scripts/flux-child-kustomizations.py | while read -r ks; do
+          [ -n "$ks" ] || continue
+          flux reconcile kustomization "$ks"
+        done
 
   flux:verify:
     desc: Run flux check and show status of all managed resources
@@ -705,6 +758,60 @@ tasks:
     cmds:
       - flux check
       - flux get all -A
+      - task: flux:verify-live-policy
+
+  flux:verify-live-policy:
+    desc: Run the live-state policy checks (CPU limits + secret ownership) and WARN — never abort flux:verify
+    preconditions: *flux_preconditions
+    cmds:
+      # Two independent tracks each appended a live check to flux:verify.
+      # go-task stops at the first failing command, so stacking them meant only
+      # ever ONE of the two reported: an operator who fixed the SSA drift would
+      # discover the secret offenders only on the next run. Run both, aggregate,
+      # and WARN rather than fail — flux:verify is the documented post-deploy /
+      # DR gate (CLAUDE.md, docs/17, docs/19, kubernetes/README.md), and both
+      # checks are red on REAL findings that need one-time operator action the
+      # branch deliberately deferred (docs/33 § CPU limits, docs/29 § secret
+      # ownership). A gate that cannot go green on a healthy cluster teaches
+      # people to ignore it. The standalone tasks below keep their non-zero exit
+      # for scripted/CI use.
+      - |
+        set -u
+        rc=0
+        echo "=== Live CPU-limit policy (docs/33-autoscaling.md) ==="
+        kubectl get pods -A -o json | python3 scripts/check-live-cpu-limits.py || rc=1
+        echo ""
+        echo "=== Secret ownership / rotation coverage (docs/29-flux-operations.md) ==="
+        kubectl get secrets -A -o json | python3 scripts/check-unmanaged-secrets.py || rc=1
+        if [ "$rc" -ne 0 ]; then
+          echo ""
+          echo "############################################################"
+          echo "WARNING: live-state policy findings above (flux:verify is NOT failed by them)."
+          echo "Each needs a one-time operator action; re-run to confirm:"
+          echo "  task flux:verify-cpu-limits        # exits non-zero until the stale SSA"
+          echo "                                    # field owners are released (docs/33)"
+          echo "  task flux:verify-unmanaged-secrets # exits non-zero until the hand-applied"
+          echo "                                    # Secrets are removed (docs/29)"
+          echo "############################################################"
+        fi
+
+  flux:verify-unmanaged-secrets:
+    desc: Assert every live Secret is owned by ESO/Flux/Helm/a controller (rotation coverage)
+    preconditions: *flux_preconditions
+    cmds:
+      # A hand-applied Secret is outside the ExternalSecret lifecycle, so
+      # `task flux:rotate-secret` and docs/15 never touch it and a superseded
+      # credential can outlive its rotation. Nothing in git can see it.
+      - kubectl get secrets -A -o json | python3 scripts/check-unmanaged-secrets.py
+
+  flux:verify-cpu-limits:
+    desc: Assert the LIVE cluster imposes no CPU limits (git-vs-cluster drift, docs/33)
+    preconditions: *flux_preconditions
+    cmds:
+      # flux:lint proves the policy in git; this proves it in the cluster. The
+      # two disagree whenever a retired field manager still co-owns limits.cpu
+      # under server-side apply — a state no static lint can see.
+      - kubectl get pods -A -o json | python3 scripts/check-live-cpu-limits.py
 
   flux:status:
     desc: Concise health summary
@@ -768,7 +875,7 @@ tasks:
         set -eo pipefail
         if [ -z "{{.CLI_ARGS}}" ]; then
           echo "Usage: task flux:rotate-secret -- <app>"
-          echo "Known apps: authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent"
+          echo "Known apps: authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged, gitlab-agent, registry-cache, observability-exporters"
           exit 1
         fi
         APP="{{.CLI_ARGS}}"
@@ -810,6 +917,25 @@ tasks:
           gitlab-agent)
             task flux:refresh-secret -- gitlab-agent/gitlab-agent-token
             kubectl rollout restart deployment -n gitlab-agent
+            ;;
+          registry-cache)
+            task flux:refresh-secret -- registry-cache/registry-cache-secrets
+            kubectl rollout restart deployment/registry-cache -n registry-cache
+            ;;
+          observability-exporters)
+            task flux:refresh-secret -- observability/observability-exporter-secrets
+            # Restart by name, not `-n observability` wholesale: the namespace also
+            # holds grafana/prometheus/loki. Every consumer below takes the value
+            # via env secretKeyRef, so a refresh is invisible until the pod
+            # restarts (Reloader ignores Secrets — ignoreSecrets: true). The
+            # ServiceMonitor bearer tokens in the same Secret are picked up by
+            # Prometheus itself (mounted Secret + config-reloader), so Prometheus
+            # is deliberately not restarted here.
+            kubectl rollout restart -n observability \
+              deployment/proxmox-exporter deployment/plex-exporter \
+              deployment/adguard-exporter-dns01 deployment/adguard-exporter-dns02 \
+              deployment/exportarr-sonarr deployment/exportarr-radarr \
+              deployment/exportarr-lidarr deployment/exportarr-prowlarr
             ;;
           *)
             echo "Unknown app: $APP"
@@ -964,6 +1090,32 @@ tasks:
           FAILED=1
         fi
 
+        # Scrape/NetworkPolicy invariant: a namespace that enables a
+        # ServiceMonitor/PodMonitor (directly or via a chart's values) while
+        # running an ingress-deny policy must also admit the observability
+        # namespace, or the scrape is REJECTed and only TargetDown reveals it.
+        echo "=== Checking scrape/NetworkPolicy invariant ==="
+        if ! python3 scripts/check-scrape-netpol.py < "$RENDER_ALL"; then
+          FAILED=1
+        fi
+
+        # ClusterSecretStore scoping: cluster-scoped stores must declare
+        # spec.conditions, and those conditions must admit every namespace that
+        # actually consumes the store (directly or via a ClusterExternalSecret).
+        echo "=== Checking ClusterSecretStore scoping ==="
+        if ! python3 scripts/check-secretstore-scope.py < "$RENDER_ALL"; then
+          FAILED=1
+        fi
+
+        # storageClassName invariant: every claim must pin its class. An omitted
+        # field is rewritten by the DefaultStorageClass admission plugin at
+        # create time, which is how a PVC silently lands on the unbacked-up VM
+        # bootdisk (the 2026-07 loki-0 incident).
+        echo "=== Checking claim storageClassName ==="
+        if ! python3 scripts/check-pvc-storageclass.py < "$RENDER_ALL"; then
+          FAILED=1
+        fi
+
         echo "=== Building cluster root kubernetes/clusters/weisssrv/ ==="
         if ! kustomize build kubernetes/clusters/weisssrv >/dev/null; then
           echo "ERROR: cluster root kustomization failed to build"
@@ -1043,15 +1195,55 @@ tasks:
     desc: Check all services for available version updates
     env:
       GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    # Anchor shared by both check-versions tasks. Without them a 1Password auth
+    # failure was indistinguishable from "nothing to update": `op run` also
+    # exits 1 when unauthenticated or unable to resolve a reference, and the
+    # `[ $RC -le 1 ]` convention below (0 = up to date, 1 = updates available)
+    # then swallowed it into a silent exit 0.
+    preconditions: &check_versions_preconditions
+      - sh: command -v op
+        msg: "1Password CLI is not installed. Install via: https://developer.1password.com/docs/cli/get-started/"
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
+        msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
-      - op run -- python3 ./scripts/check-versions.py {{.CLI_ARGS}}; RC=$?; [ $RC -le 1 ] || exit $RC
+      # The script's own rc is carried out-of-band in a temp file so it can be
+      # told apart from op's. A missing/empty file means op (or the
+      # interpreter) failed before the script exited, and the documented
+      # 0-or-1 convention must NOT be applied to that.
+      - |
+        rc_file=$(mktemp)
+        trap 'rm -f "$rc_file"' EXIT
+        op run -- sh -c 'python3 ./scripts/check-versions.py {{.CLI_ARGS}}; echo $? > '"$rc_file" || true
+        rc=$(cat "$rc_file" 2>/dev/null || true)
+        if [ -z "$rc" ]; then
+          echo "ERROR: check-versions.py did not run to completion (op run / interpreter failure above)" >&2
+          exit 2
+        fi
+        # 0 = up to date, 1 = updates available (scripts/check-versions.py).
+        [ "$rc" -le 1 ] || exit "$rc"
 
   maintenance:check-versions-json:
     desc: Check all versions and output as JSON
     env:
       GITHUB_TOKEN: op://Homelab/GitHub Token/credential
+    preconditions: *check_versions_preconditions
     cmds:
-      - op run -- python3 ./scripts/check-versions.py --json {{.CLI_ARGS}}; RC=$?; [ $RC -le 1 ] || exit $RC
+      # Same out-of-band rc handling as check-versions; stdout stays pure JSON.
+      - |
+        rc_file=$(mktemp)
+        trap 'rm -f "$rc_file"' EXIT
+        op run -- sh -c 'python3 ./scripts/check-versions.py --json {{.CLI_ARGS}}; echo $? > '"$rc_file" || true
+        rc=$(cat "$rc_file" 2>/dev/null || true)
+        if [ -z "$rc" ]; then
+          echo "ERROR: check-versions.py did not run to completion (op run / interpreter failure above)" >&2
+          exit 2
+        fi
+        [ "$rc" -le 1 ] || exit "$rc"
 
   maintenance:update-version:
     desc: "Update a single service version in all.yml + regenerate ConfigMap (task maintenance:update-version SERVICE=gluetun)"
@@ -1212,7 +1404,12 @@ tasks:
         msg: "terraform is not installed. Install via: https://www.terraform.io/downloads"
       - sh: command -v op
         msg: "1Password CLI is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- terraform init {{.CLI_ARGS}}
@@ -1287,9 +1484,9 @@ tasks:
   # Mirrors the cloudflare/tailscale terraform:* tasks but points at
   # terraform/authentik, its own GitLab state name, and the authentik API
   # token + per-provider OAuth2 client secrets (the same 1Password items the
-  # apps consume). There is deliberately NO terraform:authentik-apply task:
-  # every apply is a supervised manual step until the module has soaked — see
-  # terraform/authentik/README.md.
+  # apps consume). Changing an OAuth2/SAML provider can break a login, so read the
+  # plan before confirming — the same care terraform:cloudflare-apply takes, not a
+  # separate ceremony.
   terraform:authentik-init:
     desc: Initialize Terraform for the authentik SSO module (GitLab state backend)
     dir: "{{.TERRAFORM_DIR}}/authentik"
@@ -1329,6 +1526,14 @@ tasks:
     cmds:
       - op run -- terraform plan {{.CLI_ARGS}}
 
+  terraform:authentik-apply:
+    desc: "Apply authentik SSO changes (applications/providers/groups)"
+    dir: "{{.TERRAFORM_DIR}}/authentik"
+    env: *tf_authentik_env
+    preconditions: *tf_preconditions
+    cmds:
+      - op run -- terraform apply {{.CLI_ARGS}}
+
   terraform:authentik-import:
     desc: "One-time/DR state bootstrap: terraform-import every resource in imports.tf (read-only against the API; writes only Terraform state)"
     dir: "{{.TERRAFORM_DIR}}/authentik"
@@ -1353,7 +1558,12 @@ tasks:
     preconditions: &b2_preconditions
       - sh: command -v op
         msg: "1Password CLI is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- python3 scripts/b2-bucket-drift.py
@@ -1422,10 +1632,14 @@ tasks:
       - task: lint:shellcheck
       - task: lint:yamllint
       - task: lint:coverage-checks
+      - task: lint:sync-checks
       - task: lint:flux-version-pin
       - task: lint:kubectl-version-pin
       - task: lint:doc-links
       - task: lint:taskfile-smoke
+      # promtool/amtool gate — CI runs it as prometheus-config-lint, so leaving
+      # it out of `lint` meant a clean local run could still red the pipeline.
+      - task: lint:prometheus-config
 
   lint:shellcheck:
     desc: ShellCheck scripts/, role *.sh, and neutralized *.sh.j2 templates (mirrors CI shellcheck job)
@@ -1483,13 +1697,63 @@ tasks:
       - yamllint -d relaxed Taskfile.yml
 
   lint:coverage-checks:
-    desc: Deploy-coverage + molecule-matrix-coverage gates (mirror the CI lint stage)
+    desc: Deploy-coverage + molecule-matrix-coverage + env-secret-coverage + backup-artifact-app gates (mirror the CI lint stage)
     preconditions:
       - sh: python3 -c "import yaml" 2>/dev/null
         msg: "PyYAML not installed (pip install pyyaml)"
     cmds:
       - bash scripts/check-deploy-coverage.sh
+      - python3 scripts/check-deploy-host-coverage.py
       - bash scripts/check-molecule-matrix-coverage.sh
+      - python3 scripts/check-env-secret-coverage.py
+      # The NAS-side collector's app list (Ansible role defaults) and
+      # BackupArtifactStale's per-app absent() arms (Flux-reconciled rule) are
+      # edited on separate lifecycles; nothing else notices when they diverge.
+      - python3 scripts/check-backup-artifact-apps.py
+
+  lint:sync-checks:
+    desc: Generated-file freshness (hosts.env, versions-configmap) — mirrors the CI repo-sync-checks job
+    preconditions:
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "PyYAML not installed (pip install pyyaml)"
+    cmds:
+      # Both generators write in place, so each check saves the committed file,
+      # regenerates, diffs, and restores. The restore runs from an EXIT trap, not
+      # just on the happy path: under `set -eu` a generator that exits non-zero
+      # (bad all.yml, missing dep, partial write) would otherwise abort before
+      # the restore, leaving the TRACKED file regenerated or truncated with the
+      # only good copy in an anonymous temp file. With the trap the workspace
+      # really is left untouched whether the check passes or fails. (EXIT only:
+      # go-task's embedded shell rejects INT/TERM in `trap`.) Same shape as the
+      # CI job.
+      - |
+        set -eu
+        overall=0
+        check_sync() {
+          target="$1"; generator="$2"; fixup="$3"
+          committed=$(mktemp); generated=$(mktemp)
+          cp "$target" "$committed"
+          trap 'cp "$committed" "$target" 2>/dev/null || true; rm -f "$committed" "$generated"' EXIT
+          python3 "$generator"
+          cp "$target" "$generated"
+          cp "$committed" "$target"
+          if ! diff -q "$committed" "$generated" >/dev/null 2>&1; then
+            echo "ERROR: $target is out of sync with its source"
+            echo "Run: $fixup and commit the result."
+            diff -u "$committed" "$generated" || true
+            overall=1
+          else
+            echo "$target is in sync"
+          fi
+          rm -f "$committed" "$generated"
+          # Disarm: the restore window is closed, and leaving it armed would run
+          # a cp from an already-deleted temp on normal shell exit.
+          trap - EXIT
+        }
+        check_sync scripts/hosts.env scripts/generate-hosts-env.py "task hosts:sync"
+        check_sync kubernetes/infrastructure/sources/versions-configmap.yaml \
+          scripts/generate-versions-configmap.py "task flux:sync-versions"
+        exit "$overall"
 
   lint:flux-version-pin:
     desc: Check the deploy-verify FLUX_VERSION pin against versions-configmap (mirrors the flux-version-pin check in CI repo-policy-checks)
@@ -1571,7 +1835,7 @@ tasks:
         find ansible/inventories/prod/group_vars ansible/inventories/prod/host_vars -name "*.yml" -type f -exec grep -hoE "op://Homelab/[^\"'\`\)\(]+" {} \; 2>/dev/null | sed 's/[[:space:]]*$//' | grep -E "^op://Homelab/[^/]+/[^/]+$" | sort -u | sed 's/^/  - /' || echo "  (none found)"
         echo ""
         echo "To verify all secrets exist in 1Password:"
-        echo "  op whoami && op item list --vault Homelab"
+        echo "  op account list && op item list --vault Homelab"
 
   # === Download Clients / Media Stack Tasks ===
   # New architecture: Each download client (nzbget, qbittorrent) runs independently
@@ -1645,7 +1909,22 @@ tasks:
         # Same single-source check downloads:vpn-provider uses (the provider is
         # read from the CM here, i.e. the one the pod would actually start with).
         if [ "$VAL" = "true" ]; then
+          # rc=2 means the ConfigMap's vpn_provider is empty or unrecognised.
+          # That is a refusal, not "nothing missing": the check reads the live
+          # value, so a hand-patched/renamed/blanked provider is exactly the
+          # input the pre-flight exists to stop.
+          set +e
           MISSING=$(scripts/vpn-credcheck.sh "$APP")
+          CRED_RC=$?
+          set -e
+          if [ "$CRED_RC" -ne 0 ]; then
+            PROV=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "")
+            echo "ERROR: cannot enable VPN — credential pre-flight failed (rc=$CRED_RC) for provider '$PROV'."
+            echo "       Fix the ConfigMap's vpn_provider (or teach scripts/vpn-credcheck.sh"
+            echo "       the provider's required keys) before enabling; gluetun would fail"
+            echo "       settings validation and $APP would be fully down under Recreate."
+            exit 1
+          fi
           if [ -n "$MISSING" ]; then
             PROV=$(kubectl get configmap "$CM" -n downloads -o jsonpath='{.data.vpn_provider}' 2>/dev/null || echo "")
             echo "ERROR: cannot enable VPN — provider '$PROV' is not fully wired;"
@@ -1771,7 +2050,20 @@ tasks:
         # the selection be staged but warn that turning it on will crash-loop.
         # Single-source provider->required-keys + Secret lookup (also used by
         # downloads:vpn) so the two commands' pre-flight can't drift.
+        set +e
         MISSING=$(scripts/vpn-credcheck.sh "$APP" "$GLUE")
+        CRED_RC=$?
+        set -e
+        if [ "$CRED_RC" -ne 0 ]; then
+          # rc=2: the alias map above resolved PROVIDER to a gluetun string the
+          # credential check does not know — the two lists have drifted. Refuse
+          # in both VPN-on and VPN-off cases; staging an unmappable provider only
+          # defers the crash-loop.
+          echo "ERROR: credential pre-flight failed (rc=$CRED_RC) for gluetun provider '$GLUE'."
+          echo "       The PROVIDER alias map and scripts/vpn-credcheck.sh have drifted;"
+          echo "       add '$GLUE' and its required vpn-credentials keys there (docs/21)."
+          exit 1
+        fi
         if [ -n "$MISSING" ]; then
           if [ "$VPN_ENABLED" = "true" ]; then
             echo "ERROR: provider '$GLUE' is not fully wired — vpn-credentials is missing: $MISSING"
@@ -2367,7 +2659,12 @@ tasks:
     preconditions: &gitlab_deploy_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/gitlab.yml {{.CLI_ARGS}}
@@ -2577,7 +2874,12 @@ tasks:
     preconditions: &nextcloud_deploy_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/nextcloud.yml {{.CLI_ARGS}}
@@ -2707,7 +3009,12 @@ tasks:
     preconditions: &immich_deploy_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/immich.yml {{.CLI_ARGS}}
@@ -2855,7 +3162,12 @@ tasks:
     preconditions: &immich_ml_deploy_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/immich-ml.yml {{.CLI_ARGS}}
@@ -2914,7 +3226,12 @@ tasks:
     preconditions: &windows_preconditions
       - sh: command -v ansible-playbook
         msg: "ansible-playbook is not installed"
-      - sh: op whoami 2>/dev/null
+      # `op account list`, not `op whoami`: with the desktop-app integration
+      # (no OP_SESSION_* in the environment) whoami reports "account is not
+      # signed in" inside the non-interactive shell Task runs preconditions
+      # in, while `op run` in the very same shell works. The check was
+      # failing tasks that would have succeeded.
+      - sh: op account list 2>/dev/null
         msg: "1Password CLI not authenticated. Run: eval $(op signin)"
     cmds:
       - op run -- ansible-playbook -i {{.INVENTORY}} playbooks/windows.yml {{.CLI_ARGS}}

@@ -174,14 +174,75 @@ spec:
         - name: windows-rdp
           url: 192.168.0.155:3389
           module: tcp_connect
+        # GitLab Container Registry — every CI image pull and push goes through
+        # it, and it has its own Traefik router and certificate, so neither the
+        # git.esweiss.com probe nor the runner jobs' failure mode covers it
+        # (a broken registry surfaces as a mid-pipeline ImagePullBackOff).
+        # Unauthenticated GET / answers 200 today; http_sso also tolerates the
+        # 401 the registry API returns if that ever changes.
+        - name: gitlab-registry
+          url: https://registry.git.esweiss.com
+          module: http_sso
         # External path (Cloudflare -> WAN -> MetalLB .100): catches DDNS
         # drift and public-ingress breakage that the internal probes can't see.
+        # That rationale is not specific to these two hostnames — every
+        # *.ericsweiss.com record BUT ONE leaves the LAN from this pod (the
+        # blackbox pod resolves via CoreDNS -> AdGuard, which rewrites only
+        # *.esweiss.com; verified: home -> the Cloudflare edge IPs, git/photos ->
+        # direct.ericsweiss.com/the WAN address), so each externally-published
+        # app is probed on BOTH names. The exception is auth.ericsweiss.com —
+        # see its target below. Modules mirror each app's internal probe
+        # (http_sso where an SSO gate answers the unauthenticated probe with a
+        # 302/401).
         - name: home-assistant-external
           url: https://home.ericsweiss.com
           module: http_2xx
         - name: gitlab-external
           url: https://git.ericsweiss.com
           module: http_2xx
+        - name: gitlab-registry-external
+          url: https://registry.git.ericsweiss.com
+          module: http_sso
+        # NOT an external probe, despite the hostname: auth.ericsweiss.com is
+        # the documented AdGuard split-horizon exception (group_vars/dns.yml)
+        # and answers 192.168.0.101 on the LAN, so this pod reaches the INTERNAL
+        # Traefik VIP with SNI auth.ericsweiss.com — which is precisely the path
+        # every server-side OIDC discovery/JWKS fetch takes (hermes, immich,
+        # nextcloud, grafana fetch from the issuer host, deliberately kept off
+        # the Cloudflare hairpin because its bot filter 403s non-browser UAs).
+        # That router + the separate authentik-tls certificate are not covered
+        # by the auth.esweiss.com probe, which presents the other SNI. The
+        # genuinely public front door cannot be probed from in-cluster while the
+        # rewrite stands (a hostAlias pinning a Cloudflare anycast IP would page
+        # on their rotation, not on ours), and an external browser login failing
+        # at the edge surfaces through the other *-external probes.
+        - name: authentik-oidc-issuer
+          url: https://auth.ericsweiss.com
+          module: http_2xx
+        - name: nextcloud-external
+          url: https://cloud.ericsweiss.com
+          module: http_sso
+        # photos.ericsweiss.com is a DNS-only (proxy-bypassed) CNAME so large
+        # uploads skip Cloudflare — which also means it is the hostname most
+        # exposed to DDNS drift and the one with no proxy in front to mask it.
+        - name: immich-external
+          url: https://photos.ericsweiss.com
+          module: http_sso
+        - name: hermes-external
+          url: https://agent.ericsweiss.com
+          module: http_sso
+        - name: homarr-external
+          url: https://dashboard.ericsweiss.com
+          module: http_sso
+        - name: mealie-external
+          url: https://food.ericsweiss.com
+          module: http_sso
+        - name: bar-assistant-external
+          url: https://bar.ericsweiss.com
+          module: http_sso
+        - name: plex-external
+          url: https://plex.ericsweiss.com
+          module: http_sso
     resources:
       requests:
         cpu: 25m

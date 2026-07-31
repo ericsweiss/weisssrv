@@ -104,7 +104,16 @@ spec:
           args:
             - |
               mkdir -p /opt/data/.codex
+              # camofox mounts this subdir (and only this subdir) — create it
+              # here so the mount never depends on kubelet's subPath autocreate.
+              mkdir -p /opt/data/.camofox
               touch /opt/data/.env
+              # .env is a plaintext credential store; keep it off group/other.
+              # This does not isolate the containers from each other (the NFS
+              # export is all_squash, so every container's writes and reads map
+              # to the same 1000:2000) — the camofox subPath mount is what
+              # actually keeps the browser away from it.
+              chmod 600 /opt/data/.env
               upsert() {
                 sed -i "/^$1=/d" /opt/data/.env
                 printf '%s=%s\n' "$1" "$2" >> /opt/data/.env
@@ -175,7 +184,6 @@ spec:
       containers:
         # ── Gateway: always-on agent supervisor ──────────────────────────
         - name: gateway
-          # Version managed in ansible/inventories/prod/group_vars/all.yml
           # (hermes_version); built by the build-hermes-agent CI job. Pulled
           # from the internal registry host (AdGuard rewrite -> Traefik .101).
           image: registry.git.esweiss.com/eric/weisssrv/hermes-agent:${hermes_image_version}
@@ -497,10 +505,15 @@ spec:
           # history — request covers the idle server + one session, the 2Gi
           # limit caps a MAX_SESSIONS burst (VPA is Off for this container,
           # see vpa.yaml). No CPU limit (repo policy — docs/33).
+          # 896Mi, not the original 512Mi: the container has never been observed
+          # BELOW its old request (7d max 839Mi), so the scheduler was
+          # under-reserving ~300Mi on whichever node hermes lands on and the pod
+          # sat permanently in the worst eviction rank. Excluding a container
+          # from the VPA means its number has to be re-measured by hand.
           resources:
             requests:
               cpu: 100m
-              memory: 512Mi
+              memory: 896Mi
             limits:
               memory: 2Gi
           # Hardening for the highest-risk container in the pod (it loads
@@ -517,9 +530,17 @@ spec:
           securityContext:
             capabilities:
               drop: ["ALL"]
+          # subPath, NOT the volume root: the shared volume also holds the
+          # plaintext /opt/data/.env (Discord/HA/1Password tokens), .codex/
+          # auth.json and .claude/ — every delegated credential the agent owns.
+          # A renderer/IPC escape in the one container that loads arbitrary
+          # attacker-influenced web content would otherwise read them all in one
+          # go. Its own env keeps every legitimate path (profiles, cookies,
+          # traces) under .camofox, so this mount is exactly what it needs.
           volumeMounts:
             - name: data
-              mountPath: /opt/data
+              subPath: .camofox
+              mountPath: /opt/data/.camofox
       volumes:
         - name: data
           persistentVolumeClaim:

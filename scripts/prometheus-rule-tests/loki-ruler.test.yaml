@@ -1,0 +1,127 @@
+---
+# promtool unit tests for the Loki-ruler meta-alerts. The 23
+# HostLogShippingStale rules are evaluated inside Loki and pushed straight to
+# Alertmanager, so Prometheus never sees them — these three rules are the only
+# thing watching that path.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  # Healthy: the ruler reports the full rule set, no eval/notify errors, one
+  # Alertmanager discovered. Nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
+        values: '23+0x30'
+      - series: 'loki_prometheus_rule_evaluation_failures_total{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
+        values: '0+0x30'
+      - series: 'loki_prometheus_notifications_errors_total{job="observability/loki", user="fake"}'
+        values: '0+0x30'
+      - series: 'loki_prometheus_notifications_alertmanagers_discovered{job="observability/loki", user="fake"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerRulesMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LokiRulerEvaluationFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LokiRulerNotificationFailures
+        exp_alerts: []
+
+  # The sidecar stops delivering the rules ConfigMap: Loki is healthy (so
+  # TargetDown stays silent) but the ruler has loaded nothing.
+  - interval: 1m
+    input_series:
+      - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerRulesMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # Partial delivery — the count regressing below what git ships must also fire,
+  # which is why the threshold is the rule count and not just zero.
+  - interval: 1m
+    input_series:
+      - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
+        values: '20+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerRulesMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # absent() arm: the metric gone entirely (ruler disabled, scrape relabelled
+  # away) is the quietest failure of all.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerRulesMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: observability/loki
+
+  # Evaluation errors: the rules are loaded but not producing results.
+  - interval: 1m
+    input_series:
+      - series: 'loki_prometheus_rule_group_rules{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
+        values: '23+0x30'
+      - series: 'loki_prometheus_rule_evaluation_failures_total{job="observability/loki", user="fake", rule_group="host-log-staleness"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerEvaluationFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # Notification errors: rules fire, Alertmanager never hears about it.
+  - interval: 1m
+    input_series:
+      - series: 'loki_prometheus_notifications_errors_total{job="observability/loki", user="fake"}'
+        values: '0+1x30'
+      - series: 'loki_prometheus_notifications_alertmanagers_discovered{job="observability/loki", user="fake"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerNotificationFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # Second arm: no Alertmanager discovered at all (bad alertmanager_url,
+  # Service renamed) — errors stay at zero because nothing is even attempted.
+  - interval: 1m
+    input_series:
+      - series: 'loki_prometheus_notifications_errors_total{job="observability/loki", user="fake"}'
+        values: '0+0x30'
+      - series: 'loki_prometheus_notifications_alertmanagers_discovered{job="observability/loki", user="fake"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LokiRulerNotificationFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # LokiIngestionRateLimited must catch a SHORT burst: the real too_far_behind
+  # spikes lasted well under the old 15m hold and never fired. 6 minutes of
+  # discards has to page.
+  - interval: 1m
+    input_series:
+      - series: 'loki_discarded_samples_total{job="observability/loki", reason="too_far_behind", tenant="fake"}'
+        values: '0+1000x8 8000+0x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: LokiIngestionRateLimited
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: too_far_behind

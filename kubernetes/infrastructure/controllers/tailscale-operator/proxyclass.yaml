@@ -5,10 +5,20 @@
 # (controllers/traefik/traefik-tailnet-service.yaml, apps/tailnet-dns/service.yaml).
 #
 # Without a ProxyClass the operator renders the proxy container with a tiny
-# ~1Mi memory request while the tsnet userspace-networking process actually
-# resides at ~55Mi, giving BestEffort-ish QoS and poor scheduling. We set a
-# realistic request (64Mi) so the pods land in Burstable QoS and the scheduler
-# reserves the right footprint, with a 128Mi memory limit as an OOM ceiling.
+# ~1Mi memory request, giving BestEffort-ish QoS and poor scheduling. We set a
+# realistic request so the pods land in Burstable QoS and the scheduler reserves
+# the right footprint, with a memory limit as an OOM ceiling.
+#
+# Sizing is measured against the PEAK, not the steady state: the tsnet
+# userspace-networking process resides at ~50Mi but peaks at 124Mi (7d max on
+# ts-traefik-tailnet-*), which was 97% of the previous 128Mi limit. Request
+# tracks the p95 (114Mi), limit is 2x the observed peak.
+#
+# These StatefulSets are a deliberate VPA blind spot (docs/33 §VPA blind
+# spots): the operator generates them as ts-<svc>-<hash> and the hash changes
+# whenever the exposure Service is recreated, so no static targetRef can follow
+# them. This ProxyClass is the only sizing lever — re-measure it whenever the
+# tailnet ingress path is touched.
 #
 # Per docs/33 (CPU limits, intentionally unset): CPU is compressible, so we set
 # a CPU request but NO CPU limit — a limit only adds CFS throttling.
@@ -23,6 +33,6 @@ spec:
         resources:
           requests:
             cpu: 10m
-            memory: 64Mi
-          limits:
             memory: 128Mi
+          limits:
+            memory: 256Mi

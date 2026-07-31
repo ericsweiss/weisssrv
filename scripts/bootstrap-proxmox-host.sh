@@ -237,10 +237,21 @@ set -euo pipefail
 
 SSH_KEY_B64="$SSH_KEY_B64"
 SSH_KEY=\$(echo "\$SSH_KEY_B64" | base64 -d)
-echo "\$SSH_KEY" > /home/eric/.ssh/authorized_keys
-chmod 600 /home/eric/.ssh/authorized_keys
-chown eric:eric /home/eric/.ssh/authorized_keys
-echo "SSH key deployed to /home/eric/.ssh/authorized_keys"
+AUTH=/home/eric/.ssh/authorized_keys
+# Append-if-absent, never truncate. A re-run against a host that has since
+# gained a second admin key, a CI deploy key, or the dns-01 cert-distribution
+# key must not destroy them — and the verification step below would still
+# report SUCCESS, because the key it tests with is the survivor.
+touch "\$AUTH"
+if grep -qxF "\$SSH_KEY" "\$AUTH"; then
+    echo "SSH key already present in \$AUTH (no change)"
+else
+    printf '%s\n' "\$SSH_KEY" >> "\$AUTH"
+    echo "SSH key appended to \$AUTH"
+fi
+chmod 600 "\$AUTH"
+chown eric:eric "\$AUTH"
+echo "Authorized keys now present: \$(grep -c '^[^#[:space:]]' "\$AUTH")"
 DEPLOY_KEY
 
 echo ""

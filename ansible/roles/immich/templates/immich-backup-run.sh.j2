@@ -31,6 +31,10 @@ fi
 PROM_FILE="${PROM_DIR}/immich_backup.prom"
 START_TS="$(date +%s)"
 DUMP_FILE="${BACKUP_DIR}/immich-$(date +%Y%m%d-%H%M%S).sql.gz"
+# Passed to write_prom_metrics so a run that produced nothing still reports the
+# newest EXISTING dump's size: 0 is BackupArtifactEmpty's (critical) "no artefact
+# at all", not "tonight's dump failed" — that is ImmichBackupFailed's job.
+ARTIFACT_GLOB="${BACKUP_DIR}/immich-*.sql.gz"
 
 mkdir -p "$PROM_DIR"
 
@@ -41,7 +45,7 @@ mkdir -p "$PROM_DIR"
 # success=0 (ImmichBackupFailed), and exit non-zero BEFORE dumping.
 if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_DIR"; then
   echo "immich-backup: BACKUP_DIR ${BACKUP_DIR} is NFS-backed but not mounted — aborting" >&2
-  write_prom_metrics immich_backup 0 0 0 "$PROM_FILE"
+  write_prom_metrics immich_backup 0 0 0 "$PROM_FILE" "$ARTIFACT_GLOB"
   exit 1
 fi
 mkdir -p "$BACKUP_DIR"
@@ -77,9 +81,9 @@ fi
 end_ts="$(date +%s)"
 duration=$(( end_ts - START_TS ))
 if [ "$rc" -eq 0 ]; then
-  write_prom_metrics immich_backup 1 "$duration" "$size" "$PROM_FILE"
+  write_prom_metrics immich_backup 1 "$duration" "$size" "$PROM_FILE" "$ARTIFACT_GLOB"
 else
-  write_prom_metrics immich_backup 0 "$duration" "$size" "$PROM_FILE"
+  write_prom_metrics immich_backup 0 "$duration" "$size" "$PROM_FILE" "$ARTIFACT_GLOB"
 fi
 
 exit "$rc"

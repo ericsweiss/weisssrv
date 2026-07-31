@@ -172,6 +172,13 @@ spec:
                   # the full-body PUT can't fight a Terraform-side change; the
                   # per-record literal only applies when creating from scratch.
                   existing_proxied = existing_record.get('proxied', proxied) if existing_record else proxied
+                  # And the comment: this is a FULL-BODY PUT, so any field left
+                  # out is cleared. Terraform sets a comment on all four DDNS
+                  # records but scopes ignore_changes to [content], so dropping
+                  # it here made every WAN-IP change show up as four comment
+                  # diffs in the next `terraform plan` — drift noise that the
+                  # auto-applying deploy-terraform job then silently reverted.
+                  existing_comment = existing_record.get('comment') if existing_record else None
 
                   print(f"Existing IP: {existing_ip or 'none'}")
 
@@ -187,6 +194,8 @@ spec:
                       'ttl': existing_ttl,
                       'proxied': existing_proxied
                   }
+                  if existing_comment:
+                      record_data['comment'] = existing_comment
 
                   if record_id:
                       # Update existing record

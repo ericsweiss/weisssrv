@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# DUAL-MAINTAINED: eric/weisssrv-lib ships a copy of this script for its other
+# consumers, and the library CI templates take the script PATH from the consumer
+# tree (.gitlab-ci.yml inputs), so this repo-local copy is the one CI runs. A
+# behaviour change here should be mirrored into weisssrv-lib and released with
+# the next tag bump; nothing compares the two automatically.
 """Offline checker for relative Markdown cross-links in the repo's docs.
 
 docs/ and the top-level READMEs are the declared source of truth (CLAUDE.md),
@@ -6,6 +11,10 @@ and the tree carries dozens of internal `](docs/NN-*.md)` / `](../NN-*.md)`
 links plus the README docs-index table. Docs are renumbered/reorganized over
 time, so a renamed or deleted doc silently rots these links. This gate resolves
 every relative `.md` link against the filesystem and fails on a missing target.
+
+Scope is every *tracked* `*.md` in the repo (see `doc_files`), not just `docs/`:
+role READMEs, `kubernetes/**/README.md`, `AGENTS.md` and the agent skill all
+link into `docs/` too.
 
 Scope (intentionally narrow to stay false-positive-free):
 - Only Markdown inline links `[text](target)` whose target is a *relative*
@@ -16,12 +25,13 @@ Scope (intentionally narrow to stay false-positive-free):
 - Anchors are not validated (only that the target file exists).
 
 Run via `pytest scripts/` (test_check_doc_links.py) or directly:
-  scripts/check-doc-links.py            # scan the repo (docs/, README.md, CLAUDE.md)
+  scripts/check-doc-links.py            # scan every tracked *.md in the repo
   scripts/check-doc-links.py <root>...  # scan an explicit repo root
 """
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,9 +45,38 @@ _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _SKIP_PREFIXES = ("http://", "https://", "mailto:", "//", "#", "tel:")
 
 
+def _tracked_markdown(root: Path) -> list[Path] | None:
+    """Every git-tracked *.md under `root`, or None when git can't answer.
+
+    Tracked-only is deliberate: untracked scratch Markdown (review notes,
+    vendored caches) is not ours to gate, and including it would make the check
+    fail differently on every machine.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", "*.md"],
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    files = [root / p for p in out.split("\0") if p]
+    return sorted(f for f in files if f.is_file())
+
+
 def doc_files(root: Path) -> list[Path]:
-    """The Markdown files to scan: everything under docs/, plus the top-level
-    README.md / CLAUDE.md and ansible/TESTING.md when present."""
+    """The Markdown files to scan.
+
+    Every tracked `*.md` in the repo — not just `docs/` — because role, app and
+    agent-facing READMEs carry relative cross-links into `docs/` too, and a
+    renumber rots those exactly as easily. Falls back to the docs/ + top-level
+    set when `root` is not a git checkout (the unit tests use tmpdirs).
+    """
+    tracked = _tracked_markdown(root)
+    if tracked:
+        return tracked
+
     files: list[Path] = []
     docs = root / "docs"
     if docs.is_dir():

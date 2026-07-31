@@ -217,7 +217,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{host=\"smtp-relay\", unit=~\"postfix.*\"}",
+          "expr": "{job=\"journal\", host=\"smtp-relay\", unit=~\"postfix.*\"}",
           "refId": "A"
         }
       ]

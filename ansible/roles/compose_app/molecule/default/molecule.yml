@@ -1,11 +1,10 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). This is a render/contract
-# scenario: compose_app_skip_install skips the service-touching steps, so the
-# shared compose unit (both the RequiresMountsFor-present and -absent cases) and
-# the write_prom_metrics helper library are rendered + asserted (and the lib is
-# exercised end to end) without a container runtime.
+# Scenario overrides; shared config in ansible/molecule/base.yml.
+# This is a render/contract scenario: compose_app_skip_install skips the
+# service-touching steps, so the shared compose unit (both the
+# RequiresMountsFor-present and -absent cases) and the write_prom_metrics
+# helper library are rendered + asserted (and the lib is exercised end to end)
+# without a container runtime.
 provisioner:
   playbooks:
     prepare: prepare.yml

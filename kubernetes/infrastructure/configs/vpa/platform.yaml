@@ -276,28 +276,31 @@ spec:
         maxAllowed: {cpu: 500m, memory: 256Mi}
         controlledResources: [cpu, memory]
 ---
-# local-path-provisioner (k3s AddOn) ships with empty resources: {} → BestEffort
-# QoS and has no VPA. Recommend-only (updateMode: Off) so the updater never
-# evicts the provisioner off the PVC-bind path; it just records a right-sizing
-# signal so a request bump (or a HelmChartConfig override) can be data-driven.
-# Inspect with `kubectl describe vpa local-path-provisioner -n kube-system`.
+# kube-vip (Ansible-rendered DaemonSet, roles/k3s/templates/kube-vip-manifest.yaml.j2)
+# owns the API VIP on all three control-plane nodes. Recommend-only
+# (updateMode: Off): the updater must never evict the pod that serves the API
+# endpoint every kubectl call, Flux reconcile and kubelet uses. Its requests are
+# hand-set in the Ansible template — this records the signal to retune them,
+# matching the metrics-server AddOn treatment below.
+# (local-path-provisioner had the same Off VPA until local-storage was added to
+# k3s_disable — group_vars/k3s.yml — which removes the Deployment entirely.)
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  name: local-path-provisioner
+  name: kube-vip
   namespace: kube-system
 spec:
   targetRef:
     apiVersion: apps/v1
-    kind: Deployment
-    name: local-path-provisioner
+    kind: DaemonSet
+    name: kube-vip
   updatePolicy:
     updateMode: "Off"
   resourcePolicy:
     containerPolicies:
       - containerName: "*"
-        minAllowed: {cpu: 10m, memory: 16Mi}
-        maxAllowed: {cpu: 100m, memory: 128Mi}
+        minAllowed: {cpu: 10m, memory: 32Mi}
+        maxAllowed: {cpu: 200m, memory: 192Mi}
         controlledResources: [cpu, memory]
 ---
 # metrics-server (k3s AddOn) is the single source of pod/node resource metrics

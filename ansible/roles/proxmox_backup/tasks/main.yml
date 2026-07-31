@@ -3,9 +3,7 @@
 # (jobs.cfg), reconciled via pvesh. Both files live on the clustered /etc/pve
 # filesystem, so wire this role into a play that targets a single node.
 
-# ---------------------------------------------------------------------------
 # Storage entries (/storage)
-# ---------------------------------------------------------------------------
 - name: Manage Proxmox storage entries
   when: pve_storage | length > 0
   tags: [proxmox_backup, proxmox_backup_storage]
@@ -94,9 +92,7 @@
       register: pve_storage_set_result
       changed_when: pve_storage_set_result.rc == 0
 
-# ---------------------------------------------------------------------------
 # vzdump backup jobs (/cluster/backup)
-# ---------------------------------------------------------------------------
 - name: Manage vzdump backup jobs
   when: pve_vzdump_jobs | length > 0
   tags: [proxmox_backup, proxmox_backup_jobs]

@@ -1,4 +1,4 @@
-# 37 — Hermes Agent
+# Hermes Agent
 
 NousResearch [Hermes Agent](https://github.com/NousResearch/hermes-agent) is an
 autonomous AI agent platform (skill-learning loop, persistent memory,

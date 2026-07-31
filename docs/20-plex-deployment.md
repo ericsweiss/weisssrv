@@ -207,12 +207,18 @@ task plex:check
 ### Manual Steps (if needed)
 
 ```bash
-# Provision container only
-ansible-playbook -i ansible/inventories/prod ansible/playbooks/plex.yml --tags proxmox_lxc
+# Equivalent of task plex:deploy
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/plex.yml
 
-# Install Plex only (container must exist)
-ansible-playbook -i ansible/inventories/prod ansible/playbooks/plex.yml --limit plex --skip-tags proxmox_lxc
+# Dry-run the same thing (equivalent of task plex:check)
+ansible-playbook -i ansible/inventories/prod ansible/playbooks/plex.yml --check --diff
 ```
+
+`plex.yml` declares **no tags**, and both plays target `hosts: plex` (play 1
+provisions the LXC through `proxmox_lxc`, which `delegate_to`s the Proxmox host).
+There is therefore no `--tags proxmox_lxc` / `--skip-tags proxmox_lxc` split —
+those would match nothing and Ansible would exit 0 having done nothing. The
+provisioning play is idempotent, so a full re-run is the normal path.
 
 ## Storage Configuration
 

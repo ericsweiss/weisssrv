@@ -1,11 +1,34 @@
 ---
 # Base configuration playbook
 
+# Records unreachable hosts up front; _reachability-gate.yml below turns that
+# ledger into a non-zero exit. Both are required because `ignore_unreachable`
+# makes ansible-playbook exit 0 on a host it configured nothing on. The gate
+# carries the probe's host pattern, not localhost — --limit empties a
+# localhost play, which silently disables the gate for every scoped run.
+- name: Probe reachability before deploying
+  ansible.builtin.import_playbook: _reachability-probe.yml
+
 - name: Deploy base configuration
-  hosts: base_managed
+  # !deploy_skipped drops whatever the probe above could not reach: it is
+  # already on the ledger, and leaving it in would make it fail this play on
+  # the first task templating an ungathered fact (a hard failure the gate's
+  # deploy_expected_absent_hosts downgrade cannot undo).
+  hosts: base_managed:!deploy_skipped
   become: true
+  # Still needed for a host that dies BETWEEN the probe and here: skip it
+  # instead of failing the whole play, because this is a multi-host reconciler
+  # and the hosts that ARE up still converge. Paired with the reachability gate
+  # above/below, which is what keeps a skipped host from passing as a
+  # successful deploy — this is the playbook deploy-ansible-base runs FIRST, so
+  # without both halves that job reds (or, worse, greens) on a bare-metal host
+  # out for hardware work before site.yml is ever reached.
+  ignore_unreachable: true
   roles:
     - role: base
       tags: [base]
     - role: nic_tuning
       tags: [nic_tuning, network]
+
+- name: Gate on the reachability ledger
+  ansible.builtin.import_playbook: _reachability-gate.yml

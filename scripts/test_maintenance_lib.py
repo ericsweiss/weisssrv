@@ -37,7 +37,7 @@ def _run(func_call: str, stdin: str = "") -> subprocess.CompletedProcess:
     )
 
 
-# --- not_ready_node_names --------------------------------------------------
+# not_ready_node_names
 
 class TestNotReadyNodeNames:
     def test_all_ready_prints_nothing(self):
@@ -67,7 +67,7 @@ class TestNotReadyNodeNames:
         assert _run("not_ready_node_names", "").stdout.strip() == ""
 
 
-# --- list_unhealthy_pods ---------------------------------------------------
+# list_unhealthy_pods
 
 class TestListUnhealthyPods:
     # Columns mirror `kubectl get pods -A --no-headers`:
@@ -164,7 +164,7 @@ class TestListUnhealthyPods:
         assert "bad" in out
 
 
-# --- deployment_replicas_ok ------------------------------------------------
+# deployment_replicas_ok
 
 class TestDeploymentReplicasOk:
     def test_equal_ok(self):
@@ -192,7 +192,7 @@ class TestDeploymentReplicasOk:
         assert _run("deployment_replicas_ok foo 2").returncode != 0
 
 
-# --- deployment_pod_nodes --------------------------------------------------
+# deployment_pod_nodes
 
 class TestDeploymentPodNodes:
     # Input mirrors the verify's jsonpath rows: "<pod-name>\t<nodeName>".
@@ -226,7 +226,7 @@ class TestDeploymentPodNodes:
         assert _run("deployment_pod_nodes metallb-controller", rows).stdout.strip() == "<unscheduled>"
 
 
-# --- kured_rebooting_filter --------------------------------------------------
+# kured_rebooting_filter
 
 class TestKuredRebootingFilter:
     # Input mirrors the verify's jsonpath rows: "node<TAB>annotation<TAB>unschedulable".
@@ -258,7 +258,7 @@ class TestKuredRebootingFilter:
         assert _run("kured_rebooting_filter", "").stdout.strip() == ""
 
 
-# --- classify_not_ready_nodes ------------------------------------------------
+# classify_not_ready_nodes
 
 class TestClassifyNotReadyNodes:
     def _classify(self, kured_names: str, not_ready: str) -> list[str]:
@@ -297,7 +297,7 @@ class TestClassifyNotReadyNodes:
         assert self._classify("node-a", "") == []
 
 
-# --- rearm_marker_host -------------------------------------------------------
+# rearm_marker_host
 
 class TestRearmMarkerHost:
     def test_plain_hostname(self):
@@ -317,7 +317,7 @@ class TestRearmMarkerHost:
         assert _run("rearm_marker_host", "").stdout.strip() == ""
 
 
-# --- rearm_remote_command ----------------------------------------------------
+# rearm_remote_command
 
 class TestRearmRemoteCommand:
     def _cmd(self, *args) -> str:
@@ -357,7 +357,7 @@ class TestRearmRemoteCommand:
         assert "--unit=maintenance-self-reboot-prompt" in self._cmd("60")
 
 
-# --- ha_reset_verdict ------------------------------------------------------
+# ha_reset_verdict
 
 class TestHaResetVerdict:
     def test_ok(self):
@@ -404,7 +404,7 @@ class TestHaResetVerdict:
         assert out == "notfound"
 
 
-# --- ha_observe_step -------------------------------------------------------
+# ha_observe_step
 
 class TestHaObserveStep:
     def _step(self, streak, went_down, probe):
@@ -461,7 +461,7 @@ class TestHaObserveStep:
         assert went_down == "true"
 
 
-# --- ha_settle_verdict -----------------------------------------------------
+# ha_settle_verdict
 
 class TestHaSettleVerdict:
     def _verdict(self, went_down, streak, elapsed, settle):

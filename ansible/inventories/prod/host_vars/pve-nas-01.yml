@@ -214,6 +214,14 @@ zfs_scrub_schedule: "monthly"
 # an update-initramfs handler so it applies at early boot).
 zfs_arc_max_bytes: 4294967296
 
+# Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
+# cluster-shared, so archiving it from this one node covers the whole cluster —
+# and this is the node whose landing zone rides archsync into restic B2. Without
+# it, user.cfg (users/ACLs/API tokens), corosync.conf and priv/ (cluster CA +
+# node certs + authkey) have no backup at ANY tier: vzdump captures guests, not
+# the cluster filesystem. docs/17.
+nas_pve_cluster_backup_enabled: true
+
 # Daily swap reset. Paired with vm.swappiness=1 (nic_tuning) + the 4G ARC cap
 # above: those keep steady-state swap ~0, but a near-capacity host still swaps
 # under real peak events (deploys/backups/ML) and that swap never self-clears, so
@@ -641,6 +649,18 @@ pve_vzdump_jobs:
     # the supported recovery is reprovision + etcd-snapshot restore, never an
     # image roll-back. So excluding them removes a footgun as well as the I/O.
     # (proxmox_backup clears a removed exclude via --delete; `all` stays true.)
+    #
+    # CHECKLIST when adding a guest to this exclude list: Proxmox's
+    # prune-backups runs PER GUEST, immediately AFTER that guest's backup — so a
+    # guest that is no longer backed up is never revisited and its existing dumps
+    # are NEVER pruned. Excluding a guest therefore strands its whole dump
+    # history on tank/proxmox (and, via archsync, on archive/proxmox) forever.
+    # Sweep them by hand in the same change:
+    #   sudo ls -lt /mnt/tank/proxmox/dump/vzdump-qemu-<vmid>-*
+    #   sudo rm -f  /mnt/tank/proxmox/dump/vzdump-{qemu,lxc}-<vmid>-*
+    # then let archsync retention age the archive copy out. Measured 2026-07-25:
+    # the 9 VMIDs below had accumulated 2.8 T of orphaned dumps against a 4.00 T
+    # tank/proxmox refer — ~70% dead weight, faithfully replicated to archive.
     exclude: [202, 203, 204, 205, 206, 207, 222, 223, 227]
     # bwlimit caps per-node backup I/O (KiB/s). Because this is a cluster-wide
     # `all` job it fires on EVERY node at 03:30 and they all write their guests
@@ -730,15 +750,19 @@ nic_tuning_vm_swappiness: 1
 # unaffected, Tailscale + SSH-jump access preserved (with opt-01/opt-02 as
 # fallback jumps), and zero legitimate OUT-DROP log entries.
 
-# --- restic_offsite secrets (B2 offsite backup, docs/42) --------------------
+# restic_offsite secrets (B2 offsite backup, docs/42)
 # Env -> var mapping for the secrets the storage deploy job (and the Taskfile
 # storage tasks) inject via `op run` from the "B2 Archive Backup" item — the
 # smtp-relay.yml pattern. The role templates consume the snake_case vars;
 # without this mapping a production render fails on undefined variables.
 # no_log protects the render tasks in the role (they already carry it).
-# NOTE: these are the RESTRICTED (hide-only, no deleteFiles) key fields —
-# terraform/b2 keeps the full-capability master key on separate item fields
-# (capability split rationale: docs/42 Step 0).
+# NAMING TRAP: these vars are called b2_key_id / b2_application_key but hold the
+# RESTRICTED (hide-only, no deleteFiles) key, sourced from the 1Password fields
+# restic_key_id / restic_application_key. The FULL-capability master key lives on
+# that item's b2_key_id / b2_application_key fields and is used only by
+# scripts/b2-bucket-drift.py (`task b2:drift` / `b2:apply`) — same names, opposite
+# capability. Read the op:// field, not the var name (capability split
+# rationale: docs/42 Step 0).
 b2_key_id: "{{ lookup('ansible.builtin.env', 'B2_KEY_ID') or undef(hint='B2_KEY_ID env var must be set (run via op run)') }}"
 b2_application_key: "{{ lookup('ansible.builtin.env', 'B2_APPLICATION_KEY') or undef(hint='B2_APPLICATION_KEY env var must be set (run via op run)') }}"
 restic_repo_password: "{{ lookup('ansible.builtin.env', 'RESTIC_REPO_PASSWORD') or undef(hint='RESTIC_REPO_PASSWORD env var must be set (run via op run)') }}"

@@ -1,8 +1,7 @@
 ---
-# Per-role Molecule scenario. Shared driver/provisioner/verifier/scenario config
-# is inherited from ansible/molecule/base.yml (applied via the `-c` flag in
-# test-all-roles.sh and the CI molecule-tests matrix). Only the per-role platform
-# lives here; the collector vars are passed by the converge include_role.
+# Scenario overrides; shared config in ansible/molecule/base.yml.
+# Only the per-role platform lives here; the collector vars are passed by the
+# converge include_role.
 platforms:
   - name: textfile-collector-test
     image: registry.git.ericsweiss.com/eric/weisssrv/molecule-test:latest

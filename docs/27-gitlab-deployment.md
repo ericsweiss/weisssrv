@@ -177,6 +177,12 @@ This creates (or updates):
 and SSH access on the same hostname. Nested subdomains (registry.git, pages.git, *.pages.git)
 use `direct.ericsweiss.com` because Cloudflare Universal SSL only covers first-level wildcards.
 
+The internal equivalents (`pages.git.esweiss.com` and `*.pages.git.esweiss.com`)
+are served by the same IngressRoutes and covered by the GitLab wildcard
+Certificate in `kubernetes/apps/vm-ingress/`; internally they resolve via the
+AdGuard rewrites in `group_vars/dns.yml`, so there is no Terraform record for
+them.
+
 **DNS cutover verification:** If `git.ericsweiss.com` was previously a CNAME (e.g., pointing
 to `direct.ericsweiss.com`) and is being changed to an A record, verify the transition:
 

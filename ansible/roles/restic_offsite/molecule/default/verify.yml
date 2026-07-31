@@ -94,6 +94,65 @@
         fail_msg: "restic_offsite.prom missing expected metrics on success"
         success_msg: "restic_offsite.prom emits all run metrics on success"
 
+    # ALREADY-UPLOADED short-circuit: the primary trigger (archive-backup's
+    # OnSuccess=) and the fallback timer both fire every night, so a second run
+    # against the SAME archsync generation must skip rather than repeat a full
+    # backup + forget --prune (whose prune discarded the chain-verified snapshot
+    # in favour of the fallback one). Asserted behaviourally: re-run now, expect
+    # rc=0, the already-uploaded log line, and NO additional restic snapshot.
+    - name: Count restic snapshots before the duplicate run
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -a; . /etc/restic-offsite/env; set +a
+        restic snapshots --json | grep -c '"short_id"'
+      args:
+        executable: /bin/bash
+      register: restic_offsite_snaps_before
+      changed_when: false
+
+    - name: Re-run restic-offsitectl run against the same archsync generation
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl run
+      args:
+        executable: /bin/bash
+      register: restic_offsite_duplicate_run
+      changed_when: false
+
+    - name: Count restic snapshots after the duplicate run
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -a; . /etc/restic-offsite/env; set +a
+        restic snapshots --json | grep -c '"short_id"'
+      args:
+        executable: /bin/bash
+      register: restic_offsite_snaps_after
+      changed_when: false
+
+    - name: Assert the duplicate run skipped instead of re-uploading
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_duplicate_run.rc == 0
+          - restic_offsite_duplicate_run.stdout is search('already-uploaded')
+          - restic_offsite_snaps_after.stdout | int == restic_offsite_snaps_before.stdout | int
+        fail_msg: >-
+          A second run against the same archsync generation did not short-circuit
+          (snapshots {{ restic_offsite_snaps_before.stdout }} ->
+          {{ restic_offsite_snaps_after.stdout }}) — the nightly job is running twice.
+        success_msg: "A second run against the same archsync generation skips (already-uploaded)"
+
+    - name: Assert --force overrides the already-uploaded skip
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl run --force
+      args:
+        executable: /bin/bash
+      register: restic_offsite_forced_run
+      changed_when: false
+      failed_when: >-
+        restic_offsite_forced_run.rc != 0
+        or restic_offsite_forced_run.stdout is search('already-uploaded')
+
     # RESTORE round-trip: restore the appdata source (bind mode backs it up at
     # BIND_ROOT/appdata, which cmd_restore's --include prefix matches) into a temp
     # target and assert the seeded payload comes back byte-for-byte.

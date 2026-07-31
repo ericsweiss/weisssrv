@@ -11,7 +11,7 @@
 
 locals {
   applications = {
-    # --- Home ---
+    # Home
     bar = {
       name        = "Bar Assistant"
       group       = "Home"
@@ -41,7 +41,7 @@ locals {
       meta_icon   = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/immich.svg"
     }
 
-    # --- Software ---
+    # Software
     agent = {
       name        = "Hermes"
       group       = "Software"
@@ -78,7 +78,7 @@ locals {
       meta_icon   = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/wireguard.svg"
     }
 
-    # --- Downloads ---
+    # Downloads
     movies = {
       name        = "Radarr"
       group       = "Downloads"

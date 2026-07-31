@@ -213,12 +213,10 @@
   when: not (skip_dns_config | default(false))
   tags: [dns, networking, base]
 
-# ============================================================================
 # Intel e1000e NIC workaround
 # The e1000e driver has known issues causing "Hardware Unit Hang" on
 # I219-LM/I219-V NICs. Disabling TSO/GSO prevents these hangs.
 # See: https://www.intel.com/content/www/us/en/support/articles/000057074/
-# ============================================================================
 
 - name: Check for Intel e1000e NIC
   ansible.builtin.shell: |
@@ -325,9 +323,7 @@
   notify: Reload systemd
   tags: [networking, base]
 
-# ============================================================================
 # Fail2ban - Intrusion Prevention
-# ============================================================================
 # Protects against brute-force attacks on SSH and other services
 # Whitelists internal LAN (192.168.0.0/24) and Tailscale (100.64.0.0/10)
 

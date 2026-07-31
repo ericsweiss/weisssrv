@@ -1,6 +1,4 @@
 ---
-# Default variables for postfix null client role
-
 smtp_relay_host: smtp-relay.esweiss.com
 smtp_relay_port: 587
 

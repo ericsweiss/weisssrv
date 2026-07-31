@@ -5,9 +5,7 @@
   become: true
   gather_facts: false
   tasks:
-    # ==========================================================================
     # Compose unit — RequiresMountsFor present (immich/nextcloud shape)
-    # ==========================================================================
     - name: Slurp the mounts-present compose unit
       ansible.builtin.slurp:
         src: /etc/systemd/system/mounts-present.service
@@ -29,9 +27,7 @@
         fail_msg: "mounts-present compose unit missing expected lines"
         success_msg: "mounts-present compose unit renders description, mounts, reconcile comment, lifecycle"
 
-    # ==========================================================================
     # Compose unit — RequiresMountsFor absent (immich_ml shape)
-    # ==========================================================================
     - name: Slurp the mounts-absent compose unit
       ansible.builtin.slurp:
         src: /etc/systemd/system/mounts-absent.service
@@ -49,9 +45,7 @@
         fail_msg: "mounts-absent unit must omit RequiresMountsFor and its comment"
         success_msg: "mounts-absent unit omits RequiresMountsFor (empty list) — immich_ml shape"
 
-    # ==========================================================================
     # write_prom_metrics helper library — content + end-to-end behaviour
-    # ==========================================================================
     - name: Stat the helper library
       ansible.builtin.stat:
         path: /usr/local/lib/testapp-backup-lib.sh
@@ -130,10 +124,43 @@
         fail_msg: "failure path did not record success=0 or lost the prior success timestamp"
         success_msg: "failure path records success=0 and preserves the last success timestamp"
 
-    # ==========================================================================
+    # Newest-artefact fallback. BackupArtifactEmpty is CRITICAL and its runbook
+    # describes a landing-path fault, so *_last_size_bytes 0 must mean "no
+    # artefact exists at all" — never "tonight's dump failed", which
+    # *_last_run_success 0 already carries. Exercised both ways from one call
+    # site: a seeded artefact must be sized, an empty landing zone must stay 0.
+    - name: Exercise the newest-artefact fallback (failure with a prior artefact)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        rm -rf /tmp/compose-app-artifacts
+        mkdir -p /tmp/compose-app-artifacts
+        head -c 4096 /dev/zero > /tmp/compose-app-artifacts/dump-20200101-000000.sql.gz
+        source /usr/local/lib/testapp-backup-lib.sh
+        write_prom_metrics test_backup 0 7 0 /tmp/compose-app-fallback.prom \
+          '/tmp/compose-app-artifacts/dump-*.sql.gz'
+        awk '/^test_backup_last_size_bytes/ {print $2}' /tmp/compose-app-fallback.prom
+        rm -f /tmp/compose-app-artifacts/*.sql.gz
+        write_prom_metrics test_backup 0 7 0 /tmp/compose-app-fallback.prom \
+          '/tmp/compose-app-artifacts/dump-*.sql.gz'
+        awk '/^test_backup_last_size_bytes/ {print $2}' /tmp/compose-app-fallback.prom
+      args:
+        executable: /bin/bash
+      register: compose_app_fallback
+      changed_when: false
+
+    - name: Assert 0 bytes means "no artefact", not "this run failed"
+      ansible.builtin.assert:
+        that:
+          - compose_app_fallback.stdout_lines == ['4096', '0']
+        fail_msg: >-
+          write_prom_metrics reported {{ compose_app_fallback.stdout_lines }}
+          for (artefact present, artefact absent); expected ['4096', '0'].
+          A failed run that reports 0 while good dumps sit in the landing zone
+          false-pages BackupArtifactEmpty (critical).
+        success_msg: "size falls back to the newest existing artefact, and is 0 only when there is none"
+
     # Host-nginx task flow (Case C) — cert untouched via creates:, site deployed,
     # packaged default vhost removed.
-    # ==========================================================================
     - name: Read the pre-seeded cert after the nginx flow
       ansible.builtin.slurp:
         src: /etc/nginx/ssl/fullchain.pem

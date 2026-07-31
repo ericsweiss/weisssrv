@@ -4,18 +4,38 @@ This document explains how to rotate passwords, API tokens, and SSH keys stored 
 
 ## Overview
 
-All secrets are stored in 1Password and injected at use time. There are two
-consumer paths and they rotate differently:
+All secrets are stored in the 1Password **Homelab** vault and injected at use
+time. **Nothing sensitive is ever committed to git** — only references.
 
-- **Kubernetes workloads** (Authentik, download clients, recipes, GitLab
-  runners / agent, cert-manager DNS-01 token, etc.) consume 1Password via
-  the External Secrets Operator (ESO). Rotate via `task flux:rotate-secret
-  -- <app>` — see § "Kubernetes workloads (External Secrets Operator)"
-  below and `docs/29-flux-operations.md` for the full day-2 playbook.
-- **Host-side / Ansible-managed state** (SMTP, SSH keys, acme.sh, Tailscale
-  auth keys, GitLab VM root password, etc.) uses `op run --` to inject
-  secrets at playbook-run time. Rotate by updating 1Password, then
-  re-running the relevant Ansible playbook.
+### Secrets model: three consumers, one vault
+
+This is the canonical description of the model; other pages (README.md,
+CLAUDE.md, `ansible/README.md`, `docs/29-flux-operations.md`) point here.
+
+1. **Ansible / Terraform / the Task wrapper** — `op run --` resolves
+   `op://Homelab/<Item Title>/<field>` references at run time. The references
+   live in the `secrets:` dict of
+   `ansible/inventories/prod/group_vars/all.yml` (that file, not this one, holds
+   the real reference strings). Item titles with spaces are fine — `op run`
+   parses the full path. Rotate by updating 1Password, then re-running the
+   relevant playbook (per-credential procedures below).
+2. **External Secrets Operator, in-cluster** — the `onepassword-homelab`
+   `ClusterSecretStore` (namespace `external-secrets`, 1Password **Connect**
+   provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect
+   runs in-cluster and serves from a local encrypted cache — no calls out to the
+   1Password cloud on each read. `remoteRef.key` is the **item title** and
+   `remoteRef.property` is the **field name** (format reference:
+   `docs/29-flux-operations.md` § "1Password Connect Provider Reference
+   Format"). Rotate via `task flux:rotate-secret -- <app>` — a refresh alone is
+   not enough, because Reloader deliberately ignores Secret changes
+   (`ignoreSecrets: true`), so consuming pods must be restarted.
+   The bootstrap Secrets `op-credentials` and `onepassword-connect-token` in the
+   `external-secrets` namespace are the **only** manually created Kubernetes
+   Secrets (`task flux:bootstrap-onepassword`); every other in-cluster Secret is
+   produced by ESO from a manifest Flux reconciles.
+3. **CI pipelines** — `.gitlab-ci.yml` uses `op run` / `op read` with
+   `OP_SERVICE_ACCOUNT_TOKEN` (a service-account token, not Connect) to inject
+   secrets into jobs at run time.
 
 ## Required 1Password Items
 
@@ -56,6 +76,7 @@ when an item is added or its fields change.
 - **Home Assistant API Token** - token (long-lived access token for Prometheus /api/prometheus endpoint); `backup_encryption_key` = HA's backup encryption key (automatic backups are `protected: true` — **without this key the offsite HA tars in B2 are undecryptable**; from Settings → System → Backups → emergency kit. Re-save here if HA ever regenerates it)
 - **GitLab** - root-password (initial GitLab root user password)
 - **GitLab API Token** - credential (admin personal access token, `api` scope; used by PR-Agent AI code review and hard-asserted by `task gitlab:deploy` for the Web IDE Application Settings block)
+- **GitLab Version Bump Bot Token** - credential (personal or project access token, scopes **`api` + `write_repository`**, Developer or better on `eric/weisssrv`). The item of record for the **masked, protected** `VERSION_BUMP_BOT_TOKEN` CI/CD variable, which is what the `version-bump-bot` job actually reads — the job cannot use `CI_JOB_TOKEN` (it cannot push, and the Merge requests API is read-only for job tokens) and cannot `op read` it either, since the value is consumed as a CI variable. Deliberately NOT the admin **GitLab API Token** above: this one is scoped to what a bot needs (push a branch, open/refresh/close one MR — never merge) and can be revoked without taking PR-Agent or `task gitlab:deploy` down with it. Rotate = mint a replacement (Settings > Access Tokens), update this field AND the CI variable, then revoke the old token; verify by playing `version-bump-bot` from a web pipeline on `main` (docs/13 § Version bump bot)
 - **GitLab SSO** - saml-cert-fingerprint (Authentik SAML)
 - **GitLab Runner** - runner-token (glrt-* format, tags: k8s-deploy, run untagged: yes, shared multi-project runner)
 - **GitLab Runner Privileged** - runner-token (glrt-* format, tags: infrastructure, run untagged: no, weisssrv infrastructure runner)
@@ -68,7 +89,7 @@ when an item is added or its fields change.
 - **Homarr SSO** - client-id (literal `homarr`), client-secret, secret-encryption-key, admin-username, admin-password. `client-secret` is read by BOTH ESO (the `homarr-secrets` ExternalSecret → `oidc-client-secret`) AND terraform/authentik (`TF_VAR_oauth2_client_secret_homarr`, docs/40) so they can never disagree. `secret-encryption-key` (`openssl rand -hex 32`) is ESO-synced too and encrypts the SQLite-stored integration credentials — **do not lose it** (losing it makes stored integration creds unreadable). `admin-username`/`admin-password` are operator-set (NOT ESO-injected — the `homarr-secrets` ExternalSecret pulls only `client-secret` + `secret-encryption-key`; like Immich `admin-bootstrap-password`). They are a **historical record** of the onboarding bootstrap admin, which is deleted at the SSO-only cutover (there is no standing local admin — the credentials break-glass was retired in !193), so no current auth path consumes them — the break-glass DR mints its own username + one-time password via `homarr-cli recreate-admin` (see docs/41 §SSO)
 - **Homarr Proxmox Token** - token-id (e.g. `homarr@pve!homarr`), token-secret (a read-only `PVEAuditor` Proxmox API token minted via `pveum`, docs/41). Entered into Homarr's Proxmox integration via the UI (NOT ESO-consumed). Rotate = mint a new token in Proxmox + update here + re-enter in the Homarr UI
 - **Homarr Integrations** - DR-convenience record (NOT ESO-consumed) of the per-integration credentials entered in the Homarr UI so they survive a rebuild: sonarr-api-key, radarr-api-key, lidarr-api-key, prowlarr-api-key, immich-api-key, nextcloud-app-password. (The AdGuard/NZBGet/qBittorrent/Plex/Home-Assistant integrations reuse their existing items above)
-- **GitHub Token** - credential (personal access token for version checker API rate limits)
+- **GitHub Token** - credential (personal access token for version checker API rate limits; consumed by `task maintenance:check-versions` / `maintenance:update-all-versions` locally AND by the `version-bump-bot` CI job, which runs that same task under `op run`)
 - **GitLab Terraform State Token** - credential (project access token for Terraform HTTP state backend, local use)
 - **K3s Kubeconfig** - kubeconfig file content (used by .k3s-deploy-base CI template as fallback; agent is preferred)
 - **Service Account Auth Token weisssrv** - 1Password Service Account token used by CI (`OP_SERVICE_ACCOUNT_TOKEN` in `.gitlab-ci.yml`)
@@ -98,9 +119,12 @@ For any secret consumed inside the k3s cluster (every `ExternalSecret` in
 eval $(op signin)   # if needed
 # op item edit <item-id> <field>[password]=<new-value>
 
-# 2. Refresh ExternalSecret + restart consuming pods in one go:
-task flux:rotate-secret -- authentik    # or: downloads, recipes, gitlab-runner,
-                                        #     gitlab-runner-privileged, gitlab-agent
+# 2. Refresh ExternalSecret + restart consuming pods in one go.
+#    Known apps (the task's own `--` dispatch; run it with no argument to have
+#    it print the current list):
+#      authentik, downloads, recipes, gitlab-runner, gitlab-runner-privileged,
+#      gitlab-agent, registry-cache, observability-exporters
+task flux:rotate-secret -- authentik
 
 # 3. (Optional) Refresh an ExternalSecret without restarting pods — useful
 #    for secrets that don't require a pod restart to take effect.
@@ -109,9 +133,12 @@ task flux:refresh-secret -- authentik/authentik-secrets
 
 The `task flux:rotate-secret -- <app>` command annotates the ExternalSecret
 with a force-sync timestamp, waits for ESO to re-fetch from 1Password, then
-restarts the Deployments/StatefulSets that consume the produced Secret. See
-`docs/29-flux-operations.md` § Secret Operations for the full dispatch table
-and rate-limit considerations.
+restarts the Deployments/StatefulSets that consume the produced Secret. The
+per-app dispatch (which ExternalSecrets it force-syncs and which workloads it
+rolls) lives in the task itself — `Taskfile.yml`, `flux:rotate-secret` — and is
+the source of truth; running the task with no argument prints the current app
+list. See `docs/29-flux-operations.md` § Rotating a Secret for the surrounding
+procedure and § Rate Limits for the 1Password read budget.
 
 The single exception is the Connect bootstrap secrets
 (`external-secrets/op-credentials` and `external-secrets/onepassword-connect-token`)
@@ -142,14 +169,32 @@ eval $(op signin)
 op read "op://Homelab/SMTP Relay Gmail/password"
 op read "op://Homelab/SMTP Relay Auth/password"
 
-# 4. Deploy SMTP configuration
-ansible-playbook ansible/playbooks/site.yml --tags smtp
+# 4a. Relay + the null clients site.yml carries (proxmox + dns)
+task infra:deploy -- --tags smtp_relay,postfix_null_client
+
+# 4b. The app VMs and k3s nodes — site.yml does NOT carry them, and `--tags`
+#     against their own playbooks rotates nothing (see "Why --tags" below)
+task mail:rotate-credential
+
+# 4c. GitLab stores the credential a SECOND time, in /etc/gitlab/gitlab.rb.
+#     Only the gitlab role templates it, and it must run untagged so the role
+#     re-templates gitlab.rb and reconfigures.
+task gitlab:deploy
 
 # 5. Verify mail still works
 ssh eric@192.168.0.102 "echo 'Test' | mail -s 'Rotation Test' root"
 
 # Check mail arrives at your root_email_alias
 ```
+
+Steps 4a-4c are the sequence that actually rotates every consumer; `site.yml`
+alone leaves most of the fleet on the revoked password. Use the `task` wrappers,
+not bare `ansible-playbook` — the credential reaches Ansible only through the
+`op run` env injection they carry. A host that is knowingly out (hardware work)
+belongs in `deploy_expected_absent_hosts` (`group_vars/all.yml`), which
+downgrades 4a's reachability gate to a loud warning; 4b has no such gate and
+fails on an unreachable host by design, since a host silently left on the
+revoked credential is the failure being avoided.
 
 **What Happens**:
 - Gmail password: `/etc/postfix/sasl_passwd` updated on smtp-relay, postmap rebuilds hash
@@ -158,14 +203,59 @@ ssh eric@192.168.0.102 "echo 'Test' | mail -s 'Rotation Test' root"
   postfix) only on an actual rotation — sasldb stores no recoverable
   plaintext, so the role detects rotation via a sha256 fingerprint sentinel
   at `/etc/postfix/.sasl_relay_user.sha256` (root:root, 0600)
-- Null client passwords: `/etc/postfix/sasl_passwd` updated on all Proxmox hosts and DNS LXCs
+- Null client passwords: `/etc/postfix/sasl_passwd` updated on all Proxmox hosts
+  and DNS LXCs by 4a, on the app VMs and k3s nodes by 4b
 - Postfix reloads on all affected hosts
+- Both roles rebuild the compiled `sasl_passwd.db` / `aliases.db` whenever they
+  no longer match their source, rather than relying on the `notify` handler
+  alone: a play that dies before `flush_handlers` used to leave a correct source
+  next to a stale database, and the host kept authenticating with the OLD
+  credential with nothing reporting changed
 
 **Affected Hosts**:
 - `smtp-relay` - Both passwords
 - `pve-nas-01`, `pve-laptop-01`, `pve-opt-01`, `pve-opt-02`, `pve-opt-03`, `pve-prec-01` - Relay auth password
 - `dns-01`, `dns-02` - Relay auth password
-- `plex`, `gitlab` - Relay auth password
+- `plex`, `gitlab`, `immich`, `immich-ml`, `nextcloud` - Relay auth password
+- every k3s node (server + agent) - Relay auth password
+
+**Why `--tags` cannot do this on its own.** `site.yml --tags
+smtp_relay,postfix_null_client` covers ONLY `proxmox` and `dns` — the two plays
+that tag the role. The app VMs and k3s nodes get `postfix_null_client` from
+their own playbooks (`gitlab.yml`, `plex.yml`, `immich.yml`, `immich-ml.yml`,
+`nextcloud.yml`, `k3s.yml`), where the role is listed **untagged**, so
+`--tags postfix_null_client` selects none of its tasks. Verified with
+`--list-tasks` on each; the two outcomes differ, and the silent one is worse:
+
+| Playbook | `--tags postfix_null_client` selects | Outcome |
+|---|---|---|
+| `plex.yml`, `immich.yml`, `immich-ml.yml`, `nextcloud.yml`, `gitlab.yml` | only base's two `tags: [always]` fact detections | **Fails.** Those plays are `gather_facts: false` with an untagged gathering pre-task, so `Detect if running in a VM` templates `ansible_facts` that were never gathered |
+| `k3s.yml` | the same two tasks | **Exits 0 having rotated nothing.** The play gathers facts by default, so the always-tasks succeed and the run reports success with zero postfix tasks executed |
+
+So: run `task mail:rotate-credential`
+(`ansible/playbooks/rotate-mail-credential.yml` — the role, and only the role,
+on exactly those hosts), then `task gitlab:deploy` for gitlab.rb. Running the
+app playbooks untagged also works but reconfigures the whole app.
+`scripts/test_mail_credential_rotation.py` fails if the rotation playbook's host
+pattern drifts from the set of playbooks that carry the role.
+
+**Beyond Ansible** — the same 1Password item feeds consumers no playbook touches:
+
+| Consumer | Path | Rotation step |
+|---|---|---|
+| Authentik | ESO -> `authentik-secrets` (`smtp-username`/`smtp-password`) | restart `authentik-server` + `authentik-worker` |
+| Mealie + Bar Assistant | ESO -> `recipes-secrets` (shared) | restart both deployments |
+| Alertmanager | ESO -> `alertmanager-config`, templated into `alertmanager.yaml` | none - its config-reloader sidecar picks it up |
+| Home Assistant | **UI config entry** (`smtp_notify`), stored in HA's `.storage` | **manual, in the HA UI** - no automation reaches it |
+
+Reloader sets `ignoreSecrets: true` (docs/29), so a refreshed ExternalSecret does
+NOT roll the pods that consume it. Force the sync and restart by hand:
+
+```bash
+kubectl -n <ns> annotate externalsecret <name> force-sync="$(date +%s)" --overwrite
+kubectl -n <ns> delete pod -l <selector>   # delete, not `rollout restart`:
+                                           # kustomize-controller reverts the annotation
+```
 
 ---
 
@@ -382,7 +472,7 @@ smbclient //192.168.0.102/share -U nas
 op read "op://Homelab/Tailscale Auth Key/credential"
 
 # 4. New nodes will automatically use new key on deployment
-ansible-playbook ansible/playbooks/base.yml --tags tailscale --limit new-host
+ansible-playbook ansible/playbooks/site.yml --tags tailscale --limit new-host
 ```
 
 **Affected Hosts**: Only new hosts being provisioned
@@ -404,7 +494,7 @@ eval $(op signin)
 ansible-playbook ansible/playbooks/site.yml --limit affected-hosts
 
 # 4. For Proxmox firewall or network-level security:
-ansible-playbook ansible/playbooks/site.yml --tags firewall
+ansible-playbook ansible/playbooks/site.yml --tags proxmox_firewall
 
 # 5. Revoke old credential at source (Cloudflare, Tailscale, Gmail, etc.)
 ```

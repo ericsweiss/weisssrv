@@ -43,9 +43,6 @@ spec:
     # CRDs owned by the infrastructure-crds stage (see install.crds above).
     crds:
       enabled: false
-    # -------------------------------------------------------------------------
-    # Prometheus
-    # -------------------------------------------------------------------------
     prometheus:
       prometheusSpec:
         # Prometheus runs as nobody (65534); fsGroup ensures the PVC is writable
@@ -76,13 +73,27 @@ spec:
                   storage: 150Gi
               volumeName: prometheus-data
 
-        # Retention
-        # retentionSize bounds only persisted block storage; the WAL, the
-        # in-memory head being flushed, and compaction scratch consume more
-        # on-disk space on top of it. Held to 120GB (vs the 150Gi/~161GB PV)
-        # to leave ~40GB headroom for those non-block on-disk costs.
+        # Retention. retentionSize is the limit that actually binds: at ~1GB of
+        # blocks per day the 365d time limit is unreachable, so treat 365d as an
+        # outer bound and the size cap as the policy.
+        #
+        # The cap must be sized against the FILESYSTEM, not the PV's nominal
+        # 150Gi. /mnt/prometheus-data is ext4: 157.4GB total, of which 8.1GB is
+        # the 5% root reserve that node_filesystem_avail_bytes excludes — so
+        # DiskUsageWarning (avail-based, > 80%, no job filter, hits this mount
+        # via the k3s DaemonSet) trips at roughly 117GB of Prometheus data. The
+        # old 120GB cap therefore guaranteed a warning that fires the moment the
+        # TSDB reaches its configured size and never resolves. It also
+        # understated the true footprint: retention.size covers the WAL and
+        # head chunks as well as persisted blocks.
+        #
+        # 110GB lands the full-disk case at ~75% with room for compaction
+        # scratch. Effective window still grows, not shrinks: dropping the
+        # duplicated k3s server registry from job="kubelet" (see the kubelet
+        # metricRelabelings below) removes roughly a quarter of the stored
+        # series, so 110GB now buys more days than 120GB did before.
         retention: 365d
-        retentionSize: 120GB
+        retentionSize: 110GB
 
         # Discover ServiceMonitors, PodMonitors, and PrometheusRules in ALL namespaces
         serviceMonitorSelectorNilUsesHelmValues: false
@@ -92,8 +103,16 @@ spec:
         ruleSelectorNilUsesHelmValues: false
         ruleNamespaceSelector: {}
 
-        # Working set runs 2-2.6Gi at 365d retention; request must reflect
-        # that for honest scheduling (VPA is Off here — hand-tuned).
+        # Steady-state working set runs 2-2.6Gi, but the number that matters
+        # here is the PEAK: 3.5Gi over 7d and 3.8Gi over 30d, with the VPA
+        # (recording-only, updateMode Off) putting its upperBound at ~3.65Gi —
+        # ~90% of the 4Gi limit. An OOMKill takes the whole alerting plane with
+        # it. The bump to 5-6Gi is a deferred operator step gated on confirmed
+        # NAS headroom (docs/06 §NAS memory, vpa.yaml); until then the pressure
+        # relief is cardinality, and the kubelet metricRelabelings below remove
+        # ~73k of ~317k head series. Re-measure the peak before deciding the
+        # limit is fine. VPARecommendationExceedsLimit is the automated guard:
+        # it fires if the recorded target ever crosses this limit.
         resources:
           requests:
             cpu: 200m
@@ -101,26 +120,88 @@ spec:
           limits:
             memory: 4Gi
 
-    # -------------------------------------------------------------------------
-    # Alertmanager
-    # -------------------------------------------------------------------------
     alertmanager:
       alertmanagerSpec:
         configSecret: alertmanager-config
+        # Two gossiping replicas. The data dir is an emptyDir (the chart ships
+        # no storage and we deliberately do not add a volumeClaimTemplate: the
+        # only dynamic class here is local-path, which is node-local and would
+        # pin Alertmanager to one node — strictly worse availability across a
+        # kured reboot — while an NFS-backed static PV would make the alerting
+        # plane hard-depend on the NAS). State therefore lives only in memory
+        # and on the pod's ephemeral disk, and the observed failure mode is a
+        # POD RESCHEDULE, not a container restart: Prometheus saw 5 distinct
+        # Alertmanager pod IPs in 7 days, each move wiping every active silence
+        # and the notification log (so already-notified alerts re-fire), and one
+        # move left a ~6-minute window in which ~28 notifications were dropped
+        # with no Alertmanager reachable at all.
+        #
+        # A second replica fixes both: the operator wires the gossip cluster so
+        # the pair replicates silences and the nflog, a rescheduled replica
+        # re-syncs from its peer instead of starting blank, and Prometheus
+        # always has a live receiver. The chart's default soft pod
+        # anti-affinity (per hostname) keeps the two apart without blocking
+        # scheduling while a node is out for maintenance — as one is today.
+        replicas: 2
+        # Re-sized with the replica change, by the same measured-peak method used
+        # for Prometheus/tailscale/dcgm in this branch: the single live replica's
+        # 7d working-set peak is 82Mi (30d peak 82Mi, 7d mean 73Mi) — already 64%
+        # of the old 128Mi limit and ABOVE the old 64Mi request, so the request
+        # under-reserved the pod and the ceiling left no room for the memberlist
+        # peer state, replicated silences/nflog and second notifier fan-in that a
+        # gossiping pair adds. Request now covers the observed steady state,
+        # limit is ~2.3x the measured peak. No OOMKill in 30d at 128Mi, so this
+        # is headroom for the new load, not a fix for an observed kill.
         resources:
           requests:
             cpu: 50m
-            memory: 64Mi
+            memory: 96Mi
           limits:
-            memory: 128Mi
+            memory: 192Mi
 
-    # -------------------------------------------------------------------------
-    # Grafana
-    # -------------------------------------------------------------------------
     grafana:
       # Ingress handled by Traefik IngressRoute
       ingress:
         enabled: false
+
+      # The app container gets NO ServiceAccount token. Only the two sidecars
+      # talk to the apiserver (they watch ConfigMaps and POST the results to
+      # Grafana's local admin API); Grafana itself never does. The chart's
+      # automountServiceAccountToken is pod-level, so dropping it strips the
+      # token from the sidecars too — hence the explicit projected token below,
+      # mounted back into just those two containers via their extraMounts. Net
+      # effect: a Grafana RCE/SSRF finds no kube credential in its own
+      # filesystem. (extraContainerVolumes, not extraVolumes: the latter's
+      # template only understands claim/hostPath/csi/configMap/emptyDir and
+      # would silently render a projected volume as an emptyDir.)
+      automountServiceAccountToken: false
+      extraContainerVolumes:
+        - name: sidecar-kube-api-access
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3607
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
+
+      # Cluster-wide `secrets` read is dropped from the Grafana SA: the chart's
+      # ClusterRole AND ClusterRoleBinding are both replaced by the pair in
+      # grafana-rbac.yaml (configmaps only). NOT `useExistingClusterRole` — that
+      # keeps the chart's fixed-name binding and only rewrites its roleRef, which
+      # the RBAC API forbids on an existing binding; grafana-rbac.yaml carries
+      # the full rationale and what re-adding `secrets` would take.
+      rbac:
+        create: false
 
       grafana.ini:
         server:
@@ -160,15 +241,31 @@ spec:
 
       # Dashboard sidecar — auto-discovers ConfigMaps with grafana_dashboard label
       sidecar:
+        # `resource: configmap` (chart default is `both`): with `secrets` gone
+        # from the SA's ClusterRole, a sidecar still watching Secrets would just
+        # log Forbidden on every cycle. Every dashboard/datasource here is a
+        # ConfigMap.
         dashboards:
           enabled: true
           label: grafana_dashboard
           labelValue: "1"
           searchNamespace: ALL
           folderAnnotation: grafana_folder
+          resource: configmap
+          # The pod-level token is off (see automountServiceAccountToken above);
+          # give this sidecar back the projected one it needs to watch ConfigMaps.
+          extraMounts:
+            - name: sidecar-kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
         datasources:
           # Set fixed UID so custom dashboard JSON can reference "prometheus"
           uid: prometheus
+          resource: configmap
+          extraMounts:
+            - name: sidecar-kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
 
       # Additional datasource: Loki for log queries
       additionalDataSources:
@@ -242,9 +339,6 @@ spec:
         limits:
           memory: 1Gi
 
-    # -------------------------------------------------------------------------
-    # node-exporter
-    # -------------------------------------------------------------------------
     nodeExporter:
       enabled: true
 
@@ -272,9 +366,6 @@ spec:
           # to controlledValues: RequestsOnly so it cannot re-impose a CPU limit.
           memory: 128Mi
 
-    # -------------------------------------------------------------------------
-    # kube-state-metrics
-    # -------------------------------------------------------------------------
     kube-state-metrics:
       resources:
         requests:
@@ -408,6 +499,24 @@ spec:
                   exported_namespace: [metadata, namespace]
                   target_kind: [spec, targetRef, kind]
                   target_name: [spec, targetRef, name]
+                  # Policy shape, needed by VPARecommendationExceedsLimit to
+                  # tell "nothing will ever apply this recommendation" from "the
+                  # VPA rewrites the limit itself on the next admission".
+                  # controlled_values reads ONLY the "*" containerPolicy, and
+                  # kube-state-metrics' [key=value] list selector is an exact
+                  # string match, so "*" is the literal entry name, not a
+                  # wildcard: a per-container controlledValues (download-clients'
+                  # gluetun) is invisible here, and the two VPAs that name every
+                  # container instead of carrying a "*" entry — apps/tailnet-dns
+                  # and apps/wg-easy — get no label at all. Both are updateMode
+                  # Initial on the default RequestsAndLimits, the self-healing
+                  # shape VPARecommendationExceedsLimit deliberately excludes, so
+                  # that costs nothing. An unset path (no updatePolicy, no "*"
+                  # policy, controlledValues left at its default) just omits the
+                  # label — same behaviour as the `suspended` label on the Flux
+                  # Info metrics above, which is absent on all 64 live objects.
+                  update_mode: [spec, updatePolicy, updateMode]
+                  controlled_values: [spec, resourcePolicy, containerPolicies, "[containerName=*]", controlledValues]
                 # One entry per (metric, resource): valueFrom must resolve to a
                 # scalar quantity, so target/uncappedTarget are split into their
                 # cpu and memory members. commonLabels carries the resource/unit
@@ -466,9 +575,7 @@ spec:
                           container: [containerName]
                         valueFrom: [uncappedTarget, memory]
 
-    # -------------------------------------------------------------------------
     # Disable components not present in k3s
-    # -------------------------------------------------------------------------
     # k3s bundles kube-scheduler and kube-controller-manager into the server
     # process without separate metrics endpoints. kube-proxy is embedded in
     # the k3s binary without a standalone metrics endpoint. Disabling prevents
@@ -480,6 +587,46 @@ spec:
       enabled: false
     kubeControllerManager:
       enabled: false
+
+    # The flip side of that bundling: on a k3s SERVER, :10250/metrics serves the
+    # whole embedded registry — apiserver, etcd, scheduler, controller-manager
+    # and their shared workqueue/rest_client/lasso families — not just kubelet
+    # metrics. The chart's kubelet ServiceMonitor scrapes it verbatim, so every
+    # one of those series was stored TWICE: once under job="kubelet" and once
+    # under job="apiserver" from :6443, whose scrape_samples_scraped counts were
+    # byte-identical per node (36,991 / 46,798 vs ~3,000 on a real agent).
+    # Measured: 32,212 + 41,121 = 73,333 duplicate series out of ~317k head
+    # series — a quarter of the TSDB, of the 4Gi memory limit, and of the
+    # retentionSize-bounded window, for data Prometheus already had.
+    #
+    # Scoped by the `node` target label rather than by IP so adding or replacing
+    # a server needs no edit here. Agents keep everything: their ~560 matching
+    # series are the kubelet's own auth-delegation and workqueue metrics, and
+    # nothing on an agent is duplicated elsewhere. On servers those same ~560
+    # are given up knowingly — they are indistinguishable in the merged registry
+    # and the apiserver job carries an identical copy.
+    #
+    # `node` is a target label the operator sets from the Endpoints address
+    # (verified in the live scrape config), so it is available to
+    # metric_relabel_configs. Helm REPLACES this list rather than merging, so
+    # the chart's own default rule is repeated below — dropping it would put
+    # back the kubelet storage-operation bucket cardinality it removes.
+    kubelet:
+      serviceMonitor:
+        metricRelabelings:
+          # Chart default (kube-prometheus-stack values.yaml) — keep in sync on
+          # a chart bump.
+          - action: drop
+            sourceLabels: [__name__, le]
+            regex: (csi_operations|storage_operation_duration)_seconds_bucket;(0.25|2.5|15|25|120|600)(\.0)?
+          # k3s server registry duplication (see comment above). rest_client_*
+          # is deliberately NOT in this list: it is duplicated too, but the
+          # chart's own Kubelet dashboard plots it under job="kubelet", and
+          # keeping it costs ~1.4k series against the ~73k this drops.
+          - action: drop
+            sourceLabels: [__name__, node]
+            separator: ;
+            regex: (apiserver|etcd|scheduler|workqueue|lasso)_.*;k3s-srv-.*
     # k3s embeds etcd but does expose its metrics: the server nodes run with
     # etcd-expose-metrics: true (ansible/roles/k3s), which serves the standard
     # etcd metrics on :2381 over plain HTTP. The chart builds a Service with
@@ -501,9 +648,7 @@ spec:
         enabled: true
         scheme: http
 
-    # -------------------------------------------------------------------------
     # Upstream default-rule overrides
-    # -------------------------------------------------------------------------
     defaultRules:
       disabled:
         # KubeCPUOvercommit fires transiently on every heavy privileged-CI
@@ -517,9 +662,7 @@ spec:
         # out the flap; excluding the CI namespaces removes the flap at source.
         KubeCPUOvercommit: true
 
-    # -------------------------------------------------------------------------
     # Custom alert rules
-    # -------------------------------------------------------------------------
     # Every custom alert below carries a runbook_url annotation pointing at the
     # canonical runbook doc (docs/12-runbooks.md) — a section anchor where one
     # maps cleanly, otherwise the doc root. Upstream chart-shipped rules are
@@ -1055,10 +1198,16 @@ spec:
               # a 2xx/4xx path, so LokiRequestFailures (5xx) misses them. Senders
               # don't buffer (RF=1), so dropped samples are lost — alert on a
               # sustained discard rate.
+              # for: 5m, not 15m. The real discard bursts are shorter than they
+              # are large: 1.93M lines were rejected over a 7-day sample in
+              # spikes peaking above 1000/s, and every one of them left this
+              # alert in `pending` and resolved before it could fire. A discard
+              # is unrecoverable data loss (RF=1, senders do not retry a 4xx),
+              # so it should page on the burst, not on a plateau.
               - alert: LokiIngestionRateLimited
                 expr: >-
                   sum by (reason) (rate(loki_discarded_samples_total{job="observability/loki"}[5m])) > 0
-                for: 15m
+                for: 5m
                 labels:
                   severity: warning
                 annotations:
@@ -1066,12 +1215,80 @@ spec:
                   summary: 'Loki is discarding samples ({{ $labels.reason }})'
                   description: >-
                     Loki has been discarding incoming samples at
-                    {{ $value | printf "%.1f" }}/s for 15 minutes
-                    (reason: {{ $labels.reason }}) — typically a 429
-                    ingestion / per-stream rate-limit. Those log lines are
-                    lost (RF=1, senders do not buffer). Raise the
-                    limits_config caps in loki/release.yaml or find the
-                    runaway log source.
+                    {{ $value | printf "%.1f" }}/s for 5 minutes
+                    (reason: {{ $labels.reason }}). `too_far_behind` means a
+                    sender replayed logs older than the out-of-order accept
+                    window (ingester.max_chunk_age/2) — check
+                    alloy_host_journal_max_age; anything else is typically a 429
+                    against the limits_config caps. Either way those lines are
+                    lost (RF=1, senders do not buffer).
+
+              # Meta-monitoring for the OTHER alerting path. The 23
+              # HostLogShippingStale rules (loki/host-log-staleness.yaml) are
+              # evaluated by Loki's in-process ruler and pushed straight to
+              # Alertmanager, bypassing Prometheus entirely — so a Prometheus
+              # rule cannot notice them failing. Loki being down is already
+              # covered (TargetDown on job="observability/loki"); what was
+              # uncovered is the ruler going quiet while Loki stays healthy:
+              # the k8s-sidecar stops delivering the rules ConfigMap (label or
+              # annotation drift), an evaluation starts erroring, or the push to
+              # Alertmanager fails.
+              #
+              # The `< 23` threshold is the rule count in
+              # loki/host-log-staleness.yaml; scripts/test_host_log_staleness.py
+              # asserts the two stay equal, so adding a host cannot leave a
+              # stale threshold that under-detects.
+              - alert: LokiRulerRulesMissing
+                expr: >-
+                  sum(loki_prometheus_rule_group_rules{job="observability/loki"}) < 23
+                  or absent(loki_prometheus_rule_group_rules{job="observability/loki"})
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+                  summary: 'Loki ruler has fewer rules loaded than git ships'
+                  description: >-
+                    Loki's ruler is evaluating fewer than the 23
+                    HostLogShippingStale rules in git (or reports none at all).
+                    The per-host "journald shipping stopped" alerts are
+                    partially or fully disarmed. Check the loki-sc-rules sidecar
+                    log and that the loki-rules-* ConfigMap still carries the
+                    loki_rule label + k8s-sidecar-target-directory annotation
+                    (loki/kustomization.yaml).
+
+              - alert: LokiRulerEvaluationFailures
+                expr: >-
+                  sum(rate(loki_prometheus_rule_evaluation_failures_total{job="observability/loki"}[15m])) > 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+                  summary: 'Loki ruler is failing to evaluate its rules'
+                  description: >-
+                    Loki's ruler has been erroring on rule evaluation for 15
+                    minutes — the HostLogShippingStale alerts are not being
+                    computed. Check the Loki pod log for ruler errors (a bad
+                    LogQL expression in host-log-staleness.yaml, or the query
+                    path failing).
+
+              - alert: LokiRulerNotificationFailures
+                expr: >-
+                  sum(rate(loki_prometheus_notifications_errors_total{job="observability/loki"}[15m])) > 0
+                  or max(loki_prometheus_notifications_alertmanagers_discovered{job="observability/loki"}) == 0
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/31-observability.md'
+                  summary: 'Loki ruler cannot deliver alerts to Alertmanager'
+                  description: >-
+                    Loki's ruler is erroring on its Alertmanager push, or has
+                    discovered no Alertmanager at all. Rules may be firing with
+                    nobody notified. Check rulerConfig.alertmanager_url in
+                    loki/release.yaml and that the Alertmanager Service is
+                    reachable from the loki pod.
 
               - alert: FluxReconciliationFailure
                 expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{job="observability/flux-system"}[5m])) > 0
@@ -1229,6 +1446,68 @@ spec:
                     has been clamped by maxAllowed for 24 hours — it wants
                     {{ $value }} {{ $labels.unit }} uncapped. Raise the cap in
                     infrastructure/configs/vpa/ or investigate the growth.
+
+              # The complement of VPARecommendationCapped: the recommendation is
+              # NOT clamped, it has simply outgrown the memory limit written in
+              # the workload's manifest. For an Off-tier VPA nothing applies the
+              # recommendation, so this is the only automated signal that a
+              # hand-applied size has fallen behind — the gap that let
+              # authentik-postgresql sit at a 684Mi target against a 512Mi limit
+              # until it OOMKilled (2026-07-25). It is equally valid for an
+              # Initial/Auto VPA pinned to controlledValues: RequestsOnly, where
+              # the limit likewise never moves.
+              #
+              # SCOPED to exactly those two shapes (update_mode="Off" or
+              # controlled_values="RequestsOnly", from the KSM labels above).
+              # A mutating VPA left on the default RequestsAndLimits scales the
+              # limit with the request at the next admission, so the same
+              # condition there is self-healing and the annotation's "apply the
+              # recommendation in git" remedy is wrong for it: a 14-day backtest
+              # of the unscoped expression fired downloads/pulsarr for 57
+              # consecutive hours and external-secrets/external-secrets for 12h,
+              # both of which decayed back under their limits untouched. The two
+              # arms are a plain `or` on the same series, so a VPA that is both
+              # Off and RequestsOnly still yields one alert.
+              #
+              # label_replace rewrites the KSM series' own namespace label
+              # (observability) with the VPA's target namespace so the join
+              # against kube_pod_container_resource_limits lands, and so the
+              # alert routes on the workload's namespace. Containers with no
+              # memory limit produce no right-hand series and are skipped by
+              # design — an absent limit is a different finding.
+              #
+              # 6h hold rather than the 24h above: the VPA target is already a
+              # multi-day decayed quantity, so it does not flap, and this
+              # condition is one burst away from an OOMKill.
+              - alert: VPARecommendationExceedsLimit
+                expr: >-
+                  max by (namespace, verticalpodautoscaler, container) (
+                    label_replace(
+                      vpa_recommendation_target{resource="memory", update_mode="Off"}
+                      or
+                      vpa_recommendation_target{resource="memory", controlled_values="RequestsOnly"},
+                      "namespace", "$1", "exported_namespace", "(.*)")
+                  )
+                  > on (namespace, container) group_left ()
+                  max by (namespace, container) (
+                    kube_pod_container_resource_limits{resource="memory"}
+                  )
+                for: 6h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/33-autoscaling.md'
+                  summary: >-
+                    VPA {{ $labels.namespace }}/{{ $labels.verticalpodautoscaler }}
+                    recommends more memory than container
+                    {{ $labels.container }} is allowed
+                  description: >-
+                    The VPA memory target for container {{ $labels.container }}
+                    in {{ $labels.namespace }} is {{ $value | humanize1024 }}B,
+                    above the container's configured memory limit — the workload
+                    is sized below its own measured need and will OOMKill on the
+                    next burst. Apply the recommendation in git (docs/33
+                    "Applying an Off-tier recommendation").
 
       homelab-monitoring:
         groups:
@@ -1820,8 +2099,30 @@ spec:
               # Cloudflare auto-renews these, so this is a low-priority backstop that
               # surfaces a silently-lapsed edge cert BEFORE it fully breaks (which
               # would otherwise only show as EndpointDown at expiry).
+              # Scoped to every *.ericsweiss.com probe rather than a hostname
+              # list so the guard widens automatically as external probes are
+              # added (a hardcoded (home|git) left nine external hostnames
+              # unwatched once they were published) — MINUS the hostnames whose
+              # TLS this cluster terminates itself, where cert-manager already
+              # exports the same expiry and CertExpiringWarning/Critical would
+              # double-page on one lapsing cert. Verified by SNI handshake:
+              # home/cloud/agent/dashboard/food/bar/plex present the Cloudflare
+              # edge cert (Google Trust Services, CN=ericsweiss.com) and are the
+              # real subject here; git + registry.git (DNS-only -> WAN) present
+              # cert-manager's gitlab-services cert, photos (DNS-only) the
+              # ericsweiss-com-wildcard, and auth resolves to the internal VIP
+              # (split-horizon exception, see the exporter targets) presenting
+              # authentik-tls. A future proxy-bypassed hostname not listed here
+              # double-warns rather than going unwatched — the safe direction.
+              # Post-expiry those four are still covered end-to-end: an expired
+              # served cert fails the probe's TLS verification, so probe_success
+              # drops and EndpointDown fires.
               - alert: BlackboxCertExpiringSoon
-                expr: probe_ssl_earliest_cert_expiry{instance=~"https://(home|git)\\.ericsweiss\\.com"} - time() < 86400 * 14
+                expr: >-
+                  probe_ssl_earliest_cert_expiry{
+                    instance=~"https://.*\\.ericsweiss\\.com",
+                    instance!~"https://(git|registry\\.git|photos|auth)\\.ericsweiss\\.com"
+                  } - time() < 86400 * 14
                 for: 1h
                 labels:
                   severity: warning
@@ -1843,6 +2144,214 @@ spec:
                   runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
                   summary: 'Node {{ $labels.node }} is under memory pressure'
                   description: 'Kubelet on {{ $labels.node }} has been reporting memory pressure for 5 minutes. Pods may be evicted.'
+
+      # Bare-metal / VM node_exporter (job="node-exporter-host", :9101)
+      # EVERY rule the chart ships from the node-exporter mixin is selector-
+      # scoped to job="node-exporter" — the in-cluster DaemonSet. The 15
+      # Endpoints in exporters/node-exporter-host.yaml (6 Proxmox hosts, dns-01/
+      # 02, smtp-relay, the GitLab/Nextcloud/Immich VMs, 3 k3s servers) carry
+      # job="node-exporter-host" and so match NONE of them: 27 upstream rules,
+      # zero coverage. Disk/inode (homelab.storage), PSI, thermals, SMART and
+      # ZFS were already backfilled for this job; this group closes the rest —
+      # NIC health, link flaps, bonding, clock, textfile-collector failure,
+      # read-only filesystems, conntrack — plus the target-down case below.
+      #
+      # Physical-device selector: nic0/nic1 are the codified predictable names
+      # on the Proxmox hosts (nic_tuning role), bond0 the LACP/active-backup
+      # bond, eth0 the LXC/VM NIC. Everything else on a Proxmox host is a
+      # per-guest artefact (fwbr*/fwln*/fwpr*/tap*/veth*) that legitimately
+      # appears and disappears with guest starts and would flap these rules.
+      homelab-host-exporter:
+        groups:
+          - name: homelab.host-exporter
+            rules:
+              # One host's exporter dying is invisible today: TargetDown needs
+              # >10% of a job's targets down and 1/15 = 6.7%, and every
+              # *CollectorStale rule is `time() - metric > N`, which yields NO
+              # sample once the series goes stale (their absent() arms only fire
+              # when ALL hosts lose the metric — ZFSPoolCollectorStale's witness
+              # arm even uses a second collector from the same exporter, so it
+              # disappears too). Result: SMART, ZFS-pool, thermal, PSI and
+              # backup-artifact alerting for that host silently stops evaluating
+              # while ProxmoxHostDown (pve_up) stays green. 15m rides out a
+              # kured cycle or a host reboot; the absent() arm catches the whole
+              # Service/Endpoints/ServiceMonitor chain being broken at once.
+              - alert: HostExporterDown
+                expr: >-
+                  up{job="node-exporter-host"} == 0
+                  or absent(up{job="node-exporter-host"})
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Host node_exporter {{ $labels.instance }} is down'
+                  description: >-
+                    Prometheus has not scraped node_exporter on
+                    {{ $labels.instance }} (:9101) for 15 minutes. If the host
+                    itself is up, this host's SMART, ZFS-pool, thermal, PSI and
+                    backup-freshness alerts are now BLIND — they stop evaluating
+                    rather than firing. Check
+                    `systemctl status prometheus-node-exporter` on the host, and
+                    the sg-metrics firewall rule if it was recently rebuilt.
+
+              # NIC error ratio, mirroring the upstream mixin's
+              # NodeNetworkTransmit/ReceiveErrs at the same 1%/1h threshold.
+              # These counters sit at zero across the fleet, so a sustained
+              # ratio is a genuinely degrading link or driver.
+              - alert: HostNetworkTransmitErrs
+                expr: >-
+                  rate(node_network_transmit_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
+                  / rate(node_network_transmit_packets_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
+                  > 0.01
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+                  summary: 'NIC {{ $labels.device }} on {{ $labels.instance }} is dropping transmits'
+                  description: >-
+                    {{ $labels.device }} on {{ $labels.instance }} has failed
+                    {{ $value | humanizePercentage }} of its transmits for an
+                    hour. Check `ethtool -S {{ $labels.device }}` and
+                    `dmesg | grep -i {{ $labels.device }}` — on the OptiPlex
+                    e1000e NICs this is the "Hardware Unit Hang" family
+                    (docs/34, nic_tuning offload guards).
+
+              - alert: HostNetworkReceiveErrs
+                expr: >-
+                  rate(node_network_receive_errs_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
+                  / rate(node_network_receive_packets_total{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[2m])
+                  > 0.01
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+                  summary: 'NIC {{ $labels.device }} on {{ $labels.instance }} is dropping receives'
+                  description: >-
+                    {{ $labels.device }} on {{ $labels.instance }} has failed
+                    {{ $value | humanizePercentage }} of its receives for an
+                    hour — cabling, switch port, or driver. Check
+                    `ethtool -S {{ $labels.device }}` and the switch counters.
+
+              # Link flapping. NOT the mixin's `changes(...[2m]) > 2`: this job
+              # is scraped every 60s (node-exporter-host.yaml), so a 2m window
+              # holds 3 samples and can express at most 2 changes — that
+              # threshold could never fire here. Sized for the real interval
+              # instead: >4 transitions in 10m is at least three bounces, where
+              # one clean link event contributes 2 and a reboot takes the
+              # exporter down with it anyway.
+              - alert: HostNetworkInterfaceFlapping
+                expr: >-
+                  changes(node_network_up{job="node-exporter-host", device=~"nic[0-9]+|bond[0-9]+|eth[0-9]+"}[10m]) > 4
+                for: 2m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+                  summary: 'NIC {{ $labels.device }} on {{ $labels.instance }} is flapping'
+                  description: >-
+                    Link state on {{ $labels.device }} ({{ $labels.instance }})
+                    changed more than four times in the last 10 minutes — at
+                    least three bounces at this job's 60s scrape interval. Check
+                    the cable and switch port; on a bonded host also confirm the
+                    bond has not fallen back to a single slave.
+
+              # Bond degradation on the three active-backup hosts (.104/.105/
+              # .106). The bond is load-bearing history here: docs/34 traces the
+              # recurring guest network black-hole to bond configuration, and a
+              # silently-failed slave halves the redundancy that fix relies on.
+              - alert: HostBondingDegraded
+                expr: >-
+                  (node_bonding_slaves{job="node-exporter-host"} - node_bonding_active{job="node-exporter-host"}) != 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/34-bond-mac-flapping.md'
+                  summary: 'Bond {{ $labels.master }} on {{ $labels.instance }} has a failed slave'
+                  description: >-
+                    {{ $labels.master }} on {{ $labels.instance }} has fewer
+                    active slaves than configured — the host is running without
+                    NIC redundancy. `cat /proc/net/bonding/{{ $labels.master }}`
+                    to find the down slave (docs/34).
+
+              # A malformed .prom file makes node_exporter skip that file and
+              # set node_textfile_scrape_error=1. Every SMART / ZFS-pool /
+              # backup-freshness / swap-clean metric on these hosts arrives that
+              # way, and the *CollectorStale rules only catch a collector that
+              # STOPPED — not one whose output no longer parses, which zeroes
+              # the metrics while the timer keeps reporting success.
+              - alert: HostTextfileCollectorScrapeError
+                expr: node_textfile_scrape_error{job="node-exporter-host"} == 1
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'node_exporter textfile collector is failing on {{ $labels.instance }}'
+                  description: >-
+                    node_exporter on {{ $labels.instance }} could not parse a
+                    file in its textfile directory, so the metrics that file
+                    carries (SMART, ZFS pool status, backup freshness, swap
+                    clean) are missing and their alerts are evaluating against
+                    nothing. Check
+                    `ls -l /var/lib/node_exporter/textfile_collector/` for a
+                    truncated `.prom` (usually a collector killed mid-write).
+
+              # Clock. etcd and corosync are the two consumers that fail hard on
+              # skew, and both run on these hosts.
+              - alert: HostClockNotSynchronising
+                expr: >-
+                  min_over_time(node_timex_sync_status{job="node-exporter-host"}[5m]) == 0
+                  and node_timex_maxerror_seconds{job="node-exporter-host"} >= 16
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: 'Clock on {{ $labels.instance }} is not synchronising'
+                  description: >-
+                    {{ $labels.instance }} has had no NTP sync for 10 minutes
+                    and its maximum error has grown past 16s. etcd quorum and
+                    corosync membership both degrade on skew — check
+                    `timedatectl status` and `systemctl status chrony`
+                    (or systemd-timesyncd) on the host.
+
+              # A filesystem remounted read-only is the classic post-I/O-error
+              # state: everything looks up, nothing can write.
+              - alert: HostFilesystemReadOnly
+                expr: >-
+                  node_filesystem_readonly{job="node-exporter-host", fstype!~"tmpfs|overlay|squashfs|efivarfs|devtmpfs|iso9660"} == 1
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md'
+                  summary: '{{ $labels.mountpoint }} on {{ $labels.instance }} is mounted read-only'
+                  description: >-
+                    {{ $labels.mountpoint }} ({{ $labels.device }}) on
+                    {{ $labels.instance }} has been read-only for 5 minutes —
+                    usually the kernel remounting after an I/O error. Check
+                    `dmesg -T | tail`, SMART for the backing device, and the ZFS
+                    pool state before remounting rw.
+
+              - alert: HostConntrackEntriesHigh
+                expr: >-
+                  (node_nf_conntrack_entries{job="node-exporter-host"} / node_nf_conntrack_entries_limit{job="node-exporter-host"}) > 0.75
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/11-firewall.md'
+                  summary: 'conntrack table {{ $value | humanizePercentage }} full on {{ $labels.instance }}'
+                  description: >-
+                    The netfilter connection-tracking table on
+                    {{ $labels.instance }} is {{ $value | humanizePercentage }}
+                    full. At 100% new connections are dropped silently — raise
+                    net.netfilter.nf_conntrack_max or find the connection
+                    storm (`conntrack -L | awk '{print $4}' | sort | uniq -c`).
 
       homelab-scripts:
         groups:
@@ -2033,6 +2542,44 @@ spec:
                   summary: 'GitLab backup failed'
                   description: 'The nightly gitlab-backup run did not complete successfully.'
 
+              # "The run succeeded" and "a restorable artefact exists" are NOT the
+              # same claim, and nothing consumed the size metric until this alert.
+              # Live proof: gitlab_backup_last_size_bytes sat at 0 for four days
+              # (gitlab.rb's relocated backup_path had never been reconfigured, so
+              # `ls *_gitlab_backup.tar` in the landing zone matched nothing) while
+              # gitlab_backup_last_run_success stayed 1 — GitLabBackupFailed,
+              # GitLabBackupStale, GitLabBackupStaleCritical AND
+              # BackupArtifactStale{gitlab} were all green over a total offsite loss
+              # of the repo that holds the IaC and every Terraform state.
+              #
+              # Name-regex rather than one rule per app so a future backup producer
+              # inherits the gate for free: every wrapper (gitlab, nextcloud, immich
+              # and anything built on compose_app's write_prom_metrics.sh) emits
+              # <app>_backup_last_size_bytes, where 0 means "no artefact found",
+              # never "an empty but valid backup".
+              # label_replace copies __name__ into a `metric` label: Prometheus
+              # strips __name__ from alert labels, so without it the alert could
+              # not name which backup went empty.
+              - alert: BackupArtifactEmpty
+                expr: >-
+                  label_replace(
+                    {__name__=~".+_backup_last_size_bytes"} == 0,
+                    "metric", "$1", "__name__", "(.*)")
+                for: 1h
+                labels:
+                  severity: critical
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: '{{ $labels.metric }} is 0 on {{ $labels.instance }} — the backup run reported success but produced no artefact'
+                  description: >-
+                    A backup wrapper reported success while its most recent artefact
+                    measured 0 bytes, i.e. the wrapper found no file to size. The
+                    usual cause is a landing-path change that never reached the
+                    application (config written but the reconfigure/restart never
+                    ran), or a backup written somewhere other than where the wrapper
+                    looks. Check the wrapper's BACKUP_PATH against the application's
+                    EFFECTIVE configuration on the host — not just its config file.
+
               - alert: GitLabBackupStale
                 expr: (time() - gitlab_backup_last_success_timestamp_seconds > 86400 * 2) or absent(gitlab_backup_last_success_timestamp_seconds)
                 for: 1h
@@ -2215,6 +2762,33 @@ spec:
                     did not complete successfully. Guest VM/LXC images are the DR
                     path for the compute-node guests.
 
+              # pve-cluster (/etc/pve: the cluster CA + every guest config) is the
+              # only backup producer whose run_success metric had no consumer —
+              # every other wrapper pairs one with its artefact alert. The gap is
+              # a tar/validate failure with good archives still on disk: the
+              # producer then reports the newest EXISTING archive's size, so
+              # BackupArtifactEmpty stays (correctly) green and the next signal
+              # would be a stale artefact 50h later. NOT the fail-closed guards —
+              # an unmounted landing dataset shadows the landing dir with an
+              # empty one, so the size falls back to 0 and BackupArtifactEmpty
+              # pages within the same hour. No absent() arm here for the same reason
+              # BackupArtifactStale's pve-cluster arm is gated: the producer ships
+              # on the Ansible lifecycle, so the series legitimately does not
+              # exist between this rule merging and the first pve-nas-01 deploy.
+              - alert: PveClusterBackupFailed
+                expr: pve_cluster_backup_last_run_success == 0
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/12-runbooks.md#backup-and-recovery'
+                  summary: 'Proxmox /etc/pve cluster-config backup failed'
+                  description: >-
+                    The nightly /etc/pve tar (cluster CA, corosync config and
+                    every guest definition) did not complete successfully. This
+                    is the DR path for rebuilding the cluster itself, not the
+                    guests — vzdump covers those.
+
               - alert: VzdumpBackupStale
                 expr: (time() - vzdump_backup_last_success_timestamp_seconds > 93600) or absent(vzdump_backup_last_success_timestamp_seconds)
                 for: 1h
@@ -2277,9 +2851,13 @@ spec:
                     machine backups.
 
               # Integrity of the offsite repo itself, distinct from freshness of the
-              # last upload above. `restic-offsitectl verify` (a `restic check`) is an
-              # on-demand operator command — the role wires NO verify timer — with an
-              # intended ~weekly cadence; it writes restic_offsite_last_verify_success
+              # last upload above. `restic-offsitectl verify` (a `restic check`) runs
+              # BOTH on demand and weekly: the role installs restic-offsite-verify.timer
+              # (Sundays, `verify --auto-subset` — a rotating 1/12 read-data check).
+              # (An earlier revision of this comment claimed the role wires no verify
+              # timer, then cited the timer two sentences later; the timer is real —
+              # ansible/roles/restic_offsite/tasks/main.yml.)
+              # It writes restic_offsite_last_verify_success
               # + _last_verify_timestamp_seconds (timestamp preserved on failure, like
               # the run metric). This fires if the last verify FAILED (a failed
               # `restic check` means the B2 repo is corrupt / unrestorable — the whole
@@ -2322,10 +2900,25 @@ spec:
               # A single family-level absent(backup_artifact_last_mtime_seconds)
               # would only fire when EVERY app's series vanished, hiding one missing
               # app dir behind the others — so the absent arm is enumerated per app
-              # over the six static per-app landing dirs (nas_backup_artifact_apps) to make a
+              # over the static per-app landing dirs (nas_backup_artifact_apps) to make a
               # single missing/undeployed dir loud. The whole-collector-down case
               # (the base dir or the timer itself gone) is covered by
               # BackupArtifactCollectorStale below.
+              #
+              # pve-cluster is the one arm that is NOT unconditional. Its producer
+              # (nas_pve_cluster_backup_enabled, nas_storage) ships on the Ansible
+              # lifecycle, not with Flux: this rule goes live on merge while the
+              # metric only appears after the pve-nas-01 deploy AND the first
+              # 02:15 tar, so an unconditional absent() would page for a backup
+              # that has never run — a guaranteed ~day-long false warning on a
+              # freshly merged rule. Gated on the producer's own success metric
+              # instead: silent until the unit has completed once, loud from then
+              # on if the landing dir disappears. `and on()` matches on the empty
+              # label set, so the alert keeps absent()'s app="pve-cluster" label.
+              # Before the first successful run the gap is covered from the other
+              # side: a first run that fails writes
+              # pve_cluster_backup_last_size_bytes 0 (no archive exists yet to
+              # fall back to), which BackupArtifactEmpty pages on as critical.
               - alert: BackupArtifactStale
                 expr: >-
                   (time() - backup_artifact_last_mtime_seconds > 180000)
@@ -2335,6 +2928,10 @@ spec:
                   or absent(backup_artifact_last_mtime_seconds{app="immich"})
                   or absent(backup_artifact_last_mtime_seconds{app="nextcloud"})
                   or absent(backup_artifact_last_mtime_seconds{app="home-assistant"})
+                  or (
+                    absent(backup_artifact_last_mtime_seconds{app="pve-cluster"})
+                    and on() (pve_cluster_backup_last_success_timestamp_seconds > 0)
+                  )
                 for: 1h
                 labels:
                   severity: warning
@@ -2800,3 +3397,34 @@ spec:
                     cannot tolerate a single node loss. The gitlab-runner*
                     namespaces are excluded because their ResourceQuota
                     deliberately over-requests for burst CI.
+
+              # A container that OOMKills and restarts cleanly is invisible to
+              # every upstream rule: KubePodCrashLooping needs a restart RATE,
+              # KubeContainerWaiting needs the container to stay down, and
+              # neither fires for a single kill of a process that comes back.
+              # authentik-postgresql (the SSO database) was OOMKilled on
+              # 2026-07-25 and nothing alerted. Edge-triggered on the restart
+              # counter, qualified by the last-terminated reason, so it reports
+              # the event rather than the surviving state; the 1h window keeps
+              # it visible long enough to be actioned and then self-resolves.
+              - alert: ContainerOOMKilled
+                expr: >-
+                  increase(kube_pod_container_status_restarts_total[1h]) > 0
+                  and on (namespace, pod, container)
+                  kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  runbook_url: 'https://git.ericsweiss.com/eric/weisssrv/-/blob/main/docs/33-autoscaling.md'
+                  summary: >-
+                    Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}
+                    was OOMKilled
+                  description: >-
+                    Container {{ $labels.container }} in pod
+                    {{ $labels.namespace }}/{{ $labels.pod }} hit its memory
+                    limit and was killed by the kernel. Compare the container's
+                    limit against its VPA recommendation
+                    (`kubectl describe vpa -n {{ $labels.namespace }}`) and
+                    raise the size in git — the limit is a hand-set number, not
+                    something the VPA maintains for an Off-tier workload.

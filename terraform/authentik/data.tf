@@ -4,7 +4,7 @@
 # users) — Terraform reads them by stable identifier and NEVER manages them.
 # See README.md "Managed vs unmanaged".
 
-# --- Flows ------------------------------------------------------------------
+# Flows
 # Every provider uses the default implicit-consent authorization flow and the
 # default provider-invalidation flow.
 
@@ -16,7 +16,7 @@ data "authentik_flow" "provider_invalidation" {
   slug = "default-provider-invalidation-flow"
 }
 
-# --- Signing keypair --------------------------------------------------------
+# Signing keypair
 # The install-generated self-signed keypair signs OIDC tokens (all six OAuth2
 # providers) and the GitLab SAML assertions.
 
@@ -24,7 +24,7 @@ data "authentik_certificate_key_pair" "self_signed" {
   name = "authentik Self-signed Certificate"
 }
 
-# --- OAuth2 scope mappings --------------------------------------------------
+# OAuth2 scope mappings
 # Looked up individually (not via managed_list) so each provider's
 # property_mappings list can reproduce the exact server-side ordering.
 # (Proxy providers carry no lookups here: authentik auto-assigns their five
@@ -43,7 +43,7 @@ data "authentik_property_mapping_provider_scope" "profile" {
   managed = "goauthentik.io/providers/oauth2/scope-profile"
 }
 
-# --- SAML property mappings (GitLab provider) -------------------------------
+# SAML property mappings (GitLab provider)
 
 data "authentik_property_mapping_provider_saml" "name" {
   managed = "goauthentik.io/providers/saml/name"
@@ -73,7 +73,7 @@ data "authentik_property_mapping_provider_saml" "windows_account_name" {
   managed = "goauthentik.io/providers/saml/ms-windowsaccountname"
 }
 
-# --- Users ------------------------------------------------------------------
+# Users
 # Users are deliberately NOT managed (akadmin is authentik's bootstrap admin,
 # eric is the human operator whose password/MFA live outside Terraform).
 # Group membership is modelled on the authentik_group resources' `users`

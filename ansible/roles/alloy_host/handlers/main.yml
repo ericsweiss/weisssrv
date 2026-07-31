@@ -1,6 +1,4 @@
 ---
-# Handlers for alloy_host role
-
 - name: Restart alloy
   ansible.builtin.systemd:
     name: alloy

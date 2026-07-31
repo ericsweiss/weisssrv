@@ -39,13 +39,37 @@ weisssrv/
 │   │   ├── controllers/        # platform HelmReleases (dependsOn crds) — see the dir for the current set
 │   │   ├── configs/            # CRs that require the controllers' CRDs (dependsOn controllers) — see the dir for the current set
 │   │   └── observability/      # kube-prometheus-stack, loki, alloy, exporters, dashboards, ingress (dependsOn configs) — see the dir
+│   ├── components/             # reusable Kustomize components — netpol-baseline (default-deny-ingress, MANDATORY for every app) + gitlab-runner-common
 │   └── apps/                   # one dir per app — either a HelmRelease (release.yaml) or raw Deployments/CRs, plus an externalsecret.yaml where the app needs ESO secrets (dependsOn infrastructure-configs — parallel to observability) — see the dir for the current set
 ├── docs/                       # Documentation
+├── .gitlab/                    # GitLab agent config (agents/weisssrv-k3s/), the molecule child-pipeline include (ci/), secret-detection ruleset
 ├── scripts/                    # Utility scripts
 ├── docker/                     # Molecule test/CI images + app build images (hermes-agent, camofox-browser)
-├── .gitlab-ci.yml              # CI/CD pipeline (canonical)
+├── .gitlab-ci.yml              # CI/CD pipeline (canonical) — but see "Repo family" below: 7 jobs come from weisssrv-lib
 └── .github/workflows/          # Single inert stub (ci-disabled.yml) — CI runs on GitLab
 ```
+
+## Repo family (weisssrv is not self-contained)
+
+| Repo | Role |
+|---|---|
+| `eric/weisssrv` | this repo — the cluster instance |
+| `eric/weisssrv-lib` | shared CI library. `.gitlab-ci.yml` `include:`s **seven** templates from it at a pinned `ref:` (yaml-lint, shellcheck, docs-link-check, terraform, secret-detection, python-tests, flux-lint) |
+| `eric/weisssrv-app-template` | tenant scaffold for repos that deploy into this cluster (docs/30) — also consumes weisssrv-lib at a pinned tag |
+
+Consequences an agent must not miss:
+
+- **Do not "fix" one of those seven jobs by editing `.gitlab-ci.yml`.** Their
+  behaviour lives in the library; a same-named local job silently overrides the
+  included one. Change the library, tag it, then bump the `ref:`.
+- **Bumping the library is a fan-out**: lib MR → maintainer cuts a tag → bump
+  `ref:` in this repo's `include:` block **and** in the app template
+  (`.gitlab-ci.yml` + `scripts/rename.sh`). Prove pipeline parity before merging
+  — the library serves more than one consumer, so a changed input default
+  silently changes this pipeline.
+- What each include overrides, and what deliberately stays weisssrv-local, is in
+  `docs/13-ci-cd.md` § Shared CI library. The library's own
+  `docs/INCLUDE-CONTRACT.md` / `docs/VERSIONING.md` own the input contract.
 
 ## Architecture
 
@@ -76,7 +100,7 @@ list with IPs and host placement lives in the README architecture diagram and
 Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-triggered via the GitLab agent's Flux module (the ~1-minute git poll is the fallback); use `task flux:reconcile` to force immediately. See `docs/19-k3s-deployment.md` for the k3s layer and `docs/29-flux-operations.md` for Flux day-2 operations.
 
 **Features**:
-- kube-vip (API VIP .161), MetalLB (VIPs .100/.101)
+- kube-vip (API VIP .161), MetalLB (VIPs .100 public / .101 internal / .99 wg-easy)
 - Traefik ingress, external-dns (Cloudflare)
 - 3-node etcd quorum (tolerates 1 server failure)
 - Flux CD (source-controller, kustomize-controller, helm-controller, notification-controller) + External Secrets Operator with 1Password Connect backend
@@ -86,7 +110,7 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-tr
 - Node/workload ops: kured (coordinated reboots), Reloader (restarts on ConfigMap changes only — Secrets are intentionally excluded via `ignoreSecrets: true`; a rare credential-Secret rotation is a manual restart) — full controller set in `kubernetes/infrastructure/controllers/kustomization.yaml`
 
 **Applications** (deployment details live in the per-app docs):
-- Authentik SSO (auth.esweiss.com) — identity provider for OIDC/SAML; PostgreSQL on a dedicated zvol
+- Authentik SSO (auth.esweiss.com internal / auth.ericsweiss.com external — the OIDC issuer host is ALWAYS the external one) — identity provider for OIDC/SAML; PostgreSQL on a dedicated zvol; app README is canonical, Terraform layer in docs/40
 - Plex Media Server (plex.esweiss.com) — LXC container with Traefik ingress (docs/20)
 - Download/media stack, `downloads` namespace (docs/21): Gluetun VPN gateway with killswitch, NZBGet (nzbget.\*), qBittorrent (qbittorrent.\*), Prowlarr (prowlarr.\*), Sonarr (tv.\*), Radarr (movies.\*), Lidarr (music.\*), Pulsarr (pulsarr.\*, NAS-pinned/AVX)
 - Recipes stack, `recipes` namespace (docs/22-23): Mealie (food.\*, PostgreSQL on zvol, OpenAI parsing), Bar Assistant (bar.\*); both behind Authentik OIDC
@@ -97,10 +121,15 @@ Ansible tasks remain idempotent - safe to re-run. Flux reconciliation is push-tr
 - Nextcloud (cloud.esweiss.com / cloud.ericsweiss.com, docs/35): Docker Compose stack (nextcloud-apache + PostgreSQL + Redis + cron + exporter) on a NAS-pinned VM (.156), all state on ZFS zvol passthrough disks (no NFS), host-nginx TLS, Authentik OIDC SSO-only
 - Immich (photos.esweiss.com / photos.ericsweiss.com, docs/36): photo management on a NAS-pinned Debian VM (.157) running a docker-compose stack (immich-server + CPU ML + release-pinned Postgres/vectorchord + Valkey), host nginx TLS, encrypted zvols (photo library on tank/immich-data), Authentik OIDC SSO-only, nightly pg_dump; external record is a DNS-only Cloudflare CNAME (proxy bypass for large uploads)
 - Hermes Agent (agent.esweiss.com / agent.ericsweiss.com, docs/37): NousResearch AI agent + web dashboard, `hermes` namespace; self-built image (build-hermes-agent CI job — upstream ships none), one pod / three containers (gateway + dashboard + camofox browser), NFS `/opt/data` on encrypted ssd/appdata, SSO via the dashboard's Authentik-OIDC login on both hostnames (`hermes-users` gate; an auth provider is mandatory on its 0.0.0.0 bind; Traefik-only NetworkPolicy; Authentik objects in terraform/authentik, docs/40); its long-term memory is a cluster-internal Hindsight deployment (`hindsight` namespace, no ingress; docs/37 §Memory backend) whose llama.cpp inference sidecar GPU-offloads to the pve-prec-01 GTX 1660 Ti (docs/43-gpu-passthrough.md)
+- Windows 11 VM (.155, vmid 155, docs/39): desktop VM on pve-nas-01, RDP-only
+  (no ingress), start-on-demand — `task windows:*`
+- Immich ML (.158, vmid 158, docs/36): OpenVINO inference LXC serving the Immich
+  VM only (authless API, firewall-scoped by `sg-immich-ml`) — `task immich-ml:*`
 - Homarr (dashboard.esweiss.com / dashboard.ericsweiss.com, docs/41): homelab dashboard/launcher, `homarr` namespace, raw manifests; Authentik OIDC SSO-only (`homarr-admins` group gate; credentials break-glass retired !193, DR via the `homarr recreate-admin` CLI — docs/41 §SSO), NFS-backed SQLite on encrypted ssd/appdata, direct-URL integrations to the *arr/qbit/nzbget/AdGuard/Proxmox/Plex/HA/Nextcloud/Immich services (bypassing the SSO perimeter by design)
 
 **Planned** (not yet created) — roadmap source of truth is `docs/16-next-steps.md`:
-- Apps: none currently queued (all Priority 6 apps shipped — see `docs/16-next-steps.md`)
+- Apps: Uptime Kuma (`status.esweiss.com`) is the one queued app; every Priority
+  6 app has shipped. Open non-app work lives in docs/16 § Outstanding Follow-Ups.
 
 ## Common Development Commands
 
@@ -132,7 +161,9 @@ Workflow facts an agent must know (not obvious from `task --list`):
   (Version pinning / Substitution Not Applied) for details.
 - **Local Flux iteration**: `task flux:dev-apply -- <path>` previews a change
   in-cluster but is reverted on the next reconcile unless committed.
-- `task lint` runs everything (Ansible, Terraform, `flux:lint`, Python scripts);
+- `task lint` mirrors the CI lint stage (Ansible, Terraform, `flux:lint`, Python
+  scripts, shellcheck, yamllint, coverage/sync/version-pin gates, and
+  `lint:prometheus-config` — which needs promtool/amtool on PATH);
   `task kubernetes:lint` / `kubernetes:validate-helm` are aliases for `flux:lint`.
 
 ### Manual Ansible
@@ -167,22 +198,15 @@ terraform apply
 
 ## Secrets Management (1Password)
 
-Two consumers pull from the same 1Password "Homelab" vault:
-
-1. **Ansible / Terraform / Task wrapper** — uses `op run --` to inject `op://Homelab/Item/field` references at runtime.
-   ```yaml
-   # Format in group_vars/all.yml (that file holds the real references — the
-   # canonical source of truth; do not re-copy specific item names here)
-   secrets:
-     <var_name>: "op://Homelab/<Item Title>/<field>"
-     # Item titles with spaces are fine — `op run` parses the full path.
-   ```
-
-2. **External Secrets Operator in the cluster** — the `onepassword-homelab` ClusterSecretStore (namespace `external-secrets`, 1Password Connect provider) syncs `ExternalSecret` resources into Kubernetes `Secret`s. Connect runs in-cluster (no calls to 1Password cloud). `remoteRef.key` is the **1Password item title** and `remoteRef.property` is the **field name** — canonical format reference in `docs/29-flux-operations.md` ("1Password Connect Provider Reference Format").
-
-3. **CI pipelines** — `.gitlab-ci.yml` uses `op run` / `op read` with `OP_SERVICE_ACCOUNT_TOKEN` to inject secrets at runtime. This is separate from Connect and unchanged by the migration.
-
-The bootstrap Secrets `op-credentials` and `onepassword-connect-token` in the `external-secrets` namespace are the **only manually created** Kubernetes Secrets — created via `task flux:bootstrap-onepassword` (procedure in `docs/29-flux-operations.md`). Every other in-cluster Secret is produced by ESO from `ExternalSecret` manifests reconciled by Flux.
+Three consumers pull from the same 1Password "Homelab" vault: Ansible/Terraform
+and the Task wrapper (`op run --` resolving `op://Homelab/<Item>/<field>`
+references from the `secrets:` dict in `group_vars/all.yml`), External Secrets
+Operator in-cluster (`onepassword-homelab` ClusterSecretStore, 1Password Connect
+provider, `remoteRef.key` = item **title** and `remoteRef.property` = **field**),
+and CI (`OP_SERVICE_ACCOUNT_TOKEN`). The canonical description of the model —
+including which Secrets are bootstrap-only and how each path rotates — is
+**`docs/15-credential-rotation.md` § Secrets model**; the ESO reference format is
+in `docs/29-flux-operations.md`.
 
 **NEVER commit secrets to git**. All sensitive values use 1Password references (`op://` for host-side tooling, item titles in ExternalSecrets for in-cluster).
 
@@ -220,9 +244,10 @@ export CLOUDFLARE_API_TOKEN=$(op read "op://Homelab/Cloudflare DNS Token/credent
 
 Quick reference (full host-by-host topology in `docs/01-overview.md`):
 
-- Proxmox hosts `.102-.107`; DNS `.150`/`.160`; SMTP `.151`; services `.152-.155`.
+- Proxmox hosts `.102-.107`; DNS `.150`/`.160`; SMTP `.151`; service guests
+  `.152-.158` (plex, gitlab, HAOS, windows, nextcloud, immich, immich-ml).
 - K3s: API VIP `.161`; servers `.222`/`.223`/`.227`; agents `.202-.207`;
-  MetalLB VIPs `.100` (public) / `.101` (internal).
+  MetalLB VIPs `.100` (public) / `.101` (internal) / `.99` (wg-easy endpoint).
 
 Firewall IP sets and security groups (`admin_lan`, `admin_ts`, `core-cluster`,
 `k3s_nodes`, `pve_hosts`, `nfs_clients`, `smb_clients`) are documented in
@@ -262,30 +287,22 @@ knowing up front:
   now mounts with TLS, though its export does not yet require it (docs/16).
 - **resolv_conf** / **zvol_mount** are shared helper roles (used by base/adguard
   and k3s/gitlab respectively).
+- **compose_app** / **docker_engine** are the shared scaffolding behind the three
+  docker-compose guests — **immich, immich_ml and nextcloud**. `docker_engine`
+  installs the pinned, `dpkg`-held Docker CE + plugins (`docker_ce_version` and
+  friends in `all.yml`, via `apt_signed_repo`); `compose_app` owns the
+  compose-unit/nginx/backup task flow. A change to either redeploys all three
+  consumers (`deploy-immich`, `deploy-immich-ml`, `deploy-nextcloud` all list
+  both role paths in their `changes:`).
 
 ## Code Conventions
 
-These are the repo's Ansible conventions (canonical home for all agent
-entry-points — CLAUDE.md, AGENTS.md, and `.cursorrules` all defer here):
-
-- **Fully-qualified collection names (FQCN)** — `ansible.builtin.apt`, not `apt`.
-  Partly enforced by `ansible-lint` (`profile: production`) via `task lint`.
-- **snake_case** for all Ansible variables; role-specific vars are prefixed with
-  the role name (e.g. `adguard_http_port`). Var precedence (low→high):
-  `group_vars/all.yml` → `group_vars/<group>.yml` → `host_vars/<host>.yml`.
-- **`no_log: true` on any task that handles a secret** (renders a password to a
-  file, passes a credential, etc.). This is a secret-hygiene rule `ansible-lint`
-  does **not** fully catch (it matches known password module params, not the
-  template-writes-a-secret pattern), so apply it by hand. Secrets themselves are
-  `op://Homelab/...` references in the `secrets:` dict (see Secrets Management).
-- **Handler pattern**: a config-changing task `notify:`s a handler that does the
-  `state: restarted`; handlers live in `handlers/main.yml`. When a readiness
-  probe must see the restarted process, `meta: flush_handlers` before it.
-- **Service pattern**: install packages → create a system user
-  (`system: true`, `shell: /usr/sbin/nologin`) → deploy the systemd unit
-  template (`notify: [Reload systemd, Restart <svc>]`) → enable + start.
-- **Follow existing patterns** — mirror a similar role or
-  `kubernetes/apps/<neighbour>` rather than inventing a new shape.
+The repo's Ansible conventions — FQCN, snake_case role-prefixed vars and var
+precedence, `no_log: true` on every secret-touching task, the handler and service
+patterns, and the `--tags` caveat — live in **`ansible/README.md` § Code
+conventions** (canonical; `AGENTS.md` and `.cursorrules` point at the same
+place). Read that section before writing a task. For anything Kubernetes-side,
+mirror the closest `kubernetes/apps/<neighbour>` rather than inventing a shape.
 
 ## User Management
 
@@ -377,7 +394,8 @@ downloads/scratch), `archive` (cold storage/backups). Geometry, capacities,
 and datasets: `docs/06-zfs.md`.
 
 **Persistent Storage (ZFS zvols)**: per-app zvols under `ssd/appdata/*`
-(Authentik/Mealie Postgres, GitLab repos, Prometheus, Loki) plus the Grafana
+(Authentik/Mealie Postgres, GitLab repos, Prometheus, Loki — illustrative, not
+exhaustive) plus the Nextcloud/Immich app+DB+data zvols and the Grafana
 NFS-backed PV. The full list with sizes, SCSI slots, and mount points is the
 `vm_additional_disks` block in hosts.yml (created and mounted by the
 proxmox_vm/zvol_mount roles) and is documented in `docs/06-zfs.md`. Data

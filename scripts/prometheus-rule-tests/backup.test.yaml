@@ -28,6 +28,41 @@ tests:
         alertname: ArchiveBackupFailed
         exp_alerts: []
 
+  # PveClusterBackupFailed: a failed /etc/pve tar pages. This is the metric the
+  # fail-closed unmounted-dataset guard writes on exit, so it is the only signal
+  # that distinguishes "guard tripped" from "ran fine" until the 50h artefact
+  # window elapses.
+  - interval: 1m
+    input_series:
+      - series: 'pve_cluster_backup_last_run_success'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PveClusterBackupFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # A successful run must not fire it, and — deliberately — neither must an
+  # ABSENT series: the producer ships on the Ansible lifecycle, so the metric
+  # legitimately does not exist between this rule merging and the first
+  # pve-nas-01 deploy. An absent() arm here would page on merge day.
+  - interval: 1m
+    input_series:
+      - series: 'pve_cluster_backup_last_run_success'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PveClusterBackupFailed
+        exp_alerts: []
+
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: PveClusterBackupFailed
+        exp_alerts: []
+
   # ArchiveBackupDatasetStale fires per-dataset when a dataset's last-success
   # timestamp is older than 2 days; a fresh dataset does not fire.
   - interval: 1m
@@ -197,8 +232,8 @@ tests:
           - exp_labels:
               severity: warning
 
-  # BackupArtifactStale — freshness arm: with all six static app series present,
-  # only the app whose mtime is older than 50h fires (labelled by app); the five
+  # BackupArtifactStale — freshness arm: with all seven static app series present,
+  # only the app whose mtime is older than 50h fires (labelled by app); the six
   # fresh apps do not, and no per-app absent arm fires (all present).
   - interval: 1m
     input_series:
@@ -214,6 +249,8 @@ tests:
         values: '0+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="home-assistant"}'
         values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="pve-cluster"}'
+        values: '0+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: BackupArtifactStale
@@ -223,7 +260,7 @@ tests:
               app: gitlab
 
   # Per-app absent arm: one app's landing dir went missing (its series absent)
-  # while the other five are fresh — the immich arm fires, labelled app=immich,
+  # while the other six are fresh — the immich arm fires, labelled app=immich,
   # even though every other app is healthy (the whole point of enumerating absent
   # per app instead of a single family-level absent()).
   - interval: 1m
@@ -238,6 +275,8 @@ tests:
         values: '0+60x70'
       - series: 'backup_artifact_last_mtime_seconds{app="home-assistant"}'
         values: '0+60x70'
+      - series: 'backup_artifact_last_mtime_seconds{app="pve-cluster"}'
+        values: '0+60x70'
     alert_rule_test:
       - eval_time: 65m
         alertname: BackupArtifactStale
@@ -246,8 +285,44 @@ tests:
               severity: warning
               app: immich
 
-  # Nothing emitted at all (base dir gone / collector never populated the family):
-  # every per-app absent arm fires — one alert per static app.
+  # Nothing emitted at all (base dir gone / collector never populated the family)
+  # on a cluster where the /etc/pve backup HAS run at least once: every per-app
+  # absent arm fires — one alert per static app, pve-cluster included.
+  - interval: 1m
+    input_series:
+      - series: 'pve_cluster_backup_last_success_timestamp_seconds{instance="192.168.0.102:9101"}'
+        values: '1785000000+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              app: authentik
+          - exp_labels:
+              severity: warning
+              app: mealie
+          - exp_labels:
+              severity: warning
+              app: gitlab
+          - exp_labels:
+              severity: warning
+              app: immich
+          - exp_labels:
+              severity: warning
+              app: nextcloud
+          - exp_labels:
+              severity: warning
+              app: home-assistant
+          - exp_labels:
+              severity: warning
+              app: pve-cluster
+
+  # The merge-day state: the rule is live but the Ansible-side /etc/pve backup
+  # has never run, so neither the artefact series nor the producer's success
+  # timestamp exists. The six unconditional arms fire (nothing else is emitting
+  # either, in this synthetic input); the gated pve-cluster arm must stay silent
+  # rather than page for a backup that has never run.
   - interval: 1m
     input_series: []
     alert_rule_test:
@@ -272,6 +347,62 @@ tests:
           - exp_labels:
               severity: warning
               app: home-assistant
+
+  # BackupArtifactEmpty: a wrapper reported success while its newest artefact
+  # measured 0 bytes. This is the gate whose ABSENCE let gitlab_backup_last_size_bytes
+  # sit at 0 for four days behind a green gitlab_backup_last_run_success — so the
+  # test pins that a run-success of 1 does NOT suppress it.
+  - interval: 1m
+    input_series:
+      - series: 'gitlab_backup_last_size_bytes{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+        values: '1+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactEmpty
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.153:9101
+              metric: gitlab_backup_last_size_bytes
+
+  # A non-zero artefact size must not fire, and the name regex must not match
+  # the neighbouring _last_run_success / _last_run_duration_seconds series
+  # (which are legitimately 0).
+  - interval: 1m
+    input_series:
+      - series: 'gitlab_backup_last_size_bytes{instance="192.168.0.153:9101"}'
+        values: '41922560+0x70'
+      - series: 'gitlab_backup_last_run_success{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+      - series: 'gitlab_backup_last_run_duration_seconds{instance="192.168.0.153:9101"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactEmpty
+        exp_alerts: []
+
+  # The regex is family-wide by design: every backup wrapper emits
+  # <app>_backup_last_size_bytes, so a new producer inherits the gate.
+  - interval: 1m
+    input_series:
+      - series: 'nextcloud_backup_last_size_bytes{instance="192.168.0.156:9101"}'
+        values: '0+0x70'
+      - series: 'pve_cluster_backup_last_size_bytes{instance="192.168.0.102:9101"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: BackupArtifactEmpty
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.156:9101
+              metric: nextcloud_backup_last_size_bytes
+          - exp_labels:
+              severity: critical
+              instance: 192.168.0.102:9101
+              metric: pve_cluster_backup_last_size_bytes
 
   # ResticOffsiteVerifyStale: last successful `restic check` older than 8d fires;
   # a fresh verify does not; a failed verify (success==0) fires. NO absent() arm,

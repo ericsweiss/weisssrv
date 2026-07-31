@@ -16,9 +16,7 @@
   become: true
   gather_facts: true
   tasks:
-    # ========================================================================
     # 1. ktls-utils package installed (both hosts)
-    # ========================================================================
     - name: Check ktls-utils is installed
       ansible.builtin.package_facts:
         manager: apt
@@ -34,9 +32,7 @@
         fail_msg: "ktls-utils/nfs-common not installed — role's apt step incomplete"
         success_msg: "ktls-utils (tlshd) + nfs-common (mount.nfs) installed"
 
-    # ========================================================================
     # 2. /etc/tlshd.conf rendered (TLS-enabled hosts; content differs per role)
-    # ========================================================================
     - name: Stat /etc/tlshd.conf
       ansible.builtin.stat:
         path: /etc/tlshd.conf
@@ -155,9 +151,7 @@
         - nfs_tls_enabled | default(true)
         - not (nfs_tls_is_server | default(false))
 
-    # ========================================================================
     # 3. tlshd.service unit recognized by systemd (both hosts)
-    # ========================================================================
     # `systemctl cat` is intentional here (not systemd_service module): we
     # want a read-only check that the unit file is on disk and parseable
     # by systemd, with an actionable error message if it isn't. The unit
@@ -186,10 +180,8 @@
         success_msg: "tlshd.service is enabled (will start at boot on real hosts)"
       when: nfs_tls_enabled | default(true)
 
-    # ========================================================================
     # 4. Opt-out reconcile (nfs_tls_enabled: false): unit stopped + disabled,
     #    /etc/tlshd.conf removed. prepare.yml staged the opposite state.
-    # ========================================================================
     - name: Assert tlshd.service is disabled after opt-out reconcile
       ansible.builtin.assert:
         that:
@@ -208,9 +200,7 @@
         success_msg: "/etc/tlshd.conf removed after opt-out reconcile"
       when: not (nfs_tls_enabled | default(true))
 
-    # ========================================================================
     # Summary
-    # ========================================================================
     - name: Display test results
       ansible.builtin.debug:
         msg:

@@ -253,7 +253,7 @@ def test_malformed_yaml_exits_cleanly(monkeypatch):
         _run("foo: [unterminated\n", monkeypatch)
 
 
-# --- chart-native HPA static assertion (--require-chart-native-vpas) -----------
+# chart-native HPA static assertion (--require-chart-native-vpas)
 
 def _chart_native_vpa(controlled: str = "memory") -> str:
     """A VPA for every CHART_NATIVE_HPA_TARGETS workload (memory-only by default)."""
@@ -341,7 +341,7 @@ def test_chart_native_check_is_opt_in(monkeypatch):
     assert _run("", monkeypatch) == 0
 
 
-# --- "no CPU limits" policy (--require-chart-native-vpas) ----------------------
+# "no CPU limits" policy (--require-chart-native-vpas)
 
 import yaml as _yaml  # noqa: E402
 
@@ -453,5 +453,199 @@ def test_cpu_limit_not_checked_without_flag(monkeypatch):
     assert _run(DEPLOY_WITH_CPU_LIMIT, monkeypatch) == 0
 
 
+# CPU limits embedded in a config-file block string (gitlab-runner TOML)
+# The job pods these lines create never appear in any rendered manifest, so the
+# dict walk over .spec.values cannot see them.
+
+HR_RUNNER_CONFIG = """
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: gitlab-runner, namespace: gitlab-runner}
+spec:
+  values:
+    runners:
+      config: |
+        [[runners]]
+          [runners.kubernetes]
+            namespace = "gitlab-runner"
+            # cpu_limit intentionally unset (docs/33)
+            cpu_request = "500m"
+            memory_limit = "4Gi"
+"""
+
+HR_RUNNER_CONFIG_CPU_LIMIT = HR_RUNNER_CONFIG.replace(
+    '            cpu_request = "500m"',
+    '            cpu_limit = "2"\n            cpu_request = "500m"',
+)
+
+HR_RUNNER_CONFIG_SERVICE_CPU_LIMIT = HR_RUNNER_CONFIG.replace(
+    '            cpu_request = "500m"',
+    '            service_cpu_limit = "2"\n            cpu_request = "500m"',
+)
+
+
+def test_config_string_cpu_limit_flagged():
+    """A cpu_limit inside the runner's TOML config string is a violation."""
+    assert mod._cpu_limit_violations(_docs(HR_RUNNER_CONFIG_CPU_LIMIT))
+
+
+def test_config_string_service_cpu_limit_flagged():
+    """service_/helper_-prefixed job-pod CPU limits count too."""
+    assert mod._cpu_limit_violations(_docs(HR_RUNNER_CONFIG_SERVICE_CPU_LIMIT))
+
+
+def test_config_string_without_cpu_limit_ok():
+    """A commented-out mention must not trip the check."""
+    assert mod._cpu_limit_violations(_docs(HR_RUNNER_CONFIG)) == []
+
+
+def test_config_string_overwrite_ceiling_not_a_limit():
+    """cpu_limit_overwrite_max_allowed grants an override; it sets no limit."""
+    doc = HR_RUNNER_CONFIG.replace(
+        '            cpu_request = "500m"',
+        '            cpu_limit_overwrite_max_allowed = "2"\n'
+        '            cpu_request = "500m"',
+    )
+    assert mod._cpu_limit_violations(_docs(doc)) == []
+
+
+def test_config_string_empty_cpu_limit_clears_default():
+    """cpu_limit = "" clears the chart default, like limits.cpu: ""."""
+    doc = HR_RUNNER_CONFIG.replace(
+        '            cpu_request = "500m"',
+        '            cpu_limit = ""\n            cpu_request = "500m"',
+    )
+    assert mod._cpu_limit_violations(_docs(doc)) == []
+
+
+def test_config_string_cpu_limit_integrated_fails_with_flag(monkeypatch):
+    """Full-corpus mode fails on a TOML-embedded job-pod CPU limit."""
+    stream = _chart_native_vpa("memory") + "\n---\n" + HR_RUNNER_CONFIG_CPU_LIMIT
+    assert _run_flag(stream, monkeypatch) == 1
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- memory request == limit under a limit-rewriting VPA ---------------------
+# The prowlarr/authentik-server trap: at a 1:1 ratio the VPA's default
+# controlledValues rewrites the limit down with every request revision.
+
+RATIO_DEPLOY = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: app, namespace: ns}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests: {memory: 512Mi}
+            limits: {memory: 512Mi}
+"""
+
+RATIO_DEPLOY_OK = RATIO_DEPLOY.replace("limits: {memory: 512Mi}", "limits: {memory: 1Gi}")
+
+
+def _mem_vpa(extra: str = "", mode: str = "Initial", container: str = '"*"') -> str:
+    return f"""
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {{name: app, namespace: ns}}
+spec:
+  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: app}}
+  updatePolicy: {{updateMode: {mode}}}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: {container}
+        controlledResources: [memory]
+{extra}
+"""
+
+
+def test_one_to_one_memory_under_default_controlled_values_fails():
+    docs = _docs(RATIO_DEPLOY + "---" + _mem_vpa())
+    assert mod._memory_ratio_violations(docs)
+
+
+def test_one_to_one_memory_with_requests_only_passes():
+    """controlledValues: RequestsOnly is the documented fix — must not flag."""
+    docs = _docs(RATIO_DEPLOY + "---" + _mem_vpa("        controlledValues: RequestsOnly"))
+    assert mod._memory_ratio_violations(docs) == []
+
+
+def test_limit_above_request_passes():
+    """Breaking the 1:1 ratio in the manifest is the other documented fix."""
+    docs = _docs(RATIO_DEPLOY_OK + "---" + _mem_vpa())
+    assert mod._memory_ratio_violations(docs) == []
+
+
+def test_one_to_one_memory_under_off_vpa_passes():
+    """A recommend-only VPA never rewrites a limit."""
+    docs = _docs(RATIO_DEPLOY + '---' + _mem_vpa(mode='"Off"'))
+    assert mod._memory_ratio_violations(docs) == []
+
+
+def test_one_to_one_memory_under_cpu_only_vpa_passes():
+    """A VPA that does not control memory cannot rewrite the memory limit."""
+    vpa = _mem_vpa().replace("controlledResources: [memory]", "controlledResources: [cpu]")
+    assert mod._memory_ratio_violations(_docs(RATIO_DEPLOY + "---" + vpa)) == []
+
+
+def test_one_to_one_memory_with_no_vpa_passes():
+    """Without a VPA the ratio is just a Guaranteed-QoS choice, not a trap."""
+    assert mod._memory_ratio_violations(_docs(RATIO_DEPLOY)) == []
+
+
+def test_named_container_policy_wins_over_catchall():
+    """VPA applies the FIRST matching containerPolicy, so a named RequestsOnly
+    policy protects that container even when the '*' catch-all does not."""
+    vpa = """
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: app, namespace: ns}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: app}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: app
+        controlledValues: RequestsOnly
+        controlledResources: [memory]
+      - containerName: "*"
+        controlledResources: [memory]
+"""
+    assert mod._memory_ratio_violations(_docs(RATIO_DEPLOY + "---" + vpa)) == []
+
+
+def test_container_policies_without_a_catchall_still_flags():
+    """A containerPolicies list that names OTHER containers and omits "*" leaves
+    this container on the VPA defaults (Auto + RequestsAndLimits) — the exact
+    1:1 rewrite trap. _policy_for used to return None there and the caller
+    skipped the container silently."""
+    vpa = """
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: app, namespace: ns}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: app}
+  updatePolicy: {updateMode: Initial}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: sidecar
+        mode: "Off"
+"""
+    assert mod._memory_ratio_violations(_docs(RATIO_DEPLOY + "---" + vpa))
+
+
+def test_policy_for_returns_empty_dict_when_nothing_matches():
+    spec = {"resourcePolicy": {"containerPolicies": [{"containerName": "other"}]}}
+    assert mod._policy_for(spec, "app") == {}
+
+
+def test_ratio_violation_fails_the_run(monkeypatch):
+    """The check is wired into main() (and runs without the opt-in flag)."""
+    monkeypatch.setattr("sys.argv", ["check"])
+    assert _run(RATIO_DEPLOY + "---" + _mem_vpa(), monkeypatch) == 1

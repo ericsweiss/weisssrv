@@ -14,6 +14,31 @@ backup freshness on GitLab). The Proxmox-only pieces below — smartmontools and
 the collectors — are gated on `groups['proxmox']`, so those hosts install only
 the node-exporter package + 9101 override + textfile collector directory.
 
+## Liveness gate
+
+`node-exporter-healthcheck.timer` fires
+`/usr/local/sbin/node-exporter-healthcheck.sh` every
+`node_exporter_host_healthcheck_interval` (default 5min). It GETs
+`http://127.0.0.1:9101/metrics` twice (20s timeout, 5s apart) and, if both fail
+while systemd still reports the unit active, restarts
+`prometheus-node-exporter` and writes
+`node_exporter_healthcheck_last_restart_timestamp_seconds` to the textfile dir.
+
+It exists because on 2026-07-26 the exporter on pve-nas-01 went **zombie**
+(`/proc/<pid>/status` `State: Z`, PPid 1) with its listening socket still bound
+and nothing accepting. systemd saw a live main PID, reported
+`active (running)` forever, and no `Restart=` policy could fire — the NAS went
+unmonitored for hours and `NFSServerDown` (which alerts on the metric being
+*absent*) paged falsely while NFS was healthy. `WatchdogSec` cannot cover this:
+the Debian unit is `Type=simple` and node_exporter never `sd_notify`s, so an
+HTTP probe is the only trustworthy liveness signal.
+
+A deliberately stopped unit is left alone (`systemctl is-active` guard), so the
+gate never fights an operator. Note this is the runtime counterpart to the
+role's deploy-time `uri` check, which only proves the exporter was alive at the
+end of the play — this role is deliberately NOT a `prometheus_exporter` wrapper
+and so inherits none of that role's health handling.
+
 ## Textfile collector
 
 Reads `/var/lib/node_exporter/*.prom` files for custom metrics. Currently

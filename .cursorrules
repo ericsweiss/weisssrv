@@ -28,18 +28,18 @@ See `CLAUDE.md` for the project overview, architecture, storage and secrets/vers
 1. **Test with dry run first** - `task infra:check` (Ansible) and `task flux:lint` (k8s) before shipping
 2. **Use fully qualified collection names** - `ansible.builtin.apt` not `apt`
 3. **Follow existing patterns** - Check similar roles or `kubernetes/apps/<neighbour>` for conventions
-4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes)
+4. **Update documentation** - When changing behavior, update `docs/` (especially `docs/29-flux-operations.md` for GitOps changes) **and the agent surface**: if the change alters a workflow, gate, invariant, or canonical-doc pointer, update `.claude/skills/weisssrv-development/SKILL.md` / the matching `references/` file in the same MR (CI only checks the skill's links and task names — nothing validates its prose)
 5. **Use snake_case** - For all Ansible variables
 6. **Deploy Kubernetes changes via git (branch → MR → merge to `main`)** - Flux reconciliation is push-triggered (GitLab agent Flux module; ~1-minute poll fallback). Use `task flux:reconcile` to force.
-7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` job will fail otherwise. See CLAUDE.md and `docs/29-flux-operations.md` (Version pinning / Substitution) for how the `${name}` substitution works.
+7. **Keep `versions-configmap.yaml` in sync with `all.yml`** - Run `task flux:sync-versions` after editing version pins; CI's `flux-versions-sync` check (inside the `repo-sync-checks` job) will fail otherwise. See CLAUDE.md and `docs/29-flux-operations.md` (Version pinning / Substitution) for how the `${name}` substitution works.
 
 ## Code Conventions
 
 The Ansible code conventions (FQCN, snake_case + variable precedence,
-`no_log: true` on secret-handling tasks, and the handler/service task patterns)
-are documented once in `CLAUDE.md` § "Code Conventions" — follow that section.
-It is the single canonical home so every agent entry-point sees the same rules;
-do not restate them here.
+`no_log: true` on secret-handling tasks, the handler/service task patterns, and
+the `--tags` caveat) are documented once in `ansible/README.md` § "Code
+conventions" — follow that section. It is the single canonical home so every
+agent entry-point and every human sees the same rules; do not restate them here.
 
 ## Common Workflows
 
@@ -64,3 +64,10 @@ Structure and stage descriptions live in `CLAUDE.md` — paths only here:
 - `kubernetes/infrastructure/`
 - `kubernetes/apps/`
 - `docs/` (numbered index in the `README.md` Documentation section)
+- `ansible/README.md` (Ansible layout + code conventions), `ansible/TESTING.md` (molecule)
+
+## Repo family
+
+Seven CI jobs are `include:`d from the sibling `eric/weisssrv-lib` project at a
+pinned `ref:` — do not re-add them inline in `.gitlab-ci.yml`. See `CLAUDE.md`
+§ "Repo family" and `docs/13-ci-cd.md` § "Shared CI library".

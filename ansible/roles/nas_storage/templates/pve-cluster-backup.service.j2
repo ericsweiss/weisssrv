@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Archive /etc/pve (PVE cluster identity) into the offsite-eligible landing zone
+# The landing zone is on tank/backups, which mounts only after the encrypted
+# datasets' keys load. Ordering ONLY — `Wants=` does not fail this unit when the
+# mount job fails, and the timer's Persistent=true fires a missed run on boot.
+# The actual fail-closed check is a `mountpoint -q` in pve-cluster-backup.sh,
+# deliberately NOT a `ConditionPathIsMountPoint=` here: a failed Condition marks
+# the unit "condition failed" and skips ExecStart, so no textfile metric is
+# written and pve_cluster_backup_last_run_success never flips to 0. The script
+# guard exits non-zero AND records the failure.
+After=zfs.target zfs-mount.service zfs-mount-encrypted.service
+Wants=zfs-mount-encrypted.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pve-cluster-backup.sh
+# Tiny job (a few hundred KB), but keep it deferential like every other NAS
+# nightly so it can never compete with the archive/restic chain.
+Nice={{ nas_pve_cluster_backup_nice | default(10) }}
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=20
+IOWeight=20
+# /etc/pve is a FUSE mount and the destination is on ZFS; a private mount
+# namespace (ProtectSystem/PrivateTmp) would hide both — same constraint as
+# media-mover.service.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

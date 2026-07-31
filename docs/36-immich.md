@@ -1,4 +1,4 @@
-# 36 - Immich (Photo Management)
+# Immich (Photo Management)
 
 [Immich](https://immich.app) self-hosted photo and video management, deployed as
 a Docker Compose stack on a dedicated NAS-pinned Debian VM and fronted by a host

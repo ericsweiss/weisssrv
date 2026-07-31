@@ -32,7 +32,6 @@
         fail_msg: "Plex v2 repository not configured correctly"
         success_msg: "Plex v2 repository configured correctly"
 
-    # Verify Plex package is installed
     - name: Check if Plex package is installed
       ansible.builtin.command: dpkg -l plexmediaserver
       register: plex_installed
@@ -165,7 +164,6 @@
         fail_msg: "/usr/local/sbin/plex-cert-reload.sh must be root:root 0750"
         success_msg: "/usr/local/sbin/plex-cert-reload.sh is root:root 0750"
 
-    # ========================================================================
     # Behavioral test of plex-cert-reload.sh: stage a self-signed PEM pair (the
     # role deploys pfx-passphrase in this scenario), stub systemctl so the
     # restart/readiness checks pass, run the script, and assert it built a

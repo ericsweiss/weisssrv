@@ -299,3 +299,121 @@
         that:
           - "'vzdump_backup_last_run_success 0' in (vzdump_prom_fail.content | b64decode)"
         fail_msg: "backup-abort did not downgrade job-end to vzdump_backup_last_run_success 0"
+
+    # ── node_exporter liveness gate ───────────────────────────────────────
+    # The failure this guards (2026-07-26, pve-nas-01) is a zombie exporter
+    # that systemd still reports as active, so the deploy contract is only half
+    # the test: the probe must also be able to FAIL. Both directions are
+    # exercised below against the live exporter in this container.
+
+    - name: Verify healthcheck script is present and executable
+      ansible.builtin.stat:
+        path: /usr/local/sbin/node-exporter-healthcheck.sh
+      register: healthcheck_script
+
+    - name: Assert healthcheck script is mode 0755 root:root
+      ansible.builtin.assert:
+        that:
+          - healthcheck_script.stat.exists
+          - healthcheck_script.stat.mode == "0755"
+          - healthcheck_script.stat.pw_name == "root"
+          - healthcheck_script.stat.gr_name == "root"
+        fail_msg: "node-exporter-healthcheck.sh missing or has wrong perms"
+
+    - name: Verify healthcheck unit + timer are present
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/node-exporter-healthcheck.{{ item }}"
+      register: healthcheck_units
+      loop:
+        - service
+        - timer
+
+    - name: Assert healthcheck units are mode 0644
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.mode == "0644"
+        fail_msg: "node-exporter-healthcheck unit missing or has wrong perms"
+      loop: "{{ healthcheck_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read healthcheck service unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/node-exporter-healthcheck.service
+      register: healthcheck_svc_content
+
+    - name: Assert the unit probes the configured port
+      ansible.builtin.assert:
+        that:
+          - "'node-exporter-healthcheck.sh 9101' in (healthcheck_svc_content.content | b64decode)"
+        fail_msg: "healthcheck unit does not probe port 9101"
+
+    - name: Probe-only run against the live exporter reports healthy
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 9101
+      changed_when: false
+
+    # The negative case: a port nothing is listening on must be detected, not
+    # silently passed. Without this, a probe that always succeeds (wrong URL,
+    # swallowed curl error) would look identical to a working gate.
+    - name: Probe-only run against a dead port must fail
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 19999
+      register: healthcheck_dead_port
+      changed_when: false
+      failed_when: healthcheck_dead_port.rc == 0
+
+    - name: Record the exporter's main PID before the restart path runs
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: exporter_state_before
+
+    # Full run against the dead port with the unit still "active" reproduces the
+    # zombie signature (systemd says up, nothing answers) and must restart it.
+    - name: Full run against a dead port restarts the exporter
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh 19999
+      changed_when: true
+
+    - name: Record the exporter's main PID after the restart path ran
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: exporter_state_after
+
+    - name: Assert the exporter was actually restarted
+      ansible.builtin.assert:
+        that:
+          - exporter_state_before.status.MainPID != exporter_state_after.status.MainPID
+          - exporter_state_after.status.MainPID | int > 0
+        fail_msg: >-
+          healthcheck did not restart prometheus-node-exporter
+          (MainPID {{ exporter_state_before.status.MainPID }} unchanged)
+
+    - name: Read the restart marker the healthcheck writes
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/node_exporter_healthcheck.prom
+      register: healthcheck_prom
+
+    - name: Assert the restart is visible as a scrapable metric
+      ansible.builtin.assert:
+        that:
+          - "'node_exporter_healthcheck_last_restart_timestamp_seconds ' in (healthcheck_prom.content | b64decode)"
+        fail_msg: "healthcheck restart did not emit its timestamp metric"
+
+    - name: Stopped exporter must be left alone (no fighting a deliberate stop)
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: stopped
+
+    - name: Full run against a stopped exporter exits clean without restarting
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh 9101
+      changed_when: false
+
+    - name: Confirm the exporter is still stopped
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: exporter_state_stopped
+      failed_when: exporter_state_stopped.status.ActiveState == "active"
+
+    - name: Restore the exporter for any later checks
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: started

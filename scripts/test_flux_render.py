@@ -85,11 +85,16 @@ class TestK8sVersion:
         assert r.returncode == 0
         assert r.stdout.strip() == "1.36.0"
 
-    def test_defaults_when_no_k3s_version(self, tmp_path: Path):
+    def test_missing_k3s_version_is_loud(self, tmp_path: Path):
+        # No silent fallback: local lint and CI must validate against the SAME
+        # schema version, so a missing/renamed k3s_version key has to fail
+        # rather than quietly pin an out-of-date default.
         p = tmp_path / "cm.yaml"
         p.write_text("data:\n  traefik_version: '1.0.0'\n")
         r = _run(["k8s-version", str(p)])
-        assert r.stdout.strip() == "1.36.0"
+        assert r.returncode != 0
+        assert r.stdout.strip() == ""
+        assert "k3s_version" in r.stderr
 
 
 class TestCli:

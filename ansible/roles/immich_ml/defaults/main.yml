@@ -10,18 +10,18 @@
 #
 # No secrets: this role needs no `op run` env vars.
 
-# --- Compose project layout (LXC rootfs) -------------------------------------
+# Compose project layout (LXC rootfs)
 # The model cache (multi-GB, downloaded on first run) lives in a named docker
 # volume in the rootfs — re-downloadable cache, not state, so no zvol/bind
 # mount and no backup enrollment.
 immich_ml_compose_dir: /opt/immich-ml/compose
 
-# --- Listen port --------------------------------------------------------------
+# Listen port
 # Upstream immich-machine-learning default (3003). Published on the LAN;
 # reachability is scoped by sg-immich-ml, not by the bind address.
 immich_ml_listen_port: 3003
 
-# --- Container image (from group_vars/all.yml) --------------------------------
+# Container image (from group_vars/all.yml)
 # Derived from the SAME immich_version pin as the VM's server/ML containers,
 # so the documented server/ML version-lockstep is automatic: any
 # immich_version bump MR redeploys both the VM stack (deploy-immich) and this
@@ -30,7 +30,7 @@ immich_ml_listen_port: 3003
 # supplies the xe kernel driver (already proven by Plex on the same card).
 immich_ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}-openvino"
 
-# --- GPU device access --------------------------------------------------------
+# GPU device access
 # GIDs granted to the ML container (compose group_add) so it can open the
 # idmapped /dev/dri nodes: in an unprivileged LXC the container's root is not
 # host root, so CAP_DAC_OVERRIDE cannot bypass the 0660 root:video/render

@@ -1,10 +1,11 @@
 ---
 # ZFS dataset configuration and scrub timers
 
-# Pools can be legitimately absent at deploy time — the archive pool's
-# documented steady state is exported/unplugged. Probe each pool once and
-# skip its datasets/scrub timer when it is not imported, rather than
-# hard-failing the whole storage deploy on a `zfs list` miss.
+# Pools can be legitimately absent at deploy time: the archive pool is normally
+# IMPORTED (the nightly archive-backup -> restic -> B2 chain depends on it), but
+# the absent branch is the unplug/DR path. Probe each pool once and skip its
+# datasets/scrub timer when it is not imported, rather than hard-failing the
+# whole storage deploy on a `zfs list` miss.
 - name: Probe imported ZFS pools
   ansible.builtin.command: zpool list -H -o name
   register: zfs_imported_pools

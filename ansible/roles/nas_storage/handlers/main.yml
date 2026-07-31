@@ -1,6 +1,4 @@
 ---
-# Handlers for NAS storage role
-
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true

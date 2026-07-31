@@ -1,5 +1,15 @@
 ---
 # IngressRoute for router (internal-only: LAN + Tailscale)
+#
+# Deliberately NO Authentik forward-auth: the router's own web login is the
+# gate, and the router must stay administrable when the SSO stack is degraded
+# (same reasoning as the AdGuard raw routes in adguard-home.yaml). Because the
+# only network gate is the IP allowlist, this route uses lan-tailscale-STRICT
+# rather than lan-tailscale-only: strict drops the k3s pod CIDR, so an
+# in-cluster pod — notably the hermes agent, which runs LLM-authored code and
+# holds blanket :443 egress to the traefik namespace — cannot reach the router
+# admin UI (over a cleartext backend hop, at that). No in-cluster client
+# consumes this host.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -12,7 +22,7 @@ spec:
     - match: Host(`router.esweiss.com`)
       kind: Rule
       middlewares:
-        - name: lan-tailscale-only
+        - name: lan-tailscale-strict
           namespace: traefik
         - name: hsts-header
           namespace: traefik

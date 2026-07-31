@@ -10,6 +10,26 @@ dns_servers:
   - 192.168.0.150
   - 192.168.0.160
 
+# Hosts that are KNOWINGLY out of the fleet (hardware work, decommissioning) and
+# may therefore be skipped by base.yml / site.yml without failing the run.
+# Read by playbooks/_reachability-gate.yml: a listed host downgrades an
+# UNREACHABLE skip from a hard failure to a loud warning; anything else still
+# ends the playbook non-zero, because `ignore_unreachable` alone would exit 0
+# having configured nothing there. Keep this list EMPTY in steady state — an
+# entry is a dated, reviewable concession, not a permanent exemption, and every
+# role that host needs stays undeployed for as long as it sits here.
+# The downgrade only covers hosts the multi-host plays tolerate. site.yml's
+# SINGLE-host plays (mail, pve-nas-01) deliberately keep no ignore_unreachable,
+# so losing their one host is still a hard UNREACHABLE that ends the run rc 4 —
+# listing smtp-relay or pve-nas-01 here does NOT make site.yml green.
+deploy_expected_absent_hosts:
+  # 2026-07-27: out for a cooling-fan replacement + the RAM swap that retires
+  # the GRUB_BADRAM workaround (docs/34). Its two k3s nodes are NotReady and
+  # etcd runs 2/3 meanwhile. ON REJOIN: remove this entry and run a full
+  # `task infra:deploy` — every role skipped while it sat here is still
+  # undeployed, so it comes back at whatever state it left at.
+  - pve-laptop-01
+
 # Proxmox autostart defaults
 proxmox_autostart_enabled: true
 proxmox_startup_order: 100
@@ -109,8 +129,10 @@ secrets:
   immich_oauth_client_id: "op://Homelab/Immich SSO/client-id"
   immich_oauth_client_secret: "op://Homelab/Immich SSO/client-secret"
   # B2 offsite backup (docs/42 Step 0 capability split). The restic_offsite
-  # role consumes the RESTRICTED hide-only key (restic_* fields); terraform/b2
-  # keeps the FULL master key on the b2_* fields (bucket lifecycle/SSE writes).
+  # role consumes the RESTRICTED hide-only key (restic_* fields);
+  # scripts/b2-bucket-drift.py (`task b2:drift` / `b2:apply`) uses the FULL
+  # master key on the b2_* fields for bucket lifecycle/SSE writes. (The
+  # terraform/b2 module that used to hold that role is retired and deleted.)
   # restic_repo_password doubles as the restic repo password (RESTIC_PASSWORD)
   # — losing it loses the repo.
   b2_master_key_id: "op://Homelab/B2 Archive Backup/b2_key_id"
@@ -154,7 +176,7 @@ adguardhome_sync_version: "0.9.2"
 # Host-side Alloy apt package (alloy_host role; distinct from the in-cluster
 # helm_chart_versions.alloy chart pin below).
 alloy_host_version: "1.18.0-1"
-tailscale_version: "1.98.9"
+tailscale_version: "1.98.10"
 # CoreDNS image for the tailnet-dns split-horizon resolver (kubernetes/apps/
 # tailnet-dns). Pinned to the rancher mirror k3s already caches on every node.
 coredns_tailnet_version: "1.14.6"
@@ -176,7 +198,7 @@ k3s_version: "v1.36.2+k3s1"
 # versions ConfigMap. Recompute + update in lockstep with every k3s_version bump:
 #   curl -sfL https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version>/install.sh | sha256sum
 k3s_install_script_checksum: "sha256:46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
-kube_vip_version: "v1.2.1"
+kube_vip_version: "v1.2.2"
 # Flux CLI used by CI deploy-verify; the job pins a matching sha256 —
 # update both together when bumping.
 flux_version: "2.9.0"
@@ -204,7 +226,7 @@ mealie_postgresql_version: "18.4-alpine"
 # Pulsarr: https://github.com/jamcalli/Pulsarr/releases
 # busybox: init container utility image used by VPN sidecar pre-checks
 busybox_version: "1.38"
-gluetun_version: "v3.41.1"
+gluetun_version: "v3.41.3"
 nzbget_version: "26.2"
 qbittorrent_version: "5.2.3"
 prowlarr_version: "2.5.2.5491"
@@ -224,11 +246,11 @@ wg_easy_version: "15.3.0"
 # Salt Rim: https://hub.docker.com/r/barassistant/salt-rim/tags
 # Meilisearch: https://github.com/meilisearch/meilisearch/releases (pinned to 1.15.x for Bar Assistant compat)
 # Redis: https://hub.docker.com/_/redis/tags (Alpine variant)
-mealie_version: "v3.21.0"
+mealie_version: "v3.22.0"
 bar_assistant_version: "5.15.3"
 salt_rim_version: "4.15.0"
 meilisearch_version: "v1.15.2"
-redis_version: "8.8.1-alpine"
+redis_version: "8.10.0-alpine"
 
 # Plex Media Server version (apt-managed via official repository)
 plex_version: "1.43.3.10828-00f62d37d"
@@ -239,7 +261,7 @@ plex_version: "1.43.3.10828-00f62d37d"
 # current latest patch. Applied by task gitlab:deploy / the deploy-gitlab CI
 # job (triggered on all.yml changes); maintenance apt-upgrade honors the
 # gitlab-ee package hold and will not bump it.
-gitlab_version: "19.2.0-ee.0"
+gitlab_version: "19.2.1-ee.0"
 
 # GitLab Runner version for k3s cluster
 # https://gitlab.com/gitlab-org/charts/gitlab-runner/tags
@@ -280,7 +302,7 @@ nextcloud_exporter_version: "0.9.1"
 # The Postgres + Valkey images (tag AND digest) are whatever Immich's pinned
 # release pins in its own docker/docker-compose.yml — the DB is release-coupled
 # (vectorchord/pgvectors build), so NEVER bump it independently of immich_version.
-immich_version: "v3.0.3"
+immich_version: "v3.1.0"
 immich_postgres_version: "14-vectorchord0.4.3-pgvectors0.2.0"
 immich_postgres_digest: "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
 immich_valkey_version: "9"
@@ -340,7 +362,7 @@ hermes_image_version: "v2026.7.20-r1"
 # Bump = pick a newer stable release, sync-versions, commit — CI rebuilds the
 # wrapper, Flux rolls the pods. NOT substituted into any manifest (build-time
 # only); it rides in the versions ConfigMap as a harmless superset.
-hermes_codex_version: "0.145.0"
+hermes_codex_version: "0.146.0"
 # Claude Code CLI (https://github.com/anthropics/claude-code, npm
 # @anthropic-ai/claude-code). Baked into the hermes-agent image alongside the
 # Codex CLI so Hermes can DELEGATE coding tasks to Claude Code headlessly
@@ -357,12 +379,20 @@ hermes_claude_version: "2.1.220"
 # skill can drive `op` against the isolated Agent vault via a service-account
 # token (OP_SERVICE_ACCOUNT_TOKEN — wired in kubernetes/apps/hermes; docs/37
 # §1Password). Value is the full DEB version string (apt pin), not the bare
-# semver `op --version` reports (2.35.0). No release feed to poll — bump by
+# semver `op --version` reports (2.38.1). No release feed to poll — bump by
 # checking `apt-cache madison 1password-cli` against 1Password's signed repo,
 # then sync-versions + commit; CI rebuilds the wrapper. Build-time only (not
 # substituted into any manifest); rides in the versions ConfigMap as a harmless
 # superset like hermes_codex_version.
-hermes_op_version: "2.35.0-1"
+#
+# This pin is NOT optional maintenance: 1Password PRUNES old versions from the
+# apt repo, so a stale value fails the image build outright rather than merely
+# lagging. 2.35.0-1 was withdrawn and build-hermes-agent died with
+# "E: Version '2.35.0-1' for '1password-cli' was not found" — at the time of this
+# bump 2.38.1-1 was the ONLY version the repo still carried. version-check cannot
+# catch this (there is no release feed), so if this job ever fails again, re-read
+# the repo's Packages index before assuming anything else is wrong.
+hermes_op_version: "2.38.1-1"
 # Camofox anti-detection browser server (jo-inc/camofox-browser) — the sidecar
 # behind Hermes' camofox browser tool (CAMOFOX_URL). Upstream publishes no
 # container image; the build-camofox-browser CI job clones the repo at tag
@@ -382,7 +412,7 @@ hermes_camofox_git_sha: "8b5b0959adfadadae38ecce9d7eed706ab102bf1"
 # memory backend (kubernetes/apps/hindsight, docs/37 §Memory backend). The pin
 # is the ghcr.io/vectorize-io/hindsight image tag (bare semver; the git tag
 # carries a leading "v"). https://github.com/vectorize-io/hindsight/releases
-hindsight_version: "0.8.5"
+hindsight_version: "0.8.6"
 # llama.cpp server sidecar for Hindsight's local LLM. The deployment builds the
 # image tag as ghcr.io/ggml-org/llama.cpp:server-cuda-<pin> — the CUDA build,
 # for GPU offload on the pve-prec-01 1660 Ti (docs/43). Upstream tags a build
@@ -490,23 +520,23 @@ helm_chart_versions:
   # images per upstream. Re-evaluate when the fix lands.
   # Upstream issue: https://github.com/metallb/metallb/issues/3063
   metallb: "0.15.3"
-  traefik: "41.0.2"  # App version v3.7.6 (chart 41.x: logs.general->log, logs.access->accessLog)
-  cert_manager: "v1.21.0"
+  traefik: "41.1.0"  # App version v3.7.6 (chart 41.x: logs.general->log, logs.access->accessLog)
+  cert_manager: "v1.21.1"
   external_dns: "1.21.1"  # App version 0.20.0
   external_secrets: "2.8.0"  # ESO with 1Password Connect provider
-  kube_prometheus_stack: "87.19.1"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
+  kube_prometheus_stack: "87.21.0"  # prometheus-operator v0.92.x (additive CRD fields; crds: CreateReplace)
   # prometheus-community/prometheus-operator-crds chart. Owns the
   # monitoring.coreos.com CRDs in the dedicated infrastructure-crds stage so
   # controllers (Traefik's ServiceMonitor) reconcile before kube-prometheus-stack
   # (docs/29). 30.0.1 = appVersion v0.92.1, matching kube_prometheus_stack's
   # operator 0.92.x. COUPLING: bump in lockstep with kube_prometheus_stack so the
   # CRD set stays version-matched to the operator kps deploys (docs/12).
-  prometheus_operator_crds: "30.0.1"
-  loki: "18.5.4"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  prometheus_operator_crds: "31.0.0"
+  loki: "18.7.0"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.0"
-  prometheus_blackbox_exporter: "11.15.1"
+  prometheus_blackbox_exporter: "11.16.0"
   onepassword_connect: "2.4.1"
-  vpa: "4.12.3"
+  vpa: "4.12.4"
   kured: "6.1.0"  # Kubernetes Reboot Daemon (app 1.22.1); owns k3s-node reboots flagged by maintenance
   reloader: "2.2.14"  # stakater/Reloader (app v1.4.17); auto-restarts annotated workloads on ConfigMap change (Secrets excluded via ignoreSecrets)
   tailscale_operator: "1.98.9"  # Tailscale K8s operator (appVersion v1.98.9; tracks the host tailscale_version); exposes internal Traefik + tailnet-dns to the tailnet

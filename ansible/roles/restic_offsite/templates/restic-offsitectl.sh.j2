@@ -27,6 +27,9 @@ KEEP_DAILY="{{ restic_offsite_keep_daily | default(3) }}"
 KEEP_WEEKLY="{{ restic_offsite_keep_weekly | default(2) }}"
 KEEP_MONTHLY="{{ restic_offsite_keep_monthly | default(3) }}"
 KEEP_YEARLY="{{ restic_offsite_keep_yearly | default(1) }}"
+KEEP_LAST="{{ restic_offsite_keep_last | default(5) }}"
+FORGET_GROUP_BY="{{ restic_offsite_forget_group_by | default('host') }}"
+FORGET_MAX_REMOVE="{{ restic_offsite_forget_max_remove | default(3) }}"
 PROM_DIR="{{ restic_offsite_metrics_dir | default('/var/lib/node_exporter') }}"
 ZVOL_CLONE_SUFFIX="{{ restic_offsite_zvol_clone_suffix | default('b2walk') }}"
 ENV_FILE="{{ restic_offsite_config_dir }}/env"
@@ -50,7 +53,66 @@ PROM_FILE="${PROM_DIR}/restic_offsite.prom"
 VERIFY_PROM_FILE="${PROM_DIR}/restic_offsite_verify.prom"
 LOCK="/run/restic-offsite.lock"
 
+# GFS retention flags, shared by the nightly run and the `prune` subcommand so
+# the two can never diverge. --keep-last is a WORM-ish floor independent of the
+# calendar buckets (the B2 bucket has no Object Lock); --group-by is pinned so a
+# source-list change cannot fork a new retention group and strand the old one's
+# snapshots under a policy nothing ever re-evaluates.
+FORGET_FLAGS=(
+  --keep-last "$KEEP_LAST"
+  --keep-daily "$KEEP_DAILY"
+  --keep-weekly "$KEEP_WEEKLY"
+  --keep-monthly "$KEEP_MONTHLY"
+  --keep-yearly "$KEEP_YEARLY"
+  --group-by "$FORGET_GROUP_BY"
+)
+
 log() { echo "[$(date -Is)] $*"; }
+
+# Guarded forget+prune.
+#
+# The delete set is a function of the keep policy AND of --group-by, and the
+# bucket has no Object Lock — past the B2 hide-lifecycle window a forget is
+# unrecoverable. Pinning --group-by to `host` (restic's default is `host,paths`)
+# MERGES groups: snapshots taken under a retired source-path set stop being
+# frozen in a group of their own and become expendable in a single step. Any
+# such change must not be discovered by reading the next morning's snapshot
+# list. So: dry-run the exact same policy first, count what it would forget, and
+# refuse to run the destructive pass when that exceeds $max_remove.
+#
+# Steady state forgets 0-1 snapshots a night, so the ceiling only trips on a
+# policy/grouping change or after a long gap. A delete set that IS intended is
+# applied by naming it: `restic-offsitectl prune --max-remove <N>` — an explicit,
+# reviewed act rather than a surprise.
+#
+# Parse note: this reads restic's `remove <N> snapshots:` summary line (one per
+# group). If a future restic reworded it the sum would read 0 and the guard
+# would fall back to today's unguarded behaviour — it is a blast-radius bound,
+# not a correctness mechanism, and must never be the thing standing between a
+# broken policy and the repo.
+run_forget() {
+  local max_remove="${1:-$FORGET_MAX_REMOVE}"
+  local dry removing rc=0
+  dry="$(restic forget "${FORGET_FLAGS[@]}" --dry-run 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log "retention dry-run failed (rc=${rc}) — refusing to prune"
+    printf '%s\n' "$dry" | tail -n 20
+    return 1
+  fi
+  removing="$(printf '%s\n' "$dry" \
+    | sed -n 's/^remove \([0-9][0-9]*\) snapshots\{0,1\}:.*/\1/p' \
+    | awk '{ s += $1 } END { print s + 0 }')"
+  [[ "$removing" =~ ^[0-9]+$ ]] || removing=0
+  log "retention dry-run: ${removing} snapshot(s) would be forgotten (ceiling ${max_remove})"
+  if [[ "$removing" -gt "$max_remove" ]]; then
+    log "REFUSING to prune: the policy would forget ${removing} snapshots, above the ${max_remove} ceiling."
+    log "Inspect first: restic-offsitectl snapshots"
+    log "If that delete set is intended: restic-offsitectl prune --max-remove ${removing}"
+    return 1
+  fi
+  log "restic forget ${FORGET_FLAGS[*]} --prune"
+  restic forget "${FORGET_FLAGS[@]}" --prune
+}
 
 # restic's rclone backend spawns rclone with BUILT-IN default args
 # 'serve restic --stdio --b2-hard-delete' (upstream wants prune to free B2
@@ -179,6 +241,48 @@ snap_age_seconds() {
   echo $(( now - epoch ))
 }
 
+# Echoes "<newest_epoch> <oldest_epoch> <sources_without_a_snapshot>" over ALL
+# sources (0 0 <n> when none resolve). Read-only: it mounts and clones nothing,
+# so it can run before any setup. Feeds the already-uploaded short-circuit,
+# which needs BOTH ends of the range — see cmd_run for why the oldest matters.
+source_snap_epochs() {
+  local entry name mp zvol rest snap age now epoch
+  local newest=0 oldest=0 missing=0
+  now="$(date +%s)"
+  _acc() {
+    epoch=$1
+    [[ "$newest" -eq 0 || "$epoch" -gt "$newest" ]] && newest="$epoch"
+    [[ "$oldest" -eq 0 || "$epoch" -lt "$oldest" ]] && oldest="$epoch"
+    return 0
+  }
+  for entry in "${FILE_SOURCES[@]}"; do
+    [[ -n "$entry" ]] || continue
+    read -r name mp <<< "$entry"
+    snap="$(latest_file_snap "$mp")"
+    if [[ -z "$snap" ]]; then missing=$(( missing + 1 )); continue; fi
+    age="$(snap_age_seconds "$snap")"
+    _acc $(( now - age ))
+  done
+  for entry in "${ZVOL_SOURCES[@]}"; do
+    [[ -n "$entry" ]] || continue
+    read -r name zvol rest <<< "$entry"
+    snap="$(latest_zvol_snap "$zvol")"
+    if [[ -z "$snap" ]]; then missing=$(( missing + 1 )); continue; fi
+    age="$(snap_age_seconds "$snap")"
+    _acc $(( now - age ))
+  done
+  printf '%s %s %s' "$newest" "$oldest" "$missing"
+}
+
+# Unix time of the last SUCCESSFUL offsite run, from the metrics file (0 when
+# absent). The file is the same one node_exporter scrapes, so this reuses state
+# that is already durable across reboots.
+last_success_epoch() {
+  local v
+  v="$(awk '/^restic_offsite_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null | tail -1 || true)"
+  case "${v%%.*}" in ''|*[!0-9]*) echo 0 ;; *) echo "${v%%.*}" ;; esac
+}
+
 # ---- cleanup (EXIT trap) -----------------------------------------------------
 # Torn-down in reverse: unmount every bind + zvol-clone mount, destroy every
 # clone, then write metrics. Paths/clones are recorded BEFORE the mount/clone so
@@ -218,11 +322,47 @@ repo_init_if_needed() {
 
 # ---- run ---------------------------------------------------------------------
 cmd_run() {
+  local force=0
+  [[ "${1:-}" == "--force" ]] && force=1
+
   exec 9>"$LOCK"
   if ! flock -n 9; then
     log "restic-offsite already running; exiting"
     exit 0
   fi
+
+  # --- Already-uploaded short-circuit -----------------------------------------
+  # There are TWO triggers: archive-backup.service's OnSuccess= (the primary)
+  # and restic-offsite.timer (the fallback for the rare skipped-OnSuccess path).
+  # The timer had no condition, so BOTH fired every night: a second full backup
+  # + `forget --prune` ~40 minutes after the first, which re-scanned the whole
+  # pack set, doubled the B2 class-B/C transactions on a memory-tight NAS, and —
+  # because prune runs after it — discarded the chain-verified snapshot in favour
+  # of the fallback one. Skip when the last successful run already covers the
+  # newest archsync generation; `run --force` overrides.
+  #
+  # The skip requires EVERY source to be present and fresh, not just that the
+  # last run is newer than the newest snapshot. Without that condition a total
+  # archsync failure (no source getting a new snapshot at all) would be silently
+  # skipped night after night instead of aborting loudly through the freshness
+  # guard below — trading a loud ResticOffsiteFailed for a 50h-delayed
+  # ResticOffsiteStale. A stale or missing source therefore always falls through.
+  #
+  # Deliberately BEFORE _METRICS_ACTIVE=1: a skip is not a run and must not
+  # refresh the metrics ResticOffsiteStale watches.
+  if [[ "$force" -eq 0 ]]; then
+    local newest_snap oldest_snap missing_snaps last_ok max_age_pre
+    read -r newest_snap oldest_snap missing_snaps <<< "$(source_snap_epochs)"
+    last_ok="$(last_success_epoch)"
+    max_age_pre=$(( FRESH_MAX_AGE_H * 3600 ))
+    if [[ "$missing_snaps" -eq 0 && "$newest_snap" -gt 0 \
+          && $(( $(date +%s) - oldest_snap )) -le "$max_age_pre" \
+          && "$last_ok" -ge "$newest_snap" ]]; then
+      log "already-uploaded: last successful offsite run ($(date -d "@${last_ok}" -Is 2>/dev/null || echo "@${last_ok}")) already covers the newest ${SNAP_PREFIX}-* source snapshot ($(date -d "@${newest_snap}" -Is 2>/dev/null || echo "@${newest_snap}")) and every source is fresh; nothing new to upload — skipping (use 'run --force' to override)"
+      exit 0
+    fi
+  fi
+
   _METRICS_ACTIVE=1
   trap cleanup EXIT
   trap 'exit' INT TERM
@@ -324,13 +464,11 @@ cmd_run() {
     --exclude-caches \
     --one-file-system=false
 
-  log "restic forget --keep-daily ${KEEP_DAILY} --keep-weekly ${KEEP_WEEKLY} --keep-monthly ${KEEP_MONTHLY} --keep-yearly ${KEEP_YEARLY} --prune"
-  restic forget \
-    --keep-daily "$KEEP_DAILY" \
-    --keep-weekly "$KEEP_WEEKLY" \
-    --keep-monthly "$KEEP_MONTHLY" \
-    --keep-yearly "$KEEP_YEARLY" \
-    --prune
+  # Dry-run-guarded: refuses to prune a delete set larger than
+  # FORGET_MAX_REMOVE (see run_forget). A refusal fails the run — the backup
+  # itself already landed, but retention needs an operator decision, and the
+  # only way to make that visible is to keep the run red.
+  run_forget
 
   # Repo raw-data size + latest snapshot size for the metrics (best-effort).
   run_repo_bytes="$(restic stats --mode raw-data --json 2>/dev/null \
@@ -398,13 +536,19 @@ cmd_verify() {
 cmd_snapshots() { restic snapshots; }
 
 cmd_prune() {
+  local max_remove="$FORGET_MAX_REMOVE"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max-remove)
+        max_remove="${2:-}"
+        [[ "$max_remove" =~ ^[0-9]+$ ]] || { log "--max-remove needs a number"; return 2; }
+        shift 2
+        ;;
+      *) log "unknown prune argument: $1"; return 2 ;;
+    esac
+  done
   need_lock_or_die
-  restic forget \
-    --keep-daily "$KEEP_DAILY" \
-    --keep-weekly "$KEEP_WEEKLY" \
-    --keep-monthly "$KEEP_MONTHLY" \
-    --keep-yearly "$KEEP_YEARLY" \
-    --prune
+  run_forget "$max_remove"
 }
 
 cmd_status() {
@@ -431,14 +575,20 @@ usage() {
 Usage: restic-offsitectl <command> [args]   (run as root)
 
 Commands:
-  run                          Run the nightly offsite backup now (freshness-guarded)
+  run [--force]                Run the nightly offsite backup now (freshness-guarded).
+                               Skips when the last successful run already covers
+                               the newest archsync-* source snapshot; --force
+                               overrides that skip.
   restore <name> [snap] [dir]  Restore a source (default snap=latest) into dir
                                (default /mnt/restore/restic/<name>/<ts>)
   verify [--full|--auto-subset]  restic check (--full reads all pack data;
                                --auto-subset reads a rotating 1/12 — the weekly
                                restic-offsite-verify.timer's mode)
   snapshots                    List restic snapshots
-  prune                        restic forget --prune (GFS retention)
+  prune [--max-remove N]       restic forget --prune (GFS retention). Refuses to
+                               run when the dry-run would forget more than N
+                               snapshots (default {% endraw %}{{ restic_offsite_forget_max_remove | default(3) }}{% raw %}) — name the count to
+                               accept a deliberate retention/grouping change.
   status                       Timer/service status + snapshots + repo stats
 USAGE
 }
@@ -448,11 +598,11 @@ main() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
-    run) cmd_run ;;
+    run) cmd_run "$@" ;;
     restore) cmd_restore "$@" ;;
     verify) cmd_verify "$@" ;;
     snapshots) cmd_snapshots ;;
-    prune) cmd_prune ;;
+    prune) cmd_prune "$@" ;;
     status) cmd_status ;;
     ""|help|-h|--help) usage ;;
     *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;

@@ -12,42 +12,22 @@ locals {
   # policy bindings in policy_bindings.tf. (media-admins / dns-admins carry
   # basic-auth injection attributes too, so they are explicit resources below,
   # not list entries.)
-  # Grouped by consumer:
-  #   admin                          — wg-easy admin UI (docs/38)
-  #   bar-assistant-users            — `bar` application binding
-  #   gitlab-admins / gitlab-users   — GitLab SAML group mapping (docs/27);
-  #                                    gitlab-users also binds the `git` app
-  #   grafana-admins / grafana-users — Grafana OIDC role mapping (docs/31);
-  #                                    grafana-users also binds the `grafana` app
-  #   hermes-users                   — Hermes dashboard OIDC (docs/37)
-  #                                    + the `agent` app binding
-  #   home-assistant-users           — `home` application binding
-  #   homarr-admins / homarr-users   — two-tier `dashboard` app gate (either
-  #                                    binding grants access); homarr-admins is
-  #                                    also the Homarr admin group synced from
-  #                                    the OIDC `groups` claim, homarr-users
-  #                                    land as regular users (docs/41)
-  #   immich-users                   — Immich OIDC (docs/36) + `photos` binding
-  #   mealie-admins / mealie-users   — Mealie OIDC (docs/22-23);
-  #                                    mealie-users also binds the `food` app
-  #   nextcloud-users                — Nextcloud OIDC (docs/35) + `cloud` binding
-  #   vpn-admins                     — wg-easy admin UI (docs/38) + `vpn` binding
   member_groups = [
-    "admin",
-    "bar-assistant-users",
-    "gitlab-admins",
-    "gitlab-users",
-    "grafana-admins",
-    "grafana-users",
-    "hermes-users",
-    "home-assistant-users",
-    "homarr-admins",
-    "homarr-users",
-    "immich-users",
-    "mealie-admins",
-    "mealie-users",
-    "nextcloud-users",
-    "vpn-admins",
+    "admin",                # wg-easy admin UI (docs/38)
+    "bar-assistant-users",  # `bar` application binding
+    "gitlab-admins",        # GitLab SAML group mapping (docs/27)
+    "gitlab-users",         # GitLab SAML mapping + `git` app binding
+    "grafana-admins",       # Grafana OIDC role mapping (docs/31)
+    "grafana-users",        # Grafana OIDC mapping + `grafana` app binding
+    "hermes-users",         # Hermes dashboard OIDC + `agent` binding (docs/37)
+    "home-assistant-users", # `home` application binding
+    "homarr-admins",        # Homarr admin group synced from the OIDC groups claim (docs/41)
+    "homarr-users",         # second tier of the `dashboard` gate; either binding grants access
+    "immich-users",         # Immich OIDC + `photos` binding (docs/36)
+    "mealie-admins",        # Mealie OIDC admin mapping (docs/22-23)
+    "mealie-users",         # Mealie OIDC + `food` app binding
+    "nextcloud-users",      # Nextcloud OIDC + `cloud` binding (docs/35)
+    "vpn-admins",           # wg-easy admin UI + `vpn` binding (docs/38)
   ]
 }
 

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DUAL-MAINTAINED: eric/weisssrv-lib ships a copy of this script for its other
+# consumers, and the library CI templates take the script PATH from the consumer
+# tree (.gitlab-ci.yml inputs), so this repo-local copy is the one CI runs. A
+# behaviour change here should be mirrored into weisssrv-lib and released with
+# the next tag bump; nothing compares the two automatically.
 # Assert that every scripts/<name>.{sh,py} referenced by Taskfile.yml exists on
 # disk, plus the `dotenv:` target scripts/hosts.env. go-task compiles command
 # templates lazily and `task --list`/`--dry` never stat referenced files, so a

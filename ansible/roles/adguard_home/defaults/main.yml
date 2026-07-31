@@ -1,6 +1,4 @@
 ---
-# Default variables for adguard_home role
-
 adguard_user: adguard
 adguard_group: adguard
 adguard_install_path: /opt/AdGuardHome

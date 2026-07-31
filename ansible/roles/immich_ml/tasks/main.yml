@@ -8,9 +8,7 @@
 # in a plain CI container (mirrors skip_nextcloud_deploy / immich_skip_install).
 # It defaults false, so real deploys run the full flow.
 
-# =============================================================================
 # GPU device (passed through by proxmox_lxc: /dev/dri bind + video/render idmap)
-# =============================================================================
 - name: Check the GPU render/card device nodes
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -43,9 +41,7 @@
     immich_ml_video_gid: "{{ immich_ml_dri_nodes.results[1].stat.gid }}"
   when: not (skip_immich_ml_deploy | default(false))
 
-# =============================================================================
 # Docker Engine (shared docker_engine via compose_app)
-# =============================================================================
 # Pinned-engine install + dpkg hold + journald daemon.json via the shared
 # docker_engine role (also backs immich + nextcloud), included through the shared
 # compose_app role. skip_immich_ml_deploy maps onto compose_app_skip_install.
@@ -56,9 +52,7 @@
   vars:
     compose_app_skip_install: "{{ skip_immich_ml_deploy | default(false) }}"
 
-# =============================================================================
 # Compose project
-# =============================================================================
 - name: Create the compose project directory
   ansible.builtin.file:
     path: "{{ immich_ml_compose_dir }}"
@@ -76,9 +70,7 @@
     mode: "0640"
   notify: Restart compose stack
 
-# =============================================================================
 # Systemd unit that owns the compose lifecycle (shared compose_app unit)
-# =============================================================================
 # No zvols on this LXC, so compose_app_requires_mounts_for is empty — the shared
 # unit then omits RequiresMountsFor entirely (matching the former per-role unit).
 - name: Deploy + start the Immich ML compose stack

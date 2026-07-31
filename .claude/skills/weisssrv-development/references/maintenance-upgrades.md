@@ -29,6 +29,18 @@ OS is the one exception — updated manually via its UI).
 Fold every available bump into the current MR revision; do not open a revision
 just to bump versions.
 
+**The bot does steps 1-3 weekly on its own.** `version-bump-bot` (scheduled CI
+job, `SCHEDULE_TYPE=version-bump`) runs the very same
+`task maintenance:update-all-versions` and keeps ONE open MR
+(`bot/version-bumps`) in sync with the result: it refreshes that MR rather than
+opening a second, closes it when nothing is outdated any more, and **never
+merges** — review and merge it like any other MR. Setup, the three outcomes, and
+how to trigger a run by hand: `docs/13-ci-cd.md` § "Version bump bot". Its MR
+manager, `scripts/version-bump-mr.py`, is vendored byte-identical from
+`weisssrv-lib` — fix it upstream, never here. The bot does not change the manual
+flow above: if you are already revising an MR, fold the bumps in there and let
+the bot close its own MR on the next run.
+
 ## Node / cluster upgrades & reboots
 
 - `task maintenance:update-packages` / `:update-applications` / `:update-full` /
@@ -53,6 +65,11 @@ just to bump versions.
 ## Doc updates that ride with a change
 
 `docs/16-next-steps.md` (mark done / remove from planned), the relevant
-`docs/NN-*.md`, `README.md` tables where applicable, and `CLAUDE.md` only if a
-top-level fact changed. `task lint` runs the docs-link checker over `docs/`,
-`README.md`, and `CLAUDE.md` (it does not scan `.claude/`).
+`docs/NN-*.md`, `README.md` tables where applicable, `CLAUDE.md` only if a
+top-level fact changed, and — whenever the change alters a **workflow, gate,
+invariant, or canonical-doc pointer** — `.claude/skills/weisssrv-development/`
+(`SKILL.md` and the matching `references/` file) in the SAME MR. Two thin gates
+now cover the skill — `docs-link-check` resolves its relative `.md` links and
+`scripts/test_doc_inventories.py` asserts every `` `task <ns>:<name>` `` it names
+still exists — but nothing validates the *prose*, so a stale procedure is doc
+rot CI cannot catch.

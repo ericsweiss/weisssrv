@@ -5,9 +5,6 @@
   become: true
   gather_facts: true
   tasks:
-    # ========================================================================
-    # 1. Mount point directory exists
-    # ========================================================================
     - name: Check mount point directory exists
       ansible.builtin.stat:
         path: /mnt/test-data
@@ -21,9 +18,7 @@
         fail_msg: "Mount point /mnt/test-data has wrong permissions: {{ mount_dir.stat.mode }}"
         success_msg: "Mount point /mnt/test-data exists with correct permissions (0755)"
 
-    # ========================================================================
     # 2. Device is formatted as ext4
-    # ========================================================================
     - name: Check device filesystem type with blkid
       ansible.builtin.command: blkid -s TYPE -o value /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
       register: blkid_result
@@ -37,9 +32,7 @@
         fail_msg: "Device is not ext4, got: {{ blkid_result.stdout | trim }}"
         success_msg: "Device is correctly formatted as ext4"
 
-    # ========================================================================
     # 3. Device is mounted at the correct mount point
-    # ========================================================================
     - name: Check device is mounted with findmnt
       ansible.builtin.command: findmnt -n -o TARGET --source /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
       register: findmnt_result
@@ -53,9 +46,7 @@
         fail_msg: "Device mounted at '{{ findmnt_result.stdout | trim }}', expected '/mnt/test-data'"
         success_msg: "Device is correctly mounted at /mnt/test-data"
 
-    # ========================================================================
     # 4. fstab entry exists with UUID and correct mount point
-    # ========================================================================
     - name: Get filesystem UUID
       ansible.builtin.command: blkid -s UUID -o value /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
       register: disk_uuid
@@ -83,9 +74,7 @@
         fail_msg: "fstab is missing UUID-based mount entry for /mnt/test-data"
         success_msg: "fstab contains correct UUID-based entry for /mnt/test-data"
 
-    # ========================================================================
     # Summary
-    # ========================================================================
     - name: Display test results
       ansible.builtin.debug:
         msg:

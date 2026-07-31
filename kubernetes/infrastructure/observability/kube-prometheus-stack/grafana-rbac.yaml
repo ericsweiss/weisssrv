@@ -1,0 +1,65 @@
+---
+# Replacement for the grafana subchart's own ClusterRole + ClusterRoleBinding,
+# selected by `grafana.rbac.create: false` in release.yaml.
+#
+# WHY: the chart hard-codes `resources: ["configmaps", "secrets"]` whenever any
+# sidecar is enabled (charts/grafana/templates/clusterrole.yaml), so the stock
+# install gives the Grafana ServiceAccount cluster-wide `secrets` get/list/watch
+# — the 1Password Connect token, both runner tokens, the Authentik secret-key
+# and Postgres passwords, the Cloudflare token, the VPN credentials. Grafana is
+# a user-facing web app reachable from the LAN, the whole tailnet and every pod,
+# so any Grafana RCE/SSRF turns into "read every Secret in the cluster".
+#
+# Nothing here needs Secrets: the dashboard and datasource sidecars are pinned to
+# `resource: configmap` in release.yaml, and every dashboard/datasource this
+# cluster provisions is a ConfigMap (the `grafana_dashboard` sidecar convention).
+# Adding a Secret-backed dashboard source would need `secrets` added back here
+# AND the sidecar `resource` widened — deliberately two edits.
+#
+# WHY BOTH OBJECTS, and NOT `rbac.useExistingClusterRole`: that value keeps the
+# chart's own binding — `{{ include "grafana.fullname" }}-clusterrolebinding`,
+# a fixed name — and only swaps its roleRef. roleRef is IMMUTABLE in the RBAC
+# API, so pointing the live binding (roleRef
+# kube-prometheus-stack-grafana-clusterrole, created 2026-04-17) at a different
+# ClusterRole is rejected on apply; `spec.upgrade` sets no `force`, and the
+# binding sorts before the Deployment in Helm's apply order, so the whole
+# kube-prometheus-stack upgrade would fail and roll back on every reconcile —
+# taking every other change in the release with it. Turning the chart's RBAC off
+# instead means the new binding is a NEW object (different name, created
+# cleanly), while Helm removes the two objects it used to own (both the
+# ClusterRole and the binding drop out of the release manifest, so `helm
+# upgrade` deletes them — no manual pre-merge kubectl step). Verified with
+# `helm template` of chart 87.19.1: `rbac.create: false` removes exactly
+# ClusterRoleBinding/kube-prometheus-stack-grafana-clusterrolebinding and
+# nothing else (the chart's Role/RoleBinding render only under
+# `rbac.namespaced`, which is off — the live cluster has neither).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-prometheus-stack-grafana-configmaps
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: kube-prometheus-stack
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "watch", "list"]
+---
+# The binding the chart no longer ships. Subject must stay in sync with the
+# chart's ServiceAccount name (`grafana.fullname` = <release>-grafana); the
+# sidecars mount that SA's token via the projected volume in release.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-prometheus-stack-grafana-configmaps
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: kube-prometheus-stack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-prometheus-stack-grafana-configmaps
+subjects:
+  - kind: ServiceAccount
+    name: kube-prometheus-stack-grafana
+    namespace: observability

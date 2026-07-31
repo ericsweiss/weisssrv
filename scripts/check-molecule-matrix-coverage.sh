@@ -76,7 +76,7 @@ def matrix_entries(job_name):
     return matrix if isinstance(matrix, list) else []
 
 
-# ---- molecule-tests: (ROLE, SCENARIO) pairs ----------------------------------
+# molecule-tests: (ROLE, SCENARIO) pairs
 # Matrix shape: a list of {ROLE: <name>, SCENARIO: <name>} dicts.
 ci_molecule = set()
 for entry in matrix_entries("molecule-tests"):
@@ -120,7 +120,7 @@ if roles_dir.is_dir():
         if role_dir.name not in tested_roles:
             untested_roles.append(role_dir.name)
 
-# ---- integration-tests: TEST list --------------------------------------------
+# integration-tests: TEST list
 # Matrix shape: a single {TEST: [a, b, ...]} entry (a list of test names).
 ci_integration = set()
 for entry in matrix_entries("integration-tests"):

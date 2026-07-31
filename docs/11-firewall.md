@@ -390,11 +390,15 @@ k3s_servers:
         - nfs_clients
 ```
 
-**Available IPSets:**
-- `pve_hosts` - Proxmox VE hypervisor hosts
-- `core-cluster` - All core infrastructure (Proxmox, DNS, SMTP, services, k3s)
-- `k3s_nodes` - Kubernetes nodes
-- `nfs_clients` - Hosts allowed NFS access
+**Available IPSets** (`cluster.fw.j2` + the inventory-generated `ipsets.j2` are
+the source of truth):
+- `pve_hosts` - Proxmox VE hypervisor hosts (generated from the inventory)
+- `core-cluster` - All core infrastructure (Proxmox, DNS, SMTP, services, k3s) (generated)
+- `k3s_nodes` - Kubernetes nodes (generated)
+- `nfs_clients` - Hosts allowed NFS access (generated)
+- `admin_lan` - The whole LAN /24, admin/management sources (in-template)
+- `admin_ts` - The full Tailscale CGNAT range 100.64.0.0/10 (in-template)
+- `smb_clients` - Hosts allowed SMB access, the whole LAN /24 (in-template)
 
 **Special Entries (VIPs, non-host IPs):**
 
@@ -458,6 +462,9 @@ k3s_agents:
 | `sg-k3s-ingress-int` | HTTP/HTTPS from admin networks | K3s ingress nodes (internal apps) |
 | `sg-k3s-ingress-pub` | HTTP/HTTPS from all sources | K3s ingress nodes (public apps) |
 | `sg-gitlab` | GitLab HTTP/HTTPS + Git SSH | GitLab VM |
+| `sg-nextcloud` | HTTPS 443 (Traefik + admin) + nextcloud-exporter 9205 | Nextcloud VM (.156) |
+| `sg-immich` | HTTPS 443 (Traefik + admin) + Immich telemetry 8081/8082 | Immich VM (.157) |
+| `sg-immich-ml` | ML inference 3003 from the Immich VM **only** (the API is authless — this rule is the security boundary) | immich-ml LXC (.158) |
 | `sg-haos` | Home Assistant Web UI + mDNS | Home Assistant VM |
 | `sg-windows` | Windows RDP | Windows VMs |
 | `sg-metrics` | Prometheus exporter scrape ports from k3s_nodes (9100/9101/9134/9167/8123/32400/3000/7472/7473) + Loki NodePort 31100 from core-cluster | **All hosts and guests** |

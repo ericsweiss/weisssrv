@@ -88,8 +88,23 @@ no longer takes the only copies. **3-2-1 is met for everything except the
 intentional exclusions**: `tank/media` (replaceable bulk media),
 Prometheus/Loki history (config is in git; history accepted-loss), vzdump VM
 images (IaC-rebuildable; local + archive copies only), and the Windows VM
-(excluded entirely by design). GFS retention on B2: 3 daily / 2 weekly /
-3 monthly / 1 yearly. Restore paths in docs/42 §Restore.
+(offsite-excluded — it *is* vzdumped nightly, so it has local + archive copies;
+only the B2 tier skips it). GFS retention on B2: 3 daily / 2 weekly / 3 monthly
+/ 1 yearly, plus a `--keep-last 5` floor so the daily buckets alone cannot walk
+every restore point out of a bucket that has no Object Lock. Restore paths in
+docs/42 §Restore.
+
+> **The offsite claim is only as good as what actually lands.** GitLab's
+> tarballs were absent from B2 for four days because `gitlab.rb`'s relocated
+> `backup_path` never reached the Rails config (a lost `notify: Reconfigure
+> gitlab`) — and three separate monitors stayed green throughout, because the
+> artifact-freshness collector matched *any* file and the nightly
+> `gitlab.rb`/`gitlab-secrets.json` copies satisfied it. Both holes are now
+> closed: the `gitlab` role asserts the EFFECTIVE Rails backup path and
+> self-heals a missed reconfigure, the NAS collector counts only files matching
+> a per-app artefact glob, and `BackupArtifactEmpty` fires on any
+> `*_backup_last_size_bytes == 0`. When auditing this tier, check artefact
+> NAMES in `tank/backups/apps/<app>`, not just mtimes.
 
 The archive's raw-encrypted streams and `plug`/`unplug` workflow remain
 purpose-built for physical offsite rotation (the pool can be detached and
@@ -143,12 +158,53 @@ pct set 152 --mp0 /mnt/ssd/appdata/plex,mp=/config,backup=0
 Reclaiming the already-accumulated oversized vzdump tarballs is a separate
 one-time manual prune (or let `tank-proxmox` retention age them out).
 
+## Total site loss — the ordered critical path
+
+The sections below cover each recovery track in isolation. This is the sequence
+that ties them together when there is **nothing left on site** (fire / theft /
+flood). Every earlier draft of this document had the pieces but never the order,
+and never named its two off-site dependencies.
+
+**The two things that must survive outside the house:**
+
+1. **The IaC itself.** GitLab (`git.esweiss.com`) hosts the canonical repos AND
+   the Terraform HTTP state backends for `terraform/{cloudflare,tailscale,authentik}`.
+   Its nightly tarball reaches B2 — but you cannot read B2 without the repo's
+   tooling, so the bootstrap copy is the **read-only GitHub mirror**
+   (`github.com/ericsweiss/weisssrv`). The mirror carries this repo only: **not**
+   `weisssrv-lib` / `weisssrv-app-template` history, not issues/MRs, not the
+   container registry, and not Terraform state. Those come back from the GitLab
+   tarball once GitLab itself is running.
+2. **The credentials.** The 1Password vault (survives independently) plus an
+   **offline** copy of `restic_repo_password` — without it the entire B2 repo is
+   an inert blob (`docs/15-credential-rotation.md`).
+
+**Order (rough RTO per track, assuming replacement hardware is on hand):**
+
+| # | Step | Depends on | Rough RTO |
+|---|---|---|---|
+| 1 | Install Proxmox on the replacement hosts, restore `/etc/pve` from the `pve-cluster` archive once B2 is readable (or rebuild the cluster and re-add nodes) | hardware | 2–4 h |
+| 2 | Clone the IaC from the **GitHub mirror**; sign in to 1Password; restore the offline `restic_repo_password` | GitHub + 1Password | 15 min |
+| 3 | Create the ZFS pools by hand (never automated — docs/06), then run the storage bootstrap (this document, "Storage Bootstrap") | 1, 2 | 1–2 h |
+| 4 | Restore from B2: `restic-offsitectl restore <source>` for `backups`, `share`, `appdata`, `k3s-etcd`, and the two data zvol trees | 3 | hours–days (data-volume bound; 621 GB raw at review time) |
+| 5 | Rebuild the k3s VMs + cluster (`task k3s:deploy`), restoring etcd from the off-node snapshot if a same-identity cluster is wanted | 3, 4 | 1–2 h |
+| 6 | Bootstrap Flux + ESO (the two manual secrets — `docs/29-flux-operations.md`), let Flux reconcile everything in `kubernetes/` | 5 | 30–60 min |
+| 7 | Rebuild the VM/LXC apps via their playbooks, then replay logical dumps from the restored `backups/apps/<app>` (`gitlab-backup restore`, `pg_restore`, HAOS tar import — the HA tars need `backup_encryption_key`) | 4, 6 | 2–4 h |
+| 8 | Re-point DNS: `terraform/cloudflare` state is inside the restored GitLab, so restore GitLab (step 7) **before** any terraform apply | 7 | 30 min |
+
+Bare-metal guest images are deliberately **not** in B2 (vzdump is local +
+archive only), so step 7 is "reprovision via Ansible, then restore data" — not
+"restore images". That is a defensible trade given the IaC coverage, but it is
+the reason the GitHub mirror is a hard dependency rather than a convenience.
+
+**Nothing above is proven until it is drilled** — see docs/42 § "Restore drills".
+
 ## Restore Procedures
 
 Two paths feed the `archive` pool (see "Backup Dedup" above): the nightly
 `vzdump` of every VM/CT into `tank/proxmox`, and `archive-backupctl`'s direct
 raw/encrypted replication of `tank/{share,backups,nextcloud-data,proxmox,
-immich-data}` + `ssd/{appdata,databases}`. **Everything in `archive` is raw
+immich-data}` + `ssd/{appdata,databases,k3s-etcd}`. **Everything in `archive` is raw
 (`zfs send -w`) and encrypted under its source's key** — `archive` never holds a
 loaded key, so any restored dataset needs `zfs load-key` before it can be read
 (passphrase in 1Password; see `docs/32-zfs-encryption.md` and
@@ -168,7 +224,8 @@ Import the pool first if it is detached (`archive-backupctl plug`), then:
 # received lockdown props (mountpoint, readonly) and attempts the mount itself;
 # encrypted (key-less) trees still need the load-key + mount steps below.
 sudo archive-backupctl restore <target>   # share|backups|nextcloud-data|proxmox|
-                                          # immich-data|appdata|databases|all
+                                          # immich-data|appdata|databases|
+                                          # k3s-etcd|all
 
 # The restored clone is raw + encrypted (key-less). These pools use multiple
 # SIBLING encryption roots that share one passphrase (Model B, docs/32) — NOT one
@@ -347,9 +404,22 @@ with the app's normal restore (`pg_restore`, `gitlab-backup restore`, etc.).
   `ssd/appdata → archive`; restore file-wise like Grafana above (see
   `docs/38-wireguard-vpn.md`, `docs/37-hermes.md`).
 - **Home Assistant** — full-VM recovery rides the monitored nightly vzdump of the
-  HAOS VM (.154) via `VzdumpBackupStale`; HAOS built-in backups
-  (`docs/24-home-assistant-deployment.md`) are an unmonitored best-effort
-  convenience for granular config restore.
+  HAOS VM (.154) via `VzdumpBackupStale`. The HAOS built-in backups
+  (`docs/24-home-assistant-deployment.md`) are **no longer unmonitored**: they
+  land on `tank/backups/apps/home-assistant` over the HAOS network-storage mount,
+  ride archsync into B2, and are watched by
+  `BackupArtifactStale{app="home-assistant"}` (docs/42 superseded the old
+  best-effort framing). They are **encrypted** — restoring them needs the
+  emergency-kit key stored as `backup_encryption_key` on the "Home Assistant API
+  Token" 1Password item (`docs/15-credential-rotation.md`); without it the tars
+  are unusable, so verify that field is populated as part of the restore drill.
+- **PVE cluster identity (`/etc/pve`)** — pmxcfs is NOT captured by vzdump
+  (which backs up guests, not the cluster filesystem). `pve-cluster-backup.timer`
+  on pve-nas-01 tars it nightly to `tank/backups/apps/pve-cluster`, so
+  `user.cfg` (users/ACLs/API tokens), `corosync.conf` and `priv/` (cluster CA +
+  node certs + `authkey.pub`) ride archsync into B2. Restore by unpacking the
+  tar and copying files back into `/etc/pve` on a rebuilt cluster — note the
+  archive holds private key material, so it is root-only 0600 at every hop.
 
 ## etcd Snapshots
 

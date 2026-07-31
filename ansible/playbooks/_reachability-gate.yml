@@ -1,0 +1,110 @@
+---
+# Reachability ledger (second half) — imported LAST by base.yml and site.yml.
+# See _reachability-probe.yml for why the recap's `unreachable=` count and the
+# playbook exit code cannot be trusted once `ignore_unreachable` is in play.
+#
+# hosts MUST stay identical to the probe's pattern (base_managed). It is NOT
+# `localhost`: --limit is applied to every play's host list including an
+# implicit localhost, so a `hosts: localhost` gate matched 0 hosts — and never
+# ran — under exactly the three scoped CI invocations it exists to protect
+# (site.yml --limit proxmox / --limit mail / --limit dns). `tags: always`
+# cannot rescue a play with no hosts. Sharing the probe's pattern means the
+# gate is scoped by --limit the same way the ledger is.
+#
+# The verdict itself is delegated to the controller and run_once: the play's own
+# hosts are only a carrier. A carrier is safe even while unreachable —
+# gather_facts is off, the verdict tasks run on localhost, and the one task that
+# does dial (the re-probe) is ignore_unreachable and skipped for hosts already
+# on the ledger. `ignore_unreachable` on the plays above is what keeps such a
+# host out of `_unreachable_hosts`, and so in this play, for the whole run.
+#
+# A host that is knowingly out (hardware work) is declared in
+# `deploy_expected_absent_hosts` (group_vars/all.yml): it downgrades to a loud
+# warning instead of a failure, so the concession is recorded in git and expires
+# with a commit rather than silently applying to every future run.
+- name: Gate the run on the reachability ledger
+  hosts: base_managed
+  gather_facts: false
+  become: false
+  # The re-probe below is the only task that touches a host; a box that died
+  # mid-run must not turn the gate itself into an UNREACHABLE failure.
+  ignore_unreachable: true
+  vars:
+    deploy_skipped_all: "{{ groups['deploy_skipped'] | default([]) }}"
+    deploy_lost_all: "{{ groups['deploy_lost'] | default([]) }}"
+    deploy_skipped_expected: >-
+      {{ deploy_skipped_all | intersect(deploy_expected_absent_hosts | default([])) }}
+    deploy_skipped_unexpected: >-
+      {{ deploy_skipped_all | difference(deploy_expected_absent_hosts | default([])) }}
+  tasks:
+    # The probe's ledger is a t0 snapshot, and this fleet loses hosts mid-run
+    # (opt-node e1000e TX hangs, docs/34) — so re-probe here rather than leaving
+    # "went unreachable after the probe" as a documented silent-success window.
+    # It is the probe's two tasks again, one connection per still-expected host
+    # at the point where the run is otherwise finished, and it distinguishes the
+    # two cases instead of merging them: `deploy_skipped` converged NOTHING,
+    # `deploy_lost` converged PART of the run and is the more dangerous state to
+    # report green. Hosts already on the ledger are not re-probed — they are
+    # known absent, and re-dialling them only buys another connection timeout.
+    - name: Re-probe the connection at the end of the run
+      ansible.builtin.ping:
+      register: deploy_reachability_reprobe
+      changed_when: false
+      when: inventory_hostname not in deploy_skipped_all
+      tags: [always]
+
+    - name: Record any host lost since the probe
+      ansible.builtin.group_by:
+        key: deploy_lost
+      changed_when: false
+      when: deploy_reachability_reprobe.unreachable | default(false)
+      tags: [always]
+
+    - name: Report the hosts that were skipped by declaration
+      ansible.builtin.debug:
+        msg: >-
+          INCOMPLETE RUN — unreachable and declared absent in
+          deploy_expected_absent_hosts: {{ deploy_skipped_expected | join(', ') }}.
+          Nothing was deployed to them. Re-run this playbook once they are back
+          and drop them from the list.
+      when: deploy_skipped_expected | length > 0
+      run_once: true
+      delegate_to: localhost
+      tags: [always]
+
+    - name: Fail because a targeted host was never configured
+      ansible.builtin.fail:
+        msg: >-
+          UNREACHABLE, so NOTHING was deployed to:
+          {{ deploy_skipped_unexpected | join(', ') }}.
+          ignore_unreachable let the rest of the fleet converge, but it also
+          makes ansible-playbook exit 0 with `unreachable=0` in the recap, so
+          this gate is the only signal that the run is incomplete. Fix the host
+          and re-run — or, if it is knowingly out (hardware work), add it to
+          deploy_expected_absent_hosts in group_vars/all.yml so the absence is
+          reviewed and dated instead of passing silently.
+      when: deploy_skipped_unexpected | length > 0
+      run_once: true
+      delegate_to: localhost
+      tags: [always]
+
+    # Reached only when nothing failed above: run_once fails the whole play, so
+    # "never configured" is reported ahead of "half configured" when a run
+    # manages both. Both are non-zero, and the next run re-probes either way.
+    #
+    # No deploy_expected_absent_hosts downgrade here: that list declares a host
+    # absent for the WHOLE run, and a host that answered the probe and then died
+    # is a different, unreviewed event — it is half-configured, not skipped.
+    - name: Fail because a host went unreachable mid-run
+      ansible.builtin.fail:
+        msg: >-
+          LOST MID-RUN, so only PART of the run reached:
+          {{ deploy_lost_all | join(', ') }}.
+          These hosts answered the probe and stopped answering before the end,
+          so an unknown prefix of the roles applied and `ignore_unreachable`
+          swallowed the rest. Fix the host and re-run the full playbook — a
+          partial converge is not a converge.
+      when: deploy_lost_all | length > 0
+      run_once: true
+      delegate_to: localhost
+      tags: [always]

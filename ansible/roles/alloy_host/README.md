@@ -43,6 +43,31 @@ fallback when Traefik is down — see note above). See `defaults/main.yml`
 for the canonical list of tunables; `group_vars/all.yml` does not pin this
 value.
 
+### Journal labels and the Loki accept window
+
+Two constraints in `templates/config.alloy.j2` are easy to break by tidying:
+
+- `loki.source.journal` forwards **directly** to `loki.write` and passes the
+  relabel rules by reference (`relabel_rules = loki.relabel.journal.rules`).
+  Routing it through the `loki.relabel` component instead applies those rules a
+  second time after Alloy has dropped the `__journal_*` metadata, which sets
+  `unit` to the empty string — i.e. deletes it. `loki.relabel "journal"`
+  therefore has `forward_to = []`: it is a rules holder, not a hop.
+- The stream labels are `job`, `host` and `unit`, and that set is a cardinality
+  budget, not an oversight: each label multiplies the streams Loki keeps open
+  for `max_chunk_age`. `unit` is what the mail and unbound dashboards select on
+  (~285 streams fleet-wide, measured). `priority` (another ~1.4x, no consumer)
+  and `hostname` (a duplicate of `host`) are deliberately not mapped — adding
+  either means re-checking `max_global_streams_per_user` and the Loki ingester's
+  memory limit in `kubernetes/infrastructure/observability/loki/release.yaml`.
+- `alloy_host_journal_max_age` (3h) must stay **inside** Loki's out-of-order
+  accept window (`ingester.max_chunk_age / 2`, currently 6h/2 = 3h). Entries
+  re-read from further back are pushed and then rejected `too_far_behind`.
+
+Both are enforced statically by `scripts/test_alloy_journal_pipeline.py`
+(`task scripts:test`) and asserted on the rendered config by the role's
+Molecule verify.
+
 ## Deployment
 
 ```bash

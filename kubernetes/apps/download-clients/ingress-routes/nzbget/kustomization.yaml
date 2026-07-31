@@ -26,6 +26,16 @@ patches:
       - op: replace
         path: /spec/routes/0/match
         value: Host(`nzbget.esweiss.com`)
+      # Guard the positional replace below (same rail the _vpn-sidecar overlays
+      # use): index 1 is authentik-auth only as long as nobody prepends to the
+      # shared chain. If someone adds e.g. a rate-limiter at the front, index 1
+      # becomes lan-tailscale-only and this patch would silently swap the IP
+      # allowlist for an auth middleware — leaving nzbget.esweiss.com reachable
+      # from anywhere Traefik is, with `kustomize build` still exiting 0. The
+      # test turns that into a loud build failure.
+      - op: test
+        path: /spec/routes/0/middlewares/1/name
+        value: authentik-auth
       - op: replace
         path: /spec/routes/0/middlewares/1
         value:

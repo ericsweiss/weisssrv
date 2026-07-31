@@ -14,7 +14,7 @@
 # container runtime. Callers pass compose_app_skip_install: "{{ <their flag> }}".
 compose_app_skip_install: false
 
-# --- Compose systemd unit (tasks/main.yml + templates/compose.service.j2) -----
+# Compose systemd unit (tasks/main.yml + templates/compose.service.j2)
 compose_app_service_name: compose            # unit basename (<name>.service)
 compose_app_description: "Docker Compose stack"
 compose_app_working_directory: /opt/compose
@@ -25,12 +25,12 @@ compose_app_reconcile_comment: []
 # systemd treats `yes` and `true` identically; standardised on `yes`.
 compose_app_remain_after_exit: "yes"
 
-# --- Backup-metrics helper library (tasks/backup_lib.yml) ---------------------
+# Backup-metrics helper library (tasks/backup_lib.yml)
 compose_app_backup_lib_dest: /usr/local/lib/compose-app-backup-lib.sh
 # Noun in the size-gauge HELP line ("Size of the most recent <object> in bytes").
 compose_app_backup_size_help_object: dump
 
-# --- Host nginx TLS terminator (tasks/nginx.yml) ------------------------------
+# Host nginx TLS terminator (tasks/nginx.yml)
 # Cert material (paths + dir mode) and the self-signed placeholder parameters
 # are per-app; the site template stays in the caller's role (byte-unchanged) and
 # is passed by an eagerly-resolved absolute path (compose_app_nginx_site_template).

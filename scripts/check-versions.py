@@ -40,9 +40,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-# ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
 
 VARS_FILE = Path(__file__).resolve().parent.parent / "ansible" / "inventories" / "prod" / "group_vars" / "all.yml"
 # CI-pinned container images (e.g. the pr-agent reviewer) live in .gitlab-ci.yml
@@ -93,7 +91,7 @@ class ServiceVersion:
 
 # Service definitions - maps var_name to lookup configuration
 SERVICE_REGISTRY: list[dict] = [
-    # --- GitHub releases (binary tools) ---
+    # GitHub releases (binary tools)
     {
         "name": "AdGuard Home",
         "var_name": "adguard_home_version",
@@ -303,7 +301,7 @@ SERVICE_REGISTRY: list[dict] = [
         "source_url": "https://github.com/NVIDIA/dcgm-exporter/releases",
         "notes": "nvcr.io tag <DCGM>-<exporter>-<variant>, e.g. 4.6.0-4.8.3-distroless.",
     },
-    # --- Container images ---
+    # Container images
     {
         "name": "Gluetun",
         "var_name": "gluetun_version",
@@ -393,7 +391,7 @@ SERVICE_REGISTRY: list[dict] = [
         "docker_image": "library/redis",
         "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
     },
-    # --- LinuxServer.io container images ---
+    # LinuxServer.io container images
     # LinuxServer.io tags follow these patterns:
     #   version-vX.Y.Z (nzbget), version-X.Y.Z-rN (qbittorrent),
     #   version-X.Y.Z.BUILD (*arr apps - stable branch)
@@ -459,7 +457,7 @@ SERVICE_REGISTRY: list[dict] = [
         "lsio_max_pages": 4,
         "notes": "LinuxServer stable branch",
     },
-    # --- Helm charts ---
+    # Helm charts
     {
         "name": "MetalLB",
         "var_name": "helm_chart_versions.metallb",
@@ -550,7 +548,7 @@ SERVICE_REGISTRY: list[dict] = [
         "apt_package": "alloy",
         "source_url": "https://apt.grafana.com/dists/stable/main/binary-amd64/Packages.gz",
     },
-    # --- GitLab ---
+    # GitLab
     {
         "name": "GitLab EE",
         "var_name": "gitlab_version",
@@ -588,7 +586,7 @@ SERVICE_REGISTRY: list[dict] = [
         "tag_regex": r"^(\d+\.\d+\.\d+)$",
         "source_url": "https://hub.docker.com/_/registry/tags",
     },
-    # --- Observability ---
+    # Observability
     {
         "name": "kube-prometheus-stack",
         "var_name": "helm_chart_versions.kube_prometheus_stack",
@@ -757,14 +755,14 @@ SERVICE_REGISTRY: list[dict] = [
         "docker_image": "oliver006/redis_exporter",
         "tag_regex": r"^(v\d+\.\d+\.\d+)$",
     },
-    # --- Plex (apt repo, auto-checked via fetch_plex_version) ---
+    # Plex (apt repo, auto-checked via fetch_plex_version)
     {
         "name": "Plex Media Server",
         "var_name": "plex_version",
         "category": "plex",
         "source_url": "https://www.plex.tv/media-server-downloads/",
     },
-    # --- Nextcloud (Docker Compose stack on the NAS-pinned VM) ---
+    # Nextcloud (Docker Compose stack on the NAS-pinned VM)
     {
         "name": "Nextcloud",
         "var_name": "nextcloud_version",
@@ -797,7 +795,7 @@ SERVICE_REGISTRY: list[dict] = [
         "tag_filter": r"^\d+\.\d+\.\d+$",
         "source_url": "https://github.com/xperimental/nextcloud-exporter/releases",
     },
-    # --- CI tooling images (pinned in .gitlab-ci.yml, not all.yml) ---
+    # CI tooling images (pinned in .gitlab-ci.yml, not all.yml)
     {
         # The pr-agent AI reviewer image, pinned by tag+digest in the
         # pr-agent-review job. Tracked here so `check-versions` flags a stale
@@ -812,7 +810,7 @@ SERVICE_REGISTRY: list[dict] = [
         "version_file": "ci",
         "source_url": "https://github.com/qodo-ai/pr-agent/releases",
     },
-    # --- Manifest-pinned container images (kubernetes/, not all.yml) ---
+    # Manifest-pinned container images (kubernetes/, not all.yml)
     # Tag+digest `image:` pins that live directly in kubernetes/ manifests with
     # no ${...} substitution from all.yml. version_file names the manifest(s)
     # the current tag is read from; like the CI pins above, updates are manual
@@ -886,9 +884,7 @@ SERVICE_REGISTRY: list[dict] = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # HTTP helpers
-# ---------------------------------------------------------------------------
 
 def _urlopen_with_retry_full(req, timeout: int = REQUEST_TIMEOUT) -> tuple[str, bytes]:
     """urlopen with a bounded retry on transient failures; return (content_type, body).
@@ -1044,9 +1040,7 @@ def fetch_apt_packages(base_url: str) -> str:
         raise RuntimeError(f"Invalid gzip data from {gz_url}") from e
 
 
-# ---------------------------------------------------------------------------
 # Cache helpers
-# ---------------------------------------------------------------------------
 
 def _cache_key(service_name: str) -> Path:
     """Generate a cache file path for a service."""
@@ -1091,9 +1085,7 @@ def _write_cache(service_name: str, version: str) -> None:
         print(f"Warning: failed to write cache for {service_name}: {e}", file=sys.stderr)
 
 
-# ---------------------------------------------------------------------------
 # Version parsing
-# ---------------------------------------------------------------------------
 
 def parse_version_tuple(version_str: str) -> tuple:
     """Parse a version string into a comparable tuple.
@@ -1228,9 +1220,7 @@ def version_compare(a: str, b: str) -> int:
     return -1
 
 
-# ---------------------------------------------------------------------------
 # Version fetchers
-# ---------------------------------------------------------------------------
 
 def _debian_version_part_compare(a: str, b: str) -> int:
     """Compare one Debian upstream_version or debian_revision part per
@@ -1826,9 +1816,7 @@ def fetch_gitlab_version(svc: dict) -> str:
     return best_version
 
 
-# ---------------------------------------------------------------------------
 # all.yml parser (simple YAML extraction without PyYAML)
-# ---------------------------------------------------------------------------
 
 def read_pinned_image_versions() -> dict[str, str]:
     """Current tags of digest-locked `image:` pins that live outside all.yml.
@@ -2058,9 +2046,7 @@ def update_version_in_file(var_name: str, new_version: str) -> bool:
     return modified
 
 
-# ---------------------------------------------------------------------------
 # Main logic
-# ---------------------------------------------------------------------------
 
 def _annotate_latest_resolution(result: ServiceVersion, current: str) -> None:
     """When a service tracks 'latest', surface the resolved version in the notes
@@ -2199,9 +2185,7 @@ def check_all(
     return results
 
 
-# ---------------------------------------------------------------------------
 # Output formatting
-# ---------------------------------------------------------------------------
 
 # ANSI colors
 GREEN = "\033[32m"
@@ -2369,9 +2353,7 @@ def format_json(results: list[ServiceVersion]) -> str:
     return json.dumps(data, indent=2)
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 
 def get_deploy_command(result: ServiceVersion) -> str:
     """Get the deployment command for a service."""
@@ -2630,7 +2612,7 @@ def main():
 
             # Surface errors FIRST — an operator looking at a long successful
             # update list could easily miss that 5 other services failed their
-            # version check. Previous behavior silently swallowed errors.
+            # version check.
             if write_failed:
                 print(f"\nERROR: {len(write_failed)} service(s) could not be updated in {VARS_FILE.name}:")
                 for r in write_failed:

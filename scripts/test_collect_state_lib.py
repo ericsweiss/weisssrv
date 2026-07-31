@@ -14,6 +14,7 @@ Run with pytest:
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def _redact(text: str, tmp_path: Path) -> str:
     return outfile.read_text()
 
 
-# --- redact_file: secrets must come out redacted -----------------------------
+# redact_file: secrets must come out redacted
 
 class TestRedactSecrets:
     @pytest.mark.parametrize(
@@ -93,7 +94,7 @@ class TestRedactSecrets:
         assert "<PRIVATE_KEY_REDACTED>" in out
 
 
-# --- redact_file: benign text must come out untouched ------------------------
+# redact_file: benign text must come out untouched
 
 class TestRedactBenign:
     @pytest.mark.parametrize(
@@ -112,7 +113,7 @@ class TestRedactBenign:
         assert out == line + "\n"
 
 
-# --- classifiers -------------------------------------------------------------
+# classifiers
 # classify_regular <pve_reachable> <k3s_api_ok> <k3s_ready> <k3s_total>
 #                  <hosts_ok> <hosts_total> <coverage_pct> <coverage_floor>
 #                  <flux_not_ready> <zfs_degraded> <gitlab_ok>
@@ -120,10 +121,12 @@ class TestRedactBenign:
 #                  <flux_not_ready> <zfs_degraded> <gitlab_ok>
 
 def _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, floor,
-             flux, zfs, gitlab) -> str:
+             flux, zfs, gitlab, sections_ok=1, sections_total=1,
+             alerts=0) -> str:
     res = _run(
         f"classify_regular {pve} {api} {ready} {total} {hosts_ok} "
-        f"{hosts_total} {pct} {floor} {flux} {zfs} {gitlab}"
+        f"{hosts_total} {pct} {floor} {flux} {zfs} {gitlab} "
+        f"{sections_ok} {sections_total} {alerts}"
     )
     assert res.returncode == 0, res.stderr
     return res.stdout.strip()
@@ -180,6 +183,33 @@ class TestClassifyRegular:
         # gitlab probe failure (000 -> gitlab_ok=0) with everything else green
         # yields PARTIAL, never OK.
         assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, 0) == "PARTIAL"
+
+    def test_failed_specialised_section_degrades(self):
+        # Every host SSH succeeded but one specialised collector (Proxmox /
+        # DNS / k3s / GitLab / compose) did not: the artifact is missing a whole
+        # block (ZFS health, firewall, HA state ...) and must not read OK.
+        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, 1,
+                        sections_ok=21, sections_total=22) == "PARTIAL"
+
+    def test_all_sections_collected_stays_ok(self):
+        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, 1,
+                        sections_ok=22, sections_total=22) == "OK"
+
+    def test_firing_alert_degrades(self):
+        # A firing non-Watchdog alert under a green header is the exact lie the
+        # artifact used to tell (TargetDown active, "Status: OK").
+        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, 1,
+                        alerts=1) == "PARTIAL"
+
+    def test_firing_alerts_never_cause_failed(self):
+        # Alert noise degrades but must never suppress the artifact.
+        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, 1,
+                        alerts=99) == "PARTIAL"
+
+    def test_suspended_flux_counts_as_not_ready(self):
+        # probe_flux_not_ready folds spec.suspend into its count, so a frozen
+        # cluster arrives here as flux_not_ready>0 and degrades.
+        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 1, 0, 1) == "PARTIAL"
 
 
 class TestClassifyJson:
@@ -247,7 +277,7 @@ class TestClassifierParity:
         )
 
 
-# --- compose_active_sections: sentinel section-dispatch ----------------------
+# compose_active_sections: sentinel section-dispatch
 # compose_active_sections <health_url> <nginx_cert> <backup_timer> <backup_prom>
 # echoes the comma-joined optional sections that render ("-" drops a section;
 # `metrics` is nested under `backup`).
@@ -293,7 +323,7 @@ class TestComposeActiveSections:
         )
 
 
-# --- firewall_guest_fw_list: per-guest .fw enumeration -----------------------
+# firewall_guest_fw_list: per-guest .fw enumeration
 # Reads candidate *.fw paths on stdin, drops cluster.fw, emits the rest sorted.
 
 def _fw_list(stdin: str) -> list[str]:
@@ -329,6 +359,117 @@ class TestFirewallGuestFwList:
 
     def test_empty_input_yields_nothing(self):
         assert _fw_list("") == []
+
+
+# cs_capped / cs_emit: remote section emitters
+# These replace the `producer | head -N || echo "none"` idiom the remote bodies
+# used to carry. That idiom is broken twice over: a pipeline exits with head's
+# status so the fallback is unreachable (a failed probe rendered as an EMPTY
+# section), and the cap was applied with no marker (pve-nas-01's ZFS dataset
+# list was silently clipped at exactly 50 rows). Both properties are asserted
+# here because both were live defects.
+
+def _capped(cap: int, fallback: str, stdin: str) -> list[str]:
+    res = _run(f"cs_capped {cap} '{fallback}'", stdin=stdin)
+    assert res.returncode == 0, res.stderr
+    return res.stdout.splitlines()
+
+
+def _emit(fallback: str, stdin: str) -> list[str]:
+    res = _run(f"cs_emit '{fallback}'", stdin=stdin)
+    assert res.returncode == 0, res.stderr
+    return res.stdout.splitlines()
+
+
+class TestCsEmit:
+    def test_empty_producer_prints_fallback(self):
+        # The regression: `systemctl --failed | head -20 || echo none` printed
+        # NOTHING here, so 16 of 22 host blocks had a blank Failed Units section.
+        assert _emit("none", "") == ["none"]
+
+    def test_output_passes_through_unchanged(self):
+        assert _emit("none", "a\nb\nc\n") == ["a", "b", "c"]
+
+    def test_uncapped_keeps_every_line(self):
+        big = "".join(f"row{i}\n" for i in range(500))
+        assert len(_emit("No ZFS", big)) == 500
+
+    def test_unterminated_final_line_is_kept(self):
+        # kubectl -o jsonpath emits no trailing newline.
+        assert _emit("none", "only-line") == ["only-line"]
+
+    def test_blank_line_is_output_not_absence(self):
+        assert _emit("none", "\n") == [""]
+
+
+class TestCsCapped:
+    def test_empty_producer_prints_fallback(self):
+        assert _capped(30, "none", "") == ["none"]
+
+    def test_under_cap_has_no_truncation_marker(self):
+        out = _capped(5, "none", "a\nb\n")
+        assert out == ["a", "b"]
+
+    def test_exactly_at_cap_has_no_marker(self):
+        out = _capped(3, "none", "a\nb\nc\n")
+        assert out == ["a", "b", "c"]
+
+    def test_over_cap_truncates_and_says_so(self):
+        out = _capped(3, "none", "a\nb\nc\nd\ne\n")
+        assert out[:3] == ["a", "b", "c"]
+        assert len(out) == 4
+        assert "truncated" in out[3]
+        # The marker must report the real total, not just the cap — a reader
+        # needs to know how much is missing.
+        assert "3 of 5" in out[3]
+
+    def test_cap_zero_means_uncapped(self):
+        out = _capped(0, "none", "a\nb\nc\nd\n")
+        assert out == ["a", "b", "c", "d"]
+
+
+# source guard: the dead-fallback idiom must not come back
+# The helpers above only help if the remote bodies actually use them. This is
+# the regression gate on collect-state.sh itself: `producer | head -N || echo
+# "msg"` (or tail/wc) can never print msg, because the pipeline exits with
+# head's status. 14 sites shipped with that shape.
+
+COLLECT_STATE = Path(__file__).resolve().parent / "collect-state.sh"
+
+DEAD_FALLBACK_RE = re.compile(
+    r"\|\s*(head|tail|wc)(\s[^|\n]*)?\|\|\s*echo"
+)
+
+
+class TestNoDeadPipelineFallbacks:
+    def test_collect_state_has_no_head_tail_wc_or_echo(self):
+        offenders = [
+            f"{n}: {line.strip()}"
+            for n, line in enumerate(COLLECT_STATE.read_text().splitlines(), 1)
+            if DEAD_FALLBACK_RE.search(line)
+        ]
+        assert not offenders, (
+            "`producer | head/tail/wc ... || echo MSG` can never print MSG "
+            "(the pipeline exits with head's status), so a probe failure "
+            "renders as an empty section. Use cs_emit / cs_capped instead:\n"
+            + "\n".join(offenders)
+        )
+
+    def test_the_guard_actually_matches_the_broken_idiom(self):
+        # A gate that cannot fail proves nothing — pin the pattern to the exact
+        # shapes that shipped.
+        for broken in (
+            'systemctl --failed --no-legend | head -20 || echo "none"',
+            "sudo postqueue -p 2>/dev/null | tail -1 || echo 'Cannot check'",
+            'kubectl get cm --no-headers | wc -l || echo "0"',
+        ):
+            assert DEAD_FALLBACK_RE.search(broken), broken
+        for ok in (
+            'systemctl --failed --no-legend | cs_emit "none"',
+            'zfs list | cs_capped 50 "No ZFS"',
+            'sudo pct list 2>/dev/null || echo "No LXC containers"',
+        ):
+            assert not DEAD_FALLBACK_RE.search(ok), ok
 
 
 if __name__ == "__main__":

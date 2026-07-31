@@ -5,7 +5,11 @@
 
 - name: Install prometheus-node-exporter
   ansible.builtin.apt:
-    name: prometheus-node-exporter
+    name:
+      - prometheus-node-exporter
+      # curl is the liveness gate's probe (see the healthcheck tasks below);
+      # not guaranteed present on a minimal LXC.
+      - curl
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -91,9 +95,47 @@
   tags:
     - molecule-notest
 
-# ---------------------------------------------------------------------------
+# Liveness gate
+# The check above is deploy-time only. At RUNTIME the exporter can die in a way
+# systemd cannot see: on 2026-07-26 the pve-nas-01 process went zombie with its
+# listener still bound, systemd kept reporting "active (running)", and the NAS
+# was unmonitored until an operator noticed — while NFSServerDown (which alerts
+# on the metric being absent) paged falsely. WatchdogSec cannot cover a
+# Type=simple process that never sd_notifies, so probe /metrics the way
+# Prometheus does and restart on a sustained failure. The shared
+# prometheus_exporter role has an equivalent health step; this bespoke role had
+# none.
+- name: Install node_exporter healthcheck script
+  ansible.builtin.copy:
+    src: node-exporter-healthcheck.sh
+    dest: /usr/local/sbin/node-exporter-healthcheck.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy node_exporter healthcheck unit + timer
+  ansible.builtin.template:
+    src: "node-exporter-healthcheck.{{ item }}.j2"
+    dest: "/etc/systemd/system/node-exporter-healthcheck.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  notify: Restart node_exporter_host_healthcheck_timer
+
+- name: Enable and start the node_exporter healthcheck timer
+  ansible.builtin.systemd:
+    name: node-exporter-healthcheck.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode
+  tags:
+    - molecule-notest
+
 # Textfile collectors (Proxmox hosts only)
-# ---------------------------------------------------------------------------
 # One block so the proxmox-group gate lives in a single place; each collector
 # keeps its own script + textfile_collector include.
 - name: Deploy the Proxmox-host textfile collectors

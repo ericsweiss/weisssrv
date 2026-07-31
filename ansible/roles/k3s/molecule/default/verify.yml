@@ -183,7 +183,6 @@
         fail_msg: "copy timer missing OnCalendar/Persistent"
         success_msg: "copy timer renders OnCalendar=hourly and Persistent=true"
 
-    # ------------------------------------------------------------------
     # Behavioral test of the DEPLOYED copy script (not just its rendered text):
     # seed snapshots + a bind-mounted export, run it, and assert the atomic
     # copy, *.part exclusion, retention prune, the success metric, and the
@@ -277,7 +276,6 @@
         fail_msg: "failure branch did not preserve the prior success timestamp"
         success_msg: "failure branch keeps success=0 with the preserved last-good timestamp"
 
-    # ------------------------------------------------------------------
     # Maintenance reboot-gate coverage: exercise the DEFER routing of the real
     # playbooks/maintenance/_reboot-if-needed.yml end to end without ever
     # rebooting. proxmox_self_reboot_safe=false forces the fail-closed defer

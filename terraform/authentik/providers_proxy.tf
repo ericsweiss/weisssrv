@@ -223,7 +223,7 @@ resource "authentik_provider_proxy" "wireguard_easy" {
   refresh_token_validity = "days=30"
 }
 
-# --- AdGuard Home SSO dashboards (Terraform-authored, docs/08) ---------------
+# AdGuard Home SSO dashboards (Terraform-authored, docs/08)
 # One provider per hostname (forward_single matches exactly one external
 # host): adguard.esweiss.com -> dns-01, adguard-02.esweiss.com -> dns-02.
 # Both inject the AdGuard admin credentials (adguard_user/adguard_password

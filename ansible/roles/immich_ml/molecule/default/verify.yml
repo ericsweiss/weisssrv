@@ -7,9 +7,7 @@
   vars:
     immich_ml_compose_dir: /opt/immich-ml/compose
   tasks:
-    # ==========================================================================
     # docker-compose.yml
-    # ==========================================================================
     - name: Stat docker-compose.yml
       ansible.builtin.stat:
         path: "{{ immich_ml_compose_dir }}/docker-compose.yml"
@@ -51,9 +49,7 @@
         fail_msg: "docker-compose.yml missing expected image pin / GPU / cache / port config"
         success_msg: "docker-compose.yml pins the -openvino image and wires GPU, cache, port 3003"
 
-    # ==========================================================================
     # systemd unit
-    # ==========================================================================
     - name: Slurp the compose systemd unit
       ansible.builtin.slurp:
         src: /etc/systemd/system/immich-ml-compose.service

@@ -31,7 +31,6 @@
     _pe_deb_install_version: "7.7.7"
     _pe_deb_install_tmp: /tmp/pe-deb-install-fixture
   pre_tasks:
-    # Wait for apt locks to be released (unattended-upgrades runs on container startup)
     - name: Wait for apt locks to be released
       ansible.builtin.shell: |
         while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
@@ -73,7 +72,7 @@
         - { unit: "pe-deb-mock", bin: "/usr/local/bin/pe-deb-mock" }
         - { unit: "pe-install-mock", bin: "/usr/local/bin/pe-install-mock" }
 
-    # --- Tarball install-path fixture -----------------------------------------
+    # Tarball install-path fixture
     # Build a tiny .tar.gz holding a sleep-loop binary at a nested archive
     # member path, served back to the role over file:// so the real
     # get_url -> unarchive -> copy -> cleanup chain runs without leaving CI.
@@ -102,7 +101,7 @@
           -C {{ _pe_install_tmp }}/build pe-install-mock-{{ _pe_install_version }}.linux-amd64
         creates: "{{ _pe_install_tmp }}/pe-install-mock-{{ _pe_install_version }}.linux-amd64.tar.gz"
 
-    # --- Deb install-path fixture --------------------------------------------
+    # Deb install-path fixture
     # Build a minimal .deb shipping a sleep-loop binary + unit, served back over
     # file:// so the role's deb branch (get_url -> apt deb: -> cleanup) runs for
     # real in CI instead of only being exercised on the live unbound_exporter
