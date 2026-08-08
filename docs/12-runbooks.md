@@ -1140,6 +1140,44 @@ task maintenance:update-cluster     # 4-phase: k3s nodes, check-versions, update
 - Helm charts: 1-2 minutes per chart (rolling updates)
 - Workloads: 1-2 minutes per namespace (rolling restart)
 
+#### Rebooting a Proxmox host that runs HA guests
+
+**Drain the node first.** The maintenance playbooks reboot without draining, and
+the cluster leaves `shutdown_policy` at the Proxmox default (`conditional`),
+which *freezes* HA services across a reboot rather than moving them — they stay
+assigned to the node and are DOWN for its whole downtime. For dns-01 that means
+losing the primary resolver for the reboot unless you move it first.
+
+```bash
+# 1. Drain: HA relocates every service off the node (it may hop more than once)
+ssh <host> sudo ha-manager crm-command node-maintenance enable <node>
+ssh <host> sudo ha-manager status | grep service:   # wait until none list <node>
+
+# 2. Reboot
+ssh <host> sudo systemctl reboot
+
+# 3. Release: services fail BACK to their homes automatically
+ssh <host> sudo ha-manager crm-command node-maintenance disable <node>
+ssh <host> sudo ha-manager status | grep service:   # homes restored
+```
+
+Do NOT try `ha-manager migrate <svc> <node>` to move a service off its home
+while the home is up — it is refused with *"resource not allowed on target
+node"*. That is correct behaviour, not a fault: with the priority groups in
+`ha_rules` (home at `:2`, the rest at `:1`) only the highest-priority AVAILABLE
+node is a legal placement, and lower-priority nodes become legal exactly when
+the home goes away. Maintenance mode is the supported way to make a node
+unavailable on purpose. Automatic failover on a real node failure is unaffected.
+
+Leaving `shutdown_policy` at `conditional` is deliberate. Switching it to
+`migrate` would not reduce downtime here: dns-01, dns-02 and smtp-relay are LXCs,
+and container migration is stop/start regardless, so you would get the same
+outage on a different host plus needless shuffling on every kernel reboot. The
+redundancy that matters is the dns-01/dns-02 pair plus automatic failover.
+
+Verified end-to-end on pve-laptop-01 (2026-08-08): drained, rebooted, released,
+and ct:150 returned to its home unaided while dns-02 served throughout.
+
 ### Rollback Procedures
 
 #### Rolling back k3s version
@@ -1419,9 +1457,10 @@ Use this when the original node is offline for extended maintenance or has faile
 
    The `ha_rules` node-affinity home for the VMID must move with it (`source_node`
    has to track the HA home or `proxmox_ha/replication.yml` cannot manage the jobs).
-   Never make `pve-laptop-01` a home (priority >= 2) — it has a memtest-confirmed
-   dead RAM cell masked via `GRUB_BADRAM` and is fallback-only until the DIMM is
-   replaced (`all.yml` `affinity-dns-01` carries the same note).
+   `pve-laptop-01` is currently fallback-only (priority 1, never a home). Its RAM
+   was replaced 2026-08-08 and memtest86+ passed clean, so this is a soak
+   decision rather than a hardware block (`all.yml` `affinity-dns-01` has the
+   detail).
 
 2. **Update all 4 jobs for the VMID:**
    - Change `source_node` to the current running node
@@ -1481,16 +1520,15 @@ Use this when the original node is back online and you want to restore the origi
 
 | Service | VMID | Primary Node | Schedule | Notes |
 |---------|------|--------------|----------|-------|
-| dns-01 | 150 | pve-opt-01 [†] | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
+| dns-01 | 150 | pve-laptop-01 | `*/15` (0,15,30,45) | Primary DNS; dns-02 provides redundancy |
 | smtp-relay | 151 | pve-opt-01 | `3-59/15` (3,18,33,48) | Single instance; brief outage during failover |
 | dns-02 | 160 | pve-opt-03 | `6-59/15` (6,21,36,51) | Secondary DNS; dns-01 provides redundancy |
 | home-assistant | 154 | pve-prec-01 | `9-59/15` (9,24,39,54) | HAOS VM; check integrations after failover |
 
-[†] dns-01's home moved off pve-laptop-01 (memtest-confirmed dead RAM cell, masked
-via `GRUB_BADRAM`, DIMM replacement pending). pve-laptop-01 stays a priority-1
-fallback and must never be a home until the RAM is replaced and re-tested —
-`ha_rules` / `storage_replication_jobs` in `group_vars/all.yml` are the source of
-truth for the current homes.
+dns-01's home moved off pve-laptop-01 while it had a memtest-confirmed dead RAM
+cell, and returned on 2026-08-08 once the RAM was replaced and memtest86+ passed
+clean. `ha_rules` / `storage_replication_jobs` in `group_vars/all.yml` are the
+source of truth for the current homes.
 
 ### Replication Job ID Format
 

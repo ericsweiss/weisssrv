@@ -98,15 +98,17 @@ This document tracks remaining work and planned improvements for the weisssrv ho
 
 | Service | Type | Primary Host | Failover Targets | Status |
 |---------|------|--------------|------------------|--------|
-| dns-01 | LXC | pve-opt-01 [†] | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
+| dns-01 | LXC | pve-laptop-01 | pve-opt-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
 | dns-02 | LXC | pve-opt-03 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-prec-01 | HA Active |
 | smtp-relay | LXC | pve-opt-01 | pve-laptop-01, pve-opt-02, pve-opt-03, pve-prec-01 | HA Active |
 | home-assistant | VM | pve-prec-01 | pve-laptop-01, pve-opt-01, pve-opt-02, pve-opt-03 | HA Active |
 
-[†] dns-01 is **temporarily** homed on pve-opt-01: pve-laptop-01 has confirmed bad
-RAM (masked via `GRUB_BADRAM`, DIMM replacement pending) and is fallback-only until
-the swap. Restore pve-laptop-01 as the primary once the DIMM is replaced.
-Authoritative placement is `ha_rules` (`affinity-dns-01`) in `group_vars/all.yml`.
+dns-01's home returned to pve-laptop-01 on 2026-08-08, after its RAM, CPU fan and
+CMOS battery were replaced and memtest86+ passed clean. It had been relocated to
+pve-opt-01 while that host had a memtest-confirmed dead cell.
+Authoritative placement is `ha_rules` (`affinity-dns-01`) in `group_vars/all.yml`;
+the `150-*` `storage_replication_jobs` source_node and dns-01's `proxmox_host` in
+`hosts.yml` must always match it.
 
 - [x] **Proxmox HA configured** via `proxmox_ha` role
   - Node-affinity rules control placement

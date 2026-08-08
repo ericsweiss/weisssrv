@@ -1201,7 +1201,16 @@ pr-agent-review:
     # that one), so size the call timeout above the slow case and let the job
     # timeout below be the real bound. A too-small value does not fail fast — it
     # fails, retries, and fails again having done the work twice.
-    CONFIG__AI_TIMEOUT: "1800"
+    # 1200s per call. Raised from 600 after a 52k-token diff on weisssrv-lib!4
+    # took 1478s in ONE improve call, timed out, retried, and ate the job budget.
+    # 1800 was over-corrected for THIS repo. Be precise about what 1200 does and
+    # does not cover: it clears every pass observed here (the 407-file !201 did
+    # both passes in 16.2m total) but it is still BELOW that 1478s lib!4 call, so
+    # a diff of that shape would time out. That is an accepted trade — this file
+    # governs weisssrv only, the failure is loud in the job, and the fix is to
+    # raise this AND the job timeout together. It is not a value that makes all
+    # conceivable diffs safe.
+    CONFIG__AI_TIMEOUT: "1200"
     PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
     PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
     PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
@@ -1238,12 +1247,22 @@ pr-agent-review:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OP_SERVICE_ACCOUNT_TOKEN'
   allow_failure: true  # Don't block MRs on AI review
   # Must exceed CONFIG__AI_TIMEOUT times the number of passes (review + improve
-  # = 2 x 1800s = 60m), plus the 1Password install and clone. At 45m the job
-  # killed a call that had not yet hit its own timeout, which discards the output
-  # of the pass that already finished. allow_failure means it never blocks — and
-  # that is exactly why a failure here is easy to miss: the pipeline stays GREEN
-  # and the review comment simply never appears. Check the job, not the pipeline.
-  timeout: 90m
+  # = 2 x 1200s = 40m), plus the 1Password install and clone. Keep that inequality
+  # if either number changes: a job timeout below it kills a call that had not yet
+  # hit its own timeout, discarding the output of the pass that already finished.
+  #
+  # 45m, not 90m. MEASURED durations on this repo: 3.0m and 5.6m on small MRs,
+  # 16.2m on the 407-file !201 — so 90m was 5.5x the worst case ever seen and only
+  # ever served as a hang budget. Note a timeout is a CEILING, not a duration:
+  # lowering it does not make a passing pipeline faster, it bounds how long a
+  # wedged one burns a runner before failing. Both review passes are kept —
+  # dropping `improve` would halve the ceiling by removing review coverage, which
+  # is not the trade being made here.
+  #
+  # allow_failure means it never blocks — and that is exactly why a failure here
+  # is easy to miss: the pipeline stays GREEN and the review comment simply never
+  # appears. Check the job, not the pipeline.
+  timeout: 45m
 
 # VALIDATE STAGE - Schema and configuration validation
 

@@ -117,9 +117,33 @@ fi
 # reports active. Budget ~60s (20 x 3s) to match service.yml's readiness check
 # (retries 12 x delay 5s) so a legitimately-slow start isn't reverted spuriously.
 EXPECTED_FP=$(openssl x509 -in "$PEM_FULLCHAIN" -noout -fingerprint -sha256)
+# The probe MUST send SNI. Plex serves the custom certificate only to
+# connections whose SNI matches its customCertificateDomain preference; a
+# handshake without SNI gets the *.plex.direct fallback instead. Without
+# -servername this check therefore compared the pushed leaf against
+# plex.direct, could never match, and reverted every renewal — leaving Plex
+# pinned to an ever-older certificate while the job reported a cert-swap
+# failure. (Found 2026-08-08: the reverts had held Plex on a cert three
+# renewals stale.)
+#
+# The domain is read from Plex's live preferences rather than hardcoded, so
+# changing it in the UI cannot silently re-break this probe. The role default
+# is only a fallback for a Plex that has not written the key yet.
+PLEX_PREFS="{{ plex_config_dir }}/Library/Application Support/Plex Media Server/Preferences.xml"
+CERT_DOMAIN=""
+if [[ -r "$PLEX_PREFS" ]]; then
+    CERT_DOMAIN=$(grep -oE 'customCertificateDomain="[^"]*"' "$PLEX_PREFS" 2>/dev/null \
+        | head -1 | cut -d'"' -f2) || CERT_DOMAIN=""
+fi
+CERT_DOMAIN="${CERT_DOMAIN:-{{ plex_cert_domain }}}"
+if [[ -z "$CERT_DOMAIN" ]]; then
+    echo "cannot determine Plex customCertificateDomain; refusing to verify blind" >&2
+    exit 1
+fi
 SERVED_FP=""
 for _ in $(seq 1 20); do
-    SERVED_FP=$(openssl s_client -connect 127.0.0.1:32400 </dev/null 2>/dev/null \
+    SERVED_FP=$(openssl s_client -connect 127.0.0.1:32400 -servername "$CERT_DOMAIN" \
+        </dev/null 2>/dev/null \
         | openssl x509 -noout -fingerprint -sha256 2>/dev/null) || SERVED_FP=""
     [[ "$SERVED_FP" == "$EXPECTED_FP" ]] && break
     sleep 3

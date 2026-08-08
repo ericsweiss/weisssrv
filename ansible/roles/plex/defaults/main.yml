@@ -31,6 +31,16 @@ plex_config_dir: /config
 plex_transcode_dir: /transcode
 plex_media_dir: /media
 
+# FALLBACK only for the cert-reload probe's SNI. Plex serves the custom
+# certificate exclusively to handshakes whose SNI matches its
+# customCertificateDomain preference — everything else gets the *.plex.direct
+# fallback — so plex-cert-reload.sh must send that name when it verifies the
+# swap took effect. The script reads the live value out of Preferences.xml and
+# only falls back to this if Plex has not written the key yet, so changing the
+# domain in Plex's UI cannot silently break the probe. Keep it in step with
+# Settings -> Network -> "Custom certificate domain" anyway.
+plex_cert_domain: vm.esweiss.com
+
 # Systemd service dependencies
 # Plex starts after the network is online
 plex_service_after:

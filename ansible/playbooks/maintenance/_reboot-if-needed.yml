@@ -1,5 +1,18 @@
 ---
 # Shared reboot-if-needed logic for maintenance playbooks
+#
+# NOTE: this does NOT drain Proxmox HA guests before rebooting, and the cluster
+# leaves shutdown_policy at the Proxmox default (`conditional`), which FREEZES
+# HA services across a reboot instead of moving them — they stay assigned to the
+# node and are down for its whole downtime. On a host that homes an HA guest
+# (today: dns-01 on pve-laptop-01, smtp-relay on pve-opt-01, dns-02 on
+# pve-opt-03, home-assistant on pve-prec-01) that means losing that guest for the
+# reboot. It is survivable by design — dns-01/dns-02 are a redundant pair — but
+# if you want the guest to stay up, drain first with
+# `ha-manager crm-command node-maintenance enable <node>` and release afterwards.
+# Full procedure and the reasoning: docs/12-runbooks.md § "Rebooting a Proxmox
+# host that runs HA guests".
+#
 # Checks for reboot requirement using multiple methods:
 # 1. /var/run/reboot-required (Debian/Ubuntu standard)
 # 2. Kernel version mismatch (works on Proxmox which doesn't create reboot-required)

@@ -22,13 +22,14 @@ dns_servers:
 # SINGLE-host plays (mail, pve-nas-01) deliberately keep no ignore_unreachable,
 # so losing their one host is still a hard UNREACHABLE that ends the run rc 4 —
 # listing smtp-relay or pve-nas-01 here does NOT make site.yml green.
-deploy_expected_absent_hosts:
-  # 2026-07-27: out for a cooling-fan replacement + the RAM swap that retires
-  # the GRUB_BADRAM workaround (docs/34). Its two k3s nodes are NotReady and
-  # etcd runs 2/3 meanwhile. ON REJOIN: remove this entry and run a full
-  # `task infra:deploy` — every role skipped while it sat here is still
-  # undeployed, so it comes back at whatever state it left at.
-  - pve-laptop-01
+deploy_expected_absent_hosts: []
+# 2026-08-08: pve-laptop-01 rejoined and this list is empty again. Its CPU fan,
+# RAM and CMOS battery were replaced and memtest86+ passed clean, so the
+# GRUB_BADRAM page mask was retired on the host (/etc/default/grub, applies from
+# its next boot). The catch-up `task infra:deploy --limit pve-laptop-01` ran:
+# 261 tasks ok / 13 changed, and the relay credential it had missed is confirmed
+# working — a message deferred since Aug 7 with "SASL authentication failed"
+# delivered on the retry.
 
 # Proxmox autostart defaults
 proxmox_autostart_enabled: true
@@ -572,28 +573,33 @@ firewall_ipset_special_entries:
 # storage_replication_jobs source-node warnings flag. Replaces the old flat
 # critical-services-no-nas rule (kept off nas but had no per-service home
 # preference). Homes match the storage_replication_jobs primary layout below.
-# dns-01 (ct:150) is temporarily homed on pve-opt-01 (not pve-laptop-01)
-# because pve-laptop-01 has bad RAM — restore to pve-laptop-01 after the DIMM is
-# replaced + re-tested (see the laptop-ssd-watch memory).
+# dns-01 (ct:150) is still homed on pve-opt-01 rather than pve-laptop-01. The
+# hardware reason is GONE as of 2026-08-08 — pve-laptop-01's RAM, CPU fan and
+# CMOS battery were replaced and memtest86+ passed clean — so this is no longer
+# blocked on parts. It is now a deliberate soak: that host has a history (bad
+# RAM, thermal crashes), and moving the PRIMARY DNS back onto freshly-replaced
+# hardware is a decision to take on evidence, not automatically. Moving it back
+# means reverting three coupled places together — this rule, the 150-* jobs in
+# storage_replication_jobs, and dns-01's proxmox_host in hosts.yml.
 ha_rules:
   - name: affinity-dns-01
     type: node-affinity
     resources:
       - ct:150  # dns-01 (AdGuard Home primary)
     nodes:
-      # Home moved OFF pve-laptop-01: that host has confirmed bad RAM (one dead
-      # cell masked via GRUB_BADRAM, DIMM pending replacement — see the
-      # laptop-ssd-watch memory). pve-laptop-01 must never be a HOME (priority>=2)
-      # for any service; it stays at :1 so dns-01 can run there only as a last-
-      # resort fallback and always migrates back off it. Restore home=pve-laptop-01
-      # once the RAM is replaced and re-tested.
-      - "pve-opt-01:2"  # home (where dns-01 currently runs)
+      # 2026-08-08: home RESTORED to pve-laptop-01. It had been moved to
+      # pve-opt-01 while that host carried a memtest-confirmed dead cell; the
+      # RAM, CPU fan and CMOS battery were replaced, memtest86+ passed clean,
+      # and the GRUB_BADRAM mask that papered over the bad cell is retired. This
+      # entry, the 150-* storage_replication_jobs source_node, and dns-01's
+      # proxmox_host in hosts.yml are one unit — they were reverted together.
+      - "pve-laptop-01:2"  # home
+      - "pve-opt-01:1"
       - "pve-opt-02:1"
       - "pve-opt-03:1"
       - "pve-prec-01:1"
-      - "pve-laptop-01:1"  # fallback only — bad RAM, never a home
     strict: false
-    comment: "dns-01 home pve-opt-01 (fails back when available); pve-laptop-01 fallback-only (bad RAM); never pve-nas-01"
+    comment: "dns-01 home pve-laptop-01 (fails back when available); never pve-nas-01"
     enabled: true
 
   - name: affinity-smtp-relay
@@ -677,41 +683,40 @@ ha_resources:
 # - pve-nas-01 excluded: no local-ssd storage, services migrated OFF for I/O contention
 #
 # Node layout (primary locations):
-# - pve-laptop-01: (no primary services while its bad RAM awaits a DIMM swap —
-#   fallback/backup target only)
-# - pve-opt-01: smtp-relay (151), dns-01 (150 — temporary home, see ha_rules)
+# - pve-laptop-01: dns-01 (150) — home restored 2026-08-08 after the RAM swap
+# - pve-opt-01: smtp-relay (151)
 # - pve-opt-02: (no primary services - backup only)
 # - pve-opt-03: dns-02 (160)
 # - pve-prec-01: home-assistant (154)
 #
 storage_replication_jobs:
-  # dns-01 (VMID 150) - Primary TEMPORARILY on pve-opt-01 (matches the
-  # affinity-dns-01 home above; source_node must track the HA home or
-  # proxmox_ha/replication.yml cannot manage these jobs). Revert source/targets
-  # to the pve-laptop-01 layout when the home moves back after the DIMM swap.
+  # dns-01 (VMID 150) - Primary on pve-laptop-01 (matches the affinity-dns-01
+  # home above; source_node MUST track the HA home or proxmox_ha/replication.yml
+  # cannot manage these jobs). Restored 2026-08-08 together with that rule and
+  # dns-01's proxmox_host in hosts.yml.
   # Replicate to all other local-ssd nodes
   # Staggered: offset 0 (explicit times instead of */15 so the four
   # services' offsets stay deterministic)
   - id: "150-0"
-    source_node: pve-opt-01
-    target_node: pve-laptop-01
+    source_node: pve-laptop-01
+    target_node: pve-opt-01
     schedule: "0,15,30,45"
-    comment: "dns-01 -> pve-laptop-01"
+    comment: "dns-01 -> pve-opt-01"
     enabled: true
   - id: "150-1"
-    source_node: pve-opt-01
+    source_node: pve-laptop-01
     target_node: pve-opt-02
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-02"
     enabled: true
   - id: "150-2"
-    source_node: pve-opt-01
+    source_node: pve-laptop-01
     target_node: pve-opt-03
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-03"
     enabled: true
   - id: "150-3"
-    source_node: pve-opt-01
+    source_node: pve-laptop-01
     target_node: pve-prec-01
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-prec-01"
