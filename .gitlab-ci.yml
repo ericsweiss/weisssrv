@@ -1172,27 +1172,37 @@ pr-agent-review:
   variables:
     CONFIG__GIT_PROVIDER: "gitlab"
     GITLAB__URL: "https://git.ericsweiss.com"
-    # CONFIG__MODEL: gpt-5.5 — OpenAI's latest. There is no gpt-5.5-codex (the
-    # codex line tops out at gpt-5.3-codex); gpt-5.5 supports xhigh reasoning.
+    # gpt-5.6, matching the library template's default so every reviewer in the
+    # repo family runs the same model at the same effort — a review that differs
+    # per repo is one you cannot reason about from its output. The other three
+    # repos take it from ci/review/pr-agent.yml; this job is inline, so it is
+    # pinned here by hand and must be moved WITH that default.
     # See: https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/
-    CONFIG__MODEL: "gpt-5.5"
-    # Use (most of) gpt-5.5's ~1M context for deep review. Its window is 1.05M
+    CONFIG__MODEL: "gpt-5.6"
+    # Use (most of) the model's ~1M context for deep review. The window is 1.05M
     # total = ~922k input + 128k output; get_max_tokens() returns TOTAL context
     # and does NOT reserve output, so cap usage at 900k to stay under the input
     # limit (with headroom for the system prompt). This is the operational cap
     # that get_max_tokens min()s against.
     CONFIG__MAX_MODEL_TOKENS: "900000"
-    # gpt-5.5 shipped after pr-agent 0.34, so it is absent from pr-agent's
+    # gpt-5.6 shipped after pr-agent 0.34, so it is absent from pr-agent's
     # MAX_TOKENS table — declare the model's context window explicitly or
-    # get_max_tokens() errors out ("Model gpt-5.5 is not defined in MAX_TOKENS").
+    # get_max_tokens() errors out ("Model gpt-5.6 is not defined in MAX_TOKENS").
     # Set to the full ~1.05M window; MAX_MODEL_TOKENS above is the real cap.
     # (Reasoning + temperature-omission still apply via the gpt-5* prefix check.)
     CONFIG__CUSTOM_MODEL_MAX_TOKENS: "1050000"
-    # 'high', not 'xhigh': the litellm bundled in pr-agent 0.34 only allows
-    # reasoning_effort='xhigh' for gpt-5.1-codex-max and gpt-5.2 — for gpt-5.5 it
-    # raises UnsupportedParamsError, which makes pr-agent fall back to o4-mini.
-    # 'high' is litellm's max for gpt-5.5; revisit if pr-agent ships a newer
-    # litellm that knows gpt-5.5 supports xhigh.
+    # 'high', and NOT because xhigh is unavailable — because it is a trap. Two
+    # independent reasons, both measured:
+    #   1. The litellm bundled in pr-agent 0.34 only allows xhigh for
+    #      gpt-5.1-codex-max and gpt-5.2; elsewhere it raises
+    #      UnsupportedParamsError and pr-agent silently falls back to o4-mini.
+    #   2. Where xhigh IS accepted (pr-agent 0.40 on weisssrv-lib) it does not
+    #      finish: 40.7m/44.6m/74.5m to succeed and two outright failures at
+    #      45m/90m emitting NOTHING, on a 56k-token diff. Behind allow_failure
+    #      that reads as a GREEN pipeline with no review. At 'high' the same
+    #      reviews complete in ~7m.
+    # This matches the library template's default so every reviewer in the repo
+    # family runs identically.
     CONFIG__REASONING_EFFORT: "high"
     # Per-LLM-call timeout (litellm). 120s timed out immediately; 600s was not
     # enough either — measured on weisssrv-lib!4, one `improve` call on a
@@ -1223,7 +1233,7 @@ pr-agent-review:
       export OPENAI__KEY=$(op read "op://Homelab/OpenAI API Key/api-key")
 
       echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
-      echo "Model: gpt-5.5 (high reasoning, 900k context, 1800s call timeout)"
+      echo "Model: gpt-5.6 (high reasoning, 900k context, 1200s call timeout)"
 
       # Run full review
       python -m pr_agent.cli \

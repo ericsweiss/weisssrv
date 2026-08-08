@@ -3053,7 +3053,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100",
+          "expr": "label_join(max by (namespace,persistentvolumeclaim) (kubelet_volume_stats_used_bytes) / max by (namespace,persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes) * 100, \"pvc_key\", \"/\", \"namespace\", \"persistentvolumeclaim\")",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -3064,7 +3064,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kubelet_volume_stats_capacity_bytes",
+          "expr": "label_join(max by (namespace,persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes), \"pvc_key\", \"/\", \"namespace\", \"persistentvolumeclaim\")",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -3075,7 +3075,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kubelet_volume_stats_used_bytes",
+          "expr": "label_join(max by (namespace,persistentvolumeclaim) (kubelet_volume_stats_used_bytes), \"pvc_key\", \"/\", \"namespace\", \"persistentvolumeclaim\")",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -3086,7 +3086,7 @@
         {
           "id": "seriesToColumns",
           "options": {
-            "byField": "persistentvolumeclaim"
+            "byField": "pvc_key"
           }
         },
         {
@@ -3118,18 +3118,21 @@
               "service 2": true,
               "service 3": true,
               "namespace 2": true,
-              "namespace 3": true
+              "namespace 3": true,
+              "pvc_key": true,
+              "persistentvolumeclaim 2": true,
+              "persistentvolumeclaim 3": true
             },
             "indexByName": {
               "namespace 1": 0,
-              "persistentvolumeclaim": 1,
+              "persistentvolumeclaim 1": 1,
               "Value #C": 2,
               "Value #B": 3,
               "Value #A": 4
             },
             "renameByName": {
               "namespace 1": "Namespace",
-              "persistentvolumeclaim": "PVC",
+              "persistentvolumeclaim 1": "PVC",
               "Value #A": "Usage %",
               "Value #B": "Capacity",
               "Value #C": "Used"
