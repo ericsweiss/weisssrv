@@ -232,6 +232,17 @@ SERVICE_REGISTRY: list[dict] = [
         "version_prefix": "v",
         "strip_prefix": True,
         "tag_filter": r"^v\d+\.\d+\.\d+$",
+        "held": True,
+        "notes": (
+            "1.13.1+ held: upstream's own Dockerfile does not build. 1.13.1 "
+            "moved the transitive better-sqlite3 12.9.0 -> 13.0.1, which has no "
+            "prebuilt binary for node 22, so `npm ci` falls back to `node-gyp "
+            "rebuild` and dies with 'not found: make' — their node:22-slim base "
+            "installs python3-minimal but no compiler. We build their Dockerfile "
+            "UNMODIFIED by design (docker/camofox-browser/README.md), so this is "
+            "not patchable here without forking the supply chain. Re-check when "
+            "upstream adds build-essential or the dep ships a node 22 prebuilt."
+        ),
     },
     {
         # Hindsight agent-memory server (Hermes' memory backend). The pin is the
