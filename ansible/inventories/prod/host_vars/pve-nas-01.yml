@@ -43,21 +43,24 @@ zfs_encryption_pools:
 #         tank/nextcloud-data)
 #   157 = immich (scsi0 + app/postgres zvols on ssd; data zvol on encrypted
 #         tank/immich-data)
-#   155 = windows — DELIBERATELY EXCLUDED (start-on-demand). Windows idles
-#         holding ~13G it can't be reliably ballooned back out of, so it is a
-#         start-when-needed box, not an auto-started service; keeping it off by
-#         default leaves the memory-committed NAS in a healthier spot. Its disks
-#         (scsi0 root + EFI/TPM state) live on the ssd pool, which zfs-mount-
-#         encrypted unlocks at boot for the OTHER guests, so `qm start 155`
-#         works any time after boot with no manual unlock. See docs/39.
+#   155 = windows (scsi0 root + EFI/TPM state on ssd). It idles on ~13G it
+#         cannot be reliably ballooned out of, so it is ordered last.
+#
+#         NOTE the mechanism, which is why membership of THIS list — not
+#         onboot — is what makes a guest start at boot: every guest here stays
+#         onboot=0 in hosts.yml, because pve-guests runs before
+#         zfs-mount-encrypted has unlocked the ssd pool. onboot=1 would fail
+#         against a locked pool; this list is the working equivalent, applied
+#         after the unlock. See docs/32, 39.
 #   152 = plex LXC (mp0 /config on ssd)
 # Order mirrors proxmox_startup_order: the k3s agent (202, order 40) before the
-# gitlab app (153, order 50), nextcloud (156, order 55), and immich (157, order
-# 56); pve-start-encrypted-guests.sh starts VMs in this list order, then CTs.
-# 157 (immich) has disks on both the ssd pool and tank/immich-data — both
-# unlocked by zfs-mount-encrypted before this cohort starts. Windows (155) is
-# start-on-demand and intentionally NOT in this auto-start cohort (see above).
-zfs_encryption_guest_vmids: [202, 153, 156, 157]
+# gitlab app (153, order 50), nextcloud (156, order 55), immich (157, order 56)
+# and windows (155, order 60); pve-start-encrypted-guests.sh starts VMs in this
+# list order, then CTs. 157 (immich) has disks on both the ssd pool and
+# tank/immich-data — both unlocked by zfs-mount-encrypted before this cohort
+# starts. Windows is LAST: it is the least critical guest here and the slowest to
+# settle, so it claims its memory after the services have theirs.
+zfs_encryption_guest_vmids: [202, 153, 156, 157, 155]
 zfs_encryption_guest_ctids: [152]
 
 # NFS bind sources that live on ENCRYPTED datasets. nas_storage anchors their
@@ -201,18 +204,22 @@ zfs_pools:
 zfs_scrub_enabled: true
 zfs_scrub_schedule: "monthly"
 
-# ZFS ARC cap (bytes) = 4 GiB. This host is memory-tight (near-capacity with the
-# app VMs + GitLab), so the ARC is capped hard to keep it from grabbing the free
-# RAM the guests need (a rebuild must not silently revert to the ~31GB default
-# and swap-thrash the guests). Sized off the measured working set: ARC runs a
-# 98% hit ratio at just ~2.5 GiB — almost entirely metadata, since the pools are
-# large-but-cold (media is streamed once, not re-cached). So 4 GiB is ample
-# headroom over the ~2.5 GiB hot set at ZERO read-perf cost (ARC self-tunes to
-# ~2 GiB under pressure regardless), while leaving ~2 GiB more RAM for the guests
-# vs the old 6.25 GiB cap — which is what keeps swap flat (paired with
-# vm.swappiness=1). Rendered into /etc/modprobe.d/zfs.conf by nas_storage (with
-# an update-initramfs handler so it applies at early boot).
-zfs_arc_max_bytes: 4294967296
+# ZFS ARC cap (bytes) = 16 GiB.
+#
+# The cap is a guard, not a performance target: uncapped, ARC takes ~half of RAM
+# (~62 GiB on this host), and a rebuild must never silently revert to that and
+# squeeze the guests.
+#
+# The measured working set is far below the ceiling — ARC runs a 98% hit ratio on
+# a ~2.5 GiB hot set, almost entirely metadata, since the pools are
+# large-but-cold (media is streamed once, not re-cached). 16 GiB therefore leaves
+# room for the metadata cache to grow as the pools fill and as guests are added,
+# rather than pinning it just above today's working set. ARC self-tunes downward
+# under pressure and is instantly reclaimable, so unused ceiling costs nothing.
+#
+# Rendered into /etc/modprobe.d/zfs.conf by nas_storage (with an update-initramfs
+# handler so it applies at early boot).
+zfs_arc_max_bytes: 17179869184
 
 # Nightly /etc/pve archive into the offsite-eligible landing zone. pmxcfs is
 # cluster-shared, so archiving it from this one node covers the whole cluster —
@@ -222,12 +229,15 @@ zfs_arc_max_bytes: 4294967296
 # the cluster filesystem. docs/17.
 nas_pve_cluster_backup_enabled: true
 
-# Daily swap reset. Paired with vm.swappiness=1 (nic_tuning) + the 4G ARC cap
-# above: those keep steady-state swap ~0, but a near-capacity host still swaps
-# under real peak events (deploys/backups/ML) and that swap never self-clears, so
-# it slowly accumulates. This timer resets it each night, guarded to abort if a
-# swapoff would risk OOM (nas_storage/templates/swap-clean.sh.j2). Only this host
-# runs it (the compute hosts have headroom + default swappiness).
+# Daily swap reset. Paired with vm.swappiness=1 (nic_tuning) + the ARC cap above:
+# those keep steady-state swap ~0, but a real peak (deploys/backups/ML) can still
+# swap, and that swap never self-clears. This timer resets it each night, guarded
+# to abort if a swapoff would risk OOM (nas_storage/templates/swap-clean.sh.j2).
+# Only this host runs it (the compute hosts have headroom + default swappiness).
+#
+# It is a backstop: on a normal night it finds ~0 swap and does nothing, which
+# costs nothing. Retire it only if the guest-shutdown escalation below goes
+# unused across a few months of real peaks.
 nas_swap_clean_enabled: true
 # 07:00 — deliberately AFTER the NAS's own overnight jobs (media-mover 06:00,
 # archive-backup 06:30) so it reclaims the swap THEY caused rather than running
@@ -731,16 +741,18 @@ nic_tuning_overrides:
       - feature: gro
         value: "off"
 
-# Lower swappiness aggressively: this NAS host runs the memory-committed app VMs
-# (Nextcloud/Immich/Windows/GitLab) plus ZFS ARC. At 10 the kernel still parked
-# cold anon pages to swap OPPORTUNISTICALLY even with free RAM (observed
-# 2026-07-20: swap crept 0 -> 7G+ with si~=0, i.e. accumulating, not thrashing —
-# and Linux never pages them back in on its own, so it chronically climbed toward
-# the old 17G). At 1 the kernel reclaims from ZFS ARC (instantly reclaimable)
-# instead of swapping until genuine near-OOM pressure, so steady-state swap stays
-# ~0 and only grows under a real spike (swap still available as a backstop). The
-# trade is a smaller ARC read-cache under pressure — correct for a near-capacity
-# box. Applied live + persisted via nic_tuning's sysctl.d drop-in.
+# Swappiness 1 — the only host in the fleet that sets this (the others run
+# neither ZFS ARC nor memory-pinned guests, so they keep the kernel default 60).
+#
+# At higher values the kernel parks cold anon pages to swap OPPORTUNISTICALLY
+# even with free RAM, and since Linux never pages them back in on its own, swap
+# ratchets upward instead of thrashing — measured at 10 on this host: 0 -> 7G+
+# with si~=0. At 1 the kernel reclaims from ZFS ARC, which is instantly
+# reclaimable, and only swaps under genuine near-OOM pressure. Free RAM does not
+# remove that behaviour, it only slows the ratchet, and swapping buys this host
+# nothing it does not already have.
+#
+# Applied live + persisted via nic_tuning's sysctl.d drop-in.
 nic_tuning_vm_swappiness: 1
 
 # Host egress filtering: pve-nas-01 now inherits the cluster-wide default

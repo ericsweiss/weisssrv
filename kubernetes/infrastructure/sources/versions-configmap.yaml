@@ -30,7 +30,7 @@ data:
   helm_chart_versions_external_secrets: 2.9.0
   helm_chart_versions_kube_prometheus_stack: 88.2.0
   helm_chart_versions_kured: 6.1.0
-  helm_chart_versions_loki: 18.7.5
+  helm_chart_versions_loki: 18.7.6
   helm_chart_versions_metallb: 0.15.3
   helm_chart_versions_nvidia_device_plugin: 0.19.3
   helm_chart_versions_onepassword_connect: 2.4.1
@@ -73,7 +73,7 @@ data:
   qbittorrent_version: 5.2.3
   radarr_version: 6.3.0.10514
   rclone_version: 1.74.4
-  redis_exporter_version: v1.88.0
+  redis_exporter_version: v1.89.0
   redis_version: 8.10.0-alpine
   registry_cache_version: 3.1.1
   restic_version: ''

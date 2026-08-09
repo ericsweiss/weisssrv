@@ -40,11 +40,25 @@ spec:
         app.kubernetes.io/name: hermes
         app.kubernetes.io/part-of: hermes
     spec:
-      # NAS-avoid: this is a stateless-scheduling general workload (its state
-      # lives on NFS, not a node-local zvol), so steer it OFF the NAS node
-      # (soft preference reinforced by the NAS node's PreferNoSchedule taint,
-      # which this pod does NOT tolerate). modern CPU: the image bundles a
-      # Node/Chromium/uv toolchain — keep it off the Core2-era legacy nodes.
+      # NAS-PREFER. This pod is the largest single memory reservation in the
+      # general workload set (~1.6 GiB of requests across its containers), and on
+      # a 14-15 GiB compute host that is the difference between the host serving
+      # its guests and paging their memory to swap. The NAS agent has the room:
+      # 24 GiB with roughly 16 GiB of slack.
+      #
+      # Its state is on NFS under ssd/appdata, which is EXPORTED BY the NAS — so
+      # running here also takes the network out of its own storage path rather
+      # than adding one.
+      #
+      # Preference, not a pin: `preferred` plus the toleration below means it
+      # lands on the NAS under normal conditions and can still be scheduled
+      # anywhere eligible if that node is unavailable, which matters for a pod
+      # with no replicas. The toleration is required, not decorative — without it
+      # the node's PreferNoSchedule taint scores this node down and works against
+      # the preference.
+      #
+      # modern CPU: the image bundles a Node/Chromium/uv toolchain — keep it off
+      # the Core2-era legacy nodes.
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -52,7 +66,12 @@ spec:
               preference:
                 matchExpressions:
                   - key: esweiss.com/nas
-                    operator: DoesNotExist
+                    operator: Exists
+      tolerations:
+        - key: esweiss.com/nas
+          operator: Equal
+          value: "true"
+          effect: PreferNoSchedule
       nodeSelector:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"

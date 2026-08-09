@@ -599,23 +599,35 @@ sudo zpool status tank
 
 ### NAS memory management (ARC cap, swappiness, swap reset)
 
-pve-nas-01 runs near memory capacity (the app VMs + GitLab + ARC ≈ its 62 GB),
-so five codified levers keep it stable — the first three in
-`host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`, the fifth in the GitLab
-runner config:
+pve-nas-01 has ~124 GiB usable and commits ~84 GiB of guest maximums plus a
+16 GiB ARC ceiling, leaving roughly 20 GiB spare with every guest at its maximum.
+It is not memory-tight, and the five levers below are what keep it that way —
+most of them are **guards** rather than fixes: they cost nothing while there is
+headroom, and they are what stops a new workload silently re-creating the swap
+ratchet this host suffered in July 2026.
 
-1. **ARC cap `zfs_arc_max_bytes` = `4294967296` (4 GiB).** The `nas_storage` role
-   renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs` handler
-   (the pools import from the initramfs at early boot, so a bare modprobe.d write
-   would only apply on the next module reload). 4 GiB is sized off the measured
-   working set: ARC runs a ~98% hit ratio at ~2.5 GiB (almost all metadata — the
-   pools are large-but-cold), so 4 GiB is ample at ~0 read-perf cost while leaving
-   ~2 GiB more RAM for the guests.
+The first three live in `host_vars/pve-nas-01.yml`, the fourth in `hosts.yml`,
+the fifth in the GitLab runner config:
+
+1. **ARC cap `zfs_arc_max_bytes` = `17179869184` (16 GiB).** The `nas_storage`
+   role renders `/etc/modprobe.d/zfs.conf` and notifies an `update-initramfs`
+   handler (the pools import from the initramfs at early boot, so a bare
+   modprobe.d write would only apply on the next module reload). The cap is a
+   **guard, not a target**: uncapped, ARC takes ~half of RAM (~62 GiB), and a
+   rebuild must never silently revert to that. The measured working set sits far
+   below the ceiling — ARC runs a ~98 % hit ratio at ~2.5 GiB, almost all
+   metadata, because the pools are large-but-cold — so 16 GiB is room for the
+   metadata cache to grow as the pools fill, not a response to a shortage.
 2. **`vm.swappiness = 1`** (`nic_tuning_vm_swappiness`, via `nic_tuning`'s
-   sysctl.d drop-in). At the old 10 the kernel parked cold anon pages to swap
-   opportunistically even with free RAM, and since Linux never pages them back in
-   on its own, swap chronically climbed (it once reached ~17 GB). At 1 it reclaims
-   from ARC before swapping until genuine near-OOM pressure.
+   sysctl.d drop-in). This is the only host in the fleet that sets it; the others
+   keep the kernel default of 60, because they run neither ZFS ARC nor
+   memory-pinned guests. At higher values the kernel parks cold anon pages to
+   swap opportunistically *even with free RAM*, and since Linux never pages them
+   back in on its own, swap ratchets upward rather than thrashing — measured at
+   10 on this host, climbing 0 → 7 GB+ with `si≈0`, and once reaching ~17 GB. At
+   1 it reclaims from ARC — instantly reclaimable — and only swaps under genuine
+   near-OOM pressure. Free RAM slows that ratchet but does not remove it, and
+   swapping buys this host nothing it does not already have.
 3. **Daily swap reset** (`nas_swap_clean_enabled`). swappiness=1 stops the
    *opportunistic* parking, but a full host still swaps under real peak events
    (deploys/backups/ML) and that swap never self-clears. A `swap-clean.timer`
@@ -638,36 +650,35 @@ runner config:
    ARC-shrink path covers the common case, so a guest stop is the rare-overflow
    exception, not a nightly event. The service `TimeoutStartSec` (1200s) sits well
    above the sum of the stop-guest timeouts so a legit reclaim is never cut short.
-4. **Right-sized NAS k3s VMs** (`hosts.yml`: `k3s-agt-nas-01` `vm_memory: 10240`,
-   was 12288; `k3s-srv-nas-01` `vm_memory: 5120`, was 6144). Both VMs held RAM
-   they never used — the agent runs at ~5.8 GB (of a 12 GB VM) with ~9 GB of pod
-   requests, the etcd server at ~2.3 GB (of 6 GB). Trimming hands ~3 GB back to
-   the host **at no performance cost** (the guests don't touch it), and — the key
-   effect — it lifts the swap reset's clearing capacity (`MemAvailable` after the
-   ARC shrink, minus a 2 GB OOM margin) from ~6.7 GB to ~9.7 GB, i.e. **above the
-   swap in use**. Without this the reset (lever 3) aborts on a full box; with it
-   the reset *recovers* rather than only maintaining a clean baseline. 10 GB on
-   the agent stays above its request total with slack — do not stack more
-   workloads there or drop it further while nzbget keeps its 3.5 GB reservation;
-   5 GB is the etcd server's floor (latency-sensitive). Applying a `vm_memory`
-   change needs a guest reboot (drain → `qm shutdown`/`qm start` → uncordon; one
-   k3s server at a time to preserve etcd quorum). The box remains ~5 GB
-   overcommitted structurally — that residual lives as *cold* swap (`si≈0`, no
-   thrashing, no perf impact) and is what the nightly reset clears; only more RAM
-   eliminates the overcommit outright.
-5. **CI job pods hard-excluded from the NAS agent**
-   (`kubernetes/apps/gitlab-runner-privileged/release.yaml`, the executor config's
-   `node_affinity` — `esweiss.com/nas DoesNotExist`, *required*). A forensic sweep
-   (2026-07-20) found GitLab CI molecule/DinD builds spilling onto `k3s-agt-nas-01`
-   — past the old *soft* `nas=PreferNoSchedule` taint once the fleet filled — to be
-   the **#1 driver** of the day's swap ratchet: 15 job pods on the NAS agent, peak
-   7 concurrent, ~1.5–2.5 GB each, forcing the overcommitted host to swap other
-   guests' cold pages. The hard exclusion keeps CI on the compute agents
-   (prec-01/laptop-01 for `cpu=modern` jobs via `node_selector_overwrite_allowed`,
-   opt-01/02/03 otherwise); CPU is never the fleet bottleneck (all agents <25 %
-   cpu-requested) and prec-01 (17.6 GiB, the largest agent) backfills the modern
-   slot. This removes the largest *recurring* source of NAS swap-out — the levers
-   above manage the residual, this one cuts the biggest inflow.
+4. **NAS k3s VMs sized for headroom** (`hosts.yml`: `k3s-agt-nas-01`
+   `vm_memory: 24576`; `k3s-srv-nas-01` `vm_memory: 8192`). The agent carries the
+   heavy in-cluster state (Prometheus, Loki, the Authentik/Mealie Postgres zvols)
+   *and* is CI-eligible, so it is sized for both: 24 GB puts standing pod requests
+   at ~32 % of allocatable and leaves ~16 GB of slack for CI job pods bursting on
+   top. Anything much tighter starts OOM-killing the observability stack when a
+   pipeline lands there. The etcd server gets 8 GB against ~2.4 GB of use —
+   deliberate margin, not need: etcd is latency-sensitive and the one guest here
+   whose degradation takes the whole cluster with it, so do not size it to
+   measured usage. Cores are deliberately **not** raised to match: the host is
+   32 vCPU over 20 physical, and CI must not crowd out host-side CPU work.
+   Applying a `vm_memory` change needs a guest reboot (drain → `qm shutdown`/`qm
+   start` → uncordon; one k3s server at a time to preserve etcd quorum).
+5. **CI job pods are eligible on the NAS agent, but last**
+   (`kubernetes/apps/gitlab-runner-privileged/release.yaml`). There is no
+   `node_affinity` exclusion; the node's `esweiss.com/nas=true:PreferNoSchedule`
+   taint is what makes it least-preferred, so the scheduler exhausts every other
+   agent before spilling here. That matters because this host also runs on-demand
+   CPU work, and CI should be its last claim rather than a standing one — while on
+   pure capacity it is the least-loaded machine in the fleet (20 cores at ~9 %
+   load, against 4-core opt nodes at 58–68 %).
+   **The taint is the lever**: to tighten this, raise it to `NoSchedule` rather
+   than adding an affinity exclusion, so the decision lives in one place. History
+   worth knowing: a 2026-07-20 forensic sweep found CI molecule/DinD builds
+   spilling onto this node — 15 job pods, peak 7 concurrent, ~1.5–2.5 GB each —
+   to be the **#1 driver** of that day's swap ratchet, back when the host was
+   over-committed. Including the agent's 6 cores makes the CI-eligible pool
+   25 cores, which is what `concurrent: 12` and the matching ResourceQuota are
+   sized against.
 
 ```bash
 # View ARC size + hit ratio
@@ -675,7 +686,7 @@ awk '$1 ~ /^(c|c_max|size)$/' /proc/spl/kstat/zfs/arcstats
 sudo arc_summary | grep "Hit Rate"
 
 # Limit ARC (temporary, until reboot)
-echo 4294967296 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 4 GiB
+echo 17179869184 | sudo tee /sys/module/zfs/parameters/zfs_arc_max  # 16 GiB
 
 # One-off swap reset (what the timer does)
 sudo /usr/local/sbin/swap-clean.sh

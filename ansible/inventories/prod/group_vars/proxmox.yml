@@ -71,9 +71,15 @@ proxmox_firewall_egress_filtering: true
 # (its ARC stays owned by nas_storage + host_vars/pve-nas-01.yml at 4 GiB). The
 # cap became load-bearing when pve-prec-01 gained a VFIO GPU-passthrough guest
 # whose RAM is host-pinned/mlock'd: an uncapped ARC (~½ of 62 GiB) would collide
-# with the pinned VM and thrash. On the 14-15 GiB opt/laptop hosts 8 GiB sits
-# at/above their ~½-RAM default, so it is a harmless ceiling there (available RAM
-# self-limits ARC); it is the protective cap on the 62 GiB pve-prec-01. docs/43.
+# with the pinned VM and thrash. This 8 GiB value exists for pve-prec-01 and is
+# sized for it. docs/43.
+#
+# The 14-15 GiB opt/laptop hosts override it to 2 GiB in their host_vars. 8 GiB
+# was assumed to be a harmless ceiling there on the reasoning that available RAM
+# self-limits the ARC well below it — that turned out not to hold: pve-opt-02 was
+# measured at 4.3 GiB ARC with 2 GiB available and 1.7 GiB swapped, 612 MiB of it
+# KVM guest memory. On a host running a 6 GiB guest in 14 GiB, an ARC free to
+# grow that far is competing with the guests it exists to serve.
 zfs_arc_cap_max_bytes: 8589934592
 
 # NFSv4-over-TLS handshake daemon on every Proxmox host: prerequisite for the

@@ -23,7 +23,7 @@ are manual, one-time, human steps documented below.
 | Firmware | OVMF/UEFI, q35, pre-enrolled Secure Boot keys, TPM 2.0 (v2) |
 | Storage bus / NIC | VirtIO SCSI (`virtio-scsi-pci`, discard + ssd) / VirtIO (`net0`) |
 | Resource pool | `apps-private` |
-| Autostart | `onboot=0`, **start-on-demand** — deliberately excluded from `zfs_encryption_guest_vmids`, so it is NOT auto-started at boot; start by hand (`qm start 155`) when needed (docs/32) |
+| Autostart | **Auto-starts at boot**, last in the cohort (startup order 60). `onboot=0` is correct and required — its disks are on the encrypted `ssd` pool, so it is started by `pve-start-encrypted-guests` *after* the unlock, via `zfs_encryption_guest_vmids` (docs/32) |
 | Backups | vzdump (cluster-wide `all: true` job) → encrypted `tank/proxmox` |
 | Firewall | `sg-windows`: RDP 3389 from `admin_lan` (LAN /24) + `admin_ts` (tailnet) |
 
@@ -34,12 +34,12 @@ are manual, one-time, human steps documented below.
 | Inventory host + specs | `ansible/inventories/prod/hosts.yml` (`windows_vms` group) |
 | VM build logic | `ansible/roles/proxmox_vm` (`vm_guest_type: windows`) |
 | VirtIO ISO version + sha256 | `ansible/inventories/prod/group_vars/all.yml` (`virtio_win_version` / `virtio_win_checksum`) |
-| Start-on-demand policy | `ansible/inventories/prod/host_vars/pve-nas-01.yml` (excluded from `zfs_encryption_guest_vmids`) |
+| Autostart policy | `ansible/inventories/prod/host_vars/pve-nas-01.yml` (`zfs_encryption_guest_vmids`, includes 155) |
 | Provisioning playbook | `ansible/playbooks/windows.yml` |
 | Firewall group | `ansible/roles/proxmox_firewall/templates/cluster.fw.j2` (`[group sg-windows]`) |
 | Internal DNS + PTR | `ansible/inventories/prod/group_vars/dns.yml` |
 | Tasks | `task windows:{provision,provision-check,status,verify}` |
-| RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (`windows-rdp` target) + `WindowsRdpDown` alert (fires only while the VM is powered on — the as-needed VM being off is normal) |
+| RDP monitoring | `kubernetes/infrastructure/observability/exporters/blackbox-exporter.yaml` (`windows-rdp` target) + `WindowsRdpDown` alert (fires only while the VM is powered on, so a deliberate shutdown stays quiet) |
 
 There is **no** Kubernetes/Traefik object for this VM: RDP is not HTTP, so
 access is a direct L3 connection to `192.168.0.155:3389`, gated purely at the
@@ -56,10 +56,9 @@ Proxmox guest firewall. There are **no** external-dns / Cloudflare records —
   finishes booting — starting the VM (Proxmox UI or `qm start 155`) needs **no**
   manual unlock, and Windows itself does no in-guest crypto (the ZFS layer is
   transparent to it).
-- VMID 155 is **deliberately excluded** from `zfs_encryption_guest_vmids`
-  ([start-on-demand](#start-on-demand), below), so it does **not** cold-boot
-  after a NAS reboot. That only removes its auto-start — the `ssd` pool still
-  unlocks at boot for the other guests, so a manual start works any time.
+- VMID 155 is **included** in `zfs_encryption_guest_vmids` ([autostart](#autostart),
+  below), so it cold-boots after a NAS reboot along with the other encrypted-storage
+  guests — last in that cohort, after the services have claimed their memory.
 - vzdump backs the whole VM image up nightly (the cluster-wide `all: true` job)
   into `tank/proxmox`, which is an encrypted dataset — so backups are encrypted
   at rest. A 250 GiB desktop image is a non-trivial nightly footprint, with two
@@ -193,15 +192,24 @@ a separate job (see [Encryption & backups](#encryption--backups)).
 
 ---
 
-## Start-on-demand
+## Autostart
 
-Windows is kept **off by default**. It idles holding ~13 GiB the balloon driver
-won't reliably reclaim, so leaving it stopped keeps the memory-committed NAS
-(pve-nas-01) in a healthier spot. It is deliberately **excluded** from
-`zfs_encryption_guest_vmids`, so it does **not** auto-start at boot or after a
-NAS reboot.
+Windows **starts automatically** at boot and after a NAS reboot, last in the
+encrypted-guest cohort (startup order 60) — it idles holding ~13 GiB the balloon
+driver won't reliably reclaim, so it claims its memory after the services have
+theirs.
 
-Turn it on when you need a session, either way:
+**`onboot=0` and auto-started is not a contradiction.** Its disks live on the
+encrypted `ssd` pool, so `pve-guests` — which is what honours `onboot` — runs too
+early, before `zfs-mount-encrypted` has unlocked it. Every encrypted-storage guest
+on this host is `onboot=0` and started afterwards by `pve-start-encrypted-guests`,
+driven by `zfs_encryption_guest_vmids` in `host_vars/pve-nas-01.yml`. Setting
+`onboot=1` to "make it start at boot" would do the opposite: the start would fail
+against a locked pool.
+
+To stop it auto-starting, remove `155` from that list — do not touch `onboot`.
+
+You can start or stop it by hand at any time:
 
 - **Proxmox UI**: VM 155 → **Start**.
 - **CLI**: `ssh eric@192.168.0.102 "sudo qm start 155"`.
@@ -268,7 +276,7 @@ this repo:
 | No network after install | `netkvm` not installed — run `virtio-win-guest-tools.exe` (step 4). |
 | `task windows:provision` fails "vm_install_iso is empty" | Set `vm_install_iso` in hosts.yml and stage the ISO (step 1). |
 | get_url checksum mismatch on the VirtIO ISO | `virtio_win_checksum` in `all.yml` is stale for the pinned version — recompute per the comment there. |
-| Windows did not come up after a NAS reboot | **Expected** — it is start-on-demand (excluded from `zfs_encryption_guest_vmids`). Start it by hand when needed: `qm start 155` (the `ssd` pool is already unlocked at boot, docs/32). To restore auto-start, re-add `155` to that list. |
+| Windows did not come up after a NAS reboot | 155 is in `zfs_encryption_guest_vmids` and starts last in that cohort, so this is a fault, not the design. Check `systemctl status pve-start-encrypted-guests` and `journalctl -t zfs-start-encrypted-guests`; if the `ssd` pool failed to unlock, every other `ssd` guest is down too, so it is not Windows-specific (docs/32). `qm start 155` still works by hand. |
 | `qm start 155` fails with a storage/volume error | The `ssd` pool didn't unlock at boot — check `systemctl status zfs-mount-encrypted` and 1Password Connect reachability (docs/32). Every other `ssd` guest would be down too, so this is not Windows-specific. |
 | RDP refused | RDP not enabled / NLA blocking / account has no password (step 4). |
 | Microsoft-account login / activation / Windows Update fails, or `*.esweiss.com` won't resolve | Encrypted DNS (DoH/DoT) is enabled, bypassing AdGuard — set **DNS over HTTPS = Off** and use plaintext DNS to `192.168.0.150` / `.160` (step 4 DNS note). |

@@ -36,19 +36,37 @@ spec:
     # per-node packing is correct and the scheduler self-limits effective
     # parallelism to what the agent cores can actually run.
     #
-    # concurrent is sized to the schedulable pool, NOT above it. The CI-eligible
-    # pool is 19 cores (opt-01/02/03 3 + laptop-01 4 + prec-01 6) since the NAS
-    # agent's hard CI exclusion; after co-tenant requests (~5 cpu) that is ~14
-    # cpu of headroom = ~9 jobs at 1.5 cpu/job. Oversubscribing here (the old
-    # c=15, sized against the pre-exclusion 25-core pool) parks the overflow as
-    # Unschedulable PODS — and pod-Pending time burns the JOB's timeout clock
-    # (pipeline 773: two molecule jobs sat Pending ~18.5 min and were killed by
-    # the 20m job timeout without ever converging). At/below pool capacity the
-    # overflow waits in GitLab's job queue instead, where the timeout clock does
-    # not run. concurrent stays at/below what the ResourceQuota's requests.cpu
-    # admits so the runner never submits a pod the quota rejects (403). Move in
-    # lockstep with the quota.
-    concurrent: 9
+    # concurrent is sized to the schedulable pool, NOT above it. Oversubscribing
+    # parks the overflow as Unschedulable PODS — and pod-Pending time burns the
+    # JOB's timeout clock (pipeline 773: two molecule jobs sat Pending ~18.5 min
+    # and were killed by the 20m job timeout without ever converging). At/below
+    # pool capacity the overflow waits in GitLab's job queue instead, where the
+    # timeout clock does not run.
+    #
+    # Pool: 25 cores — opt-01/02/03 3 each, laptop-01 4, prec-01 6, nas-01 6.
+    # After co-tenant requests (~6 cpu) that is ~19 cpu of headroom = ~12 jobs at
+    # 1.5 cpu/job.
+    #
+    # That 1.5 cpu/job is a RESERVATION, not a measurement, and it is the same
+    # for every job: cpu_request 900m + service_cpu_request 500m (dind) +
+    # helper_cpu_request 100m, with no cpu_request_overwrite_max_allowed, so a
+    # job cannot ask for less. The scheduler admits on REQUESTS, never on usage —
+    # so "most jobs are lint work that use far less than they reserve" is true
+    # and irrelevant: a light job still holds 1.5 cpu of a node while it runs.
+    #
+    # That is why this number cannot be tuned upward against the same pool. Any
+    # value above ~12 does not pack tighter, it parks the difference in Pending
+    # pods and burns job timeouts. Raising it honestly means adding cores (the
+    # NAS agent is the only one with room to grow) or lowering the per-job
+    # request — and that request was deliberately raised FROM an understated
+    # ~650m after the understatement oversubscribed the small agents and inflated
+    # molecule jobs 4-7x (proxmox_vm 2.5min -> 18min). Do not undo that to buy
+    # concurrency.
+    #
+    # concurrent stays at/below what the ResourceQuota's requests.cpu admits so
+    # the runner never submits a pod the quota rejects (403). Move in lockstep
+    # with the quota.
+    concurrent: 12
 
     # Kubernetes executor configuration
     runners:
@@ -167,27 +185,18 @@ spec:
             # Example: KUBERNETES_NODE_SELECTOR_CPU: esweiss.com/cpu=modern
             node_selector_overwrite_allowed = "^esweiss\\.com/cpu=(modern|legacy)$"
 
-            # Node affinity: HARD-exclude CI job pods from the NAS agent (label
-            # esweiss.com/nas=true). That node's Proxmox host (pve-nas-01) runs at
-            # ~99.8% memory commit, so a CI pod landing there forces the
-            # overcommitted host to swap OTHER guests' cold pages. The old *soft*
-            # nas=PreferNoSchedule taint let a ~15-job burst spill onto it once the
-            # rest of the fleet filled, which the 2026-07-20 forensics found the #1
-            # driver of the NAS swap ratchet (15 job pods on the NAS agent that day,
-            # peak 7 concurrent). DoesNotExist (NOT NotIn, which would require the
-            # key) keeps every node WITHOUT the label eligible and excludes only the
-            # labelled NAS agent; combined with node_selector_overwrite_allowed
-            # above, a cpu=modern job still lands on prec-01/laptop-01, never the
-            # NAS. CPU is never the fleet bottleneck (all agents <25% cpu-requested)
-            # and prec-01 (17.6Gi, the biggest agent) backfills the modern slot —
-            # see docs/06 (NAS memory management) + docs/27. A sub-table: keep it
-            # after all scalar keys and before pod_labels (TOML positionality note).
-            [runners.kubernetes.affinity.node_affinity]
-              [runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution]
-                [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms]]
-                  [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms.match_expressions]]
-                    key = "esweiss.com/nas"
-                    operator = "DoesNotExist"
+            # NO node affinity here, deliberately: every agent is eligible for CI,
+            # including the NAS agent (esweiss.com/nas=true).
+            #
+            # Eligible is NOT preferred, and that distinction needs no config here:
+            # that node carries esweiss.com/nas=true:PreferNoSchedule, so the
+            # scheduler exhausts every other agent first and only spills onto it
+            # under real load. The NAS also runs host-side CPU work on demand, so
+            # CI must stay its last claim on the box rather than a standing one.
+            #
+            # If that ever needs tightening, raise THE TAINT to NoSchedule rather
+            # than adding a node_affinity exclusion here — one lever, one place.
+            # See docs/06 (NAS memory management) + docs/27.
 
             # Pod anti-affinity: spread infrastructure job pods across agents so
             # a ~15-job burst does not bin-pack many systemd-DinD test pods onto

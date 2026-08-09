@@ -2162,6 +2162,7 @@ deploy-ansible-base:
         - ansible/inventories/prod/host_vars/pve-opt-02.yml
         - ansible/inventories/prod/host_vars/pve-opt-03.yml
         - ansible/inventories/prod/host_vars/pve-nas-01.yml
+        - ansible/inventories/prod/host_vars/pve-laptop-01.yml
 
 # Proxmox host configuration (qol, postfix_null_client, tailscale)
 deploy-ansible-proxmox:
@@ -2210,6 +2211,19 @@ deploy-ansible-proxmox:
         # tailscale/plex pins deploy via manual maintenance jobs by design).
         - ansible/inventories/prod/group_vars/proxmox.yml
         - ansible/inventories/prod/hosts.yml
+        # Proxmox-host host_vars. Required because zfs_arc_cap is deployed HERE
+        # and nowhere else, while per-host ARC caps live in these files — without
+        # them a cap change triggers only deploy-ansible-base (which runs
+        # nic_tuning, not this play) and never actually lands. The
+        # deploy-coverage gate cannot catch that: it asks whether a path maps to
+        # SOME job, not whether it maps to the job that applies it.
+        # Listed explicitly per host, not a pve-*.yml glob, so that gate credits
+        # each path — it ignores wildcards by design.
+        - ansible/inventories/prod/host_vars/pve-nas-01.yml
+        - ansible/inventories/prod/host_vars/pve-laptop-01.yml
+        - ansible/inventories/prod/host_vars/pve-opt-01.yml
+        - ansible/inventories/prod/host_vars/pve-opt-02.yml
+        - ansible/inventories/prod/host_vars/pve-opt-03.yml
 
 deploy-ansible-firewall:
   stage: deploy

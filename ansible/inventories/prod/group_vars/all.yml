@@ -499,7 +499,7 @@ adguard_exporter_version: "v1.2.1"
 # integrity. On bump: shasum -a 256 the downloaded .deb and update both lines.
 unbound_exporter_version: "0.6.0"
 unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"
-redis_exporter_version: "v1.88.0"
+redis_exporter_version: "v1.89.0"
 
 # Helm chart versions for k3s platform workloads
 # These flow into kubernetes/infrastructure/sources/versions-configmap.yaml
@@ -540,7 +540,7 @@ helm_chart_versions:
   # is invisible because both pins looked individually current. Moving the stack
   # to 88.2.0 restores the match rather than widening it.
   prometheus_operator_crds: "31.0.0"
-  loki: "18.7.5"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
+  loki: "18.7.6"  # grafana-community/loki (OSS chart after the grafana/ GEL fork at 6.55.0); 18.0.0 = dashboard-gen only
   alloy: "1.11.1"
   prometheus_blackbox_exporter: "11.16.0"
   onepassword_connect: "2.4.1"
@@ -594,19 +594,23 @@ ha_rules:
     resources:
       - ct:150  # dns-01 (AdGuard Home primary)
     nodes:
-      # 2026-08-08: home RESTORED to pve-laptop-01. It had been moved to
-      # pve-opt-01 while that host carried a memtest-confirmed dead cell; the
-      # RAM, CPU fan and CMOS battery were replaced, memtest86+ passed clean,
-      # and the GRUB_BADRAM mask that papered over the bad cell is retired. This
-      # entry, the 150-* storage_replication_jobs source_node, and dns-01's
-      # proxmox_host in hosts.yml are one unit — they were reverted together.
-      - "pve-laptop-01:2"  # home
+      # Home is pve-prec-01: it has 62 GiB against the 14-15 GiB of the opt and
+      # laptop hosts, and those five are permanently capped at that size. dns-01
+      # is 2 GiB of guest that a small host cannot spare and prec-01 does not
+      # notice, so the primary lives where the headroom is.
+      #
+      # dns-02 is on pve-opt-03, so the pair stays split across hosts.
+      #
+      # THIS ENTRY, the 150-* storage_replication_jobs source_node, and dns-01's
+      # proxmox_host in hosts.yml are ONE UNIT — move all three together or
+      # proxmox_ha/replication.yml cannot manage the jobs.
+      - "pve-prec-01:2"  # home
+      - "pve-laptop-01:1"
       - "pve-opt-01:1"
       - "pve-opt-02:1"
       - "pve-opt-03:1"
-      - "pve-prec-01:1"
     strict: false
-    comment: "dns-01 home pve-laptop-01 (fails back when available); never pve-nas-01"
+    comment: "dns-01 home pve-prec-01 (fails back when available); never pve-nas-01"
     enabled: true
 
   - name: affinity-smtp-relay
@@ -697,36 +701,36 @@ ha_resources:
 # - pve-prec-01: home-assistant (154)
 #
 storage_replication_jobs:
-  # dns-01 (VMID 150) - Primary on pve-laptop-01 (matches the affinity-dns-01
+  # dns-01 (VMID 150) - Primary on pve-prec-01 (matches the affinity-dns-01
   # home above; source_node MUST track the HA home or proxmox_ha/replication.yml
-  # cannot manage these jobs). Restored 2026-08-08 together with that rule and
-  # dns-01's proxmox_host in hosts.yml.
+  # cannot manage these jobs). Note 150-3 targets pve-laptop-01 rather than
+  # pve-prec-01: the source node cannot also be a replication target.
   # Replicate to all other local-ssd nodes
   # Staggered: offset 0 (explicit times instead of */15 so the four
   # services' offsets stay deterministic)
   - id: "150-0"
-    source_node: pve-laptop-01
+    source_node: pve-prec-01
     target_node: pve-opt-01
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-01"
     enabled: true
   - id: "150-1"
-    source_node: pve-laptop-01
+    source_node: pve-prec-01
     target_node: pve-opt-02
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-02"
     enabled: true
   - id: "150-2"
-    source_node: pve-laptop-01
+    source_node: pve-prec-01
     target_node: pve-opt-03
     schedule: "0,15,30,45"
     comment: "dns-01 -> pve-opt-03"
     enabled: true
   - id: "150-3"
-    source_node: pve-laptop-01
-    target_node: pve-prec-01
+    source_node: pve-prec-01
+    target_node: pve-laptop-01
     schedule: "0,15,30,45"
-    comment: "dns-01 -> pve-prec-01"
+    comment: "dns-01 -> pve-laptop-01"
     enabled: true
 
   # smtp-relay (VMID 151) - Primary on pve-opt-01
