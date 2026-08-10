@@ -23,14 +23,27 @@ CI/CD features:
 
 ## Shared CI library (`eric/weisssrv-lib`)
 
-Seven of the generic jobs below are **not defined in this repo**. They are
+Eight of the generic jobs below are **not defined in this repo**. They are
 `include:`d from the sibling library project at a pinned tag
 (`.gitlab-ci.yml`, the `include:` block):
 
 ```yaml
 - project: eric/weisssrv-lib
-  ref: v0.1.1
+  ref: v0.5.2
   file: /ci/lint/yaml-lint.yml
+```
+
+The four templates that take **no inputs** share a single entry, because
+`file:` accepts a list while `inputs:` binds per entry:
+
+```yaml
+- project: eric/weisssrv-lib
+  ref: v0.5.2
+  file:
+    - /ci/lint/yaml-lint.yml
+    - /ci/lint/shellcheck.yml
+    - /ci/validate/terraform.yml
+    - /ci/security/secret-detection.yml
 ```
 
 | Library file | Job(s) emitted | Inputs weisssrv overrides |
@@ -41,6 +54,7 @@ Seven of the generic jobs below are **not defined in this repo**. They are
 | `/ci/validate/terraform.yml` | `terraform-fmt` **and** `terraform-validate` | none |
 | `/ci/security/secret-detection.yml` | `secret_detection` | none |
 | `/ci/test/python-tests.yml` | `python-tests` | `changes` (adds the ansible + docs paths the suite validates — roles, playbooks, docs/, README, CLAUDE) |
+| `/ci/maintenance/version-check.yml` | `version-check` | `setup_command` + `check_command` only. Everything else is the library default, because this template was generalised FROM weisssrv's local job. `changes` is deliberately **not** passed: the default `["**/*"]` matches every MR, which is what the local job did by carrying no filter |
 | `/ci/validate/flux-lint.yml` | `flux-lint` | `substitute: true`, the kubeconform/kustomize/helm/PyYAML pins + sha256s, cluster/ConfigMap/script paths, and `extra_validation` (the HPA/VPA, scrape/NetworkPolicy, ClusterSecretStore-scope and PVC-storageClassName invariants + `validate-helm-values.py`, which stay weisssrv-local) |
 
 Rules of engagement:
@@ -56,6 +70,22 @@ Rules of engagement:
   job's script/rules against the previous pipeline before merging. The library
   is consumed by more than one repo, so an input default changed there silently
   changes this pipeline.
+- **`variables.WEISSSRV_LIB_REF` is the single source for the pin, and
+  `scripts/check-lib-pins.py` enforces it.** `include:` is resolved at
+  pipeline-creation time, before that variable exists, so every entry has to
+  repeat the tag as a literal — `ref: $WEISSSRV_LIB_REF` silently does not work.
+  (A project-level CI/CD variable *is* readable there, but it would move the pin
+  out of git, where a bump no longer shows up in a diff and cannot be reverted as
+  an MR.) The gate fails the pipeline if any entry drifts from the variable or
+  pins a **branch**, which the include contract forbids: a branch deleted after
+  merge takes the include with it, and until then the pipeline can change
+  behaviour with no commit here at all. Bump the variable, then run
+  `scripts/check-lib-pins.py --fix`. It runs in `python-tests` (and `task lint`
+  via `scripts:test`), and `.gitlab-ci.yml` is in that job's `changes` list, so
+  it fires on its own subject. The script is **vendored byte-identical** from
+  the library (`weisssrv-lib/scripts/check-lib-pins.py`) like
+  `version-bump-mr.py`; re-copy it when the ref moves rather than editing it
+  here.
 - Everything weisssrv-specific stays here: the Ansible/molecule jobs, all
   `deploy-*` jobs, the drift plans, `repo-sync-checks` / `repo-policy-checks`,
   `prometheus-config-lint`, and the scripts the library jobs call
@@ -63,11 +93,12 @@ Rules of engagement:
   `scripts/kubeconform-skipped.py` — the library jobs run the **consumer's**
   copy at a configurable path).
 
-One job is a **pending** eighth include: `version-bump-bot` is the library's
-`/ci/maintenance/version-bump-bot.yml` reproduced inline in `.gitlab-ci.yml`,
-because that template first ships in library **v0.2.0** and this repo is pinned
-at v0.1.1 — and a ref bump is its own MR (parity evidence for all seven jobs,
-plus `weisssrv-app-template` moving in lockstep), not a rider on a new job. The
+One job is a **pending** ninth include: `version-bump-bot` is the library's
+`/ci/maintenance/version-bump-bot.yml` reproduced inline in `.gitlab-ci.yml`
+rather than included, so adopting it is a swap of the local job for the
+template. It is the write half of a pair whose read half (`version-check`) is
+already included above — the bot rewrites pins and raises the MR for when nobody
+is looking; version-check reports for whoever already is. The
 MR manager it drives, `scripts/version-bump-mr.py`, is already **vendored
 byte-identical** from the library (`weisssrv-lib/scripts/version-bump-mr.py` @
 v0.2.0) and does not change in that swap, since the template takes the script

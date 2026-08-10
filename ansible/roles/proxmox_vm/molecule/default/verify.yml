@@ -129,11 +129,19 @@
     # case 5 already proves the no-op path, incl. the up=0 normalization since the
     # default stub reports `startup: order=100`). Each drift case expects exactly
     # one targeted `qm set`.
-    - name: Agent/onboot/startup drift each triggers exactly one qm set
+    - name: Agent/memory/onboot/startup drift each triggers exactly one qm set
       ansible.builtin.assert:
         that:
           # 7b: agent enabled=0 -> exactly one `qm set --agent 1`
           - meta_drift.agent_set == 1
+          # 7b-ii: stub reports memory 4096 against the desired 2048 -> exactly
+          #        one `qm set --memory 2048`. Exactly one matters in BOTH
+          #        directions: more than one is churn, and ZERO means a hosts.yml
+          #        memory change reaches an existing guest through nothing at all
+          #        — not a deploy, and not a reboot either, since the guest
+          #        restarts against the unchanged config. That silent no-op is
+          #        the defect this reconcile exists to close.
+          - meta_drift.memory_set == 1
           # 7c: onboot:0 + stale startup -> exactly one combined onboot/startup set
           #     written with the canonical desired `order=100,up=0` string
           - meta_drift.startup_set == 1

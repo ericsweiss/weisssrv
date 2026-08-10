@@ -52,6 +52,12 @@ default:
 
 # Global variables
 variables:
+  # Single source for the weisssrv-lib pin. `include:` CANNOT read this — it is
+  # resolved before job variables exist — so each include entry repeats the tag
+  # as a literal and scripts/check-lib-pins.py enforces that they all equal this
+  # value and that it is a release tag. Bump here, then `--fix`. See the comment
+  # on the include block.
+  WEISSSRV_LIB_REF: "v0.5.2"
   # Single source for the Ansible pin used by the lint (.ansible-base) and
   # deploy (.deploy-base) pip installs. Keep in step with requirements.txt's
   # ansible pin (which the molecule-ci image builds from).
@@ -1224,13 +1230,21 @@ pr-agent-review:
     PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
     PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
     PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
-  before_script:
-    - !reference [.install-1password, before_script]
   script:
     - |
-      # Get secrets from 1Password
-      export GITLAB__PERSONAL_ACCESS_TOKEN=$(op read "op://Homelab/GitLab API Token/credential")
-      export OPENAI__KEY=$(op read "op://Homelab/OpenAI API Key/api-key")
+      # NO 1Password here, deliberately. Both credentials arrive as masked CI
+      # variables (GITLAB__PERSONAL_ACCESS_TOKEN, OPENAI__KEY), so this job no
+      # longer needs OP_SERVICE_ACCOUNT_TOKEN — a whole-vault credential with no
+      # business in a job whose .gitlab-ci.yml comes from the branch under
+      # review. Fetching a token here never protected it anyway: the fetch runs
+      # in the same shell as the reviewed code, so anything that shell can do to
+      # a variable it can do to an `op read`.
+      #
+      # GITLAB__PERSONAL_ACCESS_TOKEN is now a PROJECT access token
+      # (weisssrv-review-bot, Developer + api) rather than a user PAT, so reviews
+      # post as the bot and the token cannot push. Developer rather than Reporter
+      # because pr-agent applies its "Review effort N/5" label, which Reporter
+      # cannot do — verified against the API before the swap.
 
       echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
       echo "Model: gpt-5.6 (high reasoning, 900k context, 1200s call timeout)"
@@ -1776,47 +1790,80 @@ include:
   # default: tags non-inheritance bug pipeline 777 hit.
   - local: .gitlab/ci/molecule-jobs.gitlab-ci.yml
 
-  # Shared CI library (eric/weisssrv-lib @ v0.1.1) — the generic/parameterizable
+  # Shared CI library (eric/weisssrv-lib) — the generic/parameterizable
   # lint/validate/test/security jobs, consumed via include:project + pinned tag.
   # Inputs reproduce weisssrv's prior INLINE behavior job-for-job: the default
   # tags:[infrastructure] keeps every job on the privileged infrastructure
   # runner, and each `changes:` path list matches the old .paths-* anchor. The
   # adoption MR description carries the job-by-job parity evidence.
-  # yaml-lint: defaults reproduce weisssrv's four `yamllint -d relaxed <target>`
-  # invocations + .paths-yaml-lint.
+  #
+  # THE PIN IS REPEATED, AND THAT IS NOT A CHOICE. `include:` is resolved at
+  # pipeline-CREATION time, before this file's `variables:` block exists, so
+  # `ref: $WEISSSRV_LIB_REF` silently does not work. (A project-level CI/CD
+  # variable IS readable there, but it would move the pin out of git, where a
+  # library bump stops showing up in a diff and cannot be reverted as an MR.)
+  # variables.WEISSSRV_LIB_REF is the single source of truth and
+  # scripts/check-lib-pins.py fails the pipeline if any entry drifts from it or
+  # pins a branch; `--fix` rewrites them. Bump the variable, run --fix.
+  #
+  # These four take the library defaults verbatim, so they share ONE entry:
+  # `file:` accepts a list. The entries below it each pass their own `inputs:`,
+  # which bind per ENTRY, so they cannot be folded in here.
+  #   yaml-lint: reproduces weisssrv's four `yamllint -d relaxed <target>`
+  #     invocations + .paths-yaml-lint.
+  #   shellcheck: reproduces the scripts/ + ansible/*.sh globs, the ansible/roles
+  #     find, the *.sh.j2 Jinja neutralizer, and .paths-shellcheck.
+  #   terraform: emits BOTH terraform-fmt (lint) and terraform-validate
+  #     (validate); reproduces fmt_dir terraform/, module_glob terraform/*/, and
+  #     .paths-terraform.
+  #   secret_detection: overrides GitLab's managed Secret-Detection job
+  #     (cpu_selector esweiss.com/cpu=modern, allow_failure true,
+  #     MR/main/schedule rules); the hard block still comes from validation-gate
+  #     needing this job non-optionally.
   - project: eric/weisssrv-lib
-    ref: v0.1.1
-    file: /ci/lint/yaml-lint.yml
-  # shellcheck: defaults reproduce the scripts/ + ansible/*.sh globs, the
-  # ansible/roles find, the *.sh.j2 Jinja neutralizer, and .paths-shellcheck.
-  - project: eric/weisssrv-lib
-    ref: v0.1.1
-    file: /ci/lint/shellcheck.yml
+    ref: v0.5.2
+    file:
+      - /ci/lint/yaml-lint.yml
+      - /ci/lint/shellcheck.yml
+      - /ci/validate/terraform.yml
+      - /ci/security/secret-detection.yml
   # docs-link-check: runs weisssrv's repo-local scripts/check-doc-links.py, which
   # scans every TRACKED *.md (role/app/agent READMEs link into docs/ too), so the
   # trigger list has to be `**/*.md`-wide — the library default only covers
   # docs/ + the top-level READMEs.
   - project: eric/weisssrv-lib
-    ref: v0.1.1
+    ref: v0.5.2
     file: /ci/lint/docs-link-check.yml
     inputs:
       changes:
         - "**/*.md"
         - "scripts/check-doc-links.py"
         - "scripts/test_check_doc_links.py"
-  # terraform: one include emits BOTH terraform-fmt (lint stage) and
-  # terraform-validate (validate stage); defaults reproduce fmt_dir terraform/,
-  # module_glob terraform/*/, and .paths-terraform.
+  # version-check: reports available pin updates and changes nothing — the
+  # read-only half of the pair whose other half is version-bump-bot (still a
+  # local job below). Replaces an 85-line local job that this template was
+  # generalised FROM, so the defaults are that job: stage lint, image
+  # python:3.11, needs: [], the version-report.json artifact at
+  # `when: always`, and the four soft-fail rules (schedule / web-manual /
+  # MR / main). Only the two commands differ per consumer.
+  #
+  # `changes` is deliberately NOT passed. The library default is `["**/*"]`,
+  # which matches every merge request — exactly what the local job did by
+  # carrying no filter at all. Passing `[]` would match NOTHING and delete the
+  # job silently.
+  #
+  # No credential input exists by design: `setup_command` and `check_command`
+  # come from the branch under review, so a token fetched here would be readable
+  # by that code. GITLAB_API_TOKEN stays a masked CI variable holding a project
+  # token (weisssrv-bot, Reporter + api) — enough to post the MR comment, unable
+  # to push. Without it, version-check-ci.py skips the comment and still writes
+  # the report; that graceful skip lives in the script, not in this job.
   - project: eric/weisssrv-lib
-    ref: v0.1.1
-    file: /ci/validate/terraform.yml
-  # secret_detection: overrides GitLab's managed Secret-Detection job. Defaults
-  # (cpu_selector esweiss.com/cpu=modern, allow_failure true, MR/main/schedule
-  # rules) match weisssrv's inline job; the hard block still comes from
-  # validation-gate needing this job non-optionally.
-  - project: eric/weisssrv-lib
-    ref: v0.1.1
-    file: /ci/security/secret-detection.yml
+    ref: v0.5.2
+    file: /ci/maintenance/version-check.yml
+    inputs:
+      setup_command: 'pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.34.2'
+      check_command: "python3 ./scripts/version-check-ci.py"
   # python-tests: pytest scripts/. Most of the suite are drift guards that read
   # files OUTSIDE scripts/, so the library default `changes` (scripts/ + docs)
   # leaves them unable to fire on their own subject.
@@ -1840,7 +1887,7 @@ include:
   # missed paths built from string constants inside functions, which would be one
   # more gate that cannot fail on part of its subject.
   - project: eric/weisssrv-lib
-    ref: v0.1.1
+    ref: v0.5.2
     file: /ci/test/python-tests.yml
     inputs:
       changes:
@@ -1881,7 +1928,7 @@ include:
   # scoping and helm-values checks, which call weisssrv-local scripts (kept in
   # scripts/), running with $RENDER_ALL / $FAILED in scope.
   - project: eric/weisssrv-lib
-    ref: v0.1.1
+    ref: v0.5.2
     file: /ci/validate/flux-lint.yml
     inputs:
       substitute: true
@@ -3158,107 +3205,6 @@ maintenance-verify:
   rules:
     - !reference [.maintenance-manual-rules, rules]
 
-# VERSION CHECK - Runs early, soft-fail on PRs
-
-version-check:
-  # Every other lint-stage job sets needs: [] so it starts immediately instead
-  # of waiting out the whole build stage (multi-minute image builds) it has no
-  # dependency on. version-check is soft-fail everywhere, so an earlier start is
-  # strictly beneficial.
-  needs: []
-  stage: lint
-  image: python:3.11
-  before_script:
-    # Install the 1Password CLI only when OP_SERVICE_ACCOUNT_TOKEN is present
-    # (forks / outside MRs don't get the masked variable). The CLI is only
-    # needed for the MR auto-comment path; without the token the job still
-    # runs and still emits the version-report.json artifact. We inline the
-    # apt install here (rather than `extends`/`!reference` .install-1password)
-    # so it can be conditional — a YAML `!reference` can't live inside a shell
-    # `if`, and unconditionally installing it on every schedule/MR/main run
-    # would add a useless apt round-trip when no token is available.
-    - |
-      if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-        apt-get update -qq
-        apt-get install -y -qq curl gnupg
-        curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
-          gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
-          > /etc/apt/sources.list.d/1password.list
-        apt-get update -qq && apt-get install -y -qq 1password-cli
-        op --version
-      fi
-  script:
-    - pip install --quiet "pyyaml==${PYYAML_VERSION}" requests==2.32.3
-    # GITLAB_API_TOKEN drives version-check-ci.py's post_mr_comment(). Without
-    # it the script gracefully skips the comment and only writes the
-    # version-report.json artifact (graceful-skip lives in version-check-ci.py).
-    # Gate the op read on the token so non-token pipelines still run cleanly.
-    - |
-      if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-        export GITLAB_API_TOKEN=$(op read "op://Homelab/GitLab API Token/credential")
-      fi
-    - python3 ./scripts/version-check-ci.py
-  artifacts:
-    paths:
-      - version-report.json
-    expire_in: 7 days
-    when: always
-  rules:
-    # Run on schedule (weekly check). Soft-fail: rc=1 just means updates are
-    # available, which must not red the scheduled pipeline.
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      allow_failure: true
-    # Manual trigger on web pipelines (must precede main rule to avoid auto-run).
-    # allow_failure: rules-based `when: manual` defaults to allow_failure: false,
-    # which would leave every web pipeline "blocked" until this job is played.
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: manual
-      allow_failure: true
-    # Run on MRs as informational (soft-fail)
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      allow_failure: true
-    # Run on pushes to main as informational (soft-fail)
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      allow_failure: true
-
-# VERSION BUMP BOT - weekly scheduled version-pin MR
-#
-# Where version-check REPORTS what is outdated, this job ACTS on it: it runs the
-# same `task maintenance:update-all-versions` an operator runs by hand, then hands
-# the working tree to scripts/version-bump-mr.py, which keeps exactly ONE open bot
-# MR in sync with it. Three outcomes, all idempotent, and it NEVER merges:
-#
-#   bumps + branch content changed   -> force-push bot/version-bumps, create the
-#                                       MR or refresh the open one
-#   bumps + branch content identical -> nothing (no push, no MR churn, so a
-#                                       weekly re-run does not re-notify)
-#   no bumps + an open bot MR        -> close it
-#
-# INLINE, NOT `include:`d — deliberate, and temporary. This is
-# eric/weisssrv-lib's ci/maintenance/version-bump-bot.yml reproduced in the
-# template's exact shape (same job name, stage, image class, variables, script
-# ORDER — setup, check, MR manager — and rules), because weisssrv pins the shared
-# library at v0.1.1 (see the include: block above) and that template first ships
-# in v0.2.0. Bumping the shared ref is its own change: every one of the seven
-# included jobs needs parity evidence and weisssrv-app-template has to move in
-# lockstep (docs/13 "Shared CI library"), so it does not ride along with a new
-# job. When the ref does move to >= v0.2.0, delete this job and add:
-#
-#   - project: eric/weisssrv-lib
-#     ref: <tag>
-#     file: /ci/maintenance/version-bump-bot.yml
-#     inputs:
-#       image: python:3.11
-#       setup_command: <this job's before_script>
-#       check_command: <this job's first script step>
-#       paths: "<PINS_FILE> <VERSIONS_CONFIGMAP>"
-#       report_path: version-bump-report.txt
-#
-# and keep the local `rules:` + `artifacts:` overrides (the template has no input
-# for either). scripts/version-bump-mr.py is already vendored BYTE-IDENTICAL from
-# the library, and the template reads its path from the consumer tree, so the
-# script itself does not change in that swap.
 version-bump-bot:
   # Consumes no artifacts (every input comes from the repo + 1Password at
   # runtime), so it starts immediately instead of waiting out the build stage.

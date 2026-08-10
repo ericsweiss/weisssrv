@@ -94,6 +94,17 @@
             else
               echo "startup: order=100"
             fi
+            # Memory, same contract as the reconciles above: the default matches
+            # the role default (vm_memory: 2048) so the memory reconcile sees no
+            # drift and stays a no-op. Without this line the stub reports NO
+            # memory at all, which reads as drift against any desired value and
+            # makes the reconcile mutate on every run — which is exactly what the
+            # existence-guard invariant is there to catch.
+            if [ -f /tmp/molecule-stub-state/vm_memory_override ]; then
+              echo "memory: $(cat /tmp/molecule-stub-state/vm_memory_override)"
+            else
+              echo "memory: 2048"
+            fi
             # The additional-disk attach task parses `qm config` for its scsiN
             # line. The override file, when present, supplies the scsi1 value
             # verbatim so converge can simulate a passthrough disk already

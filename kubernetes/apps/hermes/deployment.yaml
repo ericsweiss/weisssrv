@@ -40,38 +40,25 @@ spec:
         app.kubernetes.io/name: hermes
         app.kubernetes.io/part-of: hermes
     spec:
-      # NAS-PREFER. This pod is the largest single memory reservation in the
-      # general workload set (~1.6 GiB of requests across its containers), and on
-      # a 14-15 GiB compute host that is the difference between the host serving
-      # its guests and paging their memory to swap. The NAS agent has the room:
-      # 24 GiB with roughly 16 GiB of slack.
+      # NO node affinity and no NAS toleration, deliberately.
       #
-      # Its state is on NFS under ssd/appdata, which is EXPORTED BY the NAS — so
-      # running here also takes the network out of its own storage path rather
-      # than adding one.
+      # This pod is the largest single memory reservation in the general
+      # workload set (~1.6 GiB across its containers), so the thing that matters
+      # is that it does NOT land on a 14-15 GiB compute host, where it is the
+      # difference between serving guests and paging them to swap. That is
+      # already handled without a preference here: the NAS agent carries
+      # esweiss.com/nas=true:PreferNoSchedule, and the scheduler's own
+      # least-allocated scoring sends this pod to whichever eligible node has the
+      # most room — pve-prec-01 today, which sits at ~31% of memory requested
+      # with ~18 GiB free.
       #
-      # Preference, not a pin: `preferred` plus the toleration below means it
-      # lands on the NAS under normal conditions and can still be scheduled
-      # anywhere eligible if that node is unavailable, which matters for a pod
-      # with no replicas. The toleration is required, not decorative — without it
-      # the node's PreferNoSchedule taint scores this node down and works against
-      # the preference.
+      # An earlier revision preferred the NAS explicitly. That was dropped once
+      # it was running comfortably on prec-01: a preference that has to be
+      # re-satisfied on every reschedule buys a pod restart to move a workload
+      # that is already well placed.
       #
       # modern CPU: the image bundles a Node/Chromium/uv toolchain — keep it off
       # the Core2-era legacy nodes.
-      affinity:
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: esweiss.com/nas
-                    operator: Exists
-      tolerations:
-        - key: esweiss.com/nas
-          operator: Equal
-          value: "true"
-          effect: PreferNoSchedule
       nodeSelector:
         esweiss.com/general: "true"
         esweiss.com/cpu: "modern"

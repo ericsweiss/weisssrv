@@ -330,6 +330,33 @@
     - not ansible_check_mode
     - vm_balloon is defined
 
+# vm_memory is set at `qm create` above, which means a change to it in hosts.yml
+# reached NOTHING on an existing guest: not the deploy, and not a reboot either,
+# because the guest restarts against a config that still holds the old value. It
+# was config-in-git that no amount of running Ansible would apply — a silent
+# no-op with a plausible-looking green pipeline.
+#
+# `qm set --memory` on a RUNNING guest writes the config and takes effect at its
+# next start rather than resizing it live, so this task never restarts anything.
+# Applying it is still the operator's step: drain -> `qm shutdown`/`qm start` ->
+# uncordon, one k3s server at a time so etcd keeps quorum.
+- name: Reconcile VM memory allocation
+  delegate_to: "{{ vm_reconcile_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$(qm config {{ vm_id }} | sed -n 's/^memory: //p')
+    if [ "$current" != "{{ vm_memory }}" ]; then
+      qm set {{ vm_id }} --memory {{ vm_memory }}
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: vm_memory_reconcile
+  changed_when: "'CHANGED' in (vm_memory_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - vm_memory is defined
+
 - name: Import cloud image disk
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |

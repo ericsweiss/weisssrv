@@ -397,6 +397,44 @@
       register: agent_drift
       changed_when: false
 
+    # 7b-ii. memory drift — an existing VM reporting a different memory must get
+    # exactly one `qm set 999 --memory <desired>`. This is the case the role was
+    # blind to before: vm_memory was applied only at `qm create`, so a change in
+    # hosts.yml reached an existing guest through NOTHING — not a deploy, and not
+    # a reboot either, since the guest restarts against the unchanged config.
+    - name: Stub memory drifted (4096 against the role default 2048)
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_memory_override
+        content: "4096"
+        mode: "0644"
+
+    - name: Reset qm.log for memory-drift case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role against memory-drifted VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Remove memory override
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/vm_memory_override
+        state: absent
+
+    - name: Count memory-drift qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --memory 2048$' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"memory_set\": ${applied}}"
+      args:
+        executable: /bin/bash
+      register: memory_drift
+      changed_when: false
+
     # 7c. onboot + startup drift — existing VM reporting onboot:0 and a stale
     # startup string must get exactly one `qm set 999 --onboot 1 --startup ...`.
     - name: Stub onboot disabled
@@ -448,6 +486,7 @@
         mode: "0644"
         content: |
           {"agent_set": {{ (agent_drift.stdout | from_json).agent_set }},
+           "memory_set": {{ (memory_drift.stdout | from_json).memory_set }},
            "startup_set": {{ (startup_drift.stdout | from_json).startup_set }},
            "any_onboot_set": {{ (startup_drift.stdout | from_json).any_onboot_set }}}
 
